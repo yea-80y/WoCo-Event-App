@@ -1,0 +1,21 @@
+{
+  "name": "woco",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @woco/web",
+    "dev:server": "npm run dev -w @woco/server",
+    "build:shared": "npm run build -w @woco/shared",
+    "build:web": "npm run build -w @woco/web",
+    "build:server": "npm run build -w @woco/server",
+    "check": "npm run check --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
+  }
+}
