@@ -1,7 +1,11 @@
 <script lang="ts">
   import { auth } from "./lib/auth/auth-store.svelte.js";
+  import { router, navigate } from "./lib/router/router.svelte.js";
   import LoginModal from "./lib/components/auth/LoginModal.svelte";
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
+  import EventList from "./lib/components/events/EventList.svelte";
+  import EventForm from "./lib/components/events/EventForm.svelte";
+  import EventDetail from "./lib/components/events/EventDetail.svelte";
   import { onMount } from "svelte";
 
   let showLogin = $state(false);
@@ -13,8 +17,11 @@
 
 <main>
   <header class="top-bar">
-    <h1 class="logo-text">WoCo</h1>
+    <button class="logo-text" onclick={() => navigate("/")}>WoCo</button>
     <nav>
+      <button class="nav-link" onclick={() => navigate("/create")}>
+        + Create Event
+      </button>
       {#if !auth.ready}
         <span class="loading">Loading...</span>
       {:else if auth.isAuthenticated}
@@ -28,37 +35,15 @@
   </header>
 
   <section class="content">
-    {#if !auth.ready}
-      <p class="status">Initialising...</p>
-    {:else if auth.isAuthenticated}
-      <div class="authenticated">
-        <h2>Connected</h2>
-        <dl>
-          <dt>Primary wallet</dt>
-          <dd>{auth.parent}</dd>
-          <dt>Session key</dt>
-          <dd>{auth.sessionAddress}</dd>
-          <dt>POD identity</dt>
-          <dd>
-            {#if auth.hasPodIdentity}
-              {auth.podPublicKeyHex}
-            {:else}
-              <button class="derive-btn" onclick={() => auth.ensurePodIdentity()} disabled={auth.busy}>
-                {auth.busy ? "Deriving..." : "Derive POD Identity"}
-              </button>
-              <span class="hint">Required for creating/claiming tickets</span>
-            {/if}
-          </dd>
-        </dl>
-      </div>
-    {:else}
-      <div class="welcome">
-        <h2>Welcome to WoCo</h2>
-        <p>Decentralized event platform built on Swarm and Ethereum.</p>
-        <button class="cta-btn" onclick={() => showLogin = true}>
-          Get Started
-        </button>
-      </div>
+    {#if router.route === "home"}
+      <EventList onselect={(id) => navigate(`/event/${id}`)} />
+    {:else if router.route === "create"}
+      <EventForm onpublished={(id) => navigate(`/event/${id}`)} />
+    {:else if router.route === "event"}
+      <EventDetail
+        eventId={router.params.id}
+        onback={() => navigate("/")}
+      />
     {/if}
   </section>
 </main>
@@ -67,7 +52,7 @@
 
 <style>
   main {
-    max-width: 720px;
+    max-width: 800px;
     margin: 0 auto;
     padding: 1rem;
   }
@@ -84,7 +69,36 @@
   .logo-text {
     margin: 0;
     font-size: 1.5rem;
+    font-weight: 700;
     color: #e2e8f0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .logo-text:hover {
+    color: #818cf8;
+  }
+
+  nav {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .nav-link {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #818cf8;
+    cursor: pointer;
+  }
+
+  .nav-link:hover {
+    background: rgba(79, 70, 229, 0.1);
   }
 
   .sign-in-btn {
@@ -110,93 +124,5 @@
 
   .content {
     padding: 1rem 0;
-  }
-
-  .welcome {
-    text-align: center;
-    padding: 3rem 0;
-  }
-
-  .welcome h2 {
-    color: #e2e8f0;
-    margin-bottom: 0.5rem;
-  }
-
-  .welcome p {
-    color: #9ca3af;
-    margin-bottom: 1.5rem;
-  }
-
-  .cta-btn {
-    padding: 0.75rem 2rem;
-    font-size: 1rem;
-    font-weight: 600;
-    border: none;
-    border-radius: 8px;
-    background: #4f46e5;
-    color: #fff;
-    cursor: pointer;
-  }
-
-  .cta-btn:hover {
-    background: #4338ca;
-  }
-
-  .authenticated h2 {
-    color: #e2e8f0;
-    margin-bottom: 1rem;
-  }
-
-  dl {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.5rem 1rem;
-  }
-
-  dt {
-    color: #9ca3af;
-    font-size: 0.875rem;
-    font-weight: 600;
-  }
-
-  dd {
-    color: #e2e8f0;
-    font-family: monospace;
-    font-size: 0.8125rem;
-    word-break: break-all;
-    margin: 0;
-  }
-
-  .derive-btn {
-    padding: 0.375rem 0.75rem;
-    font-size: 0.8125rem;
-    border: 1px solid #4f46e5;
-    border-radius: 6px;
-    background: transparent;
-    color: #818cf8;
-    cursor: pointer;
-  }
-
-  .derive-btn:hover:not(:disabled) {
-    background: #4f46e5;
-    color: #fff;
-  }
-
-  .derive-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .hint {
-    display: block;
-    color: #6b7280;
-    font-size: 0.75rem;
-    font-family: sans-serif;
-    margin-top: 0.25rem;
-  }
-
-  .status {
-    text-align: center;
-    color: #6b7280;
   }
 </style>

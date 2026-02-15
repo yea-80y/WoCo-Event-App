@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { requireAuth } from "./middleware/auth.js";
+import { events } from "./routes/events.js";
 
 const app = new Hono();
 
@@ -32,6 +33,9 @@ app.post("/api/auth/whoami", requireAuth, (c) => {
     },
   });
 });
+
+// Event routes
+app.route("/api/events", events);
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
