@@ -14,9 +14,10 @@ npm-debug.log*
 .env
 .env.*
 
-# Markdown (except README)
+# Markdown (except README and CLAUDE.md)
 *.md
 !README.md
+!CLAUDE.md
 
 # Scripts / artifacts
 *.sh
