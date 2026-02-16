@@ -89,3 +89,83 @@ export interface CreateEventResponse {
   eventId?: string;
   error?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Claiming
+// ---------------------------------------------------------------------------
+
+/** A claimed ticket (original ticket data + claim metadata) */
+export interface ClaimedTicket {
+  podType: "woco.ticket.claimed.v1";
+  eventId: string;
+  seriesId: string;
+  seriesName: string;
+  edition: number;
+  totalSupply: number;
+  imageHash: string;
+  creator: string;
+  mintedAt: string;
+  /** ed25519 public key (optional — only present when POD identity was derived) */
+  owner?: string;
+  /** Wallet address (for wallet-based claims) */
+  ownerAddress?: Hex0x;
+  /** SHA-256 hash of email (for email-based claims) */
+  ownerEmailHash?: string;
+  claimedAt: string;
+  originalPodHash: string;
+  originalSignature: string;
+}
+
+/** Request body for POST /api/events/:eventId/series/:seriesId/claim */
+export interface ClaimTicketRequest {
+  mode: "wallet" | "email" | "api";
+  /** Wallet address (mode: wallet) */
+  walletAddress?: string;
+  /** Email address (mode: email) */
+  email?: string;
+  /** API key for organizer claims (mode: api) */
+  apiKey?: string;
+  /** Optional metadata from organizer */
+  metadata?: Record<string, unknown>;
+  // Legacy fields (kept for backwards compat during transition)
+  claimerPodKey?: string;
+  claimerAddress?: Hex0x;
+}
+
+// ---------------------------------------------------------------------------
+// User Collection (Passport)
+// ---------------------------------------------------------------------------
+
+/** A single entry in a user's ticket collection */
+export interface CollectionEntry {
+  seriesId: string;
+  eventId: string;
+  edition: number;
+  claimedRef: string;
+  claimedAt: string;
+}
+
+/** A user's full ticket collection (stored as JSON feed) */
+export interface UserCollection {
+  v: 1;
+  entries: CollectionEntry[];
+  updatedAt: string;
+}
+
+/** Response from claim endpoint */
+export interface ClaimTicketResponse {
+  ok: boolean;
+  ticket?: ClaimedTicket;
+  edition?: number;
+  error?: string;
+}
+
+/** Claim status for a series (returned by GET .../claim-status) */
+export interface SeriesClaimStatus {
+  seriesId: string;
+  totalSupply: number;
+  claimed: number;
+  available: number;
+  /** If the requesting user has claimed, their edition number */
+  userEdition?: number;
+}

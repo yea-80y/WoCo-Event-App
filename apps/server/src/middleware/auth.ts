@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import type { AppEnv } from "../types.js";
 import {
   verifyDelegation,
   extractDelegation,
@@ -15,7 +16,7 @@ import {
  * On success, sets `c.set("parentAddress", ...)` and `c.set("sessionAddress", ...)`
  * for downstream handlers.
  */
-export async function requireAuth(c: Context, next: Next) {
+export async function requireAuth(c: Context<AppEnv>, next: Next) {
   let body: Record<string, unknown> = {};
 
   // Parse body if present (POST/PUT/PATCH)

@@ -1,47 +1,186 @@
-# Svelte + TS + Vite
+# WoCo — Decentralized Event Platform
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+WoCo is a decentralized event ticketing platform built on the Swarm Network and Ethereum standards. Event organizers create events and issue signed tickets as PODs (Portable Object Data). Attendees claim tickets via wallet or email, and carry them in their on-chain passport.
 
-## Recommended IDE Setup
+## Architecture
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
-
-## Need an official Svelte framework?
-
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
-
-## Technical considerations
-
-**Why use this over SvelteKit?**
-
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
-
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
-
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
-
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
-
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `allowJs` in the TS template?**
-
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
 ```
+apps/web/              # Vite + Svelte 5 frontend
+apps/server/           # Hono API server (Swarm relay + auth)
+packages/shared/       # Shared TypeScript types and constants
+packages/embed/        # <woco-tickets> Web Component for external sites
+```
+
+**Storage**: All data lives on Swarm Network feeds — no traditional database. Binary feed pages (4096 bytes, 128 slots x 32-byte refs) store ticket edition hashes. JSON feeds store event metadata, user collections, and claim records.
+
+**Auth**: EIP-712 session delegation. The user's wallet signs a delegation granting a browser-generated session key permission to act on their behalf. This avoids repeated MetaMask popups.
+
+**Identity layers**:
+1. **Wallet** (secp256k1) — permanent Ethereum identity
+2. **Session key** (secp256k1, random) — ephemeral, signs API requests
+3. **POD identity** (ed25519, deterministic) — signs tickets, deferred to feature access
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 20+
+- npm 10+
+- Access to a Swarm Bee node (configured in `apps/server/.env`)
+
+### Install
+
+```bash
+npm install
+```
+
+### Development
+
+```bash
+# Start the API server (watches for changes)
+npm run dev:server
+
+# Start the web frontend (Vite dev server on :5173)
+npm run dev:web
+```
+
+The web dev server proxies `/api` requests to the backend (configured via `PORT` env var).
+
+### Build
+
+```bash
+npm run build:server   # TypeScript check
+npm run build:web      # Production Vite build
+npm run build:embed    # IIFE bundle → packages/embed/dist/woco-embed.js
+```
+
+### Environment
+
+Create `apps/server/.env`:
+
+```env
+FEED_PRIVATE_KEY=<hex private key for platform feed signer>
+POSTAGE_BATCH=<swarm postage batch ID>
+BEE_URL=<your Bee node URL>
+PORT=<server port>
+# Optional: API key for organizer backend-to-backend claims
+ORGANIZER_API_KEY=<secret>
+```
+
+## Features
+
+### Event Creation
+
+Organizers fill out event details (title, description, dates, location, image) and define ticket series with quantities. Tickets are signed with the creator's ed25519 key and uploaded to Swarm. The event directory feed is updated for discovery.
+
+### Ticket Claiming (3 modes)
+
+| Mode | Auth required | Identifier stored | Use case |
+|------|--------------|-------------------|----------|
+| **Wallet** | MetaMask connect | Wallet address | WoCo app + embed widget |
+| **Email** | None | SHA-256 email hash | Embed widget (non-crypto users) |
+| **API** | Organizer API key | Wallet or email | Backend-to-backend after payment |
+
+Claiming is a single action — no EIP-712 signing or ed25519 derivation required at claim time. POD identity derivation is deferred to later feature access (forums, proof of attendance).
+
+### Passport (My Tickets)
+
+Authenticated users see their claimed tickets at `#/my-tickets`. The collection is stored as a JSON feed keyed by wallet address, read through authenticated API endpoints.
+
+### Embed Widget
+
+A standalone Web Component that organizers embed on their own websites. The embed code is generated via the **Embed Setup** page, accessible from any event detail page by clicking "Embed on your site".
+
+The configurator lets organizers:
+- Toggle event image and description visibility
+- Choose claim method (wallet, email, or both)
+- Select theme (dark or light)
+- Copy the generated HTML snippet
+
+```html
+<script src="https://api.woco.eth/embed/woco-embed.js"></script>
+<woco-tickets
+  event-id="abc-123"
+  api-url="https://api.woco.eth"
+  claim-mode="both"
+  theme="dark"
+  show-image="true"
+  show-description="false"
+></woco-tickets>
+```
+
+**Attributes**:
+
+| Attribute | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| `event-id` | string | — | Event identifier (required) |
+| `api-url` | URL | — | WoCo API base URL (required) |
+| `claim-mode` | `wallet` / `email` / `both` | `wallet` | How users claim tickets |
+| `theme` | `dark` / `light` | `dark` | Widget colour scheme |
+| `show-image` | `true` / `false` | `true` | Show event image in header |
+| `show-description` | `true` / `false` | `false` | Show event description |
+
+**Events**: Dispatches `woco-claim` CustomEvent on successful claims with `{ seriesId, mode, address|email, edition }` in detail.
+
+**Bundle**: ~10KB / 3KB gzipped. No framework dependencies — vanilla TypeScript with Shadow DOM.
+
+## Routes
+
+| Hash route | Page |
+|-----------|------|
+| `#/` | Event listing |
+| `#/create` | Create event form |
+| `#/event/:id` | Event detail + claim buttons |
+| `#/event/:id/embed` | Embed configurator |
+| `#/my-tickets` | Passport (claimed tickets) |
+
+## Swarm Feed Layout
+
+```
+woco/event/directory                     # Global event listing (JSON)
+woco/event/{eventId}                     # Event details + series (JSON)
+woco/pod/editions/{seriesId}             # Page 0: slot 0=metadata, 1-127=tickets
+woco/pod/editions/{seriesId}/p{N}        # Pages 1+: 128 tickets each
+woco/pod/claims/{seriesId}[/p{N}]        # Mirrors editions layout
+woco/pod/claimers/{seriesId}             # Who claimed what (JSON)
+woco/pod/collection/{ethAddress}         # User's ticket collection (JSON)
+woco/pod/creator/{creatorPodKey}         # Creator's event index (JSON)
+```
+
+Binary pages use 128 slots x 32 bytes = 4096 bytes. JSON feeds are padded to 4096 bytes with null bytes. Multi-page support allows unlimited tickets per series (127 on page 0, 128 per additional page).
+
+## API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/health` | No | Health check |
+| POST | `/api/auth/whoami` | Session | Verify session delegation |
+| GET | `/api/events` | No | List all events |
+| GET | `/api/events/:id` | No | Get event details |
+| POST | `/api/events` | Session | Create event (streaming NDJSON) |
+| POST | `/api/events/:eid/series/:sid/claim` | No | Claim a ticket |
+| GET | `/api/events/:eid/series/:sid/claim-status` | No | Check availability |
+| GET | `/api/collection/me` | Session | Get user's ticket collection |
+| GET | `/api/collection/me/ticket/:ref` | Session | Get claimed ticket detail |
+
+## Project Status
+
+- [x] Monorepo scaffolding with npm workspaces
+- [x] Wallet auth with EIP-712 session delegation
+- [x] Event creation with Swarm feeds
+- [x] Multi-page ticket editions (no quantity limit)
+- [x] Ticket claiming (wallet + email + API modes)
+- [x] Passport / My Tickets page
+- [x] Embed widget with setup configurator
+- [ ] User profile page
+- [ ] Zupass login integration
+- [ ] Para wallet integration
+- [ ] Smart contract claims (replace platform signer)
+
+## Tech Stack
+
+- **Frontend**: Vite + Svelte 5 + TypeScript
+- **Backend**: Hono + TypeScript
+- **Storage**: Swarm Network (bee-js)
+- **Auth**: EIP-712 (ethers.js), ed25519 (@noble/ed25519)
+- **Embed**: Vanilla TypeScript Web Component (IIFE bundle)

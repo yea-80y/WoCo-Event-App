@@ -49,7 +49,8 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -57,12 +58,12 @@
   }
 
   .modal {
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    border-radius: 12px;
-    padding: 1.5rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.75rem;
     min-width: 340px;
-    max-width: 420px;
+    max-width: 400px;
     width: 90vw;
   }
 
@@ -75,22 +76,20 @@
 
   h2 {
     margin: 0;
-    font-size: 1.25rem;
-    color: #e2e8f0;
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text);
   }
 
   .close-btn {
-    background: none;
-    border: none;
-    color: #9ca3af;
-    font-size: 1.5rem;
-    cursor: pointer;
-    padding: 0;
+    color: var(--text-muted);
+    font-size: 1.375rem;
     line-height: 1;
+    transition: color var(--transition);
   }
 
   .close-btn:hover {
-    color: #e2e8f0;
+    color: var(--text);
   }
 
   .options {

@@ -1,4 +1,4 @@
-import { verifyTypedData, getAddress } from "ethers";
+import { verifyTypedData, getAddress, type TypedDataField } from "ethers";
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
@@ -59,7 +59,7 @@ export function verifyDelegation(
     try {
       recovered = verifyTypedData(
         SESSION_DOMAIN,
-        { ...SESSION_TYPES },
+        SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
         message,
         parentSig,
       );

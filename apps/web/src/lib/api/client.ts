@@ -27,6 +27,23 @@ export async function authPost<T>(
   return resp.json();
 }
 
+/** Authenticated GET request (delegation via headers). */
+export async function authGet<T>(path: string): Promise<ApiResponse<T>> {
+  const signed = await auth.signRequest("");
+  if (!signed) throw new Error("Not authenticated");
+
+  const delegationB64 = btoa(JSON.stringify(signed.delegation));
+
+  const resp = await fetch(`${BASE}${path}`, {
+    headers: {
+      "X-Session-Address": signed.sessionAddress,
+      "X-Session-Delegation": delegationB64,
+    },
+  });
+
+  return resp.json();
+}
+
 /** Unauthenticated GET request. */
 export async function get<T>(path: string): Promise<ApiResponse<T>> {
   const resp = await fetch(`${BASE}${path}`);

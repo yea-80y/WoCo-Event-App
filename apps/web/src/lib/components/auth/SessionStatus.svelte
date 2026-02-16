@@ -21,31 +21,30 @@
   .session-status {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 
   .address {
-    font-family: monospace;
-    font-size: 0.875rem;
-    color: #94a3b8;
-    background: #1e1e3a;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
     padding: 0.375rem 0.75rem;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
   }
 
   .logout-btn {
     padding: 0.375rem 0.75rem;
     font-size: 0.8125rem;
-    border: 1px solid #374151;
-    border-radius: 6px;
-    background: transparent;
-    color: #9ca3af;
-    cursor: pointer;
-    transition: all 0.15s;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    transition: all var(--transition);
   }
 
   .logout-btn:hover {
-    border-color: #ef4444;
-    color: #ef4444;
+    border-color: var(--error);
+    color: var(--error);
   }
 </style>

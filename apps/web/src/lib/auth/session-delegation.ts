@@ -1,4 +1,4 @@
-import { Wallet, ZeroHash, verifyTypedData } from "ethers";
+import { Wallet, BrowserProvider, ZeroHash, verifyTypedData, type TypedDataField } from "ethers";
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
@@ -23,14 +23,12 @@ function getHost(): string {
  *
  * 1. Generate random session key
  * 2. Session key signs proof-of-possession
- * 3. Parent wallet signs EIP-712 AuthorizeSession
+ * 3. Parent wallet signs EIP-712 AuthorizeSession (via ethers BrowserProvider)
  * 4. Encrypt & store session key + delegation in IndexedDB
  */
 export async function requestSessionDelegation(
   parentAddress: string,
 ): Promise<{ sessionAddress: string; delegation: SessionDelegation }> {
-  const provider = requireProvider();
-
   // 1. Random session key
   const sessionWallet = Wallet.createRandom();
   const sessionAddress = sessionWallet.address;
@@ -55,23 +53,19 @@ export async function requestSessionDelegation(
     statement: `Authorize ${sessionAddress} as session key for ${host}`,
   };
 
-  // 3. Parent signs EIP-712
-  const payload = {
-    domain: SESSION_DOMAIN,
-    types: { ...SESSION_TYPES },
-    primaryType: "AuthorizeSession" as const,
+  // 3. Sign via ethers BrowserProvider (ensures encoding matches verifyTypedData)
+  const browserProvider = new BrowserProvider(requireProvider());
+  const signer = await browserProvider.getSigner(parentAddress);
+  const parentSig = await signer.signTypedData(
+    { ...SESSION_DOMAIN },
+    SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
     message,
-  };
-
-  const parentSig = (await provider.request({
-    method: "eth_signTypedData_v4",
-    params: [parentAddress, JSON.stringify(payload)],
-  })) as string;
+  );
 
   // 4. Verify locally before storing
   const recovered = verifyTypedData(
     SESSION_DOMAIN,
-    { ...SESSION_TYPES },
+    SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
     message,
     parentSig,
   );
@@ -84,7 +78,6 @@ export async function requestSessionDelegation(
   // 5. Encrypt and store
   const deviceKey = await ensureDeviceKey();
 
-  // Store session private key bytes directly (no Wallet.encrypt layer)
   const encSessionKey = await encrypt(deviceKey, {
     privateKey: sessionWallet.privateKey,
     address: sessionAddress,

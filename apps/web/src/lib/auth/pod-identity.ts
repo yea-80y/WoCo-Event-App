@@ -1,4 +1,4 @@
-import { keccak256, toUtf8Bytes } from "ethers";
+import { keccak256, toUtf8Bytes, BrowserProvider, type TypedDataField } from "ethers";
 import {
   POD_IDENTITY_DOMAIN,
   POD_IDENTITY_TYPES,
@@ -21,8 +21,6 @@ import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 export async function requestPodIdentity(
   parentAddress: string,
 ): Promise<{ podPublicKeyHex: string; seed: string }> {
-  const provider = requireProvider();
-
   // Build deterministic EIP-712 message (fixed nonce!)
   const message = {
     purpose: "Derive deterministic POD signing identity",
@@ -30,17 +28,14 @@ export async function requestPodIdentity(
     nonce: POD_IDENTITY_NONCE,
   };
 
-  const payload = {
-    domain: POD_IDENTITY_DOMAIN,
-    types: { ...POD_IDENTITY_TYPES },
-    primaryType: "DerivePodIdentity" as const,
+  // Sign via ethers BrowserProvider (ensures encoding consistency)
+  const browserProvider = new BrowserProvider(requireProvider());
+  const signer = await browserProvider.getSigner(parentAddress);
+  const signature = await signer.signTypedData(
+    { ...POD_IDENTITY_DOMAIN },
+    POD_IDENTITY_TYPES as unknown as Record<string, TypedDataField[]>,
     message,
-  };
-
-  const signature = (await provider.request({
-    method: "eth_signTypedData_v4",
-    params: [parentAddress, JSON.stringify(payload)],
-  })) as string;
+  );
 
   // Deterministic: same wallet → same signature → same seed
   const seed = keccak256(toUtf8Bytes(signature));

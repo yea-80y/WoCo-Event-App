@@ -32,7 +32,7 @@
 
   <div class="fields">
     <label>
-      <span>Event title *</span>
+      <span>Event title</span>
       <input type="text" bind:value={title} placeholder="My awesome event" />
     </label>
 
@@ -43,11 +43,11 @@
 
     <div class="row">
       <label>
-        <span>Start date *</span>
+        <span>Start date</span>
         <input type="datetime-local" bind:value={startDate} />
       </label>
       <label>
-        <span>End date *</span>
+        <span>End date</span>
         <input type="datetime-local" bind:value={endDate} />
       </label>
     </div>
@@ -76,58 +76,40 @@
   .event-form {
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 1.75rem;
     max-width: 560px;
     margin: 0 auto;
   }
 
   h2 {
-    color: #e2e8f0;
+    color: var(--text);
     margin: 0;
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
   }
 
   .fields {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 1rem;
   }
 
   .row {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.75rem;
+    gap: 1rem;
   }
 
   label {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.375rem;
   }
 
   label span {
-    color: #9ca3af;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  input, textarea {
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #374151;
-    border-radius: 6px;
-    background: #0f0f23;
-    color: #e2e8f0;
-    font-size: 0.875rem;
-    font-family: inherit;
-  }
-
-  input:focus, textarea:focus {
-    outline: none;
-    border-color: #4f46e5;
-  }
-
-  textarea {
-    resize: vertical;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
   }
 </style>

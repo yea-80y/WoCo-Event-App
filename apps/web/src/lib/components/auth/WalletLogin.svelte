@@ -41,39 +41,38 @@
   .wallet-login {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     gap: 0.75rem;
   }
 
   .wallet-btn {
-    padding: 0.75rem 1.5rem;
-    font-size: 1rem;
+    padding: 0.75rem;
+    font-size: 0.9375rem;
     font-weight: 600;
-    border: none;
-    border-radius: 8px;
-    background: #4f46e5;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
     color: #fff;
-    cursor: pointer;
-    transition: background 0.15s;
+    transition: background var(--transition);
   }
 
   .wallet-btn:hover:not(:disabled) {
-    background: #4338ca;
+    background: var(--accent-hover);
   }
 
   .wallet-btn:disabled {
-    opacity: 0.6;
+    opacity: 0.5;
     cursor: not-allowed;
   }
 
   .error {
-    color: #ef4444;
+    color: var(--error);
     font-size: 0.875rem;
     margin: 0;
+    text-align: center;
   }
 
   .no-wallet {
-    color: #9ca3af;
+    color: var(--text-secondary);
     font-size: 0.875rem;
     text-align: center;
     margin: 0;

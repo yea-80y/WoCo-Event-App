@@ -1,9 +1,11 @@
 import { Hono } from "hono";
+import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventRequest } from "@woco/shared";
+import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEvent, getEvent, listEvents } from "../lib/event/service.js";
 
-const events = new Hono();
+const events = new Hono<AppEnv>();
 
 // GET /api/events - public listing
 events.get("/", async (c) => {
@@ -30,8 +32,9 @@ events.get("/:id", async (c) => {
 });
 
 // POST /api/events - authenticated, creates event + tickets on Swarm
+// Streams NDJSON progress events, final line is the result
 events.post("/", requireAuth, async (c) => {
-  const body = c.get("body") as CreateEventRequest & {
+  const body = c.get("body") as unknown as CreateEventRequest & {
     session: string;
     delegation: unknown;
   };
@@ -70,32 +73,41 @@ events.post("/", requireAuth, async (c) => {
 
   const eventId = crypto.randomUUID();
 
-  try {
-    const result = await createEvent({
-      eventId,
-      title: ev.title,
-      description: ev.description || "",
-      startDate: ev.startDate,
-      endDate: ev.endDate,
-      location: ev.location || "",
-      creatorAddress: parentAddress.toLowerCase() as Hex0x,
-      creatorPodKey,
-      imageData,
-      series: series.map((s) => ({
-        seriesId: s.seriesId,
-        name: s.name,
-        description: s.description || "",
-        totalSupply: s.totalSupply,
-      })),
-      signedTickets: serializedTickets,
-    });
+  return streamText(c, async (stream) => {
+    try {
+      const result = await createEvent({
+        eventId,
+        title: ev.title,
+        description: ev.description || "",
+        startDate: ev.startDate,
+        endDate: ev.endDate,
+        location: ev.location || "",
+        creatorAddress: parentAddress.toLowerCase() as Hex0x,
+        creatorPodKey,
+        imageData,
+        series: series.map((s) => ({
+          seriesId: s.seriesId,
+          name: s.name,
+          description: s.description || "",
+          totalSupply: s.totalSupply,
+        })),
+        signedTickets: serializedTickets,
+        onProgress: (p) => {
+          stream.writeln(JSON.stringify(p));
+        },
+      });
 
-    return c.json({ ok: true, eventId: result.eventId });
-  } catch (err) {
-    console.error("[api] createEvent error:", err);
-    const message = err instanceof Error ? err.message : "Failed to create event";
-    return c.json({ ok: false, error: message }, 500);
-  }
+      stream.writeln(JSON.stringify({
+        type: "done",
+        ok: true,
+        data: { eventId: result.eventId },
+      }));
+    } catch (err) {
+      console.error("[api] createEvent error:", err);
+      const message = err instanceof Error ? err.message : "Failed to create event";
+      stream.writeln(JSON.stringify({ type: "error", ok: false, error: message }));
+    }
+  });
 });
 
 export { events };

@@ -6,6 +6,8 @@
   import EventList from "./lib/components/events/EventList.svelte";
   import EventForm from "./lib/components/events/EventForm.svelte";
   import EventDetail from "./lib/components/events/EventDetail.svelte";
+  import MyTickets from "./lib/components/passport/MyTickets.svelte";
+  import EmbedSetup from "./lib/components/embed/EmbedSetup.svelte";
   import { onMount } from "svelte";
 
   let showLogin = $state(false);
@@ -17,11 +19,16 @@
 
 <main>
   <header class="top-bar">
-    <button class="logo-text" onclick={() => navigate("/")}>WoCo</button>
+    <button class="logo" onclick={() => navigate("/")}>WoCo</button>
     <nav>
       <button class="nav-link" onclick={() => navigate("/create")}>
         + Create Event
       </button>
+      {#if auth.isAuthenticated}
+        <button class="nav-link" onclick={() => navigate("/my-tickets")}>
+          My Tickets
+        </button>
+      {/if}
       {#if !auth.ready}
         <span class="loading">Loading...</span>
       {:else if auth.isAuthenticated}
@@ -44,6 +51,10 @@
         eventId={router.params.id}
         onback={() => navigate("/")}
       />
+    {:else if router.route === "my-tickets"}
+      <MyTickets />
+    {:else if router.route === "embed-setup"}
+      <EmbedSetup eventId={router.params.id} />
     {/if}
   </section>
 </main>
@@ -52,77 +63,72 @@
 
 <style>
   main {
-    max-width: 800px;
+    max-width: 840px;
     margin: 0 auto;
-    padding: 1rem;
+    padding: 0 1.25rem;
   }
 
   .top-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 1rem 0;
-    border-bottom: 1px solid #2a2a4a;
+    padding: 1.25rem 0;
+    border-bottom: 1px solid var(--border);
     margin-bottom: 2rem;
   }
 
-  .logo-text {
-    margin: 0;
-    font-size: 1.5rem;
+  .logo {
+    font-size: 1.375rem;
     font-weight: 700;
-    color: #e2e8f0;
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
+    color: var(--text);
+    letter-spacing: -0.02em;
   }
 
-  .logo-text:hover {
-    color: #818cf8;
+  .logo:hover {
+    color: var(--accent-text);
   }
 
   nav {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 
   .nav-link {
-    padding: 0.5rem 0.75rem;
+    padding: 0.5rem 0.875rem;
     font-size: 0.875rem;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: #818cf8;
-    cursor: pointer;
+    font-weight: 500;
+    color: var(--accent-text);
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
   }
 
   .nav-link:hover {
-    background: rgba(79, 70, 229, 0.1);
+    background: var(--accent-subtle);
   }
 
   .sign-in-btn {
     padding: 0.5rem 1rem;
     font-size: 0.875rem;
-    border: 1px solid #4f46e5;
-    border-radius: 6px;
-    background: transparent;
-    color: #818cf8;
-    cursor: pointer;
-    transition: all 0.15s;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    transition: all var(--transition);
   }
 
   .sign-in-btn:hover {
-    background: #4f46e5;
+    background: var(--accent);
+    border-color: var(--accent);
     color: #fff;
   }
 
   .loading {
-    color: #6b7280;
+    color: var(--text-muted);
     font-size: 0.875rem;
   }
 
   .content {
-    padding: 1rem 0;
+    padding: 0.5rem 0 3rem;
   }
 </style>

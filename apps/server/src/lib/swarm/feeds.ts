@@ -112,8 +112,23 @@ export async function readFeedPageWithRetry(
 }
 
 export async function writeFeedPage(topic: Topic, page: Uint8Array): Promise<void> {
-  const writer = getBee().makeFeedWriter(topic, getPlatformSigner());
-  await writer.uploadPayload(requirePostageBatch(), page);
+  let delay = 500;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const writer = getBee().makeFeedWriter(topic, getPlatformSigner());
+      await writer.uploadPayload(requirePostageBatch(), page);
+      return;
+    } catch (err: unknown) {
+      const status = (err as any)?.status ?? (err as any)?.response?.status;
+      if (status === 429 && attempt < 4) {
+        console.log(`[swarm] Feed write rate limited, retrying in ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 5000);
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

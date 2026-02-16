@@ -1,10 +1,14 @@
+import "dotenv/config";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
+import type { AppEnv } from "./types.js";
 import { requireAuth } from "./middleware/auth.js";
 import { events } from "./routes/events.js";
+import { claims } from "./routes/claims.js";
+import { collection } from "./routes/collection.js";
 
-const app = new Hono();
+const app = new Hono<AppEnv>();
 
 // CORS - allow frontend dev server
 app.use(
@@ -36,6 +40,10 @@ app.post("/api/auth/whoami", requireAuth, (c) => {
 
 // Event routes
 app.route("/api/events", events);
+app.route("/api/events", claims);
+
+// Collection routes (authenticated)
+app.route("/api/collection", collection);
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);

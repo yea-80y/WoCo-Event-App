@@ -14,11 +14,22 @@ import {
   topicEvent,
   topicEditions,
   topicClaims,
+  editionPageCount,
+  PAGE_0_CAPACITY,
+  PAGE_N_CAPACITY,
 } from "../swarm/topics.js";
 
 // ---------------------------------------------------------------------------
 // Create event
 // ---------------------------------------------------------------------------
+
+export interface CreateProgress {
+  type: "progress";
+  phase: string;
+  current: number;
+  total: number;
+  message: string;
+}
 
 export async function createEvent(opts: {
   eventId: string;
@@ -38,19 +49,30 @@ export async function createEvent(opts: {
   }>;
   /** signedTickets[seriesId] = array of serialized signed tickets */
   signedTickets: Record<string, string[]>;
+  onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
     eventId, title, description, startDate, endDate, location,
     creatorAddress, creatorPodKey, imageData, series, signedTickets,
+    onProgress,
   } = opts;
+
+  const totalTickets = series.reduce((sum, s) => sum + s.totalSupply, 0);
+  let ticketsUploaded = 0;
+
+  const emit = (phase: string, current: number, total: number, message: string) => {
+    onProgress?.({ type: "progress", phase, current, total, message });
+  };
 
   console.log(`[event] Creating event ${eventId}: "${title}"`);
 
   // 1. Upload event image
+  emit("image", 0, 1, "Uploading event image...");
   console.log("[event] Uploading image...");
   const imageHash = await uploadToBytes(imageData);
+  emit("image", 1, 1, "Image uploaded");
 
-  // 2. For each series: upload tickets, write editions feed, init claims feed
+  // 2. For each series: upload tickets, write editions feed(s), init claims feed(s)
   const seriesSummaries: SeriesSummary[] = [];
 
   for (const s of series) {
@@ -60,24 +82,34 @@ export async function createEvent(opts: {
         `Series ${s.seriesId}: expected ${s.totalSupply} tickets, got ${tickets?.length ?? 0}`,
       );
     }
-    if (s.totalSupply > 127) {
-      throw new Error(`Series ${s.seriesId}: max 127 tickets per series in v1`);
-    }
 
-    console.log(`[event] Processing series "${s.name}" (${s.totalSupply} tickets)...`);
+    const pages = editionPageCount(s.totalSupply);
+    console.log(
+      `[event] Processing series "${s.name}" (${s.totalSupply} tickets, ${pages} page${pages > 1 ? "s" : ""})...`,
+    );
 
-    // Upload each ticket to /bytes
+    // Upload tickets to /bytes in parallel batches of 10
     const ticketHashes: string[] = [];
-    for (let i = 0; i < tickets.length; i++) {
-      const hash = await uploadToBytes(tickets[i]);
-      ticketHashes.push(hash);
-      // Brief delay between uploads to avoid rate limiting
-      if (i < tickets.length - 1) {
-        await new Promise((r) => setTimeout(r, 50));
+    const BATCH_SIZE = 10;
+    for (let batchStart = 0; batchStart < tickets.length; batchStart += BATCH_SIZE) {
+      const batch = tickets.slice(batchStart, batchStart + BATCH_SIZE);
+      const batchResults = await Promise.all(batch.map((t) => uploadToBytes(t)));
+      ticketHashes.push(...batchResults);
+      ticketsUploaded += batchResults.length;
+      emit(
+        "tickets",
+        ticketsUploaded,
+        totalTickets,
+        `Uploading tickets: ${ticketsUploaded}/${totalTickets} (${s.name})`,
+      );
+      if (ticketHashes.length < tickets.length) {
+        console.log(`[event]   Uploaded ${ticketHashes.length}/${tickets.length} tickets...`);
+        await new Promise((r) => setTimeout(r, 100));
       }
     }
+    console.log(`[event]   All ${ticketHashes.length} tickets uploaded`);
 
-    // Upload series metadata to /bytes (slot 0)
+    // Upload series metadata to /bytes (page 0, slot 0)
     const seriesMeta = {
       v: 1,
       seriesId: s.seriesId,
@@ -88,22 +120,39 @@ export async function createEvent(opts: {
       creatorPodKey,
       creatorAddress,
       totalSupply: s.totalSupply,
+      pageCount: pages,
       createdAt: new Date().toISOString(),
     };
     const metaRef = await uploadToBytes(JSON.stringify(seriesMeta));
 
-    // Pack editions feed: [metaRef, ticketHash1, ticketHash2, ...]
-    const editionsPage = pack4096([metaRef, ...ticketHashes]);
-    await writeFeedPage(topicEditions(s.seriesId), editionsPage);
+    // Write editions across pages
+    emit("feeds", 0, pages, `Writing edition feeds for "${s.name}"...`);
+    for (let p = 0; p < pages; p++) {
+      let pageRefs: string[];
 
-    // Verify editions feed
-    const verified = await readFeedPageWithRetry(topicEditions(s.seriesId), 3, 500);
+      if (p === 0) {
+        const chunk = ticketHashes.slice(0, PAGE_0_CAPACITY);
+        pageRefs = [metaRef, ...chunk];
+      } else {
+        const start = PAGE_0_CAPACITY + (p - 1) * PAGE_N_CAPACITY;
+        pageRefs = ticketHashes.slice(start, start + PAGE_N_CAPACITY);
+      }
+
+      const editionsPage = pack4096(pageRefs);
+      await writeFeedPage(topicEditions(s.seriesId, p), editionsPage);
+      emit("feeds", p + 1, pages, `Writing edition feeds for "${s.name}" (${p + 1}/${pages})...`);
+    }
+
+    // Verify page 0
+    const verified = await readFeedPageWithRetry(topicEditions(s.seriesId, 0), 3, 500);
     if (!verified) {
       throw new Error(`Failed to verify editions feed for series ${s.seriesId}`);
     }
 
-    // Init empty claims feed
-    await writeFeedPage(topicClaims(s.seriesId), new Uint8Array(4096));
+    // Init empty claims feed(s) - one per edition page
+    for (let p = 0; p < pages; p++) {
+      await writeFeedPage(topicClaims(s.seriesId, p), new Uint8Array(4096));
+    }
 
     seriesSummaries.push({
       seriesId: s.seriesId,
@@ -130,6 +179,7 @@ export async function createEvent(opts: {
     createdAt: new Date().toISOString(),
   };
 
+  emit("finalize", 0, 1, "Writing event feed...");
   console.log("[event] Writing event feed...");
   await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed));
 
@@ -156,6 +206,7 @@ export async function createEvent(opts: {
     console.error("[event] Failed to update directory (non-critical):", err);
   }
 
+  emit("finalize", 1, 1, "Event published!");
   console.log(`[event] Event ${eventId} created successfully`);
   return eventFeed;
 }

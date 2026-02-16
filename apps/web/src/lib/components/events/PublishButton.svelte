@@ -2,7 +2,7 @@
   import type { SignedTicket } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { createSeriesTickets } from "../../pod/signing.js";
-  import { createEvent } from "../../api/events.js";
+  import { createEventStreaming, type PublishProgress } from "../../api/events.js";
 
   interface SeriesDraft {
     seriesId: string;
@@ -30,6 +30,8 @@
   let publishing = $state(false);
   let error = $state<string | null>(null);
   let step = $state("");
+  let progress = $state(0); // 0-100
+  let phase = $state<"auth" | "signing" | "uploading" | "done">("auth");
 
   const canPublish = $derived(
     title.trim() &&
@@ -37,63 +39,96 @@
     endDate &&
     imageDataUrl &&
     series.length > 0 &&
-    series.every((s) => s.name.trim() && s.totalSupply > 0 && s.totalSupply <= 127)
+    series.every((s) => s.name.trim() && s.totalSupply > 0)
   );
+
+  const totalTickets = $derived(
+    series.reduce((sum, s) => sum + s.totalSupply, 0)
+  );
+
+  function handleProgress(p: PublishProgress) {
+    step = p.message;
+    phase = "uploading";
+    if (p.phase === "tickets" && p.total > 0) {
+      // Tickets are the bulk of the work (~80% of progress)
+      // Reserve 0-10% for auth/signing, 10-90% for tickets, 90-100% for feeds
+      progress = 10 + Math.round((p.current / p.total) * 80);
+    } else if (p.phase === "feeds") {
+      progress = 90 + Math.round((p.current / Math.max(p.total, 1)) * 8);
+    } else if (p.phase === "finalize") {
+      progress = p.current > 0 ? 100 : 98;
+    } else if (p.phase === "image") {
+      progress = 10;
+    }
+  }
 
   async function handlePublish() {
     if (!canPublish || publishing) return;
     publishing = true;
     error = null;
+    progress = 0;
+    phase = "auth";
 
     try {
-      // Step 1: Authenticate (if not already)
       if (!auth.isAuthenticated) {
-        step = "Connecting wallet...";
+        step = "Approve session in wallet (1 of 2)...";
         const ok = await auth.login();
         if (!ok) { error = "Login cancelled"; return; }
       }
+      progress = 2;
 
-      // Step 2: Ensure POD identity (for signing tickets)
       if (!auth.hasPodIdentity) {
-        step = "Creating POD identity...";
+        step = "Approve identity in wallet (2 of 2)...";
         const pk = await auth.ensurePodIdentity();
-        if (!pk) { error = "POD identity derivation cancelled"; return; }
+        if (!pk) { error = "Identity setup cancelled"; return; }
       }
+      progress = 4;
 
-      // Step 3: Get keypair and sign all tickets
-      step = "Signing tickets...";
+      phase = "signing";
+      step = "Preparing tickets...";
       const keypair = await auth.getPodKeypair();
-      if (!keypair) { error = "Could not get POD keypair"; return; }
+      if (!keypair) { error = "Could not get signing key"; return; }
 
       const signedTickets: Record<string, SignedTicket[]> = {};
+      let signed = 0;
       for (const s of series) {
         signedTickets[s.seriesId] = await createSeriesTickets({
-          eventId: "", // Will be assigned by server
+          eventId: "",
           seriesId: s.seriesId,
           seriesName: s.name,
           totalSupply: s.totalSupply,
-          imageHash: "", // Will be assigned after upload
+          imageHash: "",
           creatorPrivateKey: keypair.privateKey,
           creatorPublicKeyHex: keypair.publicKeyHex,
         });
+        signed += s.totalSupply;
+        step = `Signing tickets (${signed}/${totalTickets})...`;
+        progress = 4 + Math.round((signed / totalTickets) * 6);
       }
 
-      // Step 4: Upload to backend
+      phase = "uploading";
       step = "Publishing to Swarm...";
-      const result = await createEvent({
-        event: { title, description, startDate, endDate, location },
-        series,
-        signedTickets,
-        image: imageDataUrl!,
-        creatorAddress: auth.parent as `0x${string}`,
-        creatorPodKey: auth.podPublicKeyHex!,
-      });
+      progress = 10;
+
+      const result = await createEventStreaming(
+        {
+          event: { title, description, startDate, endDate, location },
+          series,
+          signedTickets,
+          image: imageDataUrl!,
+          creatorAddress: auth.parent as `0x${string}`,
+          creatorPodKey: auth.podPublicKeyHex!,
+        },
+        handleProgress,
+      );
 
       if (!result.ok) {
         error = result.error || "Failed to publish event";
         return;
       }
 
+      phase = "done";
+      progress = 100;
       step = "Published!";
       onpublished?.(result.eventId!);
     } catch (e) {
@@ -117,6 +152,23 @@
     {/if}
   </button>
 
+  {#if publishing}
+    <div class="progress-container">
+      <div class="progress-bar" style="width: {progress}%"></div>
+    </div>
+    <p class="progress-label">
+      {#if phase === "auth"}
+        Connecting wallet...
+      {:else if phase === "signing"}
+        Signing tickets locally...
+      {:else if phase === "uploading"}
+        Uploading to Swarm ({progress}%)
+      {:else}
+        Done!
+      {/if}
+    </p>
+  {/if}
+
   {#if !canPublish && !publishing}
     <p class="hint">Fill in all required fields to publish</p>
   {/if}
@@ -136,34 +188,54 @@
 
   .publish-btn {
     padding: 0.875rem;
-    font-size: 1rem;
+    font-size: 0.9375rem;
     font-weight: 600;
-    border: none;
-    border-radius: 8px;
-    background: #4f46e5;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
     color: #fff;
-    cursor: pointer;
-    transition: background 0.15s;
+    transition: background var(--transition);
   }
 
   .publish-btn:hover:not(:disabled) {
-    background: #4338ca;
+    background: var(--accent-hover);
   }
 
   .publish-btn:disabled {
-    opacity: 0.5;
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
+  .progress-container {
+    height: 6px;
+    background: var(--bg-input);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .progress-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    min-width: 0;
+  }
+
+  .progress-label {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    text-align: center;
+    margin: 0;
+  }
+
   .hint {
-    color: #6b7280;
+    color: var(--text-muted);
     font-size: 0.8125rem;
     text-align: center;
     margin: 0;
   }
 
   .error {
-    color: #ef4444;
+    color: var(--error);
     font-size: 0.875rem;
     text-align: center;
     margin: 0;

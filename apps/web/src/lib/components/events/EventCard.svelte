@@ -14,13 +14,12 @@
     return new Date(iso).toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
-      year: "numeric",
     });
   }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="event-card" role="button" tabindex="0" onclick={onclick}>
+<div class="card" role="button" tabindex="0" onclick={onclick}>
   {#if event.imageHash}
     <img
       src="{BEE_GATEWAY}/bytes/{event.imageHash}"
@@ -31,63 +30,69 @@
     <div class="card-image placeholder"></div>
   {/if}
   <div class="card-body">
+    <span class="date">{formatDate(event.startDate)}</span>
     <h3>{event.title}</h3>
-    <p class="meta">
-      <span>{formatDate(event.startDate)}</span>
-      {#if event.location}
-        <span>&middot; {event.location}</span>
-      {/if}
-    </p>
-    <p class="tickets">{event.totalTickets} tickets &middot; {event.seriesCount} series</p>
+    {#if event.location}
+      <p class="location">{event.location}</p>
+    {/if}
+    <p class="tickets">{event.totalTickets} tickets</p>
   </div>
 </div>
 
 <style>
-  .event-card {
-    border: 1px solid #2a2a4a;
-    border-radius: 10px;
+  .card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
     overflow: hidden;
     cursor: pointer;
-    transition: border-color 0.15s;
+    transition: border-color var(--transition), transform var(--transition);
+    background: var(--bg-surface);
   }
 
-  .event-card:hover {
-    border-color: #4f46e5;
+  .card:hover {
+    border-color: var(--border-hover);
+    transform: translateY(-2px);
   }
 
   .card-image {
     width: 100%;
-    height: 140px;
+    height: 160px;
     object-fit: cover;
   }
 
   .placeholder {
-    background: #1a1a2e;
+    background: linear-gradient(135deg, var(--bg-surface-hover), var(--bg-elevated));
   }
 
   .card-body {
-    padding: 0.75rem;
+    padding: 0.875rem 1rem;
+  }
+
+  .date {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   h3 {
-    margin: 0 0 0.25rem;
-    color: #e2e8f0;
+    margin: 0.25rem 0 0.375rem;
+    color: var(--text);
     font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.3;
   }
 
-  .meta {
+  .location {
     margin: 0;
-    color: #9ca3af;
+    color: var(--text-secondary);
     font-size: 0.8125rem;
   }
 
-  .meta span + span {
-    margin-left: 0.25rem;
-  }
-
   .tickets {
-    margin: 0.25rem 0 0;
-    color: #6b7280;
+    margin: 0.375rem 0 0;
+    color: var(--text-muted);
     font-size: 0.75rem;
   }
 </style>
