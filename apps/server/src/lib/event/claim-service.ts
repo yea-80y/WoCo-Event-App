@@ -7,6 +7,8 @@ import type {
   CollectionEntry,
   UserCollection,
   SealedBox,
+  ClaimerEntry,
+  ClaimersFeed,
 } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import {
@@ -78,16 +80,26 @@ export async function claimTicket(opts: {
 
   const pageCount = meta.pageCount || 1;
 
-  // 2. Find next unclaimed slot by scanning claims pages
+  // 2. Find next unclaimed slot — fetch all pages in parallel, then scan
   let foundPage = -1;
   let foundSlot = -1;
   let ticketRef = "";
+  let cachedClaimsPageData: Uint8Array | null = null;
+
+  // Parallel fetch of all claims + editions pages
+  const pageResults = await Promise.all(
+    Array.from({ length: pageCount }, (_, p) =>
+      Promise.all([
+        readFeedPage(topicClaims(seriesId, p)),
+        p === 0 ? Promise.resolve(editionsPage0) : readFeedPage(topicEditions(seriesId, p)),
+      ]),
+    ),
+  );
 
   for (let p = 0; p < pageCount; p++) {
-    const claimsPage = await readFeedPage(topicClaims(seriesId, p));
+    const [claimsPage, editionsPageData] = pageResults[p];
     const claims = claimsPage ? decode4096Claims(claimsPage) : new Array(128).fill("");
 
-    const editionsPageData = p === 0 ? editionsPage0 : await readFeedPage(topicEditions(seriesId, p));
     if (!editionsPageData) continue;
 
     const editionRefs = decode4096(editionsPageData);
@@ -95,10 +107,10 @@ export async function claimTicket(opts: {
 
     for (let s = startSlot; s < editionRefs.length; s++) {
       if (claims[s] === "") {
-        // Unclaimed
         foundPage = p;
         foundSlot = s;
         ticketRef = editionRefs[s];
+        cachedClaimsPageData = claimsPage;
         break;
       }
     }
@@ -146,9 +158,8 @@ export async function claimTicket(opts: {
   const claimedRef = await uploadToBytes(JSON.stringify(claimedTicket));
   console.log(`[claim] Uploaded claimed ticket: ${claimedRef}`);
 
-  // 7. Write claim hash to claims feed at the found slot
-  const claimsPage = await readFeedPage(topicClaims(seriesId, foundPage));
-  const claimsData = claimsPage ? new Uint8Array(claimsPage) : new Uint8Array(4096);
+  // 7. Write claim hash to claims feed at the found slot (use cached page from step 2)
+  const claimsData = cachedClaimsPageData ? new Uint8Array(cachedClaimsPageData) : new Uint8Array(4096);
 
   // Write the claimed ref into the slot
   const refBytes = hexToBytes32(claimedRef);
@@ -157,45 +168,50 @@ export async function claimTicket(opts: {
   await writeFeedPage(topicClaims(seriesId, foundPage), claimsData);
   console.log(`[claim] Updated claims feed page ${foundPage}, slot ${foundSlot}`);
 
-  // 8. Store encrypted order data (if present)
-  let orderRef: string | undefined;
-  if (encryptedOrder) {
-    try {
-      orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
-      console.log(`[claim] Encrypted order stored: ${orderRef}`);
-    } catch (err) {
-      console.error("[claim] Failed to store encrypted order (non-critical):", err);
-    }
-  }
-
-  // 9. Update claimers feed (best-effort JSON tracking)
+  // 8. Fire non-critical background updates in parallel (don't block response)
   const claimerAddress = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash}`;
-  try {
-    await updateClaimersFeed(seriesId, {
-      edition: editionNumber,
-      claimerAddress,
-      claimedRef,
-      claimedAt: claimedTicket.claimedAt,
-      orderRef,
-    });
-  } catch (err) {
-    console.error("[claim] Failed to update claimers feed (non-critical):", err);
-  }
 
-  // 9. Update user collection feed (wallet claims only)
+  const backgroundTasks: Promise<void>[] = [];
+
+  // 8a. Store encrypted order + update claimers feed (order ref needed for claimers entry)
+  backgroundTasks.push(
+    (async () => {
+      let orderRef: string | undefined;
+      if (encryptedOrder) {
+        try {
+          orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
+          console.log(`[claim] Encrypted order stored: ${orderRef}`);
+        } catch (err) {
+          console.error("[claim] Failed to store encrypted order (non-critical):", err);
+        }
+      }
+      await updateClaimersFeed(seriesId, {
+        edition: editionNumber,
+        claimerAddress,
+        claimedRef,
+        claimedAt: claimedTicket.claimedAt,
+        orderRef,
+      });
+    })().catch((err) => console.error("[claim] Failed to update claimers feed (non-critical):", err)),
+  );
+
+  // 8b. Update user collection (wallet claims only, independent of order/claimers)
   if (identifier.type === "wallet") {
-    try {
-      await addToUserCollection(identifier.address, {
+    backgroundTasks.push(
+      addToUserCollection(identifier.address, {
         seriesId,
         eventId: originalTicket.data.eventId,
         edition: editionNumber,
         claimedRef,
         claimedAt: claimedTicket.claimedAt,
-      });
-    } catch (err) {
-      console.error("[claim] Failed to update user collection (non-critical):", err);
-    }
+      }).catch((err) => console.error("[claim] Failed to update user collection (non-critical):", err)),
+    );
   }
+
+  // Don't await — let them settle in background after response
+  Promise.allSettled(backgroundTasks).then(() => {
+    console.log(`[claim] Background updates complete for edition ${editionNumber}`);
+  });
 
   console.log(`[claim] Ticket claimed successfully: edition ${editionNumber}`);
   return claimedTicket;
@@ -291,22 +307,6 @@ function hexToBytes32(hex: string): Uint8Array {
   const out = new Uint8Array(32);
   for (let i = 0; i < 32; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
   return out;
-}
-
-interface ClaimerEntry {
-  edition: number;
-  claimerAddress: string;
-  claimedRef: string;
-  claimedAt: string;
-  /** Swarm ref to ECIES-encrypted order data (only organizer can decrypt) */
-  orderRef?: string;
-}
-
-interface ClaimersFeed {
-  v: 1;
-  seriesId: string;
-  claimers: ClaimerEntry[];
-  updatedAt: string;
 }
 
 async function updateClaimersFeed(seriesId: string, entry: ClaimerEntry): Promise<void> {

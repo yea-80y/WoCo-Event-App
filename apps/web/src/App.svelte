@@ -8,6 +8,7 @@
   import EventDetail from "./lib/components/events/EventDetail.svelte";
   import MyTickets from "./lib/components/passport/MyTickets.svelte";
   import EmbedSetup from "./lib/components/embed/EmbedSetup.svelte";
+  import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
   import { onMount } from "svelte";
 
   let showLogin = $state(false);
@@ -51,6 +52,8 @@
         eventId={router.params.id}
         onback={() => navigate("/")}
       />
+    {:else if router.route === "dashboard"}
+      <Dashboard eventId={router.params.id} />
     {:else if router.route === "my-tickets"}
       <MyTickets />
     {:else if router.route === "embed-setup"}

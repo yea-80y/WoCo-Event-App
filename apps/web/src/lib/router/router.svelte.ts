@@ -16,6 +16,9 @@ function matchRoute(path: string): { route: string; params: Record<string, strin
   if (path === "/create") return { route: "create", params: {} };
   if (path === "/my-tickets") return { route: "my-tickets", params: {} };
 
+  const dashboardMatch = path.match(/^\/event\/(.+)\/dashboard$/);
+  if (dashboardMatch) return { route: "dashboard", params: { id: dashboardMatch[1] } };
+
   const embedMatch = path.match(/^\/event\/(.+)\/embed$/);
   if (embedMatch) return { route: "embed-setup", params: { id: embedMatch[1] } };
 

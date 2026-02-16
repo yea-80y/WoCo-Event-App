@@ -175,3 +175,39 @@ export interface SeriesClaimStatus {
   /** If the requesting user has claimed, their edition number */
   userEdition?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Claimers feed (per-series tracking of who claimed what)
+// ---------------------------------------------------------------------------
+
+/** Single entry in the claimers JSON feed */
+export interface ClaimerEntry {
+  edition: number;
+  claimerAddress: string;
+  claimedRef: string;
+  claimedAt: string;
+  /** Swarm ref to ECIES-encrypted order data (only organizer can decrypt) */
+  orderRef?: string;
+}
+
+/** Claimers JSON feed stored per series */
+export interface ClaimersFeed {
+  v: 1;
+  seriesId: string;
+  claimers: ClaimerEntry[];
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Organizer order data (dashboard)
+// ---------------------------------------------------------------------------
+
+/** A single order entry returned to the organizer dashboard */
+export interface OrderEntry {
+  seriesId: string;
+  seriesName: string;
+  edition: number;
+  claimerAddress: string;
+  claimedAt: string;
+  encryptedOrder: SealedBox;
+}

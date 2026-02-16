@@ -2,6 +2,7 @@
   import type { EventFeed } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
   import ClaimButton from "./ClaimButton.svelte";
+  import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
 
@@ -70,6 +71,18 @@
       <p class="description">{event.description}</p>
     {/if}
 
+    {#if auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
+      <div class="organizer-banner">
+        <div class="organizer-banner-text">
+          <span class="organizer-label">You are the organizer</span>
+          <span class="organizer-hint">View attendee order data and export to CSV</span>
+        </div>
+        <button class="organizer-dashboard-btn" onclick={() => navigate(`/event/${event!.eventId}/dashboard`)}>
+          Orders Dashboard
+        </button>
+      </div>
+    {/if}
+
     <h2>Tickets</h2>
     <div class="series-list">
       {#each event.series as s}
@@ -91,7 +104,7 @@
       {/each}
     </div>
 
-    <div class="embed-cta">
+    <div class="actions-cta">
       <button class="embed-btn" onclick={() => navigate(`/event/${event!.eventId}/embed`)}>
         Embed on your site
       </button>
@@ -193,7 +206,51 @@
     margin: 0.125rem 0 0;
   }
 
-  .embed-cta {
+  .organizer-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.875rem 1.125rem;
+    margin-bottom: 1.5rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+
+  .organizer-banner-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .organizer-label {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--accent-text);
+  }
+
+  .organizer-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+
+  .organizer-dashboard-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    background: var(--accent);
+    border-radius: var(--radius-sm);
+    color: #fff;
+    white-space: nowrap;
+    transition: opacity var(--transition);
+  }
+
+  .organizer-dashboard-btn:hover {
+    opacity: 0.85;
+  }
+
+  .actions-cta {
     margin-top: 2rem;
     padding-top: 1.5rem;
     border-top: 1px solid var(--border);

@@ -8,6 +8,7 @@ import type {
   UserCollection,
   ClaimedTicket,
   SealedBox,
+  OrderEntry,
 } from "@woco/shared";
 import { authPost, authGet, get } from "./client.js";
 
@@ -157,4 +158,20 @@ export async function getMyCollection(): Promise<UserCollection> {
 export async function getTicketDetail(ref: string): Promise<ClaimedTicket | null> {
   const resp = await authGet<ClaimedTicket>(`/api/collection/me/ticket/${ref}`);
   return resp.data ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Organizer Dashboard
+// ---------------------------------------------------------------------------
+
+export interface EventOrdersResponse {
+  eventId: string;
+  eventTitle: string;
+  orders: OrderEntry[];
+}
+
+export async function getEventOrders(eventId: string): Promise<EventOrdersResponse> {
+  const resp = await authGet<EventOrdersResponse>(`/api/events/${eventId}/orders`);
+  if (!resp.data) throw new Error(resp.error || "Failed to load orders");
+  return resp.data;
 }

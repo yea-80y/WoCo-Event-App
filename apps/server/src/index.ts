@@ -6,6 +6,7 @@ import type { AppEnv } from "./types.js";
 import { requireAuth } from "./middleware/auth.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
+import { orders } from "./routes/orders.js";
 import { collection } from "./routes/collection.js";
 
 const app = new Hono<AppEnv>();
@@ -41,6 +42,7 @@ app.post("/api/auth/whoami", requireAuth, (c) => {
 // Event routes
 app.route("/api/events", events);
 app.route("/api/events", claims);
+app.route("/api/events", orders);
 
 // Collection routes (authenticated)
 app.route("/api/collection", collection);
