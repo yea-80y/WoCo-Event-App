@@ -2,7 +2,7 @@
   import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, openJson } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
-  import { getEventOrders, type EventOrdersResponse } from "../../api/events.js";
+  import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -23,10 +23,77 @@
   let error = $state<string | null>(null);
   let decryptError = $state<string | null>(null);
 
+  // Webhook state
+  interface WebhookConfig {
+    url: string;
+    authHeaderName?: string;
+    authHeaderValue?: string;
+  }
+  interface SentRecord {
+    sentAt: string;
+    statusCode: number;
+    success: boolean;
+  }
+
+  let webhookConfig = $state<WebhookConfig | null>(null);
+  let sentMap = $state<Record<string, SentRecord>>({});
+  let sending = $state<Set<string>>(new Set());
+  let showWebhookConfig = $state(false);
+  let webhookFormUrl = $state("");
+  let webhookFormAuthName = $state("Authorization");
+  let webhookFormAuthValue = $state("");
+  let bulkSending = $state<string | null>(null); // seriesId currently bulk-sending
+
   interface DecryptedOrder {
     fields: Record<string, string>;
     seriesId: string;
   }
+
+  // ---------------------------------------------------------------------------
+  // localStorage helpers
+  // ---------------------------------------------------------------------------
+
+  function loadWebhookConfig(): WebhookConfig | null {
+    try {
+      const raw = localStorage.getItem(`woco:webhook:${eventId}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  function loadSentMap(): Record<string, SentRecord> {
+    try {
+      const raw = localStorage.getItem(`woco:webhook-sent:${eventId}`);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  }
+
+  function saveWebhookConfig() {
+    const cfg: WebhookConfig = {
+      url: webhookFormUrl.trim(),
+      authHeaderName: webhookFormAuthName.trim() || undefined,
+      authHeaderValue: webhookFormAuthValue || undefined,
+    };
+    if (!cfg.url) return;
+    localStorage.setItem(`woco:webhook:${eventId}`, JSON.stringify(cfg));
+    webhookConfig = cfg;
+    showWebhookConfig = false;
+  }
+
+  function clearWebhookConfig() {
+    localStorage.removeItem(`woco:webhook:${eventId}`);
+    webhookConfig = null;
+    webhookFormUrl = "";
+    webhookFormAuthName = "Authorization";
+    webhookFormAuthValue = "";
+  }
+
+  function persistSentMap() {
+    localStorage.setItem(`woco:webhook-sent:${eventId}`, JSON.stringify(sentMap));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Grouping / CSV helpers
+  // ---------------------------------------------------------------------------
 
   function groupBySeries(orders: OrderEntry[]): Map<string, OrderEntry[]> {
     const map = new Map<string, OrderEntry[]>();
@@ -73,7 +140,109 @@
     URL.revokeObjectURL(url);
   }
 
+  // ---------------------------------------------------------------------------
+  // Webhook send helpers
+  // ---------------------------------------------------------------------------
+
+  function orderKey(order: OrderEntry): string {
+    return `${order.seriesId}:${order.edition}`;
+  }
+
+  function buildPayload(order: OrderEntry, dec: Record<string, string>): Record<string, unknown> {
+    // Map field IDs to human-readable labels
+    const labeledFields: Record<string, string> = {};
+    if (event?.orderFields) {
+      for (const f of event.orderFields) {
+        if (dec[f.id] !== undefined) {
+          labeledFields[f.label] = dec[f.id];
+        }
+      }
+    }
+
+    return {
+      event: event!.title,
+      eventId,
+      series: order.seriesName,
+      edition: order.edition,
+      claimerAddress: order.claimerAddress,
+      claimedAt: order.claimedAt,
+      fields: labeledFields,
+    };
+  }
+
+  async function sendOne(order: OrderEntry, globalIdx: number) {
+    if (!webhookConfig) return;
+    const key = orderKey(order);
+    const dec = decryptedOrders.get(globalIdx);
+    if (!dec) return;
+
+    sending = new Set([...sending, key]);
+    try {
+      const headers: Record<string, string> = {};
+      if (webhookConfig.authHeaderName && webhookConfig.authHeaderValue) {
+        headers[webhookConfig.authHeaderName] = webhookConfig.authHeaderValue;
+      }
+
+      const payload = buildPayload(order, dec);
+      const result = await webhookRelay(eventId, webhookConfig.url, headers, payload);
+
+      sentMap[key] = {
+        sentAt: new Date().toISOString(),
+        statusCode: result.status,
+        success: result.status >= 200 && result.status < 300,
+      };
+      sentMap = { ...sentMap };
+      persistSentMap();
+    } catch (err) {
+      sentMap[key] = {
+        sentAt: new Date().toISOString(),
+        statusCode: 0,
+        success: false,
+      };
+      sentMap = { ...sentMap };
+      persistSentMap();
+    } finally {
+      const next = new Set(sending);
+      next.delete(key);
+      sending = next;
+    }
+  }
+
+  function unsentCount(seriesOrders: OrderEntry[]): number {
+    return seriesOrders.filter((o) => {
+      const key = orderKey(o);
+      const globalIdx = ordersResponse!.orders.indexOf(o);
+      return decryptedOrders.has(globalIdx) && !sentMap[key];
+    }).length;
+  }
+
+  async function sendAllUnsent(seriesId: string, seriesOrders: OrderEntry[]) {
+    bulkSending = seriesId;
+    for (const order of seriesOrders) {
+      const key = orderKey(order);
+      const globalIdx = ordersResponse!.orders.indexOf(order);
+      if (!decryptedOrders.has(globalIdx) || sentMap[key]) continue;
+      await sendOne(order, globalIdx);
+      // 200ms delay between sends
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    bulkSending = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
   onMount(async () => {
+    // Load webhook config from localStorage
+    webhookConfig = loadWebhookConfig();
+    sentMap = loadSentMap();
+    if (webhookConfig) {
+      webhookFormUrl = webhookConfig.url;
+      webhookFormAuthName = webhookConfig.authHeaderName ?? "Authorization";
+      webhookFormAuthValue = webhookConfig.authHeaderValue ?? "";
+    }
+
     try {
       // Check auth
       if (!auth.isAuthenticated) {
@@ -162,6 +331,53 @@
     <h1>Orders Dashboard</h1>
     <p class="subtitle">{event.title}</p>
 
+    <!-- Webhook config panel -->
+    <div class="webhook-section">
+      <button
+        class="webhook-toggle"
+        onclick={() => (showWebhookConfig = !showWebhookConfig)}
+      >
+        Webhook {webhookConfig ? "(configured)" : "(not configured)"}
+        <span class="chevron" class:open={showWebhookConfig}></span>
+      </button>
+
+      {#if showWebhookConfig}
+        <div class="webhook-config">
+          <label class="config-field">
+            <span>Endpoint URL</span>
+            <input
+              type="url"
+              placeholder="https://api.example.com/webhook"
+              bind:value={webhookFormUrl}
+            />
+          </label>
+          <label class="config-field">
+            <span>Auth header name</span>
+            <input
+              type="text"
+              placeholder="Authorization"
+              bind:value={webhookFormAuthName}
+            />
+          </label>
+          <label class="config-field">
+            <span>Auth header value</span>
+            <input
+              type="password"
+              placeholder="Bearer sk-..."
+              bind:value={webhookFormAuthValue}
+            />
+          </label>
+          <p class="config-hint">Credentials stored only in your browser.</p>
+          <div class="config-actions">
+            <button class="btn-save" onclick={saveWebhookConfig}>Save</button>
+            {#if webhookConfig}
+              <button class="btn-remove" onclick={clearWebhookConfig}>Remove</button>
+            {/if}
+          </div>
+        </div>
+      {/if}
+    </div>
+
     {#if ordersResponse.orders.length === 0}
       <div class="empty-state">
         <p>No orders yet. Orders will appear here when attendees claim tickets with order data.</p>
@@ -191,6 +407,18 @@
                   Export CSV
                 </button>
               {/if}
+              {#if webhookConfig && decryptedOrders.size > 0}
+                {@const unsent = unsentCount(seriesOrders)}
+                {#if unsent > 0}
+                  <button
+                    class="bulk-send-btn"
+                    disabled={bulkSending === series.seriesId}
+                    onclick={() => sendAllUnsent(series.seriesId, seriesOrders)}
+                  >
+                    {bulkSending === series.seriesId ? "Sending..." : `Send ${unsent} unsent`}
+                  </button>
+                {/if}
+              {/if}
             </div>
 
             <div class="table-wrap">
@@ -205,12 +433,16 @@
                         <th>{field.label}</th>
                       {/each}
                     {/if}
+                    <th>Webhook</th>
                   </tr>
                 </thead>
                 <tbody>
                   {#each seriesOrders as order}
                     {@const globalIdx = ordersResponse!.orders.indexOf(order)}
                     {@const dec = decryptedOrders.get(globalIdx)}
+                    {@const key = orderKey(order)}
+                    {@const sent = sentMap[key]}
+                    {@const isSending = sending.has(key)}
                     <tr>
                       <td>#{order.edition}</td>
                       <td class="address" title={order.claimerAddress}>
@@ -222,6 +454,28 @@
                           <td>{dec?.[field.id] ?? (decrypting ? "..." : "-")}</td>
                         {/each}
                       {/if}
+                      <td class="webhook-cell">
+                        {#if isSending}
+                          <span class="badge badge-sending">Sending...</span>
+                        {:else if sent?.success}
+                          <span class="badge badge-sent" title="Sent {new Date(sent.sentAt).toLocaleString()}">Sent</span>
+                        {:else if sent && !sent.success}
+                          <button
+                            class="badge badge-failed"
+                            title="Failed ({sent.statusCode}) — click to retry"
+                            onclick={() => sendOne(order, globalIdx)}
+                          >Failed</button>
+                        {:else if webhookConfig && dec}
+                          <button
+                            class="btn-send"
+                            onclick={() => sendOne(order, globalIdx)}
+                          >Send</button>
+                        {:else if !webhookConfig}
+                          <span class="badge badge-none">No webhook</span>
+                        {:else}
+                          <span class="badge badge-none">-</span>
+                        {/if}
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
@@ -236,7 +490,7 @@
 
 <style>
   .dashboard {
-    max-width: 900px;
+    max-width: 960px;
     margin: 0 auto;
   }
 
@@ -263,9 +517,127 @@
   .subtitle {
     color: var(--text-muted);
     font-size: 0.9375rem;
-    margin: 0 0 2rem;
+    margin: 0 0 1.5rem;
   }
 
+  /* Webhook config panel */
+  .webhook-section {
+    margin-bottom: 1.5rem;
+  }
+
+  .webhook-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    width: 100%;
+    text-align: left;
+    transition: all var(--transition);
+  }
+
+  .webhook-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .chevron {
+    margin-left: auto;
+    display: inline-block;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid currentColor;
+    transition: transform 0.2s;
+  }
+
+  .chevron.open {
+    transform: rotate(180deg);
+  }
+
+  .webhook-config {
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  }
+
+  .config-field {
+    display: block;
+    margin-bottom: 0.75rem;
+  }
+
+  .config-field span {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.25rem;
+  }
+
+  .config-field input {
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    font-size: 0.8125rem;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .config-field input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .config-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: 0 0 0.75rem;
+  }
+
+  .config-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .btn-save {
+    padding: 0.375rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    transition: opacity var(--transition);
+  }
+
+  .btn-save:hover {
+    opacity: 0.85;
+  }
+
+  .btn-remove {
+    padding: 0.375rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    transition: all var(--transition);
+  }
+
+  .btn-remove:hover {
+    border-color: var(--error);
+    color: var(--error);
+  }
+
+  /* Series sections */
   .empty-state {
     text-align: center;
     padding: 3rem 1rem;
@@ -283,6 +655,7 @@
     align-items: center;
     gap: 0.75rem;
     margin-bottom: 0.75rem;
+    flex-wrap: wrap;
   }
 
   .series-header h2 {
@@ -313,6 +686,27 @@
     color: var(--accent-text);
   }
 
+  .bulk-send-btn {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    color: var(--accent-text);
+    transition: all var(--transition);
+  }
+
+  .bulk-send-btn:hover:not(:disabled) {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .bulk-send-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  /* Table */
   .table-wrap {
     overflow-x: auto;
     border: 1px solid var(--border);
@@ -356,6 +750,66 @@
     font-size: 0.75rem;
   }
 
+  /* Webhook column */
+  .webhook-cell {
+    white-space: nowrap;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    border-radius: 9999px;
+    letter-spacing: 0.02em;
+  }
+
+  .badge-sent {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+  }
+
+  .badge-sending {
+    background: rgba(124, 108, 240, 0.15);
+    color: var(--accent-text);
+  }
+
+  .badge-failed {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    cursor: pointer;
+    border: none;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+  }
+
+  .badge-failed:hover {
+    background: rgba(239, 68, 68, 0.3);
+  }
+
+  .badge-none {
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  .btn-send {
+    padding: 0.2rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    color: var(--accent-text);
+    transition: all var(--transition);
+  }
+
+  .btn-send:hover {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* Status / error */
   .status {
     text-align: center;
     color: var(--text-muted);

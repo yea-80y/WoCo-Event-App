@@ -175,3 +175,22 @@ export async function getEventOrders(eventId: string): Promise<EventOrdersRespon
   if (!resp.data) throw new Error(resp.error || "Failed to load orders");
   return resp.data;
 }
+
+export interface WebhookRelayResponse {
+  status: number;
+  body: string;
+}
+
+export async function webhookRelay(
+  eventId: string,
+  webhookUrl: string,
+  webhookHeaders: Record<string, string>,
+  payload: Record<string, unknown>,
+): Promise<WebhookRelayResponse> {
+  const resp = await authPost<WebhookRelayResponse>(
+    `/api/events/${eventId}/webhook-relay`,
+    { webhookUrl, webhookHeaders, payload },
+  );
+  if (!resp.data) throw new Error(resp.error || "Webhook relay failed");
+  return resp.data;
+}
