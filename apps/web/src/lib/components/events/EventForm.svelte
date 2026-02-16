@@ -1,6 +1,8 @@
 <script lang="ts">
+  import type { OrderField } from "@woco/shared";
   import ImageUpload from "./ImageUpload.svelte";
   import TicketSeriesEditor from "./TicketSeriesEditor.svelte";
+  import OrderFieldsEditor from "./OrderFieldsEditor.svelte";
   import PublishButton from "./PublishButton.svelte";
 
   interface Props {
@@ -23,6 +25,8 @@
       totalSupply: 10,
     },
   ]);
+  let collectInfo = $state(false);
+  let orderFields = $state<OrderField[]>([]);
 </script>
 
 <div class="event-form">
@@ -60,6 +64,8 @@
 
   <TicketSeriesEditor bind:series />
 
+  <OrderFieldsEditor bind:orderFields bind:enabled={collectInfo} />
+
   <PublishButton
     {title}
     {description}
@@ -68,6 +74,7 @@
     {location}
     {imageDataUrl}
     {series}
+    orderFields={collectInfo ? orderFields : undefined}
     {onpublished}
   />
 </div>

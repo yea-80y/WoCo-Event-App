@@ -45,13 +45,20 @@ export async function decrypt<T = unknown>(
   deviceKey: CryptoKey,
   blob: EncryptedBlob,
 ): Promise<T> {
-  const iv = hexToBytes(blob.iv);
-  const ciphertext = hexToBytes(blob.ct);
+  const ivBytes = hexToBytes(blob.iv);
+  const ctBytes = hexToBytes(blob.ct);
+
+  // Copy into plain ArrayBuffer — hexToBytes returns Uint8Array<ArrayBufferLike>
+  // but Web Crypto requires ArrayBuffer (not SharedArrayBuffer).
+  const iv = new ArrayBuffer(ivBytes.byteLength);
+  new Uint8Array(iv).set(ivBytes);
+  const ct = new ArrayBuffer(ctBytes.byteLength);
+  new Uint8Array(ct).set(ctBytes);
 
   const plaintext = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv },
     deviceKey,
-    ciphertext,
+    ct,
   );
 
   return JSON.parse(new TextDecoder().decode(plaintext));

@@ -1,4 +1,5 @@
 import type { Hex64, Hex0x } from "../types.js";
+import type { OrderField, SealedBox } from "../crypto/types.js";
 
 /** Full event metadata stored in Swarm feed */
 export interface EventFeed {
@@ -14,6 +15,10 @@ export interface EventFeed {
   creatorPodKey: string;
   series: SeriesSummary[];
   createdAt: string;
+  /** Organizer's X25519 public key for order encryption (hex, no 0x prefix) */
+  encryptionKey?: string;
+  /** Order form fields — present when organizer collects customer info */
+  orderFields?: OrderField[];
 }
 
 /** Ticket series summary (stored within event feed) */
@@ -81,6 +86,10 @@ export interface CreateEventRequest {
   creatorAddress: Hex0x;
   /** Creator's ed25519 public key (hex) */
   creatorPodKey: string;
+  /** Organizer's X25519 encryption public key (hex, derived from POD seed) */
+  encryptionKey?: string;
+  /** Order form fields (if organizer wants to collect attendee info) */
+  orderFields?: OrderField[];
 }
 
 /** Response from POST /api/events */
@@ -125,11 +134,8 @@ export interface ClaimTicketRequest {
   email?: string;
   /** API key for organizer claims (mode: api) */
   apiKey?: string;
-  /** Optional metadata from organizer */
-  metadata?: Record<string, unknown>;
-  // Legacy fields (kept for backwards compat during transition)
-  claimerPodKey?: string;
-  claimerAddress?: Hex0x;
+  /** ECIES-encrypted order data — only the event organizer can decrypt */
+  encryptedOrder?: SealedBox;
 }
 
 // ---------------------------------------------------------------------------

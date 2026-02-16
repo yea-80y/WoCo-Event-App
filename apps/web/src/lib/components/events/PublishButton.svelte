@@ -1,6 +1,8 @@
 <script lang="ts">
-  import type { SignedTicket } from "@woco/shared";
+  import type { SignedTicket, OrderField } from "@woco/shared";
+  import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { restorePodSeed } from "../../auth/pod-identity.js";
   import { createSeriesTickets } from "../../pod/signing.js";
   import { createEventStreaming, type PublishProgress } from "../../api/events.js";
 
@@ -19,12 +21,14 @@
     location: string;
     imageDataUrl: string | null;
     series: SeriesDraft[];
+    /** Order form fields — undefined means no info collection */
+    orderFields?: OrderField[];
     onpublished?: (eventId: string) => void;
   }
 
   let {
     title, description, startDate, endDate, location,
-    imageDataUrl, series, onpublished,
+    imageDataUrl, series, orderFields, onpublished,
   }: Props = $props();
 
   let publishing = $state(false);
@@ -84,6 +88,14 @@
       }
       progress = 4;
 
+      // Derive encryption keypair from POD seed (zero extra popups)
+      let encryptionKey: string | undefined;
+      const podSeed = await restorePodSeed();
+      if (podSeed) {
+        const encKeypair = deriveEncryptionKeypairFromPodSeed(podSeed);
+        encryptionKey = encKeypair.publicKeyHex;
+      }
+
       phase = "signing";
       step = "Preparing tickets...";
       const keypair = await auth.getPodKeypair();
@@ -118,6 +130,8 @@
           image: imageDataUrl!,
           creatorAddress: auth.parent as `0x${string}`,
           creatorPodKey: auth.podPublicKeyHex!,
+          encryptionKey,
+          orderFields: orderFields?.length ? orderFields : undefined,
         },
         handleProgress,
       );

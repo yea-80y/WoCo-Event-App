@@ -1,4 +1,4 @@
-import type { Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary } from "@woco/shared";
+import type { Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary, OrderField } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import {
   pack4096,
@@ -49,12 +49,16 @@ export async function createEvent(opts: {
   }>;
   /** signedTickets[seriesId] = array of serialized signed tickets */
   signedTickets: Record<string, string[]>;
+  /** Organizer's X25519 encryption public key (hex) */
+  encryptionKey?: string;
+  /** Order form fields (if organizer wants attendee info) */
+  orderFields?: OrderField[];
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
     eventId, title, description, startDate, endDate, location,
     creatorAddress, creatorPodKey, imageData, series, signedTickets,
-    onProgress,
+    encryptionKey, orderFields, onProgress,
   } = opts;
 
   const totalTickets = series.reduce((sum, s) => sum + s.totalSupply, 0);
@@ -177,6 +181,8 @@ export async function createEvent(opts: {
     creatorPodKey,
     series: seriesSummaries,
     createdAt: new Date().toISOString(),
+    ...(encryptionKey ? { encryptionKey } : {}),
+    ...(orderFields?.length ? { orderFields } : {}),
   };
 
   emit("finalize", 0, 1, "Writing event feed...");
