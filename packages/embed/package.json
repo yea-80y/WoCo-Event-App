@@ -7,6 +7,9 @@
     "build": "vite build",
     "dev": "vite build --watch"
   },
+  "dependencies": {
+    "@woco/shared": "*"
+  },
   "devDependencies": {
     "typescript": "~5.9.3",
     "vite": "^6.0.0"

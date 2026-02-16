@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Hex0x } from "@woco/shared";
+import type { Hex0x, SealedBox } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 
@@ -57,7 +57,9 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   }
 
   try {
-    const ticket = await claimTicket({ seriesId, identifier });
+    // Pass encrypted order data through (opaque to server — only organizer can decrypt)
+    const encryptedOrder = body.encryptedOrder as SealedBox | undefined;
+    const ticket = await claimTicket({ seriesId, identifier, encryptedOrder });
     return c.json({ ok: true, ticket, edition: ticket.edition });
   } catch (err) {
     console.error("[api] claimTicket error:", err);

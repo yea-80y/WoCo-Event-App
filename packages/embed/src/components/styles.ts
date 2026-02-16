@@ -173,6 +173,96 @@ export function getStyles(theme: "dark" | "light"): string {
       margin: 0.375rem 0 0;
     }
 
+    /* Order form */
+    .series-card--expanded {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .order-form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.625rem;
+      padding-top: 0.625rem;
+      border-top: 1px solid ${vars.border};
+    }
+
+    .form-field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.1875rem;
+    }
+
+    .form-label {
+      font-size: 0.75rem;
+      color: ${vars.textSecondary};
+      font-weight: 500;
+    }
+
+    .required { color: ${vars.error}; }
+
+    .order-form input,
+    .order-form textarea,
+    .order-form select {
+      font-size: 0.8125rem;
+      padding: 0.375rem 0.5rem;
+      background: ${vars.inputBg};
+      border: 1px solid ${vars.border};
+      border-radius: 6px;
+      color: ${vars.text};
+      font-family: inherit;
+      outline: none;
+    }
+
+    .order-form input:focus,
+    .order-form textarea:focus,
+    .order-form select:focus {
+      border-color: ${vars.accent};
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      color: ${vars.textSecondary};
+    }
+
+    .checkbox-row input[type="checkbox"] {
+      width: 0.875rem;
+      height: 0.875rem;
+      accent-color: ${vars.accent};
+    }
+
+    .form-actions {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+      margin-top: 0.25rem;
+    }
+
+    .cancel-btn {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8125rem;
+      background: none;
+      border: none;
+      color: ${vars.textMuted};
+      cursor: pointer;
+      font-family: inherit;
+      transition: color 0.15s ease;
+    }
+
+    .cancel-btn:hover { color: ${vars.textSecondary}; }
+
+    .encrypt-note {
+      font-size: 0.6875rem;
+      color: ${vars.textMuted};
+      margin: 0;
+      text-align: right;
+    }
+
     .loading {
       text-align: center;
       padding: 2rem;

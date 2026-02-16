@@ -1,6 +1,7 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
 import { connectWallet } from "../auth/wallet.js";
 import { getStyles } from "./styles.js";
+import { sealJson, type OrderField, type SealedBox } from "@woco/shared";
 
 interface SeriesSummary {
   seriesId: string;
@@ -17,6 +18,8 @@ interface EventData {
   location: string;
   startDate: string;
   series: SeriesSummary[];
+  encryptionKey?: string;
+  orderFields?: OrderField[];
 }
 
 interface ClaimStatus {
@@ -32,6 +35,8 @@ interface SeriesState {
   claimedEdition: number | null;
   error: string | null;
   emailMode: boolean;
+  orderFormVisible: boolean;
+  orderFormData: Record<string, string>;
 }
 
 export class WocoTickets extends HTMLElement {
@@ -100,6 +105,8 @@ export class WocoTickets extends HTMLElement {
           claimedEdition: null,
           error: null,
           emailMode: false,
+          orderFormVisible: false,
+          orderFormData: {},
         });
       }
 
@@ -166,6 +173,72 @@ export class WocoTickets extends HTMLElement {
     this.attachListeners();
   }
 
+  private get hasOrderForm(): boolean {
+    return !!(this.event?.orderFields?.length && this.event?.encryptionKey);
+  }
+
+  private renderOrderForm(seriesId: string, st: SeriesState): string {
+    const fields = this.event?.orderFields ?? [];
+    let fieldsHtml = "";
+
+    for (const f of fields) {
+      let inputHtml: string;
+      const val = st.orderFormData[f.id] ?? "";
+
+      if (f.type === "textarea") {
+        inputHtml = `<textarea data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" placeholder="${this.esc(f.placeholder || "")}" ${f.maxLength ? `maxlength="${f.maxLength}"` : ""} rows="2">${this.esc(val)}</textarea>`;
+      } else if (f.type === "select" && f.options) {
+        const opts = f.options.map((o) =>
+          `<option value="${this.esc(o)}" ${val === o ? "selected" : ""}>${this.esc(o)}</option>`
+        ).join("");
+        inputHtml = `<select data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}"><option value="">Select...</option>${opts}</select>`;
+      } else if (f.type === "checkbox") {
+        inputHtml = `<label class="checkbox-row"><input type="checkbox" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" ${val === "yes" ? "checked" : ""} /><span>${this.esc(f.placeholder || f.label)}</span></label>`;
+      } else {
+        inputHtml = `<input type="${this.esc(f.type)}" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" value="${this.esc(val)}" placeholder="${this.esc(f.placeholder || "")}" ${f.maxLength ? `maxlength="${f.maxLength}"` : ""} />`;
+      }
+
+      fieldsHtml += `
+        <label class="form-field">
+          <span class="form-label">${this.esc(f.label)}${f.required ? ' <span class="required">*</span>' : ""}</span>
+          ${inputHtml}
+        </label>
+      `;
+    }
+
+    const mode = this.claimMode;
+    let submitHtml: string;
+    if (st.claiming) {
+      submitHtml = `<button class="claim-btn" disabled>Claiming...</button>`;
+    } else if (mode === "email" || st.emailMode) {
+      submitHtml = `
+        <div class="email-form">
+          <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
+          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">Claim</button>
+        </div>
+      `;
+    } else if (mode === "both") {
+      submitHtml = `
+        <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>
+        <button class="claim-btn" data-show-email="${this.esc(seriesId)}" style="margin-left:4px;background:transparent;border:1px solid;color:inherit;">Email</button>
+      `;
+    } else {
+      submitHtml = `<button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim ticket</button>`;
+    }
+
+    return `
+      <div class="order-form" data-order-form="${this.esc(seriesId)}">
+        ${fieldsHtml}
+        <div class="form-actions">
+          ${submitHtml}
+          <button class="cancel-btn" data-cancel-order="${this.esc(seriesId)}">Cancel</button>
+        </div>
+        ${st.error ? `<p class="error-msg">${this.esc(st.error)}</p>` : ""}
+        <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
+      </div>
+    `;
+  }
+
   private renderSeries(s: SeriesSummary, st?: SeriesState | null): string {
     const avail = st?.status?.available ?? s.totalSupply;
     const total = st?.status?.totalSupply ?? s.totalSupply;
@@ -182,12 +255,25 @@ export class WocoTickets extends HTMLElement {
       `;
     }
 
+    // Show order form if visible
+    if (st?.orderFormVisible && this.hasOrderForm) {
+      return `
+        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
+          <div class="series-info">
+            <h3>${this.esc(s.name)}</h3>
+            <p class="avail">${avail} / ${total} available</p>
+          </div>
+          ${this.renderOrderForm(s.seriesId, st)}
+        </div>
+      `;
+    }
+
     let actionHtml: string;
     if (st?.claiming) {
       actionHtml = `<button class="claim-btn" disabled>Claiming...</button>`;
     } else if (avail === 0) {
       actionHtml = `<button class="claim-btn" disabled>Sold out</button>`;
-    } else if (st?.emailMode) {
+    } else if (st?.emailMode && !this.hasOrderForm) {
       actionHtml = `
         <div>
           <div class="email-form">
@@ -229,21 +315,30 @@ export class WocoTickets extends HTMLElement {
   }
 
   private attachListeners() {
-    // Wallet claim buttons
+    // Wallet claim buttons — if order form needed, show form first
     this.shadow.querySelectorAll<HTMLButtonElement>("[data-wallet-claim]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const sid = btn.getAttribute("data-wallet-claim")!;
+        const st = this.seriesStates.get(sid);
+        if (this.hasOrderForm && st && !st.orderFormVisible) {
+          st.orderFormVisible = true;
+          this.render();
+          return;
+        }
         this.handleWalletClaim(sid);
       });
     });
 
-    // Show email form
+    // Show email form — if order form needed, show order form with email mode
     this.shadow.querySelectorAll<HTMLButtonElement>("[data-show-email]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const sid = btn.getAttribute("data-show-email")!;
         const st = this.seriesStates.get(sid);
         if (st) {
           st.emailMode = true;
+          if (this.hasOrderForm && !st.orderFormVisible) {
+            st.orderFormVisible = true;
+          }
           this.render();
         }
       });
@@ -256,6 +351,71 @@ export class WocoTickets extends HTMLElement {
         this.handleEmailClaim(sid);
       });
     });
+
+    // Cancel order form
+    this.shadow.querySelectorAll<HTMLButtonElement>("[data-cancel-order]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sid = btn.getAttribute("data-cancel-order")!;
+        const st = this.seriesStates.get(sid);
+        if (st) {
+          st.orderFormVisible = false;
+          st.emailMode = false;
+          st.orderFormData = {};
+          st.error = null;
+          this.render();
+        }
+      });
+    });
+
+    // Order form field inputs — sync values to state
+    this.shadow.querySelectorAll<HTMLElement>("[data-order-field]").forEach((el) => {
+      const attr = el.getAttribute("data-order-field")!;
+      const [sid, fieldId] = attr.split(":");
+      const st = this.seriesStates.get(sid);
+      if (!st) return;
+
+      if (el instanceof HTMLInputElement && el.type === "checkbox") {
+        el.addEventListener("change", () => {
+          st.orderFormData[fieldId] = el.checked ? "yes" : "";
+        });
+      } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+        el.addEventListener("input", () => {
+          st.orderFormData[fieldId] = el.value;
+        });
+      }
+    });
+  }
+
+  /**
+   * Validate required order fields and encrypt form data if present.
+   * Returns undefined if no order form, or the encrypted SealedBox.
+   * Sets st.error and returns null if validation fails.
+   */
+  private async encryptOrderData(seriesId: string, st: SeriesState): Promise<SealedBox | undefined | null> {
+    if (!this.hasOrderForm || !st.orderFormVisible) return undefined;
+
+    const fields = this.event?.orderFields ?? [];
+    const encryptionKey = this.event?.encryptionKey;
+
+    // Validate required fields
+    for (const f of fields) {
+      if (f.required && !(st.orderFormData[f.id] ?? "").trim()) {
+        st.error = `${f.label} is required`;
+        this.render();
+        return null;
+      }
+    }
+
+    try {
+      return await sealJson(encryptionKey!, {
+        fields: st.orderFormData,
+        seriesId,
+      });
+    } catch {
+      st.error = "Failed to encrypt your info";
+      this.render();
+      return null;
+    }
   }
 
   private async handleWalletClaim(seriesId: string) {
@@ -266,6 +426,10 @@ export class WocoTickets extends HTMLElement {
     st.error = null;
     this.render();
 
+    // Encrypt order data if form is present
+    const encryptedOrder = await this.encryptOrderData(seriesId, st);
+    if (encryptedOrder === null) { st.claiming = false; return; }
+
     const address = await connectWallet();
     if (!address) {
       st.claiming = false;
@@ -275,15 +439,19 @@ export class WocoTickets extends HTMLElement {
     }
 
     try {
+      const body: Record<string, unknown> = { mode: "wallet", walletAddress: address };
+      if (encryptedOrder) body.encryptedOrder = encryptedOrder;
+
       const resp = await this.api.post<unknown>(
         `/api/events/${this.eventId}/series/${seriesId}/claim`,
-        { mode: "wallet", walletAddress: address },
+        body,
       );
 
       if (!resp.ok) {
         st.error = (resp.error as string) || "Claim failed";
       } else {
         st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
+        st.orderFormVisible = false;
         this.dispatchEvent(new CustomEvent("woco-claim", {
           detail: { seriesId, mode: "wallet", address, edition: st.claimedEdition },
           bubbles: true,
@@ -315,16 +483,24 @@ export class WocoTickets extends HTMLElement {
     st.error = null;
     this.render();
 
+    // Encrypt order data if form is present
+    const encryptedOrder = await this.encryptOrderData(seriesId, st);
+    if (encryptedOrder === null) { st.claiming = false; return; }
+
     try {
+      const body: Record<string, unknown> = { mode: "email", email };
+      if (encryptedOrder) body.encryptedOrder = encryptedOrder;
+
       const resp = await this.api.post<unknown>(
         `/api/events/${this.eventId}/series/${seriesId}/claim`,
-        { mode: "email", email },
+        body,
       );
 
       if (!resp.ok) {
         st.error = (resp.error as string) || "Claim failed";
       } else {
         st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
+        st.orderFormVisible = false;
         this.dispatchEvent(new CustomEvent("woco-claim", {
           detail: { seriesId, mode: "email", email, edition: st.claimedEdition },
           bubbles: true,

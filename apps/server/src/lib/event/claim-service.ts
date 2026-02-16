@@ -6,6 +6,7 @@ import type {
   SeriesClaimStatus,
   CollectionEntry,
   UserCollection,
+  SealedBox,
 } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import {
@@ -48,8 +49,9 @@ export function hashEmail(email: string): string {
 export async function claimTicket(opts: {
   seriesId: string;
   identifier: ClaimIdentifier;
+  encryptedOrder?: SealedBox;
 }): Promise<ClaimedTicket> {
-  const { seriesId, identifier } = opts;
+  const { seriesId, identifier, encryptedOrder } = opts;
 
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
@@ -155,7 +157,18 @@ export async function claimTicket(opts: {
   await writeFeedPage(topicClaims(seriesId, foundPage), claimsData);
   console.log(`[claim] Updated claims feed page ${foundPage}, slot ${foundSlot}`);
 
-  // 8. Update claimers feed (best-effort JSON tracking)
+  // 8. Store encrypted order data (if present)
+  let orderRef: string | undefined;
+  if (encryptedOrder) {
+    try {
+      orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
+      console.log(`[claim] Encrypted order stored: ${orderRef}`);
+    } catch (err) {
+      console.error("[claim] Failed to store encrypted order (non-critical):", err);
+    }
+  }
+
+  // 9. Update claimers feed (best-effort JSON tracking)
   const claimerAddress = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash}`;
   try {
     await updateClaimersFeed(seriesId, {
@@ -163,6 +176,7 @@ export async function claimTicket(opts: {
       claimerAddress,
       claimedRef,
       claimedAt: claimedTicket.claimedAt,
+      orderRef,
     });
   } catch (err) {
     console.error("[claim] Failed to update claimers feed (non-critical):", err);
@@ -284,6 +298,8 @@ interface ClaimerEntry {
   claimerAddress: string;
   claimedRef: string;
   claimedAt: string;
+  /** Swarm ref to ECIES-encrypted order data (only organizer can decrypt) */
+  orderRef?: string;
 }
 
 interface ClaimersFeed {

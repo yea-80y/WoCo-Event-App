@@ -84,6 +84,8 @@
             eventId={event.eventId}
             seriesId={s.seriesId}
             totalSupply={s.totalSupply}
+            encryptionKey={event.encryptionKey}
+            orderFields={event.orderFields}
           />
         </div>
       {/each}

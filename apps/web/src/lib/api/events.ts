@@ -7,6 +7,7 @@ import type {
   SeriesClaimStatus,
   UserCollection,
   ClaimedTicket,
+  SealedBox,
 } from "@woco/shared";
 import { authPost, authGet, get } from "./client.js";
 
@@ -115,12 +116,13 @@ export async function claimTicket(
   eventId: string,
   seriesId: string,
   walletAddress: string,
+  encryptedOrder?: SealedBox,
 ): Promise<ClaimTicketResponse> {
   // No auth needed — just POST with wallet address
   const resp = await fetch(`/api/events/${eventId}/series/${seriesId}/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "wallet", walletAddress }),
+    body: JSON.stringify({ mode: "wallet", walletAddress, encryptedOrder }),
   });
   const json = await resp.json();
   return {
