@@ -1,5 +1,6 @@
 <script lang="ts">
   import { auth } from "./lib/auth/auth-store.svelte.js";
+  import { loginRequest } from "./lib/auth/login-request.svelte.js";
   import { router, navigate } from "./lib/router/router.svelte.js";
   import LoginModal from "./lib/components/auth/LoginModal.svelte";
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
@@ -11,8 +12,6 @@
   import EmbedSetup from "./lib/components/embed/EmbedSetup.svelte";
   import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
   import { onMount } from "svelte";
-
-  let showLogin = $state(false);
 
   onMount(() => {
     auth.init();
@@ -36,7 +35,7 @@
       {:else if auth.isConnected}
         <SessionStatus />
       {:else}
-        <button class="sign-in-btn" onclick={() => showLogin = true}>
+        <button class="sign-in-btn" onclick={() => loginRequest.request()}>
           Sign in
         </button>
       {/if}
@@ -63,7 +62,7 @@
   </section>
 </main>
 
-<LoginModal bind:open={showLogin} />
+<LoginModal />
 <SigningConfirmDialog />
 
 <style>

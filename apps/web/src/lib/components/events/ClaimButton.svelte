@@ -2,6 +2,7 @@
   import type { OrderField, SealedBox } from "@woco/shared";
   import { sealJson } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
   import { claimTicket, getClaimStatus } from "../../api/events.js";
   import type { SeriesClaimStatus } from "@woco/shared";
   import { onMount } from "svelte";
@@ -68,7 +69,7 @@
       // Ensure user is connected (wallet or local account)
       if (!auth.isConnected) {
         step = "Waiting for sign-in...";
-        const ok = await auth.login();
+        const ok = await loginRequest.request();
         if (!ok) { error = "Login cancelled"; return; }
       }
 

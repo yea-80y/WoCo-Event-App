@@ -2,6 +2,7 @@
   import type { SignedTicket, OrderField } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { createSeriesTickets } from "../../pod/signing.js";
   import { createEventStreaming, type PublishProgress } from "../../api/events.js";
@@ -77,8 +78,7 @@
       // Step 1: Ensure user is connected (wallet or local account)
       if (!auth.isConnected) {
         step = "Waiting for sign-in...";
-        // Caller should open LoginModal; for now try login()
-        const ok = await auth.login();
+        const ok = await loginRequest.request();
         if (!ok) { error = "Login cancelled"; return; }
       }
       progress = 1;

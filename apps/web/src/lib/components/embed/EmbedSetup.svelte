@@ -21,7 +21,7 @@
   let copied = $state(false);
 
   // Default API URL (user can override)
-  const defaultApiUrl = "https://api.woco.eth";
+  const defaultApiUrl = "https://events-api.woco-net.com";
 
   const snippet = $derived(buildSnippet());
 
@@ -108,18 +108,18 @@
           </div>
         </label>
 
-        <label class="radio-row">
-          <input type="radio" name="claim-mode" value="email" bind:group={claimMode} />
+        <label class="radio-row disabled">
+          <input type="radio" name="claim-mode" value="email" bind:group={claimMode} disabled />
           <div>
-            <span class="radio-label">Email only</span>
+            <span class="radio-label">Email only <span class="coming-soon">(Coming soon)</span></span>
             <span class="radio-desc">Users enter email — no wallet needed</span>
           </div>
         </label>
 
-        <label class="radio-row">
-          <input type="radio" name="claim-mode" value="both" bind:group={claimMode} />
+        <label class="radio-row disabled">
+          <input type="radio" name="claim-mode" value="both" bind:group={claimMode} disabled />
           <div>
-            <span class="radio-label">Both</span>
+            <span class="radio-label">Both <span class="coming-soon">(Coming soon)</span></span>
             <span class="radio-desc">Users choose wallet or email</span>
           </div>
         </label>
@@ -327,6 +327,18 @@
     color: var(--text-muted);
     display: block;
     margin-top: 0.0625rem;
+  }
+
+  .radio-row.disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .coming-soon {
+    font-size: 0.6875rem;
+    font-weight: 400;
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   /* Snippet */

@@ -2,16 +2,27 @@
   import WalletLogin from "./WalletLogin.svelte";
   import LocalLogin from "./LocalLogin.svelte";
   import ZupassLogin from "./ZupassLogin.svelte";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
 
   interface Props {
-    open: boolean;
+    open?: boolean;
     onclose?: () => void;
   }
 
-  let { open = $bindable(), onclose }: Props = $props();
+  let { open = $bindable(false), onclose }: Props = $props();
+
+  // Modal is visible if either prop-driven or store-driven
+  const visible = $derived(open || loginRequest.pending);
 
   function close() {
     open = false;
+    loginRequest.resolve(false);
+    onclose?.();
+  }
+
+  function handleComplete() {
+    open = false;
+    loginRequest.resolve(true);
     onclose?.();
   }
 
@@ -26,7 +37,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-{#if open}
+{#if visible}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="backdrop" role="presentation" onclick={handleBackdrop}>
     <div class="modal" role="dialog" aria-modal="true" aria-label="Login">
@@ -38,11 +49,11 @@
       </header>
 
       <div class="options">
-        <WalletLogin oncomplete={close} />
+        <WalletLogin oncomplete={handleComplete} />
 
         <div class="divider"><span>or</span></div>
 
-        <LocalLogin oncomplete={close} />
+        <LocalLogin oncomplete={handleComplete} />
 
         <div class="divider"><span>or</span></div>
 
