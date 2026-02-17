@@ -291,8 +291,9 @@ async function logout(): Promise<void> {
 async function clearAllAuth(): Promise<void> {
   await clearSession();
   await clearPodIdentity();
-  await clearLocalAccount();
-  // Delete individual auth keys — preserves device key
+  // NOTE: we intentionally do NOT clear the local account private key.
+  // This lets the user re-login with the same local account later.
+  // The key stays in IndexedDB; only the session state is wiped.
   await delKV(StorageKeys.AUTH_KIND);
   await delKV(StorageKeys.PARENT_ADDRESS);
   _kind = "none";

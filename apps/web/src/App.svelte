@@ -11,6 +11,7 @@
   import MyTickets from "./lib/components/passport/MyTickets.svelte";
   import EmbedSetup from "./lib/components/embed/EmbedSetup.svelte";
   import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
+  import DashboardIndex from "./lib/components/dashboard/DashboardIndex.svelte";
   import { onMount } from "svelte";
 
   onMount(() => {
@@ -28,6 +29,9 @@
       {#if auth.isConnected}
         <button class="nav-link" onclick={() => navigate("/my-tickets")}>
           My Tickets
+        </button>
+        <button class="nav-link" onclick={() => navigate("/dashboard")}>
+          Dashboard
         </button>
       {/if}
       {#if !auth.ready}
@@ -52,6 +56,8 @@
         eventId={router.params.id}
         onback={() => navigate("/")}
       />
+    {:else if router.route === "dashboard-index"}
+      <DashboardIndex />
     {:else if router.route === "dashboard"}
       <Dashboard eventId={router.params.id} />
     {:else if router.route === "my-tickets"}

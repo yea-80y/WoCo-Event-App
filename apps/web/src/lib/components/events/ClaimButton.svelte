@@ -212,7 +212,7 @@
         {#each orderFields as field}
           <label class="form-field">
             <span class="form-label">
-              {field.label}
+              {field.label || field.placeholder || field.type}
               {#if field.required}<span class="required">*</span>{/if}
             </span>
             {#if field.type === "textarea"}

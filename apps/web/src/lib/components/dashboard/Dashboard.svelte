@@ -456,7 +456,16 @@
                     <tr>
                       <td>#{order.edition}</td>
                       <td class="address" title={order.claimerAddress}>
-                        {order.claimerAddress.slice(0, 6)}...{order.claimerAddress.slice(-4)}
+                        {#if order.claimerAddress.startsWith("email:")}
+                          {@const emailFromOrder = dec ? Object.values(dec).find((v) => typeof v === "string" && v.includes("@")) : null}
+                          {#if emailFromOrder}
+                            <span class="claim-email">{emailFromOrder}</span>
+                          {:else}
+                            <span class="claim-type">Email claim</span>
+                          {/if}
+                        {:else}
+                          {order.claimerAddress.slice(0, 6)}...{order.claimerAddress.slice(-4)}
+                        {/if}
                       </td>
                       <td>{new Date(order.claimedAt).toLocaleString()}</td>
                       {#if event.orderFields}
@@ -758,6 +767,17 @@
   .address {
     font-family: monospace;
     font-size: 0.75rem;
+  }
+
+  .claim-email {
+    font-family: inherit;
+    color: var(--accent-text);
+  }
+
+  .claim-type {
+    font-family: inherit;
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   /* Webhook column */

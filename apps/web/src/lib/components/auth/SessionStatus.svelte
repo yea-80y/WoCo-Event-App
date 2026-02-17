@@ -51,7 +51,7 @@
       </button>
     {/if}
     <button class="logout-btn" onclick={() => auth.logout()}>
-      Forget Identity
+      Sign out
     </button>
   </div>
 

@@ -168,50 +168,41 @@ export async function claimTicket(opts: {
   await writeFeedPage(topicClaims(seriesId, foundPage), claimsData);
   console.log(`[claim] Updated claims feed page ${foundPage}, slot ${foundSlot}`);
 
-  // 8. Fire non-critical background updates in parallel (don't block response)
+  // 8. Update claimers feed (MUST await to prevent race conditions on rapid claims)
   const claimerAddress = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash}`;
 
-  const backgroundTasks: Promise<void>[] = [];
-
-  // 8a. Store encrypted order + update claimers feed (order ref needed for claimers entry)
-  backgroundTasks.push(
-    (async () => {
-      let orderRef: string | undefined;
-      if (encryptedOrder) {
-        try {
-          orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
-          console.log(`[claim] Encrypted order stored: ${orderRef}`);
-        } catch (err) {
-          console.error("[claim] Failed to store encrypted order (non-critical):", err);
-        }
-      }
-      await updateClaimersFeed(seriesId, {
-        edition: editionNumber,
-        claimerAddress,
-        claimedRef,
-        claimedAt: claimedTicket.claimedAt,
-        orderRef,
-      });
-    })().catch((err) => console.error("[claim] Failed to update claimers feed (non-critical):", err)),
-  );
-
-  // 8b. Update user collection (wallet claims only, independent of order/claimers)
-  if (identifier.type === "wallet") {
-    backgroundTasks.push(
-      addToUserCollection(identifier.address, {
-        seriesId,
-        eventId: originalTicket.data.eventId,
-        edition: editionNumber,
-        claimedRef,
-        claimedAt: claimedTicket.claimedAt,
-      }).catch((err) => console.error("[claim] Failed to update user collection (non-critical):", err)),
-    );
+  let orderRef: string | undefined;
+  if (encryptedOrder) {
+    try {
+      orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
+      console.log(`[claim] Encrypted order stored: ${orderRef}`);
+    } catch (err) {
+      console.error("[claim] Failed to store encrypted order:", err);
+    }
   }
 
-  // Don't await — let them settle in background after response
-  Promise.allSettled(backgroundTasks).then(() => {
-    console.log(`[claim] Background updates complete for edition ${editionNumber}`);
-  });
+  try {
+    await updateClaimersFeed(seriesId, {
+      edition: editionNumber,
+      claimerAddress,
+      claimedRef,
+      claimedAt: claimedTicket.claimedAt,
+      orderRef,
+    });
+  } catch (err) {
+    console.error("[claim] Failed to update claimers feed:", err);
+  }
+
+  // 9. Update user collection in background (non-critical, wallet only)
+  if (identifier.type === "wallet") {
+    addToUserCollection(identifier.address, {
+      seriesId,
+      eventId: originalTicket.data.eventId,
+      edition: editionNumber,
+      claimedRef,
+      claimedAt: claimedTicket.claimedAt,
+    }).catch((err) => console.error("[claim] Failed to update user collection (non-critical):", err));
+  }
 
   console.log(`[claim] Ticket claimed successfully: edition ${editionNumber}`);
   return claimedTicket;
