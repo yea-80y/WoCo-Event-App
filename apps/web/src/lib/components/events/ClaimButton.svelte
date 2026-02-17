@@ -36,6 +36,12 @@
   let formData = $state<Record<string, string>>({});
   /** When claimMode is "both", which method has the user picked? */
   let chosenMethod = $state<"wallet" | "email" | null>(null);
+  /** Inline email input for email claims when no email field in order form */
+  let inlineEmail = $state("");
+  /** Whether the order form already includes an email-type field */
+  const hasEmailField = $derived(
+    !!orderFields?.some((f) => f.type === "email" || f.id === "__email")
+  );
 
   const formValid = $derived(() => {
     if (!orderFields?.length) return true;
@@ -44,11 +50,12 @@
     );
   });
 
-  /** Get the email from the order form's __email field */
+  /** Get the email from form fields or inline input */
   function getEmailFromForm(): string | null {
+    // Check __email field first
     const email = formData["__email"]?.trim();
     if (email && email.includes("@")) return email;
-    // Also check any field with type "email"
+    // Check any email-type field in order form
     if (orderFields) {
       for (const f of orderFields) {
         if (f.type === "email") {
@@ -57,6 +64,9 @@
         }
       }
     }
+    // Fall back to inline email input
+    const inline = inlineEmail.trim();
+    if (inline && inline.includes("@")) return inline;
     return null;
   }
 
@@ -85,6 +95,14 @@
 
   function handleClaimClick(method?: "wallet" | "email") {
     if (method) chosenMethod = method;
+
+    // For "both" mode without a pre-chosen method, always show form first
+    // so user can fill fields then pick wallet or email at the bottom
+    if (claimMode === "both" && !method && !showOrderForm) {
+      showOrderForm = true;
+      return;
+    }
+
     if (hasOrderForm && !showOrderForm) {
       showOrderForm = true;
       return;
@@ -188,62 +206,89 @@
     {:else if claimedVia === "wallet"}
       <p class="claimed-note">Ticket saved to your passport.</p>
     {/if}
-  {:else if showOrderForm && orderFields}
+  {:else if showOrderForm}
     <div class="order-form">
-      {#each orderFields as field}
-        <label class="form-field">
-          <span class="form-label">
-            {field.label}
-            {#if field.required}<span class="required">*</span>{/if}
-          </span>
-          {#if field.type === "textarea"}
-            <textarea
-              bind:value={formData[field.id]}
-              placeholder={field.placeholder || ""}
-              maxlength={field.maxLength}
-              rows="2"
-            ></textarea>
-          {:else if field.type === "select" && field.options}
-            <select bind:value={formData[field.id]}>
-              <option value="">Select...</option>
-              {#each field.options as opt}
-                <option value={opt}>{opt}</option>
-              {/each}
-            </select>
-          {:else if field.type === "checkbox"}
-            <label class="checkbox-row">
+      {#if orderFields}
+        {#each orderFields as field}
+          <label class="form-field">
+            <span class="form-label">
+              {field.label}
+              {#if field.required}<span class="required">*</span>{/if}
+            </span>
+            {#if field.type === "textarea"}
+              <textarea
+                bind:value={formData[field.id]}
+                placeholder={field.placeholder || ""}
+                maxlength={field.maxLength}
+                rows="2"
+              ></textarea>
+            {:else if field.type === "select" && field.options}
+              <select bind:value={formData[field.id]}>
+                <option value="">Select...</option>
+                {#each field.options as opt}
+                  <option value={opt}>{opt}</option>
+                {/each}
+              </select>
+            {:else if field.type === "checkbox"}
+              <label class="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={formData[field.id] === "yes"}
+                  onchange={(e) => formData[field.id] = (e.target as HTMLInputElement).checked ? "yes" : ""}
+                />
+                <span>{field.placeholder || field.label}</span>
+              </label>
+            {:else}
               <input
-                type="checkbox"
-                checked={formData[field.id] === "yes"}
-                onchange={(e) => formData[field.id] = (e.target as HTMLInputElement).checked ? "yes" : ""}
+                type={field.type}
+                bind:value={formData[field.id]}
+                placeholder={field.placeholder || ""}
+                maxlength={field.maxLength}
               />
-              <span>{field.placeholder || field.label}</span>
-            </label>
-          {:else}
-            <input
-              type={field.type}
-              bind:value={formData[field.id]}
-              placeholder={field.placeholder || ""}
-              maxlength={field.maxLength}
-            />
-          {/if}
+            {/if}
+          </label>
+        {/each}
+      {/if}
+
+      {#if claimMode === "both" && !hasEmailField}
+        <!-- Inline email for email claims when organizer didn't add one -->
+        <label class="form-field">
+          <span class="form-label">Email <span class="form-label-optional">(for email claim)</span></span>
+          <input
+            type="email"
+            bind:value={inlineEmail}
+            placeholder="your@email.com"
+          />
         </label>
-      {/each}
+      {/if}
+
       <div class="form-actions">
         {#if claimMode === "both"}
-          <button class="claim-btn" onclick={handleClaim} disabled={claiming || !formValid()}>
-            {#if claiming}
-              {step}
-            {:else if chosenMethod === "email"}
-              Claim with email
-            {:else}
+          <!-- Both mode: two buttons so user picks their method -->
+          {#if claiming}
+            <button class="claim-btn" disabled>{step}</button>
+          {:else}
+            <button
+              class="claim-btn"
+              onclick={() => { chosenMethod = "wallet"; handleClaim(); }}
+              disabled={!formValid()}
+            >
               Claim with wallet
-            {/if}
-          </button>
+            </button>
+            <button
+              class="claim-btn claim-btn--outline"
+              onclick={() => { chosenMethod = "email"; handleClaim(); }}
+              disabled={!formValid() || (!hasEmailField && !inlineEmail.trim())}
+            >
+              Claim with email
+            </button>
+          {/if}
         {:else}
           <button class="claim-btn" onclick={handleClaim} disabled={claiming || !formValid()}>
             {#if claiming}
               {step}
+            {:else if claimMode === "email"}
+              Claim with email
             {:else}
               Claim ticket
             {/if}
@@ -251,56 +296,26 @@
         {/if}
         <button class="cancel-btn" onclick={() => { showOrderForm = false; chosenMethod = null; }}>Cancel</button>
       </div>
-      <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
+      {#if hasOrderForm}
+        <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
+      {/if}
     </div>
   {:else}
-    {#if claimMode === "both"}
-      <!-- Two buttons: wallet and email -->
-      <div class="claim-options">
-        <button
-          class="claim-btn"
-          onclick={() => handleClaimClick("wallet")}
-          disabled={claiming || (status?.available === 0)}
-        >
-          {#if claiming && effectiveMethod() === "wallet"}
-            {step}
-          {:else if status?.available === 0}
-            Sold out
-          {:else}
-            Claim with wallet
-          {/if}
-        </button>
-        <button
-          class="claim-btn claim-btn--outline"
-          onclick={() => handleClaimClick("email")}
-          disabled={claiming || (status?.available === 0)}
-        >
-          {#if claiming && effectiveMethod() === "email"}
-            {step}
-          {:else if status?.available === 0}
-            Sold out
-          {:else}
-            Claim with email
-          {/if}
-        </button>
-      </div>
-    {:else}
-      <button
-        class="claim-btn"
-        onclick={() => handleClaimClick()}
-        disabled={claiming || (status?.available === 0)}
-      >
-        {#if claiming}
-          {step}
-        {:else if status?.available === 0}
-          Sold out
-        {:else if claimMode === "email"}
-          Claim with email
-        {:else}
-          Claim ticket
-        {/if}
-      </button>
-    {/if}
+    <button
+      class="claim-btn"
+      onclick={() => handleClaimClick()}
+      disabled={claiming || (status?.available === 0)}
+    >
+      {#if claiming}
+        {step}
+      {:else if status?.available === 0}
+        Sold out
+      {:else if claimMode === "email"}
+        Claim with email
+      {:else}
+        Claim ticket
+      {/if}
+    </button>
   {/if}
 
   {#if status && !claimed && !showOrderForm}
@@ -319,11 +334,6 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 0.375rem;
-  }
-
-  .claim-options {
-    display: flex;
     gap: 0.375rem;
   }
 
@@ -416,6 +426,12 @@
 
   .required {
     color: var(--error);
+  }
+
+  .form-label-optional {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   .order-form input,

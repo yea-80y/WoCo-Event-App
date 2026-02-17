@@ -26,21 +26,34 @@
     },
   ]);
   let claimMode = $state<ClaimMode>("wallet");
+  let collectEmail = $state(false);
   let collectInfo = $state(false);
   let orderFields = $state<OrderField[]>([]);
 
-  // Auto-add email field when email claiming is enabled
+  // Auto-manage email field based on claim mode + toggle
   const EMAIL_FIELD_ID = "__email";
+
+  // When claim mode changes, set sensible defaults for email collection
   $effect(() => {
-    const needsEmail = claimMode === "email" || claimMode === "both";
+    if (claimMode === "email") {
+      collectEmail = true; // forced — email is the identity
+    } else if (claimMode === "both") {
+      // default ON for "both" so organizer can contact everyone
+      // (only set on mode change, not every render)
+    }
+    // "wallet" leaves collectEmail as-is (user toggles manually)
+  });
+
+  // Sync the email field in/out of orderFields
+  $effect(() => {
     const hasEmail = orderFields.some((f) => f.id === EMAIL_FIELD_ID);
-    if (needsEmail && !hasEmail) {
+    if (collectEmail && !hasEmail) {
       collectInfo = true;
       orderFields = [
         { id: EMAIL_FIELD_ID, type: "email", label: "Email", required: true, placeholder: "your@email.com" },
         ...orderFields,
       ];
-    } else if (!needsEmail && hasEmail) {
+    } else if (!collectEmail && hasEmail) {
       orderFields = orderFields.filter((f) => f.id !== EMAIL_FIELD_ID);
       if (orderFields.length === 0) collectInfo = false;
     }
@@ -108,6 +121,21 @@
         </div>
       </label>
     </div>
+
+    {#if claimMode === "email"}
+      <p class="claim-mode-note">An email field will be added to the claim form automatically.</p>
+    {:else}
+      <label class="claim-mode-toggle">
+        <input type="checkbox" bind:checked={collectEmail} />
+        <span>
+          {#if claimMode === "both"}
+            Require email from all attendees
+          {:else}
+            Collect email from attendees
+          {/if}
+        </span>
+      </label>
+    {/if}
   </fieldset>
 
   <OrderFieldsEditor bind:orderFields bind:enabled={collectInfo} />
@@ -250,5 +278,36 @@
     color: var(--text-muted);
     display: block;
     margin-top: 0.0625rem;
+  }
+
+  .claim-mode-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+    margin-top: 0.25rem;
+    cursor: pointer;
+    flex-direction: row;
+  }
+
+  .claim-mode-toggle input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .claim-mode-toggle span {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .claim-mode-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: 0.5rem 0 0;
+    font-style: italic;
   }
 </style>
