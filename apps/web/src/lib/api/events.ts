@@ -10,7 +10,7 @@ import type {
   SealedBox,
   OrderEntry,
 } from "@woco/shared";
-import { authPost, authGet, get } from "./client.js";
+import { authPost, authGet, get, apiBase } from "./client.js";
 
 export interface PublishProgress {
   type: "progress";
@@ -33,7 +33,7 @@ export async function createEventStreaming(
   const signed = await auth.signRequest(JSON.stringify(req));
   if (!signed) throw new Error("Not authenticated");
 
-  const resp = await fetch("/api/events", {
+  const resp = await fetch(`${apiBase}/api/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -120,7 +120,7 @@ export async function claimTicket(
   encryptedOrder?: SealedBox,
 ): Promise<ClaimTicketResponse> {
   // No auth needed — just POST with wallet address
-  const resp = await fetch(`/api/events/${eventId}/series/${seriesId}/claim`, {
+  const resp = await fetch(`${apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode: "wallet", walletAddress, encryptedOrder }),

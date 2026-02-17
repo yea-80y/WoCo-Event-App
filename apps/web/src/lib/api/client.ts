@@ -1,7 +1,11 @@
 import type { ApiResponse, SessionDelegation } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
 
-const BASE = "";  // Uses Vite proxy in dev, relative path in prod
+/** API base URL — empty in dev (Vite proxy), full URL in production */
+const BASE = import.meta.env.VITE_API_URL || "";
+
+/** Exported for direct fetch calls in events.ts */
+export const apiBase = BASE;
 
 /**
  * Authenticated POST request.

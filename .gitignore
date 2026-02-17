@@ -13,6 +13,7 @@ npm-debug.log*
 *.local
 .env
 .env.*
+!.env.production
 
 # Markdown (except README and CLAUDE.md)
 *.md
@@ -23,6 +24,9 @@ npm-debug.log*
 *.sh
 *.tar
 *.tar.gz
+
+# Swarm deployment state
+.swarm/
 
 # Editor
 .vscode/*

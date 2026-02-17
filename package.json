@@ -14,9 +14,16 @@
     "build:web": "npm run build -w @woco/web",
     "build:server": "npm run build -w @woco/server",
     "build:embed": "npm run build -w @woco/embed",
+    "build:deploy": "npm run build:web",
+    "upload:swarm": "node scripts/upload-to-swarm-feed.js",
+    "deploy": "npm run build:deploy && npm run upload:swarm",
     "check": "npm run check --workspaces --if-present"
   },
   "devDependencies": {
+    "@ethersphere/bee-js": "^11.1.0",
+    "axios": "^1.13.5",
+    "dotenv": "^17.3.1",
+    "tar": "^7.5.9",
     "typescript": "~5.9.3"
   }
 }
