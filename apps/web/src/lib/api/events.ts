@@ -119,17 +119,15 @@ export async function claimTicket(
   walletAddress: string,
   encryptedOrder?: SealedBox,
 ): Promise<ClaimTicketResponse> {
-  // No auth needed — just POST with wallet address
-  const resp = await fetch(`${apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "wallet", walletAddress, encryptedOrder }),
-  });
-  const json = await resp.json();
+  // Wallet claims require session delegation (proves address ownership)
+  const json = await authPost<ClaimTicketResponse>(
+    `/api/events/${eventId}/series/${seriesId}/claim`,
+    { mode: "wallet", walletAddress, encryptedOrder },
+  );
   return {
     ok: json.ok,
-    ticket: json.ticket ?? json.data?.ticket,
-    edition: json.edition ?? json.data?.edition,
+    ticket: (json as any).ticket ?? json.data?.ticket,
+    edition: (json as any).edition ?? json.data?.edition,
     error: json.error,
   };
 }

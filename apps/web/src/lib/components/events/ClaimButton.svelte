@@ -151,11 +151,18 @@
         showOrderForm = false;
         step = "";
       } else {
-        // Wallet claim: need connected wallet
+        // Wallet claim: need connected wallet + session delegation
         if (!auth.isConnected) {
           step = "Waiting for sign-in...";
           const ok = await loginRequest.request();
           if (!ok) { error = "Login cancelled"; return; }
+        }
+
+        // Ensure session delegation (proves address ownership to server)
+        if (!auth.hasSession) {
+          step = "Approving session...";
+          const ok = await auth.ensureSession();
+          if (!ok) { error = "Session approval cancelled"; return; }
         }
 
         // Always encrypt claim data for the organizer dashboard

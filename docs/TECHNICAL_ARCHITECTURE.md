@@ -447,29 +447,46 @@ that a ticket was genuinely signed by the event creator.
 
 1. User clicks "Claim ticket" on an event series
 2. If claim mode is "both" → order form opens with wallet/email buttons at bottom
-3. **Wallet claim:** if not logged in → login modal appears (user picks web3 or local).
-   No EIP-712 signing required — only a wallet connection to get the address.
-4. **Email claim:** no login required — user provides email address
+3. **Wallet claim:**
+   - If not logged in → login modal appears (user picks web3 or local)
+   - If session not delegated → EIP-712 signing (one popup, cached after that)
+   - Server verifies the delegation and uses the verified address (not the request body)
+4. **Email claim:** no login required — user provides email address (rate-limited by IP)
 5. If event has order fields → user fills them in
 6. Order data encrypted with organizer's X25519 public key (`sealJson`)
-7. `POST /api/events/:eventId/series/:seriesId/claim` sent as an **unauthenticated**
-   request (no session delegation, no EIP-712) with:
+7. `POST /api/events/:eventId/series/:seriesId/claim` with:
    - `mode`: `"wallet"` or `"email"`
    - `walletAddress` or `email`
    - `encryptedOrder`: the `SealedBox`
+   - Session delegation (wallet claims only, in request body)
 
-**Important:** The claimer never signs anything at claim time. No session delegation,
-no POD identity derivation. The claim endpoint is unauthenticated — it only records
-the claimer's public wallet address or email hash. This is a deliberate design choice:
-- Minimizes friction (no MetaMask popups for claimers)
-- The wallet address or email hash serves as a recovery/lookup key for future features
-  (POD signing, ticket transfers, proof of attendance)
-- POD identity derivation and session delegation are only triggered when the user
-  accesses features that require authentication (My Tickets, Dashboard, event creation)
+**Authentication model by claim mode:**
+
+- **Wallet claims** are authenticated via session delegation. The claimer must have
+  a valid EIP-712 session delegation (one MetaMask popup on first claim, cached after
+  that). The server uses the **verified parent address** from the delegation — not
+  the address from the request body. This prevents impersonation (nobody can claim
+  as your address without controlling your wallet).
+
+- **Email claims** are unauthenticated but rate-limited (10 claims per IP per 5
+  minutes). Email verification is not currently implemented — this is an acceptable
+  trade-off because email claims don't grant the claimer any on-chain access. The
+  organizer manually processes email claims via the dashboard.
+
+- **API claims** (organizer backend-to-backend) are authenticated via API key.
+
+**No POD identity derivation at claim time.** The claimer's ed25519 identity is not
+needed — only their wallet address or email is recorded. POD identity derivation is
+deferred to features that require it (event creation, dashboard access). The wallet
+address or email hash serves as a lookup key for future features (POD signing, ticket
+transfers, proof of attendance).
 
 ### Backend (claim-service.ts)
 
-**Step 1 — Auth:** `requireAuth` middleware verifies the session delegation.
+**Step 1 — Auth (wallet claims only):** Verifies session delegation inline —
+extracts and validates the EIP-712 signature, recovers the parent address,
+and uses it as the claimer identity. Email claims skip this step (rate-limited
+by IP instead).
 
 **Step 2 — Load metadata:** Reads editions feed page 0, slot 0. Downloads the
 JSON metadata from Swarm: `{ totalSupply, pageCount, eventId, seriesId, name }`.

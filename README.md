@@ -81,11 +81,11 @@ Organizers fill out event details (title, description, dates, location, image) a
 
 | Mode | Auth required | Identifier stored | Use case |
 |------|--------------|-------------------|----------|
-| **Wallet** | MetaMask connect | Wallet address | WoCo app + embed widget |
-| **Email** | None | SHA-256 email hash | Embed widget (non-crypto users) |
+| **Wallet** | Session delegation (EIP-712) | Verified wallet address | WoCo app + embed widget |
+| **Email** | None (rate-limited by IP) | SHA-256 email hash | Embed widget (non-crypto users) |
 | **API** | Organizer API key | Wallet or email | Backend-to-backend after payment |
 
-Claiming is a single action — no EIP-712 signing or ed25519 derivation required at claim time. POD identity derivation is deferred to later feature access (forums, proof of attendance).
+Wallet claims require session delegation — this proves the claimer controls the address they're claiming as (prevents impersonation). Email claims are rate-limited to 10 per IP per 5 minutes. No POD identity (ed25519) derivation is required at claim time — this is deferred to later feature access.
 
 ### Passport (My Tickets)
 
@@ -164,7 +164,7 @@ Binary pages use 128 slots x 32 bytes = 4096 bytes. JSON feeds are padded to 409
 | GET | `/api/events` | No | List all events |
 | GET | `/api/events/:id` | No | Get event details |
 | POST | `/api/events` | Session | Create event (streaming NDJSON) |
-| POST | `/api/events/:eid/series/:sid/claim` | No | Claim a ticket |
+| POST | `/api/events/:eid/series/:sid/claim` | Session (wallet) / Rate-limited (email) | Claim a ticket |
 | GET | `/api/events/:eid/series/:sid/claim-status` | No | Check availability |
 | GET | `/api/collection/me` | Session | Get user's ticket collection |
 | GET | `/api/collection/me/ticket/:ref` | Session | Get claimed ticket detail |
