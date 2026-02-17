@@ -1,5 +1,7 @@
 <script lang="ts">
   import WalletLogin from "./WalletLogin.svelte";
+  import LocalLogin from "./LocalLogin.svelte";
+  import ZupassLogin from "./ZupassLogin.svelte";
 
   interface Props {
     open: boolean;
@@ -8,18 +10,17 @@
 
   let { open = $bindable(), onclose }: Props = $props();
 
+  function close() {
+    open = false;
+    onclose?.();
+  }
+
   function handleBackdrop(e: MouseEvent) {
-    if (e.target === e.currentTarget) {
-      open = false;
-      onclose?.();
-    }
+    if (e.target === e.currentTarget) close();
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      open = false;
-      onclose?.();
-    }
+    if (e.key === "Escape") close();
   }
 </script>
 
@@ -31,15 +32,21 @@
     <div class="modal" role="dialog" aria-modal="true" aria-label="Login">
       <header>
         <h2>Sign in to WoCo</h2>
-        <button class="close-btn" onclick={() => { open = false; onclose?.(); }} aria-label="Close">
+        <button class="close-btn" onclick={close} aria-label="Close">
           &times;
         </button>
       </header>
 
       <div class="options">
-        <WalletLogin />
-        <!-- Phase 2: Zupass login will go here -->
-        <!-- Phase 3: Para wallet login will go here -->
+        <WalletLogin oncomplete={close} />
+
+        <div class="divider"><span>or</span></div>
+
+        <LocalLogin oncomplete={close} />
+
+        <div class="divider"><span>or</span></div>
+
+        <ZupassLogin />
       </div>
     </div>
   </div>
@@ -96,5 +103,21 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
+  }
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+
+  .divider::before,
+  .divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
   }
 </style>

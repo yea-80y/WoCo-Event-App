@@ -3,6 +3,7 @@
   import { router, navigate } from "./lib/router/router.svelte.js";
   import LoginModal from "./lib/components/auth/LoginModal.svelte";
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
+  import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
   import EventList from "./lib/components/events/EventList.svelte";
   import EventForm from "./lib/components/events/EventForm.svelte";
   import EventDetail from "./lib/components/events/EventDetail.svelte";
@@ -25,14 +26,14 @@
       <button class="nav-link" onclick={() => navigate("/create")}>
         + Create Event
       </button>
-      {#if auth.isAuthenticated}
+      {#if auth.isConnected}
         <button class="nav-link" onclick={() => navigate("/my-tickets")}>
           My Tickets
         </button>
       {/if}
       {#if !auth.ready}
         <span class="loading">Loading...</span>
-      {:else if auth.isAuthenticated}
+      {:else if auth.isConnected}
         <SessionStatus />
       {:else}
         <button class="sign-in-btn" onclick={() => showLogin = true}>
@@ -63,6 +64,7 @@
 </main>
 
 <LoginModal bind:open={showLogin} />
+<SigningConfirmDialog />
 
 <style>
   main {

@@ -1,4 +1,4 @@
-import { Wallet, BrowserProvider, ZeroHash, verifyTypedData, type TypedDataField } from "ethers";
+import { Wallet, ZeroHash, verifyTypedData, type TypedDataField } from "ethers";
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
@@ -8,8 +8,8 @@ import {
   type SessionDelegation,
   type SessionDelegationMessage,
   type EncryptedBlob,
+  type EIP712Signer,
 } from "@woco/shared";
-import { requireProvider } from "../wallet/provider.js";
 import { ensureDeviceKey, encrypt, decrypt } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -28,6 +28,7 @@ function getHost(): string {
  */
 export async function requestSessionDelegation(
   parentAddress: string,
+  signTypedData: EIP712Signer,
 ): Promise<{ sessionAddress: string; delegation: SessionDelegation }> {
   // 1. Random session key
   const sessionWallet = Wallet.createRandom();
@@ -53,13 +54,11 @@ export async function requestSessionDelegation(
     statement: `Authorize ${sessionAddress} as session key for ${host}`,
   };
 
-  // 3. Sign via ethers BrowserProvider (ensures encoding matches verifyTypedData)
-  const browserProvider = new BrowserProvider(requireProvider());
-  const signer = await browserProvider.getSigner(parentAddress);
-  const parentSig = await signer.signTypedData(
+  // 3. Sign via provided signer (web3 wallet or local account)
+  const parentSig = await signTypedData(
     { ...SESSION_DOMAIN },
-    SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
-    message,
+    SESSION_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    message as unknown as Record<string, unknown>,
   );
 
   // 4. Verify locally before storing

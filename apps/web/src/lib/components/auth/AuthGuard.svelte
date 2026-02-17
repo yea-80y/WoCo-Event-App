@@ -12,7 +12,7 @@
   let showLogin = $state(false);
 </script>
 
-{#if auth.isAuthenticated}
+{#if auth.isConnected}
   {@render children()}
 {:else if fallback}
   {@render fallback()}

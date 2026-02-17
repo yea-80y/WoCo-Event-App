@@ -39,7 +39,7 @@
 
   onMount(async () => {
     try {
-      const userAddr = auth.isAuthenticated ? auth.parent : undefined;
+      const userAddr = auth.isConnected ? auth.parent : undefined;
       status = await getClaimStatus(eventId, seriesId, userAddr || undefined);
       if (status?.userEdition != null) {
         claimed = true;
@@ -65,9 +65,9 @@
     error = null;
 
     try {
-      // Ensure wallet connected
-      if (!auth.isAuthenticated) {
-        step = "Connecting wallet...";
+      // Ensure user is connected (wallet or local account)
+      if (!auth.isConnected) {
+        step = "Waiting for sign-in...";
         const ok = await auth.login();
         if (!ok) { error = "Login cancelled"; return; }
       }

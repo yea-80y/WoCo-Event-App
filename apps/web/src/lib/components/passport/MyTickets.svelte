@@ -10,7 +10,7 @@
   let tickets = $state<ClaimedTicket[]>([]);
 
   onMount(async () => {
-    if (!auth.isAuthenticated) {
+    if (!auth.isConnected) {
       loading = false;
       return;
     }
@@ -35,9 +35,9 @@
 <div class="passport">
   <h1>My Tickets</h1>
 
-  {#if !auth.isAuthenticated}
+  {#if !auth.isConnected}
     <div class="empty-state">
-      <p>Connect your wallet to see your tickets.</p>
+      <p>Sign in to see your tickets.</p>
     </div>
   {:else if loading}
     <div class="loading-state">

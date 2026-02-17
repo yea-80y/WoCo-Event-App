@@ -1,12 +1,12 @@
-import { keccak256, toUtf8Bytes, BrowserProvider, type TypedDataField } from "ethers";
+import { keccak256, toUtf8Bytes } from "ethers";
 import {
   POD_IDENTITY_DOMAIN,
   POD_IDENTITY_TYPES,
   POD_IDENTITY_NONCE,
   StorageKeys,
   type EncryptedBlob,
+  type EIP712Signer,
 } from "@woco/shared";
-import { requireProvider } from "../wallet/provider.js";
 import { deriveKeypair } from "../pod/keys.js";
 import { ensureDeviceKey, encrypt, decrypt } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
@@ -20,6 +20,7 @@ import { getKV, putKV, delKV } from "./storage/indexeddb.js";
  */
 export async function requestPodIdentity(
   parentAddress: string,
+  signTypedData: EIP712Signer,
 ): Promise<{ podPublicKeyHex: string; seed: string }> {
   // Build deterministic EIP-712 message (fixed nonce!)
   const message = {
@@ -28,13 +29,11 @@ export async function requestPodIdentity(
     nonce: POD_IDENTITY_NONCE,
   };
 
-  // Sign via ethers BrowserProvider (ensures encoding consistency)
-  const browserProvider = new BrowserProvider(requireProvider());
-  const signer = await browserProvider.getSigner(parentAddress);
-  const signature = await signer.signTypedData(
+  // Sign via provided signer (web3 wallet or local account)
+  const signature = await signTypedData(
     { ...POD_IDENTITY_DOMAIN },
-    POD_IDENTITY_TYPES as unknown as Record<string, TypedDataField[]>,
-    message,
+    POD_IDENTITY_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    message as unknown as Record<string, unknown>,
   );
 
   // Deterministic: same wallet → same signature → same seed

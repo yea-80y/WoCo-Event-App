@@ -12,6 +12,7 @@ export const StorageKeys = {
   SESSION_KEY: "woco:auth:session-key",
   SESSION_DELEGATION: "woco:auth:session-delegation",
   POD_SEED: "woco:auth:pod-seed",
+  LOCAL_KEY: "woco:auth:local-key",
 } as const;
 
 /** Fixed nonce for deterministic POD identity derivation */

@@ -244,19 +244,15 @@
     }
 
     try {
-      // Check auth
-      if (!auth.isAuthenticated) {
+      // Check auth — only need identity (isConnected), not session
+      if (!auth.isConnected) {
         error = "Please sign in to view the dashboard";
         loading = false;
         return;
       }
 
-      // Load event + orders in parallel
-      const [ev, ordersResp] = await Promise.all([
-        getEvent(eventId),
-        getEventOrders(eventId),
-      ]);
-
+      // Load event first (public, no auth needed)
+      const ev = await getEvent(eventId);
       if (!ev) {
         error = "Event not found";
         loading = false;
@@ -270,6 +266,9 @@
         return;
       }
 
+      // Load orders (authGet — will lazily trigger session delegation EIP-712 if needed)
+      const ordersResp = await getEventOrders(eventId);
+
       event = ev;
       ordersResponse = ordersResp;
       loading = false;
@@ -278,7 +277,18 @@
       if (ordersResp.orders.length === 0) return;
 
       decrypting = true;
-      const podSeed = await restorePodSeed();
+
+      // Ensure POD identity exists (will trigger EIP-712 if needed after forget/reconnect)
+      let podSeed = await restorePodSeed();
+      if (!podSeed) {
+        const pk = await auth.ensurePodIdentity();
+        if (!pk) {
+          decryptError = "POD identity derivation cancelled. Cannot decrypt orders.";
+          decrypting = false;
+          return;
+        }
+        podSeed = await restorePodSeed();
+      }
       if (!podSeed) {
         decryptError = "POD identity not found. Please re-derive your identity.";
         decrypting = false;

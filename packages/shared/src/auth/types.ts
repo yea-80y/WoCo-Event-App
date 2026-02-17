@@ -1,4 +1,18 @@
-export type AuthKind = "web3" | "zupass" | "none";
+export type AuthKind = "web3" | "local" | "zupass" | "none";
+
+/** Callback that signs EIP-712 typed data — used by session delegation + POD identity */
+export type EIP712Signer = (
+  domain: Record<string, unknown>,
+  types: Record<string, Array<{ name: string; type: string }>>,
+  value: Record<string, unknown>,
+) => Promise<string>;
+
+/** Info shown to users before signing (local account confirmation dialog) */
+export interface SigningRequestInfo {
+  action: string;
+  domainName: string;
+  fields: Array<{ label: string; value: string }>;
+}
 
 /** EIP-712 session delegation message (signed by primary wallet) */
 export interface SessionDelegationMessage {

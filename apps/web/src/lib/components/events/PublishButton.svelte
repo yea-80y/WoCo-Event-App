@@ -74,15 +74,26 @@
     phase = "auth";
 
     try {
-      if (!auth.isAuthenticated) {
-        step = "Approve session in wallet (1 of 2)...";
+      // Step 1: Ensure user is connected (wallet or local account)
+      if (!auth.isConnected) {
+        step = "Waiting for sign-in...";
+        // Caller should open LoginModal; for now try login()
         const ok = await auth.login();
         if (!ok) { error = "Login cancelled"; return; }
       }
+      progress = 1;
+
+      // Step 2: Ensure session delegation (EIP-712 — deferred until now)
+      if (!auth.hasSession) {
+        step = "Approve session delegation (1 of 2)...";
+        const ok = await auth.ensureSession();
+        if (!ok) { error = "Session delegation cancelled"; return; }
+      }
       progress = 2;
 
+      // Step 3: Ensure POD identity (EIP-712 — deferred until now)
       if (!auth.hasPodIdentity) {
-        step = "Approve identity in wallet (2 of 2)...";
+        step = "Approve identity derivation (2 of 2)...";
         const pk = await auth.ensurePodIdentity();
         if (!pk) { error = "Identity setup cancelled"; return; }
       }
@@ -172,7 +183,7 @@
     </div>
     <p class="progress-label">
       {#if phase === "auth"}
-        Connecting wallet...
+        Setting up auth...
       {:else if phase === "signing"}
         Signing tickets locally...
       {:else if phase === "uploading"}

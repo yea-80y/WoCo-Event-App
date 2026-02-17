@@ -2,13 +2,20 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { isWalletAvailable } from "../../wallet/provider.js";
 
+  interface Props {
+    oncomplete?: () => void;
+  }
+
+  let { oncomplete }: Props = $props();
   let error = $state<string | null>(null);
   const walletAvailable = isWalletAvailable();
 
   async function handleLogin() {
     error = null;
-    const ok = await auth.login();
-    if (!ok && !auth.isAuthenticated) {
+    const ok = await auth.login("web3");
+    if (ok) {
+      oncomplete?.();
+    } else if (!auth.isConnected) {
       error = "Login cancelled or failed. Please try again.";
     }
   }
