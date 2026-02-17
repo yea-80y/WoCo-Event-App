@@ -17,7 +17,7 @@
   // State
   let event = $state<EventFeed | null>(null);
   let ordersResponse = $state<EventOrdersResponse | null>(null);
-  let decryptedOrders = $state<Map<number, Record<string, string>>>(new Map());
+  let decryptedOrders = $state<Map<number, DecryptedOrder>>(new Map());
   let loading = $state(true);
   let decrypting = $state(false);
   let error = $state<string | null>(null);
@@ -45,8 +45,10 @@
   let bulkSending = $state<string | null>(null); // seriesId currently bulk-sending
 
   interface DecryptedOrder {
-    fields: Record<string, string>;
-    seriesId: string;
+    fields?: Record<string, string>;
+    seriesId?: string;
+    claimerEmail?: string;
+    claimerAddress?: string;
   }
 
   // ---------------------------------------------------------------------------
@@ -113,16 +115,15 @@
   }
 
   function downloadCSV(seriesName: string, seriesOrders: OrderEntry[], fields: OrderField[]) {
-    const headers = ["Edition", "Claimer", "Claimed At", ...fields.map((f) => f.label)];
-    const rows = seriesOrders.map((order, idx) => {
-      const dec = decryptedOrders.get(idx) ?? decryptedOrders.get(
-        ordersResponse!.orders.indexOf(order)
-      );
+    const headers = ["Edition", "Claimer", "Email", "Claimed At", ...fields.map((f) => f.label)];
+    const rows = seriesOrders.map((order) => {
+      const dec = decryptedOrders.get(ordersResponse!.orders.indexOf(order));
       return [
         String(order.edition),
-        order.claimerAddress,
+        order.claimerAddress.startsWith("email:") ? "" : order.claimerAddress,
+        dec?.claimerEmail ?? "",
         new Date(order.claimedAt).toLocaleString(),
-        ...fields.map((f) => dec?.[f.id] ?? ""),
+        ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
     });
 
@@ -148,13 +149,13 @@
     return `${order.seriesId}:${order.edition}`;
   }
 
-  function buildPayload(order: OrderEntry, dec: Record<string, string>): Record<string, unknown> {
+  function buildPayload(order: OrderEntry, dec: DecryptedOrder): Record<string, unknown> {
     // Map field IDs to human-readable labels
     const labeledFields: Record<string, string> = {};
-    if (event?.orderFields) {
+    if (event?.orderFields && dec.fields) {
       for (const f of event.orderFields) {
-        if (dec[f.id] !== undefined) {
-          labeledFields[f.label] = dec[f.id];
+        if (dec.fields[f.id] !== undefined) {
+          labeledFields[f.label] = dec.fields[f.id];
         }
       }
     }
@@ -165,6 +166,7 @@
       series: order.seriesName,
       edition: order.edition,
       claimerAddress: order.claimerAddress,
+      ...(dec.claimerEmail ? { claimerEmail: dec.claimerEmail } : {}),
       claimedAt: order.claimedAt,
       fields: labeledFields,
     };
@@ -303,17 +305,17 @@
       // Decrypt orders that have encrypted data (skip claims without order info)
       const results = await Promise.allSettled(
         ordersResp.orders.map(async (order, idx) => {
-          if (!order.encryptedOrder) return { idx, fields: {} };
+          if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
           const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
-          return { idx, fields: decrypted.fields };
+          return { idx, data: decrypted };
         }),
       );
 
-      const newMap = new Map<number, Record<string, string>>();
+      const newMap = new Map<number, DecryptedOrder>();
       let failCount = 0;
       for (const result of results) {
         if (result.status === "fulfilled") {
-          newMap.set(result.value.idx, result.value.fields);
+          newMap.set(result.value.idx, result.value.data);
         } else {
           failCount++;
         }
@@ -461,9 +463,8 @@
                       <td>#{order.edition}</td>
                       <td class="address" title={order.claimerAddress}>
                         {#if order.claimerAddress.startsWith("email:")}
-                          {@const emailFromOrder = dec ? Object.values(dec).find((v) => typeof v === "string" && v.includes("@")) : null}
-                          {#if emailFromOrder}
-                            <span class="claim-email">{emailFromOrder}</span>
+                          {#if dec?.claimerEmail}
+                            <span class="claim-email">{dec.claimerEmail}</span>
                           {:else}
                             <span class="claim-type">Email claim</span>
                           {/if}
@@ -474,7 +475,7 @@
                       <td>{new Date(order.claimedAt).toLocaleString()}</td>
                       {#if event.orderFields}
                         {#each event.orderFields as field}
-                          <td>{dec?.[field.id] ?? (decrypting ? "..." : "-")}</td>
+                          <td>{dec?.fields?.[field.id] ?? (decrypting ? "..." : "-")}</td>
                         {/each}
                       {/if}
                       <td class="webhook-cell">

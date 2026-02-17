@@ -126,12 +126,12 @@
           return;
         }
 
-        // Encrypt order data if form was filled
+        // Always encrypt claim data for the organizer dashboard
         let encryptedOrder: SealedBox | undefined;
-        if (hasOrderForm && Object.keys(formData).length > 0) {
+        if (encryptionKey) {
           step = "Encrypting your info...";
-          encryptedOrder = await sealJson(encryptionKey!, {
-            fields: formData,
+          encryptedOrder = await sealJson(encryptionKey, {
+            ...(Object.keys(formData).length > 0 ? { fields: formData } : {}),
             seriesId,
             claimerEmail: email,
           });
@@ -158,12 +158,12 @@
           if (!ok) { error = "Login cancelled"; return; }
         }
 
-        // Encrypt order data if form was filled
+        // Always encrypt claim data for the organizer dashboard
         let encryptedOrder: SealedBox | undefined;
-        if (hasOrderForm && Object.keys(formData).length > 0) {
+        if (encryptionKey) {
           step = "Encrypting your info...";
-          encryptedOrder = await sealJson(encryptionKey!, {
-            fields: formData,
+          encryptedOrder = await sealJson(encryptionKey, {
+            ...(Object.keys(formData).length > 0 ? { fields: formData } : {}),
             seriesId,
             claimerAddress: auth.parent,
           });
