@@ -19,6 +19,7 @@ npm-debug.log*
 *.md
 !README.md
 !CLAUDE.md
+!docs/*.md
 
 # Scripts / artifacts
 *.sh
