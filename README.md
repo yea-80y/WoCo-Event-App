@@ -85,7 +85,7 @@ Organizers fill out event details (title, description, dates, location, image) a
 | **Email** | None (rate-limited by IP) | SHA-256 email hash | Embed widget (non-crypto users) |
 | **API** | Organizer API key | Wallet or email | Backend-to-backend after payment |
 
-Wallet claims require session delegation — this proves the claimer controls the address they're claiming as (prevents impersonation). Email claims are rate-limited to 10 per IP per 5 minutes. No POD identity (ed25519) derivation is required at claim time — this is deferred to later feature access.
+Wallet claims require session delegation — this proves the claimer controls the address they're claiming as (prevents impersonation). Email claims are rate-limited to 3 per IP per 15 minutes. No POD identity (ed25519) derivation is required at claim time — this is deferred to later feature access.
 
 ### Passport (My Tickets)
 

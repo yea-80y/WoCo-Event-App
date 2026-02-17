@@ -468,7 +468,7 @@ that a ticket was genuinely signed by the event creator.
   the address from the request body. This prevents impersonation (nobody can claim
   as your address without controlling your wallet).
 
-- **Email claims** are unauthenticated but rate-limited (10 claims per IP per 5
+- **Email claims** are unauthenticated but rate-limited (3 claims per IP per 15
   minutes). Email verification is not currently implemented — this is an acceptable
   trade-off because email claims don't grant the claimer any on-chain access. The
   organizer manually processes email claims via the dashboard.

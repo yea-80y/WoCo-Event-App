@@ -8,8 +8,8 @@ const claims = new Hono<AppEnv>();
 
 /** In-memory rate limiter for email claims: IP → timestamps */
 const emailClaimRateMap = new Map<string, number[]>();
-const EMAIL_CLAIM_RATE_LIMIT = 10; // max claims
-const EMAIL_CLAIM_RATE_WINDOW = 300_000; // per 5 minutes
+const EMAIL_CLAIM_RATE_LIMIT = 3; // max claims
+const EMAIL_CLAIM_RATE_WINDOW = 900_000; // per 15 minutes
 
 function checkEmailRateLimit(ip: string): boolean {
   const now = Date.now();
