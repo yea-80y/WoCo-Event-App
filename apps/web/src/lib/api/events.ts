@@ -134,6 +134,26 @@ export async function claimTicket(
   };
 }
 
+export async function claimTicketByEmail(
+  eventId: string,
+  seriesId: string,
+  email: string,
+  encryptedOrder?: SealedBox,
+): Promise<ClaimTicketResponse> {
+  const resp = await fetch(`${apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "email", email, encryptedOrder }),
+  });
+  const json = await resp.json();
+  return {
+    ok: json.ok,
+    ticket: json.ticket ?? json.data?.ticket,
+    edition: json.edition ?? json.data?.edition,
+    error: json.error,
+  };
+}
+
 export async function getClaimStatus(
   eventId: string,
   seriesId: string,

@@ -1,6 +1,9 @@
 import type { Hex64, Hex0x } from "../types.js";
 import type { OrderField, SealedBox } from "../crypto/types.js";
 
+/** How attendees can claim tickets for an event */
+export type ClaimMode = "wallet" | "email" | "both";
+
 /** Full event metadata stored in Swarm feed */
 export interface EventFeed {
   v: 1;
@@ -19,6 +22,8 @@ export interface EventFeed {
   encryptionKey?: string;
   /** Order form fields — present when organizer collects customer info */
   orderFields?: OrderField[];
+  /** How attendees can claim tickets (default: "wallet") */
+  claimMode?: "wallet" | "email" | "both";
 }
 
 /** Ticket series summary (stored within event feed) */
@@ -90,6 +95,8 @@ export interface CreateEventRequest {
   encryptionKey?: string;
   /** Order form fields (if organizer wants to collect attendee info) */
   orderFields?: OrderField[];
+  /** How attendees can claim tickets (default: "wallet") */
+  claimMode?: "wallet" | "email" | "both";
 }
 
 /** Response from POST /api/events */

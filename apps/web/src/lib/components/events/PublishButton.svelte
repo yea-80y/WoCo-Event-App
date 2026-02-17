@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SignedTicket, OrderField } from "@woco/shared";
+  import type { SignedTicket, OrderField, ClaimMode } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -24,12 +24,14 @@
     series: SeriesDraft[];
     /** Order form fields — undefined means no info collection */
     orderFields?: OrderField[];
+    /** How attendees can claim tickets */
+    claimMode?: ClaimMode;
     onpublished?: (eventId: string) => void;
   }
 
   let {
     title, description, startDate, endDate, location,
-    imageDataUrl, series, orderFields, onpublished,
+    imageDataUrl, series, orderFields, claimMode, onpublished,
   }: Props = $props();
 
   let publishing = $state(false);
@@ -143,6 +145,7 @@
           creatorPodKey: auth.podPublicKeyHex!,
           encryptionKey,
           orderFields: orderFields?.length ? orderFields : undefined,
+          claimMode: claimMode && claimMode !== "wallet" ? claimMode : undefined,
         },
         handleProgress,
       );

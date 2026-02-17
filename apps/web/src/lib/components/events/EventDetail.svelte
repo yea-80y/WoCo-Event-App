@@ -99,6 +99,7 @@
             totalSupply={s.totalSupply}
             encryptionKey={event.encryptionKey}
             orderFields={event.orderFields}
+            claimMode={event.claimMode ?? "wallet"}
           />
         </div>
       {/each}

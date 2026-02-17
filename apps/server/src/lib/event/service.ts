@@ -1,4 +1,4 @@
-import type { Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary, OrderField } from "@woco/shared";
+import type { Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary, OrderField, ClaimMode } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import {
   pack4096,
@@ -53,12 +53,14 @@ export async function createEvent(opts: {
   encryptionKey?: string;
   /** Order form fields (if organizer wants attendee info) */
   orderFields?: OrderField[];
+  /** How attendees can claim tickets */
+  claimMode?: ClaimMode;
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
     eventId, title, description, startDate, endDate, location,
     creatorAddress, creatorPodKey, imageData, series, signedTickets,
-    encryptionKey, orderFields, onProgress,
+    encryptionKey, orderFields, claimMode, onProgress,
   } = opts;
 
   const totalTickets = series.reduce((sum, s) => sum + s.totalSupply, 0);
@@ -183,6 +185,7 @@ export async function createEvent(opts: {
     createdAt: new Date().toISOString(),
     ...(encryptionKey ? { encryptionKey } : {}),
     ...(orderFields?.length ? { orderFields } : {}),
+    ...(claimMode && claimMode !== "wallet" ? { claimMode } : {}),
   };
 
   emit("finalize", 0, 1, "Writing event feed...");

@@ -42,7 +42,7 @@ events.post("/", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
 
   // Validate required fields
-  const { event: ev, series, signedTickets, image, creatorPodKey, encryptionKey, orderFields } = body;
+  const { event: ev, series, signedTickets, image, creatorPodKey, encryptionKey, orderFields, claimMode } = body;
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
   }
@@ -94,6 +94,7 @@ events.post("/", requireAuth, async (c) => {
         signedTickets: serializedTickets,
         encryptionKey: encryptionKey as string | undefined,
         orderFields: orderFields as import("@woco/shared").OrderField[] | undefined,
+        claimMode: claimMode as import("@woco/shared").ClaimMode | undefined,
         onProgress: (p) => {
           stream.writeln(JSON.stringify(p));
         },
