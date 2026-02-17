@@ -16,8 +16,9 @@ Everything documented here reflects the actual implementation — no aspirationa
 7. [Device Storage Encryption](#7-device-storage-encryption)
 8. [Ticket System](#8-ticket-system)
 9. [Claiming Flow (End to End)](#9-claiming-flow-end-to-end)
-10. [Swarm Storage Architecture](#10-swarm-storage-architecture)
-11. [API Authentication Flow](#11-api-authentication-flow)
+10. [Organizer Dashboard](#10-organizer-dashboard)
+11. [Swarm Storage Architecture](#11-swarm-storage-architecture)
+12. [API Authentication Flow](#12-api-authentication-flow)
 
 ---
 
@@ -445,16 +446,26 @@ that a ticket was genuinely signed by the event creator.
 ### Frontend
 
 1. User clicks "Claim ticket" on an event series
-2. If not logged in → login modal appears (user picks web3 or local)
-3. If session not delegated → EIP-712 signing (MetaMask popup or in-app dialog)
-4. If POD identity not derived → EIP-712 signing (second popup/dialog)
-5. If event has order fields → order form appears, user fills it in
+2. If claim mode is "both" → order form opens with wallet/email buttons at bottom
+3. **Wallet claim:** if not logged in → login modal appears (user picks web3 or local).
+   No EIP-712 signing required — only a wallet connection to get the address.
+4. **Email claim:** no login required — user provides email address
+5. If event has order fields → user fills them in
 6. Order data encrypted with organizer's X25519 public key (`sealJson`)
-7. `POST /api/events/:eventId/series/:seriesId/claim` sent with:
+7. `POST /api/events/:eventId/series/:seriesId/claim` sent as an **unauthenticated**
+   request (no session delegation, no EIP-712) with:
    - `mode`: `"wallet"` or `"email"`
    - `walletAddress` or `email`
    - `encryptedOrder`: the `SealedBox`
-   - Session delegation (in headers)
+
+**Important:** The claimer never signs anything at claim time. No session delegation,
+no POD identity derivation. The claim endpoint is unauthenticated — it only records
+the claimer's public wallet address or email hash. This is a deliberate design choice:
+- Minimizes friction (no MetaMask popups for claimers)
+- The wallet address or email hash serves as a recovery/lookup key for future features
+  (POD signing, ticket transfers, proof of attendance)
+- POD identity derivation and session delegation are only triggered when the user
+  accesses features that require authentication (My Tickets, Dashboard, event creation)
 
 ### Backend (claim-service.ts)
 
@@ -516,7 +527,52 @@ Appends a `CollectionEntry` to the user's personal feed at
 
 ---
 
-## 10. Swarm Storage Architecture
+## 10. Organizer Dashboard
+
+The dashboard lets event organizers view and manage claims for their events.
+
+### Access Flow
+
+1. Organizer navigates to `#/dashboard` → sees a list of their created events
+   (filtered from the global event directory by matching `creatorAddress`)
+2. Clicks an event → `#/dashboard/:eventId`
+3. **Auth check:** must be logged in (`auth.isConnected`). If not, shows
+   "Please sign in" message
+4. **Ownership check:** `auth.parent` must match `event.creatorAddress`
+5. **Load orders:** `GET /api/events/:id/orders` (authenticated, organizer-only).
+   This endpoint reads every series' claimers JSON feed from Swarm and returns
+   all `ClaimerEntry` records with their encrypted order data
+6. **Decrypt orders:** The dashboard derives the organizer's X25519 private key
+   from their POD seed (via HKDF). If the POD seed hasn't been derived yet,
+   it triggers the EIP-712 "DerivePodIdentity" signing (MetaMask popup or
+   in-app dialog). Each order's `SealedBox` is then decrypted with `openJson()`
+7. **Display:** Orders grouped by series in a table showing edition, claimer
+   (wallet address or decrypted email), claimed time, and any custom form fields
+
+### Dashboard Features
+
+- **CSV Export:** Downloads all orders for a series as CSV (edition, claimer,
+  email, claimed time, plus custom form fields)
+- **Webhook Relay:** Organizers can configure a webhook URL (stored in
+  localStorage, never sent to the server). Decrypted order data can be forwarded
+  to external services (SendGrid, Zapier, etc.) via the server's webhook relay
+  endpoint. The server never sees the decrypted data — it only forwards it
+- **Bulk Send:** Send all unsent orders to the webhook with 200ms delay between
+  requests. Sent status is tracked in localStorage
+- **Rate Limit:** 30 webhook relay requests per minute per organizer (server-enforced)
+
+### Why POD Identity Is Needed Here
+
+The dashboard is the one place where the organizer's POD identity is required
+after event creation. The X25519 decryption key is derived from the POD seed,
+which comes from the EIP-712 "DerivePodIdentity" signature. Without it, the
+organizer cannot decrypt the attendee order data. This is why the organizer
+sees an EIP-712 popup when first visiting the dashboard (if their POD seed
+isn't already cached in IndexedDB).
+
+---
+
+## 11. Swarm Storage Architecture
 
 All data is stored on the Swarm Network using two primitives:
 
@@ -557,7 +613,7 @@ acts as a Swarm relay. Future versions will allow users to own their own feeds.
 
 ---
 
-## 11. API Authentication Flow
+## 12. API Authentication Flow
 
 Every authenticated request follows this pattern:
 

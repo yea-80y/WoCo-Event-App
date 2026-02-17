@@ -1,6 +1,10 @@
 # WoCo — Decentralized Event Platform
 
+**Live app:** [gateway.woco-net.com/bzz/...](https://gateway.woco-net.com/bzz/1b4f27ff3a6650fe2dbb4f6b40053ba2b1016dc72e174edb90c0dd46f03c2251/)
+
 WoCo is a decentralized event ticketing platform built on the Swarm Network and Ethereum standards. Event organizers create events and issue signed tickets as PODs (Portable Object Data). Attendees claim tickets via wallet or email, and carry them in their on-chain passport.
+
+For detailed technical documentation (cryptography, EIP-712 flows, encryption, Swarm architecture), see [docs/TECHNICAL_ARCHITECTURE.md](docs/TECHNICAL_ARCHITECTURE.md).
 
 ## Architecture
 
@@ -133,6 +137,8 @@ The configurator lets organizers:
 | `#/event/:id` | Event detail + claim buttons |
 | `#/event/:id/embed` | Embed configurator |
 | `#/my-tickets` | Passport (claimed tickets) |
+| `#/dashboard` | Organizer event list |
+| `#/dashboard/:id` | Orders dashboard (decrypt + webhook) |
 
 ## Swarm Feed Layout
 
@@ -162,16 +168,22 @@ Binary pages use 128 slots x 32 bytes = 4096 bytes. JSON feeds are padded to 409
 | GET | `/api/events/:eid/series/:sid/claim-status` | No | Check availability |
 | GET | `/api/collection/me` | Session | Get user's ticket collection |
 | GET | `/api/collection/me/ticket/:ref` | Session | Get claimed ticket detail |
+| GET | `/api/events/:id/orders` | Session (organizer) | Get all orders for event |
+| POST | `/api/events/:id/webhook-relay` | Session (organizer) | Forward decrypted data to webhook |
 
 ## Project Status
 
 - [x] Monorepo scaffolding with npm workspaces
-- [x] Wallet auth with EIP-712 session delegation
+- [x] Auth: web3 wallet + local browser account with EIP-712 session delegation
+- [x] Deferred signing ("build first, sign later" UX)
 - [x] Event creation with Swarm feeds
 - [x] Multi-page ticket editions (no quantity limit)
-- [x] Ticket claiming (wallet + email + API modes)
+- [x] Ticket claiming (wallet + email modes, no auth required)
+- [x] End-to-end encrypted order data (ECIES: X25519 + AES-256-GCM)
+- [x] Organizer dashboard with local decryption, CSV export, webhook relay
 - [x] Passport / My Tickets page
 - [x] Embed widget with setup configurator
+- [x] Production deployment (Swarm feed + Cloudflare tunnel)
 - [ ] User profile page
 - [ ] Zupass login integration
 - [ ] Para wallet integration
