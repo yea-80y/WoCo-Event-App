@@ -36,23 +36,25 @@ orders.get("/:id/orders", requireAuth, async (c) => {
       if (!feed?.claimers) continue;
 
       for (const claimer of feed.claimers) {
-        if (!claimer.orderRef) continue;
+        let encryptedOrder: SealedBox | undefined;
 
-        try {
-          const json = await downloadFromBytes(claimer.orderRef);
-          const sealedBox = JSON.parse(json) as SealedBox;
-
-          orderEntries.push({
-            seriesId: series.seriesId,
-            seriesName: series.name,
-            edition: claimer.edition,
-            claimerAddress: claimer.claimerAddress,
-            claimedAt: claimer.claimedAt,
-            encryptedOrder: sealedBox,
-          });
-        } catch (err) {
-          console.error(`[orders] Failed to download order ref ${claimer.orderRef}:`, err);
+        if (claimer.orderRef) {
+          try {
+            const json = await downloadFromBytes(claimer.orderRef);
+            encryptedOrder = JSON.parse(json) as SealedBox;
+          } catch (err) {
+            console.error(`[orders] Failed to download order ref ${claimer.orderRef}:`, err);
+          }
         }
+
+        orderEntries.push({
+          seriesId: series.seriesId,
+          seriesName: series.name,
+          edition: claimer.edition,
+          claimerAddress: claimer.claimerAddress,
+          claimedAt: claimer.claimedAt,
+          ...(encryptedOrder ? { encryptedOrder } : {}),
+        });
       }
     }
 

@@ -273,8 +273,11 @@
       ordersResponse = ordersResp;
       loading = false;
 
-      // Decrypt orders
+      // Decrypt orders (only if some have encrypted data)
       if (ordersResp.orders.length === 0) return;
+
+      const hasEncryptedOrders = ordersResp.orders.some((o) => !!o.encryptedOrder);
+      if (!hasEncryptedOrders) return;
 
       decrypting = true;
 
@@ -297,9 +300,10 @@
 
       const { privateKey } = deriveEncryptionKeypairFromPodSeed(podSeed);
 
-      // Decrypt all orders in parallel
+      // Decrypt orders that have encrypted data (skip claims without order info)
       const results = await Promise.allSettled(
         ordersResp.orders.map(async (order, idx) => {
+          if (!order.encryptedOrder) return { idx, fields: {} };
           const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
           return { idx, fields: decrypted.fields };
         }),

@@ -216,5 +216,5 @@ export interface OrderEntry {
   edition: number;
   claimerAddress: string;
   claimedAt: string;
-  encryptedOrder: SealedBox;
+  encryptedOrder?: SealedBox;
 }
