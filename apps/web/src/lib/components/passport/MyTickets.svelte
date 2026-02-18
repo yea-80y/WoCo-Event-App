@@ -46,13 +46,24 @@
 
     try {
       const collection = await getMyCollection();
+      console.log("[MyTickets] collection:", JSON.stringify(collection));
+      if (!collection.entries.length) {
+        tickets = [];
+        return;
+      }
       const details = await Promise.all(
-        collection.entries.map((entry: CollectionEntry) =>
-          getTicketDetail(entry.claimedRef).catch(() => null),
-        ),
+        collection.entries
+          .filter((entry: CollectionEntry) => !!entry.claimedRef)
+          .map((entry: CollectionEntry) =>
+            getTicketDetail(entry.claimedRef).catch((e) => {
+              console.warn("[MyTickets] ticket detail failed:", entry.claimedRef, e);
+              return null;
+            }),
+          ),
       );
       tickets = details.filter((t): t is ClaimedTicket => t !== null);
     } catch (e) {
+      console.error("[MyTickets] loadTickets error:", e);
       error = e instanceof Error ? e.message : "Failed to load tickets";
     } finally {
       loading = false;

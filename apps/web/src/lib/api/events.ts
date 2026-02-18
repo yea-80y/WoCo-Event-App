@@ -170,6 +170,7 @@ export async function getClaimStatus(
 
 export async function getMyCollection(): Promise<UserCollection> {
   const resp = await authGet<UserCollection>("/api/collection/me");
+  if (!resp.ok) throw new Error(resp.error || "Failed to load collection");
   return resp.data ?? { v: 1, entries: [], updatedAt: "" };
 }
 

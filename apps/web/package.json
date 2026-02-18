@@ -10,10 +10,11 @@
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
   },
   "dependencies": {
-    "@woco/shared": "*",
-    "ethers": "^6.13.0",
     "@noble/ed25519": "^2.2.0",
-    "@noble/hashes": "^1.7.0"
+    "@noble/hashes": "^1.7.0",
+    "@walletconnect/ethereum-provider": "^2.23.6",
+    "@woco/shared": "*",
+    "ethers": "^6.13.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",

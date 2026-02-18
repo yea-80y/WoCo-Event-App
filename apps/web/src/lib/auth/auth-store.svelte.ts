@@ -98,8 +98,14 @@ async function init(): Promise<void> {
     const kind = await getKV<AuthKind>(StorageKeys.AUTH_KIND);
 
     if (kind === "web3") {
-      const walletAddr = await getConnectedAddress();
+      let walletAddr = await getConnectedAddress();
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
+
+      // No injected wallet — try to silently restore a WalletConnect session
+      if (!walletAddr && typeof window !== "undefined" && !window.ethereum) {
+        const { tryRestoreWalletConnectSession } = await import("../wallet/wc-provider.js");
+        walletAddr = await tryRestoreWalletConnectSession();
+      }
 
       // Wallet still connected and matches stored parent
       if (walletAddr && storedParent && walletAddr === storedParent) {
@@ -285,6 +291,11 @@ async function signRequest(
 async function logout(): Promise<void> {
   _cleanupAccountListener?.();
   _cleanupAccountListener = null;
+  // Disconnect WalletConnect if it was used (no injected wallet present)
+  if (_kind === "web3" && typeof window !== "undefined" && !window.ethereum) {
+    const { disconnectWalletConnect } = await import("../wallet/wc-provider.js");
+    await disconnectWalletConnect();
+  }
   await clearAllAuth();
 }
 

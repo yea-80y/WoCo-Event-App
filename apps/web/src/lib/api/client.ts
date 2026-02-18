@@ -45,7 +45,11 @@ export async function authGet<T>(path: string): Promise<ApiResponse<T>> {
     },
   });
 
-  return resp.json();
+  const json = await resp.json() as ApiResponse<T>;
+  if (!json.ok) {
+    console.warn(`[authGet] ${path} failed:`, json.error);
+  }
+  return json;
 }
 
 /** Unauthenticated GET request. */

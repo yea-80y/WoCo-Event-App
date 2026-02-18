@@ -30,14 +30,18 @@ export async function getConnectedAddress(): Promise<string | null> {
     })) as string[];
     if (!accounts?.length) return null;
 
-    const permissions = (await provider.request({
-      method: "wallet_getPermissions",
-    })) as Array<{ parentCapability: string }>;
-
-    const hasAccess = permissions.some(
-      (p) => p.parentCapability === "eth_accounts",
-    );
-    return hasAccess ? accounts[0]!.toLowerCase() : null;
+    try {
+      const permissions = (await provider.request({
+        method: "wallet_getPermissions",
+      })) as Array<{ parentCapability: string }>;
+      const hasAccess = permissions.some(
+        (p) => p.parentCapability === "eth_accounts",
+      );
+      return hasAccess ? accounts[0]!.toLowerCase() : null;
+    } catch {
+      // WalletConnect doesn't support wallet_getPermissions — trust eth_accounts
+      return accounts[0]!.toLowerCase();
+    }
   } catch {
     return null;
   }
