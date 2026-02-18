@@ -97,16 +97,16 @@ A standalone Web Component that organizers embed on their own websites. The embe
 
 The configurator lets organizers:
 - Toggle event image and description visibility
-- Choose claim method (wallet, email, or both)
+- Choose claim method (email only for v1 — wallet claims require session delegation, coming soon)
 - Select theme (dark or light)
 - Copy the generated HTML snippet
 
 ```html
-<script src="https://api.woco.eth/embed/woco-embed.js"></script>
+<script src="https://events-api.woco-net.com/embed/woco-embed.js"></script>
 <woco-tickets
   event-id="abc-123"
-  api-url="https://api.woco.eth"
-  claim-mode="both"
+  api-url="https://events-api.woco-net.com"
+  claim-mode="email"
   theme="dark"
   show-image="true"
   show-description="false"
@@ -119,14 +119,16 @@ The configurator lets organizers:
 |-----------|--------|---------|-------------|
 | `event-id` | string | — | Event identifier (required) |
 | `api-url` | URL | — | WoCo API base URL (required) |
-| `claim-mode` | `wallet` / `email` / `both` | `wallet` | How users claim tickets |
+| `claim-mode` | `email` | `email` | How users claim tickets (wallet/both coming soon) |
 | `theme` | `dark` / `light` | `dark` | Widget colour scheme |
 | `show-image` | `true` / `false` | `true` | Show event image in header |
 | `show-description` | `true` / `false` | `false` | Show event description |
 
 **Events**: Dispatches `woco-claim` CustomEvent on successful claims with `{ seriesId, mode, address|email, edition }` in detail.
 
-**Bundle**: ~10KB / 3KB gzipped. No framework dependencies — vanilla TypeScript with Shadow DOM.
+**Bundle**: ~35KB / 12KB gzipped. No framework dependencies — vanilla TypeScript with Shadow DOM.
+
+**Serving**: The embed JS is served by the API server at `/embed/woco-embed.js`. Ensure `npm run build:embed` has been run before deploying the server.
 
 ## Routes
 

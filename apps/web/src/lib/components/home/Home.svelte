@@ -57,6 +57,11 @@
     </div>
     <div class="step">
       <span class="step-num">4</span>
+      <h3>Embed on your website</h3>
+      <p>Generate an embed code from any event page and paste it into your website. Attendees claim tickets without leaving your site.</p>
+    </div>
+    <div class="step">
+      <span class="step-num">5</span>
       <h3>Manage from your dashboard</h3>
       <p>View claims, decrypt attendee info locally in your browser, export CSVs, and forward data to your email service via webhooks.</p>
     </div>
@@ -134,14 +139,19 @@
       <p>A central place to discover events, manage your ticket passport, and connect with communities.</p>
     </div>
     <div class="roadmap-item">
-      <span class="roadmap-tag">Hosting</span>
-      <h3>Portable frontends</h3>
-      <p>Export your event as a standalone site. Host it anywhere — your domain, IPFS, or another Swarm node. Your event, your infrastructure.</p>
+      <span class="roadmap-tag">Embed</span>
+      <h3>Advanced ticket widget</h3>
+      <p>Embed ticket claiming on any website with a single script tag. Email claims work today — wallet claims, custom styling, and more claim modes coming soon.</p>
     </div>
     <div class="roadmap-item">
-      <span class="roadmap-tag">Embed</span>
-      <h3>Ticket widget</h3>
-      <p>Drop a single script tag on any website to add ticket claiming. Works on Wordpress, Squarespace, or any HTML page.</p>
+      <span class="roadmap-tag">Hosting</span>
+      <h3>Portable frontends</h3>
+      <p>Export your event page or user profile as a standalone site. Host it on your own domain, customise the look, and take your data with you.</p>
+    </div>
+    <div class="roadmap-item">
+      <span class="roadmap-tag">Infra</span>
+      <h3>Bring your own Bee node</h3>
+      <p>Connect your own Swarm Bee node and postage batch. Full control over your storage — no reliance on our gateway.</p>
     </div>
   </div>
 </section>
@@ -149,6 +159,9 @@
 <!-- Footer -->
 <footer class="home-footer">
   <p>Built on <a href="https://www.ethswarm.org" target="_blank" rel="noopener">Swarm</a> and <a href="https://ethereum.org" target="_blank" rel="noopener">Ethereum</a> standards</p>
+  <p class="footer-links">
+    <a href="https://github.com/yea-80y/WoCo-Event-App" target="_blank" rel="noopener">GitHub</a>
+  </p>
 </footer>
 
 <style>
@@ -424,6 +437,21 @@
   }
 
   .home-footer a:hover {
+    color: var(--accent-text);
+  }
+
+  .footer-links {
+    margin-top: 0.5rem;
+    font-size: 0.8125rem;
+  }
+
+  .footer-links a {
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color var(--transition);
+  }
+
+  .footer-links a:hover {
     color: var(--accent-text);
   }
 </style>

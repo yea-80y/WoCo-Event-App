@@ -19,6 +19,7 @@ Everything documented here reflects the actual implementation — no aspirationa
 10. [Organizer Dashboard](#10-organizer-dashboard)
 11. [Swarm Storage Architecture](#11-swarm-storage-architecture)
 12. [API Authentication Flow](#12-api-authentication-flow)
+13. [Embed Widget](#13-embed-widget)
 
 ---
 
@@ -663,6 +664,52 @@ Browser                              Server
 The session key signs the request body, but the critical trust anchor is the
 parent's EIP-712 signature over the session delegation. This proves the parent
 wallet authorized this specific session key to act on its behalf.
+
+---
+
+## 13. Embed Widget
+
+The embed widget (`packages/embed`) is a standalone Web Component (`<woco-tickets>`) that organizers paste into any website to enable ticket claiming without leaving their site.
+
+### Architecture
+
+- **Vanilla TypeScript** — no framework dependencies, uses Shadow DOM for style isolation
+- **IIFE bundle** — single `woco-embed.js` file (~35KB / 12KB gzipped)
+- **Served by API server** at `/embed/woco-embed.js`
+- **Communicates with WoCo API** — fetches event data, posts claims
+
+### Claim Modes
+
+| Mode | Status | How it works |
+|------|--------|-------------|
+| **Email** | Live | User enters email, claim is rate-limited by IP (3/15min) |
+| **Wallet** | Coming soon | Requires session delegation (EIP-712) — not yet implemented in widget |
+| **Both** | Coming soon | Depends on wallet mode |
+
+Wallet claims in the embed widget require session delegation to prove address ownership (same as the main app). Implementing this in a lightweight Web Component is non-trivial — the widget would need to handle the full EIP-712 signing flow. This is planned for a future release.
+
+### Order Form Encryption
+
+When the event has an `encryptionKey` and `orderFields`, the embed widget:
+1. Renders the order form fields inside the widget
+2. Validates required fields
+3. Encrypts form data using `sealJson()` (same ECIES as the main app — X25519 + AES-256-GCM)
+4. Sends the encrypted `SealedBox` with the claim request
+
+The organizer decrypts this data in their dashboard — the server never sees plaintext.
+
+### Events
+
+The widget dispatches a `woco-claim` CustomEvent on successful claims:
+```javascript
+element.addEventListener("woco-claim", (e) => {
+  console.log(e.detail); // { seriesId, mode, email, edition }
+});
+```
+
+### Setup
+
+Organizers generate embed code via the **Embed Setup** page (`#/event/:id/embed`), accessible from any event detail page. The configurator lets them toggle image/description visibility, select theme, and copy the snippet.
 
 ---
 

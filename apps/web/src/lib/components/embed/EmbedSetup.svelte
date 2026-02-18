@@ -16,7 +16,7 @@
   // Configurator options
   let showImage = $state(true);
   let showDescription = $state(false);
-  let claimMode = $state<"wallet" | "email" | "both">("wallet");
+  let claimMode = $state<"wallet" | "email" | "both">("email");
   let theme = $state<"dark" | "light">("dark");
   let copied = $state(false);
 
@@ -101,14 +101,6 @@
         <legend>Claim method</legend>
 
         <label class="radio-row">
-          <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} />
-          <div>
-            <span class="radio-label">Wallet only</span>
-            <span class="radio-desc">Users connect MetaMask or similar</span>
-          </div>
-        </label>
-
-        <label class="radio-row">
           <input type="radio" name="claim-mode" value="email" bind:group={claimMode} />
           <div>
             <span class="radio-label">Email only</span>
@@ -116,10 +108,18 @@
           </div>
         </label>
 
-        <label class="radio-row">
-          <input type="radio" name="claim-mode" value="both" bind:group={claimMode} />
+        <label class="radio-row disabled">
+          <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} disabled />
           <div>
-            <span class="radio-label">Both</span>
+            <span class="radio-label">Wallet only <span class="coming-soon-tag">Coming soon</span></span>
+            <span class="radio-desc">Requires session delegation — available in a future update</span>
+          </div>
+        </label>
+
+        <label class="radio-row disabled">
+          <input type="radio" name="claim-mode" value="both" bind:group={claimMode} disabled />
+          <div>
+            <span class="radio-label">Both <span class="coming-soon-tag">Coming soon</span></span>
             <span class="radio-desc">Users choose wallet or email</span>
           </div>
         </label>
@@ -329,6 +329,23 @@
     margin-top: 0.0625rem;
   }
 
+  .radio-row.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .coming-soon-tag {
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    padding: 0.0625rem 0.375rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    margin-left: 0.25rem;
+  }
 
   /* Snippet */
   .snippet-section {

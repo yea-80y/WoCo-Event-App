@@ -80,37 +80,44 @@
   .session-status {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.375rem;
+    flex-shrink: 1;
+    min-width: 0;
   }
 
   .kind-badge {
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--accent-text);
     background: var(--accent-subtle);
-    padding: 0.1875rem 0.5rem;
+    padding: 0.125rem 0.375rem;
     border-radius: var(--radius-sm);
+    flex-shrink: 0;
   }
 
   .address {
     font-family: "SF Mono", "Fira Code", monospace;
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     color: var(--text-secondary);
     background: var(--bg-surface);
-    padding: 0.375rem 0.75rem;
+    padding: 0.25rem 0.5rem;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .export-btn {
-    padding: 0.375rem 0.75rem;
-    font-size: 0.8125rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     transition: all var(--transition);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .export-btn:hover {
@@ -119,12 +126,14 @@
   }
 
   .logout-btn {
-    padding: 0.375rem 0.75rem;
-    font-size: 0.8125rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     transition: all var(--transition);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .logout-btn:hover {
