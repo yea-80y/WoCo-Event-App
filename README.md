@@ -2,7 +2,7 @@
 
 **Live app:** [gateway.woco-net.com/bzz/...](https://gateway.woco-net.com/bzz/1b4f27ff3a6650fe2dbb4f6b40053ba2b1016dc72e174edb90c0dd46f03c2251/)
 
-WoCo is a decentralized event ticketing platform built on the Swarm Network and Ethereum standards. Event organizers create events and issue signed tickets as PODs (Portable Object Data). Attendees claim tickets via wallet or email, and carry them in their on-chain passport.
+WoCo is a decentralized event ticketing platform built on the Swarm Network and Ethereum standards. Event organizers create events and issue signed tickets as PODs (Portable Object Data). Attendees claim tickets via wallet or email, and carry them in their digital passport.
 
 For detailed technical documentation (cryptography, EIP-712 flows, encryption, Swarm architecture), see [docs/TECHNICAL_ARCHITECTURE.md](docs/TECHNICAL_ARCHITECTURE.md).
 
