@@ -46,12 +46,12 @@
       {truncateAddress(auth.parent)}
     </span>
     {#if auth.kind === "local"}
-      <button class="export-btn" onclick={handleExportKey} title="Backup private key">
-        Backup
+      <button class="action-btn" onclick={handleExportKey} title="Backup private key">
+        &#128274;
       </button>
     {/if}
-    <button class="logout-btn" onclick={() => auth.logout()}>
-      Sign out
+    <button class="action-btn logout-btn" onclick={() => auth.logout()} title="Sign out">
+        &#10005;
     </button>
   </div>
 
@@ -109,34 +109,27 @@
     flex-shrink: 0;
   }
 
-  .export-btn {
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
+  .action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    font-size: 0.8125rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     transition: all var(--transition);
-    white-space: nowrap;
     flex-shrink: 0;
+    line-height: 1;
   }
 
-  .export-btn:hover {
+  .action-btn:hover {
     border-color: var(--accent);
     color: var(--accent-text);
   }
 
-  .logout-btn {
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
-    transition: all var(--transition);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .logout-btn:hover {
+  .action-btn.logout-btn:hover {
     border-color: var(--error);
     color: var(--error);
   }

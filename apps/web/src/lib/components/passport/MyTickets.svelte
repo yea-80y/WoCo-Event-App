@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { getMyCollection, getTicketDetail } from "../../api/events.js";
   import type { ClaimedTicket, CollectionEntry } from "@woco/shared";
@@ -8,12 +7,12 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let tickets = $state<ClaimedTicket[]>([]);
+  let loaded = $state(false);
 
-  onMount(async () => {
-    if (!auth.isConnected) {
-      loading = false;
-      return;
-    }
+  async function loadTickets() {
+    if (!auth.isConnected || !auth.hasSession || loaded) return;
+    loading = true;
+    error = null;
 
     try {
       const collection = await getMyCollection();
@@ -24,9 +23,19 @@
         ),
       );
       tickets = details.filter((t): t is ClaimedTicket => t !== null);
+      loaded = true;
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to load tickets";
     } finally {
+      loading = false;
+    }
+  }
+
+  // React to auth state — load when session becomes available
+  $effect(() => {
+    if (auth.isConnected && auth.hasSession) {
+      loadTickets();
+    } else if (!auth.isConnected) {
       loading = false;
     }
   });

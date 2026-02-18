@@ -193,8 +193,7 @@
     padding: 0.375rem 0;
     padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
     z-index: 100;
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    flex-wrap: nowrap;
   }
 
   .bottom-nav-item {
@@ -202,10 +201,12 @@
     flex-direction: column;
     align-items: center;
     gap: 0.125rem;
-    padding: 0.375rem 1.25rem;
+    padding: 0.375rem 0.75rem;
     border-radius: var(--radius-sm);
     transition: all var(--transition);
-    min-width: 4rem;
+    min-width: 0;
+    flex: 1;
+    max-width: 5rem;
   }
 
   .bottom-nav-item:hover {
