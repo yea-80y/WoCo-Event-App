@@ -5,13 +5,13 @@
   import LoginModal from "./lib/components/auth/LoginModal.svelte";
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
   import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
-  import EventList from "./lib/components/events/EventList.svelte";
   import EventForm from "./lib/components/events/EventForm.svelte";
   import EventDetail from "./lib/components/events/EventDetail.svelte";
   import MyTickets from "./lib/components/passport/MyTickets.svelte";
   import EmbedSetup from "./lib/components/embed/EmbedSetup.svelte";
   import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
   import DashboardIndex from "./lib/components/dashboard/DashboardIndex.svelte";
+  import Home from "./lib/components/home/Home.svelte";
   import { onMount } from "svelte";
 
   onMount(() => {
@@ -21,7 +21,10 @@
 
 <main>
   <header class="top-bar">
-    <button class="logo" onclick={() => navigate("/")}>WoCo</button>
+    <button class="logo" onclick={() => navigate("/")}>
+      <img src="./logo.png" alt="WoCo" class="logo-img" />
+      <span>WoCo</span>
+    </button>
     <nav>
       <button class="nav-link" onclick={() => navigate("/create")}>
         + Create Event
@@ -48,7 +51,7 @@
 
   <section class="content">
     {#if router.route === "home"}
-      <EventList onselect={(id) => navigate(`/event/${id}`)} />
+      <Home />
     {:else if router.route === "create"}
       <EventForm onpublished={(id) => navigate(`/event/${id}`)} />
     {:else if router.route === "event"}
@@ -88,6 +91,9 @@
   }
 
   .logo {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 1.375rem;
     font-weight: 700;
     color: var(--text);
@@ -96,6 +102,12 @@
 
   .logo:hover {
     color: var(--accent-text);
+  }
+
+  .logo-img {
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
   }
 
   nav {
