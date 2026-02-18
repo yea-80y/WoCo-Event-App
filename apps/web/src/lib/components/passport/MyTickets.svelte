@@ -1,52 +1,72 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getMyCollection, getTicketDetail } from "../../api/events.js";
   import type { ClaimedTicket, CollectionEntry } from "@woco/shared";
   import TicketCard from "./TicketCard.svelte";
+  import { onMount } from "svelte";
 
   let loading = $state(true);
   let error = $state<string | null>(null);
   let tickets = $state<ClaimedTicket[]>([]);
-  let loaded = $state(false);
+  let authFailed = $state(false);
+
+  onMount(() => {
+    bootstrap();
+  });
+
+  async function bootstrap() {
+    // Step 1: need to be connected
+    if (!auth.isConnected) {
+      const ok = await loginRequest.request();
+      if (!ok) {
+        loading = false;
+        authFailed = true;
+        return;
+      }
+    }
+
+    // Step 2: need session delegation (triggers EIP-712 popup)
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (!ok) {
+        loading = false;
+        error = "Session approval is required to view your tickets.";
+        return;
+      }
+    }
+
+    // Step 3: load tickets
+    await loadTickets();
+  }
 
   async function loadTickets() {
-    if (!auth.isConnected || !auth.hasSession || loaded) return;
     loading = true;
     error = null;
 
     try {
       const collection = await getMyCollection();
-      // Fetch ticket details in parallel
       const details = await Promise.all(
         collection.entries.map((entry: CollectionEntry) =>
           getTicketDetail(entry.claimedRef).catch(() => null),
         ),
       );
       tickets = details.filter((t): t is ClaimedTicket => t !== null);
-      loaded = true;
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to load tickets";
     } finally {
       loading = false;
     }
   }
-
-  // React to auth state — load when session becomes available
-  $effect(() => {
-    if (auth.isConnected && auth.hasSession) {
-      loadTickets();
-    } else if (!auth.isConnected) {
-      loading = false;
-    }
-  });
 </script>
 
 <div class="passport">
   <h1>My Tickets</h1>
 
-  {#if !auth.isConnected}
+  {#if authFailed}
     <div class="empty-state">
       <p>Sign in to see your tickets.</p>
+      <button class="retry-btn" onclick={bootstrap}>Sign in</button>
     </div>
   {:else if loading}
     <div class="loading-state">
@@ -107,5 +127,22 @@
     margin: 0;
     color: var(--error);
     font-size: 0.9375rem;
+  }
+
+  .retry-btn {
+    margin-top: 0.75rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    transition: all var(--transition);
+  }
+
+  .retry-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
   }
 </style>
