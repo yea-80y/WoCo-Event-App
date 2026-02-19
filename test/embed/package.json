@@ -1,0 +1,7 @@
+{
+  "name": "@woco/embed-test",
+  "private": true,
+  "scripts": {
+    "dev": "npx serve . -p 4000"
+  }
+}
