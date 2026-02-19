@@ -10,7 +10,7 @@
   }
 
   const kindLabel = $derived(
-    auth.kind === "web3" ? "wallet" : auth.kind === "local" ? "local" : auth.kind,
+    auth.kind === "web3" ? "wallet" : auth.kind === "passkey" ? "passkey" : auth.kind === "local" ? "local" : auth.kind,
   );
 
   async function handleExportKey() {

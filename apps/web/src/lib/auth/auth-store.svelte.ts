@@ -23,7 +23,12 @@ import {
   restoreLocalAccount,
   clearLocalAccount,
 } from "./local-account.js";
-import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
+import {
+  createPasskeyAccount,
+  restorePasskeyAccount,
+  hasStoredPasskeyCredential,
+} from "./passkey-account.js";
+import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
 import { signingRequest } from "./signing-request.svelte.js";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +44,7 @@ let _busy = $state(false);
 
 // In-memory only — never exposed reactively
 let _localPrivateKey: string | null = null;
+let _passkeyPrivateKey: string | null = null;
 
 // Cleanup function for wallet event listeners
 let _cleanupAccountListener: (() => void) | null = null;
@@ -68,6 +74,9 @@ function _getSigner(): EIP712Signer {
       signingRequest.request(info),
     );
   }
+  if (_kind === "passkey" && _passkeyPrivateKey) {
+    return createPasskeySigner(_passkeyPrivateKey);
+  }
   throw new Error("No signer available for auth kind: " + _kind);
 }
 
@@ -85,6 +94,15 @@ async function _restoreCachedAuth(): Promise<void> {
     const kp = await getPodKeypair();
     _podPublicKeyHex = kp?.publicKeyHex ?? null;
   }
+}
+
+/**
+ * Re-derive passkey private key via biometric prompt (if not already in memory).
+ */
+async function _ensurePasskeyKey(): Promise<void> {
+  if (_passkeyPrivateKey) return;
+  const result = await restorePasskeyAccount();
+  _passkeyPrivateKey = result.privateKey;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +143,19 @@ async function init(): Promise<void> {
         _kind = "local";
         _parent = storedParent;
         _localPrivateKey = account.privateKey;
+        await _restoreCachedAuth();
+      } else {
+        await clearAllAuth();
+      }
+    } else if (kind === "passkey") {
+      const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
+      const hasCredential = await hasStoredPasskeyCredential();
+
+      if (hasCredential && storedParent) {
+        // Set connected state — private key stays null until needed
+        // (biometric prompt is deferred to ensureSession / ensurePodIdentity)
+        _kind = "passkey";
+        _parent = storedParent;
         await _restoreCachedAuth();
       } else {
         await clearAllAuth();
@@ -204,12 +235,44 @@ async function loginLocal(): Promise<boolean> {
   }
 }
 
+async function loginPasskey(): Promise<boolean> {
+  if (_busy) return false;
+  _busy = true;
+
+  try {
+    const hasExisting = await hasStoredPasskeyCredential();
+    const account = hasExisting
+      ? await restorePasskeyAccount()
+      : await createPasskeyAccount();
+
+    await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+    await putKV(StorageKeys.PARENT_ADDRESS, account.address);
+    _kind = "passkey";
+    _parent = account.address;
+    _passkeyPrivateKey = account.privateKey;
+    _localPrivateKey = null;
+
+    await _restoreCachedAuth();
+
+    _cleanupAccountListener?.();
+    _cleanupAccountListener = null;
+
+    return true;
+  } catch (e) {
+    console.error("[auth] passkey login failed:", e);
+    return false;
+  } finally {
+    _busy = false;
+  }
+}
+
 /**
  * Dispatcher: login with specified method, or show method picker.
  */
-async function login(method?: "web3" | "local"): Promise<boolean> {
+async function login(method?: "web3" | "local" | "passkey"): Promise<boolean> {
   if (method === "web3") return loginWeb3();
   if (method === "local") return loginLocal();
+  if (method === "passkey") return loginPasskey();
   // No method specified — caller should show LoginModal
   return false;
 }
@@ -224,6 +287,7 @@ async function ensureSession(): Promise<boolean> {
 
   _busy = true;
   try {
+    if (_kind === "passkey") await _ensurePasskeyKey();
     const signer = _getSigner();
     const { sessionAddress } = await requestSessionDelegation(_parent, signer);
     _sessionAddress = sessionAddress;
@@ -246,6 +310,7 @@ async function ensurePodIdentity(): Promise<string | null> {
 
   _busy = true;
   try {
+    if (_kind === "passkey") await _ensurePasskeyKey();
     const signer = _getSigner();
     const { podPublicKeyHex } = await requestPodIdentity(_parent, signer);
     _podPublicKeyHex = podPublicKeyHex;
@@ -312,6 +377,7 @@ async function clearAllAuth(): Promise<void> {
   _sessionAddress = null;
   _podPublicKeyHex = null;
   _localPrivateKey = null;
+  _passkeyPrivateKey = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +410,7 @@ export const auth = {
   login,
   loginWeb3,
   loginLocal,
+  loginPasskey,
   ensureSession,
   logout,
   ensurePodIdentity,

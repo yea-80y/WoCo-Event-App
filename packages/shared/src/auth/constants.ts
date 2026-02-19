@@ -13,7 +13,11 @@ export const StorageKeys = {
   SESSION_DELEGATION: "woco:auth:session-delegation",
   POD_SEED: "woco:auth:pod-seed",
   LOCAL_KEY: "woco:auth:local-key",
+  PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
 } as const;
+
+/** Fixed salt input for passkey PRF → secp256k1 key derivation */
+export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
 
 /** Fixed nonce for deterministic POD identity derivation */
 export const POD_IDENTITY_NONCE = "WOCO-POD-IDENTITY-V1";

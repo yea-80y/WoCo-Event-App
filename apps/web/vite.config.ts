@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'https://events-api.woco-net.com',
         changeOrigin: true,
         // Disable response buffering so streamed NDJSON arrives chunk-by-chunk
         configure: (proxy) => {
