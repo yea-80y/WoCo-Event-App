@@ -236,6 +236,57 @@ export function getStyles(theme: "dark" | "light"): string {
       accent-color: ${vars.accent};
     }
 
+    /* Passkey confirmation overlay */
+    .passkey-confirm {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 0.75rem;
+      border: 1px solid ${vars.border};
+      border-radius: 8px;
+      margin-top: 0.5rem;
+    }
+
+    .passkey-confirm-title {
+      margin: 0;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: ${vars.text};
+    }
+
+    .passkey-confirm-detail {
+      margin: 0;
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: ${vars.text};
+    }
+
+    .passkey-confirm-label {
+      color: ${vars.textMuted};
+      flex-shrink: 0;
+    }
+
+    .passkey-confirm-note {
+      margin: 0.25rem 0 0;
+      font-size: 0.7rem;
+      color: ${vars.textMuted};
+    }
+
+    .passkey-confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      margin-top: 0.25rem;
+    }
+
+    .passkey-btn--confirm {
+      padding: 0.5rem 0.875rem;
+      font-size: 0.8rem;
+      width: auto;
+    }
+
     .claim-options {
       display: flex;
       flex-direction: column;

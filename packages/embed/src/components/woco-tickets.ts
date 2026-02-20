@@ -38,6 +38,7 @@ interface SeriesState {
   emailMode: boolean;
   orderFormVisible: boolean;
   orderFormData: Record<string, string>;
+  passkeyConfirm: boolean; // show confirmation overlay before biometric
 }
 
 export class WocoTickets extends HTMLElement {
@@ -108,6 +109,7 @@ export class WocoTickets extends HTMLElement {
           emailMode: false,
           orderFormVisible: false,
           orderFormData: {},
+          passkeyConfirm: false,
         });
       }
 
@@ -184,6 +186,30 @@ export class WocoTickets extends HTMLElement {
           Claim with passkey
         </button>
         <div class="passkey-providers">Secured by Apple, Google, 1Password</div>
+      </div>
+    `;
+  }
+
+  private renderPasskeyConfirm(seriesId: string, ticketName: string): string {
+    return `
+      <div class="passkey-confirm">
+        <p class="passkey-confirm-title">Confirm claim</p>
+        <p class="passkey-confirm-detail">
+          <span class="passkey-confirm-label">Ticket</span>
+          <span>${this.esc(ticketName)}</span>
+        </p>
+        <p class="passkey-confirm-detail">
+          <span class="passkey-confirm-label">Sign with</span>
+          <span>Your passkey (${this.esc(window.location.hostname)})</span>
+        </p>
+        <p class="passkey-confirm-note">Your passkey will authenticate this claim. No personal data is shared.</p>
+        <div class="passkey-confirm-actions">
+          <button class="cancel-btn" data-cancel-passkey="${this.esc(seriesId)}">Cancel</button>
+          <button class="passkey-btn passkey-btn--confirm" data-passkey-confirm="${this.esc(seriesId)}">
+            ${this.fingerprintIcon}
+            Sign &amp; Claim
+          </button>
+        </div>
       </div>
     `;
   }
@@ -283,6 +309,19 @@ export class WocoTickets extends HTMLElement {
             <p class="avail">${avail} / ${total} available</p>
           </div>
           <div class="claimed-badge">&#10003; Claimed #${st.claimedEdition}</div>
+        </div>
+      `;
+    }
+
+    // Passkey confirmation overlay
+    if (st?.passkeyConfirm) {
+      return `
+        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
+          <div class="series-info">
+            <h3>${this.esc(s.name)}</h3>
+            <p class="avail">${avail} / ${total} available</p>
+          </div>
+          ${this.renderPasskeyConfirm(s.seriesId, s.name)}
         </div>
       `;
     }
@@ -417,11 +456,31 @@ export class WocoTickets extends HTMLElement {
       });
     });
 
-    // Passkey claim buttons
+    // Passkey claim buttons — show confirmation overlay first
     this.shadow.querySelectorAll<HTMLButtonElement>("[data-passkey-claim]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const sid = btn.getAttribute("data-passkey-claim")!;
+        const st = this.seriesStates.get(sid);
+        if (st) { st.passkeyConfirm = true; this.render(); }
+      });
+    });
+
+    // Passkey confirm — proceed with actual claim
+    this.shadow.querySelectorAll<HTMLButtonElement>("[data-passkey-confirm]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sid = btn.getAttribute("data-passkey-confirm")!;
+        const st = this.seriesStates.get(sid);
+        if (st) { st.passkeyConfirm = false; }
         this.handlePasskeyClaim(sid);
+      });
+    });
+
+    // Passkey cancel
+    this.shadow.querySelectorAll<HTMLButtonElement>("[data-cancel-passkey]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sid = btn.getAttribute("data-cancel-passkey")!;
+        const st = this.seriesStates.get(sid);
+        if (st) { st.passkeyConfirm = false; this.render(); }
       });
     });
 
