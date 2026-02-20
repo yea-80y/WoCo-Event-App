@@ -24,7 +24,7 @@ import {
   clearLocalAccount,
 } from "./local-account.js";
 import {
-  createPasskeyAccount,
+  authenticatePasskey,
   restorePasskeyAccount,
   hasStoredPasskeyCredential,
 } from "./passkey-account.js";
@@ -75,7 +75,9 @@ function _getSigner(): EIP712Signer {
     );
   }
   if (_kind === "passkey" && _passkeyPrivateKey) {
-    return createPasskeySigner(_passkeyPrivateKey);
+    return createPasskeySigner(_passkeyPrivateKey, (info) =>
+      signingRequest.request(info),
+    );
   }
   throw new Error("No signer available for auth kind: " + _kind);
 }
@@ -240,10 +242,8 @@ async function loginPasskey(): Promise<boolean> {
   _busy = true;
 
   try {
-    const hasExisting = await hasStoredPasskeyCredential();
-    const account = hasExisting
-      ? await restorePasskeyAccount()
-      : await createPasskeyAccount();
+    // Always use discoverable get() → shows passkey picker → falls back to create
+    const account = await authenticatePasskey();
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, account.address);

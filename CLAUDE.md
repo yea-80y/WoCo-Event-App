@@ -12,7 +12,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   apps/web/              # Vite + Svelte main platform UI
   apps/server/           # Hono API server (Swarm relay + auth)
   packages/shared/       # Shared types, POD schema, constants
-  packages/embed/        # <woco-tickets> Web Component (IIFE bundle, ~35KB)
+  packages/embed/        # <woco-tickets> Web Component (IIFE bundle, ~71KB)
   packages/site-builder/ # Static site generator for user events [planned]
 
   DEPLOYMENT:
@@ -43,13 +43,14 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   [x] Organizer dashboard: encrypted order decryption, CSV export
   [x] Webhook relay: manual send to email services
   [x] My Tickets / Passport page (with lazy session delegation)
-  [x] Embed widget: email claims working, setup configurator
-  [x] Server serves embed JS at /embed/woco-embed.js
+  [x] Embed widget: email + wallet + passkey claims working, setup configurator
+  [x] Server serves embed JS at /embed/woco-embed.js (~71KB, versioned with ?v=N)
   [x] Home page: hero, how-it-works, features, coming soon, footer
   [x] Bottom navigation bar (mobile/PWA-ready)
   [x] Production deployment (Swarm feed + Cloudflare tunnel)
   [x] Technical architecture documentation (docs/TECHNICAL_ARCHITECTURE.md)
-  [ ] Embed widget: wallet claims (needs session delegation in widget)
+  [x] Embed widget: wallet + passkey claims (EIP-191 signed, no session delegation needed)
+  [ ] Embed widget: iframe approach for cross-domain shared passkey identity (ENS subdomains)
   [ ] Zupass login integration (3rd auth method)
   [ ] Para wallet integration (replaces local account)
   [ ] ENS content hash update (woco.eth)

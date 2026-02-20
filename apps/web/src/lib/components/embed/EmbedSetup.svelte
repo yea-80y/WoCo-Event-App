@@ -30,12 +30,12 @@
       `\n  event-id="${eventId}"`,
       `\n  api-url="${defaultApiUrl}"`,
     ];
-    if (claimMode !== "wallet") attrs.push(`\n  claim-mode="${claimMode}"`);
+    attrs.push(`\n  claim-mode="${claimMode}"`);
     if (theme !== "dark") attrs.push(`\n  theme="${theme}"`);
     if (!showImage) attrs.push(`\n  show-image="false"`);
-    if (showDescription) attrs.push(`\n  show-description="true"`);
+    if (!showDescription) attrs.push(`\n  show-description="false"`);
 
-    return `<script src="${defaultApiUrl}/embed/woco-embed.js"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
+    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=4"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
   }
 
   async function copySnippet() {
@@ -108,19 +108,19 @@
           </div>
         </label>
 
-        <label class="radio-row disabled">
-          <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} disabled />
+        <label class="radio-row">
+          <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} />
           <div>
-            <span class="radio-label">Wallet only <span class="coming-soon-tag">Coming soon</span></span>
-            <span class="radio-desc">Requires session delegation — available in a future update</span>
+            <span class="radio-label">Wallet / Passkey</span>
+            <span class="radio-desc">Users claim via Web3 wallet or passkey biometric</span>
           </div>
         </label>
 
-        <label class="radio-row disabled">
-          <input type="radio" name="claim-mode" value="both" bind:group={claimMode} disabled />
+        <label class="radio-row">
+          <input type="radio" name="claim-mode" value="both" bind:group={claimMode} />
           <div>
-            <span class="radio-label">Both <span class="coming-soon-tag">Coming soon</span></span>
-            <span class="radio-desc">Users choose wallet or email</span>
+            <span class="radio-label">All methods</span>
+            <span class="radio-desc">Email, wallet, and passkey — maximum flexibility</span>
           </div>
         </label>
       </fieldset>
@@ -327,24 +327,6 @@
     color: var(--text-muted);
     display: block;
     margin-top: 0.0625rem;
-  }
-
-  .radio-row.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .coming-soon-tag {
-    font-size: 0.625rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
-    background: var(--bg-surface);
-    padding: 0.0625rem 0.375rem;
-    border-radius: 9999px;
-    border: 1px solid var(--border);
-    margin-left: 0.25rem;
   }
 
   /* Snippet */

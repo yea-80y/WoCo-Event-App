@@ -1,5 +1,7 @@
 import { Hono } from "hono";
+import { verifyMessage } from "ethers";
 import type { Hex0x, SealedBox } from "@woco/shared";
+import { PASSKEY_CLAIM_MAX_AGE_MS, PASSKEY_CLAIM_PREFIX } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
@@ -77,6 +79,37 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
     }
 
     identifier = { type: "email", email, emailHash: hashEmail(email) };
+
+  } else if (mode === "passkey") {
+    const address = rawBody.address as string;
+    const signature = rawBody.signature as string;
+    const timestamp = rawBody.timestamp as number;
+
+    if (!address || !signature || !timestamp) {
+      return c.json({ ok: false, error: "Passkey claims require address, signature, and timestamp" }, 400);
+    }
+
+    // Reject stale signatures
+    if (Date.now() - timestamp > PASSKEY_CLAIM_MAX_AGE_MS) {
+      return c.json({ ok: false, error: "Claim signature expired" }, 400);
+    }
+
+    // Reconstruct and verify the signed message
+    const eventId = c.req.param("eventId");
+    const message = PASSKEY_CLAIM_PREFIX + eventId + ":" + seriesId + ":" + timestamp;
+
+    let recoveredAddress: string;
+    try {
+      recoveredAddress = verifyMessage(message, signature);
+    } catch {
+      return c.json({ ok: false, error: "Invalid signature" }, 403);
+    }
+
+    if (recoveredAddress.toLowerCase() !== address.toLowerCase()) {
+      return c.json({ ok: false, error: "Signature does not match claimed address" }, 403);
+    }
+
+    identifier = { type: "wallet", address: recoveredAddress.toLowerCase() as Hex0x };
 
   } else if (mode === "api") {
     const apiKey = rawBody.apiKey as string;

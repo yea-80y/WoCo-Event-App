@@ -1,7 +1,8 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
 import { connectWallet } from "../auth/wallet.js";
+import { isPasskeySupported, passkeyAuthenticate, signClaimMessage } from "../auth/passkey.js";
 import { getStyles } from "./styles.js";
-import { sealJson, type OrderField, type SealedBox } from "@woco/shared";
+import { sealJson, PASSKEY_CLAIM_PREFIX, type OrderField, type SealedBox } from "@woco/shared";
 
 interface SeriesSummary {
   seriesId: string;
@@ -173,6 +174,20 @@ export class WocoTickets extends HTMLElement {
     this.attachListeners();
   }
 
+  private readonly fingerprintIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"/><path d="M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"/></svg>`;
+
+  private renderPasskeyButton(seriesId: string, disabled = false): string {
+    return `
+      <div class="passkey-section">
+        <button class="passkey-btn" data-passkey-claim="${this.esc(seriesId)}" ${disabled ? "disabled" : ""}>
+          ${this.fingerprintIcon}
+          Claim with passkey
+        </button>
+        <div class="passkey-providers">Secured by Apple, Google, 1Password</div>
+      </div>
+    `;
+  }
+
   private get hasOrderForm(): boolean {
     return !!(this.event?.orderFields?.length && this.event?.encryptionKey);
   }
@@ -207,6 +222,7 @@ export class WocoTickets extends HTMLElement {
     }
 
     const mode = this.claimMode;
+    const passkeyAvail = isPasskeySupported();
     let submitHtml: string;
     if (st.claiming) {
       submitHtml = `<button class="claim-btn" disabled>Claiming...</button>`;
@@ -217,24 +233,40 @@ export class WocoTickets extends HTMLElement {
           <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">Claim</button>
         </div>
       `;
-    } else if (mode === "both") {
+    } else if (mode === "wallet") {
+      // Wallet mode: wallet + passkey in order form
       submitHtml = `
         <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>
-        <button class="claim-btn" data-show-email="${this.esc(seriesId)}" style="margin-left:4px;background:transparent;border:1px solid;color:inherit;">Email</button>
       `;
+      if (passkeyAvail) {
+        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId);
+      }
     } else {
-      submitHtml = `<button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim ticket</button>`;
+      // both — email + wallet + passkey in order form
+      submitHtml = `
+        <div class="email-form">
+          <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
+          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">Claim</button>
+        </div>
+        <div class="passkey-divider">or</div>
+        <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>
+      `;
+      if (passkeyAvail) {
+        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId);
+      }
     }
 
     return `
       <div class="order-form" data-order-form="${this.esc(seriesId)}">
         ${fieldsHtml}
-        <div class="form-actions">
+        <div class="claim-options">
           ${submitHtml}
-          <button class="cancel-btn" data-cancel-order="${this.esc(seriesId)}">Cancel</button>
         </div>
         ${st.error ? `<p class="error-msg">${this.esc(st.error)}</p>` : ""}
-        <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
+        <div class="form-actions">
+          <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
+          <button class="cancel-btn" data-cancel-order="${this.esc(seriesId)}">Cancel</button>
+        </div>
       </div>
     `;
   }
@@ -285,26 +317,44 @@ export class WocoTickets extends HTMLElement {
       `;
     } else {
       const mode = this.claimMode;
-      if (mode === "wallet") {
-        actionHtml = `<button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim ticket</button>`;
-      } else if (mode === "email") {
+      const passkeyAvail = isPasskeySupported();
+      if (mode === "email") {
         actionHtml = `<button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">Claim with email</button>`;
+      } else if (mode === "wallet") {
+        // Wallet mode: wallet + passkey (both authenticated)
+        if (this.hasOrderForm) {
+          actionHtml = `<button class="claim-btn" data-wallet-order="${this.esc(s.seriesId)}">Claim ticket</button>`;
+        } else {
+          actionHtml = `
+            <div class="claim-options">
+              <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>
+              ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId) : ""}
+            </div>
+          `;
+        }
       } else {
-        // both
-        actionHtml = `
-          <div>
-            <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>
-            <button class="claim-btn" data-show-email="${this.esc(s.seriesId)}" style="margin-left:4px;background:transparent;border:1px solid;color:inherit;">Email</button>
-          </div>
-        `;
+        // both — email + wallet + passkey
+        if (this.hasOrderForm) {
+          actionHtml = `<button class="claim-btn" data-both-order="${this.esc(s.seriesId)}">Claim ticket</button>`;
+        } else {
+          actionHtml = `
+            <div class="claim-options">
+              <button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">Claim with email</button>
+              <div class="passkey-divider">or</div>
+              <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>
+              ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId) : ""}
+            </div>
+          `;
+        }
       }
       if (st?.error) {
         actionHtml += `<p class="error-msg">${this.esc(st.error)}</p>`;
       }
     }
 
+    const hasMultipleOptions = actionHtml.includes("claim-options");
     return `
-      <div class="series-card" data-series="${this.esc(s.seriesId)}">
+      <div class="series-card${hasMultipleOptions ? " series-card--expanded" : ""}" data-series="${this.esc(s.seriesId)}">
         <div class="series-info">
           <h3>${this.esc(s.name)}</h3>
           <p class="avail">${avail} / ${total} available</p>
@@ -362,6 +412,26 @@ export class WocoTickets extends HTMLElement {
           st.emailMode = false;
           st.orderFormData = {};
           st.error = null;
+          this.render();
+        }
+      });
+    });
+
+    // Passkey claim buttons
+    this.shadow.querySelectorAll<HTMLButtonElement>("[data-passkey-claim]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sid = btn.getAttribute("data-passkey-claim")!;
+        this.handlePasskeyClaim(sid);
+      });
+    });
+
+    // Wallet-order / both-order: show order form first
+    this.shadow.querySelectorAll<HTMLButtonElement>("[data-wallet-order], [data-both-order]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sid = btn.getAttribute("data-wallet-order") || btn.getAttribute("data-both-order")!;
+        const st = this.seriesStates.get(sid);
+        if (st) {
+          st.orderFormVisible = true;
           this.render();
         }
       });
@@ -454,6 +524,63 @@ export class WocoTickets extends HTMLElement {
         st.orderFormVisible = false;
         this.dispatchEvent(new CustomEvent("woco-claim", {
           detail: { seriesId, mode: "wallet", address, edition: st.claimedEdition },
+          bubbles: true,
+        }));
+      }
+    } catch {
+      st.error = "Network error";
+    } finally {
+      st.claiming = false;
+      this.render();
+    }
+  }
+
+  private async handlePasskeyClaim(seriesId: string) {
+    const st = this.seriesStates.get(seriesId);
+    if (!st || st.claiming || !this.api) return;
+
+    st.claiming = true;
+    st.error = null;
+    this.render();
+
+    // Encrypt order data if form is present
+    const encryptedOrder = await this.encryptOrderData(seriesId, st);
+    if (encryptedOrder === null) { st.claiming = false; return; }
+
+    let privateKey: Uint8Array;
+    let address: string;
+    try {
+      const result = await passkeyAuthenticate();
+      privateKey = result.privateKey;
+      address = result.address;
+    } catch (err) {
+      st.claiming = false;
+      st.error = err instanceof Error ? err.message : "Passkey authentication failed";
+      this.render();
+      return;
+    }
+
+    // Build and sign claim message
+    const timestamp = Date.now();
+    const message = PASSKEY_CLAIM_PREFIX + this.eventId + ":" + seriesId + ":" + timestamp;
+    const signature = signClaimMessage(privateKey, message);
+
+    try {
+      const body: Record<string, unknown> = { mode: "passkey", address, signature, timestamp };
+      if (encryptedOrder) body.encryptedOrder = encryptedOrder;
+
+      const resp = await this.api.post<unknown>(
+        `/api/events/${this.eventId}/series/${seriesId}/claim`,
+        body,
+      );
+
+      if (!resp.ok) {
+        st.error = (resp.error as string) || "Claim failed";
+      } else {
+        st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
+        st.orderFormVisible = false;
+        this.dispatchEvent(new CustomEvent("woco-claim", {
+          detail: { seriesId, mode: "passkey", address, edition: st.claimedEdition },
           bubbles: true,
         }));
       }

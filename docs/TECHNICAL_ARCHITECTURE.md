@@ -42,7 +42,7 @@ creation form before any wallet popups appear. Signing only happens at publish t
 
 ## 2. Authentication & Identity
 
-WoCo supports two login methods (a third, Zupass, is planned but not implemented):
+WoCo supports three login methods (a fourth, Zupass, is planned but not implemented):
 
 ### Method 1: Web3 Wallet (MetaMask, etc.)
 
@@ -68,6 +68,26 @@ On page reload, `auth.init()` restores the local account from IndexedDB.
 The local key persists across sign-outs — only the session and POD identity
 are cleared, so the user can log back in to the same identity.
 
+### Method 3: Passkey (WebAuthn PRF)
+
+1. User clicks "Sign in with Passkey"
+2. `navigator.credentials.get()` in discoverable mode — shows a passkey picker
+3. User selects their passkey and provides biometric (fingerprint/face/PIN)
+4. **PRF extension** returns a deterministic 32-byte secret
+5. `keccak256(prfOutput)` → secp256k1 private key → Ethereum address
+6. Address stored as `woco:auth:parent`, kind set to `"passkey"`
+7. If no existing passkeys found, falls back to `navigator.credentials.create()` to register a new one
+
+The RP ID is hardcoded to `woco.eth.limo` (not `window.location.hostname`). This ensures
+any ENS subdomain of `woco.eth.limo` produces the **same passkey identity** — the foundation
+for the planned iframe-based embed that shares passkey identity across organiser sites.
+
+On page reload, `auth.init()` reads `kind="passkey"` and restores the stored address instantly.
+The private key is only re-derived when the session expires and `ensureSession()` is triggered
+(biometric prompt at that point, not on load).
+
+For full details see `docs/PASSKEY_AUTH.md`.
+
 ### Deferred Signing
 
 Neither login method triggers EIP-712 signatures at connect time. Two separate
@@ -77,8 +97,9 @@ that needs it:
 1. **Session Delegation** — triggered on first authenticated API call (e.g. publish)
 2. **POD Identity** — triggered on first ticket-related action (e.g. publish, claim)
 
-For web3 wallets, each triggers a MetaMask popup. For local accounts, each shows
-an in-app confirmation dialog displaying what is being signed.
+For web3 wallets, each triggers a MetaMask popup. For local accounts and passkey
+accounts, each shows an in-app confirmation dialog displaying what is being signed
+before any biometric prompt.
 
 ---
 
@@ -86,7 +107,7 @@ an in-app confirmation dialog displaying what is being signed.
 
 ```
 Parent Key (secp256k1)
-│  Source: MetaMask wallet OR Wallet.createRandom()
+│  Source: MetaMask wallet OR Wallet.createRandom() OR keccak256(WebAuthn PRF output)
 │  Purpose: permanent identity, owns all derived keys
 │
 ├── Session Key (secp256k1, ephemeral)
@@ -674,8 +695,8 @@ The embed widget (`packages/embed`) is a standalone Web Component (`<woco-ticket
 ### Architecture
 
 - **Vanilla TypeScript** — no framework dependencies, uses Shadow DOM for style isolation
-- **IIFE bundle** — single `woco-embed.js` file (~35KB / 12KB gzipped)
-- **Served by API server** at `/embed/woco-embed.js`
+- **IIFE bundle** — single `woco-embed.js` file (~71KB / 24KB gzipped, includes noble curves for passkey signing)
+- **Served by API server** at `/embed/woco-embed.js` (versioned via `?v=N` query param for cache busting)
 - **Communicates with WoCo API** — fetches event data, posts claims
 
 ### Claim Modes
@@ -683,10 +704,32 @@ The embed widget (`packages/embed`) is a standalone Web Component (`<woco-ticket
 | Mode | Status | How it works |
 |------|--------|-------------|
 | **Email** | Live | User enters email, claim is rate-limited by IP (3/15min) |
-| **Wallet** | Coming soon | Requires session delegation (EIP-712) — not yet implemented in widget |
-| **Both** | Coming soon | Depends on wallet mode |
+| **Wallet** | Live | MetaMask/injected wallet — no session delegation needed in embed, address taken from `eth_requestAccounts` |
+| **Passkey** | Live | WebAuthn PRF → secp256k1 key → EIP-191 signed claim message. RP ID = `woco.eth.limo` |
+| **Both** | Live | Shows email + wallet + passkey options. Organiser selects via configurator |
 
-Wallet claims in the embed widget require session delegation to prove address ownership (same as the main app). Implementing this in a lightweight Web Component is non-trivial — the widget would need to handle the full EIP-712 signing flow. This is planned for a future release.
+### Passkey Claims in the Embed
+
+The embed uses a lightweight passkey implementation (`packages/embed/src/auth/passkey.ts`) that avoids the full ethers.js dependency:
+- Signing: EIP-191 `personal_sign` (not full session delegation — appropriate for one-time claim)
+- Message: `woco:claim:{eventId}:{seriesId}:{timestamp}` (5-minute validity window)
+- Server verifies with `ethers.verifyMessage()`, checks recovered address matches claimed address
+- RP ID hardcoded to `woco.eth.limo` so passkey address matches the main app on that domain
+
+**Cross-domain limitation:** The embed web component running on an organiser's external site
+(e.g. `tickets.example.com`) produces a different passkey address than `woco.eth.limo`.
+This is a WebAuthn security boundary. The **planned iframe embed** (serving the widget from
+an ENS subdomain like `org1.woco.eth.limo`) solves this — all subdomains share RP ID
+`woco.eth.limo`, giving a consistent passkey identity everywhere.
+
+### Configurator
+
+The embed configurator (`#/event/:id/embed`) offers three claim mode presets:
+- **Email only** — lowest friction, no auth required
+- **Wallet / Passkey** — authenticated claims only
+- **All methods** — email + wallet + passkey
+
+The generated snippet URL includes a version query param (`?v=N`) to bust Cloudflare edge cache after deploys.
 
 ### Order Form Encryption
 
@@ -703,7 +746,8 @@ The organizer decrypts this data in their dashboard — the server never sees pl
 The widget dispatches a `woco-claim` CustomEvent on successful claims:
 ```javascript
 element.addEventListener("woco-claim", (e) => {
-  console.log(e.detail); // { seriesId, mode, email, edition }
+  // mode: "email" | "wallet" | "passkey"
+  console.log(e.detail); // { seriesId, mode, edition, email?, address? }
 });
 ```
 
@@ -720,6 +764,6 @@ Organizers generate embed code via the **Embed Setup** page (`#/event/:id/embed`
 | `ethers` (v6) | EIP-712 signing, wallet interaction, address utils |
 | `@noble/ed25519` | Ed25519 ticket signing and verification |
 | `@noble/hashes` | SHA-256, HKDF-SHA256, keccak256 |
-| `@noble/curves` | X25519 ECDH key exchange |
+| `@noble/curves` | X25519 ECDH key exchange; secp256k1 signing in embed passkey module |
 | `@ethersphere/bee-js` | Swarm client (feeds, bytes, uploads) |
 | Web Crypto API | AES-256-GCM (both device encryption and ECIES), random bytes |

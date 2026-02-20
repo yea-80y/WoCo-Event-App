@@ -174,7 +174,7 @@ export function getStyles(theme: "dark" | "light"): string {
     }
 
     /* Order form */
-    .series-card--expanded {
+    .series-card.series-card--expanded {
       flex-direction: column;
       align-items: stretch;
     }
@@ -236,10 +236,27 @@ export function getStyles(theme: "dark" | "light"): string {
       accent-color: ${vars.accent};
     }
 
+    .claim-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+      margin-top: 0.25rem;
+      width: 100%;
+    }
+
+    .claim-options .claim-btn {
+      width: 100%;
+    }
+
+    .claim-options .email-form {
+      width: 100%;
+    }
+
     .form-actions {
       display: flex;
       gap: 0.5rem;
-      justify-content: flex-end;
+      justify-content: space-between;
+      align-items: center;
       margin-top: 0.25rem;
     }
 
@@ -280,6 +297,71 @@ export function getStyles(theme: "dark" | "light"): string {
     .powered-by a {
       color: ${vars.accentText};
       text-decoration: none;
+    }
+
+    /* Passkey */
+    .passkey-section {
+      margin-top: 0.5rem;
+    }
+
+    .passkey-divider {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+      margin: 0.625rem 0;
+      font-size: 0.6875rem;
+      color: ${vars.textMuted};
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .passkey-divider::before,
+    .passkey-divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: ${vars.border};
+    }
+
+    .passkey-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.625rem 1rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      border: 1px solid ${vars.border};
+      border-radius: 6px;
+      background: ${vars.bgSurface};
+      color: ${vars.text};
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+      font-family: inherit;
+    }
+
+    .passkey-btn:hover:not(:disabled) {
+      border-color: ${vars.borderHover};
+      background: ${vars.bgSurfaceHover};
+    }
+
+    .passkey-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .passkey-btn svg {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+
+    .passkey-providers {
+      text-align: center;
+      font-size: 0.625rem;
+      color: ${vars.textMuted};
+      margin-top: 0.375rem;
     }
   `;
 }

@@ -12,7 +12,7 @@ extensions, and automatic cross-device sync via their existing password manager.
          │
          ▼
    PRF extension returns 32 bytes
-   (deterministic from passkey + salt)
+   (deterministic from passkey + RP ID + salt)
          │
          ▼
    keccak256(prfOutput) → secp256k1 private key
@@ -24,10 +24,12 @@ extensions, and automatic cross-device sync via their existing password manager.
    EIP-712 session delegation (same as wallet/local)
 ```
 
-1. **User creates a passkey** — standard WebAuthn `navigator.credentials.create()`
-   with the PRF extension enabled.
+1. **User authenticates** — discoverable `navigator.credentials.get()` shows a
+   passkey picker (no stored credential ID required). Falls back to creating a
+   new passkey if none exist for the RP.
 2. **PRF extension** returns a deterministic 32-byte secret derived from:
    - The passkey's internal secret
+   - The **RP ID** (`woco.eth.limo` in production — shared across all ENS subdomains)
    - A fixed application salt: `SHA-256("woco-passkey-secp256k1-v1")`
 3. **Key derivation**: `keccak256(prfOutput)` produces a valid secp256k1 private key.
 4. **Ethereum address** is computed from the public key (standard `ethers.Wallet`).
@@ -38,12 +40,47 @@ extensions, and automatic cross-device sync via their existing password manager.
 
 | Property | Detail |
 |---|---|
-| **Deterministic** | Same passkey + same salt = same Ethereum address, always |
+| **Deterministic** | Same passkey + same RP ID + same salt = same Ethereum address, always |
 | **No storage of secrets** | Private key exists only in memory during the session |
 | **Cross-device sync** | Passkeys sync via iCloud Keychain, Google Password Manager, 1Password, etc. |
 | **Biometric consent** | Every key derivation requires fingerprint/face/PIN |
-| **Domain-bound** | Passkeys are scoped to the RP ID (`gateway.woco-net.com`) |
+| **Shared RP ID** | RP ID hardcoded to `woco.eth.limo` so all ENS subdomains (e.g. `org1.woco.eth.limo`) produce the same address |
 | **Zero server changes** | Server sees standard EIP-712 signatures — signer-agnostic |
+| **EIP-712 confirmation** | All EIP-712 signing shows a confirmation dialog — passkey users see what they're signing, same as local accounts |
+
+## RP ID Strategy
+
+The RP ID is the WebAuthn "relying party" identifier — it determines which passkeys
+are visible and what PRF output is produced. Using `window.location.hostname` would
+produce different Ethereum addresses on different domains, making identity unstable.
+
+**Solution:** The RP ID is hardcoded to `woco.eth.limo` for any page on that domain
+or its subdomains. Falls back to `window.location.hostname` for local development.
+
+```typescript
+function getPasskeyRpId(): string {
+  const hostname = window.location.hostname;
+  if (hostname === "woco.eth.limo" || hostname.endsWith(".woco.eth.limo")) {
+    return "woco.eth.limo";
+  }
+  return hostname; // localhost dev fallback
+}
+```
+
+This means:
+- `woco.eth.limo` (main app) → RP ID = `woco.eth.limo`
+- `org1.woco.eth.limo` (future ENS subdomain embed) → RP ID = `woco.eth.limo`
+- `localhost` (dev) → RP ID = `localhost` (separate identity, expected)
+
+**Result:** One passkey produces one stable Ethereum address across the main app and
+all future ENS subdomain embeds. This is the foundation for the planned iframe embed
+approach (see Embed Widget section in TECHNICAL_ARCHITECTURE.md).
+
+**Important:** Passkeys are not portable across unrelated domains. The embed web
+component running on an organizer's external site (e.g. `tickets.example.com`)
+produces a different address — this is a browser security boundary. The iframe
+embed approach (planned) solves this by loading the widget from a `woco.eth.limo`
+subdomain.
 
 ## What Gets Stored
 
@@ -69,8 +106,10 @@ which passkey to prompt for. It cannot be used to derive the private key.
 ### First Time (Create)
 
 ```
-User clicks "Create Passkey Account"
-  → navigator.credentials.create() with PRF extension
+User clicks "Create / Sign in with Passkey"
+  → navigator.credentials.get() — discoverable mode (no allowCredentials)
+  → Passkey picker shown — user selects their passkey
+  → If no passkeys exist for this RP → falls back to navigator.credentials.create()
   → Biometric prompt (fingerprint/face/PIN)
   → PRF returns 32-byte secret
   → keccak256(secret) → private key → address
@@ -78,17 +117,18 @@ User clicks "Create Passkey Account"
   → User is "connected" (passkey badge + address shown)
 ```
 
-### Returning User (Restore)
+### Returning User (Restore via picker)
 
 ```
 User clicks "Sign in with Passkey"
-  → navigator.credentials.get() with stored credential ID + PRF
+  → navigator.credentials.get() — discoverable mode shows passkey picker
+  → User selects existing WoCo passkey
   → Biometric prompt
   → Same PRF output → same private key → same address
   → User is connected with identical account
 ```
 
-### Page Reload (Deferred)
+### Page Reload (Deferred / Silent)
 
 ```
 Page loads → init() reads kind="passkey" + address from IndexedDB
@@ -97,6 +137,21 @@ Page loads → init() reads kind="passkey" + address from IndexedDB
   → Biometric only re-triggers when session expires and
     ensureSession() needs to create a new EIP-712 delegation
 ```
+
+### Session Delegation (Deferred EIP-712)
+
+```
+User triggers action requiring auth (publish, claim, view tickets)
+  → ensureSession() checks for existing valid delegation
+  → If none: calls passkey signer → shows EIP-712 confirmation dialog
+  → User reviews what they are signing, clicks "Sign"
+  → Passkey biometric prompt
+  → PRF derives key → signs EIP-712 AuthorizeSession
+  → Delegation cached in IndexedDB (valid 1 year)
+```
+
+The passkey signer shows the same confirmation dialog as the local account signer —
+users can always see what they are signing before approving.
 
 ## PRF Extension
 
@@ -111,6 +166,22 @@ credential and the same salt input, it always produces the same output.
 
 When PRF is not supported, the passkey option hides itself and the user falls
 back to wallet authentication.
+
+## Embed Widget Passkey Claims
+
+The embed widget (`<woco-tickets>`) supports passkey claims using a lightweight
+implementation that avoids the ethers.js dependency:
+
+- **Library**: `@noble/curves/secp256k1` + `@noble/hashes/sha3` (already bundled)
+- **Signing**: EIP-191 `personal_sign` (not full EIP-712 session delegation)
+- **Server verification**: `ethers.verifyMessage()` recovers address, compares to claimed address
+- **Signature freshness**: 5-minute window (`PASSKEY_CLAIM_MAX_AGE_MS = 300_000`)
+- **Message format**: `woco:claim:{eventId}:{seriesId}:{timestamp}`
+- **Storage**: Credential metadata stored in `localStorage` (not IndexedDB)
+
+The RP ID logic is identical — `woco.eth.limo` in production, hostname in dev.
+On an organizer's external site the RP ID will be their domain, producing a
+different address. The planned iframe embed approach solves this.
 
 ## Security Model
 
@@ -133,15 +204,14 @@ This is the same as deleting a wallet's seed phrase. Users should:
 - Ensure their passkey provider syncs across devices
 - Consider also connecting a hardware wallet for high-value accounts
 
-### What about domain changes?
+### Domain changes
 
-Passkeys are bound to the **RP ID** (relying party identifier), which is the
-domain hostname. If WoCo moves to a different domain, existing passkeys will
-not work on the new domain. The PRF output is domain-specific.
+The RP ID is hardcoded to `woco.eth.limo`. If WoCo moves to a different domain
+and changes the RP ID, existing passkeys will produce different addresses on the
+new RP ID. The ENS domain is chosen as the permanent RP ID precisely because ENS
+names are long-lived and not tied to infrastructure (DNS, hosting, etc.).
 
-Current RP ID: `gateway.woco-net.com`
-
-### No new dependencies
+### No new dependencies (main app)
 
 The implementation uses only built-in browser APIs and existing project
 dependencies:
@@ -151,6 +221,11 @@ dependencies:
 - `ethers` — keccak256, Wallet, signTypedData (existing)
 - IndexedDB — credential metadata storage (existing wrapper)
 
+### Embed widget adds (~35KB)
+
+- `@noble/curves/secp256k1` — EIP-191 signing without ethers
+- `@noble/hashes/sha3` — keccak256 without ethers
+
 ## Server Compatibility
 
 The server's `verifyDelegation()` function uses `ethers.verifyTypedData()` to
@@ -159,18 +234,22 @@ the signature and verifies it matches the claimed parent address. This process i
 completely agnostic to how the private key was obtained — whether from MetaMask,
 a local keypair, or a passkey PRF derivation.
 
-**No server code changes were required.**
+For embed passkey claims, the server uses `ethers.verifyMessage()` (EIP-191) in
+the claims route — a lighter verification path that doesn't require full session
+delegation.
 
 ## Files
 
 | File | Role |
 |---|---|
 | `packages/shared/src/auth/types.ts` | `AuthKind` union includes `"passkey"` |
-| `packages/shared/src/auth/constants.ts` | Storage key + PRF salt constant |
-| `apps/web/src/lib/auth/webauthn-prf.d.ts` | TypeScript type augmentation for PRF |
-| `apps/web/src/lib/auth/passkey-account.ts` | Core: create, restore, clear, detect |
-| `apps/web/src/lib/auth/signers/passkey-signer.ts` | EIP-712 signer (no confirm dialog) |
-| `apps/web/src/lib/auth/auth-store.svelte.ts` | State machine: passkey branches |
+| `packages/shared/src/auth/constants.ts` | Storage keys, PRF salt, `PASSKEY_CLAIM_MAX_AGE_MS`, `PASSKEY_CLAIM_PREFIX` |
+| `apps/web/src/lib/auth/webauthn-prf.d.ts` | TypeScript type augmentation for PRF extension |
+| `apps/web/src/lib/auth/passkey-account.ts` | Core: `authenticatePasskey()` (discoverable picker), `createPasskeyAccount()`, `restorePasskeyAccount()`, `getPasskeyRpId()` |
+| `apps/web/src/lib/auth/signers/passkey-signer.ts` | EIP-712 signer — shows confirmation dialog before signing |
+| `apps/web/src/lib/auth/auth-store.svelte.ts` | State machine: passkey branches, calls `authenticatePasskey()` |
 | `apps/web/src/lib/components/auth/PasskeyLogin.svelte` | UI with provider logos |
 | `apps/web/src/lib/components/auth/LoginModal.svelte` | Integrates PasskeyLogin |
 | `apps/web/src/lib/components/auth/SessionStatus.svelte` | "passkey" badge label |
+| `packages/embed/src/auth/webauthn-prf.d.ts` | PRF type augmentation for embed bundle |
+| `packages/embed/src/auth/passkey.ts` | Embed passkey: `passkeyAuthenticate()`, `signClaimMessage()`, `getPasskeyRpId()` |

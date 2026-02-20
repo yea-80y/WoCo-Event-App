@@ -27,3 +27,9 @@ export const SESSION_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
 
 /** Session delegation purpose string */
 export const SESSION_PURPOSE = "session";
+
+/** Maximum age for a passkey claim signature (5 minutes) */
+export const PASSKEY_CLAIM_MAX_AGE_MS = 300_000;
+
+/** Prefix for constructing passkey claim messages */
+export const PASSKEY_CLAIM_PREFIX = "woco:claim:";
