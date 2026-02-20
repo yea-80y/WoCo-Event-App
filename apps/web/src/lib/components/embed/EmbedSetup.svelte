@@ -19,6 +19,7 @@
   let claimMode = $state<"wallet" | "email" | "both">("email");
   let theme = $state<"dark" | "light">("dark");
   let copied = $state(false);
+  let embedType = $state<"webcomponent" | "iframe">("webcomponent");
 
   // Default API URL (user can override)
   const defaultApiUrl = "https://events-api.woco-net.com";
@@ -26,6 +27,9 @@
   const snippet = $derived(buildSnippet());
 
   function buildSnippet(): string {
+    if (embedType === "iframe") {
+      return buildIframeSnippet();
+    }
     const attrs: string[] = [
       `\n  event-id="${eventId}"`,
       `\n  api-url="${defaultApiUrl}"`,
@@ -36,6 +40,33 @@
     if (!showDescription) attrs.push(`\n  show-description="false"`);
 
     return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=5"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
+  }
+
+  function buildIframeSnippet(): string {
+    const params = new URLSearchParams();
+    params.set("claim-mode", claimMode);
+    if (theme !== "dark") params.set("theme", theme);
+    if (!showImage) params.set("show-image", "false");
+    if (!showDescription) params.set("show-description", "false");
+    const frameUrl = `${defaultApiUrl}/embed/frame/${eventId}?${params.toString()}`;
+    const frameId = `woco-frame-${eventId.slice(0, 8)}`;
+
+    return `<iframe
+  src="${frameUrl}"
+  id="${frameId}"
+  style="width:100%;border:none;overflow:hidden;min-height:200px;"
+  title="Ticket widget"
+  allow="publickey-credentials-get *; publickey-credentials-create *"
+></iframe>
+<script>
+window.addEventListener('message', function(e) {
+  if (e.origin !== '${defaultApiUrl}') return;
+  var frame = document.getElementById('${frameId}');
+  if (!frame || e.source !== frame.contentWindow) return;
+  if (e.data.type === 'woco-resize') frame.style.height = e.data.height + 'px';
+  if (e.data.type === 'woco-claim') console.log('Ticket claimed:', e.data.detail);
+});
+<\/script>`;
   }
 
   async function copySnippet() {
@@ -81,6 +112,27 @@
     {/if}
 
     <div class="config-grid">
+      <!-- Embed type -->
+      <fieldset class="config-section">
+        <legend>Embed type</legend>
+
+        <label class="radio-row">
+          <input type="radio" name="embed-type" value="webcomponent" bind:group={embedType} />
+          <div>
+            <span class="radio-label">Web Component</span>
+            <span class="radio-desc">Simple script + custom element — paste anywhere</span>
+          </div>
+        </label>
+
+        <label class="radio-row">
+          <input type="radio" name="embed-type" value="iframe" bind:group={embedType} />
+          <div>
+            <span class="radio-label">iframe</span>
+            <span class="radio-desc">Fully isolated — recommended for passkey claims and style isolation</span>
+          </div>
+        </label>
+      </fieldset>
+
       <!-- Display options -->
       <fieldset class="config-section">
         <legend>Display</legend>
@@ -161,7 +213,11 @@
       </div>
       <pre class="snippet-code"><code>{snippet}</code></pre>
       <p class="snippet-hint">
-        Paste this into your website's HTML where you want the ticket widget to appear.
+        {#if embedType === "iframe"}
+          Paste into your HTML. The iframe auto-resizes and forwards claim events via <code>postMessage</code>.
+        {:else}
+          Paste this into your website's HTML where you want the ticket widget to appear.
+        {/if}
       </p>
     </div>
   {/if}
@@ -383,6 +439,12 @@
     font-size: 0.75rem;
     color: var(--text-muted);
     border-top: 1px solid var(--border);
+  }
+
+  .snippet-hint code {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.7rem;
+    color: var(--accent-text);
   }
 
   .status {

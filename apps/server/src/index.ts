@@ -33,6 +33,57 @@ app.use(
 // Health check
 app.get("/api/health", (c) => c.json({ ok: true }));
 
+// Serve embed iframe frame page
+app.get("/embed/frame/:eventId", (c) => {
+  const eventId = c.req.param("eventId").replace(/[^a-zA-Z0-9\-]/g, "");
+  const claimMode = (c.req.query("claim-mode") || "both").replace(/[^a-z]/g, "");
+  const theme = (c.req.query("theme") || "dark").replace(/[^a-z]/g, "");
+  const showImage = c.req.query("show-image") !== "false" ? "true" : "false";
+  const showDesc = c.req.query("show-description") !== "false" ? "true" : "false";
+  const apiUrl = "https://events-api.woco-net.com";
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>* { margin: 0; padding: 0; box-sizing: border-box; } html, body { background: transparent; }</style>
+</head>
+<body>
+  <script src="${apiUrl}/embed/woco-embed.js?v=5"><\/script>
+  <woco-tickets
+    event-id="${eventId}"
+    api-url="${apiUrl}"
+    claim-mode="${claimMode}"
+    theme="${theme}"
+    show-image="${showImage}"
+    show-description="${showDesc}"
+  ></woco-tickets>
+  <script>
+    var widget = document.querySelector('woco-tickets');
+
+    // Forward woco-claim events to parent page
+    widget.addEventListener('woco-claim', function(e) {
+      window.parent.postMessage({ type: 'woco-claim', detail: e.detail }, '*');
+    });
+
+    // Auto-resize: notify parent of height changes
+    function notifyResize() {
+      var h = widget.getBoundingClientRect().height || document.body.scrollHeight;
+      window.parent.postMessage({ type: 'woco-resize', height: Math.ceil(h) }, '*');
+    }
+    new ResizeObserver(notifyResize).observe(widget);
+    setTimeout(notifyResize, 300);
+  <\/script>
+</body>
+</html>`;
+
+  c.header("Content-Type", "text/html");
+  c.header("X-Frame-Options", "ALLOWALL");
+  c.header("Cache-Control", "no-store");
+  return c.body(html);
+});
+
 // Serve embed widget JS
 app.get("/embed/woco-embed.js", (c) => {
   try {
