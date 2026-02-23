@@ -58,6 +58,22 @@ export async function claimTicket(opts: {
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
 
+  // 0. Reject duplicate claims — check claimers feed before any expensive work.
+  //    This runs inside the per-series queue so the read is always up-to-date.
+  const claimerKey = identifier.type === "wallet"
+    ? identifier.address.toLowerCase()
+    : `email:${identifier.emailHash}`;
+
+  const existingClaimersPage = await readFeedPage(topicClaimers(seriesId));
+  if (existingClaimersPage) {
+    const existingFeed = decodeJsonFeed<ClaimersFeed>(existingClaimersPage);
+    if (existingFeed?.claimers.some(
+      (c) => c.claimerAddress.toLowerCase() === claimerKey,
+    )) {
+      throw new Error("Already claimed");
+    }
+  }
+
   // 1. Read series metadata from editions page 0, slot 0
   const editionsPage0 = await readFeedPageWithRetry(topicEditions(seriesId, 0));
   if (!editionsPage0) {

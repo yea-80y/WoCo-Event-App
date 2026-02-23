@@ -8,6 +8,33 @@ import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "..
 
 const claims = new Hono<AppEnv>();
 
+// ---------------------------------------------------------------------------
+// Double-spend prevention
+// ---------------------------------------------------------------------------
+
+// Option 1: In-flight lock — fast-rejects a duplicate request from the same
+// identifier while an identical claim is already being processed.
+// Key format: "{seriesId}:{address|emailHash}"
+const claimInFlight = new Set<string>();
+
+// Option 2: Per-series async queue — serialises ALL claim operations for a
+// given series so each one reads the latest Swarm feed state before writing.
+// Swarm has no atomic compare-and-swap; without this two concurrent requests
+// from *different* users can read the same unclaimed slot and both succeed.
+const seriesQueues = new Map<string, Promise<void>>();
+
+function queueSeriesClaim<T>(seriesId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = (seriesQueues.get(seriesId) ?? Promise.resolve()) as Promise<void>;
+  const current = prev.then(() => fn());
+  // Store an error-swallowing tail so the chain never permanently breaks
+  seriesQueues.set(seriesId, current.then(() => {}, () => {}));
+  return current;
+}
+
+// ---------------------------------------------------------------------------
+// Email rate limiter
+// ---------------------------------------------------------------------------
+
 /** In-memory rate limiter for email claims: IP → timestamps */
 const emailClaimRateMap = new Map<string, number[]>();
 const EMAIL_CLAIM_RATE_LIMIT = 3; // max claims
@@ -133,15 +160,34 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
     return c.json({ ok: false, error: `Unknown claim mode: ${mode}` }, 400);
   }
 
+  const encryptedOrder = rawBody.encryptedOrder as SealedBox | undefined;
+
+  // Build dedup key from the verified identifier
+  const identifierKey = identifier.type === "wallet"
+    ? identifier.address.toLowerCase()
+    : identifier.emailHash;
+  const lockKey = `${seriesId}:${identifierKey}`;
+
+  // Option 1: fast-reject if the exact same identifier is already mid-claim
+  if (claimInFlight.has(lockKey)) {
+    return c.json({ ok: false, error: "Claim already in progress — please wait" }, 429);
+  }
+  claimInFlight.add(lockKey);
+
   try {
-    // Pass encrypted order data through (opaque to server — only organizer can decrypt)
-    const encryptedOrder = rawBody.encryptedOrder as SealedBox | undefined;
-    const ticket = await claimTicket({ seriesId, identifier, encryptedOrder });
+    // Option 2: serialise all claims for this series through a queue
+    const ticket = await queueSeriesClaim(seriesId, () =>
+      claimTicket({ seriesId, identifier, encryptedOrder }),
+    );
     return c.json({ ok: true, ticket, edition: ticket.edition });
   } catch (err) {
     console.error("[api] claimTicket error:", err);
     const message = err instanceof Error ? err.message : "Failed to claim ticket";
-    return c.json({ ok: false, error: message }, 500);
+    // 409 Conflict for business-rule rejections (already claimed, sold out)
+    const status = (message === "Already claimed" || message === "No tickets available") ? 409 : 500;
+    return c.json({ ok: false, error: message }, status);
+  } finally {
+    claimInFlight.delete(lockKey);
   }
 });
 
