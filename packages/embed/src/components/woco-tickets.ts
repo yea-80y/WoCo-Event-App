@@ -1,5 +1,5 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
-import { connectWallet } from "../auth/wallet.js";
+import { connectWallet, signClaimMessage as signWithWallet, isWalletAvailable } from "../auth/wallet.js";
 import { isPasskeySupported, passkeyAuthenticate, signClaimMessage } from "../auth/passkey.js";
 import { getStyles } from "./styles.js";
 import { sealJson, PASSKEY_CLAIM_PREFIX, type OrderField, type SealedBox } from "@woco/shared";
@@ -46,6 +46,7 @@ export class WocoTickets extends HTMLElement {
   private event: EventData | null = null;
   private seriesStates: Map<string, SeriesState> = new Map();
   private shadow: ShadowRoot;
+  private delegationSetup = false;
 
   static get observedAttributes() {
     return ["event-id", "api-url", "claim-mode", "theme", "show-image", "show-description"];
@@ -58,16 +59,23 @@ export class WocoTickets extends HTMLElement {
 
   connectedCallback() {
     this.render();
+    if (!this.delegationSetup) {
+      this.setupDelegation();
+      this.delegationSetup = true;
+    }
     this.loadEvent();
   }
 
   attributeChangedCallback() {
-    this.loadEvent();
+    // Only reload when already in the DOM — attributeChangedCallback fires once per
+    // attribute during initial parse (6x), all before connectedCallback. Without this
+    // guard, 6 concurrent loadEvent() calls race and reset state mid-interaction.
+    if (this.isConnected) this.loadEvent();
   }
 
   private get eventId() { return this.getAttribute("event-id") || ""; }
   private get apiUrl() { return this.getAttribute("api-url") || ""; }
-  private get claimMode() { return (this.getAttribute("claim-mode") || "wallet") as "wallet" | "email" | "both"; }
+  private get claimMode() { return (this.getAttribute("claim-mode") || "email") as "wallet" | "email" | "both"; }
   private get theme() { return (this.getAttribute("theme") || "dark") as "dark" | "light"; }
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
   private get showDescription() { return this.getAttribute("show-description") !== "false"; }
@@ -172,8 +180,141 @@ export class WocoTickets extends HTMLElement {
         <div class="powered-by">Powered by WoCo</div>
       </div>
     `;
+  }
 
-    this.attachListeners();
+  /** Replace only the series card for the given seriesId — no full shadow DOM rebuild. */
+  private updateSeries(seriesId: string) {
+    const s = this.event?.series.find((s) => s.seriesId === seriesId);
+    if (!s) return;
+    const st = this.seriesStates.get(seriesId);
+    const existing = this.shadow.querySelector(`[data-series="${CSS.escape(seriesId)}"]`);
+    if (!existing) {
+      this.render();
+      return;
+    }
+    const tmp = document.createElement("div");
+    tmp.innerHTML = this.renderSeries(s, st);
+    const newEl = tmp.firstElementChild;
+    if (newEl) existing.replaceWith(newEl);
+  }
+
+  /** Attach delegated event listeners once on the shadow root — survive innerHTML resets. */
+  private setupDelegation() {
+    this.shadow.addEventListener("click", (e) => {
+      const target = e.target as Element;
+
+      // data-wallet-claim
+      const walletClaimBtn = target.closest<HTMLElement>("[data-wallet-claim]");
+      if (walletClaimBtn) {
+        const sid = walletClaimBtn.getAttribute("data-wallet-claim")!;
+        const st = this.seriesStates.get(sid);
+        if (this.hasOrderForm && st && !st.orderFormVisible) {
+          st.orderFormVisible = true;
+          this.updateSeries(sid);
+        } else {
+          this.handleWalletClaim(sid);
+        }
+        return;
+      }
+
+      // data-show-email
+      const showEmailBtn = target.closest<HTMLElement>("[data-show-email]");
+      if (showEmailBtn) {
+        const sid = showEmailBtn.getAttribute("data-show-email")!;
+        const st = this.seriesStates.get(sid);
+        if (st) {
+          st.emailMode = true;
+          if (this.hasOrderForm && !st.orderFormVisible) st.orderFormVisible = true;
+          this.updateSeries(sid);
+        }
+        return;
+      }
+
+      // data-email-claim
+      const emailClaimBtn = target.closest<HTMLElement>("[data-email-claim]");
+      if (emailClaimBtn) {
+        const sid = emailClaimBtn.getAttribute("data-email-claim")!;
+        this.handleEmailClaim(sid);
+        return;
+      }
+
+      // data-cancel-order
+      const cancelOrderBtn = target.closest<HTMLElement>("[data-cancel-order]");
+      if (cancelOrderBtn) {
+        const sid = cancelOrderBtn.getAttribute("data-cancel-order")!;
+        const st = this.seriesStates.get(sid);
+        if (st) {
+          st.orderFormVisible = false;
+          st.emailMode = false;
+          st.orderFormData = {};
+          st.error = null;
+          this.updateSeries(sid);
+        }
+        return;
+      }
+
+      // data-passkey-claim — show confirm overlay first
+      const passkeyClaimBtn = target.closest<HTMLElement>("[data-passkey-claim]");
+      if (passkeyClaimBtn) {
+        const sid = passkeyClaimBtn.getAttribute("data-passkey-claim")!;
+        const st = this.seriesStates.get(sid);
+        if (st) { st.passkeyConfirm = true; this.updateSeries(sid); }
+        return;
+      }
+
+      // data-passkey-confirm — proceed with actual claim
+      const passkeyConfirmBtn = target.closest<HTMLElement>("[data-passkey-confirm]");
+      if (passkeyConfirmBtn) {
+        const sid = passkeyConfirmBtn.getAttribute("data-passkey-confirm")!;
+        const st = this.seriesStates.get(sid);
+        if (st) st.passkeyConfirm = false;
+        this.handlePasskeyClaim(sid);
+        return;
+      }
+
+      // data-cancel-passkey
+      const cancelPasskeyBtn = target.closest<HTMLElement>("[data-cancel-passkey]");
+      if (cancelPasskeyBtn) {
+        const sid = cancelPasskeyBtn.getAttribute("data-cancel-passkey")!;
+        const st = this.seriesStates.get(sid);
+        if (st) { st.passkeyConfirm = false; this.updateSeries(sid); }
+        return;
+      }
+
+      // data-wallet-order / data-both-order — show order form
+      const orderBtn = target.closest<HTMLElement>("[data-wallet-order], [data-both-order]");
+      if (orderBtn) {
+        const sid = orderBtn.getAttribute("data-wallet-order") || orderBtn.getAttribute("data-both-order")!;
+        const st = this.seriesStates.get(sid);
+        if (st) { st.orderFormVisible = true; this.updateSeries(sid); }
+        return;
+      }
+    });
+
+    // Order form field sync — update state without re-rendering
+    this.shadow.addEventListener("input", (e) => {
+      const el = e.target as HTMLElement;
+      const attr = el.getAttribute("data-order-field");
+      if (!attr) return;
+      const [sid, fieldId] = attr.split(":");
+      const st = this.seriesStates.get(sid);
+      if (!st) return;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+        st.orderFormData[fieldId] = el.value;
+      }
+    });
+
+    this.shadow.addEventListener("change", (e) => {
+      const el = e.target as HTMLElement;
+      const attr = el.getAttribute("data-order-field");
+      if (!attr) return;
+      const [sid, fieldId] = attr.split(":");
+      const st = this.seriesStates.get(sid);
+      if (!st) return;
+      if (el instanceof HTMLInputElement && el.type === "checkbox") {
+        st.orderFormData[fieldId] = el.checked ? "yes" : "";
+      }
+    });
   }
 
   private readonly fingerprintIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"/><path d="M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"/></svg>`;
@@ -260,23 +401,26 @@ export class WocoTickets extends HTMLElement {
         </div>
       `;
     } else if (mode === "wallet") {
-      // Wallet mode: wallet + passkey in order form
-      submitHtml = `
-        <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>
-      `;
+      // Wallet: sign claim message via MetaMask (EIP-191) + passkey
+      const walletAvail = isWalletAvailable();
+      submitHtml = walletAvail
+        ? `<button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>`
+        : `<button class="claim-btn" disabled>No wallet detected</button>`;
       if (passkeyAvail) {
         submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId);
       }
     } else {
-      // both — email + wallet + passkey in order form
+      // both — email + wallet + passkey
       submitHtml = `
         <div class="email-form">
           <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
           <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">Claim</button>
         </div>
-        <div class="passkey-divider">or</div>
-        <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>
       `;
+      if (isWalletAvailable()) {
+        submitHtml += `<div class="passkey-divider">or</div>
+          <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>`;
+      }
       if (passkeyAvail) {
         submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId);
       }
@@ -360,27 +504,29 @@ export class WocoTickets extends HTMLElement {
       if (mode === "email") {
         actionHtml = `<button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">Claim with email</button>`;
       } else if (mode === "wallet") {
-        // Wallet mode: wallet + passkey (both authenticated)
+        // Wallet: sign claim message via MetaMask (EIP-191) + passkey
         if (this.hasOrderForm) {
           actionHtml = `<button class="claim-btn" data-wallet-order="${this.esc(s.seriesId)}">Claim ticket</button>`;
         } else {
-          actionHtml = `
-            <div class="claim-options">
-              <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>
-              ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId) : ""}
-            </div>
-          `;
+          const walletAvail = isWalletAvailable();
+          actionHtml = `<div class="claim-options">
+            ${walletAvail
+              ? `<button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>`
+              : `<button class="claim-btn" disabled>No wallet detected</button>`}
+            ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId) : ""}
+          </div>`;
         }
       } else {
         // both — email + wallet + passkey
         if (this.hasOrderForm) {
           actionHtml = `<button class="claim-btn" data-both-order="${this.esc(s.seriesId)}">Claim ticket</button>`;
         } else {
+          const walletAvail = isWalletAvailable();
           actionHtml = `
             <div class="claim-options">
               <button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">Claim with email</button>
-              <div class="passkey-divider">or</div>
-              <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>
+              ${walletAvail ? `<div class="passkey-divider">or</div>
+                <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>` : ""}
               ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId) : ""}
             </div>
           `;
@@ -403,118 +549,6 @@ export class WocoTickets extends HTMLElement {
     `;
   }
 
-  private attachListeners() {
-    // Wallet claim buttons — if order form needed, show form first
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-wallet-claim]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-wallet-claim")!;
-        const st = this.seriesStates.get(sid);
-        if (this.hasOrderForm && st && !st.orderFormVisible) {
-          st.orderFormVisible = true;
-          this.render();
-          return;
-        }
-        this.handleWalletClaim(sid);
-      });
-    });
-
-    // Show email form — if order form needed, show order form with email mode
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-show-email]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-show-email")!;
-        const st = this.seriesStates.get(sid);
-        if (st) {
-          st.emailMode = true;
-          if (this.hasOrderForm && !st.orderFormVisible) {
-            st.orderFormVisible = true;
-          }
-          this.render();
-        }
-      });
-    });
-
-    // Email claim submit
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-email-claim]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-email-claim")!;
-        this.handleEmailClaim(sid);
-      });
-    });
-
-    // Cancel order form
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-cancel-order]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-cancel-order")!;
-        const st = this.seriesStates.get(sid);
-        if (st) {
-          st.orderFormVisible = false;
-          st.emailMode = false;
-          st.orderFormData = {};
-          st.error = null;
-          this.render();
-        }
-      });
-    });
-
-    // Passkey claim buttons — show confirmation overlay first
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-passkey-claim]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-passkey-claim")!;
-        const st = this.seriesStates.get(sid);
-        if (st) { st.passkeyConfirm = true; this.render(); }
-      });
-    });
-
-    // Passkey confirm — proceed with actual claim
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-passkey-confirm]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-passkey-confirm")!;
-        const st = this.seriesStates.get(sid);
-        if (st) { st.passkeyConfirm = false; }
-        this.handlePasskeyClaim(sid);
-      });
-    });
-
-    // Passkey cancel
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-cancel-passkey]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-cancel-passkey")!;
-        const st = this.seriesStates.get(sid);
-        if (st) { st.passkeyConfirm = false; this.render(); }
-      });
-    });
-
-    // Wallet-order / both-order: show order form first
-    this.shadow.querySelectorAll<HTMLButtonElement>("[data-wallet-order], [data-both-order]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const sid = btn.getAttribute("data-wallet-order") || btn.getAttribute("data-both-order")!;
-        const st = this.seriesStates.get(sid);
-        if (st) {
-          st.orderFormVisible = true;
-          this.render();
-        }
-      });
-    });
-
-    // Order form field inputs — sync values to state
-    this.shadow.querySelectorAll<HTMLElement>("[data-order-field]").forEach((el) => {
-      const attr = el.getAttribute("data-order-field")!;
-      const [sid, fieldId] = attr.split(":");
-      const st = this.seriesStates.get(sid);
-      if (!st) return;
-
-      if (el instanceof HTMLInputElement && el.type === "checkbox") {
-        el.addEventListener("change", () => {
-          st.orderFormData[fieldId] = el.checked ? "yes" : "";
-        });
-      } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
-        el.addEventListener("input", () => {
-          st.orderFormData[fieldId] = el.value;
-        });
-      }
-    });
-  }
-
   /**
    * Validate required order fields and encrypt form data if present.
    * Returns undefined if no order form, or the encrypted SealedBox.
@@ -530,7 +564,7 @@ export class WocoTickets extends HTMLElement {
     for (const f of fields) {
       if (f.required && !(st.orderFormData[f.id] ?? "").trim()) {
         st.error = `${f.label} is required`;
-        this.render();
+        this.updateSeries(seriesId);
         return null;
       }
     }
@@ -542,7 +576,7 @@ export class WocoTickets extends HTMLElement {
       });
     } catch {
       st.error = "Failed to encrypt your info";
-      this.render();
+      this.updateSeries(seriesId);
       return null;
     }
   }
@@ -553,7 +587,7 @@ export class WocoTickets extends HTMLElement {
 
     st.claiming = true;
     st.error = null;
-    this.render();
+    this.updateSeries(seriesId);
 
     // Encrypt order data if form is present
     const encryptedOrder = await this.encryptOrderData(seriesId, st);
@@ -563,12 +597,23 @@ export class WocoTickets extends HTMLElement {
     if (!address) {
       st.claiming = false;
       st.error = "Wallet not available or connection rejected";
-      this.render();
+      this.updateSeries(seriesId);
+      return;
+    }
+
+    // Sign claim message — same EIP-191 approach as passkey, no session delegation needed
+    const timestamp = Date.now();
+    const message = PASSKEY_CLAIM_PREFIX + this.eventId + ":" + seriesId + ":" + timestamp;
+    const signature = await signWithWallet(address, message);
+    if (!signature) {
+      st.claiming = false;
+      st.error = "Wallet signing rejected";
+      this.updateSeries(seriesId);
       return;
     }
 
     try {
-      const body: Record<string, unknown> = { mode: "wallet", walletAddress: address };
+      const body: Record<string, unknown> = { mode: "wallet-signed", address, signature, timestamp };
       if (encryptedOrder) body.encryptedOrder = encryptedOrder;
 
       const resp = await this.api.post<unknown>(
@@ -590,7 +635,7 @@ export class WocoTickets extends HTMLElement {
       st.error = "Network error";
     } finally {
       st.claiming = false;
-      this.render();
+      this.updateSeries(seriesId);
     }
   }
 
@@ -600,7 +645,7 @@ export class WocoTickets extends HTMLElement {
 
     st.claiming = true;
     st.error = null;
-    this.render();
+    this.updateSeries(seriesId);
 
     // Encrypt order data if form is present
     const encryptedOrder = await this.encryptOrderData(seriesId, st);
@@ -615,7 +660,7 @@ export class WocoTickets extends HTMLElement {
     } catch (err) {
       st.claiming = false;
       st.error = err instanceof Error ? err.message : "Passkey authentication failed";
-      this.render();
+      this.updateSeries(seriesId);
       return;
     }
 
@@ -647,7 +692,7 @@ export class WocoTickets extends HTMLElement {
       st.error = "Network error";
     } finally {
       st.claiming = false;
-      this.render();
+      this.updateSeries(seriesId);
     }
   }
 
@@ -661,13 +706,13 @@ export class WocoTickets extends HTMLElement {
     const email = input?.value?.trim();
     if (!email || !email.includes("@")) {
       st.error = "Enter a valid email address";
-      this.render();
+      this.updateSeries(seriesId);
       return;
     }
 
     st.claiming = true;
     st.error = null;
-    this.render();
+    this.updateSeries(seriesId);
 
     // Encrypt order data if form is present
     const encryptedOrder = await this.encryptOrderData(seriesId, st);
@@ -696,7 +741,7 @@ export class WocoTickets extends HTMLElement {
       st.error = "Network error";
     } finally {
       st.claiming = false;
-      this.render();
+      this.updateSeries(seriesId);
     }
   }
 

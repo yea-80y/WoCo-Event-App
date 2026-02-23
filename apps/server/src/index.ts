@@ -50,7 +50,7 @@ app.get("/embed/frame/:eventId", (c) => {
   <style>* { margin: 0; padding: 0; box-sizing: border-box; } html, body { background: transparent; }</style>
 </head>
 <body>
-  <script src="${apiUrl}/embed/woco-embed.js?v=5"><\/script>
+  <script src="${apiUrl}/embed/woco-embed.js?v=7"><\/script>
   <woco-tickets
     event-id="${eventId}"
     api-url="${apiUrl}"

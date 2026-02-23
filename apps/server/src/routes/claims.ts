@@ -80,13 +80,14 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
 
     identifier = { type: "email", email, emailHash: hashEmail(email) };
 
-  } else if (mode === "passkey") {
+  } else if (mode === "passkey" || mode === "wallet-signed") {
+    // Both passkey and wallet-signed use EIP-191 personal_sign — same server-side verification
     const address = rawBody.address as string;
     const signature = rawBody.signature as string;
     const timestamp = rawBody.timestamp as number;
 
     if (!address || !signature || !timestamp) {
-      return c.json({ ok: false, error: "Passkey claims require address, signature, and timestamp" }, 400);
+      return c.json({ ok: false, error: "Signed claims require address, signature, and timestamp" }, 400);
     }
 
     // Reject stale signatures

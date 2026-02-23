@@ -19,7 +19,7 @@
   let claimMode = $state<"wallet" | "email" | "both">("email");
   let theme = $state<"dark" | "light">("dark");
   let copied = $state(false);
-  let embedType = $state<"webcomponent" | "iframe">("webcomponent");
+  let embedType = $state<"webcomponent" | "iframe">("iframe");
 
   // Default API URL (user can override)
   const defaultApiUrl = "https://events-api.woco-net.com";
@@ -39,7 +39,7 @@
     if (!showImage) attrs.push(`\n  show-image="false"`);
     if (!showDescription) attrs.push(`\n  show-description="false"`);
 
-    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=5"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
+    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=7"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
   }
 
   function buildIframeSnippet(): string {
@@ -120,15 +120,15 @@ window.addEventListener('message', function(e) {
           <input type="radio" name="embed-type" value="webcomponent" bind:group={embedType} />
           <div>
             <span class="radio-label">Web Component</span>
-            <span class="radio-desc">Simple script + custom element — paste anywhere</span>
+            <span class="radio-desc">Email claims only — passkeys bind to the host page domain</span>
           </div>
         </label>
 
         <label class="radio-row">
           <input type="radio" name="embed-type" value="iframe" bind:group={embedType} />
           <div>
-            <span class="radio-label">iframe</span>
-            <span class="radio-desc">Fully isolated — recommended for passkey claims and style isolation</span>
+            <span class="radio-label">iframe (recommended)</span>
+            <span class="radio-desc">Consistent passkey identity across all organizer sites — required for passkey claims</span>
           </div>
         </label>
       </fieldset>
@@ -164,15 +164,15 @@ window.addEventListener('message', function(e) {
           <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} />
           <div>
             <span class="radio-label">Wallet / Passkey</span>
-            <span class="radio-desc">Users claim via Web3 wallet or passkey biometric</span>
+            <span class="radio-desc">Wallet signs a claim message (no extension needed for passkey)</span>
           </div>
         </label>
 
         <label class="radio-row">
           <input type="radio" name="claim-mode" value="both" bind:group={claimMode} />
           <div>
-            <span class="radio-label">All methods</span>
-            <span class="radio-desc">Email, wallet, and passkey — maximum flexibility</span>
+            <span class="radio-label">All methods (recommended)</span>
+            <span class="radio-desc">Email, wallet, and passkey — maximum reach</span>
           </div>
         </label>
       </fieldset>

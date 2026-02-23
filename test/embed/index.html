@@ -18,12 +18,21 @@
 <body>
   <h1>WoCo Embed Test</h1>
 
-  <script src="https://events-api.woco-net.com/embed/woco-embed.js?v=5"></script>
-  <woco-tickets
-    event-id="dc073d3a-f9f0-48ac-a8cf-98b57a9e0f87"
-    api-url="https://events-api.woco-net.com"
-    claim-mode="both"
-    show-description="false"
-  ></woco-tickets>
+  <iframe
+    src="https://events-api.woco-net.com/embed/frame/dc073d3a-f9f0-48ac-a8cf-98b57a9e0f87?claim-mode=both"
+    id="woco-frame-dc073d3a"
+    style="width:100%;border:none;overflow:hidden;min-height:200px;"
+    title="Ticket widget"
+    allow="publickey-credentials-get *; publickey-credentials-create *"
+  ></iframe>
+  <script>
+  window.addEventListener('message', function(e) {
+    if (e.origin !== 'https://events-api.woco-net.com') return;
+    var frame = document.getElementById('woco-frame-dc073d3a');
+    if (!frame || e.source !== frame.contentWindow) return;
+    if (e.data.type === 'woco-resize') frame.style.height = e.data.height + 'px';
+    if (e.data.type === 'woco-claim') console.log('Ticket claimed:', e.data.detail);
+  });
+  </script>
 </body>
 </html>
