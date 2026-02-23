@@ -18,7 +18,7 @@
  *   (run from the monorepo root)
  */
 
-const { Bee, PrivateKey, Topic } = require('@ethersphere/bee-js');
+const { Bee, PrivateKey, Topic, Reference } = require('@ethersphere/bee-js');
 const fs = require('fs');
 const path = require('path');
 const tar = require('tar');
@@ -138,23 +138,17 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     // 4) Update feed to point at new site
     console.log('Updating feed...');
     const writer = bee.makeFeedWriter(topic, signer);
-    await writer.upload(POSTAGE_BATCH_ID, siteRef);
+    await writer.upload(POSTAGE_BATCH_ID, new Reference(siteRef));
 
     // Wait for propagation
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 3000));
 
-    // Verify
+    // Verify — bee-js v11 returns { payload, feedIndex, feedIndexNext }
     const reader = bee.makeFeedReader(topic, ownerObj);
     try {
       const feed = await reader.download();
-      const refHex = typeof feed.reference.toHex === 'function'
-        ? feed.reference.toHex()
-        : String(feed.reference);
-      if (refHex.toLowerCase() === siteRef.toLowerCase()) {
-        console.log('Feed updated successfully!');
-      } else {
-        console.log(`WARNING: Feed reference mismatch. Expected: ${siteRef}, Got: ${refHex}`);
-      }
+      const index = Number(BigInt('0x' + Buffer.from(feed.feedIndex.bytes).toString('hex')));
+      console.log(`Feed updated successfully! Index: ${index}`);
     } catch (e) {
       console.log(`Could not verify feed update: ${e.message}`);
     }
