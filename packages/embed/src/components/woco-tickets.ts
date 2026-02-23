@@ -9,6 +9,7 @@ interface SeriesSummary {
   name: string;
   description: string;
   totalSupply: number;
+  approvalRequired?: boolean;
 }
 
 interface EventData {
@@ -321,22 +322,22 @@ export class WocoTickets extends HTMLElement {
 
   private readonly fingerprintIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"/><path d="M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"/></svg>`;
 
-  private renderPasskeyButton(seriesId: string, disabled = false): string {
+  private renderPasskeyButton(seriesId: string, disabled = false, approvalRequired = false): string {
     return `
       <div class="passkey-section">
         <button class="passkey-btn" data-passkey-claim="${this.esc(seriesId)}" ${disabled ? "disabled" : ""}>
           ${this.fingerprintIcon}
-          Claim with passkey
+          ${approvalRequired ? "Request with passkey" : "Claim with passkey"}
         </button>
         <div class="passkey-providers">Secured by Apple, Google, 1Password</div>
       </div>
     `;
   }
 
-  private renderPasskeyConfirm(seriesId: string, ticketName: string): string {
+  private renderPasskeyConfirm(seriesId: string, ticketName: string, approvalRequired = false): string {
     return `
       <div class="passkey-confirm">
-        <p class="passkey-confirm-title">Confirm claim</p>
+        <p class="passkey-confirm-title">${approvalRequired ? "Confirm request" : "Confirm claim"}</p>
         <p class="passkey-confirm-detail">
           <span class="passkey-confirm-label">Ticket</span>
           <span>${this.esc(ticketName)}</span>
@@ -345,12 +346,12 @@ export class WocoTickets extends HTMLElement {
           <span class="passkey-confirm-label">Sign with</span>
           <span>Your passkey (${this.esc(window.location.hostname)})</span>
         </p>
-        <p class="passkey-confirm-note">Your passkey will authenticate this claim. No personal data is shared.</p>
+        <p class="passkey-confirm-note">Your passkey will authenticate this ${approvalRequired ? "request" : "claim"}. No personal data is shared.</p>
         <div class="passkey-confirm-actions">
           <button class="cancel-btn" data-cancel-passkey="${this.esc(seriesId)}">Cancel</button>
           <button class="passkey-btn passkey-btn--confirm" data-passkey-confirm="${this.esc(seriesId)}">
             ${this.fingerprintIcon}
-            Sign &amp; Claim
+            ${approvalRequired ? "Sign &amp; Request" : "Sign &amp; Claim"}
           </button>
         </div>
       </div>
@@ -361,7 +362,7 @@ export class WocoTickets extends HTMLElement {
     return !!(this.event?.orderFields?.length && this.event?.encryptionKey);
   }
 
-  private renderOrderForm(seriesId: string, st: SeriesState): string {
+  private renderOrderForm(seriesId: string, st: SeriesState, approvalRequired = false): string {
     const fields = this.event?.orderFields ?? [];
     let fieldsHtml = "";
 
@@ -393,38 +394,39 @@ export class WocoTickets extends HTMLElement {
     const mode = this.claimMode;
     const passkeyAvail = isPasskeySupported();
     let submitHtml: string;
+    const claimLabel = approvalRequired ? "Request" : "Claim";
     if (st.claiming) {
-      submitHtml = `<button class="claim-btn" disabled>Claiming...</button>`;
+      submitHtml = `<button class="claim-btn" disabled>${approvalRequired ? "Requesting..." : "Claiming..."}</button>`;
     } else if (mode === "email" || st.emailMode) {
       submitHtml = `
         <div class="email-form">
           <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
-          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">Claim</button>
+          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">${claimLabel}</button>
         </div>
       `;
     } else if (mode === "wallet") {
       // Wallet: sign claim message via MetaMask (EIP-191) + passkey
       const walletAvail = isWalletAvailable();
       submitHtml = walletAvail
-        ? `<button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>`
+        ? `<button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">${claimLabel} with wallet</button>`
         : `<button class="claim-btn" disabled>No wallet detected</button>`;
       if (passkeyAvail) {
-        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId);
+        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId, false, approvalRequired);
       }
     } else {
       // both — email + wallet + passkey
       submitHtml = `
         <div class="email-form">
           <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
-          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">Claim</button>
+          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">${claimLabel}</button>
         </div>
       `;
       if (isWalletAvailable()) {
         submitHtml += `<div class="passkey-divider">or</div>
-          <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">Claim with wallet</button>`;
+          <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">${claimLabel} with wallet</button>`;
       }
       if (passkeyAvail) {
-        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId);
+        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId, false, approvalRequired);
       }
     }
 
@@ -472,6 +474,9 @@ export class WocoTickets extends HTMLElement {
       `;
     }
 
+    const approvalRequired = s.approvalRequired ?? false;
+    const claimLabel = approvalRequired ? "Request to attend" : "Claim ticket";
+
     // Passkey confirmation overlay
     if (st?.passkeyConfirm) {
       return `
@@ -480,7 +485,7 @@ export class WocoTickets extends HTMLElement {
             <h3>${this.esc(s.name)}</h3>
             <p class="avail">${avail} / ${total} available</p>
           </div>
-          ${this.renderPasskeyConfirm(s.seriesId, s.name)}
+          ${this.renderPasskeyConfirm(s.seriesId, s.name, approvalRequired)}
         </div>
       `;
     }
@@ -493,14 +498,14 @@ export class WocoTickets extends HTMLElement {
             <h3>${this.esc(s.name)}</h3>
             <p class="avail">${avail} / ${total} available</p>
           </div>
-          ${this.renderOrderForm(s.seriesId, st)}
+          ${this.renderOrderForm(s.seriesId, st, approvalRequired)}
         </div>
       `;
     }
 
     let actionHtml: string;
     if (st?.claiming) {
-      actionHtml = `<button class="claim-btn" disabled>Claiming...</button>`;
+      actionHtml = `<button class="claim-btn" disabled>${approvalRequired ? "Requesting..." : "Claiming..."}</button>`;
     } else if (avail === 0) {
       actionHtml = `<button class="claim-btn" disabled>Sold out</button>`;
     } else if (st?.emailMode && !this.hasOrderForm) {
@@ -508,7 +513,7 @@ export class WocoTickets extends HTMLElement {
         <div>
           <div class="email-form">
             <input type="email" placeholder="your@email.com" data-email-input="${this.esc(s.seriesId)}" />
-            <button class="claim-btn" data-email-claim="${this.esc(s.seriesId)}">Claim</button>
+            <button class="claim-btn" data-email-claim="${this.esc(s.seriesId)}">${approvalRequired ? "Request" : "Claim"}</button>
           </div>
           ${st?.error ? `<p class="error-msg">${this.esc(st.error)}</p>` : ""}
         </div>
@@ -517,32 +522,32 @@ export class WocoTickets extends HTMLElement {
       const mode = this.claimMode;
       const passkeyAvail = isPasskeySupported();
       if (mode === "email") {
-        actionHtml = `<button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">Claim with email</button>`;
+        actionHtml = `<button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">${approvalRequired ? "Request to attend" : "Claim with email"}</button>`;
       } else if (mode === "wallet") {
         // Wallet: sign claim message via MetaMask (EIP-191) + passkey
         if (this.hasOrderForm) {
-          actionHtml = `<button class="claim-btn" data-wallet-order="${this.esc(s.seriesId)}">Claim ticket</button>`;
+          actionHtml = `<button class="claim-btn" data-wallet-order="${this.esc(s.seriesId)}">${claimLabel}</button>`;
         } else {
           const walletAvail = isWalletAvailable();
           actionHtml = `<div class="claim-options">
             ${walletAvail
-              ? `<button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>`
+              ? `<button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">${approvalRequired ? "Request with wallet" : "Claim with wallet"}</button>`
               : `<button class="claim-btn" disabled>No wallet detected</button>`}
-            ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId) : ""}
+            ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId, false, approvalRequired) : ""}
           </div>`;
         }
       } else {
         // both — email + wallet + passkey
         if (this.hasOrderForm) {
-          actionHtml = `<button class="claim-btn" data-both-order="${this.esc(s.seriesId)}">Claim ticket</button>`;
+          actionHtml = `<button class="claim-btn" data-both-order="${this.esc(s.seriesId)}">${claimLabel}</button>`;
         } else {
           const walletAvail = isWalletAvailable();
           actionHtml = `
             <div class="claim-options">
-              <button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">Claim with email</button>
+              <button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">${approvalRequired ? "Request with email" : "Claim with email"}</button>
               ${walletAvail ? `<div class="passkey-divider">or</div>
-                <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">Claim with wallet</button>` : ""}
-              ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId) : ""}
+                <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">${approvalRequired ? "Request with wallet" : "Claim with wallet"}</button>` : ""}
+              ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId, false, approvalRequired) : ""}
             </div>
           `;
         }

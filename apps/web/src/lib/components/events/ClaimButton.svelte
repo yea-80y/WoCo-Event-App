@@ -17,9 +17,11 @@
     orderFields?: OrderField[];
     /** How attendees can claim (default: "wallet") */
     claimMode?: ClaimMode;
+    /** When true, claiming creates a pending request instead of instant ticket */
+    approvalRequired?: boolean;
   }
 
-  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet" }: Props = $props();
+  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false }: Props = $props();
 
   let status = $state<SeriesClaimStatus | null>(null);
   let claiming = $state(false);
@@ -308,20 +310,22 @@
               onclick={() => { chosenMethod = "wallet"; handleClaim(); }}
               disabled={!formValid()}
             >
-              Claim with wallet
+              {approvalRequired ? "Request with wallet" : "Claim with wallet"}
             </button>
             <button
               class="claim-btn claim-btn--outline"
               onclick={() => { chosenMethod = "email"; handleClaim(); }}
               disabled={!formValid() || (!hasEmailField && !inlineEmail.trim())}
             >
-              Claim with email
+              {approvalRequired ? "Request with email" : "Claim with email"}
             </button>
           {/if}
         {:else}
           <button class="claim-btn" onclick={handleClaim} disabled={claiming || !formValid()}>
             {#if claiming}
               {step}
+            {:else if approvalRequired}
+              Submit request
             {:else if claimMode === "email"}
               Claim with email
             {:else}
@@ -345,6 +349,8 @@
         {step}
       {:else if status?.available === 0}
         Sold out
+      {:else if approvalRequired}
+        Request to attend
       {:else if claimMode === "email"}
         Claim with email
       {:else}

@@ -100,6 +100,7 @@
             encryptionKey={event.encryptionKey}
             orderFields={event.orderFields}
             claimMode={event.claimMode ?? "wallet"}
+            approvalRequired={s.approvalRequired ?? false}
           />
         </div>
       {/each}
