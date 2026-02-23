@@ -10,6 +10,7 @@ import type {
   SealedBox,
   OrderEntry,
 } from "@woco/shared";
+export type { OrderEntry };
 import { authPost, authGet, get, apiBase } from "./client.js";
 
 export interface PublishProgress {
@@ -128,6 +129,8 @@ export async function claimTicket(
     ok: json.ok,
     ticket: (json as any).ticket ?? json.data?.ticket,
     edition: (json as any).edition ?? json.data?.edition,
+    approvalPending: (json as any).approvalPending,
+    pendingId: (json as any).pendingId,
     error: json.error,
   };
 }
@@ -148,6 +151,8 @@ export async function claimTicketByEmail(
     ok: json.ok,
     ticket: json.ticket ?? json.data?.ticket,
     edition: json.edition ?? json.data?.edition,
+    approvalPending: json.approvalPending,
+    pendingId: json.pendingId,
     error: json.error,
   };
 }
@@ -156,8 +161,12 @@ export async function getClaimStatus(
   eventId: string,
   seriesId: string,
   userAddress?: string,
+  userEmailHash?: string,
 ): Promise<SeriesClaimStatus | null> {
-  const query = userAddress ? `?address=${userAddress}` : "";
+  const params = new URLSearchParams();
+  if (userAddress) params.set("address", userAddress);
+  if (userEmailHash) params.set("emailHash", userEmailHash);
+  const query = params.toString() ? `?${params}` : "";
   const resp = await get<SeriesClaimStatus>(
     `/api/events/${eventId}/series/${seriesId}/claim-status${query}`,
   );
@@ -212,4 +221,47 @@ export async function webhookRelay(
   );
   if (!resp.data) throw new Error(resp.error || "Webhook relay failed");
   return resp.data;
+}
+
+// ---------------------------------------------------------------------------
+// Organizer approval flow
+// ---------------------------------------------------------------------------
+
+export interface PendingClaimEntry {
+  pendingId: string;
+  seriesId: string;
+  seriesName: string;
+  claimerKey: string;
+  requestedAt: string;
+  encryptedOrder?: SealedBox;
+}
+
+export async function getPendingClaims(eventId: string): Promise<PendingClaimEntry[]> {
+  const resp = await authGet<{ eventId: string; pendingClaims: PendingClaimEntry[] }>(
+    `/api/events/${eventId}/pending-claims`,
+  );
+  return resp.data?.pendingClaims ?? [];
+}
+
+export async function approvePendingClaim(
+  eventId: string,
+  seriesId: string,
+  pendingId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return authPost(
+    `/api/events/${eventId}/series/${seriesId}/pending-claims/${pendingId}/approve`,
+    {},
+  );
+}
+
+export async function rejectPendingClaim(
+  eventId: string,
+  seriesId: string,
+  pendingId: string,
+  reason?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return authPost(
+    `/api/events/${eventId}/series/${seriesId}/pending-claims/${pendingId}/reject`,
+    { reason },
+  );
 }

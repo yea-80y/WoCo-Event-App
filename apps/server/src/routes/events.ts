@@ -90,6 +90,7 @@ events.post("/", requireAuth, async (c) => {
           name: s.name,
           description: s.description || "",
           totalSupply: s.totalSupply,
+          approvalRequired: !!(s as { approvalRequired?: boolean }).approvalRequired,
         })),
         signedTickets: serializedTickets,
         encryptionKey: encryptionKey as string | undefined,

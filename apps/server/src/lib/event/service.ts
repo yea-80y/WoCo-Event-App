@@ -46,6 +46,7 @@ export async function createEvent(opts: {
     name: string;
     description: string;
     totalSupply: number;
+    approvalRequired?: boolean;
   }>;
   /** signedTickets[seriesId] = array of serialized signed tickets */
   signedTickets: Record<string, string[]>;
@@ -128,6 +129,7 @@ export async function createEvent(opts: {
       totalSupply: s.totalSupply,
       pageCount: pages,
       createdAt: new Date().toISOString(),
+      ...(s.approvalRequired ? { approvalRequired: true } : {}),
     };
     const metaRef = await uploadToBytes(JSON.stringify(seriesMeta));
 
@@ -166,6 +168,7 @@ export async function createEvent(opts: {
       description: s.description,
       totalSupply: s.totalSupply,
       price: 0,
+      ...(s.approvalRequired ? { approvalRequired: true } : {}),
     });
   }
 

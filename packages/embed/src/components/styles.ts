@@ -135,6 +135,24 @@ export function getStyles(theme: "dark" | "light"): string {
       cursor: not-allowed;
     }
 
+    .pending-approval-badge {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: #d97706;
+      border: 1px solid #d97706;
+      border-radius: 6px;
+      white-space: nowrap;
+      margin-top: 0.5rem;
+    }
+
+    .pending-approval-msg {
+      font-size: 0.75rem;
+      color: ${vars.textMuted};
+      margin: 0.375rem 0 0;
+      line-height: 1.5;
+    }
+
     .claimed-badge {
       padding: 0.5rem 0.75rem;
       font-size: 0.8125rem;

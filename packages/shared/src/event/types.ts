@@ -33,6 +33,8 @@ export interface SeriesSummary {
   description: string;
   totalSupply: number;
   price: number;
+  /** If true, attendees submit a request; organizer approves/rejects from dashboard */
+  approvalRequired?: boolean;
 }
 
 /** Entry in the global event directory feed */
@@ -82,6 +84,7 @@ export interface CreateEventRequest {
     name: string;
     description: string;
     totalSupply: number;
+    approvalRequired?: boolean;
   }>;
   /** Signed tickets grouped by seriesId */
   signedTickets: Record<string, SignedTicket[]>;
@@ -130,6 +133,8 @@ export interface ClaimedTicket {
   claimedAt: string;
   originalPodHash: string;
   originalSignature: string;
+  /** Approval status — present when the series has approvalRequired: true */
+  approvalStatus?: "pending" | "approved" | "rejected";
 }
 
 /** Request body for POST /api/events/:eventId/series/:seriesId/claim */
@@ -170,6 +175,10 @@ export interface ClaimTicketResponse {
   ok: boolean;
   ticket?: ClaimedTicket;
   edition?: number;
+  /** True when the series requires organizer approval — ticket is pending, not yet issued */
+  approvalPending?: boolean;
+  /** ID of the pending claim entry (only present when approvalPending is true) */
+  pendingId?: string;
   error?: string;
 }
 
@@ -179,8 +188,10 @@ export interface SeriesClaimStatus {
   totalSupply: number;
   claimed: number;
   available: number;
-  /** If the requesting user has claimed, their edition number */
+  /** If the requesting user has an approved claim, their edition number */
   userEdition?: number;
+  /** If the requesting user has a pending approval request, the pendingId */
+  userPendingId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,4 +228,33 @@ export interface OrderEntry {
   claimerAddress: string;
   claimedAt: string;
   encryptedOrder?: SealedBox;
+}
+
+// ---------------------------------------------------------------------------
+// Organizer approval flow (pending claims)
+// ---------------------------------------------------------------------------
+
+/** A single pending claim entry in the pending-claims feed */
+export interface PendingClaimEntry {
+  /** Random UUID assigned at request time */
+  pendingId: string;
+  /** Wallet address (lowercase) or "email:{sha256hash}" — pseudonymous */
+  claimerKey: string;
+  requestedAt: string;
+  /** Swarm ref to ECIES-encrypted order data (same format as claimers feed orderRef) */
+  orderRef?: string;
+  /** Swarm ref to the reserved ClaimedTicket (written with approvalStatus: "pending") */
+  claimedRef: string;
+  status: "pending" | "approved" | "rejected";
+  decidedAt?: string;
+  /** Organizer-written rejection reason — not attendee data */
+  rejectionReason?: string;
+}
+
+/** Pending claims feed stored per series */
+export interface PendingClaimsFeed {
+  v: 1;
+  seriesId: string;
+  pending: PendingClaimEntry[];
+  updatedAt: string;
 }

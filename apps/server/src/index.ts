@@ -10,6 +10,7 @@ import { requireAuth } from "./middleware/auth.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
+import { approvals } from "./routes/approvals.js";
 import { collection } from "./routes/collection.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -113,6 +114,7 @@ app.post("/api/auth/whoami", requireAuth, (c) => {
 app.route("/api/events", events);
 app.route("/api/events", claims);
 app.route("/api/events", orders);
+app.route("/api/events", approvals);
 
 // Collection routes (authenticated)
 app.route("/api/collection", collection);

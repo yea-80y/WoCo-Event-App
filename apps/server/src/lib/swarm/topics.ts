@@ -44,6 +44,9 @@ export const topicUserCollection = (ethAddress: string) =>
 export const topicCreator = (creatorPodKey: string) =>
   Topic.fromString(`${POD_NS}/creator/${creatorPodKey}`);
 
+export const topicPendingClaims = (seriesId: string) =>
+  Topic.fromString(`${POD_NS}/pending-claims/${seriesId}`);
+
 // ---------------------------------------------------------------------------
 // Pagination helpers
 // ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@
     name: string;
     description: string;
     totalSupply: number;
+    approvalRequired?: boolean;
   }
 
   interface Props {
@@ -20,6 +21,7 @@
         name: "",
         description: "",
         totalSupply: 10,
+        approvalRequired: false,
       },
     ];
   }
@@ -66,6 +68,15 @@
           bind:value={s.totalSupply}
           min="1"
         />
+      </label>
+
+      <label class="approval-toggle">
+        <input
+          type="checkbox"
+          bind:checked={s.approvalRequired}
+        />
+        <span class="approval-label">Require organiser approval</span>
+        <span class="approval-hint">Attendees submit a request; approve each one from the dashboard</span>
       </label>
     </div>
   {/each}
@@ -134,6 +145,37 @@
 
   input[type="number"] {
     max-width: 120px;
+  }
+
+  .approval-toggle {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 0.5rem;
+    cursor: pointer;
+    flex-wrap: wrap;
+  }
+
+  .approval-toggle input[type="checkbox"] {
+    margin-top: 0.125rem;
+    width: 0.9rem;
+    height: 0.9rem;
+    accent-color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .approval-label {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .approval-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 400;
+    width: 100%;
+    margin-left: 1.4rem;
   }
 
   .add-btn {

@@ -29,6 +29,9 @@
   let claimedEdition = $state<number | null>(null);
   /** Post-claim message shown instead of the badge subtitle */
   let claimedVia = $state<"wallet" | "email" | null>(null);
+  /** True when the claim was submitted but awaiting organizer approval */
+  let approvalPending = $state(false);
+  let pendingId = $state<string | null>(null);
 
   // Order form state
   const hasOrderForm = $derived(!!orderFields?.length && !!encryptionKey);
@@ -87,6 +90,9 @@
         claimed = true;
         claimedEdition = status.userEdition;
         claimedVia = "wallet";
+      } else if (status?.userPendingId) {
+        approvalPending = true;
+        pendingId = status.userPendingId;
       }
     } catch {
       // Status check failed, button still shows
@@ -145,6 +151,14 @@
           return;
         }
 
+        if (result.approvalPending) {
+          approvalPending = true;
+          pendingId = result.pendingId ?? null;
+          showOrderForm = false;
+          step = "";
+          return;
+        }
+
         claimed = true;
         claimedEdition = result.edition ?? null;
         claimedVia = "email";
@@ -184,6 +198,14 @@
           return;
         }
 
+        if (result.approvalPending) {
+          approvalPending = true;
+          pendingId = result.pendingId ?? null;
+          showOrderForm = false;
+          step = "";
+          return;
+        }
+
         claimed = true;
         claimedEdition = result.edition ?? null;
         claimedVia = "wallet";
@@ -203,7 +225,13 @@
 </script>
 
 <div class="claim-area">
-  {#if claimed}
+  {#if approvalPending}
+    <div class="pending-badge">
+      <span class="pending-icon">&#9679;</span>
+      Pending Approval
+    </div>
+    <p class="pending-note">Your request has been submitted. You'll receive your ticket once the organiser approves it.</p>
+  {:else if claimed}
     <div class="claimed-badge">
       <span class="check">&#10003;</span>
       Claimed {#if claimedEdition != null}#{claimedEdition}{/if}
@@ -372,6 +400,32 @@
 
   .claim-btn--outline:hover:not(:disabled) {
     background: var(--accent-subtle);
+  }
+
+  .pending-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #d97706;
+    border: 1px solid #d97706;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+
+  .pending-icon {
+    font-size: 0.5rem;
+    opacity: 0.8;
+  }
+
+  .pending-note {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    margin: 0;
+    text-align: right;
+    max-width: 240px;
   }
 
   .claimed-badge {

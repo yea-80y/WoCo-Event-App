@@ -5,6 +5,7 @@ import { PASSKEY_CLAIM_MAX_AGE_MS, PASSKEY_CLAIM_PREFIX } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import type { ClaimResult } from "../lib/event/claim-service.js";
 
 const claims = new Hono<AppEnv>();
 
@@ -176,9 +177,16 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
 
   try {
     // Option 2: serialise all claims for this series through a queue
-    const ticket = await queueSeriesClaim(seriesId, () =>
+    const ticket: ClaimResult = await queueSeriesClaim(seriesId, () =>
       claimTicket({ seriesId, identifier, encryptedOrder }),
     );
+
+    // Approval flow: strip internal _pendingId and return pending state
+    if (ticket.approvalStatus === "pending") {
+      const { _pendingId, ...ticketForClient } = ticket;
+      return c.json({ ok: true, ticket: ticketForClient, edition: ticket.edition, approvalPending: true, pendingId: _pendingId });
+    }
+
     return c.json({ ok: true, ticket, edition: ticket.edition });
   } catch (err) {
     console.error("[api] claimTicket error:", err);
@@ -195,9 +203,10 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
 claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
   const seriesId = c.req.param("seriesId");
   const userAddress = c.req.query("address");
+  const userEmailHash = c.req.query("emailHash");
 
   try {
-    const status = await getClaimStatus(seriesId, userAddress || undefined);
+    const status = await getClaimStatus(seriesId, userAddress || undefined, userEmailHash || undefined);
     return c.json({ ok: true, data: status });
   } catch (err) {
     console.error("[api] getClaimStatus error:", err);

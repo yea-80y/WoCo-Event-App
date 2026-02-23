@@ -2,7 +2,7 @@
   import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, openJson } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
-  import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
+  import { getEventOrders, webhookRelay, getPendingClaims, approvePendingClaim, rejectPendingClaim, type EventOrdersResponse, type PendingClaimEntry } from "../../api/events.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -22,6 +22,13 @@
   let decrypting = $state(false);
   let error = $state<string | null>(null);
   let decryptError = $state<string | null>(null);
+
+  // Approval tab state
+  let activeTab = $state<"orders" | "approvals">("orders");
+  let pendingEntries = $state<PendingClaimEntry[]>([]);
+  let decryptedPending = $state<Map<string, DecryptedOrder>>(new Map()); // keyed by pendingId
+  let approvingId = $state<string | null>(null);
+  let rejectingId = $state<string | null>(null);
 
   // Webhook state
   interface WebhookConfig {
@@ -268,18 +275,26 @@
         return;
       }
 
-      // Load orders (authGet — will lazily trigger session delegation EIP-712 if needed)
-      const ordersResp = await getEventOrders(eventId);
+      // Load orders + pending claims in parallel
+      const [ordersResp, pending] = await Promise.all([
+        getEventOrders(eventId),
+        getPendingClaims(eventId).catch(() => [] as PendingClaimEntry[]),
+      ]);
 
       event = ev;
       ordersResponse = ordersResp;
+      pendingEntries = pending;
       loading = false;
 
-      // Decrypt orders (only if some have encrypted data)
-      if (ordersResp.orders.length === 0) return;
+      // Switch to approvals tab automatically if there are pending entries
+      if (pending.length > 0 && ordersResp.orders.length === 0) {
+        activeTab = "approvals";
+      }
 
+      // Determine if we have any encrypted data to decrypt (orders or pending)
       const hasEncryptedOrders = ordersResp.orders.some((o) => !!o.encryptedOrder);
-      if (!hasEncryptedOrders) return;
+      const hasEncryptedPending = pending.some((p) => !!p.encryptedOrder);
+      if (!hasEncryptedOrders && !hasEncryptedPending) return;
 
       decrypting = true;
 
@@ -302,29 +317,49 @@
 
       const { privateKey } = deriveEncryptionKeypairFromPodSeed(podSeed);
 
-      // Decrypt orders that have encrypted data (skip claims without order info)
-      const results = await Promise.allSettled(
-        ordersResp.orders.map(async (order, idx) => {
-          if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
-          const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
-          return { idx, data: decrypted };
-        }),
-      );
+      // Decrypt orders
+      if (hasEncryptedOrders) {
+        const results = await Promise.allSettled(
+          ordersResp.orders.map(async (order, idx) => {
+            if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
+            const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
+            return { idx, data: decrypted };
+          }),
+        );
 
-      const newMap = new Map<number, DecryptedOrder>();
-      let failCount = 0;
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          newMap.set(result.value.idx, result.value.data);
-        } else {
-          failCount++;
+        const newMap = new Map<number, DecryptedOrder>();
+        let failCount = 0;
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            newMap.set(result.value.idx, result.value.data);
+          } else {
+            failCount++;
+          }
+        }
+        decryptedOrders = newMap;
+        if (failCount > 0) {
+          decryptError = `Failed to decrypt ${failCount} order(s)`;
         }
       }
-      decryptedOrders = newMap;
 
-      if (failCount > 0) {
-        decryptError = `Failed to decrypt ${failCount} order(s)`;
+      // Decrypt pending claim orders
+      if (hasEncryptedPending) {
+        const pendingResults = await Promise.allSettled(
+          pending.map(async (entry) => {
+            if (!entry.encryptedOrder) return { pendingId: entry.pendingId, data: {} as DecryptedOrder };
+            const decrypted = await openJson<DecryptedOrder>(privateKey, entry.encryptedOrder);
+            return { pendingId: entry.pendingId, data: decrypted };
+          }),
+        );
+        const newPendingMap = new Map<string, DecryptedOrder>();
+        for (const result of pendingResults) {
+          if (result.status === "fulfilled") {
+            newPendingMap.set(result.value.pendingId, result.value.data);
+          }
+        }
+        decryptedPending = newPendingMap;
       }
+
       decrypting = false;
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to load dashboard";
@@ -332,6 +367,51 @@
       decrypting = false;
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Approve / reject handlers
+  // ---------------------------------------------------------------------------
+
+  async function handleApprove(entry: PendingClaimEntry) {
+    if (approvingId) return;
+    approvingId = entry.pendingId;
+    try {
+      const result = await approvePendingClaim(eventId, entry.seriesId, entry.pendingId);
+      if (!result.ok) {
+        alert(`Failed to approve: ${result.error}`);
+        return;
+      }
+      // Move to orders tab: remove from pending, reload orders
+      pendingEntries = pendingEntries.filter((e) => e.pendingId !== entry.pendingId);
+      const ordersResp = await getEventOrders(eventId);
+      ordersResponse = ordersResp;
+      if (pendingEntries.length === 0) activeTab = "orders";
+    } catch (e) {
+      alert(`Approve failed: ${e instanceof Error ? e.message : "Unknown error"}`);
+    } finally {
+      approvingId = null;
+    }
+  }
+
+  async function handleReject(entry: PendingClaimEntry) {
+    if (rejectingId) return;
+    const reason = prompt("Rejection reason (optional):");
+    if (reason === null) return; // cancelled
+    rejectingId = entry.pendingId;
+    try {
+      const result = await rejectPendingClaim(eventId, entry.seriesId, entry.pendingId, reason || undefined);
+      if (!result.ok) {
+        alert(`Failed to reject: ${result.error}`);
+        return;
+      }
+      pendingEntries = pendingEntries.filter((e) => e.pendingId !== entry.pendingId);
+      if (pendingEntries.length === 0) activeTab = "orders";
+    } catch (e) {
+      alert(`Reject failed: ${e instanceof Error ? e.message : "Unknown error"}`);
+    } finally {
+      rejectingId = null;
+    }
+  }
 </script>
 
 <div class="dashboard">
@@ -346,6 +426,103 @@
   {:else if event && ordersResponse}
     <h1>Orders Dashboard</h1>
     <p class="subtitle">{event.title}</p>
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button
+        class="tab-btn"
+        class:active={activeTab === "orders"}
+        onclick={() => (activeTab = "orders")}
+      >
+        Orders
+      </button>
+      <button
+        class="tab-btn"
+        class:active={activeTab === "approvals"}
+        onclick={() => (activeTab = "approvals")}
+      >
+        Approvals
+        {#if pendingEntries.length > 0}
+          <span class="tab-badge">{pendingEntries.length}</span>
+        {/if}
+      </button>
+    </div>
+
+    {#if activeTab === "approvals"}
+      <!-- Approvals tab -->
+      {#if pendingEntries.length === 0}
+        <div class="empty-state">
+          <p>No pending approval requests.</p>
+        </div>
+      {:else}
+        {#if decrypting}
+          <p class="status">Decrypting order data...</p>
+        {/if}
+        {#if decryptError}
+          <p class="warning">{decryptError}</p>
+        {/if}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Series</th>
+                <th>Claimer</th>
+                <th>Requested At</th>
+                {#if event.orderFields}
+                  {#each event.orderFields as field}
+                    <th>{field.label}</th>
+                  {/each}
+                {/if}
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each pendingEntries as entry}
+                {@const dec = decryptedPending.get(entry.pendingId)}
+                {@const isApproving = approvingId === entry.pendingId}
+                {@const isRejecting = rejectingId === entry.pendingId}
+                <tr>
+                  <td>{entry.seriesName}</td>
+                  <td class="address" title={entry.claimerKey}>
+                    {#if entry.claimerKey.startsWith("email:")}
+                      {#if dec?.claimerEmail}
+                        <span class="claim-email">{dec.claimerEmail}</span>
+                      {:else}
+                        <span class="claim-type">Email claim</span>
+                      {/if}
+                    {:else}
+                      {entry.claimerKey.slice(0, 6)}...{entry.claimerKey.slice(-4)}
+                    {/if}
+                  </td>
+                  <td>{new Date(entry.requestedAt).toLocaleString()}</td>
+                  {#if event.orderFields}
+                    {#each event.orderFields as field}
+                      <td>{dec?.fields?.[field.id] ?? (decrypting ? "..." : "-")}</td>
+                    {/each}
+                  {/if}
+                  <td class="action-cell">
+                    <button
+                      class="btn-approve"
+                      disabled={isApproving || isRejecting || !!approvingId || !!rejectingId}
+                      onclick={() => handleApprove(entry)}
+                    >
+                      {isApproving ? "Approving..." : "Approve"}
+                    </button>
+                    <button
+                      class="btn-reject"
+                      disabled={isApproving || isRejecting || !!approvingId || !!rejectingId}
+                      onclick={() => handleReject(entry)}
+                    >
+                      {isRejecting ? "Rejecting..." : "Reject"}
+                    </button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    {:else}
 
     <!-- Webhook config panel -->
     <div class="webhook-section">
@@ -509,6 +686,8 @@
         {/if}
       {/each}
     {/if}
+
+    {/if} <!-- end {:else} orders tab -->
   {/if}
 </div>
 
@@ -842,6 +1021,95 @@
   .btn-send:hover {
     background: var(--accent);
     color: #fff;
+  }
+
+  /* Tab bar */
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.5rem;
+  }
+
+  .tab-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.625rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color var(--transition), border-color var(--transition);
+  }
+
+  .tab-btn:hover {
+    color: var(--text-secondary);
+  }
+
+  .tab-btn.active {
+    color: var(--accent-text);
+    border-bottom-color: var(--accent);
+  }
+
+  .tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 0.375rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    background: #d97706;
+    color: #fff;
+    border-radius: 9999px;
+  }
+
+  /* Approval action buttons */
+  .action-cell {
+    white-space: nowrap;
+    display: flex;
+    gap: 0.375rem;
+  }
+
+  .btn-approve {
+    padding: 0.25rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
+  }
+
+  .btn-approve:hover:not(:disabled) {
+    background: rgba(16, 185, 129, 0.3);
+  }
+
+  .btn-approve:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .btn-reject {
+    padding: 0.25rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
+  }
+
+  .btn-reject:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.25);
+  }
+
+  .btn-reject:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   /* Status / error */

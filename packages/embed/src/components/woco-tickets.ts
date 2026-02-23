@@ -39,6 +39,7 @@ interface SeriesState {
   orderFormVisible: boolean;
   orderFormData: Record<string, string>;
   passkeyConfirm: boolean; // show confirmation overlay before biometric
+  pendingApproval: boolean; // claim submitted, awaiting organizer approval
 }
 
 export class WocoTickets extends HTMLElement {
@@ -118,6 +119,7 @@ export class WocoTickets extends HTMLElement {
           orderFormVisible: false,
           orderFormData: {},
           passkeyConfirm: false,
+          pendingApproval: false,
         });
       }
 
@@ -445,6 +447,19 @@ export class WocoTickets extends HTMLElement {
     const avail = st?.status?.available ?? s.totalSupply;
     const total = st?.status?.totalSupply ?? s.totalSupply;
 
+    if (st?.pendingApproval) {
+      return `
+        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
+          <div class="series-info">
+            <h3>${this.esc(s.name)}</h3>
+            <p class="avail">${avail} / ${total} available</p>
+          </div>
+          <div class="pending-approval-badge">&#9679; Pending Approval</div>
+          <p class="pending-approval-msg">Your request has been submitted. You'll receive your ticket once the organiser approves it.</p>
+        </div>
+      `;
+    }
+
     if (st?.claimedEdition != null) {
       return `
         <div class="series-card" data-series="${this.esc(s.seriesId)}">
@@ -623,6 +638,9 @@ export class WocoTickets extends HTMLElement {
 
       if (!resp.ok) {
         st.error = (resp.error as string) || "Claim failed";
+      } else if ((resp as Record<string, unknown>).approvalPending) {
+        st.pendingApproval = true;
+        st.orderFormVisible = false;
       } else {
         st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
         st.orderFormVisible = false;
@@ -680,6 +698,9 @@ export class WocoTickets extends HTMLElement {
 
       if (!resp.ok) {
         st.error = (resp.error as string) || "Claim failed";
+      } else if ((resp as Record<string, unknown>).approvalPending) {
+        st.pendingApproval = true;
+        st.orderFormVisible = false;
       } else {
         st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
         st.orderFormVisible = false;
@@ -729,6 +750,9 @@ export class WocoTickets extends HTMLElement {
 
       if (!resp.ok) {
         st.error = (resp.error as string) || "Claim failed";
+      } else if ((resp as Record<string, unknown>).approvalPending) {
+        st.pendingApproval = true;
+        st.orderFormVisible = false;
       } else {
         st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
         st.orderFormVisible = false;
