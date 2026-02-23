@@ -23,6 +23,7 @@
       name: "",
       description: "",
       totalSupply: 10,
+      approvalRequired: false,
     },
   ]);
   let claimMode = $state<ClaimMode>("wallet");
