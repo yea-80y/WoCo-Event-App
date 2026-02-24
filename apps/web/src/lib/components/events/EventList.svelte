@@ -2,6 +2,7 @@
   import type { EventDirectoryEntry } from "@woco/shared";
   import { listEvents } from "../../api/events.js";
   import EventCard from "./EventCard.svelte";
+  import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -10,18 +11,27 @@
 
   let { onselect }: Props = $props();
 
-  let events = $state<EventDirectoryEntry[]>([]);
-  let loading = $state(true);
+  const _KEY = cacheKey.directory();
+  const _cached = cacheGet<EventDirectoryEntry[]>(_KEY);
+
+  let events = $state<EventDirectoryEntry[]>(_cached ?? []);
+  let loading = $state(_cached === null);
   let error = $state<string | null>(null);
 
-  onMount(async () => {
-    try {
-      events = await listEvents();
-    } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load events";
-    } finally {
-      loading = false;
-    }
+  onMount(() => {
+    listEvents()
+      .then((fresh) => {
+        cacheSet(_KEY, fresh, TTL.EVENT);
+        events = fresh;
+        loading = false;
+        error = null;
+      })
+      .catch((e) => {
+        if (_cached === null) {
+          error = e instanceof Error ? e.message : "Failed to load events";
+          loading = false;
+        }
+      });
   });
 </script>
 
@@ -37,7 +47,7 @@
     </div>
   {:else}
     <div class="grid">
-      {#each events as event}
+      {#each events as event (event.eventId)}
         <EventCard {event} onclick={() => onselect?.(event.eventId)} />
       {/each}
     </div>

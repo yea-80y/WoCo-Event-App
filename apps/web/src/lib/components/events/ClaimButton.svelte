@@ -5,6 +5,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
   import type { SeriesClaimStatus } from "@woco/shared";
+  import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -23,17 +24,37 @@
 
   let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false }: Props = $props();
 
-  let status = $state<SeriesClaimStatus | null>(null);
+  // ---------------------------------------------------------------------------
+  // Synchronous cache init — runs before first render so the claim button
+  // shows the correct state (claimed / pending / available) immediately.
+  // ---------------------------------------------------------------------------
+  const _addr = auth.parent?.toLowerCase();
+
+  // 1. Permanent claimed cache — checked first (most valuable: zero network calls)
+  const _permanentKey = _addr ? cacheKey.claimed(eventId, seriesId, _addr) : null;
+  const _permanentClaimed = _permanentKey
+    ? cacheGet<{ edition: number; via: "wallet" | "email" }>(_permanentKey)
+    : null;
+
+  // 2. Claim status cache (availability count, pending state)
+  const _statusKey = cacheKey.claimStatus(eventId, seriesId, _addr);
+  const _cachedStatus = _permanentClaimed
+    ? null // no need — we already know the final state
+    : cacheGet<SeriesClaimStatus>(_statusKey);
+
+  let status = $state<SeriesClaimStatus | null>(_cachedStatus ?? null);
   let claiming = $state(false);
   let error = $state<string | null>(null);
   let step = $state("");
-  let claimed = $state(false);
-  let claimedEdition = $state<number | null>(null);
+  let claimed = $state(_permanentClaimed !== null);
+  let claimedEdition = $state<number | null>(_permanentClaimed?.edition ?? null);
   /** Post-claim message shown instead of the badge subtitle */
-  let claimedVia = $state<"wallet" | "email" | null>(null);
+  let claimedVia = $state<"wallet" | "email" | null>(_permanentClaimed?.via ?? null);
   /** True when the claim was submitted but awaiting organizer approval */
-  let approvalPending = $state(false);
-  let pendingId = $state<string | null>(null);
+  let approvalPending = $state(
+    !_permanentClaimed && (_cachedStatus?.userPendingId != null)
+  );
+  let pendingId = $state<string | null>(_cachedStatus?.userPendingId ?? null);
 
   // Order form state
   const hasOrderForm = $derived(!!orderFields?.length && !!encryptionKey);
@@ -57,10 +78,8 @@
 
   /** Get the email from form fields or inline input */
   function getEmailFromForm(): string | null {
-    // Check __email field first
     const email = formData["__email"]?.trim();
     if (email && email.includes("@")) return email;
-    // Check any email-type field in order form
     if (orderFields) {
       for (const f of orderFields) {
         if (f.type === "email") {
@@ -69,7 +88,6 @@
         }
       }
     }
-    // Fall back to inline email input
     const inline = inlineEmail.trim();
     if (inline && inline.includes("@")) return inline;
     return null;
@@ -79,33 +97,59 @@
   function effectiveMethod(): "wallet" | "email" {
     if (claimMode === "wallet") return "wallet";
     if (claimMode === "email") return "email";
-    // "both" — use what the user chose, or wallet if connected
     if (chosenMethod) return chosenMethod;
     return auth.isConnected ? "wallet" : "email";
   }
 
-  onMount(async () => {
-    try {
-      const userAddr = auth.isConnected ? auth.parent : undefined;
-      status = await getClaimStatus(eventId, seriesId, userAddr || undefined);
-      if (status?.userEdition != null) {
-        claimed = true;
-        claimedEdition = status.userEdition;
-        claimedVia = "wallet";
-      } else if (status?.userPendingId) {
-        approvalPending = true;
-        pendingId = status.userPendingId;
-      }
-    } catch {
-      // Status check failed, button still shows
+  /** Apply a fresh status response to local state. */
+  function applyStatus(s: SeriesClaimStatus) {
+    status = s;
+    if (s.userEdition != null && !claimed) {
+      claimed = true;
+      claimedEdition = s.userEdition;
+      claimedVia = "wallet";
+    } else if (s.userPendingId && !approvalPending) {
+      approvalPending = true;
+      pendingId = s.userPendingId;
     }
+  }
+
+  onMount(() => {
+    // Permanent claimed from cache: no network call ever needed
+    if (_permanentClaimed) return;
+
+    // Re-read current address in case auth finished initialising after script init
+    const addr = auth.parent?.toLowerCase();
+    const statusKey = cacheKey.claimStatus(eventId, seriesId, addr);
+
+    // Always fetch fresh — silently updates availability, picks up transitions
+    getClaimStatus(eventId, seriesId, addr || undefined)
+      .then((fresh) => {
+        if (!fresh) return;
+        cacheSet(statusKey, fresh, TTL.CLAIM_STATUS);
+
+        // Server confirms claimed → write permanent cache
+        if (fresh.userEdition != null && addr) {
+          const via = claimedVia ?? "wallet";
+          cacheSet(
+            cacheKey.claimed(eventId, seriesId, addr),
+            { edition: fresh.userEdition, via },
+            TTL.PERMANENT,
+          );
+        }
+
+        // Only patch UI if something changed vs what we already show
+        const statusChanged = JSON.stringify(fresh) !== JSON.stringify(_cachedStatus);
+        if (statusChanged) applyStatus(fresh);
+      })
+      .catch(() => {
+        // Background fetch failed — cached data stays shown, no error
+      });
   });
 
   function handleClaimClick(method?: "wallet" | "email") {
     if (method) chosenMethod = method;
 
-    // For "both" mode without a pre-chosen method, always show form first
-    // so user can fill fields then pick wallet or email at the bottom
     if (claimMode === "both" && !method && !showOrderForm) {
       showOrderForm = true;
       return;
@@ -127,14 +171,12 @@
       const method = effectiveMethod();
 
       if (method === "email") {
-        // Email claim: pull email from form, no wallet needed
         const email = getEmailFromForm();
         if (!email) {
           error = "Please enter a valid email address";
           return;
         }
 
-        // Always encrypt claim data for the organizer dashboard
         let encryptedOrder: SealedBox | undefined;
         if (encryptionKey) {
           step = "Encrypting your info...";
@@ -158,6 +200,12 @@
           pendingId = result.pendingId ?? null;
           showOrderForm = false;
           step = "";
+          // Cache the pending state (short-lived — server is source of truth)
+          const statusKey = cacheKey.claimStatus(eventId, seriesId, "anon");
+          const current = cacheGet<SeriesClaimStatus>(statusKey);
+          if (current) {
+            cacheSet(statusKey, { ...current, userPendingId: pendingId ?? undefined }, TTL.CLAIM_STATUS);
+          }
           return;
         }
 
@@ -166,22 +214,23 @@
         claimedVia = "email";
         showOrderForm = false;
         step = "";
+        // Email claims: no address to key permanent cache on, but invalidate
+        // status cache so availability count refreshes next visit
+        cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
       } else {
-        // Wallet claim: need connected wallet + session delegation
+        // Wallet claim
         if (!auth.isConnected) {
           step = "Waiting for sign-in...";
           const ok = await loginRequest.request();
           if (!ok) { error = "Login cancelled"; return; }
         }
 
-        // Ensure session delegation (proves address ownership to server)
         if (!auth.hasSession) {
           step = "Approving session...";
           const ok = await auth.ensureSession();
           if (!ok) { error = "Session approval cancelled"; return; }
         }
 
-        // Always encrypt claim data for the organizer dashboard
         let encryptedOrder: SealedBox | undefined;
         if (encryptionKey) {
           step = "Encrypting your info...";
@@ -214,9 +263,29 @@
         showOrderForm = false;
         step = "";
 
-        // Refresh status
+        // Write permanent claimed cache — this address has claimed this series
+        if (auth.parent) {
+          const addr = auth.parent.toLowerCase();
+          cacheSet(
+            cacheKey.claimed(eventId, seriesId, addr),
+            { edition: claimedEdition, via: "wallet" },
+            TTL.PERMANENT,
+          );
+          // Invalidate stale status cache so availability count reflects change
+          cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
+        }
+
+        // Refresh status in background to update availability count
         const userAddr = auth.parent || undefined;
-        status = await getClaimStatus(eventId, seriesId, userAddr);
+        getClaimStatus(eventId, seriesId, userAddr)
+          .then((fresh) => {
+            if (fresh) {
+              const statusKey = cacheKey.claimStatus(eventId, seriesId, auth.parent?.toLowerCase());
+              cacheSet(statusKey, fresh, TTL.CLAIM_STATUS);
+              status = fresh;
+            }
+          })
+          .catch(() => {});
       }
     } catch (e) {
       error = e instanceof Error ? e.message : "Unexpected error";
@@ -288,7 +357,6 @@
       {/if}
 
       {#if claimMode === "both" && !hasEmailField}
-        <!-- Inline email for email claims when organizer didn't add one -->
         <label class="form-field">
           <span class="form-label">Email <span class="form-label-optional">(for email claim)</span></span>
           <input
@@ -301,7 +369,6 @@
 
       <div class="form-actions">
         {#if claimMode === "both"}
-          <!-- Both mode: two buttons so user picks their method -->
           {#if claiming}
             <button class="claim-btn" disabled>{step}</button>
           {:else}

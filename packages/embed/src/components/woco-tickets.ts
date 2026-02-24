@@ -3,6 +3,7 @@ import { connectWallet, signClaimMessage as signWithWallet, isWalletAvailable } 
 import { isPasskeySupported, passkeyAuthenticate, signClaimMessage } from "../auth/passkey.js";
 import { getStyles } from "./styles.js";
 import { sealJson, PASSKEY_CLAIM_PREFIX, type OrderField, type SealedBox } from "@woco/shared";
+import { cacheGet, cacheSet, TTL_7D, embedCacheKey } from "../cache.js";
 
 interface SeriesSummary {
   seriesId: string;
@@ -86,33 +87,22 @@ export class WocoTickets extends HTMLElement {
     if (!this.eventId || !this.apiUrl) return;
 
     this.api = createApiClient(this.apiUrl);
-    this.renderLoading();
 
-    try {
-      const resp = await this.api.get<EventData>(`/api/events/${this.eventId}`);
-      if (!resp.ok || !resp.data) {
-        this.renderError("Event not found");
-        return;
-      }
-      this.event = resp.data;
+    // ------------------------------------------------------------------
+    // 1. Show cached event immediately — eliminates loading state on
+    //    return visits. Render with cached statuses if available.
+    // ------------------------------------------------------------------
+    const evKey = embedCacheKey.event(this.eventId);
+    const cachedEvent = cacheGet<EventData>(evKey);
 
-      // Fetch claim statuses in parallel
-      const statuses = await Promise.all(
-        this.event.series.map(async (s) => {
-          try {
-            const r = await this.api!.get<ClaimStatus>(
-              `/api/events/${this.eventId}/series/${s.seriesId}/claim-status`,
-            );
-            return r.data ?? null;
-          } catch {
-            return null;
-          }
-        }),
-      );
-
-      for (let i = 0; i < this.event.series.length; i++) {
-        this.seriesStates.set(this.event.series[i].seriesId, {
-          status: statuses[i],
+    if (cachedEvent) {
+      this.event = cachedEvent;
+      // Restore cached series states (availability counts etc.)
+      for (const s of cachedEvent.series) {
+        const stKey = embedCacheKey.claimStatus(this.eventId, s.seriesId);
+        const cachedStatus = cacheGet<ClaimStatus>(stKey);
+        this.seriesStates.set(s.seriesId, {
+          status: cachedStatus ?? null,
           claiming: false,
           claimedEdition: null,
           error: null,
@@ -123,11 +113,75 @@ export class WocoTickets extends HTMLElement {
           pendingApproval: false,
         });
       }
-
-      this.render();
-    } catch {
-      this.renderError("Failed to load event");
+      this.render(); // Instant render from cache
+    } else {
+      this.renderLoading();
     }
+
+    // ------------------------------------------------------------------
+    // 2. Always fetch fresh in the background — silently patches the
+    //    rendered widget if event data or availability counts changed.
+    // ------------------------------------------------------------------
+    try {
+      const resp = await this.api.get<EventData>(`/api/events/${this.eventId}`);
+      if (!resp.ok || !resp.data) {
+        if (!cachedEvent) this.renderError("Event not found");
+        return;
+      }
+      const freshEvent = resp.data;
+      cacheSet(evKey, freshEvent, TTL_7D);
+      this.event = freshEvent;
+
+      // Fetch claim statuses in parallel
+      const statuses = await Promise.all(
+        freshEvent.series.map(async (s) => {
+          try {
+            const r = await this.api!.get<ClaimStatus>(
+              `/api/events/${this.eventId}/series/${s.seriesId}/claim-status`,
+            );
+            const st = r.data ?? null;
+            if (st) cacheSet(embedCacheKey.claimStatus(this.eventId, s.seriesId), st, TTL_7D);
+            return st;
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      // Merge fresh statuses — preserve any in-progress claim state
+      for (let i = 0; i < freshEvent.series.length; i++) {
+        const sid = freshEvent.series[i].seriesId;
+        const existing = this.seriesStates.get(sid);
+        this.seriesStates.set(sid, {
+          status: statuses[i],
+          // Preserve live UI state if user is mid-claim
+          claiming: existing?.claiming ?? false,
+          claimedEdition: existing?.claimedEdition ?? null,
+          error: existing?.error ?? null,
+          emailMode: existing?.emailMode ?? false,
+          orderFormVisible: existing?.orderFormVisible ?? false,
+          orderFormData: existing?.orderFormData ?? {},
+          passkeyConfirm: existing?.passkeyConfirm ?? false,
+          pendingApproval: existing?.pendingApproval ?? false,
+        });
+      }
+
+      // Re-render silently — only if not mid-interaction
+      if (!this.isUserInteracting()) {
+        this.render();
+      }
+    } catch {
+      if (!cachedEvent) this.renderError("Failed to load event");
+      // Cached data stays shown — background failure is silent
+    }
+  }
+
+  /** Returns true if the user has an active form open in any series card. */
+  private isUserInteracting(): boolean {
+    for (const [, st] of this.seriesStates) {
+      if (st.claiming || st.orderFormVisible || st.passkeyConfirm) return true;
+    }
+    return false;
   }
 
   private renderLoading() {

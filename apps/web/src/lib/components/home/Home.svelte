@@ -3,19 +3,29 @@
   import { listEvents } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
   import EventCard from "../events/EventCard.svelte";
+  import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
 
-  let events = $state<EventDirectoryEntry[]>([]);
-  let loading = $state(true);
+  // Read cache synchronously in script init — runs before the first render.
+  // This means returning visitors never see "Loading events..." at all.
+  const _KEY = cacheKey.directory();
+  const _cached = cacheGet<EventDirectoryEntry[]>(_KEY);
 
-  onMount(async () => {
-    try {
-      events = await listEvents();
-    } catch {
-      // Silent — events section just won't show
-    } finally {
-      loading = false;
-    }
+  let events = $state<EventDirectoryEntry[]>(_cached ?? []);
+  let loading = $state(_cached === null); // false on cache hit = no spinner
+
+  onMount(() => {
+    // Always fetch fresh regardless of cache state
+    listEvents()
+      .then((fresh) => {
+        cacheSet(_KEY, fresh, TTL.EVENT);
+        events = fresh;
+        loading = false;
+      })
+      .catch(() => {
+        // Only stop the spinner if there's nothing cached to fall back on
+        if (_cached === null) loading = false;
+      });
   });
 </script>
 

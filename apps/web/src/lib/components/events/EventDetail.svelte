@@ -4,6 +4,7 @@
   import ClaimButton from "./ClaimButton.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
+  import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -13,8 +14,12 @@
 
   let { eventId, onback }: Props = $props();
 
-  let event = $state<EventFeed | null>(null);
-  let loading = $state(true);
+  // Synchronous cache read — before first render, so no loading flash on return visits
+  const _KEY = cacheKey.event(eventId);
+  const _cached = cacheGet<EventFeed>(_KEY);
+
+  let event = $state<EventFeed | null>(_cached ?? null);
+  let loading = $state(_cached === null);
   let error = $state<string | null>(null);
 
   const BEE_GATEWAY = "https://gateway.woco-net.com";
@@ -30,15 +35,26 @@
     });
   }
 
-  onMount(async () => {
-    try {
-      event = await getEvent(eventId);
-      if (!event) error = "Event not found";
-    } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load event";
-    } finally {
-      loading = false;
-    }
+  onMount(() => {
+    // Always fetch fresh — silently patches title, dates, series etc. if changed
+    getEvent(eventId)
+      .then((fresh) => {
+        if (!fresh) {
+          if (_cached === null) error = "Event not found";
+          loading = false;
+          return;
+        }
+        cacheSet(_KEY, fresh, TTL.EVENT);
+        event = fresh;
+        loading = false;
+        error = null;
+      })
+      .catch((e) => {
+        if (_cached === null) {
+          error = e instanceof Error ? e.message : "Failed to load event";
+          loading = false;
+        }
+      });
   });
 </script>
 

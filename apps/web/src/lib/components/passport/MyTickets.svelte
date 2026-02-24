@@ -4,11 +4,21 @@
   import { getMyCollection, getTicketDetail } from "../../api/events.js";
   import type { ClaimedTicket, CollectionEntry } from "@woco/shared";
   import TicketCard from "./TicketCard.svelte";
+  import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
 
-  let loading = $state(true);
+  // Pre-load cached tickets synchronously so returning users never see the
+  // loading state. The address may not be available yet (auth async), so we
+  // can only do this when auth.parent is already set (e.g. wallet was connected
+  // in a previous session and the store rehydrated synchronously).
+  const _addrInit = auth.parent?.toLowerCase();
+  const _cachedTickets = _addrInit
+    ? cacheGet<ClaimedTicket[]>(cacheKey.collection(_addrInit))
+    : null;
+
+  let loading = $state(_cachedTickets === null); // false if cache hit
   let error = $state<string | null>(null);
-  let tickets = $state<ClaimedTicket[]>([]);
+  let tickets = $state<ClaimedTicket[]>(_cachedTickets ?? []);
   let authFailed = $state(false);
 
   onMount(() => {
@@ -26,7 +36,7 @@
       }
     }
 
-    // Step 2: need session delegation (triggers EIP-712 popup)
+    // Step 2: need session delegation (triggers EIP-712 popup if needed)
     if (!auth.hasSession) {
       const ok = await auth.ensureSession();
       if (!ok) {
@@ -36,39 +46,71 @@
       }
     }
 
-    // Step 3: load tickets
+    // Step 3: show cached tickets instantly, then background-refresh
     await loadTickets();
   }
 
   async function loadTickets() {
-    loading = true;
-    error = null;
+    const addr = auth.parent;
+    if (!addr) return;
 
+    const colKey = cacheKey.collection(addr);
+
+    // Show cached tickets immediately — eliminates loading state on return visits
+    const cachedTickets = cacheGet<ClaimedTicket[]>(colKey);
+    if (cachedTickets) {
+      tickets = cachedTickets;
+      loading = false;
+    }
+
+    // Always fetch fresh from Swarm in the background
     try {
       const collection = await getMyCollection();
       console.log("[MyTickets] collection:", JSON.stringify(collection));
+
       if (!collection.entries.length) {
         tickets = [];
+        cacheSet(colKey, [], TTL.COLLECTION);
+        loading = false;
         return;
       }
+
+      // Fetch individual ticket details — use permanent cache for each POD
       const details = await Promise.all(
         collection.entries
           .filter((entry: CollectionEntry) => !!entry.claimedRef)
-          .map((entry: CollectionEntry) =>
-            getTicketDetail(entry.claimedRef).catch((e) => {
-              console.warn("[MyTickets] ticket detail failed:", entry.claimedRef, e);
-              return null;
-            }),
-          ),
+          .map((entry: CollectionEntry) => {
+            const ticketKey = cacheKey.ticket(entry.claimedRef);
+            const cachedTicket = cacheGet<ClaimedTicket>(ticketKey);
+            if (cachedTicket) return Promise.resolve(cachedTicket);
+            // Not cached — fetch and store permanently (PODs are immutable)
+            return getTicketDetail(entry.claimedRef)
+              .then((t) => {
+                if (t) cacheSet(ticketKey, t, TTL.PERMANENT);
+                return t;
+              })
+              .catch((e) => {
+                console.warn("[MyTickets] ticket detail failed:", entry.claimedRef, e);
+                return null;
+              });
+          }),
       );
-      tickets = details.filter((t): t is ClaimedTicket => t !== null);
+
+      const freshTickets = details.filter((t): t is ClaimedTicket => t !== null);
+      // Persist the full resolved list so next visit is instant
+      cacheSet(colKey, freshTickets, TTL.COLLECTION);
+      tickets = freshTickets;
     } catch (e) {
       console.error("[MyTickets] loadTickets error:", e);
-      error = e instanceof Error ? e.message : "Failed to load tickets";
+      // Only show error if we have nothing cached to fall back on
+      if (!cachedTickets) {
+        error = e instanceof Error ? e.message : "Failed to load tickets";
+      }
     } finally {
       loading = false;
     }
   }
+
 </script>
 
 <div class="passport">
