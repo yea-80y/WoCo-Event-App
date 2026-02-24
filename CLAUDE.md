@@ -13,7 +13,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   apps/server/           # Hono API server (Swarm relay + auth)
   packages/shared/       # Shared types, POD schema, constants
   packages/embed/        # <woco-tickets> Web Component (IIFE bundle, ~71KB)
-  packages/site-builder/ # Static site generator for user events [planned]
+  packages/site-builder/ # Static site generator for organiser events [next stage]
 
   DEPLOYMENT:
   - Backend server: 192.168.0.144 (user: ntl-dev), dir: ~/woco-events-server
@@ -28,9 +28,13 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - CRITICAL: Never overwrite server .env during deploy (exclude from rsync)
   - Local .env and server .env differ — server has production ALLOWED_HOSTS
 
-  BUILD STATUS (as of 2026-02-24):
+  ============================================================================
+  BUILD STATUS (as of 2026-02-24)
+  ============================================================================
+
+  CORE PLATFORM — COMPLETE:
   [x] Monorepo scaffolding with npm workspaces
-  [x] Auth overhaul: web3 wallet + local browser account (2 of 3 methods)
+  [x] Auth overhaul: web3 wallet + local browser account + Para embedded wallet
   [x] "Build first, sign later" UX (deferred signing at publish/claim time)
   [x] Forget identity (sign out clears session, local key persists for re-login)
   [x] IndexedDB encrypted storage (AES-256-GCM)
@@ -54,11 +58,92 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   [x] Organizer approval flow: approvalRequired per series, pending-claims feed,
       approve/reject endpoints, ClaimButton shows "Request to attend" / "Pending Approval",
       embed widget shows pending state, Dashboard approvals tab
-  [ ] Client-side caching / stale-while-revalidate (next task)
-  [ ] Zupass login integration (3rd auth method)
-  [ ] Para wallet integration (replaces local account)
+  [x] Client-side stale-while-revalidate caching
+  [x] Para embedded wallet (auth method 3): email → Para hosted iframe → EVM wallet
+      - packages: @getpara/web-sdk + @getpara/ethers-v6-integration
+      - API key: beta_418f67cf61e322ee04de9c1d8ccfdffa (BETA env)
+      - Para signs EIP-712 for session delegation AND POD identity derivation
+      - Dashboard decryption works (POD seed stored after first Para sign)
+      - ParaLogin.svelte: email input → iframe step → waiting step
+
+  NEXT STAGE — DEVCON/EF PITCH:
+  [ ] Self-hosted backend packaging (Docker/setup guide for EF to run their own)
+  [ ] Site builder MVP (packages/site-builder — form → static Swarm site → hash)
+  [ ] Devcon team attendee dashboard (reuse Dashboard.svelte + approvals flow)
+  [ ] Content hash registry (woco/registry/verified-frontends feed + WoCo signature)
+  [ ] Payment webhook endpoint (receive confirmation → mint ticket; mock-friendly)
+  [ ] Zupass login (4th auth method — ed25519 adapter for session delegation)
   [ ] User profile page
   [ ] PWA manifest + service worker
+
+  ============================================================================
+  NEXT STAGE ARCHITECTURE: DEVCON / EF PITCH
+  ============================================================================
+
+  GOAL: Build toward a pitch to the Ethereum Foundation to use WoCo infrastructure
+  for Devcon ticket sales. Starting target: side events and affiliated orgs (usable
+  nearly now). Longer term: Devcon main event.
+
+  SCALE CONTEXT:
+  - Devcon sells ~15,000 tickets in phased rounds over weeks — not a throughput
+    problem, a reliability problem. A well-hosted Bee node + robust server handles
+    this comfortably. Swarm reads are distributed and gateway-cached.
+  - Side events are the strongest near-term use case.
+
+  1. ORGANISER-HOSTED BACKEND:
+  - EF (or any organiser) clones/downloads WoCo's apps/server package
+  - They deploy on their own hardware with their own:
+    * Bee node (or hosted Bee service)
+    * FEED_PRIVATE_KEY (they own all feeds — WoCo has no access)
+    * POSTAGE_BATCH_ID
+    * ALLOWED_HOSTS (their frontend domains)
+  - Zero reliance on WoCo servers after setup
+  - WoCo provides the code; organiser owns and operates everything
+  - Organiser returns an API URL; WoCo frontend connects to it
+  - Packaging work: Docker Compose + setup guide + env template
+
+  2. STATIC FRONTEND SITE BUILDER (packages/site-builder):
+  - WoCo app feature: form-based builder for organiser's event frontend
+  - Inputs: event name, dates, location, ticket series, payment redirect URL,
+    gateway URL (recommend gateway.ethswarm.org for production), claim modes
+    (wallet / email / Para), organiser's API server URL
+  - Output: self-contained static site (Vite build), uploaded to Swarm
+  - Returns content hash → organiser sets on their ENS (event.devcon.eth)
+    or optionally a WoCo sub-ENS (devcon8.woco.eth)
+  - IMPORTANT: generated frontend includes Dashboard.svelte for attendee mgmt
+    (reuse existing component — it's already pure client-side, just needs the
+    correct API URL configured to point at the organiser's own server)
+
+  3. DEVCON TEAM ATTENDEE DASHBOARD:
+  - The generated site builder frontend will include a /dashboard route
+  - Reuse Dashboard.svelte + approvals tab entirely — zero new dashboard code
+  - Organiser logs in with Para (no MetaMask needed for EF team members)
+  - Dashboard decrypts order data locally using their POD seed
+  - approve/reject pending claims, CSV export — all existing functionality
+  - The only config needed: dashboard API URL points to organiser's own server
+
+  4. CONTENT HASH REGISTRY:
+  - Every verified event frontend uploaded to Swarm via site builder gets a
+    signed entry in a WoCo-maintained registry feed:
+    woco/registry/verified-frontends
+  - Entry: { hash, eventId, organiserAddress, verifiedAt, wocoSignature }
+  - Certificate-transparency-style: anyone can verify a frontend is genuine
+    before interacting with it — prevents phishing clones of Devcon ticket page
+  - Build into the site builder publish step from day one
+  - Long-term candidate: on-chain registry (ENS text record, simple contract)
+
+  5. PAYMENT WEBHOOK:
+  - Devcon has their own payment infrastructure
+  - Architecture: user completes form → redirect to organiser's payment URL →
+    payment processor sends webhook to WoCo backend → ticket minted on Swarm
+  - Server-side endpoint receives payment confirmation → triggers claim/mint
+  - Mock-friendly: can be triggered manually for testing without real payment
+  - Real integration requires collaboration with EF's payment team
+
+  6. SWARM GATEWAY FOR PRODUCTION SITES:
+  - Site builder should let organisers configure which gateway to use
+  - Recommend gateway.ethswarm.org (robust public gateway) for production
+  - gateway.woco-net.com runs on a home laptop — not suitable for Devcon scale
 
   ============================================================================
   CLAIMING SECURITY MODEL
@@ -91,12 +176,16 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   LOGIN (no EIP-712):
   - Web3: connectWallet() → stores address, kind="web3"
   - Local: createLocalAccount() → generates secp256k1 keypair, stores in IDB
+  - Para: email → Para iframe → wallet created → address stored, kind="para"
 
   DEFERRED SIGNING (lazy, on demand):
   - ensureSession(): triggered by publish, claim, or viewing My Tickets
   - For web3: MetaMask popup for EIP-712 AuthorizeSession
   - For local: SigningConfirmDialog shows what's being signed, user clicks Sign
-  - ensurePodIdentity(): triggered by publish (needed to sign tickets)
+  - For Para: Para's own hosted signing UI (popup/iframe from Para SDK)
+  - ensurePodIdentity(): triggered by publish AND dashboard decrypt (first time)
+  - For Para: second Para signing prompt — derives deterministic ed25519 POD key
+    (subsequent dashboard opens use stored POD seed, no Para re-sign needed)
 
   GLOBAL LOGIN REQUEST PATTERN:
   - loginRequest.request() → returns Promise<boolean>
@@ -114,9 +203,9 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   AUTH METHODS
   ============================================================================
 
-  OPTION 1: Web3 Wallet (MetaMask, etc.) — WORKING
+  OPTION 1: Web3 Wallet (MetaMask, WalletConnect) — WORKING
   - Parent key = wallet's secp256k1 account
-  - EIP-712 signed by wallet (MetaMask popup)
+  - EIP-712 signed by wallet (MetaMask popup or WalletConnect)
 
   OPTION 2: Local Browser Account — WORKING
   - Random secp256k1 keypair stored in IndexedDB (AES-GCM encrypted)
@@ -125,16 +214,31 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - Backup button exports private key
   - Persists across sessions; sign-out clears session but keeps key
 
-  OPTION 3: Zupass Login — NOT YET IMPLEMENTED
+  OPTION 3: Para Embedded Wallet — WORKING
+  - No browser extension needed — users onboard via email
+  - Flow: email input → Para hosted iframe (OTP / passkey) → EVM wallet created
+  - Para manages the wallet key on their infrastructure (MPC)
+  - EIP-712 signed via ParaEthersSigner.signTypedData() → Para shows their UI
+  - Session restore: para.isSessionActive() checked on init
+  - Logout: para.logout() called on sign-out
+  - API key: beta_418f67cf61e322ee04de9c1d8ccfdffa (BETA environment)
+  - Files: apps/web/src/lib/auth/para-client.ts
+           apps/web/src/lib/auth/para-account.ts
+           apps/web/src/lib/auth/signers/para-signer.ts
+           apps/web/src/lib/components/auth/ParaLogin.svelte
+  - VITE_PARA_API_KEY in apps/web/.env and .env.production
+
+  OPTION 4: Zupass Login — NOT YET IMPLEMENTED
   - Zupass provides ed25519 directly (no EIP-712 derivation)
   - Needs adapter for session delegation
 
   THREE IDENTITY LAYERS:
   1. Primary wallet (secp256k1) — permanent identity
   2. Session key (secp256k1, random) — ephemeral, signs API requests
-  3. POD identity (ed25519, deterministic) — signs tickets
+  3. POD identity (ed25519, deterministic) — signs tickets + derives encryption key
   - Session delegation: random nonce (per-session)
   - POD identity: fixed nonce "WOCO-POD-IDENTITY-V1" (deterministic)
+  - Dashboard decryption key: derived from POD seed via deriveEncryptionKeypairFromPodSeed()
 
   ============================================================================
   SWARM CONFIG
@@ -146,6 +250,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - Feed private key: env FEED_PRIVATE_KEY (server-only, never expose)
   - Vite base: './' (relative paths — required for Swarm bzz paths)
   - Upload script: scripts/upload-to-swarm-feed.cjs (CommonJS, not .js)
+  - Production gateway for generated sites: use gateway.ethswarm.org (not woco-net)
 
   SWARM PATTERNS:
   - All feed data uses 4096-byte binary pages (128 slots x 32 bytes)
@@ -164,6 +269,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   woco/pod/collection/{ethAddress}        # User's ticket collection (JSON feed)
   woco/pod/creator/{creatorPodKey}        # Creator's event index (JSON feed)
   woco/pod/pending-claims/{seriesId}      # Approval queue (JSON feed, organizer-only)
+  woco/registry/verified-frontends        # [planned] Content hash registry (signed)
 
   ============================================================================
   EMBED WIDGET
@@ -211,17 +317,21 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   apps/web/src/lib/auth/session-delegation.ts     # Session key + delegation
   apps/web/src/lib/auth/pod-identity.ts           # POD key derivation
   apps/web/src/lib/auth/local-account.ts          # Local browser account
-  apps/web/src/lib/auth/signers/index.ts          # Web3 + local EIP-712 signers
+  apps/web/src/lib/auth/para-client.ts            # Para SDK singleton (BETA)
+  apps/web/src/lib/auth/para-account.ts           # Para auth flow + session restore
+  apps/web/src/lib/auth/signers/index.ts          # Web3 + local + Para EIP-712 signers
+  apps/web/src/lib/auth/signers/para-signer.ts    # ParaEthersSigner wrapper
   apps/web/src/lib/api/client.ts                  # authPost/authGet (attaches delegation)
 
   COMPONENTS:
   apps/web/src/App.svelte                         # Shell: top bar + routing + bottom nav
   apps/web/src/lib/components/auth/LoginModal.svelte        # Login method picker
-  apps/web/src/lib/components/auth/SigningConfirmDialog.svelte # EIP-712 confirm
+  apps/web/src/lib/components/auth/SigningConfirmDialog.svelte # EIP-712 confirm (local/passkey)
+  apps/web/src/lib/components/auth/ParaLogin.svelte         # Para email → iframe flow
   apps/web/src/lib/components/events/ClaimButton.svelte     # Claim flow orchestrator
   apps/web/src/lib/components/events/PublishButton.svelte   # Publish flow orchestrator
   apps/web/src/lib/components/passport/MyTickets.svelte     # Ticket collection
-  apps/web/src/lib/components/dashboard/Dashboard.svelte    # Organizer order view
+  apps/web/src/lib/components/dashboard/Dashboard.svelte    # Organizer order view + approvals
   apps/web/src/lib/components/embed/EmbedSetup.svelte       # Embed configurator
 
   SERVER:
@@ -286,3 +396,9 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
     always initialise all fields at declaration time (e.g. approvalRequired: false, not omitted)
   - bee-js v11: writer.upload() requires new Reference(hexString), not a plain string;
     feed verification uses feed.feedIndex (not feed.reference which no longer exists)
+  - Para SDK adds ~640KB to the bundle (expected); "use client" warnings from Para
+    are benign — Rollup/Vite ignores them
+  - Para wallet address is optional on the Wallet type — always check for presence
+    and retry with backoff after waitForLogin/waitForWalletCreation resolves
+  - Para wallets filtered by type "EVM" when retrieving address (para.wallets is a
+    Record<string, Wallet> — iterate with Object.values())

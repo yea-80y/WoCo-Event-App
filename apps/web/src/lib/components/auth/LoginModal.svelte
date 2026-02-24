@@ -1,6 +1,7 @@
 <script lang="ts">
   import WalletLogin from "./WalletLogin.svelte";
   import PasskeyLogin from "./PasskeyLogin.svelte";
+  import ParaLogin from "./ParaLogin.svelte";
   import ZupassLogin from "./ZupassLogin.svelte";
   import { loginRequest } from "../../auth/login-request.svelte.js";
 
@@ -54,6 +55,10 @@
         <div class="divider"><span>or</span></div>
 
         <PasskeyLogin oncomplete={handleComplete} />
+
+        <div class="divider"><span>or</span></div>
+
+        <ParaLogin oncomplete={handleComplete} />
 
         <div class="divider"><span>or</span></div>
 

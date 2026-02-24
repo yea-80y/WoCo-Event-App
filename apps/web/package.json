@@ -10,6 +10,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
   },
   "dependencies": {
+    "@getpara/ethers-v6-integration": "^2.12.0",
+    "@getpara/web-sdk": "^2.12.0",
     "@noble/ed25519": "^2.2.0",
     "@noble/hashes": "^1.7.0",
     "@walletconnect/ethereum-provider": "^2.23.6",
@@ -23,6 +25,7 @@
     "svelte": "^5.45.2",
     "svelte-check": "^4.3.4",
     "typescript": "~5.9.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vite-plugin-node-polyfills": "^0.25.0"
   }
 }

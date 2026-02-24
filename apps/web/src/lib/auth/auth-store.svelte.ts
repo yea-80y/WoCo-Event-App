@@ -28,7 +28,8 @@ import {
   restorePasskeyAccount,
   hasStoredPasskeyCredential,
 } from "./passkey-account.js";
-import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
+import { restoreParaSession, logoutPara } from "./para-account.js";
+import { createWeb3Signer, createLocalSigner, createPasskeySigner, createParaSigner } from "./signers/index.js";
 import { signingRequest } from "./signing-request.svelte.js";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,9 @@ function _getSigner(): EIP712Signer {
     return createPasskeySigner(_passkeyPrivateKey, (info) =>
       signingRequest.request(info),
     );
+  }
+  if (_kind === "para") {
+    return createParaSigner((info) => signingRequest.request(info));
   }
   throw new Error("No signer available for auth kind: " + _kind);
 }
@@ -162,6 +166,15 @@ async function init(): Promise<void> {
       } else {
         await clearAllAuth();
       }
+    } else if (kind === "para") {
+      const session = await restoreParaSession();
+      if (session) {
+        _kind = "para";
+        _parent = session.address;
+        await _restoreCachedAuth();
+      } else {
+        await clearAllAuth();
+      }
     }
   } catch (e) {
     console.error("[auth] init failed:", e);
@@ -237,6 +250,36 @@ async function loginLocal(): Promise<boolean> {
   }
 }
 
+/**
+ * Called by ParaLogin.svelte after Para authentication completes.
+ * Para handles wallet creation internally; we just receive the address.
+ */
+async function loginPara(address: string): Promise<boolean> {
+  if (_busy) return false;
+  _busy = true;
+
+  try {
+    await putKV(StorageKeys.AUTH_KIND, "para" as AuthKind);
+    await putKV(StorageKeys.PARENT_ADDRESS, address);
+    _kind = "para";
+    _parent = address;
+    _localPrivateKey = null;
+    _passkeyPrivateKey = null;
+
+    await _restoreCachedAuth();
+
+    _cleanupAccountListener?.();
+    _cleanupAccountListener = null;
+
+    return true;
+  } catch (e) {
+    console.error("[auth] para login failed:", e);
+    return false;
+  } finally {
+    _busy = false;
+  }
+}
+
 async function loginPasskey(): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
@@ -276,6 +319,7 @@ async function login(method?: "web3" | "local" | "passkey"): Promise<boolean> {
   // No method specified — caller should show LoginModal
   return false;
 }
+// Para login is initiated from ParaLogin.svelte which calls loginPara(address) directly
 
 // ---------------------------------------------------------------------------
 // Deferred signing: ensureSession (lazy EIP-712 session delegation)
@@ -361,6 +405,9 @@ async function logout(): Promise<void> {
     const { disconnectWalletConnect } = await import("../wallet/wc-provider.js");
     await disconnectWalletConnect();
   }
+  if (_kind === "para") {
+    await logoutPara();
+  }
   await clearAllAuth();
 }
 
@@ -411,6 +458,7 @@ export const auth = {
   loginWeb3,
   loginLocal,
   loginPasskey,
+  loginPara,
   ensureSession,
   logout,
   ensurePodIdentity,

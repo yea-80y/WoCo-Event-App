@@ -1,3 +1,4 @@
 export { createWeb3Signer } from "./web3-signer.js";
 export { createLocalSigner } from "./local-signer.js";
 export { createPasskeySigner } from "./passkey-signer.js";
+export { createParaSigner } from "./para-signer.js";
