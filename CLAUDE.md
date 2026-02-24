@@ -17,11 +17,10 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
 
   DEPLOYMENT:
   - Backend server: 192.168.0.144 (user: ntl-dev), dir: ~/woco-events-server
-  - Frontend: Swarm feed via gateway.woco-net.com
+  - Frontend: Swarm feed via gateway.woco-net.com AND woco.eth.limo (ENS updated)
   - API: events-api.woco-net.com (Cloudflare tunnel to :3001)
-  - Live URL: https://gateway.woco-net.com/bzz/<hash>/
-  - Planned: woco.eth content hash update (ENS currently in grace period)
-  - Old app at woco.eth.limo — will link from new app
+  - Live URLs: https://woco.eth.limo/ and https://gateway.woco-net.com/bzz/<hash>/
+  - ENS: woco.eth content hash updated — woco.eth.limo now serves the current app
   - GitHub: github.com/yea-80y/woco_app
 
   PRODUCTION ENV (apps/server/.env on server laptop):
@@ -29,7 +28,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - CRITICAL: Never overwrite server .env during deploy (exclude from rsync)
   - Local .env and server .env differ — server has production ALLOWED_HOSTS
 
-  BUILD STATUS (as of 2026-02-18):
+  BUILD STATUS (as of 2026-02-24):
   [x] Monorepo scaffolding with npm workspaces
   [x] Auth overhaul: web3 wallet + local browser account (2 of 3 methods)
   [x] "Build first, sign later" UX (deferred signing at publish/claim time)
@@ -47,13 +46,17 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   [x] Server serves embed JS at /embed/woco-embed.js (~71KB, versioned with ?v=N)
   [x] Home page: hero, how-it-works, features, coming soon, footer
   [x] Bottom navigation bar (mobile/PWA-ready)
-  [x] Production deployment (Swarm feed + Cloudflare tunnel)
+  [x] Production deployment (Swarm feed + Cloudflare tunnel + woco.eth.limo via ENS)
   [x] Technical architecture documentation (docs/TECHNICAL_ARCHITECTURE.md)
   [x] Embed widget: wallet + passkey claims (EIP-191 signed, no session delegation needed)
-  [ ] Embed widget: iframe approach for cross-domain shared passkey identity (ENS subdomains)
+  [x] Embed widget: iframe approach for cross-domain passkey identity (ENS subdomains)
+  [x] Double-spend prevention for ticket claims (server-side slot locking)
+  [x] Organizer approval flow: approvalRequired per series, pending-claims feed,
+      approve/reject endpoints, ClaimButton shows "Request to attend" / "Pending Approval",
+      embed widget shows pending state, Dashboard approvals tab
+  [ ] Client-side caching / stale-while-revalidate (next task)
   [ ] Zupass login integration (3rd auth method)
   [ ] Para wallet integration (replaces local account)
-  [ ] ENS content hash update (woco.eth)
   [ ] User profile page
   [ ] PWA manifest + service worker
 
@@ -160,6 +163,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   woco/pod/claimers/{seriesId}            # Who claimed what (JSON feed)
   woco/pod/collection/{ethAddress}        # User's ticket collection (JSON feed)
   woco/pod/creator/{creatorPodKey}        # Creator's event index (JSON feed)
+  woco/pod/pending-claims/{seriesId}      # Approval queue (JSON feed, organizer-only)
 
   ============================================================================
   EMBED WIDGET
@@ -224,7 +228,11 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   apps/server/src/index.ts                        # Routes + embed JS serving
   apps/server/src/middleware/auth.ts               # Session delegation verification
   apps/server/src/routes/claims.ts                 # Claim endpoint (wallet auth + email rate limit)
+  apps/server/src/routes/approvals.ts              # Approve/reject pending claims (organizer auth)
   apps/server/src/routes/collection.ts             # User ticket collection
+  apps/server/src/lib/event/claim-service.ts       # Core claim + approval logic
+  apps/server/src/lib/event/service.ts             # Event creation
+  apps/server/src/lib/swarm/topics.ts              # Feed topic derivation
   apps/server/src/lib/auth/verify-delegation.ts    # EIP-712 verification + host check
 
   ============================================================================
@@ -252,6 +260,20 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   npm run build:server   # TypeScript check
   npm run build:embed    # IIFE bundle → packages/embed/dist/woco-embed.js
 
+  APPROVAL FLOW:
+  - Series can have approvalRequired: true (set at creation, stored in series metadata)
+  - Claim returns { approvalPending: true, pendingId } instead of instant ticket
+  - Slot reserved immediately on request (prevents double-assign on concurrent approvals)
+  - Pending entry written to woco/pod/pending-claims/{seriesId} feed
+  - GET /api/events/:id/pending-claims — organizer views queue (header auth)
+  - POST .../pending-claims/:pendingId/approve — finalises ticket, updates claimers feed
+  - POST .../pending-claims/:pendingId/reject — zeroes out reserved slot, frees it
+  - ClaimButton shows "Request to attend" / amber "Pending Approval" badge
+  - Embed widget shows "Pending Approval" state after submit
+  - Dashboard has "Approvals (N)" tab alongside Orders
+  - GET /claim-status returns userPendingId when pending, userEdition when approved
+  - Header auth for GET routes: x-session-address + x-session-delegation (base64 JSON)
+
   KNOWN GOTCHAS:
   - Vite base must be './' (relative) — absolute paths break under Swarm /bzz/ URLs
   - Upload script is .cjs (not .js) — monorepo has "type": "module"
@@ -260,3 +282,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - Local account sign-out clears session but keeps keypair for re-login
   - MyTickets triggers ensureSession on mount (lazy EIP-712) — not just login
   - Embed wallet claims disabled (need session delegation support in widget)
+  - Svelte 5 $state proxy: properties absent from initial object literal aren't reactive;
+    always initialise all fields at declaration time (e.g. approvalRequired: false, not omitted)
+  - bee-js v11: writer.upload() requires new Reference(hexString), not a plain string;
+    feed verification uses feed.feedIndex (not feed.reference which no longer exists)
