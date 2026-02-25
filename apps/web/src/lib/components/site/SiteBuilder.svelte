@@ -39,16 +39,21 @@
   let checkError = $state<string | null>(null);
 
   // Step 3 — event creation
-  interface SeriesItem {
+  interface WaveItem {
     id: string;
-    name: string;
-    description: string;
+    label: string;
     totalSupply: number;
-    wave: string;
     saleStart: string;
     saleEnd: string;
-    approvalRequired: boolean;
     showSaleWindow: boolean;
+  }
+
+  interface TierGroup {
+    id: string;
+    tierName: string;
+    description: string;
+    approvalRequired: boolean;
+    waves: WaveItem[];
   }
 
   interface FieldItem {
@@ -66,16 +71,19 @@
   let eventStartDate = $state("");
   let eventEndDate = $state("");
   let eventLocation = $state("");
-  let seriesItems = $state<SeriesItem[]>([{
+  let tierGroups = $state<TierGroup[]>([{
     id: crypto.randomUUID(),
-    name: "General Admission",
+    tierName: "General Admission",
     description: "",
-    totalSupply: 100,
-    wave: "",
-    saleStart: "",
-    saleEnd: "",
     approvalRequired: false,
-    showSaleWindow: false,
+    waves: [{
+      id: crypto.randomUUID(),
+      label: "",
+      totalSupply: 100,
+      saleStart: "",
+      saleEnd: "",
+      showSaleWindow: false,
+    }],
   }]);
   let fieldItems = $state<FieldItem[]>([]);
   let claimMode = $state<ClaimMode>("both");
@@ -85,23 +93,35 @@
   let createError = $state<string | null>(null);
   let createdEventId = $state<string | null>(null);
 
-  // Step 4 — site config
-  let gatewayUrl = $state("https://gateway.ethswarm.org");
-  let paraApiKey = $state("");
+  // Step 3 — stored results (used by step 5 WoCo listing)
+  interface StoredSeries {
+    seriesId: string;
+    name: string;
+    description: string;
+    totalSupply: number;
+    approvalRequired: boolean;
+    wave?: string;
+    saleStart?: string;
+    saleEnd?: string;
+  }
+  let storedSeries = $state<StoredSeries[]>([]);
+  let storedSignedTickets = $state<Record<string, SignedTicket[]>>({});
+  let storedEncryptionKey = $state<string | undefined>(undefined);
 
-  // Step 5 — env content
-  const envContent = $derived(
-    createdEventId
-      ? [
-          `VITE_API_URL=${apiUrl}`,
-          `VITE_GATEWAY_URL=${gatewayUrl.trim() || "https://gateway.ethswarm.org"}`,
-          `VITE_EVENT_ID=${createdEventId}`,
-          paraApiKey.trim()
-            ? `VITE_PARA_API_KEY=${paraApiKey.trim()}`
-            : `# VITE_PARA_API_KEY=your_para_api_key_here`,
-        ].join("\n")
-      : ""
-  );
+  // Step 4 — site config
+  let gatewayUrl = $state("https://gateway.woco-net.com");
+  let paraApiKey = $state("");
+  let listOnWoco = $state(false);
+
+  // Step 5 — deploy state
+  let deploying = $state(false);
+  let deployError = $state<string | null>(null);
+  let deployResult = $state<{ contentHash: string; feedManifestHash: string } | null>(null);
+
+  // Step 5 — WoCo listing state
+  let listingOnWoco = $state(false);
+  let wocoListError = $state<string | null>(null);
+  let wocoEventId = $state<string | null>(null);
 
   // Domain that must be in ALLOWED_HOSTS for the live site
   const gatewayHost = $derived(() => {
@@ -207,22 +227,47 @@ PORT=3001`);
 
   // ── Step 3 helpers ───────────────────────────────────────────────────────────
   function addTier() {
-    seriesItems.push({
+    tierGroups.push({
       id: crypto.randomUUID(),
-      name: "",
+      tierName: "",
       description: "",
-      totalSupply: 100,
-      wave: "",
-      saleStart: "",
-      saleEnd: "",
       approvalRequired: false,
-      showSaleWindow: false,
+      waves: [{
+        id: crypto.randomUUID(),
+        label: "",
+        totalSupply: 100,
+        saleStart: "",
+        saleEnd: "",
+        showSaleWindow: false,
+      }],
     });
   }
 
   function removeTier(id: string) {
-    const idx = seriesItems.findIndex(s => s.id === id);
-    if (idx !== -1) seriesItems.splice(idx, 1);
+    const idx = tierGroups.findIndex(t => t.id === id);
+    if (idx !== -1) tierGroups.splice(idx, 1);
+  }
+
+  function addWave(tierId: string) {
+    const tier = tierGroups.find(t => t.id === tierId);
+    if (tier) {
+      tier.waves.push({
+        id: crypto.randomUUID(),
+        label: "",
+        totalSupply: 100,
+        saleStart: "",
+        saleEnd: "",
+        showSaleWindow: false,
+      });
+    }
+  }
+
+  function removeWave(tierId: string, waveId: string) {
+    const tier = tierGroups.find(t => t.id === tierId);
+    if (tier) {
+      const idx = tier.waves.findIndex(w => w.id === waveId);
+      if (idx !== -1) tier.waves.splice(idx, 1);
+    }
   }
 
   function addField() {
@@ -278,13 +323,30 @@ PORT=3001`);
       if (!keypair) { createError = "Could not get signing key"; creatingEvent = false; return; }
 
       const signedTickets: Record<string, SignedTicket[]> = {};
-      const totalTickets = seriesItems.reduce((sum, s) => sum + s.totalSupply, 0);
+
+      // Flatten tier groups → individual series
+      const allSeries = tierGroups.flatMap(tier =>
+        tier.waves.map(wave => ({
+          seriesId: wave.id,
+          name: tier.waves.length > 1 && wave.label.trim()
+            ? `${tier.tierName.trim()} — ${wave.label.trim()}`
+            : tier.tierName.trim(),
+          description: tier.description.trim(),
+          totalSupply: wave.totalSupply,
+          approvalRequired: tier.approvalRequired,
+          ...(tier.waves.length > 1 && wave.label.trim() ? { wave: wave.label.trim() } : {}),
+          ...(wave.saleStart ? { saleStart: wave.saleStart } : {}),
+          ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
+        }))
+      );
+
+      const totalTickets = allSeries.reduce((sum, s) => sum + s.totalSupply, 0);
       let signed = 0;
 
-      for (const s of seriesItems) {
-        signedTickets[s.id] = await createSeriesTickets({
+      for (const s of allSeries) {
+        signedTickets[s.seriesId] = await createSeriesTickets({
           eventId: "",
-          seriesId: s.id,
+          seriesId: s.seriesId,
           seriesName: s.name,
           totalSupply: s.totalSupply,
           imageHash: "",
@@ -314,17 +376,10 @@ PORT=3001`);
             endDate: eventEndDate,
             location: eventLocation.trim(),
           },
-          series: seriesItems.map(s => ({
-            seriesId: s.id,
-            name: s.name.trim(),
-            description: s.description.trim(),
-            totalSupply: s.totalSupply,
-            approvalRequired: s.approvalRequired,
-            ...(s.wave.trim() ? { wave: s.wave.trim() } : {}),
-            ...(s.saleStart ? { saleStart: s.saleStart } : {}),
-            ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
-          })),
-          signedTickets,
+          series: allSeries,
+          signedTickets: Object.fromEntries(
+            allSeries.map(s => [s.seriesId, signedTickets[s.seriesId]])
+          ),
           image: eventImageDataUrl!,
           creatorAddress: auth.parent as `0x${string}`,
           creatorPodKey: auth.podPublicKeyHex!,
@@ -350,6 +405,12 @@ PORT=3001`);
 
       if (result.ok && result.eventId) {
         createdEventId = result.eventId;
+        // Store data for optional WoCo listing in step 5
+        storedSeries = allSeries;
+        storedSignedTickets = Object.fromEntries(
+          allSeries.map(s => [s.seriesId, signedTickets[s.seriesId]])
+        );
+        storedEncryptionKey = encryptionKey;
         step = 4;
       } else {
         createError = result.error || "Event creation failed";
@@ -368,19 +429,112 @@ PORT=3001`);
     !!eventEndDate &&
     eventStartDate <= eventEndDate &&
     !!eventImageDataUrl &&
-    seriesItems.length > 0 &&
-    seriesItems.every(s => !!s.name.trim() && s.totalSupply >= 1)
+    tierGroups.length > 0 &&
+    tierGroups.every(t =>
+      !!t.tierName.trim() &&
+      t.waves.length > 0 &&
+      t.waves.every(w => w.totalSupply >= 1)
+    )
   );
 
-  // ── Step 5: download ──────────────────────────────────────────────────────────
-  function downloadEnvFile() {
-    const blob = new Blob([envContent], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = ".env.site";
-    a.click();
-    URL.revokeObjectURL(url);
+  // ── Step 5: deploy ────────────────────────────────────────────────────────────
+
+  // WoCo's own API URL (the server that hosts this wizard)
+  const wocoApiUrl = import.meta.env.VITE_API_URL || "";
+
+  async function deployToSwarm() {
+    if (!createdEventId) return;
+    deploying = true;
+    deployError = null;
+    deployResult = null;
+
+    try {
+      const resp = await fetch(`${wocoApiUrl}/api/site/deploy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventId: createdEventId,
+          gatewayUrl: gatewayUrl.trim() || "https://gateway.ethswarm.org",
+          apiUrl: apiUrl,
+          ...(paraApiKey.trim() ? { paraApiKey: paraApiKey.trim() } : {}),
+        }),
+      });
+      const json = await resp.json() as { ok: boolean; data?: { contentHash: string; feedManifestHash: string }; error?: string };
+      if (json.ok && json.data) {
+        deployResult = json.data;
+      } else {
+        deployError = json.error || "Deploy failed";
+      }
+    } catch (e) {
+      deployError = e instanceof Error ? e.message : "Deploy failed";
+    } finally {
+      deploying = false;
+    }
+  }
+
+  // Derived URLs from deploy result
+  const eventSiteUrl = $derived(
+    deployResult
+      ? `${gatewayUrl.trim() || "https://gateway.ethswarm.org"}/bzz/${deployResult.contentHash}/`
+      : ""
+  );
+  const dashboardUrl = $derived(eventSiteUrl ? `${eventSiteUrl}#/dashboard` : "");
+  const ensHash = $derived(deployResult?.feedManifestHash ? `bzz://${deployResult.feedManifestHash}` : "");
+
+  async function createWocoListing() {
+    if (!createdEventId || storedSeries.length === 0) return;
+    listingOnWoco = true;
+    wocoListError = null;
+    wocoEventId = null;
+
+    // Need pod keypair to re-sign (WoCo event has different Swarm feed — same signatures still valid)
+    const podOk = await auth.ensurePodIdentity();
+    if (!podOk) { wocoListError = "Identity needed for WoCo listing."; listingOnWoco = false; return; }
+
+    try {
+      const result = await createEventStreaming(
+        {
+          event: {
+            title: eventTitle.trim(),
+            description: eventDescription.trim(),
+            startDate: eventStartDate,
+            endDate: eventEndDate,
+            location: eventLocation.trim(),
+          },
+          series: storedSeries,
+          signedTickets: storedSignedTickets,
+          image: eventImageDataUrl!,
+          creatorAddress: auth.parent as `0x${string}`,
+          creatorPodKey: auth.podPublicKeyHex!,
+          encryptionKey: storedEncryptionKey,
+          claimMode,
+          orderFields: [
+            ...(claimMode !== "wallet" ? [
+              { id: "__email", type: "email" as const, label: "Email", required: true, placeholder: "your@email.com" },
+            ] : []),
+            ...fieldItems.map(f => ({
+              id: f.id,
+              type: f.type,
+              label: f.label.trim(),
+              required: f.required,
+              ...(f.placeholder.trim() ? { placeholder: f.placeholder.trim() } : {}),
+              ...(f.options.length > 0 ? { options: f.options } : {}),
+            })),
+          ],
+        },
+        () => {},
+        // Call WoCo's own API (no override = uses VITE_API_URL = events-api.woco-net.com)
+      );
+      if (result.ok && result.eventId) {
+        wocoEventId = result.eventId;
+      } else {
+        wocoListError = result.error || "WoCo listing failed";
+      }
+    } catch (e) {
+      wocoListError = e instanceof Error ? e.message : "WoCo listing failed";
+    } finally {
+      listingOnWoco = false;
+    }
   }
 </script>
 
@@ -732,73 +886,106 @@ cp apps/server/.env.example apps/server/.env
           <!-- Ticket tiers -->
           <div class="section-divider">Ticket tiers</div>
 
-          {#each seriesItems as tier, i (tier.id)}
+          {#each tierGroups as tier, i (tier.id)}
             <div class="tier-card">
               <div class="tier-card-header">
                 <span class="tier-card-title">
                   Tier {i + 1}
-                  {#if tier.name.trim()}
-                    <span class="tier-name-preview">— {tier.name.trim()}</span>
-                  {/if}
-                  {#if tier.wave.trim()}
-                    <span class="wave-badge">{tier.wave.trim()}</span>
+                  {#if tier.tierName.trim()}
+                    <span class="tier-name-preview">— {tier.tierName.trim()}</span>
                   {/if}
                 </span>
-                {#if seriesItems.length > 1}
+                {#if tierGroups.length > 1}
                   <button class="tier-remove-btn" onclick={() => removeTier(tier.id)} type="button" aria-label="Remove tier">✕</button>
                 {/if}
               </div>
               <div class="tier-card-body">
                 <div class="row-2">
                   <div class="field-group">
-                    <label class="field-label">Name <span class="required">*</span></label>
-                    <input class="input" type="text" bind:value={tier.name} placeholder="General Admission" />
+                    <label class="field-label">Tier name <span class="required">*</span></label>
+                    <input class="input" type="text" bind:value={tier.tierName} placeholder="General Admission" />
                   </div>
                   <div class="field-group">
-                    <label class="field-label">Capacity <span class="required">*</span></label>
-                    <input class="input" type="number" bind:value={tier.totalSupply} min="1" max="100000" />
+                    <label class="field-label">Description <span class="optional">optional</span></label>
+                    <input class="input" type="text" bind:value={tier.description} placeholder="What's included" />
                   </div>
                 </div>
-
-                <div class="field-group">
-                  <label class="field-label">Description <span class="optional">optional</span></label>
-                  <input class="input" type="text" bind:value={tier.description} placeholder="What's included in this tier" />
-                </div>
-
-                <div class="row-2">
-                  <div class="field-group">
-                    <label class="field-label">Wave label <span class="optional">optional</span></label>
-                    <input class="input" type="text" bind:value={tier.wave} placeholder="Early Bird" />
-                  </div>
-                  <div class="field-group">
-                    <label class="field-label">&nbsp;</label>
-                    <button
-                      class="btn-ghost sale-window-toggle"
-                      type="button"
-                      onclick={() => { tier.showSaleWindow = !tier.showSaleWindow; }}
-                    >
-                      {tier.showSaleWindow ? "▼" : "▶"} Sale window
-                    </button>
-                  </div>
-                </div>
-
-                {#if tier.showSaleWindow}
-                  <div class="row-2 sale-window-row">
-                    <div class="field-group">
-                      <label class="field-label">Opens</label>
-                      <input class="input" type="datetime-local" bind:value={tier.saleStart} />
-                    </div>
-                    <div class="field-group">
-                      <label class="field-label">Closes</label>
-                      <input class="input" type="datetime-local" bind:value={tier.saleEnd} />
-                    </div>
-                  </div>
-                {/if}
 
                 <label class="checkbox-option">
                   <input type="checkbox" bind:checked={tier.approvalRequired} />
                   <span><strong>Require approval</strong> — you manually approve each claim from the dashboard</span>
                 </label>
+
+                <!-- Waves -->
+                <div class="waves-header">
+                  <span class="waves-label-text">Sale waves</span>
+                  {#if tier.waves.length === 1}
+                    <span class="waves-hint">Add more waves to split capacity by sale period (e.g. Early Bird → Standard)</span>
+                  {/if}
+                </div>
+
+                <div class="waves-col-labels" class:has-label={tier.waves.length > 1}>
+                  {#if tier.waves.length > 1}<span>Label</span>{/if}
+                  <span>Capacity</span>
+                  <span>Sale window</span>
+                </div>
+
+                {#each tier.waves as wave, wi (wave.id)}
+                  <div class="wave-row">
+                    <div class="wave-row-fields" class:has-label={tier.waves.length > 1}>
+                      {#if tier.waves.length > 1}
+                        <input
+                          class="input wave-label-input"
+                          type="text"
+                          bind:value={wave.label}
+                          placeholder={wi === 0 ? "Early Bird" : wi === 1 ? "Standard" : "Last Chance"}
+                        />
+                      {/if}
+                      <input
+                        class="input wave-supply-input"
+                        type="number"
+                        bind:value={wave.totalSupply}
+                        min="1"
+                        max="100000"
+                        title="Capacity"
+                      />
+                      <button
+                        class="btn-ghost wave-window-btn"
+                        class:active={wave.showSaleWindow}
+                        type="button"
+                        onclick={() => { wave.showSaleWindow = !wave.showSaleWindow; }}
+                        title="Set sale window"
+                      >
+                        {#if wave.saleStart || wave.saleEnd}
+                          <span class="wave-date-summary">
+                            {wave.saleStart ? wave.saleStart.slice(0, 10) : "…"}
+                            {#if wave.saleEnd} → {wave.saleEnd.slice(0, 10)}{/if}
+                          </span>
+                        {:else}
+                          Any time
+                        {/if}
+                        <span class="wave-window-chevron">{wave.showSaleWindow ? "▲" : "▼"}</span>
+                      </button>
+                      {#if tier.waves.length > 1}
+                        <button class="tier-remove-btn" onclick={() => removeWave(tier.id, wave.id)} type="button" aria-label="Remove wave">✕</button>
+                      {/if}
+                    </div>
+                    {#if wave.showSaleWindow}
+                      <div class="row-2 sale-window-row">
+                        <div class="field-group">
+                          <label class="field-label">Opens</label>
+                          <input class="input" type="datetime-local" bind:value={wave.saleStart} />
+                        </div>
+                        <div class="field-group">
+                          <label class="field-label">Closes</label>
+                          <input class="input" type="datetime-local" bind:value={wave.saleEnd} />
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+
+                <button class="btn-add wave-add-btn" type="button" onclick={() => addWave(tier.id)}>+ Add wave</button>
               </div>
             </div>
           {/each}
@@ -959,7 +1146,7 @@ cp apps/server/.env.example apps/server/.env
         <p class="field-hint">
           Used to load your event images and assets from Swarm.
           <code>gateway.ethswarm.org</code> is the recommended public gateway for production.
-          Do <strong>not</strong> use <code>gateway.woco-net.com</code> — that's a personal node, not suitable for Devcon-scale traffic.
+          Do <strong>not</strong> use <code>gateway.woco-net.com</code> — that's a personal node, not suitable for large-scale traffic.
         </p>
       </div>
 
@@ -996,89 +1183,239 @@ cp apps/server/.env.example apps/server/.env
         <p class="note">After updating, restart: <code>docker compose restart</code></p>
       </div>
 
+      <!-- List on WoCo option -->
+      <div class="list-woco-card">
+        <label class="checkbox-option list-woco-check">
+          <input type="checkbox" bind:checked={listOnWoco} />
+          <div>
+            <strong>List this event on WoCo</strong>
+            <p class="note">
+              Your event will appear in WoCo's public directory at
+              <a href="https://woco.eth.limo" target="_blank" rel="noopener">woco.eth.limo</a>
+              so attendees can discover it. WoCo will also create a sub-ENS record
+              (<code>yourname.woco.eth</code>) pointing to your event site — making it
+              accessible at a stable ENS address.
+            </p>
+            <p class="note" style="margin-top: 0.375rem; color: var(--text-muted);">
+              <em>ENS sub-record creation coming soon — tick to signal intent and get listed in the directory.</em>
+            </p>
+          </div>
+        </label>
+      </div>
+
       <div class="nav-row">
         <button class="btn-ghost" onclick={() => step = 3}>&larr; Back</button>
         <button class="btn-primary" onclick={() => step = 5}>
-          Generate site config &rarr;
+          Next: deploy &rarr;
         </button>
       </div>
     </div>
 
-  <!-- ── Step 5: Build & deploy ────────────────────────────────────────────────── -->
+  <!-- ── Step 5: Deploy ────────────────────────────────────────────────────────── -->
   {:else if step === 5}
     <div class="step-content">
-      <h2>Step 5 — Build &amp; deploy your site</h2>
+      <h2>Step 5 — Deploy your site</h2>
       <p class="step-intro">
-        Download the config file, build your site locally, upload it to Swarm,
-        and set the content hash on your ENS domain.
+        Your event site will be built and uploaded to Swarm in one click.
+        You'll receive a content hash you can set as an ENS record — or just share the gateway link directly.
       </p>
 
-      <!-- env.site download -->
-      <div class="output-card">
-        <div class="output-card-header">
-          <span class="mono">apps/web/.env.site</span>
-          <button class="btn-ghost" onclick={() => copyText(envContent)}>Copy</button>
+      {#if !deployResult}
+        <!-- Pre-deploy: summary + button -->
+        <div class="deploy-summary">
+          <div class="deploy-summary-row">
+            <span class="deploy-label">Event</span>
+            <span class="deploy-val">{eventTitle.trim()}</span>
+          </div>
+          <div class="deploy-summary-row">
+            <span class="deploy-label">API server</span>
+            <span class="deploy-val mono">{apiUrl}</span>
+          </div>
+          <div class="deploy-summary-row">
+            <span class="deploy-label">Gateway</span>
+            <span class="deploy-val mono">{gatewayUrl.trim() || "https://gateway.ethswarm.org"}</span>
+          </div>
+          {#if listOnWoco}
+            <div class="deploy-summary-row">
+              <span class="deploy-label">WoCo listing</span>
+              <span class="deploy-val">Yes — will appear on woco.eth.limo</span>
+            </div>
+          {/if}
         </div>
-        <pre class="env-pre">{envContent}</pre>
-        <button class="btn-primary download-btn" onclick={downloadEnvFile}>
-          &#11015; Download .env.site
-        </button>
-      </div>
 
-      <!-- Build instructions -->
-      <div class="instructions">
-        <h3>Build &amp; upload commands</h3>
-        <ol class="inst-list">
-          <li>
-            <strong>Place the config file</strong>
-            <pre class="code">mv ~/Downloads/.env.site WoCo-Event-App/apps/web/.env.site</pre>
-          </li>
-          <li>
-            <strong>Build the site</strong>
-            <pre class="code">cd WoCo-Event-App
-npm install
-npm run build:site</pre>
-            <p class="note">Output: <code>apps/web/dist-site/</code></p>
-          </li>
-          <li>
-            <strong>Configure your upload credentials</strong>
-            <p class="note">Create <code>scripts/.env</code> (your Bee node upload credentials — keep this private):</p>
-            <pre class="code">FEED_PRIVATE_KEY=0x&lt;same-key-as-server&gt;
-SITE_POSTAGE_BATCH_ID=&lt;your-batch-id&gt;
-SITE_BEE_URL=http://localhost:1633
-SITE_FEED_TOPIC=woco-site</pre>
-          </li>
-          <li>
-            <strong>Upload to Swarm</strong>
-            <pre class="code">npm run upload:site</pre>
-            <p class="note">The script prints a <strong>feed manifest hash</strong> and a direct content hash.</p>
-          </li>
-          <li>
-            <strong>Set your ENS content hash</strong>
-            <p class="note">Use the <strong>feed manifest</strong> for an updatable ENS entry (deploy new versions without changing the ENS record):</p>
-            <pre class="code"># In ENS Manager (app.ens.domains) — Content field:
-bzz://&lt;feed-manifest-hash&gt;</pre>
-            <p class="note">
-              Or use the direct content hash for a static pin:<br />
-              <code>bzz://&lt;content-hash&gt;</code>
+        {#if deployError}
+          <div class="create-error">
+            <strong>Deploy failed</strong>
+            <p>{deployError}</p>
+            <p class="note">Make sure the WoCo server has the latest <code>dist-site/</code> files rsynced.
+              Run <code>npm run build:site</code> locally and add <code>apps/web/dist-site/</code> to the server rsync, then retry.</p>
+          </div>
+        {/if}
+
+        {#if deploying}
+          <div class="progress-status">
+            <div class="spinner"></div>
+            <span>Building and uploading to Swarm… this takes 20–60 seconds.</span>
+          </div>
+        {/if}
+
+        <div class="nav-row">
+          <button class="btn-ghost" onclick={() => step = 4}>&larr; Back</button>
+          <button
+            class="btn-primary deploy-btn"
+            disabled={deploying}
+            onclick={deployToSwarm}
+          >
+            {deploying ? "Deploying…" : "Deploy to Swarm →"}
+          </button>
+        </div>
+
+      {:else}
+        <!-- Post-deploy: show all output -->
+        <div class="deploy-done-banner">
+          &#9989; Site deployed to Swarm
+        </div>
+
+        <!-- Event site URL -->
+        <div class="output-section">
+          <div class="output-section-header">
+            <span class="output-section-title">Event site</span>
+            <a
+              class="btn-primary output-launch-btn"
+              href={eventSiteUrl}
+              target="_blank"
+              rel="noopener"
+            >
+              Launch &#8599;
+            </a>
+          </div>
+          <div class="output-url-row">
+            <code class="output-url">{eventSiteUrl}</code>
+            <button class="btn-ghost copy-btn" onclick={() => copyText(eventSiteUrl)}>Copy</button>
+          </div>
+          <p class="output-hint">
+            This is your public event page. Share this link with attendees — no sign-in required to view it.
+          </p>
+        </div>
+
+        <!-- Dashboard URL -->
+        <div class="output-section">
+          <div class="output-section-header">
+            <span class="output-section-title">Organiser dashboard</span>
+          </div>
+          <div class="output-url-row">
+            <code class="output-url">{dashboardUrl}</code>
+            <button class="btn-ghost copy-btn" onclick={() => copyText(dashboardUrl)}>Copy</button>
+          </div>
+          <p class="output-hint">
+            Sign in with your wallet to view orders, decrypt attendee data, and manage approvals.
+            Bookmark this — it's not linked from the public page.
+          </p>
+        </div>
+
+        <!-- ENS section -->
+        <div class="output-section">
+          <div class="output-section-header">
+            <span class="output-section-title">ENS content hash</span>
+          </div>
+          {#if deployResult.feedManifestHash}
+            <div class="output-url-row">
+              <code class="output-url">{ensHash}</code>
+              <button class="btn-ghost copy-btn" onclick={() => copyText(ensHash)}>Copy</button>
+            </div>
+            <p class="output-hint">
+              Set this as your ENS content record at
+              <a href="https://app.ens.domains" target="_blank" rel="noopener">app.ens.domains</a>.
+              This is a <strong>feed manifest</strong> — future redeploys update the content without
+              changing this hash, so your ENS record never needs to change.
             </p>
-          </li>
-        </ol>
-
-        <div class="info-box" style="margin-top: 1.5rem;">
-          <h4>&#127881; What you'll have</h4>
-          <ul class="checklist">
-            <li>A standalone event page at your ENS domain (e.g. <code>devcon.eth.limo</code>)</li>
-            <li>Your attendees can claim tickets without ever touching WoCo's servers</li>
-            <li>Dashboard at <code>your-ens-domain/#/dashboard</code> — sign in with your wallet to manage orders</li>
-            <li>Re-run <code>npm run upload:site</code> any time to push updates without changing ENS</li>
-          </ul>
+          {:else}
+            <div class="output-url-row">
+              <code class="output-url">bzz://{deployResult.contentHash}</code>
+              <button class="btn-ghost copy-btn" onclick={() => copyText(`bzz://${deployResult.contentHash}`)}>Copy</button>
+            </div>
+            <p class="output-hint">Direct content hash — set this on your ENS record.</p>
+          {/if}
+          <p class="output-hint" style="margin-top: 0.5rem;">
+            Or point your own domain (sub-ENS or custom domain) at the gateway URL above
+            via a <code>_dnslink</code> TXT record or a redirect.
+          </p>
         </div>
-      </div>
 
-      <div class="nav-row">
-        <button class="btn-ghost" onclick={() => step = 4}>&larr; Back</button>
-      </div>
+        <!-- Raw hashes (collapsible reference) -->
+        <details class="hash-details">
+          <summary>Raw hashes</summary>
+          <div class="hash-row">
+            <span class="hash-label">Content hash</span>
+            <code class="hash-val">{deployResult.contentHash}</code>
+            <button class="btn-ghost copy-btn" onclick={() => copyText(deployResult!.contentHash)}>Copy</button>
+          </div>
+          {#if deployResult.feedManifestHash}
+            <div class="hash-row">
+              <span class="hash-label">Feed manifest</span>
+              <code class="hash-val">{deployResult.feedManifestHash}</code>
+              <button class="btn-ghost copy-btn" onclick={() => copyText(deployResult!.feedManifestHash)}>Copy</button>
+            </div>
+          {/if}
+        </details>
+
+        <!-- WoCo listing -->
+        {#if listOnWoco}
+          <div class="woco-listing-section">
+            <div class="woco-listing-header">
+              <span class="output-section-title">WoCo directory listing</span>
+            </div>
+
+            {#if wocoEventId}
+              <div class="woco-listed-banner">&#127881; Listed on WoCo!</div>
+              <div class="output-url-row" style="margin-top: 0.5rem;">
+                <a
+                  class="btn-primary output-launch-btn"
+                  href="{import.meta.env.VITE_GATEWAY_URL || 'https://gateway.woco-net.com'}/bzz/{deployResult.contentHash}/"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  View event site &#8599;
+                </a>
+                <a
+                  class="btn-ghost"
+                  href="/#/event/{wocoEventId}"
+                  target="_blank"
+                  rel="noopener"
+                  style="padding: 0.4375rem 0.875rem; font-size: 0.8125rem;"
+                >
+                  View on WoCo &#8599;
+                </a>
+              </div>
+            {:else if wocoListError}
+              <div class="create-error" style="margin: 0;">{wocoListError}</div>
+              <button class="btn-primary" style="margin-top: 0.75rem;" onclick={createWocoListing} disabled={listingOnWoco}>
+                Retry WoCo listing
+              </button>
+            {:else if listingOnWoco}
+              <div class="progress-status">
+                <div class="spinner"></div>
+                <span>Creating WoCo listing…</span>
+              </div>
+            {:else}
+              <p class="output-hint">
+                Your event will appear on <strong>woco.eth.limo</strong> and attendees will be routed to your
+                standalone event site at the gateway URL above.
+              </p>
+              <button class="btn-primary" onclick={createWocoListing}>
+                Create WoCo listing →
+              </button>
+            {/if}
+          </div>
+        {/if}
+
+        <div class="nav-row" style="margin-top: 1rem;">
+          <span></span>
+          <button class="btn-ghost" onclick={() => { step = 4; deployResult = null; }}>
+            &larr; Change config &amp; redeploy
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -1663,80 +2000,204 @@ bzz://&lt;feed-manifest-hash&gt;</pre>
     font-size: 0.8rem;
   }
 
-  /* ── Step 5 ───────────────────────────────────────────────────────────────── */
-  .output-card {
+  /* ── Step 4 — WoCo listing card ─────────────────────────────────────────── */
+  .list-woco-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1rem 1.125rem;
+    background: var(--bg-surface);
+  }
+
+  .list-woco-check {
+    align-items: flex-start;
+  }
+
+  /* ── Step 5 — deploy summary ─────────────────────────────────────────────── */
+  .deploy-summary {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     overflow: hidden;
   }
 
-  .output-card-header {
+  .deploy-summary-row {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.5rem 0.875rem;
-    background: var(--bg-elevated);
+    align-items: baseline;
+    gap: 1rem;
+    padding: 0.625rem 1rem;
     border-bottom: 1px solid var(--border);
+    font-size: 0.875rem;
   }
 
-  .output-card-header .mono {
-    font-family: monospace;
+  .deploy-summary-row:last-child {
+    border-bottom: none;
+  }
+
+  .deploy-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+    width: 5rem;
+  }
+
+  .deploy-val {
+    color: var(--text-secondary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .deploy-btn {
+    min-width: 10rem;
+  }
+
+  /* ── Step 5 — post-deploy output ─────────────────────────────────────────── */
+  .deploy-done-banner {
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 1rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--success);
+  }
+
+  .output-section {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.875rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .output-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .output-section-title {
     font-size: 0.8125rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
     color: var(--text-muted);
   }
 
-  .download-btn {
-    width: 100%;
-    border-radius: 0;
-    border-top: 1px solid var(--border);
-    padding: 0.75rem;
+  .output-launch-btn {
+    font-size: 0.8125rem;
+    padding: 0.375rem 0.75rem;
+    text-decoration: none;
   }
 
-  .instructions h3 {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--text);
-    margin: 0 0 1rem;
-  }
-
-  .inst-list {
+  .output-url-row {
     display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-    padding-left: 1.25rem;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .output-url {
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    padding: 0.3rem 0.5rem;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .copy-btn {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.5rem;
+  }
+
+  .output-hint {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.55;
     margin: 0;
   }
 
-  .inst-list li {
-    font-size: 0.9375rem;
-    color: var(--text-secondary);
-    line-height: 1.5;
+  /* ── Hash details ─────────────────────────────────────────────────────────── */
+  .hash-details {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
   }
 
-  .inst-list strong {
-    display: block;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 0.375rem;
-  }
-
-  .inst-list .note {
+  .hash-details summary {
+    padding: 0.5rem 0.875rem;
     font-size: 0.8125rem;
     color: var(--text-muted);
-    margin: 0.375rem 0;
-    line-height: 1.5;
+    cursor: pointer;
+    user-select: none;
   }
 
-  .checklist {
-    padding-left: 1.125rem;
-    margin: 0.5rem 0 0;
+  .hash-details[open] summary {
+    border-bottom: 1px solid var(--border);
   }
 
-  .checklist li {
-    font-size: 0.875rem;
+  .hash-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8125rem;
+  }
+
+  .hash-row:last-child { border-bottom: none; }
+
+  .hash-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    width: 6rem;
+  }
+
+  .hash-val {
+    font-family: monospace;
+    font-size: 0.6875rem;
     color: var(--text-secondary);
-    margin-bottom: 0.375rem;
-    line-height: 1.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* ── WoCo listing section ────────────────────────────────────────────────── */
+  .woco-listing-section {
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: var(--radius-md);
+    padding: 0.875rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+  }
+
+  .woco-listing-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .woco-listed-banner {
+    font-weight: 600;
+    color: var(--success);
+    font-size: 0.9375rem;
   }
 
   /* ── Shared: form fields ─────────────────────────────────────────────────── */
@@ -1887,15 +2348,104 @@ bzz://&lt;feed-manifest-hash&gt;</pre>
     color: var(--text-muted);
   }
 
-  .wave-badge {
-    font-size: 0.6875rem;
+  /* ── Waves ────────────────────────────────────────────────────────────────── */
+  .waves-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.625rem;
+    margin-top: 0.25rem;
+  }
+
+  .waves-label-text {
+    font-size: 0.8125rem;
     font-weight: 600;
-    padding: 0.1rem 0.45rem;
-    border-radius: 9999px;
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--accent-text);
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+
+  .waves-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+
+  .waves-col-labels {
+    display: grid;
+    grid-template-columns: 5rem 1fr;
+    gap: 0.5rem;
+    padding: 0 0.125rem;
+  }
+
+  .waves-col-labels.has-label {
+    grid-template-columns: 1fr 5rem 1fr;
+  }
+
+  .waves-col-labels span {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .wave-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .wave-row-fields {
+    display: grid;
+    grid-template-columns: 5rem 1fr;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .wave-row-fields.has-label {
+    grid-template-columns: 1fr 5rem 1fr auto;
+  }
+
+  .wave-supply-input {
+    text-align: right;
+    min-width: 0;
+  }
+
+  .wave-label-input {
+    min-width: 0;
+  }
+
+  .wave-window-btn {
+    font-size: 0.8125rem;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+  }
+
+  .wave-window-btn.active {
+    border-color: var(--accent);
+    color: var(--accent-text);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+
+  .wave-date-summary {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+  }
+
+  .wave-window-chevron {
+    font-size: 0.625rem;
+    opacity: 0.6;
+  }
+
+  .wave-add-btn {
+    margin-top: 0.25rem;
+    font-size: 0.8125rem;
+    padding: 0.375rem;
   }
 
   .tier-remove-btn {
@@ -1918,12 +2468,6 @@ bzz://&lt;feed-manifest-hash&gt;</pre>
     display: flex;
     flex-direction: column;
     gap: 0.875rem;
-  }
-
-  .sale-window-toggle {
-    width: 100%;
-    text-align: left;
-    font-size: 0.8125rem;
   }
 
   .sale-window-row {

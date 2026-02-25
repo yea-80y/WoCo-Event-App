@@ -47,6 +47,9 @@ export async function createEvent(opts: {
     description: string;
     totalSupply: number;
     approvalRequired?: boolean;
+    wave?: string;
+    saleStart?: string;
+    saleEnd?: string;
   }>;
   /** signedTickets[seriesId] = array of serialized signed tickets */
   signedTickets: Record<string, string[]>;
@@ -169,6 +172,9 @@ export async function createEvent(opts: {
       totalSupply: s.totalSupply,
       price: 0,
       ...(s.approvalRequired ? { approvalRequired: true } : {}),
+      ...(s.wave ? { wave: s.wave } : {}),
+      ...(s.saleStart ? { saleStart: s.saleStart } : {}),
+      ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
     });
   }
 

@@ -10,6 +10,11 @@ export default defineConfig({
   ],
   server: {
     proxy: {
+      // Site builder deploy runs on the local dev server — not yet on production
+      '/api/site': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
       '/api': {
         target: 'https://events-api.woco-net.com',
         changeOrigin: true,

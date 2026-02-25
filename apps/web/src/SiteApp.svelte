@@ -8,7 +8,11 @@
   import EventPage from "./lib/components/site/EventPage.svelte";
   import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
 
-  const EVENT_ID = import.meta.env.VITE_EVENT_ID || "";
+  // Runtime config (injected by deploy endpoint) takes priority over build-time env vars
+  const EVENT_ID =
+    (typeof window !== "undefined" && window.SITE_CONFIG?.eventId) ||
+    import.meta.env.VITE_EVENT_ID ||
+    "";
 
   let route = $state(parseRoute());
 
@@ -27,33 +31,48 @@
 </script>
 
 <main>
-  <header class="top-bar">
-    <div class="logo">
-      <span>Events</span>
-    </div>
-
-    <div class="top-right">
-      {#if !auth.ready}
-        <span class="loading">Loading...</span>
-      {:else if auth.isConnected}
-        <SessionStatus />
-      {:else}
-        <button class="sign-in-btn" onclick={() => loginRequest.request()}>
-          Sign in
-        </button>
-      {/if}
-    </div>
-  </header>
+  <!--
+    Dashboard gets a full header with auth controls.
+    The public event page has NO persistent auth UI — auth happens
+    inline inside the ClaimButton flow when the attendee clicks "Get ticket".
+  -->
+  {#if route === "dashboard"}
+    <header class="top-bar">
+      <button class="logo-back" onclick={() => { window.location.hash = "#/"; }}>
+        ← Event
+      </button>
+      <div class="top-right">
+        {#if !auth.ready}
+          <span class="loading">Loading…</span>
+        {:else if auth.isConnected}
+          <SessionStatus />
+        {:else}
+          <button class="sign-in-btn" onclick={() => loginRequest.request()}>Sign in</button>
+        {/if}
+      </div>
+    </header>
+  {/if}
 
   <section class="content">
     {#if !EVENT_ID}
       <p class="config-error">
-        Event not configured. Set <code>VITE_EVENT_ID</code> in your .env.site file.
+        Event not configured. Set <code>VITE_EVENT_ID</code> in your <code>.env.site</code> file.
       </p>
     {:else if route === "event"}
       <EventPage eventId={EVENT_ID} ondashboard={() => { window.location.hash = "#/dashboard"; }} />
     {:else if route === "dashboard"}
-      <Dashboard eventId={EVENT_ID} />
+      {#if !auth.ready}
+        <div class="state-center">
+          <div class="loader"></div>
+        </div>
+      {:else if !auth.isConnected}
+        <div class="state-center">
+          <p class="state-hint">Sign in to view the organizer dashboard.</p>
+          <button class="sign-in-cta" onclick={() => loginRequest.request()}>Sign in</button>
+        </div>
+      {:else}
+        <Dashboard eventId={EVENT_ID} />
+      {/if}
     {/if}
   </section>
 </main>
@@ -68,6 +87,7 @@
     padding: 0 1.25rem 3rem;
   }
 
+  /* ── Dashboard header ────────────────────────────────────────────────────── */
   .top-bar {
     display: flex;
     justify-content: space-between;
@@ -78,12 +98,17 @@
     gap: 0.75rem;
   }
 
-  .logo {
-    font-size: 1.125rem;
-    font-weight: 700;
-    color: var(--text);
-    letter-spacing: -0.02em;
+  .logo-back {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: color var(--transition);
+    white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  .logo-back:hover {
+    color: var(--text);
   }
 
   .top-right {
@@ -119,6 +144,44 @@
   .content {
     padding: 0.25rem 0 2rem;
   }
+
+  .state-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 5rem 0;
+    gap: 1.25rem;
+  }
+
+  .loader {
+    width: 1.25rem;
+    height: 1.25rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .state-hint {
+    font-size: 0.9375rem;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  .sign-in-cta {
+    padding: 0.5625rem 1.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
+  }
+
+  .sign-in-cta:hover { background: var(--accent-hover); }
 
   .config-error {
     text-align: center;
