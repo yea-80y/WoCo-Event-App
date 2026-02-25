@@ -16,6 +16,7 @@ function matchRoute(path: string): { route: string; params: Record<string, strin
   if (path === "/create") return { route: "create", params: {} };
   if (path === "/my-tickets") return { route: "my-tickets", params: {} };
   if (path === "/dashboard") return { route: "dashboard-index", params: {} };
+  if (path === "/site-builder") return { route: "site-builder", params: {} };
 
   const dashboardMatch = path.match(/^\/event\/(.+)\/dashboard$/);
   if (dashboardMatch) return { route: "dashboard", params: { id: dashboardMatch[1] } };

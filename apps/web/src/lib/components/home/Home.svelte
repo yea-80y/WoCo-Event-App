@@ -105,6 +105,40 @@
   </div>
 </section>
 
+<!-- Self-host CTA -->
+<section class="self-host-section">
+  <div class="self-host-inner">
+    <div class="self-host-text">
+      <span class="tag">For organisations</span>
+      <h2>Run your own infrastructure</h2>
+      <p>
+        Deploy WoCo's backend on your own servers — zero dependency on WoCo after setup.
+        Generate a standalone event site hosted on Swarm, point it at your ENS domain,
+        and own everything end-to-end.
+      </p>
+      <ul class="self-host-highlights">
+        <li>&#10003; Your Bee node · your feeds · your keys</li>
+        <li>&#10003; Standalone event page deployable to Swarm in minutes</li>
+        <li>&#10003; Attendee dashboard included — decrypt orders locally in your browser</li>
+        <li>&#10003; Docker Compose setup · guided 5-step wizard</li>
+      </ul>
+    </div>
+    <div class="self-host-actions">
+      <button class="btn-self-host" onclick={() => navigate("/site-builder")}>
+        &#127760; Build your event site
+      </button>
+      <a
+        class="btn-docs"
+        href="https://github.com/yea-80y/woco_app/blob/main/docs/self-hosted-setup.md"
+        target="_blank"
+        rel="noopener"
+      >
+        Setup guide &rarr;
+      </a>
+    </div>
+  </div>
+</section>
+
 <!-- Events -->
 <section class="events-section">
   <h2>Events</h2>
@@ -156,12 +190,17 @@
     <div class="roadmap-item">
       <span class="roadmap-tag">Hosting</span>
       <h3>Portable frontends</h3>
-      <p>Export your event page or user profile as a standalone site. Host it on your own domain, customise the look, and take your data with you.</p>
+      <p>Deploy fully branded event sites with custom themes and your own domain. Multi-event portals, white-label hosting, and ENS subdomains per event on the roadmap.</p>
     </div>
     <div class="roadmap-item">
-      <span class="roadmap-tag">Infra</span>
-      <h3>Bring your own Bee node</h3>
-      <p>Connect your own Swarm Bee node and postage batch. Full control over your storage — no reliance on our gateway.</p>
+      <span class="roadmap-tag">Identity</span>
+      <h3>Zupass integration</h3>
+      <p>Sign in with your Zupass identity. Your Zupass credentials become your ticket identity.</p>
+    </div>
+    <div class="roadmap-item">
+      <span class="roadmap-tag">Payments</span>
+      <h3>Paid tickets</h3>
+      <p>Accept payments for tickets — crypto and fiat. Set prices per series with built-in checkout and a payment webhook.</p>
     </div>
   </div>
 </section>
@@ -345,6 +384,107 @@
     color: var(--text-secondary);
     line-height: 1.5;
     margin: 0;
+  }
+
+  /* Self-host */
+  .self-host-section {
+    padding: 2.5rem 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .self-host-inner {
+    display: flex;
+    gap: 2rem;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .self-host-text {
+    flex: 1;
+    min-width: 260px;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--accent-text);
+    background: var(--accent-subtle);
+    padding: 0.175rem 0.5rem;
+    border-radius: 9999px;
+    margin-bottom: 0.625rem;
+  }
+
+  .self-host-text h2 {
+    font-size: 1.375rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 0.75rem;
+    letter-spacing: -0.01em;
+  }
+
+  .self-host-text p {
+    font-size: 0.9375rem;
+    color: var(--text-secondary);
+    line-height: 1.65;
+    margin: 0 0 1rem;
+    max-width: 420px;
+  }
+
+  .self-host-highlights {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .self-host-highlights li {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+  }
+
+  .self-host-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    flex-shrink: 0;
+    padding-top: 0.5rem;
+  }
+
+  .btn-self-host {
+    padding: 0.75rem 1.5rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
+    white-space: nowrap;
+  }
+
+  .btn-self-host:hover { background: var(--accent-hover); }
+
+  .btn-docs {
+    padding: 0.625rem 1.25rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    text-align: center;
+    text-decoration: none;
+    transition: all var(--transition);
+  }
+
+  .btn-docs:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
+    text-decoration: none;
   }
 
   /* Events */

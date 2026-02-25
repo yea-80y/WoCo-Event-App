@@ -70,14 +70,17 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   [x] Self-hosted backend packaging — Dockerfile, docker-compose.yml, .env.example,
       docs/self-hosted-setup.md. Organiser clones repo, fills .env, docker compose up.
       Zero WoCo dependency after setup. Bee port 1633 (standard).
-  [ ] Site builder MVP — IN PROGRESS (see memory file for full plan)
-      - SiteApp.svelte: minimal shell (#/ event page + #/dashboard)
-      - vite.site.config.ts: separate build target
-      - SiteBuilder.svelte: form in WoCo app at #/site-builder
-      - Output: .env.site download + commands to run locally (decentralised approach)
-      - Auth: web3 wallet (primary) + Para wallet; no local account
-      - Claim flow: reuse ClaimButton.svelte as-is (email + web3 + Para)
-      - Dashboard: reuse Dashboard.svelte directly — zero new dashboard code
+  [x] Site builder MVP — COMPLETE
+      - SiteApp.svelte: minimal shell (#/ EventPage + #/dashboard Dashboard)
+      - vite.site.config.ts: separate build → apps/web/dist-site/
+      - SiteBuilder.svelte: form at #/site-builder (event picker + API URL + gateway)
+      - Output: downloadable apps/web/.env.site + copy-paste build/upload instructions
+      - Auth: web3 wallet + Para (SiteLoginModal — no local account)
+      - Claim flow: ClaimButton.svelte reused as-is
+      - Dashboard: Dashboard.svelte reused directly
+      - Upload: scripts/upload-site-to-swarm.cjs (npm run upload:site)
+      - Entry: site.html → site-main.ts → SiteApp.svelte
+      - DashboardIndex: "Build a standalone event site" CTA → #/site-builder
   [ ] Content hash registry (woco/registry/verified-frontends feed + WoCo signature)
   [ ] Payment webhook endpoint (receive confirmation → mint ticket; mock-friendly)
   [ ] Zupass login (4th auth method — ed25519 adapter for session delegation)

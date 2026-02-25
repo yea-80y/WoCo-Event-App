@@ -24,17 +24,23 @@ export interface PublishProgress {
 /**
  * Create event with streaming progress.
  * Reads NDJSON from the server and calls onProgress for each update.
+ *
+ * @param baseUrlOverride  Target a different API server (e.g. organiser's self-hosted backend).
+ *                         When omitted, uses the default VITE_API_URL.
  */
 export async function createEventStreaming(
   req: Omit<CreateEventRequest, "session" | "delegation">,
   onProgress?: (p: PublishProgress) => void,
+  baseUrlOverride?: string,
 ): Promise<CreateEventResponse> {
+  const base = baseUrlOverride ?? apiBase;
+
   // We need the auth headers, so build the request manually
   const { auth } = await import("../auth/auth-store.svelte.js");
   const signed = await auth.signRequest(JSON.stringify(req));
   if (!signed) throw new Error("Not authenticated");
 
-  const resp = await fetch(`${apiBase}/api/events`, {
+  const resp = await fetch(`${base}/api/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

@@ -1,0 +1,1455 @@
+<script lang="ts">
+  import type { ClaimMode } from "@woco/shared";
+  import { auth } from "../../auth/auth-store.svelte.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { createEventStreaming, type PublishProgress } from "../../api/events.js";
+  import { onMount } from "svelte";
+
+  // ── Types ────────────────────────────────────────────────────────────────────
+  interface SetupCheckResult {
+    apiOk: true;
+    signerConfigured: boolean;
+    signerAddress: string | null;
+    signerError: string | null;
+    batchConfigured: boolean;
+    batchUsable: boolean;
+    batchTTL: number | null;
+    batchUtilization: number | null;
+    beeConnected: boolean;
+    beeVersion: string | null;
+    beePeers: number | null;
+    beeError: string | null;
+  }
+
+  // ── Wizard step ───────────────────────────────────────────────────────────────
+  let step = $state(1);
+
+  // Step 1 — computed values (available at runtime)
+  const wocoHost = typeof window !== "undefined" ? window.location.hostname : "woco.eth.limo";
+
+  // Step 2 — API verification
+  let apiUrl = $state("");
+  let apiUrlInput = $state("");
+  let checking = $state(false);
+  let checkResult = $state<SetupCheckResult | null>(null);
+  let checkError = $state<string | null>(null);
+
+  // Step 3 — event creation
+  let eventTitle = $state("");
+  let eventDescription = $state("");
+  let eventStartDate = $state("");
+  let eventEndDate = $state("");
+  let eventLocation = $state("");
+  let seriesName = $state("General Admission");
+  let seriesSupply = $state(100);
+  let seriesDescription = $state("");
+  let claimMode = $state<ClaimMode>("both");
+  let approvalRequired = $state(false);
+  let creatingEvent = $state(false);
+  let createProgress = $state("");
+  let createError = $state<string | null>(null);
+  let createdEventId = $state<string | null>(null);
+
+  // Step 4 — site config
+  let gatewayUrl = $state("https://gateway.ethswarm.org");
+  let paraApiKey = $state("");
+
+  // Step 5 — env content
+  const envContent = $derived(
+    createdEventId
+      ? [
+          `VITE_API_URL=${apiUrl}`,
+          `VITE_GATEWAY_URL=${gatewayUrl.trim() || "https://gateway.ethswarm.org"}`,
+          `VITE_EVENT_ID=${createdEventId}`,
+          paraApiKey.trim()
+            ? `VITE_PARA_API_KEY=${paraApiKey.trim()}`
+            : `# VITE_PARA_API_KEY=your_para_api_key_here`,
+        ].join("\n")
+      : ""
+  );
+
+  // Domain that must be in ALLOWED_HOSTS for the live site
+  const gatewayHost = $derived(() => {
+    try { return new URL(gatewayUrl).hostname; } catch { return "gateway.ethswarm.org"; }
+  });
+
+  // Full ALLOWED_HOSTS value to show the organiser
+  const allowedHosts = $derived(
+    [gatewayHost(), wocoHost, "gateway.woco-net.com", "localhost:5173"]
+      .filter((h, i, arr) => h && arr.indexOf(h) === i)
+      .join(",")
+  );
+
+  // ── Step 1: coming-from env template ─────────────────────────────────────────
+  const envTemplate = $derived(`# apps/server/.env
+
+# Required
+FEED_PRIVATE_KEY=0x<your-64-hex-char-private-key>
+POSTAGE_BATCH_ID=<your-batch-id>
+BEE_URL=http://localhost:1633
+
+# CRITICAL: include WoCo's domain so the wizard can create events,
+# and the gateway domain so attendees can claim from your live site.
+ALLOWED_HOSTS=${allowedHosts}
+
+# Optional
+PORT=3001`);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
+  function normaliseUrl(raw: string): string {
+    let url = raw.trim().replace(/\/$/, "");
+    if (url && !url.startsWith("http")) url = "https://" + url;
+    return url;
+  }
+
+  function formatTTL(seconds: number): string {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    if (d >= 1) return `${d} day${d !== 1 ? "s" : ""}${h > 0 ? ` ${h}h` : ""}`;
+    return `${h} hour${h !== 1 ? "s" : ""}`;
+  }
+
+  function ttlSeverity(seconds: number | null): "ok" | "warn" | "error" {
+    if (seconds === null) return "error";
+    if (seconds < 86400) return "error";       // < 1 day
+    if (seconds < 7 * 86400) return "warn";    // < 7 days
+    return "ok";
+  }
+
+  function copyText(text: string) {
+    navigator.clipboard.writeText(text);
+  }
+
+  // ── Step 2: health check ──────────────────────────────────────────────────────
+  async function runChecks() {
+    const url = normaliseUrl(apiUrlInput);
+    if (!url) return;
+    checking = true;
+    checkResult = null;
+    checkError = null;
+    try {
+      const resp = await fetch(`${url}/api/admin/setup-check`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      const json = await resp.json();
+      if (json.ok && json.data) {
+        checkResult = json.data as SetupCheckResult;
+        apiUrl = url;
+      } else {
+        checkError = json.error || "Unexpected response from setup-check";
+      }
+    } catch (e) {
+      checkError = e instanceof Error ? e.message : "Could not reach API";
+    } finally {
+      checking = false;
+    }
+  }
+
+  // ── Step 3: event creation ────────────────────────────────────────────────────
+  async function createEvent() {
+    createError = null;
+
+    if (!auth.isConnected) {
+      const ok = await loginRequest.request();
+      if (!ok) return;
+    }
+
+    const sessionOk = await auth.ensureSession();
+    if (!sessionOk) { createError = "Session setup failed or was cancelled."; return; }
+
+    const podOk = await auth.ensurePodIdentity();
+    if (!podOk) { createError = "Identity setup failed or was cancelled."; return; }
+
+    creatingEvent = true;
+    createProgress = "Preparing...";
+    try {
+      const result = await createEventStreaming(
+        {
+          title: eventTitle.trim(),
+          description: eventDescription.trim(),
+          startDate: eventStartDate,
+          endDate: eventEndDate,
+          location: eventLocation.trim(),
+          imageDataUrl: null,
+          series: [
+            {
+              seriesId: crypto.randomUUID(),
+              name: seriesName.trim(),
+              description: seriesDescription.trim(),
+              totalSupply: seriesSupply,
+              approvalRequired,
+            },
+          ],
+          claimMode,
+          orderFields: claimMode !== "wallet" ? [
+            { id: "__email", type: "email" as const, label: "Email", required: true, placeholder: "your@email.com" },
+          ] : [],
+          encryptionKey: "",  // server generates this
+        },
+        (p: PublishProgress) => { createProgress = p.message; },
+        apiUrl,
+      );
+
+      if (result.ok && result.eventId) {
+        createdEventId = result.eventId;
+        step = 4;
+      } else {
+        createError = result.error || "Event creation failed";
+      }
+    } catch (e) {
+      createError = e instanceof Error ? e.message : "Event creation failed";
+    } finally {
+      creatingEvent = false;
+      createProgress = "";
+    }
+  }
+
+  const step3Valid = $derived(
+    !!eventTitle.trim() &&
+    !!eventStartDate &&
+    !!eventEndDate &&
+    !!seriesName.trim() &&
+    seriesSupply >= 1 &&
+    eventStartDate <= eventEndDate
+  );
+
+  // ── Step 5: download ──────────────────────────────────────────────────────────
+  function downloadEnvFile() {
+    const blob = new Blob([envContent], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = ".env.site";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+</script>
+
+<!-- ────────────────────────────────────────────────────────────────────────────
+  Wizard shell
+──────────────────────────────────────────────────────────────────────────── -->
+<div class="wizard">
+
+  <!-- Progress bar -->
+  <div class="progress-bar">
+    {#each [1,2,3,4,5] as n}
+      <div class="progress-step" class:done={step > n} class:active={step === n} class:future={step < n}>
+        <div class="progress-dot">{step > n ? "✓" : n}</div>
+        <span class="progress-label">
+          {n === 1 ? "Setup" : n === 2 ? "Verify" : n === 3 ? "Event" : n === 4 ? "Site" : "Deploy"}
+        </span>
+      </div>
+      {#if n < 5}
+        <div class="progress-line" class:done={step > n}></div>
+      {/if}
+    {/each}
+  </div>
+
+  <!-- ── Step 1: Deploy your backend ─────────────────────────────────────────── -->
+  {#if step === 1}
+    <div class="step-content">
+      <h2>Step 1 — Deploy your backend</h2>
+      <p class="step-intro">
+        Your event data lives on <em>your</em> server. First, download and run the
+        WoCo backend. This takes about 5 minutes with Docker.
+      </p>
+
+      <div class="action-card">
+        <div class="action-card-body">
+          <h3>&#128230; Download backend package</h3>
+          <p>Clone or download the WoCo repository — it includes the server, Docker setup, and this site builder.</p>
+        </div>
+        <a
+          class="btn-primary"
+          href="https://github.com/yea-80y/woco_app/archive/refs/heads/main.zip"
+          target="_blank"
+          rel="noopener"
+        >
+          Download zip
+        </a>
+      </div>
+
+      <div class="steps-list">
+        <div class="mini-step">
+          <span class="mini-step-num">1</span>
+          <div>
+            <strong>Unzip and configure</strong>
+            <pre class="code">cd woco_app
+cp apps/server/.env.example apps/server/.env
+# Edit apps/server/.env (see template below)</pre>
+          </div>
+        </div>
+        <div class="mini-step">
+          <span class="mini-step-num">2</span>
+          <div>
+            <strong>Start with Docker</strong>
+            <pre class="code">docker compose up -d</pre>
+          </div>
+        </div>
+        <div class="mini-step">
+          <span class="mini-step-num">3</span>
+          <div>
+            <strong>Expose publicly</strong>
+            <p class="note">Attendees' browsers must reach your server. The easiest option is a free Cloudflare Tunnel:</p>
+            <pre class="code">cloudflared tunnel --url http://localhost:3001</pre>
+            <p class="note">Copy the generated URL — you'll need it in Step 2.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- .env template -->
+      <div class="env-block">
+        <div class="env-block-header">
+          <span>apps/server/.env — recommended template</span>
+          <button class="btn-ghost" onclick={() => copyText(envTemplate)}>Copy</button>
+        </div>
+        <pre class="env-pre">{envTemplate}</pre>
+      </div>
+
+      <!-- Warnings -->
+      <div class="warnings">
+        <div class="warning-item">
+          <span class="warn-icon">&#9888;</span>
+          <div>
+            <strong>Back up FEED_PRIVATE_KEY</strong>
+            <p>This key controls all your event feeds. If you lose it you lose access to your data. Store it in a password manager.</p>
+          </div>
+        </div>
+        <div class="warning-item">
+          <span class="warn-icon">&#128260;</span>
+          <div>
+            <strong>Need a Bee node?</strong>
+            <p>Docker Compose starts a Bee node for you. It needs a funded postage batch — buy BZZ on Gnosis Chain via
+              <a href="https://app.ethswarm.org" target="_blank" rel="noopener">app.ethswarm.org</a>
+              or use a hosted Bee service.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-row">
+        <span></span>
+        <button class="btn-primary" onclick={() => step = 2}>
+          I've started my server &rarr;
+        </button>
+      </div>
+    </div>
+
+  <!-- ── Step 2: Verify backend ───────────────────────────────────────────────── -->
+  {:else if step === 2}
+    <div class="step-content">
+      <h2>Step 2 — Verify your backend</h2>
+      <p class="step-intro">
+        Enter your public API URL (the Cloudflare Tunnel URL or your own domain).
+        We'll check that everything is connected and ready.
+      </p>
+
+      <div class="field-group">
+        <label class="field-label" for="api-url">Your API URL</label>
+        <div class="url-row">
+          <input
+            id="api-url"
+            class="input"
+            type="url"
+            placeholder="https://your-tunnel.trycloudflare.com"
+            bind:value={apiUrlInput}
+            onkeydown={(e) => e.key === "Enter" && runChecks()}
+          />
+          <button
+            class="btn-primary"
+            onclick={runChecks}
+            disabled={!apiUrlInput.trim() || checking}
+          >
+            {checking ? "Checking…" : "Run checks"}
+          </button>
+        </div>
+        <p class="field-hint">
+          If using Cloudflare Tunnel, paste the <code>*.trycloudflare.com</code> URL here.
+          If using your own domain, make sure DNS is pointing to your server.
+        </p>
+      </div>
+
+      {#if checkError}
+        <div class="check-error">
+          <strong>Could not reach your API</strong>
+          <p>{checkError}</p>
+          <p class="hint">Check that your server is running and the URL is correct. If using Cloudflare Tunnel, make sure <code>cloudflared</code> is still running.</p>
+        </div>
+      {/if}
+
+      {#if checkResult}
+        <div class="checks-grid">
+          <!-- API -->
+          <div class="check-row ok">
+            <span class="check-icon">&#10003;</span>
+            <div class="check-body">
+              <strong>API server</strong>
+              <span>Reachable at {apiUrl}</span>
+            </div>
+          </div>
+
+          <!-- Feed signer -->
+          <div class="check-row" class:ok={checkResult.signerConfigured} class:error={!checkResult.signerConfigured}>
+            <span class="check-icon">{checkResult.signerConfigured ? "✓" : "✗"}</span>
+            <div class="check-body">
+              <strong>Feed signer</strong>
+              {#if checkResult.signerConfigured}
+                <span class="addr">Owner: {checkResult.signerAddress}</span>
+              {:else}
+                <span>FEED_PRIVATE_KEY not set — add it to your .env and restart</span>
+              {/if}
+            </div>
+          </div>
+
+          <!-- Bee -->
+          <div class="check-row" class:ok={checkResult.beeConnected} class:error={!checkResult.beeConnected}>
+            <span class="check-icon">{checkResult.beeConnected ? "✓" : "✗"}</span>
+            <div class="check-body">
+              <strong>Bee node</strong>
+              {#if checkResult.beeConnected}
+                <span>
+                  Connected{checkResult.beeVersion ? ` · v${checkResult.beeVersion}` : ""}
+                  {#if checkResult.beePeers !== null}
+                    · {checkResult.beePeers} peer{checkResult.beePeers !== 1 ? "s" : ""}
+                    {#if checkResult.beePeers === 0}
+                      <span class="badge warn">No peers — allow a few minutes to connect</span>
+                    {/if}
+                  {/if}
+                </span>
+              {:else}
+                <span>{checkResult.beeError || "Cannot reach Bee node. Check BEE_URL in .env"}</span>
+              {/if}
+            </div>
+          </div>
+
+          <!-- Postage batch -->
+          <div class="check-row"
+            class:ok={checkResult.batchUsable && ttlSeverity(checkResult.batchTTL) === "ok"}
+            class:warn={checkResult.batchUsable && ttlSeverity(checkResult.batchTTL) !== "ok"}
+            class:error={!checkResult.batchConfigured || (!checkResult.batchUsable && checkResult.beeConnected)}
+          >
+            <span class="check-icon">
+              {#if !checkResult.batchConfigured || !checkResult.batchUsable}✗
+              {:else if ttlSeverity(checkResult.batchTTL) === "warn"}⚠
+              {:else}✓{/if}
+            </span>
+            <div class="check-body">
+              <strong>Postage batch</strong>
+              {#if !checkResult.batchConfigured}
+                <span>POSTAGE_BATCH_ID not set — add it to .env and restart</span>
+              {:else if !checkResult.beeConnected}
+                <span>Skipped — Bee not connected</span>
+              {:else if !checkResult.batchUsable}
+                <span>Batch not usable — it may be expired or not yet committed to the network</span>
+              {:else}
+                <span>
+                  Usable
+                  {#if checkResult.batchTTL !== null}
+                    · Expires in {formatTTL(checkResult.batchTTL)}
+                    {#if ttlSeverity(checkResult.batchTTL) === "warn"}
+                      <span class="badge warn">Consider renewing soon</span>
+                    {:else if ttlSeverity(checkResult.batchTTL) === "error"}
+                      <span class="badge error">Renew immediately</span>
+                    {/if}
+                  {/if}
+                  {#if checkResult.batchUtilization !== null}
+                    · {checkResult.batchUtilization}% full
+                  {/if}
+                </span>
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        {#if !checkResult.signerConfigured || !checkResult.beeConnected || !checkResult.batchUsable}
+          <div class="check-note">
+            Fix the errors above, then run the checks again. After updating .env, restart your server:
+            <pre class="code">docker compose restart</pre>
+          </div>
+        {/if}
+      {/if}
+
+      <div class="nav-row">
+        <button class="btn-ghost" onclick={() => step = 1}>&larr; Back</button>
+        <button
+          class="btn-primary"
+          disabled={!checkResult?.apiOk}
+          onclick={() => step = 3}
+        >
+          Looks good &rarr;
+        </button>
+      </div>
+    </div>
+
+  <!-- ── Step 3: Create your event ────────────────────────────────────────────── -->
+  {:else if step === 3}
+    <div class="step-content">
+      <h2>Step 3 — Create your event</h2>
+      <p class="step-intro">
+        Enter your event details. These will be signed with your identity and
+        stored on Swarm via your backend at <code class="inline-code">{apiUrl}</code>.
+      </p>
+
+      {#if !auth.isConnected}
+        <div class="auth-prompt">
+          <p>Sign in to create the event.</p>
+          <button class="btn-primary" onclick={() => loginRequest.request()}>Sign in</button>
+        </div>
+      {:else}
+        <div class="event-form">
+          <div class="field-group">
+            <label class="field-label" for="ev-title">Event title <span class="required">*</span></label>
+            <input id="ev-title" class="input" type="text" bind:value={eventTitle} placeholder="Devcon Side Event" />
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="ev-desc">Description</label>
+            <textarea id="ev-desc" class="input textarea" bind:value={eventDescription} rows="3" placeholder="Tell attendees what to expect…"></textarea>
+          </div>
+
+          <div class="row-2">
+            <div class="field-group">
+              <label class="field-label" for="ev-start">Start date &amp; time <span class="required">*</span></label>
+              <input id="ev-start" class="input" type="datetime-local" bind:value={eventStartDate} />
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="ev-end">End date &amp; time <span class="required">*</span></label>
+              <input id="ev-end" class="input" type="datetime-local" bind:value={eventEndDate} />
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="ev-location">Location</label>
+            <input id="ev-location" class="input" type="text" bind:value={eventLocation} placeholder="Bangkok, Thailand" />
+          </div>
+
+          <div class="section-divider">Ticket series</div>
+
+          <div class="row-2">
+            <div class="field-group">
+              <label class="field-label" for="sr-name">Series name <span class="required">*</span></label>
+              <input id="sr-name" class="input" type="text" bind:value={seriesName} placeholder="General Admission" />
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="sr-supply">Capacity <span class="required">*</span></label>
+              <input id="sr-supply" class="input" type="number" bind:value={seriesSupply} min="1" max="100000" />
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="sr-desc">Series description</label>
+            <input id="sr-desc" class="input" type="text" bind:value={seriesDescription} placeholder="Optional" />
+          </div>
+
+          <div class="section-divider">Claiming</div>
+
+          <div class="field-group">
+            <label class="field-label">How can people claim?</label>
+            <div class="radio-group">
+              <label class="radio-option">
+                <input type="radio" bind:group={claimMode} value="wallet" />
+                <span><strong>Wallet only</strong> — sign in with MetaMask or Para</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" bind:group={claimMode} value="email" />
+                <span><strong>Email only</strong> — rate-limited, no wallet needed</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" bind:group={claimMode} value="both" />
+                <span><strong>Wallet or email</strong> — maximum accessibility</span>
+              </label>
+            </div>
+          </div>
+
+          <label class="checkbox-option">
+            <input type="checkbox" bind:checked={approvalRequired} />
+            <span><strong>Require approval</strong> — you manually approve each claim from the dashboard</span>
+          </label>
+
+          {#if createError}
+            <div class="create-error">{createError}</div>
+          {/if}
+
+          {#if creatingEvent}
+            <div class="progress-status">
+              <div class="spinner"></div>
+              <span>{createProgress || "Creating event on your server…"}</span>
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      <div class="nav-row">
+        <button class="btn-ghost" onclick={() => step = 2}>&larr; Back</button>
+        {#if auth.isConnected}
+          <button
+            class="btn-primary"
+            disabled={!step3Valid || creatingEvent}
+            onclick={createEvent}
+          >
+            {creatingEvent ? "Creating…" : "Create event &rarr;"}
+          </button>
+        {/if}
+      </div>
+    </div>
+
+  <!-- ── Step 4: Site config ───────────────────────────────────────────────────── -->
+  {:else if step === 4}
+    <div class="step-content">
+      <h2>Step 4 — Configure your site</h2>
+      <p class="step-intro">
+        Event created! &#10003; Now configure where the site will load assets from,
+        and optionally provide a Para API key for email-based wallet login.
+      </p>
+
+      {#if createdEventId}
+        <div class="success-banner">
+          &#127881; Event created — ID: <code>{createdEventId}</code>
+        </div>
+      {/if}
+
+      <div class="field-group">
+        <label class="field-label" for="gw-url">Swarm gateway URL</label>
+        <input
+          id="gw-url"
+          class="input"
+          type="url"
+          bind:value={gatewayUrl}
+          placeholder="https://gateway.ethswarm.org"
+        />
+        <p class="field-hint">
+          Used to load your event images and assets from Swarm.
+          <code>gateway.ethswarm.org</code> is the recommended public gateway for production.
+          Do <strong>not</strong> use <code>gateway.woco-net.com</code> — that's a personal node, not suitable for Devcon-scale traffic.
+        </p>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="para-key">Para API key <span class="optional">optional</span></label>
+        <input
+          id="para-key"
+          class="input"
+          type="text"
+          bind:value={paraApiKey}
+          placeholder="Leave blank to use WoCo's shared beta key"
+        />
+        <p class="field-hint">
+          Enables email-based wallet login for attendees. Get your own key at
+          <a href="https://developer.getpara.com" target="_blank" rel="noopener">developer.getpara.com</a>.
+        </p>
+      </div>
+
+      <!-- ALLOWED_HOSTS reminder -->
+      <div class="info-box">
+        <h4>&#128275; Update ALLOWED_HOSTS on your server</h4>
+        <p>
+          Your live site will be served from <code>{gatewayHost()}</code>.
+          Attendees claiming tickets from that domain need your server to accept their session.
+          Make sure your <code>.env</code> has:
+        </p>
+        <div class="env-block">
+          <div class="env-block-header">
+            <span>apps/server/.env</span>
+            <button class="btn-ghost" onclick={() => copyText(`ALLOWED_HOSTS=${allowedHosts}`)}>Copy</button>
+          </div>
+          <pre class="env-pre">ALLOWED_HOSTS={allowedHosts}</pre>
+        </div>
+        <p class="note">After updating, restart: <code>docker compose restart</code></p>
+      </div>
+
+      <div class="nav-row">
+        <button class="btn-ghost" onclick={() => step = 3}>&larr; Back</button>
+        <button class="btn-primary" onclick={() => step = 5}>
+          Generate site config &rarr;
+        </button>
+      </div>
+    </div>
+
+  <!-- ── Step 5: Build & deploy ────────────────────────────────────────────────── -->
+  {:else if step === 5}
+    <div class="step-content">
+      <h2>Step 5 — Build &amp; deploy your site</h2>
+      <p class="step-intro">
+        Download the config file, build your site locally, upload it to Swarm,
+        and set the content hash on your ENS domain.
+      </p>
+
+      <!-- env.site download -->
+      <div class="output-card">
+        <div class="output-card-header">
+          <span class="mono">apps/web/.env.site</span>
+          <button class="btn-ghost" onclick={() => copyText(envContent)}>Copy</button>
+        </div>
+        <pre class="env-pre">{envContent}</pre>
+        <button class="btn-primary download-btn" onclick={downloadEnvFile}>
+          &#11015; Download .env.site
+        </button>
+      </div>
+
+      <!-- Build instructions -->
+      <div class="instructions">
+        <h3>Build &amp; upload commands</h3>
+        <ol class="inst-list">
+          <li>
+            <strong>Place the config file</strong>
+            <pre class="code">mv ~/Downloads/.env.site woco_app/apps/web/.env.site</pre>
+          </li>
+          <li>
+            <strong>Build the site</strong>
+            <pre class="code">cd woco_app
+npm install
+npm run build:site</pre>
+            <p class="note">Output: <code>apps/web/dist-site/</code></p>
+          </li>
+          <li>
+            <strong>Configure your upload credentials</strong>
+            <p class="note">Create <code>scripts/.env</code> (your Bee node upload credentials — keep this private):</p>
+            <pre class="code">FEED_PRIVATE_KEY=0x&lt;same-key-as-server&gt;
+SITE_POSTAGE_BATCH_ID=&lt;your-batch-id&gt;
+SITE_BEE_URL=http://localhost:1633
+SITE_FEED_TOPIC=woco-site</pre>
+          </li>
+          <li>
+            <strong>Upload to Swarm</strong>
+            <pre class="code">npm run upload:site</pre>
+            <p class="note">The script prints a <strong>feed manifest hash</strong> and a direct content hash.</p>
+          </li>
+          <li>
+            <strong>Set your ENS content hash</strong>
+            <p class="note">Use the <strong>feed manifest</strong> for an updatable ENS entry (deploy new versions without changing the ENS record):</p>
+            <pre class="code"># In ENS Manager (app.ens.domains) — Content field:
+bzz://&lt;feed-manifest-hash&gt;</pre>
+            <p class="note">
+              Or use the direct content hash for a static pin:<br />
+              <code>bzz://&lt;content-hash&gt;</code>
+            </p>
+          </li>
+        </ol>
+
+        <div class="info-box" style="margin-top: 1.5rem;">
+          <h4>&#127881; What you'll have</h4>
+          <ul class="checklist">
+            <li>A standalone event page at your ENS domain (e.g. <code>devcon.eth.limo</code>)</li>
+            <li>Your attendees can claim tickets without ever touching WoCo's servers</li>
+            <li>Dashboard at <code>your-ens-domain/#/dashboard</code> — sign in with your wallet to manage orders</li>
+            <li>Re-run <code>npm run upload:site</code> any time to push updates without changing ENS</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="nav-row">
+        <button class="btn-ghost" onclick={() => step = 4}>&larr; Back</button>
+      </div>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .wizard {
+    max-width: 680px;
+    margin: 0 auto;
+  }
+
+  /* ── Progress bar ─────────────────────────────────────────────────────────── */
+  .progress-bar {
+    display: flex;
+    align-items: center;
+    margin-bottom: 2.5rem;
+    gap: 0;
+  }
+
+  .progress-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    flex-shrink: 0;
+  }
+
+  .progress-dot {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    transition: all var(--transition);
+  }
+
+  .progress-step.done .progress-dot {
+    background: var(--success);
+    color: #fff;
+  }
+
+  .progress-step.active .progress-dot {
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+  }
+
+  .progress-step.future .progress-dot {
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+
+  .progress-label {
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  .progress-step.done .progress-label,
+  .progress-step.active .progress-label {
+    color: var(--text-secondary);
+  }
+
+  .progress-step.future .progress-label {
+    color: var(--text-muted);
+  }
+
+  .progress-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    margin-bottom: 1.25rem;
+    transition: background var(--transition);
+  }
+
+  .progress-line.done {
+    background: var(--success);
+  }
+
+  /* ── Step content ─────────────────────────────────────────────────────────── */
+  .step-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  h2 {
+    color: var(--text);
+    font-size: 1.375rem;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  .step-intro {
+    color: var(--text-secondary);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  .step-intro em {
+    color: var(--accent-text);
+    font-style: normal;
+    font-weight: 500;
+  }
+
+  /* ── Action card ──────────────────────────────────────────────────────────── */
+  .action-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+
+  .action-card-body h3 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 0.25rem;
+  }
+
+  .action-card-body p {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* ── Mini steps (numbered list) ───────────────────────────────────────────── */
+  .steps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .mini-step {
+    display: flex;
+    gap: 0.875rem;
+    align-items: flex-start;
+  }
+
+  .mini-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    background: var(--accent-subtle);
+    color: var(--accent-text);
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+  }
+
+  .mini-step strong {
+    display: block;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.375rem;
+  }
+
+  .mini-step .note {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0.25rem 0;
+  }
+
+  /* ── env block ────────────────────────────────────────────────────────────── */
+  .env-block {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .env-block-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.875rem;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    font-family: monospace;
+  }
+
+  .env-pre {
+    margin: 0;
+    padding: 0.875rem 1rem;
+    font-family: monospace;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.8;
+  }
+
+  /* ── Warnings ────────────────────────────────────────────────────────────── */
+  .warnings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .warning-item {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    align-items: flex-start;
+  }
+
+  .warn-icon {
+    font-size: 1.125rem;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+  }
+
+  .warning-item strong {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+  }
+
+  .warning-item p {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .warning-item a {
+    color: var(--accent-text);
+  }
+
+  /* ── Step 2: checks ──────────────────────────────────────────────────────── */
+  .url-row {
+    display: flex;
+    gap: 0.625rem;
+  }
+
+  .url-row .input {
+    flex: 1;
+  }
+
+  .check-error {
+    padding: 1rem;
+    border: 1px solid var(--error);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+    color: var(--error);
+    font-size: 0.875rem;
+  }
+
+  .check-error strong {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+  }
+
+  .check-error p {
+    margin: 0 0 0.375rem;
+    font-family: monospace;
+  }
+
+  .check-error .hint {
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.8125rem;
+  }
+
+  .checks-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .check-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.875rem;
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+  }
+
+  .check-row.ok {
+    border-color: var(--success);
+    background: color-mix(in srgb, var(--success) 6%, transparent);
+  }
+
+  .check-row.warn {
+    border-color: #f59e0b;
+    background: color-mix(in srgb, #f59e0b 6%, transparent);
+  }
+
+  .check-row.error {
+    border-color: var(--error);
+    background: color-mix(in srgb, var(--error) 6%, transparent);
+  }
+
+  .check-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+    margin-top: 0.125rem;
+  }
+
+  .check-row.ok .check-icon { color: var(--success); }
+  .check-row.warn .check-icon { color: #f59e0b; }
+  .check-row.error .check-icon { color: var(--error); }
+
+  .check-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    font-size: 0.875rem;
+  }
+
+  .check-body strong {
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .check-body span {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+  }
+
+  .addr {
+    font-family: monospace !important;
+    font-size: 0.75rem !important;
+    color: var(--text-muted) !important;
+    word-break: break-all;
+  }
+
+  .badge {
+    display: inline-block;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    margin-left: 0.375rem;
+    vertical-align: middle;
+  }
+
+  .badge.warn {
+    background: color-mix(in srgb, #f59e0b 15%, transparent);
+    color: #f59e0b;
+  }
+
+  .badge.error {
+    background: color-mix(in srgb, var(--error) 15%, transparent);
+    color: var(--error);
+  }
+
+  .check-note {
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* ── Step 3: event form ──────────────────────────────────────────────────── */
+  .auth-prompt {
+    text-align: center;
+    padding: 2.5rem;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+  }
+
+  .auth-prompt p { margin: 0 0 1rem; }
+
+  .event-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.125rem;
+  }
+
+  .row-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.875rem;
+  }
+
+  @media (max-width: 480px) {
+    .row-2 { grid-template-columns: 1fr; }
+  }
+
+  .section-divider {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .radio-option, .checkbox-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    line-height: 1.5;
+  }
+
+  .radio-option input, .checkbox-option input {
+    margin-top: 0.2rem;
+    flex-shrink: 0;
+    accent-color: var(--accent);
+  }
+
+  .radio-option strong, .checkbox-option strong {
+    color: var(--text);
+  }
+
+  .create-error {
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--error);
+    border-radius: var(--radius-sm);
+    color: var(--error);
+    font-size: 0.875rem;
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+  }
+
+  .progress-status {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+  }
+
+  .spinner {
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Step 4: info box ────────────────────────────────────────────────────── */
+  .info-box {
+    padding: 1rem 1.125rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+  }
+
+  .info-box h4 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 0.5rem;
+  }
+
+  .info-box p {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.75rem;
+    line-height: 1.5;
+  }
+
+  .info-box .note {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 0.5rem 0 0;
+  }
+
+  .success-banner {
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--success);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--success) 8%, transparent);
+    color: var(--success);
+    font-size: 0.875rem;
+  }
+
+  .success-banner code {
+    font-family: monospace;
+    font-size: 0.8rem;
+  }
+
+  /* ── Step 5 ───────────────────────────────────────────────────────────────── */
+  .output-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .output-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.875rem;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .output-card-header .mono {
+    font-family: monospace;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+  }
+
+  .download-btn {
+    width: 100%;
+    border-radius: 0;
+    border-top: 1px solid var(--border);
+    padding: 0.75rem;
+  }
+
+  .instructions h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 1rem;
+  }
+
+  .inst-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    padding-left: 1.25rem;
+    margin: 0;
+  }
+
+  .inst-list li {
+    font-size: 0.9375rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .inst-list strong {
+    display: block;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.375rem;
+  }
+
+  .inst-list .note {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 0.375rem 0;
+    line-height: 1.5;
+  }
+
+  .checklist {
+    padding-left: 1.125rem;
+    margin: 0.5rem 0 0;
+  }
+
+  .checklist li {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.375rem;
+    line-height: 1.5;
+  }
+
+  /* ── Shared: form fields ─────────────────────────────────────────────────── */
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .field-label {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .required { color: var(--error); font-size: 0.8rem; }
+  .optional { font-weight: 400; color: var(--text-muted); font-size: 0.8125rem; }
+
+  .input {
+    width: 100%;
+    padding: 0.625rem 0.875rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.9375rem;
+    transition: border-color var(--transition);
+    font-family: inherit;
+  }
+
+  .input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .textarea { resize: vertical; min-height: 80px; }
+
+  .field-hint {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .field-hint a { color: var(--accent-text); }
+
+  .inline-code {
+    font-family: monospace;
+    font-size: 0.8rem;
+    background: var(--bg-elevated);
+    padding: 0.1rem 0.375rem;
+    border-radius: 4px;
+  }
+
+  /* ── Shared: code blocks ─────────────────────────────────────────────────── */
+  .code {
+    font-family: monospace;
+    font-size: 0.8125rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.625rem 0.875rem;
+    margin: 0.375rem 0 0;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text-secondary);
+    line-height: 1.7;
+    display: block;
+  }
+
+  /* ── Navigation row ──────────────────────────────────────────────────────── */
+  .nav-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    margin-top: 0.5rem;
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────────────── */
+  .btn-primary {
+    padding: 0.625rem 1.25rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    white-space: nowrap;
+  }
+
+  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-ghost {
+    padding: 0.375rem 0.875rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    transition: all var(--transition);
+    white-space: nowrap;
+  }
+
+  .btn-ghost:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+</style>

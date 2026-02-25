@@ -12,6 +12,7 @@
   import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
   import DashboardIndex from "./lib/components/dashboard/DashboardIndex.svelte";
   import Home from "./lib/components/home/Home.svelte";
+  import SiteBuilder from "./lib/components/site/SiteBuilder.svelte";
   import { onMount } from "svelte";
 
   onMount(() => {
@@ -60,6 +61,8 @@
       <MyTickets />
     {:else if router.route === "embed-setup"}
       <EmbedSetup eventId={router.params.id} />
+    {:else if router.route === "site-builder"}
+      <SiteBuilder />
     {/if}
   </section>
 

@@ -12,6 +12,7 @@ import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
 import { approvals } from "./routes/approvals.js";
 import { collection } from "./routes/collection.js";
+import { admin } from "./routes/admin.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -118,6 +119,9 @@ app.route("/api/events", approvals);
 
 // Collection routes (authenticated)
 app.route("/api/collection", collection);
+
+// Admin / setup routes (unauthenticated — no private data exposed)
+app.route("/api/admin", admin);
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);

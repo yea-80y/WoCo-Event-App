@@ -15,7 +15,9 @@
     "build:server": "npm run build -w @woco/server",
     "build:embed": "npm run build -w @woco/embed",
     "build:deploy": "npm run build:web",
+    "build:site": "npm run build:site -w @woco/web",
     "upload:swarm": "node scripts/upload-to-swarm-feed.cjs",
+    "upload:site": "node scripts/upload-site-to-swarm.cjs",
     "deploy": "npm run build:deploy && npm run upload:swarm",
     "check": "npm run check --workspaces --if-present"
   },
