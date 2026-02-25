@@ -14,6 +14,7 @@ npm-debug.log*
 .env
 .env.*
 !.env.production
+!.env.example
 
 # Markdown (except README and CLAUDE.md)
 *.md

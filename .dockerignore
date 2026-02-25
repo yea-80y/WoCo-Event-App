@@ -1,0 +1,21 @@
+# Dependencies — reinstalled inside the image
+**/node_modules
+
+# Never bake secrets into the image
+**/.env
+**/.env.*
+
+# Frontend app — not needed by the server
+apps/web
+
+# Pre-built artefacts (embed is rebuilt inside the image)
+packages/embed/dist
+apps/server/dist
+
+# Noise
+**/.git
+**/*.log
+screenshots
+test
+scripts
+docs
