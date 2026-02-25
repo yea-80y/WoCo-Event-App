@@ -485,10 +485,12 @@ cp apps/server/.env.example apps/server/.env
           <div class="check-row"
             class:ok={checkResult.batchUsable && ttlSeverity(checkResult.batchTTL) === "ok"}
             class:warn={checkResult.batchUsable && ttlSeverity(checkResult.batchTTL) !== "ok"}
-            class:error={!checkResult.batchConfigured || (!checkResult.batchUsable && checkResult.beeConnected)}
+            class:error={!checkResult.batchConfigured}
+            class:neutral={checkResult.batchConfigured && !checkResult.batchUsable && checkResult.beeConnected}
           >
             <span class="check-icon">
-              {#if !checkResult.batchConfigured || !checkResult.batchUsable}✗
+              {#if !checkResult.batchConfigured}✗
+              {:else if !checkResult.batchUsable}–
               {:else if ttlSeverity(checkResult.batchTTL) === "warn"}⚠
               {:else}✓{/if}
             </span>
@@ -499,7 +501,7 @@ cp apps/server/.env.example apps/server/.env
               {:else if !checkResult.beeConnected}
                 <span>Skipped — Bee not connected</span>
               {:else if !checkResult.batchUsable}
-                <span>Batch not usable — it may be expired or not yet committed to the network</span>
+                <span>POSTAGE_BATCH_ID is set — batch status not available via this Bee endpoint (gateway mode). Your uploads will work as long as the batch is valid.</span>
               {:else}
                 <span>
                   Usable
@@ -520,7 +522,7 @@ cp apps/server/.env.example apps/server/.env
           </div>
         </div>
 
-        {#if !checkResult.signerConfigured || !checkResult.beeConnected || !checkResult.batchUsable}
+        {#if !checkResult.signerConfigured || !checkResult.beeConnected}
           <div class="check-note">
             Fix the errors above, then run the checks again. After updating .env, restart your server:
             <pre class="code">docker compose restart</pre>
@@ -1191,6 +1193,7 @@ bzz://&lt;feed-manifest-hash&gt;</pre>
   .check-row.ok .check-icon { color: var(--success); }
   .check-row.warn .check-icon { color: #f59e0b; }
   .check-row.error .check-icon { color: var(--error); }
+  .check-row.neutral .check-icon { color: var(--text-muted); }
 
   .check-body {
     display: flex;

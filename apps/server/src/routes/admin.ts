@@ -93,21 +93,26 @@ admin.get("/setup-check", async (c) => {
   }
 
   // ── Postage batch ─────────────────────────────────────────────────────────────
+  // Note: the stamps admin API is only available on Bee's internal API port.
+  // If BEE_URL points to a public gateway, this will 404 — treat that as
+  // "not available" rather than an error (the gateway still works for uploads).
   if (POSTAGE_BATCH_ID && result.beeConnected) {
     try {
       const batchResp = await fetch(`${BEE_URL}/stamps/${POSTAGE_BATCH_ID}`, {
         signal: AbortSignal.timeout(5000),
       });
       if (batchResp.ok) {
-        const batch = (await batchResp.json()) as Record<string, unknown>;
-        result.batchUsable = (batch.usable as boolean) ?? false;
-        result.batchTTL = typeof batch.batchTTL === "number" ? batch.batchTTL : null;
-        result.batchUtilization = typeof batch.utilization === "number" ? batch.utilization : null;
-      } else {
-        result.beeError = (result.beeError ? result.beeError + "; " : "") +
-          `Batch lookup returned ${batchResp.status}`;
+        const contentType = batchResp.headers.get("content-type") ?? "";
+        if (contentType.includes("application/json")) {
+          const batch = (await batchResp.json()) as Record<string, unknown>;
+          result.batchUsable = (batch.usable as boolean) ?? false;
+          result.batchTTL = typeof batch.batchTTL === "number" ? batch.batchTTL : null;
+          result.batchUtilization = typeof batch.utilization === "number" ? batch.utilization : null;
+        }
+        // non-JSON response on 200 — treat as not available
       }
-    } catch (e) {
+      // 404 / non-2xx: stamps API not exposed on this endpoint — not an error
+    } catch {
       // non-fatal — batch info stays null
     }
   }

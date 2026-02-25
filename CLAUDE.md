@@ -23,10 +23,11 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - ENS: woco.eth content hash updated — woco.eth.limo now serves the current app
   - GitHub: github.com/yea-80y/woco_app
 
-  PRODUCTION ENV (apps/server/.env on server laptop):
+  PRODUCTION ENV (apps/server/.env):
+  - apps/server/.env on THIS LAPTOP is the master copy — always edit here first
+  - .env IS synced to server on every deploy (laptop overwrites server)
   - ALLOWED_HOSTS must include all frontend hosts (gateway.woco-net.com, etc.)
-  - CRITICAL: Never overwrite server .env during deploy (exclude from rsync)
-  - Local .env and server .env differ — server has production ALLOWED_HOSTS
+  - BEE_URL=http://192.168.0.144:3323 (single Bee node, same address for both laptop and server)
 
   ============================================================================
   BUILD STATUS (as of 2026-02-25)
