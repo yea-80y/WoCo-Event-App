@@ -8,7 +8,7 @@
 
   let { ticket }: Props = $props();
 
-  const BEE_GATEWAY = "https://gateway.woco-net.com";
+  const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
   function formatDate(iso: string): string {
     return new Date(iso).toLocaleDateString(undefined, {
