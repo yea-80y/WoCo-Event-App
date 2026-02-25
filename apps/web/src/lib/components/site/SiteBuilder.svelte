@@ -286,7 +286,7 @@ PORT=3001`);
         </div>
         <a
           class="btn-primary"
-          href="https://github.com/yea-80y/woco_app/archive/refs/heads/main.zip"
+          href="https://github.com/yea-80y/WoCo-Event-App/archive/refs/heads/main.zip"
           target="_blank"
           rel="noopener"
         >
@@ -299,7 +299,7 @@ PORT=3001`);
           <span class="mini-step-num">1</span>
           <div>
             <strong>Unzip and configure</strong>
-            <pre class="code">cd woco_app
+            <pre class="code">cd WoCo-Event-App-main
 cp apps/server/.env.example apps/server/.env
 # Edit apps/server/.env (see template below)</pre>
           </div>
@@ -753,11 +753,11 @@ cp apps/server/.env.example apps/server/.env
         <ol class="inst-list">
           <li>
             <strong>Place the config file</strong>
-            <pre class="code">mv ~/Downloads/.env.site woco_app/apps/web/.env.site</pre>
+            <pre class="code">mv ~/Downloads/.env.site WoCo-Event-App/apps/web/.env.site</pre>
           </li>
           <li>
             <strong>Build the site</strong>
-            <pre class="code">cd woco_app
+            <pre class="code">cd WoCo-Event-App
 npm install
 npm run build:site</pre>
             <p class="note">Output: <code>apps/web/dist-site/</code></p>

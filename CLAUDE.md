@@ -21,7 +21,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - API: events-api.woco-net.com (Cloudflare tunnel to :3001)
   - Live URLs: https://woco.eth.limo/ and https://gateway.woco-net.com/bzz/<hash>/
   - ENS: woco.eth content hash updated — woco.eth.limo now serves the current app
-  - GitHub: github.com/yea-80y/woco_app
+  - GitHub: github.com/yea-80y/WoCo-Event-App
 
   PRODUCTION ENV (apps/server/.env):
   - apps/server/.env on THIS LAPTOP is the master copy — always edit here first

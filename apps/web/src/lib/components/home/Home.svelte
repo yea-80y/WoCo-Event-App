@@ -133,7 +133,7 @@
       </button>
       <a
         class="btn-docs"
-        href="https://github.com/yea-80y/woco_app/blob/main/docs/self-hosted-setup.md"
+        href="https://github.com/yea-80y/WoCo-Event-App/blob/main/docs/self-hosted-setup.md"
         target="_blank"
         rel="noopener"
       >

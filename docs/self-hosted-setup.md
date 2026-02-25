@@ -20,8 +20,8 @@ your frontend and a Swarm Bee node. No database. No WoCo dependency at runtime.
 ## 1. Clone the repository
 
 ```bash
-git clone https://github.com/yea-80y/woco_app.git
-cd woco_app
+git clone https://github.com/yea-80y/WoCo-Event-App.git
+cd WoCo-Event-App
 ```
 
 ---
