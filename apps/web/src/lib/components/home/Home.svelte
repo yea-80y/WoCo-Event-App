@@ -44,6 +44,10 @@
     </button>
     <a class="btn-outline" href="#how-it-works">How it works</a>
   </div>
+  <p class="hero-site-builder">
+    Need a standalone event site on your own server?
+    <button class="link-btn" onclick={() => navigate("/site-builder")}>Build one →</button>
+  </p>
 </section>
 
 <!-- How it works -->
@@ -258,6 +262,27 @@
     display: flex;
     gap: 0.75rem;
     justify-content: center;
+  }
+
+  .hero-site-builder {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 0.75rem 0 0;
+  }
+
+  .link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+    color: var(--accent-text);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .link-btn:hover {
+    color: var(--accent);
   }
 
   .btn-primary {

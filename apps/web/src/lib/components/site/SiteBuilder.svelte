@@ -131,15 +131,40 @@ PORT=3001`);
       const resp = await fetch(`${url}/api/admin/setup-check`, {
         signal: AbortSignal.timeout(10000),
       });
-      const json = await resp.json();
-      if (json.ok && json.data) {
-        checkResult = json.data as SetupCheckResult;
+
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try {
+          const text = await resp.text();
+          if (text && text.length < 300 && !text.trimStart().startsWith("<")) {
+            detail += `: ${text.trim()}`;
+          }
+        } catch { /* ignore */ }
+        checkError = `Server returned ${detail}. Check the URL is correct and the server is running the latest WoCo version.`;
+        return;
+      }
+
+      let json: unknown;
+      try {
+        json = await resp.json();
+      } catch {
+        checkError = "Server responded but not with JSON — it may be running an older version. Make sure you have the latest WoCo server code deployed.";
+        return;
+      }
+
+      const j = json as { ok?: boolean; data?: SetupCheckResult; error?: string };
+      if (j.ok && j.data) {
+        checkResult = j.data;
         apiUrl = url;
       } else {
-        checkError = json.error || "Unexpected response from setup-check";
+        checkError = j.error || "Unexpected response from setup-check";
       }
     } catch (e) {
-      checkError = e instanceof Error ? e.message : "Could not reach API";
+      if (e instanceof Error && e.name === "TimeoutError") {
+        checkError = "Request timed out — check that your server is running and the URL is reachable.";
+      } else {
+        checkError = e instanceof Error ? e.message : "Could not reach your API";
+      }
     } finally {
       checking = false;
     }
@@ -290,8 +315,39 @@ cp apps/server/.env.example apps/server/.env
           <span class="mini-step-num">3</span>
           <div>
             <strong>Expose publicly</strong>
-            <p class="note">Attendees' browsers must reach your server. The easiest option is a free Cloudflare Tunnel:</p>
-            <pre class="code">cloudflared tunnel --url http://localhost:3001</pre>
+            <p class="note">Attendees' browsers must reach your server. Choose the option that fits your setup:</p>
+            <div class="tunnel-options">
+              <div class="tunnel-option">
+                <div class="tunnel-option-head">
+                  <span class="tunnel-label">VPS / own server</span>
+                  <span class="tunnel-badge best">Most decentralised</span>
+                </div>
+                <p class="note">Run the server directly on a VPS (Hetzner, Linode, DigitalOcean, etc.) with a domain pointing to it. No tunnel needed — port 3001 exposed directly or via nginx reverse proxy.</p>
+              </div>
+              <div class="tunnel-option">
+                <div class="tunnel-option-head">
+                  <span class="tunnel-label">bore</span>
+                  <span class="tunnel-badge oss">Open source</span>
+                </div>
+                <p class="note">Self-hostable tunnel. Run <code>bore local 3001 --to bore.pub</code> (uses the public relay) or host your own bore server.</p>
+                <pre class="code">bore local 3001 --to bore.pub</pre>
+              </div>
+              <div class="tunnel-option">
+                <div class="tunnel-option-head">
+                  <span class="tunnel-label">Cloudflare Tunnel</span>
+                  <span class="tunnel-badge neutral">Free, centralised</span>
+                </div>
+                <p class="note">Quick option for testing. No account needed for a temporary URL:</p>
+                <pre class="code">cloudflared tunnel --url http://localhost:3001</pre>
+              </div>
+              <div class="tunnel-option">
+                <div class="tunnel-option-head">
+                  <span class="tunnel-label">ngrok</span>
+                  <span class="tunnel-badge neutral">Free tier, centralised</span>
+                </div>
+                <pre class="code">ngrok http 3001</pre>
+              </div>
+            </div>
             <p class="note">Copy the generated URL — you'll need it in Step 2.</p>
           </div>
         </div>
@@ -308,20 +364,22 @@ cp apps/server/.env.example apps/server/.env
 
       <!-- Warnings -->
       <div class="warnings">
-        <div class="warning-item">
-          <span class="warn-icon">&#9888;</span>
+        <div class="warning-item danger">
+          <span class="warn-icon">&#128683;</span>
           <div>
             <strong>Back up FEED_PRIVATE_KEY</strong>
-            <p>This key controls all your event feeds. If you lose it you lose access to your data. Store it in a password manager.</p>
+            <p>This key controls all your event feeds on Swarm. If you lose it you permanently lose write access to your data. Store it in a password manager before starting.</p>
           </div>
         </div>
         <div class="warning-item">
           <span class="warn-icon">&#128260;</span>
           <div>
             <strong>Need a Bee node?</strong>
-            <p>Docker Compose starts a Bee node for you. It needs a funded postage batch — buy BZZ on Gnosis Chain via
-              <a href="https://app.ethswarm.org" target="_blank" rel="noopener">app.ethswarm.org</a>
-              or use a hosted Bee service.
+            <p>Docker Compose only starts the WoCo server — you need a Bee node separately.
+              See the <a href="https://docs.ethswarm.org/docs/bee/installation/quick-start" target="_blank" rel="noopener">Swarm quick-start guide</a>
+              to run your own, or use a hosted Bee service.
+              You'll also need a funded postage batch — buy BZZ on Gnosis Chain via
+              <a href="https://app.ethswarm.org" target="_blank" rel="noopener">app.ethswarm.org</a>.
             </p>
           </div>
         </div>
@@ -351,7 +409,7 @@ cp apps/server/.env.example apps/server/.env
             id="api-url"
             class="input"
             type="url"
-            placeholder="https://your-tunnel.trycloudflare.com"
+            placeholder="https://your-server.example.com"
             bind:value={apiUrlInput}
             onkeydown={(e) => e.key === "Enter" && runChecks()}
           />
@@ -364,8 +422,9 @@ cp apps/server/.env.example apps/server/.env
           </button>
         </div>
         <p class="field-hint">
-          If using Cloudflare Tunnel, paste the <code>*.trycloudflare.com</code> URL here.
-          If using your own domain, make sure DNS is pointing to your server.
+          The public URL of your server — your own domain, VPS IP, or tunnel URL
+          (e.g. <code>*.trycloudflare.com</code>, bore, ngrok).
+          Make sure <code>https://</code> is included and the server is reachable.
         </p>
       </div>
 
@@ -373,7 +432,7 @@ cp apps/server/.env.example apps/server/.env
         <div class="check-error">
           <strong>Could not reach your API</strong>
           <p>{checkError}</p>
-          <p class="hint">Check that your server is running and the URL is correct. If using Cloudflare Tunnel, make sure <code>cloudflared</code> is still running.</p>
+          <p class="hint">Check that your server is running and the URL is correct. If using a tunnel (Cloudflare, bore, ngrok), make sure it is still running. If your server was already deployed, it may need updating — the <code>/api/admin/setup-check</code> endpoint was added in a recent version.</p>
         </div>
       {/if}
 
@@ -921,6 +980,59 @@ bzz://&lt;feed-manifest-hash&gt;</pre>
     margin: 0.25rem 0;
   }
 
+  /* ── tunnel options ───────────────────────────────────────────────────────── */
+  .tunnel-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    margin: 0.5rem 0;
+  }
+
+  .tunnel-option {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem;
+  }
+
+  .tunnel-option-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .tunnel-label {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .tunnel-badge {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 9999px;
+  }
+
+  .tunnel-badge.best {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent-text);
+  }
+
+  .tunnel-badge.oss {
+    background: color-mix(in srgb, #3fb950 15%, transparent);
+    color: #3fb950;
+  }
+
+  .tunnel-badge.neutral {
+    background: var(--bg-elevated, var(--bg-surface));
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+
   /* ── env block ────────────────────────────────────────────────────────────── */
   .env-block {
     border: 1px solid var(--border);
@@ -992,6 +1104,15 @@ bzz://&lt;feed-manifest-hash&gt;</pre>
 
   .warning-item a {
     color: var(--accent-text);
+  }
+
+  .warning-item.danger {
+    border-color: #f8514933;
+    background: #f8514910;
+  }
+
+  .warning-item.danger strong {
+    color: #f85149;
   }
 
   /* ── Step 2: checks ──────────────────────────────────────────────────────── */
