@@ -1,8 +1,12 @@
 <script lang="ts">
-  import type { ClaimMode, OrderFieldType } from "@woco/shared";
+  import type { ClaimMode, OrderFieldType, SignedTicket } from "@woco/shared";
+  import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { createEventStreaming, type PublishProgress } from "../../api/events.js";
+  import { createSeriesTickets } from "../../pod/signing.js";
+  import { restorePodSeed } from "../../auth/pod-identity.js";
+  import ImageUpload from "../events/ImageUpload.svelte";
   import { onMount } from "svelte";
 
   // ── Types ────────────────────────────────────────────────────────────────────
@@ -75,6 +79,7 @@
   }]);
   let fieldItems = $state<FieldItem[]>([]);
   let claimMode = $state<ClaimMode>("both");
+  let eventImageDataUrl = $state<string | null>(null);
   let creatingEvent = $state(false);
   let createProgress = $state("");
   let createError = $state<string | null>(null);
@@ -266,16 +271,49 @@ PORT=3001`);
     if (!podOk) { createError = "Identity setup failed or was cancelled."; return; }
 
     creatingEvent = true;
-    createProgress = "Preparing...";
+    createProgress = "Preparing tickets…";
     try {
+      // Sign tickets for each series (same flow as PublishButton)
+      const keypair = await auth.getPodKeypair();
+      if (!keypair) { createError = "Could not get signing key"; creatingEvent = false; return; }
+
+      const signedTickets: Record<string, SignedTicket[]> = {};
+      const totalTickets = seriesItems.reduce((sum, s) => sum + s.totalSupply, 0);
+      let signed = 0;
+
+      for (const s of seriesItems) {
+        signedTickets[s.id] = await createSeriesTickets({
+          eventId: "",
+          seriesId: s.id,
+          seriesName: s.name,
+          totalSupply: s.totalSupply,
+          imageHash: "",
+          creatorPrivateKey: keypair.privateKey,
+          creatorPublicKeyHex: keypair.publicKeyHex,
+        });
+        signed += s.totalSupply;
+        createProgress = `Signing tickets (${signed}/${totalTickets})…`;
+      }
+
+      // Derive encryption keypair from POD seed (no extra prompts)
+      let encryptionKey: string | undefined;
+      const podSeed = await restorePodSeed();
+      if (podSeed) {
+        const encKeypair = deriveEncryptionKeypairFromPodSeed(podSeed);
+        encryptionKey = encKeypair.publicKeyHex;
+      }
+
+      createProgress = "Publishing to Swarm…";
+
       const result = await createEventStreaming(
         {
-          title: eventTitle.trim(),
-          description: eventDescription.trim(),
-          startDate: eventStartDate,
-          endDate: eventEndDate,
-          location: eventLocation.trim(),
-          imageDataUrl: null,
+          event: {
+            title: eventTitle.trim(),
+            description: eventDescription.trim(),
+            startDate: eventStartDate,
+            endDate: eventEndDate,
+            location: eventLocation.trim(),
+          },
           series: seriesItems.map(s => ({
             seriesId: s.id,
             name: s.name.trim(),
@@ -286,6 +324,11 @@ PORT=3001`);
             ...(s.saleStart ? { saleStart: s.saleStart } : {}),
             ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
           })),
+          signedTickets,
+          image: eventImageDataUrl!,
+          creatorAddress: auth.parent as `0x${string}`,
+          creatorPodKey: auth.podPublicKeyHex!,
+          encryptionKey,
           claimMode,
           orderFields: [
             ...(claimMode !== "wallet" ? [
@@ -300,7 +343,6 @@ PORT=3001`);
               ...(f.options.length > 0 ? { options: f.options } : {}),
             })),
           ],
-          encryptionKey: "",  // server generates this
         },
         (p: PublishProgress) => { createProgress = p.message; },
         apiUrl,
@@ -325,6 +367,7 @@ PORT=3001`);
     !!eventStartDate &&
     !!eventEndDate &&
     eventStartDate <= eventEndDate &&
+    !!eventImageDataUrl &&
     seriesItems.length > 0 &&
     seriesItems.every(s => !!s.name.trim() && s.totalSupply >= 1)
   );
@@ -675,6 +718,15 @@ cp apps/server/.env.example apps/server/.env
           <div class="field-group">
             <label class="field-label" for="ev-location">Location</label>
             <input id="ev-location" class="input" type="text" bind:value={eventLocation} placeholder="Bangkok, Thailand" />
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">Event image <span class="required">*</span></label>
+            <p class="field-hint" style="margin-top: 0;">Displayed as a banner at the top of your event page. Use a landscape image for best results.</p>
+            <ImageUpload
+              imageDataUrl={eventImageDataUrl}
+              onchange={(url) => { eventImageDataUrl = url; }}
+            />
           </div>
 
           <!-- Ticket tiers -->
