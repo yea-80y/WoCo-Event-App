@@ -35,6 +35,12 @@ export interface SeriesSummary {
   price: number;
   /** If true, attendees submit a request; organizer approves/rejects from dashboard */
   approvalRequired?: boolean;
+  /** Sales phase label e.g. "Early Bird", "General Release" */
+  wave?: string;
+  /** ISO datetime when this series opens for claims (server-enforced) */
+  saleStart?: string;
+  /** ISO datetime when this series closes for claims (server-enforced) */
+  saleEnd?: string;
 }
 
 /** Entry in the global event directory feed */
@@ -85,6 +91,9 @@ export interface CreateEventRequest {
     description: string;
     totalSupply: number;
     approvalRequired?: boolean;
+    wave?: string;
+    saleStart?: string;
+    saleEnd?: string;
   }>;
   /** Signed tickets grouped by seriesId */
   signedTickets: Record<string, SignedTicket[]>;

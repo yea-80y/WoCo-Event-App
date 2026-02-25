@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ClaimMode } from "@woco/shared";
+  import type { ClaimMode, OrderFieldType } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { createEventStreaming, type PublishProgress } from "../../api/events.js";
@@ -35,16 +35,46 @@
   let checkError = $state<string | null>(null);
 
   // Step 3 — event creation
+  interface SeriesItem {
+    id: string;
+    name: string;
+    description: string;
+    totalSupply: number;
+    wave: string;
+    saleStart: string;
+    saleEnd: string;
+    approvalRequired: boolean;
+    showSaleWindow: boolean;
+  }
+
+  interface FieldItem {
+    id: string;
+    type: OrderFieldType;
+    label: string;
+    required: boolean;
+    placeholder: string;
+    options: string[];
+    newOption: string;
+  }
+
   let eventTitle = $state("");
   let eventDescription = $state("");
   let eventStartDate = $state("");
   let eventEndDate = $state("");
   let eventLocation = $state("");
-  let seriesName = $state("General Admission");
-  let seriesSupply = $state(100);
-  let seriesDescription = $state("");
+  let seriesItems = $state<SeriesItem[]>([{
+    id: crypto.randomUUID(),
+    name: "General Admission",
+    description: "",
+    totalSupply: 100,
+    wave: "",
+    saleStart: "",
+    saleEnd: "",
+    approvalRequired: false,
+    showSaleWindow: false,
+  }]);
+  let fieldItems = $state<FieldItem[]>([]);
   let claimMode = $state<ClaimMode>("both");
-  let approvalRequired = $state(false);
   let creatingEvent = $state(false);
   let createProgress = $state("");
   let createError = $state<string | null>(null);
@@ -170,6 +200,56 @@ PORT=3001`);
     }
   }
 
+  // ── Step 3 helpers ───────────────────────────────────────────────────────────
+  function addTier() {
+    seriesItems.push({
+      id: crypto.randomUUID(),
+      name: "",
+      description: "",
+      totalSupply: 100,
+      wave: "",
+      saleStart: "",
+      saleEnd: "",
+      approvalRequired: false,
+      showSaleWindow: false,
+    });
+  }
+
+  function removeTier(id: string) {
+    const idx = seriesItems.findIndex(s => s.id === id);
+    if (idx !== -1) seriesItems.splice(idx, 1);
+  }
+
+  function addField() {
+    fieldItems.push({
+      id: crypto.randomUUID(),
+      type: "text" as OrderFieldType,
+      label: "",
+      required: false,
+      placeholder: "",
+      options: [],
+      newOption: "",
+    });
+  }
+
+  function removeField(id: string) {
+    const idx = fieldItems.findIndex(f => f.id === id);
+    if (idx !== -1) fieldItems.splice(idx, 1);
+  }
+
+  function addOption(fieldId: string) {
+    const f = fieldItems.find(f => f.id === fieldId);
+    if (f && f.newOption.trim()) {
+      f.options.push(f.newOption.trim());
+      f.newOption = "";
+    }
+  }
+
+  function removeOption(fieldId: string, optIdx: number) {
+    const f = fieldItems.find(f => f.id === fieldId);
+    if (f) f.options.splice(optIdx, 1);
+  }
+
   // ── Step 3: event creation ────────────────────────────────────────────────────
   async function createEvent() {
     createError = null;
@@ -196,19 +276,30 @@ PORT=3001`);
           endDate: eventEndDate,
           location: eventLocation.trim(),
           imageDataUrl: null,
-          series: [
-            {
-              seriesId: crypto.randomUUID(),
-              name: seriesName.trim(),
-              description: seriesDescription.trim(),
-              totalSupply: seriesSupply,
-              approvalRequired,
-            },
-          ],
+          series: seriesItems.map(s => ({
+            seriesId: s.id,
+            name: s.name.trim(),
+            description: s.description.trim(),
+            totalSupply: s.totalSupply,
+            approvalRequired: s.approvalRequired,
+            ...(s.wave.trim() ? { wave: s.wave.trim() } : {}),
+            ...(s.saleStart ? { saleStart: s.saleStart } : {}),
+            ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
+          })),
           claimMode,
-          orderFields: claimMode !== "wallet" ? [
-            { id: "__email", type: "email" as const, label: "Email", required: true, placeholder: "your@email.com" },
-          ] : [],
+          orderFields: [
+            ...(claimMode !== "wallet" ? [
+              { id: "__email", type: "email" as const, label: "Email", required: true, placeholder: "your@email.com" },
+            ] : []),
+            ...fieldItems.map(f => ({
+              id: f.id,
+              type: f.type,
+              label: f.label.trim(),
+              required: f.required,
+              ...(f.placeholder.trim() ? { placeholder: f.placeholder.trim() } : {}),
+              ...(f.options.length > 0 ? { options: f.options } : {}),
+            })),
+          ],
           encryptionKey: "",  // server generates this
         },
         (p: PublishProgress) => { createProgress = p.message; },
@@ -233,9 +324,9 @@ PORT=3001`);
     !!eventTitle.trim() &&
     !!eventStartDate &&
     !!eventEndDate &&
-    !!seriesName.trim() &&
-    seriesSupply >= 1 &&
-    eventStartDate <= eventEndDate
+    eventStartDate <= eventEndDate &&
+    seriesItems.length > 0 &&
+    seriesItems.every(s => !!s.name.trim() && s.totalSupply >= 1)
   );
 
   // ── Step 5: download ──────────────────────────────────────────────────────────
@@ -558,6 +649,8 @@ cp apps/server/.env.example apps/server/.env
         </div>
       {:else}
         <div class="event-form">
+
+          <!-- Event details -->
           <div class="field-group">
             <label class="field-label" for="ev-title">Event title <span class="required">*</span></label>
             <input id="ev-title" class="input" type="text" bind:value={eventTitle} placeholder="Devcon Side Event" />
@@ -584,24 +677,162 @@ cp apps/server/.env.example apps/server/.env
             <input id="ev-location" class="input" type="text" bind:value={eventLocation} placeholder="Bangkok, Thailand" />
           </div>
 
-          <div class="section-divider">Ticket series</div>
+          <!-- Ticket tiers -->
+          <div class="section-divider">Ticket tiers</div>
 
-          <div class="row-2">
-            <div class="field-group">
-              <label class="field-label" for="sr-name">Series name <span class="required">*</span></label>
-              <input id="sr-name" class="input" type="text" bind:value={seriesName} placeholder="General Admission" />
+          {#each seriesItems as tier, i (tier.id)}
+            <div class="tier-card">
+              <div class="tier-card-header">
+                <span class="tier-card-title">
+                  Tier {i + 1}
+                  {#if tier.name.trim()}
+                    <span class="tier-name-preview">— {tier.name.trim()}</span>
+                  {/if}
+                  {#if tier.wave.trim()}
+                    <span class="wave-badge">{tier.wave.trim()}</span>
+                  {/if}
+                </span>
+                {#if seriesItems.length > 1}
+                  <button class="tier-remove-btn" onclick={() => removeTier(tier.id)} type="button" aria-label="Remove tier">✕</button>
+                {/if}
+              </div>
+              <div class="tier-card-body">
+                <div class="row-2">
+                  <div class="field-group">
+                    <label class="field-label">Name <span class="required">*</span></label>
+                    <input class="input" type="text" bind:value={tier.name} placeholder="General Admission" />
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">Capacity <span class="required">*</span></label>
+                    <input class="input" type="number" bind:value={tier.totalSupply} min="1" max="100000" />
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <label class="field-label">Description <span class="optional">optional</span></label>
+                  <input class="input" type="text" bind:value={tier.description} placeholder="What's included in this tier" />
+                </div>
+
+                <div class="row-2">
+                  <div class="field-group">
+                    <label class="field-label">Wave label <span class="optional">optional</span></label>
+                    <input class="input" type="text" bind:value={tier.wave} placeholder="Early Bird" />
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">&nbsp;</label>
+                    <button
+                      class="btn-ghost sale-window-toggle"
+                      type="button"
+                      onclick={() => { tier.showSaleWindow = !tier.showSaleWindow; }}
+                    >
+                      {tier.showSaleWindow ? "▼" : "▶"} Sale window
+                    </button>
+                  </div>
+                </div>
+
+                {#if tier.showSaleWindow}
+                  <div class="row-2 sale-window-row">
+                    <div class="field-group">
+                      <label class="field-label">Opens</label>
+                      <input class="input" type="datetime-local" bind:value={tier.saleStart} />
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label">Closes</label>
+                      <input class="input" type="datetime-local" bind:value={tier.saleEnd} />
+                    </div>
+                  </div>
+                {/if}
+
+                <label class="checkbox-option">
+                  <input type="checkbox" bind:checked={tier.approvalRequired} />
+                  <span><strong>Require approval</strong> — you manually approve each claim from the dashboard</span>
+                </label>
+              </div>
             </div>
-            <div class="field-group">
-              <label class="field-label" for="sr-supply">Capacity <span class="required">*</span></label>
-              <input id="sr-supply" class="input" type="number" bind:value={seriesSupply} min="1" max="100000" />
+          {/each}
+
+          <button class="btn-add" type="button" onclick={addTier}>+ Add tier</button>
+
+          <!-- Attendee questions -->
+          <div class="section-divider">
+            Attendee questions <span class="optional">optional</span>
+          </div>
+          <p class="section-hint">Collect information from attendees at claim time. Add text fields, dropdowns, or checkboxes — email is always collected automatically for email claims.</p>
+
+          {#each fieldItems as field, fi (field.id)}
+            <div class="field-card">
+              <div class="tier-card-header">
+                <span class="tier-card-title">
+                  Question {fi + 1}
+                  {#if field.label.trim()}
+                    <span class="tier-name-preview">— {field.label.trim()}</span>
+                  {/if}
+                </span>
+                <button class="tier-remove-btn" onclick={() => removeField(field.id)} type="button" aria-label="Remove question">✕</button>
+              </div>
+              <div class="tier-card-body">
+                <div class="row-2">
+                  <div class="field-group">
+                    <label class="field-label">Type</label>
+                    <select class="input" bind:value={field.type}>
+                      <option value="text">Short text</option>
+                      <option value="textarea">Long text</option>
+                      <option value="email">Email</option>
+                      <option value="tel">Phone</option>
+                      <option value="select">Select / Radio</option>
+                      <option value="checkbox">Checkbox</option>
+                    </select>
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">Label <span class="required">*</span></label>
+                    <input class="input" type="text" bind:value={field.label} placeholder="e.g. Dietary requirements" />
+                  </div>
+                </div>
+
+                {#if field.type !== "checkbox" && field.type !== "select"}
+                  <div class="field-group">
+                    <label class="field-label">Placeholder <span class="optional">optional</span></label>
+                    <input class="input" type="text" bind:value={field.placeholder} placeholder="Hint shown inside the input" />
+                  </div>
+                {/if}
+
+                {#if field.type === "select"}
+                  <div class="field-group">
+                    <label class="field-label">Options</label>
+                    {#if field.options.length > 0}
+                      <div class="option-list">
+                        {#each field.options as opt, oi}
+                          <span class="option-chip">
+                            {opt}
+                            <button class="option-remove" onclick={() => removeOption(field.id, oi)} type="button" aria-label="Remove option">✕</button>
+                          </span>
+                        {/each}
+                      </div>
+                    {/if}
+                    <div class="add-option-row">
+                      <input
+                        class="input"
+                        type="text"
+                        bind:value={field.newOption}
+                        placeholder="Add option…"
+                        onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addOption(field.id); } }}
+                      />
+                      <button class="btn-ghost" type="button" onclick={() => addOption(field.id)}>Add</button>
+                    </div>
+                  </div>
+                {/if}
+
+                <label class="checkbox-option">
+                  <input type="checkbox" bind:checked={field.required} />
+                  <span><strong>Required</strong></span>
+                </label>
+              </div>
             </div>
-          </div>
+          {/each}
 
-          <div class="field-group">
-            <label class="field-label" for="sr-desc">Series description</label>
-            <input id="sr-desc" class="input" type="text" bind:value={seriesDescription} placeholder="Optional" />
-          </div>
+          <button class="btn-add" type="button" onclick={addField}>+ Add question</button>
 
+          <!-- Claiming -->
           <div class="section-divider">Claiming</div>
 
           <div class="field-group">
@@ -621,11 +852,6 @@ cp apps/server/.env.example apps/server/.env
               </label>
             </div>
           </div>
-
-          <label class="checkbox-option">
-            <input type="checkbox" bind:checked={approvalRequired} />
-            <span><strong>Require approval</strong> — you manually approve each claim from the dashboard</span>
-          </label>
 
           {#if createError}
             <div class="create-error">{createError}</div>
@@ -648,7 +874,7 @@ cp apps/server/.env.example apps/server/.env
             disabled={!step3Valid || creatingEvent}
             onclick={createEvent}
           >
-            {creatingEvent ? "Creating…" : "Create event &rarr;"}
+            {creatingEvent ? "Creating…" : "Create event →"}
           </button>
         {/if}
       </div>
@@ -1575,5 +1801,155 @@ bzz://&lt;feed-manifest-hash&gt;</pre>
   .btn-ghost:hover {
     border-color: var(--accent);
     color: var(--accent-text);
+  }
+
+  /* ── Ticket tiers + question cards ──────────────────────────────────────── */
+  .tier-card, .field-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .tier-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.625rem 0.875rem;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    gap: 0.5rem;
+  }
+
+  .tier-card-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+  }
+
+  .tier-name-preview {
+    font-weight: 400;
+    color: var(--text-muted);
+  }
+
+  .wave-badge {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.1rem 0.45rem;
+    border-radius: 9999px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent-text);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .tier-remove-btn {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    padding: 0.2rem 0.4rem;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .tier-remove-btn:hover {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+  }
+
+  .tier-card-body {
+    padding: 0.875rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+  }
+
+  .sale-window-toggle {
+    width: 100%;
+    text-align: left;
+    font-size: 0.8125rem;
+  }
+
+  .sale-window-row {
+    padding-top: 0.25rem;
+  }
+
+  /* ── Add tier / add question button ─────────────────────────────────────── */
+  .btn-add {
+    width: 100%;
+    padding: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--accent-text);
+    border: 1px dashed var(--accent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+    transition: all var(--transition);
+    text-align: center;
+  }
+
+  .btn-add:hover {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+
+  /* ── Section hint ────────────────────────────────────────────────────────── */
+  .section-hint {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: -0.5rem 0 0;
+    line-height: 1.5;
+  }
+
+  /* ── Select options (field type dropdown) ───────────────────────────────── */
+  select.input {
+    cursor: pointer;
+  }
+
+  /* ── Option chips (select/radio field builder) ───────────────────────────── */
+  .option-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-bottom: 0.375rem;
+  }
+
+  .option-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.2rem 0.5rem 0.2rem 0.625rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+
+  .option-remove {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    line-height: 1;
+    padding: 0.1rem;
+    border-radius: 50%;
+    transition: all var(--transition);
+  }
+
+  .option-remove:hover {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+  }
+
+  .add-option-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .add-option-row .input {
+    flex: 1;
   }
 </style>
