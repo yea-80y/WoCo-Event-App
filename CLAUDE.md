@@ -30,7 +30,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - BEE_URL=http://192.168.0.144:3323 (single Bee node, same address for both laptop and server)
 
   ============================================================================
-  BUILD STATUS (as of 2026-02-25)
+  BUILD STATUS (as of 2026-02-26)
   ============================================================================
 
   CORE PLATFORM — COMPLETE:
@@ -82,6 +82,26 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
       - Upload: scripts/upload-site-to-swarm.cjs (npm run upload:site)
       - Entry: site.html → site-main.ts → SiteApp.svelte
       - DashboardIndex: "Build a standalone event site" CTA → #/site-builder
+  [x] Mock payment page + dual-feed identity association (2026-02-26)
+      - SeriesSummary.paymentRedirectUrl? — claim button becomes "Register & Pay"
+      - GET /api/events/:eventId/series/:seriesId/mock-payment-page — self-contained HTML
+        Query: email, walletAddress, returnUrl, amount, currency
+        Shows identity choice: link to wallet / link to email / use different wallet
+      - POST /api/events/:eventId/series/:seriesId/mock-payment — mints + dual feeds
+        Body: { email?, walletAddress?, linkWallet?, linkEmail?, altWallet? }
+      - addToEmailCollection(emailHash, entry) → woco/pod/collection/email:{hash}
+      - EventPage.svelte: handles ?claimed=1&edition=N return from payment page
+      - SiteBuilder step 3: paymentRedirectUrl field per tier
+      - paymentRedirectUrl flows: shared types → events route → service.ts → SeriesSummary
+  [x] Discover + list/unlist events from external server (2026-02-26)
+      - POST /api/events/discover — fetches GET {sourceApiUrl}/api/events, filters by
+        caller's address, cross-references WoCo directory, returns {listed: bool} per event
+        Does NOT auto-list. No event ID required — discovered by wallet address alone.
+      - POST /api/events/:id/list — explicit: fetches event, verifies creator, adds to dir
+      - POST /api/events/:id/unlist — removes from WoCo directory (creator verified)
+      - removeEventFromDirectory(eventId) in service.ts
+      - DashboardIndex: discover form (API URL only) + per-event List/Unlist toggle
+      - Auto-listing on WoCo-created events unchanged (still added on creation)
   [ ] Content hash registry (woco/registry/verified-frontends feed + WoCo signature)
   [ ] Payment webhook endpoint (receive confirmation → mint ticket; mock-friendly)
   [ ] Zupass login (4th auth method — ed25519 adapter for session delegation)
@@ -395,6 +415,18 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - Dashboard has "Approvals (N)" tab alongside Orders
   - GET /claim-status returns userPendingId when pending, userEdition when approved
   - Header auth for GET routes: x-session-address + x-session-delegation (base64 JSON)
+
+  KNOWN BUGS (as of 2026-02-26 — to be fixed):
+  - mock-payment CollectionEntry.claimedRef uses ticket.originalPodHash (original ticket)
+    instead of the actual claimed ticket Swarm ref — claimTicket() doesn't return claimedRef.
+    Fix: add claimedRef to ClaimResult type and return it from claimTicket().
+  - POST /api/events/discover, list, unlist + mock-payment endpoints not yet deployed to
+    server — need rsync + restart (deployment was interrupted mid-session).
+  - Mock payment series.price is always 0 (hardcoded in service.ts) so payment page always
+    shows "Free (demo)" — price field needs wiring through the create event flow.
+  - Hono default 404 returns plain text "404 Not Found" — authPost's resp.json() throws
+    "Unexpected non-whitespace character after JSON at position 4". Consider adding a
+    global 404 JSON handler in index.ts.
 
   KNOWN GOTCHAS:
   - Vite base must be './' (relative) — absolute paths break under Swarm /bzz/ URLs

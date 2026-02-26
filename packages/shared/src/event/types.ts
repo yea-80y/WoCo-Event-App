@@ -41,6 +41,8 @@ export interface SeriesSummary {
   saleStart?: string;
   /** ISO datetime when this series closes for claims (server-enforced) */
   saleEnd?: string;
+  /** If set, claim button becomes "Register & Pay" and redirects here */
+  paymentRedirectUrl?: string;
 }
 
 /** Entry in the global event directory feed */
@@ -94,6 +96,7 @@ export interface CreateEventRequest {
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
+    paymentRedirectUrl?: string;
   }>;
   /** Signed tickets grouped by seriesId */
   signedTickets: Record<string, SignedTicket[]>;

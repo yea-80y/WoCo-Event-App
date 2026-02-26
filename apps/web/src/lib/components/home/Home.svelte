@@ -44,10 +44,40 @@
     </button>
     <a class="btn-outline" href="#how-it-works">How it works</a>
   </div>
-  <p class="hero-site-builder">
-    Need a standalone event site on your own server?
-    <button class="link-btn" onclick={() => navigate("/site-builder")}>Build one →</button>
-  </p>
+</section>
+
+<!-- Self-host CTA -->
+<section class="self-host-section">
+  <div class="self-host-inner">
+    <div class="self-host-text">
+      <span class="tag">For organisations</span>
+      <h2>Run your own infrastructure</h2>
+      <p>
+        Deploy WoCo's backend on your own servers — zero dependency on WoCo after setup.
+        Generate a standalone event site hosted on Swarm, point it at your ENS domain,
+        and own everything end-to-end.
+      </p>
+      <ul class="self-host-highlights">
+        <li>&#10003; Your Bee node · your feeds · your keys</li>
+        <li>&#10003; Standalone event page deployable to Swarm in minutes</li>
+        <li>&#10003; Attendee dashboard included — decrypt orders locally in your browser</li>
+        <li>&#10003; Docker Compose setup · guided 5-step wizard</li>
+      </ul>
+    </div>
+    <div class="self-host-actions">
+      <button class="btn-self-host" onclick={() => navigate("/site-builder")}>
+        &#127760; Build your event site
+      </button>
+      <a
+        class="btn-docs"
+        href="https://github.com/yea-80y/WoCo-Event-App/blob/main/docs/self-hosted-setup.md"
+        target="_blank"
+        rel="noopener"
+      >
+        Setup guide &rarr;
+      </a>
+    </div>
+  </div>
 </section>
 
 <!-- How it works -->
@@ -105,40 +135,6 @@
       <div class="feature-icon">&#9889;</div>
       <h3>No sign-up needed</h3>
       <p>Attendees claim with a wallet connection or just an email. No accounts, no passwords, no app to install.</p>
-    </div>
-  </div>
-</section>
-
-<!-- Self-host CTA -->
-<section class="self-host-section">
-  <div class="self-host-inner">
-    <div class="self-host-text">
-      <span class="tag">For organisations</span>
-      <h2>Run your own infrastructure</h2>
-      <p>
-        Deploy WoCo's backend on your own servers — zero dependency on WoCo after setup.
-        Generate a standalone event site hosted on Swarm, point it at your ENS domain,
-        and own everything end-to-end.
-      </p>
-      <ul class="self-host-highlights">
-        <li>&#10003; Your Bee node · your feeds · your keys</li>
-        <li>&#10003; Standalone event page deployable to Swarm in minutes</li>
-        <li>&#10003; Attendee dashboard included — decrypt orders locally in your browser</li>
-        <li>&#10003; Docker Compose setup · guided 5-step wizard</li>
-      </ul>
-    </div>
-    <div class="self-host-actions">
-      <button class="btn-self-host" onclick={() => navigate("/site-builder")}>
-        &#127760; Build your event site
-      </button>
-      <a
-        class="btn-docs"
-        href="https://github.com/yea-80y/WoCo-Event-App/blob/main/docs/self-hosted-setup.md"
-        target="_blank"
-        rel="noopener"
-      >
-        Setup guide &rarr;
-      </a>
     </div>
   </div>
 </section>
@@ -262,27 +258,6 @@
     display: flex;
     gap: 0.75rem;
     justify-content: center;
-  }
-
-  .hero-site-builder {
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    margin: 0.75rem 0 0;
-  }
-
-  .link-btn {
-    background: none;
-    border: none;
-    padding: 0;
-    font-size: inherit;
-    color: var(--accent-text);
-    cursor: pointer;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-
-  .link-btn:hover {
-    color: var(--accent);
   }
 
   .btn-primary {

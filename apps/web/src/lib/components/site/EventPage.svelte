@@ -241,7 +241,32 @@
     }
   }
 
+  // ── Payment return handler ─────────────────────────────────────────────────
+  function handlePaymentReturn() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("claimed") === "1") {
+      claimed = true;
+      claimedEdition = Number(params.get("edition")) || null;
+      claimedVia = "wallet";
+      // Clean up URL without triggering a navigation
+      const cleanUrl = window.location.pathname + (window.location.hash || "");
+      history.replaceState(null, "", cleanUrl);
+    }
+  }
+
+  function handlePayment() {
+    if (!selectedSeries?.paymentRedirectUrl) return;
+    const email = getEmail() || "";
+    const params = new URLSearchParams();
+    if (email) params.set("email", email);
+    if (auth.parent) params.set("walletAddress", auth.parent);
+    params.set("returnUrl", window.location.href);
+    const qs = params.toString();
+    window.location.href = `${selectedSeries.paymentRedirectUrl}${qs ? "?" + qs : ""}`;
+  }
+
   onMount(() => {
+    handlePaymentReturn();
     getEvent(eventId)
       .then((fresh) => {
         if (!fresh) {
@@ -497,6 +522,14 @@
           <div class="claim-actions">
             {#if claiming}
               <button class="claim-btn" disabled>{claimStep || "Processing…"}</button>
+            {:else if selectedSeries.paymentRedirectUrl}
+              <button
+                class="claim-btn claim-btn--pay"
+                onclick={handlePayment}
+                disabled={!formValid()}
+              >
+                Register &amp; Pay
+              </button>
             {:else if claimMode === "both"}
               <button
                 class="claim-btn"
@@ -939,6 +972,12 @@
   }
 
   .claim-btn--outline:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+  .claim-btn--pay {
+    background: #059669;
+  }
+
+  .claim-btn--pay:hover:not(:disabled) { background: #047857; }
 
   .claim-error {
     font-size: 0.8125rem;

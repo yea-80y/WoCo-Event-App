@@ -534,7 +534,7 @@ async function updateClaimersFeed(seriesId: string, entry: ClaimerEntry): Promis
   console.log(`[claim] Claimers feed updated: ${feed.claimers.length} claims`);
 }
 
-async function addToUserCollection(ethAddress: string, entry: CollectionEntry): Promise<void> {
+export async function addToUserCollection(ethAddress: string, entry: CollectionEntry): Promise<void> {
   const page = await readFeedPage(topicUserCollection(ethAddress));
   const collection: UserCollection = page
     ? decodeJsonFeed<UserCollection>(page) ?? { v: 1, entries: [], updatedAt: "" }
@@ -548,4 +548,9 @@ async function addToUserCollection(ethAddress: string, entry: CollectionEntry): 
 
   await writeFeedPage(topicUserCollection(ethAddress), encodeJsonFeed(collection));
   console.log(`[claim] User collection updated: ${collection.entries.length} tickets`);
+}
+
+/** Add a ticket entry to an email-keyed collection feed (woco/pod/collection/email:{hash}) */
+export async function addToEmailCollection(emailHash: string, entry: CollectionEntry): Promise<void> {
+  return addToUserCollection(`email:${emailHash}`, entry);
 }

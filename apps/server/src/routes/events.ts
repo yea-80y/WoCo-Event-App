@@ -3,7 +3,7 @@ import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventRequest } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEvent, getEvent, listEvents } from "../lib/event/service.js";
+import { createEvent, getEvent, listEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
 
 const events = new Hono<AppEnv>();
 
@@ -94,6 +94,7 @@ events.post("/", requireAuth, async (c) => {
           ...((s as { wave?: string }).wave ? { wave: (s as { wave?: string }).wave } : {}),
           ...((s as { saleStart?: string }).saleStart ? { saleStart: (s as { saleStart?: string }).saleStart } : {}),
           ...((s as { saleEnd?: string }).saleEnd ? { saleEnd: (s as { saleEnd?: string }).saleEnd } : {}),
+          ...((s as { paymentRedirectUrl?: string }).paymentRedirectUrl ? { paymentRedirectUrl: (s as { paymentRedirectUrl?: string }).paymentRedirectUrl } : {}),
         })),
         signedTickets: serializedTickets,
         encryptionKey: encryptionKey as string | undefined,
@@ -115,6 +116,145 @@ events.post("/", requireAuth, async (c) => {
       stream.writeln(JSON.stringify({ type: "error", ok: false, error: message }));
     }
   });
+});
+
+// POST /api/events/discover — authenticated
+// Fetches events from an external server, filters by caller address,
+// cross-references WoCo directory to show listed/unlisted status.
+// Does NOT add anything to the directory — that's an explicit action via /list.
+events.post("/discover", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = c.get("body") as { sourceApiUrl?: string };
+
+  const rawUrl = (body.sourceApiUrl ?? "").trim().replace(/\/$/, "");
+  if (!rawUrl) return c.json({ ok: false, error: "sourceApiUrl is required" }, 400);
+
+  const apiBase = rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl;
+
+  // Fetch events from the external server
+  let remoteEntries: import("@woco/shared").EventDirectoryEntry[];
+  try {
+    const resp = await fetch(`${apiBase}/api/events`, { signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
+    const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string };
+    if (!json.ok) return c.json({ ok: false, error: json.error || "Failed to list events from source" }, 400);
+    remoteEntries = json.data ?? [];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    return c.json({ ok: false, error: `Could not reach source server: ${msg}` }, 400);
+  }
+
+  // Filter to caller's events only
+  const mine = remoteEntries.filter(
+    (e) => e.creatorAddress.toLowerCase() === parentAddress,
+  );
+
+  // Cross-reference WoCo directory for listed status
+  const wocoEntries = await listEvents();
+  const listedIds = new Set(wocoEntries.map((e) => e.eventId));
+
+  const data = mine.map((e) => ({
+    ...e,
+    listed: listedIds.has(e.eventId),
+    sourceApiUrl: apiBase,
+  }));
+
+  return c.json({ ok: true, data });
+});
+
+// POST /api/events/:id/list — authenticated
+// Fetches the event from sourceApiUrl (or WoCo's own server), verifies creator,
+// and adds to WoCo directory. No-op if already listed.
+events.post("/:id/list", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = c.get("body") as { sourceApiUrl?: string };
+
+  let eventFeed: import("@woco/shared").EventFeed | null = null;
+
+  if (body.sourceApiUrl) {
+    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+    try {
+      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
+      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed; error?: string };
+      if (!json.ok || !json.data) return c.json({ ok: false, error: json.error || "Event not found on source server" }, 404);
+      eventFeed = json.data;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      return c.json({ ok: false, error: `Could not reach source server: ${msg}` }, 400);
+    }
+  } else {
+    eventFeed = await getEvent(eventId);
+  }
+
+  if (!eventFeed) return c.json({ ok: false, error: "Event not found" }, 404);
+  if (eventFeed.creatorAddress.toLowerCase() !== parentAddress) {
+    return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
+  }
+
+  try {
+    await addEventToDirectory({
+      eventId: eventFeed.eventId,
+      title: eventFeed.title,
+      imageHash: eventFeed.imageHash,
+      startDate: eventFeed.startDate,
+      location: eventFeed.location || "",
+      creatorAddress: eventFeed.creatorAddress,
+      seriesCount: eventFeed.series.length,
+      totalTickets: eventFeed.series.reduce((sum, s) => sum + s.totalSupply, 0),
+      createdAt: eventFeed.createdAt,
+    });
+  } catch (err) {
+    console.error("[api] list event error:", err);
+    return c.json({ ok: false, error: "Failed to add event to directory" }, 500);
+  }
+
+  return c.json({ ok: true, eventId });
+});
+
+// POST /api/events/:id/unlist — authenticated
+// Removes the event from WoCo directory. Verifies the caller is the creator
+// by checking the WoCo directory entry or fetching from sourceApiUrl.
+events.post("/:id/unlist", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = c.get("body") as { sourceApiUrl?: string };
+
+  // Verify creator — check directory first, then optional sourceApiUrl
+  const wocoEntries = await listEvents();
+  const dirEntry = wocoEntries.find((e) => e.eventId === eventId);
+
+  if (dirEntry) {
+    if (dirEntry.creatorAddress.toLowerCase() !== parentAddress) {
+      return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
+    }
+  } else if (body.sourceApiUrl) {
+    // Event may not be in directory yet — verify via source
+    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+    try {
+      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed };
+      if (!json.ok || !json.data) return c.json({ ok: false, error: "Event not found" }, 404);
+      if (json.data.creatorAddress.toLowerCase() !== parentAddress) {
+        return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
+      }
+    } catch {
+      return c.json({ ok: false, error: "Could not verify event creator" }, 400);
+    }
+  } else {
+    // Event not in directory and no source to check — nothing to unlist
+    return c.json({ ok: true, eventId, message: "Event was not listed" });
+  }
+
+  try {
+    await removeEventFromDirectory(eventId);
+  } catch (err) {
+    console.error("[api] unlist event error:", err);
+    return c.json({ ok: false, error: "Failed to remove event from directory" }, 500);
+  }
+
+  return c.json({ ok: true, eventId });
 });
 
 export { events };

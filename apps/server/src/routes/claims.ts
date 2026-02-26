@@ -4,8 +4,9 @@ import type { Hex0x, SealedBox } from "@woco/shared";
 import { PASSKEY_CLAIM_MAX_AGE_MS, PASSKEY_CLAIM_PREFIX } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import { claimTicket, hashEmail, getClaimStatus, addToUserCollection, addToEmailCollection, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
+import { getEvent } from "../lib/event/service.js";
 
 const claims = new Hono<AppEnv>();
 
@@ -212,6 +213,298 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
     console.error("[api] getClaimStatus error:", err);
     const message = err instanceof Error ? err.message : "Failed to get claim status";
     return c.json({ ok: false, error: message }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Mock payment page (GET) — returns a self-contained HTML page
+// ---------------------------------------------------------------------------
+
+claims.get("/:eventId/series/:seriesId/mock-payment-page", async (c) => {
+  const eventId = c.req.param("eventId");
+  const seriesId = c.req.param("seriesId");
+  const { email = "", walletAddress = "", returnUrl = "", amount = "", currency = "GBP" } = c.req.query();
+
+  // Fetch event info for the banner
+  let eventTitle = "Event";
+  let seriesName = "Ticket";
+  let seriesPrice = amount;
+  try {
+    const ev = await getEvent(eventId);
+    if (ev) {
+      eventTitle = ev.title;
+      const s = ev.series.find(s => s.seriesId === seriesId);
+      if (s) { seriesName = s.name; if (!seriesPrice) seriesPrice = String(s.price); }
+    }
+  } catch { /* proceed with defaults */ }
+
+  const postUrl = `${new URL(c.req.url).origin}/api/events/${eventId}/series/${seriesId}/mock-payment`;
+  const safeEmail = email.replace(/"/g, "&quot;");
+  const safeWallet = walletAddress.replace(/"/g, "&quot;");
+  const safeReturn = returnUrl.replace(/"/g, "&quot;");
+
+  const priceDisplay = (seriesPrice && Number(seriesPrice) > 0)
+    ? `${seriesPrice} ${currency}`
+    : "Free (demo)";
+
+  const showIdentity = !!walletAddress;
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Complete Registration – ${eventTitle}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f0f13; color: #e1e1e6; min-height: 100dvh; display: flex; align-items: flex-start; justify-content: center; padding: 2rem 1rem; }
+  .card { width: 100%; max-width: 480px; }
+  .banner { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.5rem; }
+  .banner-label { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #888; margin-bottom: 0.375rem; }
+  .banner-title { font-size: 1.125rem; font-weight: 700; color: #e1e1e6; }
+  .banner-series { font-size: 0.875rem; color: #aaa; margin-top: 0.25rem; }
+  .price-row { display: flex; align-items: center; justify-content: space-between; margin-top: 0.875rem; padding-top: 0.875rem; border-top: 1px solid #2a2a38; }
+  .price-label { font-size: 0.8125rem; color: #888; }
+  .price-value { font-size: 1rem; font-weight: 700; color: #7c6cf0; }
+  .section-title { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #888; margin-bottom: 0.75rem; }
+  .field-group { margin-bottom: 1.25rem; }
+  label { display: block; font-size: 0.8125rem; color: #aaa; margin-bottom: 0.375rem; }
+  input[type=email], input[type=text] { width: 100%; padding: 0.5625rem 0.875rem; background: #1a1a24; border: 1px solid #2a2a38; border-radius: 8px; color: #e1e1e6; font-size: 0.875rem; font-family: inherit; transition: border-color 0.15s; }
+  input:focus { outline: none; border-color: #7c6cf0; }
+  .identity-box { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.5rem; }
+  .identity-title { font-size: 0.9375rem; font-weight: 600; color: #e1e1e6; margin-bottom: 0.25rem; }
+  .identity-subtitle { font-size: 0.8125rem; color: #888; margin-bottom: 1rem; }
+  .identity-option { display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem 0; border-top: 1px solid #2a2a38; }
+  .identity-option:first-of-type { border-top: none; }
+  .identity-option input[type=checkbox] { margin-top: 0.125rem; flex-shrink: 0; accent-color: #7c6cf0; width: 1rem; height: 1rem; }
+  .identity-option-body { flex: 1; min-width: 0; }
+  .identity-option-label { font-size: 0.875rem; font-weight: 500; color: #e1e1e6; margin-bottom: 0.125rem; }
+  .identity-option-desc { font-size: 0.75rem; color: #888; line-height: 1.5; }
+  .alt-wallet-input { margin-top: 0.5rem; }
+  .submit-btn { width: 100%; padding: 0.75rem; background: #7c6cf0; color: #fff; font-size: 0.9375rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background 0.15s; border: none; font-family: inherit; }
+  .submit-btn:hover { background: #6a5ce0; }
+  .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .demo-note { font-size: 0.75rem; color: #555; text-align: center; margin-top: 1rem; }
+  #error-msg { color: #f87171; font-size: 0.8125rem; margin-top: 0.75rem; display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="banner">
+    <div class="banner-label">Registration</div>
+    <div class="banner-title">${eventTitle}</div>
+    <div class="banner-series">${seriesName}</div>
+    <div class="price-row">
+      <span class="price-label">Amount</span>
+      <span class="price-value">${priceDisplay}</span>
+    </div>
+  </div>
+
+  <form id="pay-form">
+    <input type="hidden" name="returnUrl" value="${safeReturn}"/>
+
+    <div class="field-group">
+      <div class="section-title">Contact details</div>
+      <label for="email">Email address *</label>
+      <input type="email" id="email" name="email" value="${safeEmail}" required placeholder="your@email.com"/>
+    </div>
+
+    ${showIdentity ? `
+    <div class="identity-box">
+      <div class="identity-title">How do you want to use this ticket in future?</div>
+      <div class="identity-subtitle">Your ticket can be linked to one or more identity anchors. This determines which apps and platforms can verify your attendance.</div>
+
+      <div class="identity-option">
+        <input type="checkbox" id="linkWallet" name="linkWallet" value="1" checked/>
+        <div class="identity-option-body">
+          <div class="identity-option-label">Save to wallet (${safeWallet.slice(0, 6)}…${safeWallet.slice(-4)})</div>
+          <div class="identity-option-desc">Access gated apps, forums, and on-chain spaces with this wallet.</div>
+        </div>
+      </div>
+
+      <div class="identity-option">
+        <input type="checkbox" id="linkEmail" name="linkEmail" value="1" checked/>
+        <div class="identity-option-body">
+          <div class="identity-option-label">Save to email</div>
+          <div class="identity-option-desc">For email-based platforms and as a backup. Your email isn't stored — only a hash.</div>
+        </div>
+      </div>
+
+      <div class="identity-option">
+        <input type="checkbox" id="useAltWallet" name="useAltWallet" value="1" onchange="document.getElementById('altWalletWrap').style.display=this.checked?'block':'none'"/>
+        <div class="identity-option-body">
+          <div class="identity-option-label">Use a different wallet for access</div>
+          <div class="identity-option-desc">If your paying wallet isn't your everyday wallet.</div>
+          <div id="altWalletWrap" class="alt-wallet-input" style="display:none">
+            <input type="text" name="altWallet" placeholder="0x…" style="margin-top:0.375rem"/>
+          </div>
+        </div>
+      </div>
+    </div>
+    <input type="hidden" name="walletAddress" value="${safeWallet}"/>
+    ` : ""}
+
+    <button type="submit" class="submit-btn" id="submit-btn">Confirm Payment</button>
+    <p id="error-msg"></p>
+    <p class="demo-note">This is a mock payment page for testing. No real payment is processed.</p>
+  </form>
+</div>
+
+<script>
+document.getElementById("pay-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  const btn = document.getElementById("submit-btn");
+  const errEl = document.getElementById("error-msg");
+  btn.disabled = true;
+  btn.textContent = "Processing…";
+  errEl.style.display = "none";
+
+  const fd = new FormData(e.target);
+  const body = {
+    email: fd.get("email") || undefined,
+    walletAddress: fd.get("walletAddress") || undefined,
+    linkWallet: fd.get("linkWallet") === "1",
+    linkEmail: fd.get("linkEmail") === "1",
+    altWallet: fd.get("altWallet") || undefined,
+  };
+
+  try {
+    const resp = await fetch("${postUrl}", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = await resp.json();
+    if (json.ok) {
+      const returnUrl = fd.get("returnUrl");
+      const sep = returnUrl && returnUrl.includes("?") ? "&" : "?";
+      window.location.href = (returnUrl || "/") + sep + "claimed=1&edition=" + (json.edition || "");
+    } else {
+      errEl.textContent = json.error || "Payment failed — please try again.";
+      errEl.style.display = "block";
+      btn.disabled = false;
+      btn.textContent = "Confirm Payment";
+    }
+  } catch {
+    errEl.textContent = "Network error — please try again.";
+    errEl.style.display = "block";
+    btn.disabled = false;
+    btn.textContent = "Confirm Payment";
+  }
+});
+</script>
+</body>
+</html>`;
+
+  return c.html(html);
+});
+
+// ---------------------------------------------------------------------------
+// Mock payment POST — mints ticket, writes dual-feed identity association
+// ---------------------------------------------------------------------------
+
+claims.post("/:eventId/series/:seriesId/mock-payment", async (c) => {
+  const seriesId = c.req.param("seriesId");
+
+  let body: {
+    email?: string;
+    walletAddress?: string;
+    linkWallet?: boolean;
+    linkEmail?: boolean;
+    altWallet?: string;
+    encryptedOrder?: SealedBox;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const { email, walletAddress, linkWallet, linkEmail, altWallet, encryptedOrder } = body;
+
+  if (!email && !walletAddress) {
+    return c.json({ ok: false, error: "email or walletAddress is required" }, 400);
+  }
+
+  // Build primary claim identifier — prefer email as the "payment contact"
+  let identifier: ClaimIdentifier;
+  if (email) {
+    identifier = { type: "email", email, emailHash: hashEmail(email) };
+  } else {
+    identifier = { type: "wallet", address: (walletAddress as Hex0x).toLowerCase() as Hex0x };
+  }
+
+  // Rate-limit mock-payment same as email claims
+  const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
+    || c.req.header("cf-connecting-ip")
+    || "unknown";
+  if (identifier.type === "email" && !checkEmailRateLimit(ip)) {
+    return c.json({ ok: false, error: "Too many registrations. Please try again later." }, 429);
+  }
+
+  const identifierKey = identifier.type === "wallet"
+    ? (identifier.address as string).toLowerCase()
+    : identifier.emailHash;
+  const lockKey = `${seriesId}:${identifierKey}`;
+
+  if (claimInFlight.has(lockKey)) {
+    return c.json({ ok: false, error: "Registration already in progress — please wait" }, 429);
+  }
+  claimInFlight.add(lockKey);
+
+  try {
+    const ticket: ClaimResult = await queueSeriesClaim(seriesId, () =>
+      claimTicket({ seriesId, identifier, encryptedOrder }),
+    );
+
+    if (ticket.approvalStatus === "pending") {
+      const { _pendingId, ...ticketForClient } = ticket;
+      return c.json({ ok: true, ticket: ticketForClient, edition: ticket.edition, approvalPending: true, pendingId: _pendingId });
+    }
+
+    const edition = ticket.edition;
+    const eventId = c.req.param("eventId");
+    const claimedRef = ticket.originalPodHash; // best available ref
+    const claimedAt = ticket.claimedAt;
+
+    const entry = { seriesId, eventId, edition, claimedRef, claimedAt };
+
+    // Dual-feed identity association (runs in background, non-critical)
+    const collectionPromises: Promise<void>[] = [];
+
+    if (linkWallet && walletAddress) {
+      collectionPromises.push(
+        addToUserCollection(walletAddress.toLowerCase(), entry)
+          .catch(err => console.error("[mock-payment] wallet collection error:", err)),
+      );
+    }
+
+    if (altWallet && altWallet.trim().startsWith("0x")) {
+      collectionPromises.push(
+        addToUserCollection(altWallet.trim().toLowerCase(), entry)
+          .catch(err => console.error("[mock-payment] alt wallet collection error:", err)),
+      );
+    }
+
+    if (linkEmail && email) {
+      const emailHash = hashEmail(email);
+      collectionPromises.push(
+        addToEmailCollection(emailHash, entry)
+          .catch(err => console.error("[mock-payment] email collection error:", err)),
+      );
+    }
+
+    // Fire and forget
+    Promise.all(collectionPromises).catch(() => {});
+
+    return c.json({ ok: true, ticket, edition });
+  } catch (err) {
+    console.error("[api] mock-payment error:", err);
+    const message = err instanceof Error ? err.message : "Registration failed";
+    const status = (message === "Already claimed" || message === "No tickets available") ? 409 : 500;
+    return c.json({ ok: false, error: message }, status);
+  } finally {
+    claimInFlight.delete(lockKey);
   }
 });
 

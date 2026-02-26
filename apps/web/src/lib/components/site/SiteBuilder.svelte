@@ -53,6 +53,7 @@
     tierName: string;
     description: string;
     approvalRequired: boolean;
+    paymentRedirectUrl: string;
     waves: WaveItem[];
   }
 
@@ -76,6 +77,7 @@
     tierName: "General Admission",
     description: "",
     approvalRequired: false,
+    paymentRedirectUrl: "",
     waves: [{
       id: crypto.randomUUID(),
       label: "",
@@ -103,6 +105,7 @@
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
+    paymentRedirectUrl?: string;
   }
   let storedSeries = $state<StoredSeries[]>([]);
   let storedSignedTickets = $state<Record<string, SignedTicket[]>>({});
@@ -232,6 +235,7 @@ PORT=3001`);
       tierName: "",
       description: "",
       approvalRequired: false,
+      paymentRedirectUrl: "",
       waves: [{
         id: crypto.randomUUID(),
         label: "",
@@ -337,6 +341,7 @@ PORT=3001`);
           ...(tier.waves.length > 1 && wave.label.trim() ? { wave: wave.label.trim() } : {}),
           ...(wave.saleStart ? { saleStart: wave.saleStart } : {}),
           ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
+          ...(tier.paymentRedirectUrl.trim() ? { paymentRedirectUrl: tier.paymentRedirectUrl.trim() } : {}),
         }))
       );
 
@@ -915,6 +920,17 @@ cp apps/server/.env.example apps/server/.env
                   <input type="checkbox" bind:checked={tier.approvalRequired} />
                   <span><strong>Require approval</strong> — you manually approve each claim from the dashboard</span>
                 </label>
+
+                <div class="field-group" style="margin-top:0.75rem">
+                  <label class="field-label">Payment redirect URL <span class="optional">optional</span></label>
+                  <input
+                    class="input"
+                    type="url"
+                    bind:value={tier.paymentRedirectUrl}
+                    placeholder="https://…/api/events/…/mock-payment-page"
+                  />
+                  <p class="field-hint">If set, the claim button becomes "Register &amp; Pay" and redirects here. Use the mock-payment-page endpoint for testing.</p>
+                </div>
 
                 <!-- Waves -->
                 <div class="waves-header">

@@ -50,6 +50,7 @@ export async function createEvent(opts: {
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
+    paymentRedirectUrl?: string;
   }>;
   /** signedTickets[seriesId] = array of serialized signed tickets */
   signedTickets: Record<string, string[]>;
@@ -175,6 +176,7 @@ export async function createEvent(opts: {
       ...(s.wave ? { wave: s.wave } : {}),
       ...(s.saleStart ? { saleStart: s.saleStart } : {}),
       ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
+      ...(s.paymentRedirectUrl ? { paymentRedirectUrl: s.paymentRedirectUrl } : {}),
     });
   }
 
@@ -256,6 +258,8 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
 // Directory helpers
 // ---------------------------------------------------------------------------
 
+export { addToEventDirectory as addEventToDirectory };
+
 async function addToEventDirectory(entry: EventDirectoryEntry): Promise<void> {
   const page = await readFeedPage(topicEventDirectory());
   const dir: EventDirectory = page
@@ -273,4 +277,18 @@ async function addToEventDirectory(entry: EventDirectoryEntry): Promise<void> {
 
   await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
   console.log(`[event] Directory updated: ${dir.entries.length} events`);
+}
+
+export async function removeEventFromDirectory(eventId: string): Promise<void> {
+  const page = await readFeedPage(topicEventDirectory());
+  if (!page) return;
+
+  const dir: EventDirectory = decodeJsonFeed<EventDirectory>(page) ?? { v: 1, entries: [], updatedAt: "" };
+  const before = dir.entries.length;
+  dir.entries = dir.entries.filter((e) => e.eventId !== eventId);
+  if (dir.entries.length === before) return; // not in directory, nothing to do
+
+  dir.updatedAt = new Date().toISOString();
+  await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
+  console.log(`[event] Directory updated (removed ${eventId}): ${dir.entries.length} events`);
 }
