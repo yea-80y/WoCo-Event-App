@@ -2,6 +2,7 @@
   import type { EventDirectoryEntry } from "@woco/shared";
   import { listEvents } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
+  import { setExternalEventApi } from "../../api/event-api-registry.js";
   import EventCard from "../events/EventCard.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
@@ -136,6 +137,11 @@
       <h3>No sign-up needed</h3>
       <p>Attendees claim with a wallet connection or just an email. No accounts, no passwords, no app to install.</p>
     </div>
+    <div class="feature">
+      <div class="feature-icon">&#128683;</div>
+      <h3>Double-spend protected</h3>
+      <p>Server-side slot locking ensures each ticket can only be claimed once — concurrent requests race safely and only one wins.</p>
+    </div>
   </div>
 </section>
 
@@ -152,7 +158,10 @@
   {:else}
     <div class="event-grid">
       {#each events as event}
-        <EventCard {event} onclick={() => navigate(`/event/${event.eventId}`)} />
+        <EventCard {event} onclick={() => {
+          if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
+          navigate(`/event/${event.eventId}`);
+        }} />
       {/each}
     </div>
   {/if}
@@ -192,16 +201,6 @@
       <h3>Portable frontends</h3>
       <p>Deploy fully branded event sites with custom themes and your own domain. Multi-event portals, white-label hosting, and ENS subdomains per event on the roadmap.</p>
     </div>
-    <div class="roadmap-item">
-      <span class="roadmap-tag">Identity</span>
-      <h3>Zupass integration</h3>
-      <p>Sign in with your Zupass identity. Your Zupass credentials become your ticket identity.</p>
-    </div>
-    <div class="roadmap-item">
-      <span class="roadmap-tag">Payments</span>
-      <h3>Paid tickets</h3>
-      <p>Accept payments for tickets — crypto and fiat. Set prices per series with built-in checkout and a payment webhook.</p>
-    </div>
   </div>
 </section>
 
@@ -210,6 +209,10 @@
   <p>Built on <a href="https://www.ethswarm.org" target="_blank" rel="noopener">Swarm</a> and <a href="https://ethereum.org" target="_blank" rel="noopener">Ethereum</a> standards</p>
   <p class="footer-links">
     <a href="https://github.com/yea-80y/WoCo-Event-App" target="_blank" rel="noopener">GitHub</a>
+    <span class="footer-sep">·</span>
+    <a href="https://gateway.woco-net.com/bzz/9ebcea7ca2d4a3a975d1724ee579856684dc6f2ffa3082b64317006c922f3100/" target="_blank" rel="noopener" class="footer-demo-link">
+      WoCo v1 ↗
+    </a>
   </p>
 </footer>
 
@@ -602,6 +605,22 @@
   }
 
   .footer-links a:hover {
+    color: var(--accent-text);
+  }
+
+  .footer-sep {
+    color: var(--border);
+    margin: 0 0.375rem;
+  }
+
+  .footer-demo-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color var(--transition);
+    font-size: 0.8125rem;
+  }
+
+  .footer-demo-link:hover {
     color: var(--accent-text);
   }
 </style>

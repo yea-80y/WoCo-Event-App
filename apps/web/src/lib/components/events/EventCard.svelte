@@ -10,6 +10,10 @@
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
+  function handleClick() {
+    onclick?.();
+  }
+
   function formatDate(iso: string): string {
     return new Date(iso).toLocaleDateString(undefined, {
       month: "short",
@@ -19,7 +23,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="card" role="button" tabindex="0" onclick={onclick}>
+<div class="card" role="button" tabindex="0" onclick={handleClick} class:has-ext={!!event.apiUrl}>
   {#if event.imageHash}
     <img
       src="{BEE_GATEWAY}/bytes/{event.imageHash}"
@@ -30,7 +34,12 @@
     <div class="card-image placeholder"></div>
   {/if}
   <div class="card-body">
-    <span class="date">{formatDate(event.startDate)}</span>
+    <div class="card-title-row">
+      <span class="date">{formatDate(event.startDate)}</span>
+      {#if event.apiUrl}
+        <span class="site-badge" title="Self-hosted event">&#9670;</span>
+      {/if}
+    </div>
     <h3>{event.title}</h3>
     {#if event.location}
       <p class="location">{event.location}</p>

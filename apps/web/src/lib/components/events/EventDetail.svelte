@@ -5,6 +5,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
+  import { getExternalEventApi } from "../../api/event-api-registry.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -13,6 +14,9 @@
   }
 
   let { eventId, onback }: Props = $props();
+
+  // External API URL — set by home page when navigating to an externally-listed event
+  const externalApiUrl = getExternalEventApi(eventId);
 
   // Synchronous cache read — before first render, so no loading flash on return visits
   const _KEY = cacheKey.event(eventId);
@@ -37,7 +41,7 @@
 
   onMount(() => {
     // Always fetch fresh — silently patches title, dates, series etc. if changed
-    getEvent(eventId)
+    getEvent(eventId, externalApiUrl)
       .then((fresh) => {
         if (!fresh) {
           if (_cached === null) error = "Event not found";
@@ -117,6 +121,7 @@
             orderFields={event.orderFields}
             claimMode={event.claimMode ?? "wallet"}
             approvalRequired={s.approvalRequired ?? false}
+            apiUrl={externalApiUrl}
           />
         </div>
       {/each}

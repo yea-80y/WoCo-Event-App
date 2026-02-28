@@ -122,13 +122,22 @@ async function init(): Promise<void> {
     const kind = await getKV<AuthKind>(StorageKeys.AUTH_KIND);
 
     if (kind === "web3") {
-      let walletAddr = await getConnectedAddress();
+      // getConnectedAddress() can hang if window.ethereum is injected but broken
+      // (e.g. MetaMask inpage.js present but extension unavailable) — cap at 3 s.
+      let walletAddr = await Promise.race([
+        getConnectedAddress(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]);
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
 
-      // No injected wallet — try to silently restore a WalletConnect session
+      // No injected wallet — try to silently restore a WalletConnect session.
+      // EthereumProvider.init() can hang on network requests, so cap at 3 s.
       if (!walletAddr && typeof window !== "undefined" && !window.ethereum) {
         const { tryRestoreWalletConnectSession } = await import("../wallet/wc-provider.js");
-        walletAddr = await tryRestoreWalletConnectSession();
+        walletAddr = await Promise.race([
+          tryRestoreWalletConnectSession(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+        ]);
       }
 
       // Wallet still connected and matches stored parent

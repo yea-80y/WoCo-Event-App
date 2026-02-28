@@ -7,12 +7,14 @@
   import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
   import EventForm from "./lib/components/events/EventForm.svelte";
   import EventDetail from "./lib/components/events/EventDetail.svelte";
+  import EventPage from "./lib/components/site/EventPage.svelte";
   import MyTickets from "./lib/components/passport/MyTickets.svelte";
   import EmbedSetup from "./lib/components/embed/EmbedSetup.svelte";
   import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
   import DashboardIndex from "./lib/components/dashboard/DashboardIndex.svelte";
   import Home from "./lib/components/home/Home.svelte";
   import SiteBuilder from "./lib/components/site/SiteBuilder.svelte";
+  import { getExternalEventApi } from "./lib/api/event-api-registry.js";
   import { onMount } from "svelte";
 
   onMount(() => {
@@ -49,10 +51,19 @@
     {:else if router.route === "create"}
       <EventForm onpublished={(id) => navigate(`/event/${id}`)} />
     {:else if router.route === "event"}
-      <EventDetail
-        eventId={router.params.id}
-        onback={() => navigate("/")}
-      />
+      {#if getExternalEventApi(router.params.id)}
+        <EventPage
+          eventId={router.params.id}
+          apiUrl={getExternalEventApi(router.params.id)}
+          onback={() => navigate("/")}
+          ondashboard={() => navigate(`/event/${router.params.id}/dashboard`)}
+        />
+      {:else}
+        <EventDetail
+          eventId={router.params.id}
+          onback={() => navigate("/")}
+        />
+      {/if}
     {:else if router.route === "dashboard-index"}
       <DashboardIndex />
     {:else if router.route === "dashboard"}

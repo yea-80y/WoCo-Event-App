@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { EventDirectoryEntry } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { listEvents } from "../../api/events.js";
-  import { authPost } from "../../api/client.js";
+  import { authPost, authGet } from "../../api/client.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
 
@@ -94,10 +93,8 @@
         loading = false;
         return;
       }
-      const all = await listEvents();
-      events = all.filter(
-        (e) => e.creatorAddress.toLowerCase() === auth.parent!.toLowerCase()
-      );
+      const res = await authGet<EventDirectoryEntry[]>("/api/events/mine");
+      if (res.ok && res.data) events = res.data;
     } catch {
       // ignore
     } finally {
@@ -174,13 +171,17 @@
           {#each discovered as ev}
             {@const busy = listingId === ev.eventId}
             <div class="discovered-row">
-              <div class="discovered-info">
+              <button
+                class="discovered-info discovered-info--link"
+                onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}
+                title="Open event dashboard"
+              >
                 <span class="discovered-title">{ev.title}</span>
                 <span class="discovered-meta">
                   {new Date(ev.startDate).toLocaleDateString()} &middot;
                   {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
                 </span>
-              </div>
+              </button>
               <div class="discovered-actions">
                 {#if ev.listed}
                   <span class="listed-badge">Listed on WoCo</span>
@@ -402,6 +403,21 @@
     flex-direction: column;
     gap: 0.125rem;
     min-width: 0;
+  }
+
+  .discovered-info--link {
+    cursor: pointer;
+    text-align: left;
+    flex: 1;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 0;
+    transition: none;
+  }
+
+  .discovered-info--link:hover .discovered-title {
+    color: var(--accent);
   }
 
   .discovered-title {

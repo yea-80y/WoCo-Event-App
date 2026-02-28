@@ -115,8 +115,8 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
   return resp.data ?? [];
 }
 
-export async function getEvent(eventId: string): Promise<EventFeed | null> {
-  const resp = await get<EventFeed>(`/api/events/${eventId}`);
+export async function getEvent(eventId: string, apiUrl?: string): Promise<EventFeed | null> {
+  const resp = await get<EventFeed>(`/api/events/${eventId}`, apiUrl);
   return resp.data ?? null;
 }
 
@@ -125,11 +125,13 @@ export async function claimTicket(
   seriesId: string,
   walletAddress: string,
   encryptedOrder?: SealedBox,
+  apiUrl?: string,
 ): Promise<ClaimTicketResponse> {
   // Wallet claims require session delegation (proves address ownership)
   const json = await authPost<ClaimTicketResponse>(
     `/api/events/${eventId}/series/${seriesId}/claim`,
     { mode: "wallet", walletAddress, encryptedOrder },
+    apiUrl,
   );
   return {
     ok: json.ok,
@@ -146,8 +148,9 @@ export async function claimTicketByEmail(
   seriesId: string,
   email: string,
   encryptedOrder?: SealedBox,
+  apiUrl?: string,
 ): Promise<ClaimTicketResponse> {
-  const resp = await fetch(`${apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
+  const resp = await fetch(`${apiUrl ?? apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode: "email", email, encryptedOrder }),
@@ -168,6 +171,7 @@ export async function getClaimStatus(
   seriesId: string,
   userAddress?: string,
   userEmailHash?: string,
+  apiUrl?: string,
 ): Promise<SeriesClaimStatus | null> {
   const params = new URLSearchParams();
   if (userAddress) params.set("address", userAddress);
@@ -175,6 +179,7 @@ export async function getClaimStatus(
   const query = params.toString() ? `?${params}` : "";
   const resp = await get<SeriesClaimStatus>(
     `/api/events/${eventId}/series/${seriesId}/claim-status${query}`,
+    apiUrl,
   );
   return resp.data ?? null;
 }

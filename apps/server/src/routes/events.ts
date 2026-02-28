@@ -3,7 +3,7 @@ import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventRequest } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEvent, getEvent, listEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
+import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
 
 const events = new Hono<AppEnv>();
 
@@ -14,6 +14,36 @@ events.get("/", async (c) => {
     return c.json({ ok: true, data: entries });
   } catch (err) {
     console.error("[api] listEvents error:", err);
+    return c.json({ ok: false, error: "Failed to list events" }, 500);
+  }
+});
+
+// GET /api/events/mine — authenticated, returns caller's events from creator index
+// Also merges in any global-directory events not yet in the creator index (old events
+// predating the per-creator index). Unlisted events still appear because the creator
+// index is never trimmed by the unlist operation — only the global directory is.
+// Must be registered BEFORE /:id to prevent "mine" being treated as an eventId.
+events.get("/mine", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  try {
+    const [creatorEntries, allEntries] = await Promise.all([
+      getCreatorEvents(parentAddress),
+      listEvents(),
+    ]);
+
+    // Merge: creator index is the primary source (never affected by unlist).
+    // Global directory fills in old events that predate the creator index.
+    const seen = new Set(creatorEntries.map((e) => e.eventId));
+    const merged = [...creatorEntries];
+    for (const e of allEntries) {
+      if (e.creatorAddress.toLowerCase() === parentAddress && !seen.has(e.eventId)) {
+        merged.push(e);
+      }
+    }
+
+    return c.json({ ok: true, data: merged });
+  } catch (err) {
+    console.error("[api] getCreatorEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
   }
 });
@@ -42,7 +72,7 @@ events.post("/", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
 
   // Validate required fields
-  const { event: ev, series, signedTickets, image, creatorPodKey, encryptionKey, orderFields, claimMode } = body;
+  const { event: ev, series, signedTickets, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList } = body;
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
   }
@@ -100,6 +130,7 @@ events.post("/", requireAuth, async (c) => {
         encryptionKey: encryptionKey as string | undefined,
         orderFields: orderFields as import("@woco/shared").OrderField[] | undefined,
         claimMode: claimMode as import("@woco/shared").ClaimMode | undefined,
+        skipAutoList: !!(skipAutoList as boolean | undefined),
         onProgress: (p) => {
           stream.writeln(JSON.stringify(p));
         },
@@ -124,30 +155,61 @@ events.post("/", requireAuth, async (c) => {
 // Does NOT add anything to the directory — that's an explicit action via /list.
 events.post("/discover", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = c.get("body") as { sourceApiUrl?: string };
+  const body = c.get("body") as { sourceApiUrl?: string; session?: string; delegation?: unknown };
 
   const rawUrl = (body.sourceApiUrl ?? "").trim().replace(/\/$/, "");
   if (!rawUrl) return c.json({ ok: false, error: "sourceApiUrl is required" }, 400);
 
   const apiBase = rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl;
 
-  // Fetch events from the external server
+  // Try to fetch all creator events (including unlisted) by forwarding session auth.
+  // Falls back to the public directory if the external server doesn't accept the delegation.
   let remoteEntries: import("@woco/shared").EventDirectoryEntry[];
-  try {
-    const resp = await fetch(`${apiBase}/api/events`, { signal: AbortSignal.timeout(15000) });
-    if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
-    const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string };
-    if (!json.ok) return c.json({ ok: false, error: json.error || "Failed to list events from source" }, 400);
-    remoteEntries = json.data ?? [];
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return c.json({ ok: false, error: `Could not reach source server: ${msg}` }, 400);
+
+  // authPost sends session/delegation in the JSON body, not headers.
+  // For forwarding to the source server's GET /api/events/mine we need them as headers.
+  const sessionAddress = body.session ?? "";
+  const sessionDelegation = body.delegation
+    ? Buffer.from(JSON.stringify(body.delegation)).toString("base64")
+    : "";
+
+  let usedMine = false;
+  if (sessionAddress && sessionDelegation) {
+    try {
+      const resp = await fetch(`${apiBase}/api/events/mine`, {
+        headers: {
+          "X-Session-Address": sessionAddress,
+          "X-Session-Delegation": sessionDelegation,
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (resp.ok) {
+        const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[] };
+        if (json.ok && json.data) {
+          remoteEntries = json.data;
+          usedMine = true;
+        }
+      }
+    } catch { /* fall through to public directory */ }
   }
 
-  // Filter to caller's events only
-  const mine = remoteEntries.filter(
-    (e) => e.creatorAddress.toLowerCase() === parentAddress,
-  );
+  if (!usedMine) {
+    try {
+      const resp = await fetch(`${apiBase}/api/events`, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
+      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string };
+      if (!json.ok) return c.json({ ok: false, error: json.error || "Failed to list events from source" }, 400);
+      remoteEntries = json.data ?? [];
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      return c.json({ ok: false, error: `Could not reach source server: ${msg}` }, 400);
+    }
+  }
+
+  // Filter to caller's events only (when using public directory fallback)
+  const mine = usedMine
+    ? remoteEntries!
+    : remoteEntries!.filter((e) => e.creatorAddress.toLowerCase() === parentAddress);
 
   // Cross-reference WoCo directory for listed status
   const wocoEntries = await listEvents();
@@ -204,6 +266,7 @@ events.post("/:id/list", requireAuth, async (c) => {
       seriesCount: eventFeed.series.length,
       totalTickets: eventFeed.series.reduce((sum, s) => sum + s.totalSupply, 0),
       createdAt: eventFeed.createdAt,
+      ...(body.sourceApiUrl ? { apiUrl: body.sourceApiUrl.trim().replace(/\/$/, "") } : {}),
     });
   } catch (err) {
     console.error("[api] list event error:", err);

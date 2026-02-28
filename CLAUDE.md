@@ -93,14 +93,23 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
       - EventPage.svelte: handles ?claimed=1&edition=N return from payment page
       - SiteBuilder step 3: paymentRedirectUrl field per tier
       - paymentRedirectUrl flows: shared types → events route → service.ts → SeriesSummary
-  [x] Discover + list/unlist events from external server (2026-02-26)
+  [x] Discover + list/unlist events from external server (2026-02-26, updated 2026-02-27)
       - POST /api/events/discover — fetches GET {sourceApiUrl}/api/events, filters by
         caller's address, cross-references WoCo directory, returns {listed: bool} per event
         Does NOT auto-list. No event ID required — discovered by wallet address alone.
       - POST /api/events/:id/list — explicit: fetches event, verifies creator, adds to dir
-      - POST /api/events/:id/unlist — removes from WoCo directory (creator verified)
-      - removeEventFromDirectory(eventId) in service.ts
+      - POST /api/events/:id/unlist — removes from WoCo PUBLIC directory ONLY
+        Organiser's "My Events" view is NOT affected (uses creator index feed)
+      - removeEventFromDirectory(eventId) in service.ts — public directory only
+      - GET /api/events/mine (authenticated) — returns organiser's events from creator index
+        Falls back to filtered global directory for events predating the index.
+        "My Events" section uses this endpoint — unlist does not remove events here.
+      - Per-creator index feed: woco/event/creator/{ethAddress} (never removed from)
+        Written in addToEventDirectory() — called on both create and list operations
+        topicCreatorDirectory(ethAddress) in topics.ts
+      - DashboardIndex: uses authGet("/api/events/mine") for top "My Events" section
       - DashboardIndex: discover form (API URL only) + per-event List/Unlist toggle
+        Discovered events are clickable → navigate to event dashboard
       - Auto-listing on WoCo-created events unchanged (still added on creation)
   [ ] Content hash registry (woco/registry/verified-frontends feed + WoCo signature)
   [ ] Payment webhook endpoint (receive confirmation → mint ticket; mock-friendly)
@@ -299,7 +308,9 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   woco/pod/claims/{seriesId}[/p{N}]       # Mirrors editions layout
   woco/pod/claimers/{seriesId}            # Who claimed what (JSON feed)
   woco/pod/collection/{ethAddress}        # User's ticket collection (JSON feed)
-  woco/pod/creator/{creatorPodKey}        # Creator's event index (JSON feed)
+  woco/pod/creator/{creatorPodKey}        # Creator's event index (JSON feed) [not yet used]
+  woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
+                                          # topicCreatorDirectory(). Used by GET /api/events/mine
   woco/pod/pending-claims/{seriesId}      # Approval queue (JSON feed, organizer-only)
   woco/registry/verified-frontends        # [planned] Content hash registry (signed)
 
@@ -416,12 +427,10 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - GET /claim-status returns userPendingId when pending, userEdition when approved
   - Header auth for GET routes: x-session-address + x-session-delegation (base64 JSON)
 
-  KNOWN BUGS (as of 2026-02-26 — to be fixed):
+  KNOWN BUGS (as of 2026-02-27 — to be fixed):
   - mock-payment CollectionEntry.claimedRef uses ticket.originalPodHash (original ticket)
     instead of the actual claimed ticket Swarm ref — claimTicket() doesn't return claimedRef.
     Fix: add claimedRef to ClaimResult type and return it from claimTicket().
-  - POST /api/events/discover, list, unlist + mock-payment endpoints not yet deployed to
-    server — need rsync + restart (deployment was interrupted mid-session).
   - Mock payment series.price is always 0 (hardcoded in service.ts) so payment page always
     shows "Free (demo)" — price field needs wiring through the create event flow.
   - Hono default 404 returns plain text "404 Not Found" — authPost's resp.json() throws

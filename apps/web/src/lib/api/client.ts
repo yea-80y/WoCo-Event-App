@@ -30,11 +30,12 @@ export const apiBase = BASE;
 export async function authPost<T>(
   path: string,
   body: Record<string, unknown>,
+  baseUrl?: string,
 ): Promise<ApiResponse<T>> {
   const signed = await auth.signRequest(JSON.stringify(body));
   if (!signed) throw new Error("Not authenticated");
 
-  const resp = await fetch(`${BASE}${path}`, {
+  const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -48,13 +49,13 @@ export async function authPost<T>(
 }
 
 /** Authenticated GET request (delegation via headers). */
-export async function authGet<T>(path: string): Promise<ApiResponse<T>> {
+export async function authGet<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
   const signed = await auth.signRequest("");
   if (!signed) throw new Error("Not authenticated");
 
   const delegationB64 = btoa(JSON.stringify(signed.delegation));
 
-  const resp = await fetch(`${BASE}${path}`, {
+  const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
     headers: {
       "X-Session-Address": signed.sessionAddress,
       "X-Session-Delegation": delegationB64,
@@ -69,7 +70,7 @@ export async function authGet<T>(path: string): Promise<ApiResponse<T>> {
 }
 
 /** Unauthenticated GET request. */
-export async function get<T>(path: string): Promise<ApiResponse<T>> {
-  const resp = await fetch(`${BASE}${path}`);
+export async function get<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
+  const resp = await fetch(`${baseUrl ?? BASE}${path}`);
   return resp.json();
 }

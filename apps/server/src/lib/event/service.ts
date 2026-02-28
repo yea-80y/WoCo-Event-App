@@ -11,6 +11,7 @@ import {
 } from "../swarm/feeds.js";
 import {
   topicEventDirectory,
+  topicCreatorDirectory,
   topicEvent,
   topicEditions,
   topicClaims,
@@ -60,12 +61,14 @@ export async function createEvent(opts: {
   orderFields?: OrderField[];
   /** How attendees can claim tickets */
   claimMode?: ClaimMode;
+  /** If true, skip adding to the public event directory (site builder use case) */
+  skipAutoList?: boolean;
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
     eventId, title, description, startDate, endDate, location,
     creatorAddress, creatorPodKey, imageData, series, signedTickets,
-    encryptionKey, orderFields, claimMode, onProgress,
+    encryptionKey, orderFields, claimMode, skipAutoList, onProgress,
   } = opts;
 
   const totalTickets = series.reduce((sum, s) => sum + s.totalSupply, 0);
@@ -209,7 +212,10 @@ export async function createEvent(opts: {
     throw new Error("Failed to verify event feed write");
   }
 
-  // 4. Update event directory (best-effort)
+  // 4. Update directories (best-effort).
+  // Creator index is always updated so the organiser can see their events in the dashboard.
+  // Public directory is skipped for site-builder events (skipAutoList: true) — listing
+  // is done explicitly via POST /api/events/:id/list once the organiser is ready.
   try {
     await addToEventDirectory({
       eventId,
@@ -221,7 +227,7 @@ export async function createEvent(opts: {
       seriesCount: series.length,
       totalTickets: series.reduce((sum, s) => sum + s.totalSupply, 0),
       createdAt: eventFeed.createdAt,
-    });
+    }, { skipPublicDirectory: !!skipAutoList });
   } catch (err) {
     console.error("[event] Failed to update directory (non-critical):", err);
   }
@@ -260,23 +266,47 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
 
 export { addToEventDirectory as addEventToDirectory };
 
-async function addToEventDirectory(entry: EventDirectoryEntry): Promise<void> {
-  const page = await readFeedPage(topicEventDirectory());
-  const dir: EventDirectory = page
-    ? decodeJsonFeed<EventDirectory>(page) ?? { v: 1, entries: [], updatedAt: "" }
+async function addToEventDirectory(
+  entry: EventDirectoryEntry,
+  opts: { skipPublicDirectory?: boolean } = {},
+): Promise<void> {
+  // Write to global public directory (skipped for site-builder events until explicitly listed)
+  if (!opts.skipPublicDirectory) {
+    const page = await readFeedPage(topicEventDirectory());
+    const dir: EventDirectory = page
+      ? decodeJsonFeed<EventDirectory>(page) ?? { v: 1, entries: [], updatedAt: "" }
+      : { v: 1, entries: [], updatedAt: "" };
+
+    if (!dir.entries.some((e) => e.eventId === entry.eventId)) {
+      dir.entries.unshift(entry);
+      dir.updatedAt = new Date().toISOString();
+      if (dir.entries.length > 128) dir.entries = dir.entries.slice(0, 128);
+      await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
+      console.log(`[event] Directory updated: ${dir.entries.length} events`);
+    }
+  }
+
+  // Also write to per-creator index (never removed from — listing status doesn't affect organiser view)
+  const creatorTopic = topicCreatorDirectory(entry.creatorAddress);
+  const creatorPage = await readFeedPage(creatorTopic);
+  const creatorDir: EventDirectory = creatorPage
+    ? decodeJsonFeed<EventDirectory>(creatorPage) ?? { v: 1, entries: [], updatedAt: "" }
     : { v: 1, entries: [], updatedAt: "" };
 
-  // Idempotent
-  if (dir.entries.some((e) => e.eventId === entry.eventId)) return;
+  if (!creatorDir.entries.some((e) => e.eventId === entry.eventId)) {
+    creatorDir.entries.unshift(entry);
+    creatorDir.updatedAt = new Date().toISOString();
+    if (creatorDir.entries.length > 128) creatorDir.entries = creatorDir.entries.slice(0, 128);
+    await writeFeedPage(creatorTopic, encodeJsonFeed(creatorDir));
+    console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${creatorDir.entries.length} events`);
+  }
+}
 
-  dir.entries.unshift(entry);
-  dir.updatedAt = new Date().toISOString();
-
-  // Cap at 128 entries
-  if (dir.entries.length > 128) dir.entries = dir.entries.slice(0, 128);
-
-  await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
-  console.log(`[event] Directory updated: ${dir.entries.length} events`);
+export async function getCreatorEvents(ethAddress: string): Promise<EventDirectoryEntry[]> {
+  const page = await readFeedPage(topicCreatorDirectory(ethAddress));
+  if (!page) return [];
+  const dir = decodeJsonFeed<EventDirectory>(page);
+  return dir?.entries ?? [];
 }
 
 export async function removeEventFromDirectory(eventId: string): Promise<void> {

@@ -44,6 +44,14 @@ export const topicUserCollection = (ethAddress: string) =>
 export const topicCreator = (creatorPodKey: string) =>
   Topic.fromString(`${POD_NS}/creator/${creatorPodKey}`);
 
+/**
+ * Per-organiser event index keyed by Ethereum address.
+ * Written whenever an event is added to the directory (create or list).
+ * Never removed from — so organiser's view is unaffected by public listing status.
+ */
+export const topicCreatorDirectory = (ethAddress: string) =>
+  Topic.fromString(`${EVENT_NS}/creator/${ethAddress.toLowerCase()}`);
+
 export const topicPendingClaims = (seriesId: string) =>
   Topic.fromString(`${POD_NS}/pending-claims/${seriesId}`);
 

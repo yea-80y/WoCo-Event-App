@@ -56,6 +56,9 @@ export interface EventDirectoryEntry {
   seriesCount: number;
   totalTickets: number;
   createdAt: string;
+  /** API base URL of the organiser's self-hosted backend (if deployed via site builder).
+   *  When present, WoCo fetches event data and routes claims to this URL. */
+  apiUrl?: string;
 }
 
 /** Ticket data fields (before signing) */
@@ -112,6 +115,9 @@ export interface CreateEventRequest {
   orderFields?: OrderField[];
   /** How attendees can claim tickets (default: "wallet") */
   claimMode?: "wallet" | "email" | "both";
+  /** If true, skip adding to the public event directory on creation.
+   *  Used by site builder — organiser lists explicitly with a siteUrl after deploying. */
+  skipAutoList?: boolean;
 }
 
 /** Response from POST /api/events */

@@ -4,6 +4,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { createEventStreaming, type PublishProgress } from "../../api/events.js";
+  import { authPost } from "../../api/client.js";
   import { createSeriesTickets } from "../../pod/signing.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import ImageUpload from "../events/ImageUpload.svelte";
@@ -124,7 +125,7 @@
   // Step 5 — WoCo listing state
   let listingOnWoco = $state(false);
   let wocoListError = $state<string | null>(null);
-  let wocoEventId = $state<string | null>(null);
+  let wocoListed = $state(false);
 
   // Domain that must be in ALLOWED_HOSTS for the live site
   const gatewayHost = $derived(() => {
@@ -235,6 +236,7 @@ PORT=3001`);
       tierName: "",
       description: "",
       approvalRequired: false,
+      mockPayment: false,
       paymentRedirectUrl: "",
       waves: [{
         id: crypto.randomUUID(),
@@ -390,6 +392,7 @@ PORT=3001`);
           creatorPodKey: auth.podPublicKeyHex!,
           encryptionKey,
           claimMode,
+          skipAutoList: true,
           orderFields: [
             ...(claimMode !== "wallet" ? [
               { id: "__email", type: "email" as const, label: "Email", required: true, placeholder: "your@email.com" },
@@ -487,53 +490,21 @@ PORT=3001`);
   const ensHash = $derived(deployResult?.feedManifestHash ? `bzz://${deployResult.feedManifestHash}` : "");
 
   async function createWocoListing() {
-    if (!createdEventId || storedSeries.length === 0) return;
+    if (!createdEventId) return;
     listingOnWoco = true;
     wocoListError = null;
-    wocoEventId = null;
-
-    // Need pod keypair to re-sign (WoCo event has different Swarm feed — same signatures still valid)
-    const podOk = await auth.ensurePodIdentity();
-    if (!podOk) { wocoListError = "Identity needed for WoCo listing."; listingOnWoco = false; return; }
 
     try {
-      const result = await createEventStreaming(
-        {
-          event: {
-            title: eventTitle.trim(),
-            description: eventDescription.trim(),
-            startDate: eventStartDate,
-            endDate: eventEndDate,
-            location: eventLocation.trim(),
-          },
-          series: storedSeries,
-          signedTickets: storedSignedTickets,
-          image: eventImageDataUrl!,
-          creatorAddress: auth.parent as `0x${string}`,
-          creatorPodKey: auth.podPublicKeyHex!,
-          encryptionKey: storedEncryptionKey,
-          claimMode,
-          orderFields: [
-            ...(claimMode !== "wallet" ? [
-              { id: "__email", type: "email" as const, label: "Email", required: true, placeholder: "your@email.com" },
-            ] : []),
-            ...fieldItems.map(f => ({
-              id: f.id,
-              type: f.type,
-              label: f.label.trim(),
-              required: f.required,
-              ...(f.placeholder.trim() ? { placeholder: f.placeholder.trim() } : {}),
-              ...(f.options.length > 0 ? { options: f.options } : {}),
-            })),
-          ],
-        },
-        () => {},
-        // Call WoCo's own API (no override = uses VITE_API_URL = events-api.woco-net.com)
+      // List the event on WoCo's directory. WoCo fetches event details from sourceApiUrl
+      // and stores it with apiUrl so the WoCo home page can load the event inline.
+      const result = await authPost<{ eventId: string }>(
+        `/api/events/${createdEventId}/list`,
+        { sourceApiUrl: apiUrl },
       );
-      if (result.ok && result.eventId) {
-        wocoEventId = result.eventId;
+      if (result.ok) {
+        wocoListed = true;
       } else {
-        wocoListError = result.error || "WoCo listing failed";
+        wocoListError = (result as { error?: string }).error || "WoCo listing failed";
       }
     } catch (e) {
       wocoListError = e instanceof Error ? e.message : "WoCo listing failed";
@@ -927,9 +898,9 @@ cp apps/server/.env.example apps/server/.env
                     class="input"
                     type="url"
                     bind:value={tier.paymentRedirectUrl}
-                    placeholder="https://…/api/events/…/mock-payment-page"
+                    placeholder="https://your-payment-processor.com/pay"
                   />
-                  <p class="field-hint">If set, the claim button becomes "Register &amp; Pay" and redirects here. Use the mock-payment-page endpoint for testing.</p>
+                  <p class="field-hint">If set, the claim button becomes "Register &amp; Pay" and redirects to your payment processor. After payment, redirect back with <code>?claimed=1&amp;edition=N</code> or use a webhook to mint the ticket.</p>
                 </div>
 
                 <!-- Waves -->
@@ -1219,10 +1190,23 @@ cp apps/server/.env.example apps/server/.env
         </label>
       </div>
 
+      {#if wocoListed}
+        <div class="success-banner">&#10003; Listed on WoCo directory!</div>
+      {:else if wocoListError}
+        <div class="create-error">WoCo listing failed: {wocoListError}</div>
+      {/if}
+
       <div class="nav-row">
         <button class="btn-ghost" onclick={() => step = 3}>&larr; Back</button>
-        <button class="btn-primary" onclick={() => step = 5}>
-          Next: deploy &rarr;
+        <button
+          class="btn-primary"
+          disabled={listingOnWoco}
+          onclick={async () => {
+            if (listOnWoco && !wocoListed) await createWocoListing();
+            step = 5;
+          }}
+        >
+          {listingOnWoco ? "Listing on WoCo…" : "Next: deploy →"}
         </button>
       </div>
     </div>
@@ -1382,8 +1366,11 @@ cp apps/server/.env.example apps/server/.env
               <span class="output-section-title">WoCo directory listing</span>
             </div>
 
-            {#if wocoEventId}
+            {#if wocoListed}
               <div class="woco-listed-banner">&#127881; Listed on WoCo!</div>
+              <p class="output-hint" style="margin-top: 0.5rem;">
+                Your event is now in the WoCo directory. Visitors will be routed directly to your standalone site.
+              </p>
               <div class="output-url-row" style="margin-top: 0.5rem;">
                 <a
                   class="btn-primary output-launch-btn"
@@ -1392,15 +1379,6 @@ cp apps/server/.env.example apps/server/.env
                   rel="noopener"
                 >
                   View event site &#8599;
-                </a>
-                <a
-                  class="btn-ghost"
-                  href="/#/event/{wocoEventId}"
-                  target="_blank"
-                  rel="noopener"
-                  style="padding: 0.4375rem 0.875rem; font-size: 0.8125rem;"
-                >
-                  View on WoCo &#8599;
                 </a>
               </div>
             {:else if wocoListError}
@@ -1411,7 +1389,7 @@ cp apps/server/.env.example apps/server/.env
             {:else if listingOnWoco}
               <div class="progress-status">
                 <div class="spinner"></div>
-                <span>Creating WoCo listing…</span>
+                <span>Adding to WoCo directory…</span>
               </div>
             {:else}
               <p class="output-hint">

@@ -36,7 +36,11 @@ export async function authenticateWithPara(
  */
 export async function restoreParaSession(): Promise<{ address: string } | null> {
   try {
-    const isActive = await para.isSessionActive();
+    // para.isSessionActive() can hang on network requests — cap at 3 s
+    const isActive = await Promise.race([
+      para.isSessionActive(),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
+    ]);
     if (!isActive) return null;
 
     const address = await _getParaAddress();

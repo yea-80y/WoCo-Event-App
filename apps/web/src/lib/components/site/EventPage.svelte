@@ -10,9 +10,12 @@
   interface Props {
     eventId: string;
     ondashboard?: () => void;
+    onback?: () => void;
+    /** Override API base URL — used when this event is hosted on an organiser's own server */
+    apiUrl?: string;
   }
 
-  let { eventId, ondashboard }: Props = $props();
+  let { eventId, ondashboard, onback, apiUrl }: Props = $props();
 
   const BEE_GATEWAY =
     (typeof window !== "undefined" && window.SITE_CONFIG?.gatewayUrl) ||
@@ -165,7 +168,8 @@
           eventId,
           selectedSeries.seriesId,
           email,
-          encryptedOrder
+          encryptedOrder,
+          apiUrl,
         );
 
         if (!result.ok) {
@@ -216,7 +220,8 @@
           eventId,
           selectedSeries.seriesId,
           auth.parent!,
-          encryptedOrder
+          encryptedOrder,
+          apiUrl,
         );
 
         if (!result.ok) {
@@ -267,7 +272,7 @@
 
   onMount(() => {
     handlePaymentReturn();
-    getEvent(eventId)
+    getEvent(eventId, apiUrl)
       .then((fresh) => {
         if (!fresh) {
           if (_cached === null) error = "Event not found";
@@ -289,6 +294,9 @@
 </script>
 
 <div class="event-page">
+  {#if onback}
+    <button class="back-link" onclick={onback}>&larr; Back to events</button>
+  {/if}
   {#if loading}
     <div class="state-wrap">
       <div class="loader"></div>
@@ -519,6 +527,7 @@
             <p class="claim-error">{claimError}</p>
           {/if}
 
+          <!-- Claim actions -->
           <div class="claim-actions">
             {#if claiming}
               <button class="claim-btn" disabled>{claimStep || "Processing…"}</button>
@@ -575,6 +584,20 @@
 </div>
 
 <style>
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    padding: 0.5rem 0;
+    margin-bottom: 0.5rem;
+  }
+  .back-link:hover { color: var(--text); }
+
   .event-page {
     max-width: 640px;
     margin: 0 auto;

@@ -20,9 +20,11 @@
     claimMode?: ClaimMode;
     /** When true, claiming creates a pending request instead of instant ticket */
     approvalRequired?: boolean;
+    /** Override API base URL — used when event is hosted on an organiser's own server */
+    apiUrl?: string;
   }
 
-  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false }: Props = $props();
+  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl }: Props = $props();
 
   // ---------------------------------------------------------------------------
   // Synchronous cache init — runs before first render so the claim button
@@ -123,7 +125,7 @@
     const statusKey = cacheKey.claimStatus(eventId, seriesId, addr);
 
     // Always fetch fresh — silently updates availability, picks up transitions
-    getClaimStatus(eventId, seriesId, addr || undefined)
+    getClaimStatus(eventId, seriesId, addr || undefined, undefined, apiUrl)
       .then((fresh) => {
         if (!fresh) return;
         cacheSet(statusKey, fresh, TTL.CLAIM_STATUS);
@@ -188,7 +190,7 @@
         }
 
         step = "Claiming ticket...";
-        const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder);
+        const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl);
 
         if (!result.ok) {
           error = result.error || "Failed to claim ticket";
@@ -242,7 +244,7 @@
         }
 
         step = "Claiming ticket...";
-        const result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder);
+        const result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl);
 
         if (!result.ok) {
           error = result.error || "Failed to claim ticket";
@@ -277,7 +279,7 @@
 
         // Refresh status in background to update availability count
         const userAddr = auth.parent || undefined;
-        getClaimStatus(eventId, seriesId, userAddr)
+        getClaimStatus(eventId, seriesId, userAddr, undefined, apiUrl)
           .then((fresh) => {
             if (fresh) {
               const statusKey = cacheKey.claimStatus(eventId, seriesId, auth.parent?.toLowerCase());
