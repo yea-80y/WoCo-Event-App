@@ -19,6 +19,13 @@
   let fetched = $state<UserProfile | null>(propProfile ?? null);
   let loaded = $state(propProfile !== undefined);
 
+  // Keep in sync when parent passes updated profile data
+  $effect(() => {
+    if (propProfile !== undefined) {
+      fetched = propProfile;
+    }
+  });
+
   // Deterministic gradient from address
   function addressGradient(addr: string): string {
     const hex = addr.replace("0x", "").slice(0, 12);
