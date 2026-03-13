@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { EventDirectoryEntry } from "@woco/shared";
+  import CreatorChip from "../profile/CreatorChip.svelte";
 
   interface Props {
     event: EventDirectoryEntry;
@@ -44,7 +45,10 @@
     {#if event.location}
       <p class="location">{event.location}</p>
     {/if}
-    <p class="tickets">{event.totalTickets} tickets</p>
+    <div class="card-footer">
+      <CreatorChip address={event.creatorAddress} compact={false} />
+      <span class="tickets">{event.totalTickets} tickets</span>
+    </div>
   </div>
 </div>
 
@@ -99,9 +103,21 @@
     font-size: 0.8125rem;
   }
 
+  .card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
   .tickets {
-    margin: 0.375rem 0 0;
     color: var(--text-muted);
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 </style>

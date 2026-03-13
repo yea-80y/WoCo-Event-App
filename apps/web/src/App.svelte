@@ -14,6 +14,8 @@
   import DashboardIndex from "./lib/components/dashboard/DashboardIndex.svelte";
   import Home from "./lib/components/home/Home.svelte";
   import SiteBuilder from "./lib/components/site/SiteBuilder.svelte";
+  import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
+  import UserAvatar from "./lib/components/profile/UserAvatar.svelte";
   import { getExternalEventApi } from "./lib/api/event-api-registry.js";
   import { onMount } from "svelte";
 
@@ -35,8 +37,11 @@
     <div class="top-right">
       {#if !auth.ready}
         <span class="loading">Loading...</span>
-      {:else if auth.isConnected}
+      {:else if auth.isConnected && auth.parent}
         <SessionStatus />
+        <button class="top-avatar-btn" onclick={() => navigate(`/profile/${auth.parent!.toLowerCase()}`)}>
+          <UserAvatar address={auth.parent} size={28} />
+        </button>
       {:else}
         <button class="sign-in-btn" onclick={() => loginRequest.request()}>
           Sign in
@@ -74,6 +79,8 @@
       <EmbedSetup eventId={router.params.id} />
     {:else if router.route === "site-builder"}
       <SiteBuilder />
+    {:else if router.route === "profile"}
+      <ProfilePage address={router.params.address} />
     {/if}
   </section>
 
@@ -111,6 +118,16 @@
       >
         <span class="nav-icon">&#128202;</span>
         <span class="nav-label">Dashboard</span>
+      </button>
+      <button
+        class="bottom-nav-item profile-nav-item"
+        class:active={router.route === "profile"}
+        onclick={() => navigate(auth.parent ? `/profile/${auth.parent.toLowerCase()}` : "/profile")}
+      >
+        <span class="nav-avatar">
+          <UserAvatar address={auth.parent!} size={24} />
+        </span>
+        <span class="nav-label">Profile</span>
       </button>
     {/if}
   </nav>
@@ -184,6 +201,19 @@
     color: #fff;
   }
 
+  .top-avatar-btn {
+    margin-left: 0.375rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: opacity var(--transition), box-shadow var(--transition);
+    line-height: 0;
+  }
+
+  .top-avatar-btn:hover {
+    opacity: 0.85;
+    box-shadow: 0 0 0 2px var(--accent-subtle);
+  }
+
   .loading {
     color: var(--text-muted);
     font-size: 0.8125rem;
@@ -245,6 +275,19 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+
+  .nav-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    line-height: 1;
+  }
+
+  .profile-nav-item.active .nav-avatar :global(.avatar) {
+    box-shadow: 0 0 0 2px var(--accent);
   }
 
   /* Desktop: wider bottom nav items */

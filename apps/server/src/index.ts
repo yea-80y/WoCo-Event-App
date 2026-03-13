@@ -14,6 +14,7 @@ import { approvals } from "./routes/approvals.js";
 import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
 import { siteRoute } from "./routes/site.js";
+import { profiles } from "./routes/profiles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -124,6 +125,9 @@ app.route("/api/collection", collection);
 // Admin / setup routes (unauthenticated — no private data exposed)
 app.route("/api/admin", admin);
 app.route("/api/site", siteRoute);
+
+// Profile routes
+app.route("/api/profile", profiles);
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);

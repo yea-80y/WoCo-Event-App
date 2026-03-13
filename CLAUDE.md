@@ -30,7 +30,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - BEE_URL=http://192.168.0.144:3323 (single Bee node, same address for both laptop and server)
 
   ============================================================================
-  BUILD STATUS (as of 2026-02-26)
+  BUILD STATUS (as of 2026-02-28)
   ============================================================================
 
   CORE PLATFORM — COMPLETE:
@@ -53,6 +53,7 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   [x] Bottom navigation bar (mobile/PWA-ready)
   [x] Production deployment (Swarm feed + Cloudflare tunnel + woco.eth.limo via ENS)
   [x] Technical architecture documentation (docs/TECHNICAL_ARCHITECTURE.md)
+  [x] Architecture visual — FigJam board exported to docs/WoCo-Events-Architecture-2026-02-28.pdf
   [x] Embed widget: wallet + passkey claims (EIP-191 signed, no session delegation needed)
   [x] Embed widget: iframe approach for cross-domain passkey identity (ENS subdomains)
   [x] Double-spend prevention for ticket claims (server-side slot locking)
@@ -82,17 +83,10 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
       - Upload: scripts/upload-site-to-swarm.cjs (npm run upload:site)
       - Entry: site.html → site-main.ts → SiteApp.svelte
       - DashboardIndex: "Build a standalone event site" CTA → #/site-builder
-  [x] Mock payment page + dual-feed identity association (2026-02-26)
-      - SeriesSummary.paymentRedirectUrl? — claim button becomes "Register & Pay"
-      - GET /api/events/:eventId/series/:seriesId/mock-payment-page — self-contained HTML
-        Query: email, walletAddress, returnUrl, amount, currency
-        Shows identity choice: link to wallet / link to email / use different wallet
-      - POST /api/events/:eventId/series/:seriesId/mock-payment — mints + dual feeds
-        Body: { email?, walletAddress?, linkWallet?, linkEmail?, altWallet? }
-      - addToEmailCollection(emailHash, entry) → woco/pod/collection/email:{hash}
-      - EventPage.svelte: handles ?claimed=1&edition=N return from payment page
-      - SiteBuilder step 3: paymentRedirectUrl field per tier
-      - paymentRedirectUrl flows: shared types → events route → service.ts → SeriesSummary
+  [ ] Payment redirect flow — paymentRedirectUrl field exists on SeriesSummary + shared types,
+      wired through events route → service.ts. Mock payment page endpoints were built then
+      removed. Real implementation: payment processor sends webhook → server mints ticket.
+      paymentRedirectUrl still in types for future use.
   [x] Discover + list/unlist events from external server (2026-02-26, updated 2026-02-27)
       - POST /api/events/discover — fetches GET {sourceApiUrl}/api/events, filters by
         caller's address, cross-references WoCo directory, returns {listed: bool} per event
@@ -114,7 +108,17 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   [ ] Content hash registry (woco/registry/verified-frontends feed + WoCo signature)
   [ ] Payment webhook endpoint (receive confirmation → mint ticket; mock-friendly)
   [ ] Zupass login (4th auth method — ed25519 adapter for session delegation)
-  [ ] User profile page
+  [x] User profiles — avatar, display name, bio, website, Twitter/X, Farcaster
+      - Stored on Swarm feeds: woco/profile/data/{address}, woco/profile/avatar/{address}
+      - Server: GET /api/profile/:address (public), POST /api/profile (auth), POST /api/profile/avatar (auth)
+      - Frontend: ProfilePage (#/profile/:address), UserAvatar, CreatorChip components
+      - Creator chip on event cards (Luma-style: avatar + name at bottom of card)
+      - Creator section on EventDetail ("Hosted by" with avatar + name, clickable)
+      - Top bar: user avatar next to SessionStatus (clickable → own profile)
+      - Bottom nav: "Profile" tab for logged-in users
+      - Profile page: gradient banner, large avatar with upload, inline edit form
+      - Avatar upload: resized to 400x400 JPEG, max 2MB, uploaded to Swarm /bytes
+      - 5-minute in-memory profile cache on frontend (invalidated on update)
   [ ] PWA manifest + service worker
 
   ============================================================================
@@ -163,15 +167,19 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - approve/reject pending claims, CSV export — all existing functionality
   - The only config needed: dashboard API URL points to organiser's own server
 
-  4. CONTENT HASH REGISTRY:
-  - Every verified event frontend uploaded to Swarm via site builder gets a
-    signed entry in a WoCo-maintained registry feed:
-    woco/registry/verified-frontends
-  - Entry: { hash, eventId, organiserAddress, verifiedAt, wocoSignature }
-  - Certificate-transparency-style: anyone can verify a frontend is genuine
-    before interacting with it — prevents phishing clones of Devcon ticket page
-  - Build into the site builder publish step from day one
-  - Long-term candidate: on-chain registry (ENS text record, simple contract)
+  4. CONTENT HASH REGISTRY (community initiative):
+  - Any Swarm-hosted frontend serving WoCo event pages — site-builder generated,
+    WoCo app itself, or custom organiser deployment — can register its content hash
+  - Framed as an open community standard, not a WoCo-proprietary feature:
+    WoCo bootstraps it, governance designed to be open and community-owned
+  - Entry: { hash, eventId, organiserAddress, verifiedAt, signature }
+  - Certificate-transparency-style: wallets, browsers, or a smart contract wrapper
+    can verify a frontend is genuine before any ticket interaction
+  - Prevents phishing clones across the entire decentralised events ecosystem
+  - Feed: woco/registry/verified-frontends (initial implementation)
+  - Long-term: on-chain registry, ENS text record, or ERC/ENS community standard
+  - Build into site builder publish step from day one; also applicable to WoCo app
+    itself and any organiser who sets their own ENS content hash
 
   5. PAYMENT WEBHOOK:
   - Devcon has their own payment infrastructure
@@ -312,6 +320,8 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
                                           # topicCreatorDirectory(). Used by GET /api/events/mine
   woco/pod/pending-claims/{seriesId}      # Approval queue (JSON feed, organizer-only)
+  woco/profile/data/{ethAddress}          # User profile (name, bio, links — JSON feed)
+  woco/profile/avatar/{ethAddress}        # User avatar ref (JSON feed, separate for independent update)
   woco/registry/verified-frontends        # [planned] Content hash registry (signed)
 
   ============================================================================
@@ -365,6 +375,8 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   apps/web/src/lib/auth/signers/index.ts          # Web3 + local + Para EIP-712 signers
   apps/web/src/lib/auth/signers/para-signer.ts    # ParaEthersSigner wrapper
   apps/web/src/lib/api/client.ts                  # authPost/authGet (attaches delegation)
+  apps/web/src/lib/api/event-api-registry.ts      # client-side map: eventId → external API URL
+                                                  # set on home page nav, read by EventDetail
 
   COMPONENTS:
   apps/web/src/App.svelte                         # Shell: top bar + routing + bottom nav
@@ -387,6 +399,15 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   apps/server/src/lib/event/service.ts             # Event creation
   apps/server/src/lib/swarm/topics.ts              # Feed topic derivation
   apps/server/src/lib/auth/verify-delegation.ts    # EIP-712 verification + host check
+
+  PROFILES:
+  packages/shared/src/profile/types.ts              # UserProfile, UpdateProfileRequest types
+  apps/server/src/routes/profiles.ts                # GET/POST profile + avatar upload endpoints
+  apps/server/src/lib/profile/service.ts            # Profile CRUD via Swarm feeds
+  apps/web/src/lib/api/profiles.ts                  # Frontend profile API client + cache
+  apps/web/src/lib/components/profile/ProfilePage.svelte    # Full profile view + edit
+  apps/web/src/lib/components/profile/UserAvatar.svelte     # Reusable avatar component
+  apps/web/src/lib/components/profile/CreatorChip.svelte    # Creator name + avatar chip
 
   ============================================================================
   CONVENTIONS
@@ -427,21 +448,18 @@ WoCo App - Decentralized event platform built on Swarm Network and Ethereum stan
   - GET /claim-status returns userPendingId when pending, userEdition when approved
   - Header auth for GET routes: x-session-address + x-session-delegation (base64 JSON)
 
-  KNOWN BUGS (as of 2026-02-27 — to be fixed):
-  - mock-payment CollectionEntry.claimedRef uses ticket.originalPodHash (original ticket)
-    instead of the actual claimed ticket Swarm ref — claimTicket() doesn't return claimedRef.
-    Fix: add claimedRef to ClaimResult type and return it from claimTicket().
-  - Mock payment series.price is always 0 (hardcoded in service.ts) so payment page always
-    shows "Free (demo)" — price field needs wiring through the create event flow.
+  KNOWN BUGS (as of 2026-02-28 — to be fixed):
   - Hono default 404 returns plain text "404 Not Found" — authPost's resp.json() throws
     "Unexpected non-whitespace character after JSON at position 4". Consider adding a
     global 404 JSON handler in index.ts.
+  - series.price is not wired through the create event flow (hardcoded 0 in service.ts)
+    — needs UI field + type update when payment redirect is implemented.
 
   KNOWN GOTCHAS:
   - Vite base must be './' (relative) — absolute paths break under Swarm /bzz/ URLs
   - Upload script is .cjs (not .js) — monorepo has "type": "module"
   - ALLOWED_HOSTS on server must include all frontend hosts or session delegation fails with 403
-  - Server .env differs from local .env — NEVER overwrite during rsync
+  - apps/server/.env on laptop is master — IS synced to server on every deploy (overwrites)
   - Local account sign-out clears session but keeps keypair for re-login
   - MyTickets triggers ensureSession on mount (lazy EIP-712) — not just login
   - Embed wallet claims disabled (need session delegation support in widget)

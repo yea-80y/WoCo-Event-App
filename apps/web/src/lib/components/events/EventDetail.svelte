@@ -6,6 +6,9 @@
   import { navigate } from "../../router/router.svelte.js";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { getExternalEventApi } from "../../api/event-api-registry.js";
+  import { getProfile } from "../../api/profiles.js";
+  import type { UserProfile } from "@woco/shared";
+  import UserAvatar from "../profile/UserAvatar.svelte";
   import { onMount } from "svelte";
 
   interface Props {
@@ -25,6 +28,7 @@
   let event = $state<EventFeed | null>(_cached ?? null);
   let loading = $state(_cached === null);
   let error = $state<string | null>(null);
+  let creatorProfile = $state<UserProfile | null>(null);
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
@@ -52,6 +56,8 @@
         event = fresh;
         loading = false;
         error = null;
+        // Fetch creator profile
+        getProfile(fresh.creatorAddress).then((p) => { creatorProfile = p; });
       })
       .catch((e) => {
         if (_cached === null) {
@@ -85,6 +91,23 @@
       {#if event.location}
         <p class="location">{event.location}</p>
       {/if}
+    </div>
+
+    <!-- Creator profile chip -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_interactive_supports_focus -->
+    <div
+      class="creator-section"
+      role="button"
+      onclick={() => navigate(`/profile/${event!.creatorAddress.toLowerCase()}`)}
+    >
+      <UserAvatar address={event.creatorAddress} size={40} profile={creatorProfile} />
+      <div class="creator-info">
+        <span class="creator-label">Hosted by</span>
+        <span class="creator-name">
+          {creatorProfile?.displayName || `${event.creatorAddress.slice(0, 6)}...${event.creatorAddress.slice(-4)}`}
+        </span>
+      </div>
     </div>
 
     {#if event.description}
@@ -181,6 +204,44 @@
 
   .location {
     color: var(--text-muted);
+  }
+
+  .creator-section {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 0;
+    margin-bottom: 0.75rem;
+    cursor: pointer;
+    transition: opacity var(--transition);
+  }
+
+  .creator-section:hover {
+    opacity: 0.8;
+  }
+
+  .creator-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+  }
+
+  .creator-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .creator-name {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .creator-section:hover .creator-name {
+    color: var(--accent-text);
   }
 
   .description {

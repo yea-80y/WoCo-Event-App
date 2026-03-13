@@ -10,8 +10,12 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      // Site builder deploy runs on the local dev server — not yet on production
+      // Routes that run on local dev server (not yet deployed to production)
       '/api/site': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/api/profile': {
         target: 'http://localhost:3001',
         changeOrigin: true,
       },

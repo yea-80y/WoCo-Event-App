@@ -56,6 +56,18 @@ export const topicPendingClaims = (seriesId: string) =>
   Topic.fromString(`${POD_NS}/pending-claims/${seriesId}`);
 
 // ---------------------------------------------------------------------------
+// Profile feeds
+// ---------------------------------------------------------------------------
+
+const PROFILE_NS = "woco/profile";
+
+export const topicProfileData = (ethAddress: string) =>
+  Topic.fromString(`${PROFILE_NS}/data/${ethAddress.toLowerCase()}`);
+
+export const topicProfileAvatar = (ethAddress: string) =>
+  Topic.fromString(`${PROFILE_NS}/avatar/${ethAddress.toLowerCase()}`);
+
+// ---------------------------------------------------------------------------
 // Pagination helpers
 // ---------------------------------------------------------------------------
 
