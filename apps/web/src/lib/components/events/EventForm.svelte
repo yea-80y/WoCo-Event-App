@@ -17,15 +17,8 @@
   let endDate = $state("");
   let location = $state("");
   let imageDataUrl = $state<string | null>(null);
-  let series = $state([
-    {
-      seriesId: crypto.randomUUID(),
-      name: "",
-      description: "",
-      totalSupply: 10,
-      approvalRequired: false,
-    },
-  ]);
+  // series is populated and kept in sync by TicketSeriesEditor via $bindable
+  let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string }[]>([]);
   let claimMode = $state<ClaimMode>("wallet");
   let collectEmail = $state(false);
   let collectInfo = $state(false);
@@ -50,8 +43,10 @@
     const hasEmail = orderFields.some((f) => f.id === EMAIL_FIELD_ID);
     if (collectEmail && !hasEmail) {
       collectInfo = true;
+      // Email is only required when it's the sole claim method (it IS the identity).
+      // For "both" mode, wallet users must be able to proceed without entering email.
       orderFields = [
-        { id: EMAIL_FIELD_ID, type: "email", label: "Email", required: true, placeholder: "your@email.com" },
+        { id: EMAIL_FIELD_ID, type: "email", label: "Email", required: claimMode === "email", placeholder: "your@email.com" },
         ...orderFields,
       ];
     } else if (!collectEmail && hasEmail) {
@@ -130,7 +125,7 @@
         <input type="checkbox" bind:checked={collectEmail} />
         <span>
           {#if claimMode === "both"}
-            Require email from all attendees
+            Collect email from attendees (optional for wallet users)
           {:else}
             Collect email from attendees
           {/if}
@@ -184,6 +179,12 @@
     gap: 1rem;
   }
 
+  @media (max-width: 480px) {
+    .row {
+      grid-template-columns: 1fr;
+    }
+  }
+
   label {
     display: flex;
     flex-direction: column;
@@ -194,6 +195,12 @@
     color: var(--text-secondary);
     font-size: 0.8125rem;
     font-weight: 500;
+  }
+
+  /* Ensure datetime inputs don't overflow on narrow screens */
+  input[type="datetime-local"] {
+    width: 100%;
+    min-width: 0;
   }
 
   /* Claim mode section */

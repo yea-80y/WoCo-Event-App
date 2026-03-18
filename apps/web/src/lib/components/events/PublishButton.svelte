@@ -12,6 +12,10 @@
     name: string;
     description: string;
     totalSupply: number;
+    approvalRequired?: boolean;
+    wave?: string;
+    saleStart?: string;
+    saleEnd?: string;
   }
 
   interface Props {

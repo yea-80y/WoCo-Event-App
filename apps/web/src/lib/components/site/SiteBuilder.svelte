@@ -395,7 +395,7 @@ PORT=3001`);
           skipAutoList: true,
           orderFields: [
             ...(claimMode !== "wallet" ? [
-              { id: "__email", type: "email" as const, label: "Email", required: true, placeholder: "your@email.com" },
+              { id: "__email", type: "email" as const, label: "Email", required: claimMode === "email", placeholder: "your@email.com" },
             ] : []),
             ...fieldItems.map(f => ({
               id: f.id,

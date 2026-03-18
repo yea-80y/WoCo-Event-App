@@ -25,14 +25,16 @@ const tar = require('tar');
 const axios = require('axios');
 
 // ===== CONFIG =====
-const BEE_URL = 'https://gateway.woco-net.com';
-const POSTAGE_BATCH_ID = '10385383779bc425047a1c9023fdb86b6873136ecccd52df9c10251c0991088b';
-
-// Feed key loaded from scripts/.env (gitignored)
-// Create scripts/.env with: FEED_PRIVATE_KEY=0x<your-key>
+// All secrets loaded from scripts/.env (gitignored)
+// Create scripts/.env with:
+//   FEED_PRIVATE_KEY=0x<your-key>
+//   POSTAGE_BATCH_ID=<your-batch-id>
+//   BEE_URL=https://gateway.woco-net.com  (optional, defaults to gateway.woco-net.com)
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+const BEE_URL = process.env.BEE_URL || 'https://gateway.woco-net.com';
+const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || '';
 const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || '';
-const FEED_TOPIC = 'woco-events';
+const FEED_TOPIC = 'woco-events-v1';
 const UPLOAD_DIR = path.resolve(__dirname, '../apps/web/dist');
 
 // Persisted state so we reuse the same manifest every time
@@ -62,7 +64,12 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
   console.log('\nStarting Swarm Feed Upload (WoCo Events)...\n');
 
   if (!FEED_PRIVATE_KEY || !/^0x[0-9a-fA-F]{64}$/.test(FEED_PRIVATE_KEY)) {
-    console.error('ERROR: FEED_PRIVATE_KEY is not set correctly.');
+    console.error('ERROR: FEED_PRIVATE_KEY is not set correctly. Set it in scripts/.env');
+    process.exit(1);
+  }
+
+  if (!POSTAGE_BATCH_ID || !/^[0-9a-fA-F]{64}$/.test(POSTAGE_BATCH_ID)) {
+    console.error('ERROR: POSTAGE_BATCH_ID is not set correctly. Set it in scripts/.env');
     process.exit(1);
   }
 

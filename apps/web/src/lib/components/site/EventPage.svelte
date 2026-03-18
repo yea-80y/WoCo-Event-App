@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { EventFeed, SeriesSummary, SealedBox } from "@woco/shared";
+  import type { EventFeed, SeriesSummary, SealedBox, SeriesClaimStatus } from "@woco/shared";
   import { sealJson } from "@woco/shared";
-  import { getEvent, claimTicket, claimTicketByEmail } from "../../api/events.js";
+  import { getEvent, claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
+  import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -33,6 +33,40 @@
   // ── Ticket selection ──────────────────────────────────────────────────────
   let selectedSeries = $state<SeriesSummary | null>(null);
 
+  // ── Claim status (per-series availability + user state) ───────────────────
+  // Keyed by seriesId — fetched lazily when series is selected or on mount.
+  let seriesStatus = $state<Record<string, SeriesClaimStatus>>({});
+  let _fetchedStatusWithAddr = false;
+
+  function getSeriesStatus(s: SeriesSummary): SeriesClaimStatus | null {
+    return seriesStatus[s.seriesId] ?? null;
+  }
+
+  function fetchSeriesStatus(s: SeriesSummary, addr?: string) {
+    const sk = cacheKey.claimStatus(eventId, s.seriesId, addr ?? "anon");
+    const cached = cacheGet<SeriesClaimStatus>(sk);
+    if (cached) seriesStatus = { ...seriesStatus, [s.seriesId]: cached };
+
+    getClaimStatus(eventId, s.seriesId, addr || undefined, undefined, apiUrl)
+      .then((fresh) => {
+        if (!fresh) return;
+        cacheSet(sk, fresh, TTL.CLAIM_STATUS);
+        seriesStatus = { ...seriesStatus, [s.seriesId]: fresh };
+        // If server says user already has pending/claimed for the selected series,
+        // restore that state (handles page refresh recovery).
+        if (selectedSeries?.seriesId === s.seriesId) {
+          if (fresh.userPendingId && !approvalPending && !claimed) {
+            approvalPending = true;
+          } else if (fresh.userEdition != null && !claimed) {
+            claimed = true;
+            claimedEdition = fresh.userEdition;
+            claimedVia = "wallet";
+          }
+        }
+      })
+      .catch(() => {});
+  }
+
   // ── Claim flow state ──────────────────────────────────────────────────────
   let formData = $state<Record<string, string>>({});
   let inlineEmail = $state("");
@@ -58,6 +92,15 @@
     if (!event?.orderFields?.length) return true;
     return event.orderFields.every(
       (f) => !f.required || (formData[f.id] ?? "").trim().length > 0
+    );
+  });
+
+  // Wallet claims should not be blocked by the __email field — email is only
+  // the claim identity for email-only mode. Wallet users can skip it.
+  const walletFormValid = $derived(() => {
+    if (!event?.orderFields?.length) return true;
+    return event.orderFields.every(
+      (f) => f.id === "__email" || !f.required || (formData[f.id] ?? "").trim().length > 0
     );
   });
 
@@ -92,6 +135,8 @@
   // ── Ticket selection ──────────────────────────────────────────────────────
   function selectSeries(s: SeriesSummary) {
     if (saleStatus(s) !== "active") return;
+    const ss = getSeriesStatus(s);
+    if (ss != null && ss.available === 0) return;
     // Reset claim state when switching series
     if (selectedSeries?.seriesId !== s.seriesId) {
       claimed = false;
@@ -231,12 +276,24 @@
 
         if (result.approvalPending) {
           approvalPending = true;
+          // Cache so page refresh restores pending state immediately
+          if (auth.parent && selectedSeries) {
+            const addr = auth.parent.toLowerCase();
+            const sk = cacheKey.claimStatus(eventId, selectedSeries.seriesId, addr);
+            const cur = cacheGet<SeriesClaimStatus>(sk);
+            const base = cur ?? ({ seriesId: selectedSeries.seriesId, totalSupply: selectedSeries.totalSupply, claimed: 0, available: selectedSeries.totalSupply } as SeriesClaimStatus);
+            cacheSet(sk, { ...base, userPendingId: "pending" }, TTL.CLAIM_STATUS);
+          }
           return;
         }
 
         claimed = true;
         claimedEdition = result.edition ?? null;
         claimedVia = "wallet";
+        // Invalidate status cache so availability count refreshes
+        if (auth.parent && selectedSeries) {
+          cacheDel(cacheKey.claimStatus(eventId, selectedSeries.seriesId, auth.parent.toLowerCase()));
+        }
       }
     } catch (e) {
       claimError = e instanceof Error ? e.message : "Unexpected error";
@@ -272,6 +329,9 @@
 
   onMount(() => {
     handlePaymentReturn();
+    const addr = auth.parent?.toLowerCase();
+    if (addr) _fetchedStatusWithAddr = true;
+
     getEvent(eventId, apiUrl)
       .then((fresh) => {
         if (!fresh) {
@@ -283,6 +343,10 @@
         event = fresh;
         loading = false;
         error = null;
+        // Fetch claim status for all series (availability + user state)
+        for (const s of fresh.series) {
+          fetchSeriesStatus(s, addr || undefined);
+        }
       })
       .catch((e) => {
         if (_cached === null) {
@@ -290,6 +354,23 @@
           loading = false;
         }
       });
+
+    // Also fetch status for cached event series so availability shows immediately
+    if (_cached) {
+      for (const s of _cached.series) {
+        fetchSeriesStatus(s, addr || undefined);
+      }
+    }
+  });
+
+  // Re-fetch status with address when auth restores asynchronously (page refresh)
+  $effect(() => {
+    const addr = auth.parent?.toLowerCase();
+    if (!addr || _fetchedStatusWithAddr || !event) return;
+    _fetchedStatusWithAddr = true;
+    for (const s of event.series) {
+      fetchSeriesStatus(s, addr);
+    }
   });
 </script>
 
@@ -370,15 +451,18 @@
       <h2 class="tickets-heading">Tickets</h2>
       <div class="series-list">
         {#each event.series as s}
-          {@const status = saleStatus(s)}
+          {@const sale = saleStatus(s)}
+          {@const ss = getSeriesStatus(s)}
+          {@const soldOut = ss != null && ss.available === 0}
+          {@const isUnavailable = sale !== "active" || soldOut}
           {@const isSelected = selectedSeries?.seriesId === s.seriesId}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_interactive_supports_focus -->
           <div
             class="series-card"
             class:is-selected={isSelected}
-            class:is-unavailable={status !== "active"}
-            role={status === "active" ? "button" : "listitem"}
+            class:is-unavailable={isUnavailable}
+            role={!isUnavailable ? "button" : "listitem"}
             onclick={() => selectSeries(s)}
           >
             <div class="series-info">
@@ -392,14 +476,18 @@
                 <p class="series-desc">{s.description}</p>
               {/if}
               <div class="series-meta-row">
-                {#if status === "future"}
+                {#if sale === "future"}
                   <span class="sale-tag sale-tag--future">
                     Opens {formatShortDate(s.saleStart!)}
                   </span>
-                {:else if status === "past"}
+                {:else if sale === "past"}
                   <span class="sale-tag sale-tag--past">Sales closed</span>
+                {:else if soldOut}
+                  <span class="sale-tag sale-tag--past">Sold out</span>
                 {:else}
-                  <span class="series-supply">{s.totalSupply} tickets</span>
+                  <span class="series-supply">
+                    {ss != null ? `${ss.available} / ${ss.totalSupply}` : s.totalSupply} tickets
+                  </span>
                   {#if s.saleEnd}
                     <span class="sale-tag sale-tag--active">Until {formatShortDate(s.saleEnd)}</span>
                   {/if}
@@ -408,10 +496,12 @@
             </div>
 
             <div class="series-action">
-              {#if status === "future"}
+              {#if sale === "future"}
                 <span class="select-btn select-btn--disabled">Coming soon</span>
-              {:else if status === "past"}
+              {:else if sale === "past"}
                 <span class="select-btn select-btn--disabled">Closed</span>
+              {:else if soldOut}
+                <span class="select-btn select-btn--disabled">Sold out</span>
               {:else if isSelected}
                 <span class="select-btn select-btn--selected">✓ Selected</span>
               {:else}
@@ -543,7 +633,7 @@
               <button
                 class="claim-btn"
                 onclick={() => handleClaim("wallet")}
-                disabled={!formValid()}
+                disabled={!walletFormValid()}
               >
                 {selectedSeries.approvalRequired ? "Request with wallet" : "Claim with wallet"}
               </button>
@@ -566,7 +656,7 @@
               <button
                 class="claim-btn"
                 onclick={() => handleClaim("wallet")}
-                disabled={!formValid()}
+                disabled={!walletFormValid()}
               >
                 {selectedSeries.approvalRequired ? "Request to attend" : "Claim ticket"}
               </button>
@@ -575,6 +665,11 @@
 
           {#if hasOrderForm}
             <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
+          {/if}
+
+          {#if getSeriesStatus(selectedSeries) && !claimed}
+            {@const ss = getSeriesStatus(selectedSeries)!}
+            <p class="availability-note">{ss.available} / {ss.totalSupply} tickets available</p>
           {/if}
         {/if}
       </div>
@@ -1012,6 +1107,12 @@
     font-size: 0.75rem;
     color: var(--text-muted);
     margin: 0.75rem 0 0;
+  }
+
+  .availability-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: 0.5rem 0 0;
   }
 
   /* ── Claim success ────────────────────────────────────────────────────────── */

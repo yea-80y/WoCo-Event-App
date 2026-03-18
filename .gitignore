@@ -13,13 +13,12 @@ npm-debug.log*
 *.local
 .env
 .env.*
-!.env.production
 !.env.example
+!.env.production.example
 
-# Markdown (except README and CLAUDE.md)
+# Markdown (except README)
 *.md
 !README.md
-!CLAUDE.md
 !docs/*.md
 
 # Scripts / artifacts

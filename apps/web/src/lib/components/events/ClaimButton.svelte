@@ -48,6 +48,10 @@
   let claiming = $state(false);
   let error = $state<string | null>(null);
   let step = $state("");
+  // Tracks whether we've fetched claim-status with a real address.
+  // Prevents double-fetch in the normal flow; enables re-fetch when auth
+  // restores asynchronously after a hard page refresh.
+  let _fetchedWithAddr = false;
   let claimed = $state(_permanentClaimed !== null);
   let claimedEdition = $state<number | null>(_permanentClaimed?.edition ?? null);
   /** Post-claim message shown instead of the badge subtitle */
@@ -75,6 +79,15 @@
     if (!orderFields?.length) return true;
     return orderFields.every((f) =>
       !f.required || (formData[f.id] ?? "").trim().length > 0
+    );
+  });
+
+  // Wallet claims skip the __email required check — email identity is only
+  // mandatory for email-only mode. Wallet users should never be blocked by it.
+  const walletFormValid = $derived(() => {
+    if (!orderFields?.length) return true;
+    return orderFields.every((f) =>
+      f.id === "__email" || !f.required || (formData[f.id] ?? "").trim().length > 0
     );
   });
 
@@ -123,6 +136,7 @@
     // Re-read current address in case auth finished initialising after script init
     const addr = auth.parent?.toLowerCase();
     const statusKey = cacheKey.claimStatus(eventId, seriesId, addr);
+    if (addr) _fetchedWithAddr = true;
 
     // Always fetch fresh — silently updates availability, picks up transitions
     getClaimStatus(eventId, seriesId, addr || undefined, undefined, apiUrl)
@@ -147,6 +161,29 @@
       .catch(() => {
         // Background fetch failed — cached data stays shown, no error
       });
+  });
+
+  // Re-fetch with address when auth restores asynchronously (page refresh scenario).
+  // At onMount time, auth.parent may be null if IDB restore hasn't completed yet.
+  // Without an address the server can't return userPendingId/userEdition.
+  $effect(() => {
+    const addr = auth.parent?.toLowerCase();
+    if (!addr || _permanentClaimed || claimed || approvalPending || _fetchedWithAddr) return;
+    _fetchedWithAddr = true;
+    getClaimStatus(eventId, seriesId, addr, undefined, apiUrl)
+      .then((fresh) => {
+        if (!fresh) return;
+        cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), fresh, TTL.CLAIM_STATUS);
+        if (fresh.userEdition != null) {
+          cacheSet(
+            cacheKey.claimed(eventId, seriesId, addr),
+            { edition: fresh.userEdition, via: "wallet" as const },
+            TTL.PERMANENT,
+          );
+        }
+        applyStatus(fresh);
+      })
+      .catch(() => {});
   });
 
   function handleClaimClick(method?: "wallet" | "email") {
@@ -256,6 +293,14 @@
           pendingId = result.pendingId ?? null;
           showOrderForm = false;
           step = "";
+          // Cache pending state — ensures refresh shows correct state immediately
+          if (auth.parent) {
+            const addr = auth.parent.toLowerCase();
+            const sk = cacheKey.claimStatus(eventId, seriesId, addr);
+            const cur = cacheGet<SeriesClaimStatus>(sk);
+            const base = cur ?? ({ seriesId, totalSupply, claimed: 0, available: totalSupply } as SeriesClaimStatus);
+            cacheSet(sk, { ...base, userPendingId: pendingId ?? undefined }, TTL.CLAIM_STATUS);
+          }
           return;
         }
 
@@ -377,7 +422,7 @@
             <button
               class="claim-btn"
               onclick={() => { chosenMethod = "wallet"; handleClaim(); }}
-              disabled={!formValid()}
+              disabled={!walletFormValid()}
             >
               {approvalRequired ? "Request with wallet" : "Claim with wallet"}
             </button>
@@ -390,7 +435,7 @@
             </button>
           {/if}
         {:else}
-          <button class="claim-btn" onclick={handleClaim} disabled={claiming || !formValid()}>
+          <button class="claim-btn" onclick={handleClaim} disabled={claiming || !(claimMode === "email" ? formValid() : walletFormValid())}>
             {#if claiming}
               {step}
             {:else if approvalRequired}
