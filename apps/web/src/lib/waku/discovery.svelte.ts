@@ -14,7 +14,6 @@
 import type { EventDirectoryEntry } from "@woco/shared";
 import {
   WAKU_CONTENT_TOPIC,
-  WAKU_SHARD_INDEX,
   decodeEventAnnouncement,
   type EventAnnouncement,
 } from "@woco/shared";
@@ -180,7 +179,7 @@ function processAnnouncement(announcement: EventAnnouncement): void {
 
 async function queryHistory(node: import("@waku/sdk").LightNode): Promise<void> {
   try {
-    const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC, shardId: WAKU_SHARD_INDEX });
+    const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC });
 
     // Query messages from the last 48 hours
     const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);

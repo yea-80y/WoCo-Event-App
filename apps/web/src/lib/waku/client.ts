@@ -7,7 +7,7 @@
  * If Waku is unavailable, all operations degrade gracefully.
  */
 import type { LightNode } from "@waku/sdk";
-import { WAKU_CLUSTER_ID } from "@woco/shared";
+
 
 let _node: LightNode | null = null;
 let _initialising: Promise<LightNode | null> | null = null;
@@ -33,9 +33,6 @@ async function initNode(): Promise<LightNode | null> {
 
     const node = await createLightNode({
       defaultBootstrap: true,
-      networkConfig: {
-        clusterId: WAKU_CLUSTER_ID,
-      },
     });
 
     await node.start();

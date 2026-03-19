@@ -7,7 +7,6 @@
 import type { EventDirectoryEntry } from "@woco/shared";
 import {
   WAKU_CONTENT_TOPIC,
-  WAKU_SHARD_INDEX,
   encodeEventAnnouncement,
   type EventAnnouncement,
   type WakuAnnounceAction,
@@ -28,7 +27,7 @@ export async function announceEvent(
     const node = await getWakuNode();
     if (!node) return;
 
-    const encoder = node.createEncoder({ contentTopic: WAKU_CONTENT_TOPIC, shardId: WAKU_SHARD_INDEX });
+    const encoder = node.createEncoder({ contentTopic: WAKU_CONTENT_TOPIC });
 
     const announcement: EventAnnouncement = {
       eventId: entry.eventId,
@@ -79,7 +78,7 @@ export async function announceUnlist(
     const node = await getWakuNode();
     if (!node) return;
 
-    const encoder = node.createEncoder({ contentTopic: WAKU_CONTENT_TOPIC, shardId: WAKU_SHARD_INDEX });
+    const encoder = node.createEncoder({ contentTopic: WAKU_CONTENT_TOPIC });
 
     const announcement: EventAnnouncement = {
       eventId,
