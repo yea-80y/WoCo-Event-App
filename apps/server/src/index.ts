@@ -16,6 +16,7 @@ import { admin } from "./routes/admin.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { broadcast } from "./routes/broadcast.js";
+import { domains } from "./routes/domains.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -127,6 +128,9 @@ app.route("/api/collection", collection);
 // Admin / setup routes (unauthenticated — no private data exposed)
 app.route("/api/admin", admin);
 app.route("/api/site", siteRoute);
+
+// Custom domain routes
+app.route("/api/domains", domains);
 
 // Profile routes
 app.route("/api/profile", profiles);

@@ -8,6 +8,7 @@
   import { createSeriesTickets } from "../../pod/signing.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import ImageUpload from "../events/ImageUpload.svelte";
+  import { registerDomain, verifyDomainDns, type DomainEntry } from "../../api/domains.js";
   import { onMount } from "svelte";
 
   // ── Types ────────────────────────────────────────────────────────────────────
@@ -126,6 +127,51 @@
   let listingOnWoco = $state(false);
   let wocoListError = $state<string | null>(null);
   let wocoListed = $state(false);
+
+  // Step 5 — custom domain state
+  let customDomainInput = $state("");
+  let domainRegistering = $state(false);
+  let domainVerifying = $state(false);
+  let domainEntry = $state<DomainEntry | null>(null);
+  let domainError = $state<string | null>(null);
+
+  async function handleRegisterDomain() {
+    if (!createdEventId || !deployResult || domainRegistering) return;
+    const hostname = customDomainInput.trim().toLowerCase();
+    if (!hostname) { domainError = "Enter a hostname"; return; }
+    domainError = null;
+    domainRegistering = true;
+    try {
+      domainEntry = await registerDomain(
+        hostname,
+        createdEventId,
+        deployResult.contentHash,
+        deployResult.feedManifestHash,
+      );
+    } catch (err) {
+      domainError = err instanceof Error ? err.message : "Registration failed";
+    } finally {
+      domainRegistering = false;
+    }
+  }
+
+  async function handleVerifyDomain() {
+    if (!domainEntry || domainVerifying) return;
+    domainError = null;
+    domainVerifying = true;
+    try {
+      const result = await verifyDomainDns(domainEntry.hostname);
+      if (result.verified) {
+        domainEntry = { ...domainEntry, verified: true, verifiedAt: new Date().toISOString() };
+      } else {
+        domainError = result.error || "DNS not yet configured";
+      }
+    } catch (err) {
+      domainError = err instanceof Error ? err.message : "Verification failed";
+    } finally {
+      domainVerifying = false;
+    }
+  }
 
   // Domain that must be in ALLOWED_HOSTS for the live site
   const gatewayHost = $derived(() => {
@@ -1342,6 +1388,93 @@ cp apps/server/.env.example apps/server/.env
           </p>
         </div>
 
+        <!-- Custom domain -->
+        <div class="output-section">
+          <div class="output-section-header">
+            <span class="output-section-title">Custom domain</span>
+          </div>
+
+          {#if domainEntry?.verified}
+            <div class="domain-verified-banner">
+              Your site is live at <strong>{domainEntry.hostname}</strong>
+            </div>
+            <div class="output-url-row" style="margin-top: 0.5rem;">
+              <a
+                class="btn-primary output-launch-btn"
+                href="https://{domainEntry.hostname}"
+                target="_blank"
+                rel="noopener"
+              >
+                Visit site &#8599;
+              </a>
+            </div>
+
+          {:else if domainEntry}
+            <div class="domain-pending">
+              <p class="domain-instruction">
+                Add this DNS record to <strong>{domainEntry.hostname}</strong>:
+              </p>
+              <div class="dns-record">
+                <div class="dns-record-row">
+                  <span class="dns-label">Type</span>
+                  <code class="dns-value">CNAME</code>
+                </div>
+                <div class="dns-record-row">
+                  <span class="dns-label">Name</span>
+                  <code class="dns-value">{domainEntry.hostname.split('.')[0]}</code>
+                </div>
+                <div class="dns-record-row">
+                  <span class="dns-label">Target</span>
+                  <code class="dns-value">{domainEntry.cnameTarget || "sites.woco-net.com"}</code>
+                </div>
+              </div>
+
+              {#if domainError}
+                <p class="domain-error">{domainError}</p>
+              {/if}
+
+              <button
+                class="btn-primary"
+                style="margin-top: 0.75rem;"
+                onclick={handleVerifyDomain}
+                disabled={domainVerifying}
+              >
+                {domainVerifying ? "Checking DNS..." : "Verify domain"}
+              </button>
+              <p class="output-hint" style="margin-top: 0.5rem;">
+                DNS changes can take a few minutes to propagate. Click Verify once you've added the record.
+              </p>
+            </div>
+
+          {:else}
+            <p class="output-hint">
+              Point your own domain at this event site. Visitors will see your content served from Swarm.
+            </p>
+            <div class="domain-input-row">
+              <input
+                type="text"
+                class="domain-input"
+                placeholder="events.mycompany.com"
+                bind:value={customDomainInput}
+                onkeydown={(e) => e.key === "Enter" && handleRegisterDomain()}
+              />
+              <button
+                class="btn-primary"
+                onclick={handleRegisterDomain}
+                disabled={domainRegistering || !customDomainInput.trim()}
+              >
+                {domainRegistering ? "Registering..." : "Add domain"}
+              </button>
+            </div>
+            {#if domainError}
+              <p class="domain-error">{domainError}</p>
+            {/if}
+            <p class="output-hint" style="margin-top: 0.5rem;">
+              You'll need access to your domain's DNS settings (e.g. Cloudflare, Namecheap, Route 53).
+            </p>
+          {/if}
+        </div>
+
         <!-- Raw hashes (collapsible reference) -->
         <details class="hash-details">
           <summary>Raw hashes</summary>
@@ -2541,5 +2674,88 @@ cp apps/server/.env.example apps/server/.env
 
   .add-option-row .input {
     flex: 1;
+  }
+
+  /* ── Custom domain ──────────────────────────────────────────────────────── */
+  .domain-verified-banner {
+    font-size: 0.875rem;
+    color: #22c55e;
+    padding: 0.75rem 1rem;
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    border-radius: var(--radius-sm);
+  }
+
+  .domain-pending {
+    margin-top: 0.5rem;
+  }
+
+  .domain-instruction {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.75rem;
+  }
+
+  .dns-record {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+  }
+
+  .dns-record-row {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8125rem;
+  }
+
+  .dns-record-row:last-child {
+    border-bottom: none;
+  }
+
+  .dns-label {
+    width: 4rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 0.6875rem;
+    letter-spacing: 0.04em;
+  }
+
+  .dns-value {
+    color: var(--accent-text);
+    font-size: 0.8125rem;
+    word-break: break-all;
+  }
+
+  .domain-input-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .domain-input {
+    flex: 1;
+    padding: 0.5rem 0.625rem;
+    font-size: 0.875rem;
+    color: var(--text);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: border-color var(--transition);
+  }
+
+  .domain-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-subtle);
+  }
+
+  .domain-error {
+    font-size: 0.8125rem;
+    color: var(--error);
+    margin: 0.5rem 0 0;
   }
 </style>

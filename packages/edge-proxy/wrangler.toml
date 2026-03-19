@@ -1,0 +1,17 @@
+name = "woco-edge-proxy"
+main = "src/worker.ts"
+compatibility_date = "2024-12-01"
+
+# Routes: bind to sites.woco-net.com (set up in Cloudflare dashboard)
+# route = { pattern = "sites.woco-net.com/*", zone_name = "woco-net.com" }
+
+[vars]
+# WoCo API server for domain resolution lookups
+WOCO_API_URL = "https://events-api.woco-net.com"
+# Default Swarm gateway for fetching content
+SWARM_GATEWAY = "https://gateway.ethswarm.org"
+
+# KV namespace for caching domain → hash lookups (create via: wrangler kv namespace create DOMAINS)
+# [[kv_namespaces]]
+# binding = "DOMAINS"
+# id = "<your-kv-namespace-id>"

@@ -26,6 +26,9 @@ npm-debug.log*
 *.tar
 *.tar.gz
 
+# Server runtime data
+apps/server/data/
+
 # Swarm deployment state
 .swarm/
 
