@@ -2,7 +2,7 @@
   import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, openJson } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
-  import { getEventOrders, webhookRelay, getPendingClaims, approvePendingClaim, rejectPendingClaim, type EventOrdersResponse, type PendingClaimEntry } from "../../api/events.js";
+  import { getEventOrders, webhookRelay, getPendingClaims, approvePendingClaim, rejectPendingClaim, sendBroadcast, type EventOrdersResponse, type PendingClaimEntry, type BroadcastResponse } from "../../api/events.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -24,7 +24,7 @@
   let decryptError = $state<string | null>(null);
 
   // Approval tab state
-  let activeTab = $state<"orders" | "approvals">("orders");
+  let activeTab = $state<"orders" | "approvals" | "broadcast">("orders");
   let pendingEntries = $state<PendingClaimEntry[]>([]);
   let decryptedPending = $state<Map<string, DecryptedOrder>>(new Map()); // keyed by pendingId
   let approvingId = $state<string | null>(null);
@@ -50,6 +50,16 @@
   let webhookFormAuthName = $state("Authorization");
   let webhookFormAuthValue = $state("");
   let bulkSending = $state<string | null>(null); // seriesId currently bulk-sending
+
+  // Broadcast state
+  let broadcastSubject = $state("");
+  let broadcastBody = $state("");
+  let broadcastSending = $state(false);
+  let broadcastResult = $state<BroadcastResponse | null>(null);
+  let broadcastError = $state<string | null>(null);
+  let broadcastSeriesFilter = $state<string>("all");
+  let showPreview = $state(false);
+  let showRecipientList = $state(false);
 
   interface DecryptedOrder {
     fields?: Record<string, string>;
@@ -236,6 +246,83 @@
       await new Promise((r) => setTimeout(r, 200));
     }
     bulkSending = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Broadcast helpers
+  // ---------------------------------------------------------------------------
+
+  function getEmailRecipients(seriesFilter: string = "all"): Array<{ email: string; name?: string; seriesName?: string }> {
+    const recipients: Array<{ email: string; name?: string; seriesName?: string }> = [];
+    const seen = new Set<string>();
+    for (const [idx, dec] of decryptedOrders) {
+      const order = ordersResponse?.orders[idx];
+      if (seriesFilter !== "all" && order?.seriesId !== seriesFilter) continue;
+      if (dec.claimerEmail && !seen.has(dec.claimerEmail.toLowerCase())) {
+        seen.add(dec.claimerEmail.toLowerCase());
+        recipients.push({ email: dec.claimerEmail, seriesName: order?.seriesName });
+      }
+    }
+    return recipients;
+  }
+
+  function wrapHtmlEmail(body: string, eventTitle: string): string {
+    const escaped = body.replace(/\n/g, "<br>");
+    return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #e0e0e0; background: #1a1a2e; padding: 2rem;">
+  <div style="max-width: 600px; margin: 0 auto; background: #16213e; border-radius: 12px; padding: 2rem;">
+    <h2 style="color: #fff; margin: 0 0 1rem;">${eventTitle}</h2>
+    <div style="color: #c0c0c0; line-height: 1.6; font-size: 15px;">${escaped}</div>
+    <hr style="border: none; border-top: 1px solid #2a2a4a; margin: 2rem 0 1rem;">
+    <p style="font-size: 12px; color: #666;">Sent via <a href="https://woco.eth.limo" style="color: #7c6cf0;">WoCo</a></p>
+  </div>
+</body></html>`;
+  }
+
+  async function handleSendBroadcast() {
+    if (!event || broadcastSending) return;
+    broadcastError = null;
+    broadcastResult = null;
+
+    const recipients = getEmailRecipients(broadcastSeriesFilter);
+    if (recipients.length === 0) {
+      broadcastError = "No email recipients found. Only attendees who claimed with an email can receive broadcasts.";
+      return;
+    }
+
+    if (!broadcastSubject.trim()) {
+      broadcastError = "Subject is required.";
+      return;
+    }
+
+    if (!broadcastBody.trim()) {
+      broadcastError = "Message body is required.";
+      return;
+    }
+
+    const seriesLabel = broadcastSeriesFilter === "all"
+      ? "all series"
+      : event.series.find((s) => s.seriesId === broadcastSeriesFilter)?.name ?? "selected series";
+
+    if (!confirm(`Send "${broadcastSubject.trim()}" to ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?`)) {
+      return;
+    }
+
+    broadcastSending = true;
+    try {
+      const htmlBody = wrapHtmlEmail(broadcastBody.trim(), event.title);
+      broadcastResult = await sendBroadcast(eventId, broadcastSubject.trim(), htmlBody, recipients);
+      if (broadcastResult.sentCount > 0) {
+        broadcastSubject = "";
+        broadcastBody = "";
+        showPreview = false;
+      }
+    } catch (err) {
+      broadcastError = err instanceof Error ? err.message : "Failed to send broadcast";
+    } finally {
+      broadcastSending = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -446,9 +533,160 @@
           <span class="tab-badge">{pendingEntries.length}</span>
         {/if}
       </button>
+      <button
+        class="tab-btn"
+        class:active={activeTab === "broadcast"}
+        onclick={() => (activeTab = "broadcast")}
+      >
+        Broadcast
+      </button>
     </div>
 
-    {#if activeTab === "approvals"}
+    {#if activeTab === "broadcast"}
+      <!-- Broadcast tab -->
+      {@const emailRecipients = getEmailRecipients(broadcastSeriesFilter)}
+      <div class="broadcast-section">
+
+        {#if decryptedOrders.size === 0 && ordersResponse && ordersResponse.orders.length > 0}
+          <div class="broadcast-notice">
+            Orders need to be decrypted before you can send broadcasts.
+            Switch to the Orders tab to trigger decryption, then come back here.
+          </div>
+        {:else if ordersResponse && ordersResponse.orders.length === 0}
+          <div class="empty-state">
+            <p>No attendees yet. Broadcasts will be available once people claim tickets with an email address.</p>
+          </div>
+        {:else}
+
+          <!-- Series filter + recipient count -->
+          <div class="broadcast-toolbar">
+            <div class="broadcast-filter">
+              <label class="filter-label" for="series-filter">Audience</label>
+              <select id="series-filter" class="filter-select" bind:value={broadcastSeriesFilter}>
+                <option value="all">All series ({getEmailRecipients("all").length} emails)</option>
+                {#if event}
+                  {#each event.series as series}
+                    {@const count = getEmailRecipients(series.seriesId).length}
+                    {#if count > 0}
+                      <option value={series.seriesId}>{series.name} ({count})</option>
+                    {/if}
+                  {/each}
+                {/if}
+              </select>
+            </div>
+
+            <button
+              class="btn-toggle-recipients"
+              onclick={() => (showRecipientList = !showRecipientList)}
+              disabled={emailRecipients.length === 0}
+            >
+              {emailRecipients.length} recipient{emailRecipients.length !== 1 ? "s" : ""}
+              <span class="chevron-sm" class:open={showRecipientList}></span>
+            </button>
+          </div>
+
+          <!-- Collapsible recipient list -->
+          {#if showRecipientList && emailRecipients.length > 0}
+            <div class="recipient-list">
+              {#each emailRecipients as r}
+                <div class="recipient-row">
+                  <span class="recipient-email">{r.email}</span>
+                  {#if r.seriesName}
+                    <span class="recipient-series">{r.seriesName}</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <!-- Compose form -->
+          <div class="broadcast-compose">
+            <label class="broadcast-field">
+              <span>Subject</span>
+              <input
+                type="text"
+                placeholder="e.g. Important update about the event"
+                bind:value={broadcastSubject}
+                maxlength="200"
+              />
+            </label>
+
+            <label class="broadcast-field">
+              <span>Message</span>
+              <textarea
+                placeholder="Write your message here. Line breaks will be preserved in the email."
+                bind:value={broadcastBody}
+                rows="8"
+              ></textarea>
+            </label>
+          </div>
+
+          <!-- Preview toggle -->
+          {#if broadcastBody.trim()}
+            <button
+              class="btn-preview-toggle"
+              onclick={() => (showPreview = !showPreview)}
+            >
+              {showPreview ? "Hide preview" : "Preview email"}
+            </button>
+
+            {#if showPreview && event}
+              <div class="email-preview">
+                <div class="preview-header">
+                  <div class="preview-meta">
+                    <span class="preview-label">From:</span>
+                    <span>"{event.title}" &lt;events@woco-net.com&gt;</span>
+                  </div>
+                  <div class="preview-meta">
+                    <span class="preview-label">Subject:</span>
+                    <span>{broadcastSubject || "(no subject)"}</span>
+                  </div>
+                  <div class="preview-meta">
+                    <span class="preview-label">To:</span>
+                    <span>{emailRecipients.length} recipient{emailRecipients.length !== 1 ? "s" : ""} (sent individually)</span>
+                  </div>
+                </div>
+                <div class="preview-body">
+                  {@html wrapHtmlEmail(broadcastBody.trim(), event.title)}
+                </div>
+              </div>
+            {/if}
+          {/if}
+
+          <!-- Feedback -->
+          {#if broadcastError}
+            <p class="broadcast-error">{broadcastError}</p>
+          {/if}
+
+          {#if broadcastResult}
+            <div class="broadcast-result" class:has-failures={broadcastResult.failedCount > 0}>
+              Sent to {broadcastResult.sentCount} of {broadcastResult.totalRecipients} recipient{broadcastResult.totalRecipients !== 1 ? "s" : ""}.
+              {#if broadcastResult.failedCount > 0}
+                <br>{broadcastResult.failedCount} failed.
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Send button -->
+          <div class="broadcast-actions">
+            <button
+              class="btn-broadcast"
+              disabled={broadcastSending || emailRecipients.length === 0 || !broadcastSubject.trim() || !broadcastBody.trim()}
+              onclick={handleSendBroadcast}
+            >
+              {#if broadcastSending}
+                Sending...
+              {:else}
+                Send to {emailRecipients.length} recipient{emailRecipients.length !== 1 ? "s" : ""}
+              {/if}
+            </button>
+            <span class="broadcast-rate-hint">Max 5 broadcasts per hour</span>
+          </div>
+
+        {/if}
+      </div>
+
+    {:else if activeTab === "approvals"}
       <!-- Approvals tab -->
       {#if pendingEntries.length === 0}
         <div class="empty-state">
@@ -1132,5 +1370,276 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     margin-bottom: 1rem;
+  }
+
+  /* Broadcast tab */
+  .broadcast-section {
+    max-width: 680px;
+  }
+
+  .broadcast-notice {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    padding: 1.25rem;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    text-align: center;
+    line-height: 1.6;
+  }
+
+  .broadcast-toolbar {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+  }
+
+  .broadcast-filter {
+    flex: 1;
+    min-width: 180px;
+  }
+
+  .filter-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.25rem;
+  }
+
+  .filter-select {
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    font-size: 0.8125rem;
+    color: var(--text);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: border-color var(--transition);
+  }
+
+  .filter-select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .btn-toggle-recipients {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--accent-text);
+    background: var(--accent-subtle);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+    white-space: nowrap;
+  }
+
+  .btn-toggle-recipients:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  .btn-toggle-recipients:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .chevron-sm {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-top: 4px solid currentColor;
+    transition: transform 0.2s;
+  }
+
+  .chevron-sm.open {
+    transform: rotate(180deg);
+  }
+
+  .recipient-list {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 1.25rem;
+    background: var(--bg-surface);
+  }
+
+  .recipient-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .recipient-row:last-child {
+    border-bottom: none;
+  }
+
+  .recipient-email {
+    color: var(--text-secondary);
+  }
+
+  .recipient-series {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    padding: 0.125rem 0.5rem;
+    background: var(--accent-subtle);
+    border-radius: 9999px;
+  }
+
+  .broadcast-compose {
+    margin-bottom: 0.75rem;
+  }
+
+  .broadcast-field {
+    display: block;
+    margin-bottom: 1rem;
+  }
+
+  .broadcast-field span {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.25rem;
+  }
+
+  .broadcast-field input,
+  .broadcast-field textarea {
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    font-size: 0.875rem;
+    color: var(--text);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    resize: vertical;
+    transition: border-color var(--transition);
+  }
+
+  .broadcast-field input:focus,
+  .broadcast-field textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-subtle);
+  }
+
+  /* Preview */
+  .btn-preview-toggle {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--accent-text);
+    padding: 0;
+    margin-bottom: 0.75rem;
+    transition: opacity var(--transition);
+  }
+
+  .btn-preview-toggle:hover {
+    opacity: 0.75;
+  }
+
+  .email-preview {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin-bottom: 1.25rem;
+  }
+
+  .preview-header {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+  }
+
+  .preview-meta {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .preview-label {
+    display: inline-block;
+    width: 4rem;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  .preview-body {
+    padding: 0;
+    background: #1a1a2e;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+  }
+
+  .preview-body :global(*) {
+    max-width: 100%;
+  }
+
+  /* Feedback */
+  .broadcast-error {
+    font-size: 0.8125rem;
+    color: var(--error);
+    margin: 0 0 1rem;
+  }
+
+  .broadcast-result {
+    font-size: 0.875rem;
+    color: #22c55e;
+    padding: 0.75rem 1rem;
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    border-radius: var(--radius-sm);
+    margin-bottom: 1rem;
+  }
+
+  .broadcast-result.has-failures {
+    color: #d97706;
+    background: rgba(217, 119, 6, 0.1);
+    border-color: rgba(217, 119, 6, 0.2);
+  }
+
+  .broadcast-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .btn-broadcast {
+    padding: 0.625rem 1.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+  }
+
+  .btn-broadcast:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  .btn-broadcast:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .broadcast-rate-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
   }
 </style>

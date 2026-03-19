@@ -235,6 +235,31 @@ export async function webhookRelay(
 }
 
 // ---------------------------------------------------------------------------
+// Email broadcast
+// ---------------------------------------------------------------------------
+
+export interface BroadcastResponse {
+  sentCount: number;
+  failedCount: number;
+  totalRecipients: number;
+  errors?: string[];
+}
+
+export async function sendBroadcast(
+  eventId: string,
+  subject: string,
+  htmlBody: string,
+  recipients: Array<{ email: string; name?: string }>,
+): Promise<BroadcastResponse> {
+  const resp = await authPost<BroadcastResponse>(
+    `/api/events/${eventId}/broadcast`,
+    { subject, htmlBody, recipients },
+  );
+  if (!resp.data) throw new Error(resp.error || "Broadcast failed");
+  return resp.data;
+}
+
+// ---------------------------------------------------------------------------
 // Organizer approval flow
 // ---------------------------------------------------------------------------
 

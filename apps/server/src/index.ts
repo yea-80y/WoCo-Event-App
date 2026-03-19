@@ -15,6 +15,7 @@ import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
+import { broadcast } from "./routes/broadcast.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -118,6 +119,7 @@ app.route("/api/events", events);
 app.route("/api/events", claims);
 app.route("/api/events", orders);
 app.route("/api/events", approvals);
+app.route("/api/events", broadcast);
 
 // Collection routes (authenticated)
 app.route("/api/collection", collection);
