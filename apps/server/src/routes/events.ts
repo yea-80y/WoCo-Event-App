@@ -4,6 +4,7 @@ import type { Hex0x, CreateEventRequest } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
+import { announceEvent as wakuAnnounce, announceUnlist as wakuUnlist } from "../lib/waku/announce.js";
 
 const events = new Hono<AppEnv>();
 
@@ -268,6 +269,20 @@ events.post("/:id/list", requireAuth, async (c) => {
       createdAt: eventFeed.createdAt,
       ...(body.sourceApiUrl ? { apiUrl: body.sourceApiUrl.trim().replace(/\/$/, "") } : {}),
     });
+
+    // Announce on Waku (fire-and-forget)
+    wakuAnnounce({
+      eventId: eventFeed.eventId,
+      title: eventFeed.title,
+      imageHash: eventFeed.imageHash,
+      startDate: eventFeed.startDate,
+      location: eventFeed.location || "",
+      creatorAddress: eventFeed.creatorAddress,
+      seriesCount: eventFeed.series.length,
+      totalTickets: eventFeed.series.reduce((sum, s) => sum + s.totalSupply, 0),
+      createdAt: eventFeed.createdAt,
+      ...(body.sourceApiUrl ? { apiUrl: body.sourceApiUrl.trim().replace(/\/$/, "") } : {}),
+    }, "listed").catch(() => {});
   } catch (err) {
     console.error("[api] list event error:", err);
     return c.json({ ok: false, error: "Failed to add event to directory" }, 500);
@@ -312,6 +327,9 @@ events.post("/:id/unlist", requireAuth, async (c) => {
 
   try {
     await removeEventFromDirectory(eventId);
+
+    // Announce unlist on Waku (fire-and-forget)
+    wakuUnlist(eventId, parentAddress).catch(() => {});
   } catch (err) {
     console.error("[api] unlist event error:", err);
     return c.json({ ok: false, error: "Failed to remove event from directory" }, 500);

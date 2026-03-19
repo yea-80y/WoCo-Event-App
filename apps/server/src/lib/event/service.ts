@@ -1,5 +1,6 @@
 import type { Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary, OrderField, ClaimMode } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
+import { announceEvent as wakuAnnounce } from "../waku/announce.js";
 import {
   pack4096,
   decode4096,
@@ -231,6 +232,17 @@ export async function createEvent(opts: {
   } catch (err) {
     console.error("[event] Failed to update directory (non-critical):", err);
   }
+
+  // 5. Announce on Waku (fire-and-forget — never blocks the response)
+  wakuAnnounce(
+    {
+      eventId, title, imageHash, startDate, location, creatorAddress,
+      seriesCount: series.length,
+      totalTickets: series.reduce((sum, s) => sum + s.totalSupply, 0),
+      createdAt: eventFeed.createdAt,
+    },
+    "created",
+  ).catch((err) => console.error("[waku] Announce failed:", err));
 
   emit("finalize", 1, 1, "Event published!");
   console.log(`[event] Event ${eventId} created successfully`);

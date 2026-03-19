@@ -5,28 +5,46 @@
   import { setExternalEventApi } from "../../api/event-api-registry.js";
   import EventCard from "../events/EventCard.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
+  import {
+    startWakuDiscovery,
+    stopWakuDiscovery,
+    mergeWithWaku,
+    isWakuReady,
+    getWakuEventCount,
+  } from "../../waku/discovery.svelte.js";
 
   // Read cache synchronously in script init — runs before the first render.
   // This means returning visitors never see "Loading events..." at all.
   const _KEY = cacheKey.directory();
   const _cached = cacheGet<EventDirectoryEntry[]>(_KEY);
 
-  let events = $state<EventDirectoryEntry[]>(_cached ?? []);
+  let swarmEvents = $state<EventDirectoryEntry[]>(_cached ?? []);
   let loading = $state(_cached === null); // false on cache hit = no spinner
+
+  // Merge Swarm directory with Waku-discovered events.
+  // Swarm is authoritative — Waku only adds events not already in Swarm.
+  let events = $derived(mergeWithWaku(swarmEvents));
 
   onMount(() => {
     // Always fetch fresh regardless of cache state
     listEvents()
       .then((fresh) => {
         cacheSet(_KEY, fresh, TTL.EVENT);
-        events = fresh;
+        swarmEvents = fresh;
         loading = false;
       })
       .catch(() => {
         // Only stop the spinner if there's nothing cached to fall back on
         if (_cached === null) loading = false;
       });
+
+    // Start Waku discovery in the background — non-blocking, gracefully degrades
+    startWakuDiscovery();
+  });
+
+  onDestroy(() => {
+    stopWakuDiscovery();
   });
 </script>
 
@@ -147,7 +165,14 @@
 
 <!-- Events -->
 <section class="events-section">
-  <h2>Events</h2>
+  <div class="events-header">
+    <h2>Events</h2>
+    {#if isWakuReady() && getWakuEventCount() > 0}
+      <span class="waku-badge" title="Discovering events via Waku peer-to-peer network">
+        +{getWakuEventCount()} via p2p
+      </span>
+    {/if}
+  </div>
   {#if loading}
     <p class="status">Loading events...</p>
   {:else if events.length === 0}
@@ -494,6 +519,27 @@
   .events-section {
     padding: 2.5rem 0;
     border-top: 1px solid var(--border);
+  }
+
+  .events-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .events-header h2 {
+    margin: 0;
+  }
+
+  .waku-badge {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    background: var(--accent-subtle);
+    padding: 0.175rem 0.5rem;
+    border-radius: 9999px;
+    white-space: nowrap;
   }
 
   .event-grid {

@@ -11,6 +11,7 @@
   "dependencies": {
     "@ethersphere/bee-js": "^11.0.0",
     "@hono/node-server": "^1.14.0",
+    "@waku/sdk": "^0.0.36",
     "@woco/shared": "*",
     "dotenv": "^17.3.1",
     "ethers": "^6.13.0",

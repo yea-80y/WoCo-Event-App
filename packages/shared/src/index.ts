@@ -5,3 +5,4 @@ export * from "./auth/eip712.js";
 export * from "./event/types.js";
 export * from "./crypto/index.js";
 export * from "./profile/types.js";
+export * from "./waku/index.js";

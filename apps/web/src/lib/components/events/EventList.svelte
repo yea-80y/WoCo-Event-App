@@ -3,7 +3,12 @@
   import { listEvents } from "../../api/events.js";
   import EventCard from "./EventCard.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
+  import {
+    startWakuDiscovery,
+    stopWakuDiscovery,
+    mergeWithWaku,
+  } from "../../waku/discovery.svelte.js";
 
   interface Props {
     onselect?: (eventId: string) => void;
@@ -14,15 +19,18 @@
   const _KEY = cacheKey.directory();
   const _cached = cacheGet<EventDirectoryEntry[]>(_KEY);
 
-  let events = $state<EventDirectoryEntry[]>(_cached ?? []);
+  let swarmEvents = $state<EventDirectoryEntry[]>(_cached ?? []);
   let loading = $state(_cached === null);
   let error = $state<string | null>(null);
+
+  // Merge Swarm + Waku events (Swarm authoritative)
+  let events = $derived(mergeWithWaku(swarmEvents));
 
   onMount(() => {
     listEvents()
       .then((fresh) => {
         cacheSet(_KEY, fresh, TTL.EVENT);
-        events = fresh;
+        swarmEvents = fresh;
         loading = false;
         error = null;
       })
@@ -32,6 +40,13 @@
           loading = false;
         }
       });
+
+    // Start Waku discovery (safe to call multiple times — singleton)
+    startWakuDiscovery();
+  });
+
+  onDestroy(() => {
+    stopWakuDiscovery();
   });
 </script>
 
