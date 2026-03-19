@@ -48,10 +48,12 @@ export async function announceEvent(
     const payload = encodeEventAnnouncement(announcement);
     const result = await node.lightPush.send(encoder, { payload });
 
-    if (result?.failures && result.failures.length > 0) {
-      console.warn(
-        `[waku] Announcement had ${result.failures.length} failure(s) for event ${entry.eventId}`,
-      );
+    const successes = result?.successes?.length ?? 0;
+    const failures = result?.failures?.length ?? 0;
+    if (failures > 0 && successes === 0) {
+      console.warn(`[waku] Announcement FAILED for event ${entry.eventId} (0 successes, ${failures} failures)`);
+    } else if (failures > 0) {
+      console.log(`[waku] Announced event ${entry.eventId} (action=${action}, ${successes} ok, ${failures} failed)`);
     } else {
       console.log(`[waku] Announced event ${entry.eventId} (action=${action})`);
     }
