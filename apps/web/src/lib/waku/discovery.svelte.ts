@@ -37,7 +37,7 @@ let wakuError = $state<string | null>(null);
 let wakuConnecting = $state(false);
 
 let _started = false;
-let _subscription: { unsubscribe: (topics: string[]) => Promise<void> } | null = null;
+let _filterNode: import("@waku/sdk").LightNode | null = null;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -129,11 +129,11 @@ export async function startWakuDiscovery(): Promise<void> {
  * Stop Waku discovery and clean up subscriptions.
  */
 export async function stopWakuDiscovery(): Promise<void> {
-  if (_subscription) {
+  if (_filterNode) {
     try {
-      await _subscription.unsubscribe([WAKU_CONTENT_TOPIC]);
+      _filterNode.filter.unsubscribeAll();
     } catch { /* ignore */ }
-    _subscription = null;
+    _filterNode = null;
   }
   wakuReady = false;
   _started = false;
@@ -185,17 +185,16 @@ async function queryHistory(node: import("@waku/sdk").LightNode): Promise<void> 
     // Query messages from the last 48 hours
     const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
 
-    const callback = (msg: { payload?: Uint8Array }): void => {
-      if (!msg.payload) return;
-      const announcement = decodeEventAnnouncement(msg.payload);
-      if (announcement) processAnnouncement(announcement);
-    };
-
-    await node.store.queryMessages(
+    await node.store.queryWithOrderedCallback(
       [decoder],
+      (msg) => {
+        if (!msg.payload) return;
+        const announcement = decodeEventAnnouncement(msg.payload);
+        if (announcement) processAnnouncement(announcement);
+      },
       {
-        callback: (msgs) => { msgs.forEach(callback); },
-        timeFilter: { startTime: cutoff, endTime: new Date() },
+        timeStart: cutoff,
+        timeEnd: new Date(),
       },
     );
   } catch (err) {
@@ -208,7 +207,7 @@ async function queryHistory(node: import("@waku/sdk").LightNode): Promise<void> 
 // ---------------------------------------------------------------------------
 
 async function subscribeRealtime(node: import("@waku/sdk").LightNode): Promise<void> {
-  const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC, pubsubTopic: WAKU_PUBSUB_TOPIC });
+  const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC, shardId: WAKU_SHARD_INDEX });
 
   const callback = (msg: { payload?: Uint8Array }): void => {
     if (!msg.payload) return;
@@ -219,17 +218,11 @@ async function subscribeRealtime(node: import("@waku/sdk").LightNode): Promise<v
     }
   };
 
-  const { error, subscription } = await node.filter.createSubscription({
-    contentTopics: [WAKU_CONTENT_TOPIC],
-  });
-
-  if (error) {
-    console.warn("[waku] Filter subscription error:", error);
+  const success = await node.filter.subscribe([decoder], callback);
+  if (!success) {
+    console.warn("[waku] Filter subscription failed");
     return;
   }
 
-  if (subscription) {
-    await subscription.subscribe([decoder], callback);
-    _subscription = subscription;
-  }
+  _filterNode = node;
 }
