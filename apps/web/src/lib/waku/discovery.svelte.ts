@@ -206,7 +206,7 @@ async function queryHistory(node: import("@waku/sdk").LightNode): Promise<void> 
 // ---------------------------------------------------------------------------
 
 async function subscribeRealtime(node: import("@waku/sdk").LightNode): Promise<void> {
-  const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC, shardId: WAKU_SHARD_INDEX });
+  const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC });
 
   const callback = (msg: { payload?: Uint8Array }): void => {
     if (!msg.payload) return;

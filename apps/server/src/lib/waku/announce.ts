@@ -50,7 +50,7 @@ export async function announceEvent(
     const successes = result?.successes?.length ?? 0;
     const failures = result?.failures?.length ?? 0;
     if (failures > 0 && successes === 0) {
-      console.warn(`[waku] Announcement FAILED for event ${entry.eventId} (0 successes, ${failures} failures)`);
+      console.warn(`[waku] Announcement FAILED for event ${entry.eventId} (0 successes, ${failures} failures)`, JSON.stringify(result?.failures));
     } else if (failures > 0) {
       console.log(`[waku] Announced event ${entry.eventId} (action=${action}, ${successes} ok, ${failures} failed)`);
     } else {
