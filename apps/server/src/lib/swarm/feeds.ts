@@ -126,6 +126,17 @@ export async function writeFeedPage(topic: Topic, page: Uint8Array): Promise<voi
         delay = Math.min(delay * 2, 5000);
         continue;
       }
+      // If the feed's current chunk is missing (404), try writing at index 0 (fresh)
+      if (status === 404 && attempt === 0) {
+        console.warn(`[swarm] Feed chunk missing (404), resetting feed at index 0...`);
+        try {
+          const writer2 = getBee().makeFeedWriter(topic, getPlatformSigner());
+          await writer2.uploadPayload(requirePostageBatch(), page, { index: 0 });
+          return;
+        } catch (resetErr) {
+          console.error(`[swarm] Feed reset also failed:`, resetErr instanceof Error ? resetErr.message : resetErr);
+        }
+      }
       throw err;
     }
   }
