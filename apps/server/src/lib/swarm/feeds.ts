@@ -137,7 +137,9 @@ export async function writeFeedPage(topic: Topic, page: Uint8Array): Promise<voi
 
 export function encodeJsonFeed(data: unknown): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(data));
-  const page = new Uint8Array(4096);
+  // Use at least 4096 bytes (Swarm chunk minimum), but grow if data is larger
+  const size = Math.max(4096, json.length);
+  const page = new Uint8Array(size);
   page.set(json);
   return page;
 }
