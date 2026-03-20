@@ -138,3 +138,8 @@ app.route("/api/profile", profiles);
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
+
+// Start Waku discovery subscription in the background (non-blocking)
+import("./lib/waku/discovery.js")
+  .then(({ startWakuDiscovery }) => startWakuDiscovery())
+  .catch((err) => console.error("[waku] Discovery startup failed:", err));

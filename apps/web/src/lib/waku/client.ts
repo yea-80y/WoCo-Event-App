@@ -46,7 +46,9 @@ async function initNode(): Promise<LightNode | null> {
       peers
         ? {
             bootstrapPeers: peers,
-            networkConfig: { clusterId: 42, numShardsInCluster: 1 },
+            networkConfig: { clusterId: 42 },
+            // Allow plain ws:// connections to self-hosted nwaku node
+            libp2p: { filterMultiaddrs: false },
           }
         : { defaultBootstrap: true },
     );

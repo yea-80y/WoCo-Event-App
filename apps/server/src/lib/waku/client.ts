@@ -1,9 +1,19 @@
 /**
- * Waku light node singleton for server-side event announcement publishing.
+ * Waku light node singleton for server-side publishing and discovery.
  *
  * Lazy-initialised on first use. Gated by WAKU_ENABLED env var.
  * If Waku is unavailable, all operations degrade gracefully (log + return null).
  */
+// Polyfill Promise.withResolvers for Node < 22 (required by @waku/sdk)
+if (typeof (Promise as any).withResolvers !== "function") {
+  (Promise as any).withResolvers = function <T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+}
+
 import type { LightNode } from "@waku/sdk";
 
 
@@ -49,7 +59,9 @@ async function initNode(): Promise<LightNode | null> {
       peers
         ? {
             bootstrapPeers: peers,
-            networkConfig: { clusterId: 42, numShardsInCluster: 1 },
+            networkConfig: { clusterId: 42 },
+            // Allow plain ws:// connections to our self-hosted nwaku node
+            libp2p: { filterMultiaddrs: false },
           }
         : { defaultBootstrap: true },
     );
@@ -57,9 +69,9 @@ async function initNode(): Promise<LightNode | null> {
     await node.start();
     console.log("[waku] Node started, waiting for peers...");
 
-    // Wait for LightPush peer (needed for publishing)
-    await node.waitForPeers([Protocols.LightPush], 15_000);
-    console.log("[waku] Connected to LightPush peer");
+    // Wait for all protocols we need: publish (LightPush) + subscribe (Filter) + history (Store)
+    await node.waitForPeers([Protocols.LightPush, Protocols.Filter, Protocols.Store], 15_000);
+    console.log("[waku] Connected to LightPush + Filter + Store peers");
 
     _node = node;
     return node;

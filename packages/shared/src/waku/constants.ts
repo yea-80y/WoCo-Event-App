@@ -6,8 +6,8 @@
 
 export const WAKU_CONTENT_TOPIC = "/woco/1/event-announce/proto";
 
-/** Waku cluster ID — use the default public Waku network */
-export const WAKU_CLUSTER_ID = 1;
+/** Waku cluster ID — custom cluster for self-hosted nwaku node */
+export const WAKU_CLUSTER_ID = 42;
 
 /** Shard index within the cluster */
 export const WAKU_SHARD_INDEX = 0;

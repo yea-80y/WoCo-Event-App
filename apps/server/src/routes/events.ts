@@ -5,8 +5,21 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
 import { announceEvent as wakuAnnounce, announceUnlist as wakuUnlist } from "../lib/waku/announce.js";
+import { getWakuDiscoveredEvents } from "../lib/waku/discovery.js";
 
 const events = new Hono<AppEnv>();
+
+// GET /api/events/waku-discovered - events found via Waku (not yet in Swarm directory)
+// Must be registered BEFORE /:id to prevent "waku-discovered" being treated as an eventId.
+events.get("/waku-discovered", async (c) => {
+  try {
+    const entries = getWakuDiscoveredEvents();
+    return c.json({ ok: true, data: entries });
+  } catch (err) {
+    console.error("[api] waku-discovered error:", err);
+    return c.json({ ok: false, error: "Failed to get Waku discoveries" }, 500);
+  }
+});
 
 // GET /api/events - public listing
 events.get("/", async (c) => {

@@ -1,23 +1,16 @@
 /**
- * Waku-based decentralized event discovery — Svelte 5 rune store.
+ * Waku event discovery — Svelte 5 rune store.
  *
- * Subscribes to the Waku event announcement topic and maintains an in-memory
- * map of discovered events. The frontend merges this with the Swarm directory
- * for a unified event listing.
+ * Fetches Waku-discovered events from the server (which runs the Waku light
+ * node and subscribes to announcements). The browser doesn't connect to nwaku
+ * directly — the server acts as the Waku gateway.
  *
  * Key principles:
- * - Graceful degradation: if Waku fails, the app works exactly as before
+ * - Graceful degradation: if Waku endpoint fails, the app works with Swarm only
  * - Swarm directory is authoritative; Waku only adds events not in Swarm
- * - Lazy init: Waku SDK is dynamically imported on first use
- * - Singleton subscription: multiple components share one subscription
+ * - Polls periodically for new discoveries
  */
 import type { EventDirectoryEntry } from "@woco/shared";
-import {
-  WAKU_CONTENT_TOPIC,
-  decodeEventAnnouncement,
-  type EventAnnouncement,
-} from "@woco/shared";
-import { getWakuNode } from "./client.js";
 
 // ---------------------------------------------------------------------------
 // Reactive state (Svelte 5 runes)
@@ -26,17 +19,20 @@ import { getWakuNode } from "./client.js";
 /** Discovered events keyed by eventId */
 let wakuEvents = $state<Map<string, EventDirectoryEntry>>(new Map());
 
-/** True once the Waku node is connected and subscribed */
+/** True once the first fetch has completed */
 let wakuReady = $state(false);
 
-/** Error message if Waku init failed (null = no error or not started) */
+/** Error message if fetch failed (null = no error or not started) */
 let wakuError = $state<string | null>(null);
 
-/** True while Waku is connecting (loading state) */
+/** True while fetching */
 let wakuConnecting = $state(false);
 
 let _started = false;
-let _filterNode: import("@waku/sdk").LightNode | null = null;
+let _pollTimer: ReturnType<typeof setInterval> | null = null;
+
+/** How often to poll for new Waku discoveries (ms). */
+const POLL_INTERVAL = 30_000;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -52,12 +48,12 @@ export function getWakuEventCount(): number {
   return wakuEvents.size;
 }
 
-/** Whether Waku discovery is connected and receiving. */
+/** Whether Waku discovery has loaded. */
 export function isWakuReady(): boolean {
   return wakuReady;
 }
 
-/** Whether Waku is currently connecting. */
+/** Whether Waku is currently fetching. */
 export function isWakuConnecting(): boolean {
   return wakuConnecting;
 }
@@ -92,136 +88,77 @@ export function mergeWithWaku(
 }
 
 /**
- * Start Waku discovery. Safe to call multiple times — only runs once.
+ * Start Waku discovery polling. Safe to call multiple times — only runs once.
  */
 export async function startWakuDiscovery(): Promise<void> {
   if (_started) return;
   _started = true;
-  wakuConnecting = true;
-  wakuError = null;
 
-  try {
-    const node = await getWakuNode();
-    if (!node) {
-      wakuError = "Could not connect to Waku network";
-      wakuConnecting = false;
-      return;
-    }
+  // Fetch immediately, then poll
+  await fetchWakuDiscovered();
 
-    // 1. Query Store for recent historical announcements (last 48 hours)
-    await queryHistory(node);
-
-    // 2. Subscribe for real-time announcements
-    await subscribeRealtime(node);
-
-    wakuReady = true;
-    wakuConnecting = false;
-    console.log(`[waku] Discovery active — ${wakuEvents.size} event(s) from history`);
-  } catch (err) {
-    wakuError = err instanceof Error ? err.message : "Waku discovery failed";
-    wakuConnecting = false;
-    console.warn("[waku] Discovery failed:", wakuError);
-  }
+  _pollTimer = setInterval(() => {
+    fetchWakuDiscovered().catch(() => {});
+  }, POLL_INTERVAL);
 }
 
 /**
- * Stop Waku discovery and clean up subscriptions.
+ * Stop Waku discovery polling.
  */
 export async function stopWakuDiscovery(): Promise<void> {
-  if (_filterNode) {
-    try {
-      _filterNode.filter.unsubscribeAll();
-    } catch { /* ignore */ }
-    _filterNode = null;
+  if (_pollTimer) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
   }
   wakuReady = false;
   _started = false;
 }
 
 // ---------------------------------------------------------------------------
-// Internal: process announcements
+// Internal: fetch from server
 // ---------------------------------------------------------------------------
 
-function processAnnouncement(announcement: EventAnnouncement): void {
-  if (announcement.action === "unlisted") {
-    // Remove from discovered set
-    if (wakuEvents.has(announcement.eventId)) {
-      const next = new Map(wakuEvents);
-      next.delete(announcement.eventId);
-      wakuEvents = next;
-    }
-    return;
-  }
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "");
 
-  // Convert to EventDirectoryEntry
-  const entry: EventDirectoryEntry = {
-    eventId: announcement.eventId,
-    title: announcement.title,
-    imageHash: announcement.imageHash,
-    startDate: announcement.startDate,
-    location: announcement.location,
-    creatorAddress: announcement.creatorAddress as `0x${string}`,
-    seriesCount: announcement.seriesCount,
-    totalTickets: announcement.totalTickets,
-    createdAt: announcement.createdAt,
-    ...(announcement.apiUrl ? { apiUrl: announcement.apiUrl } : {}),
-  };
+async function fetchWakuDiscovered(): Promise<void> {
+  wakuConnecting = true;
+  wakuError = null;
 
-  // Upsert — trigger reactivity by creating new Map
-  const next = new Map(wakuEvents);
-  next.set(entry.eventId, entry);
-  wakuEvents = next;
-}
-
-// ---------------------------------------------------------------------------
-// Internal: Store protocol (historical query)
-// ---------------------------------------------------------------------------
-
-async function queryHistory(node: import("@waku/sdk").LightNode): Promise<void> {
   try {
-    const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC });
-
-    // Query messages from the last 48 hours
-    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
-
-    await node.store.queryWithOrderedCallback(
-      [decoder],
-      (msg) => {
-        if (!msg.payload) return;
-        const announcement = decodeEventAnnouncement(msg.payload);
-        if (announcement) processAnnouncement(announcement);
-      },
-      {
-        timeStart: cutoff,
-        timeEnd: new Date(),
-      },
-    );
-  } catch (err) {
-    console.warn("[waku] Store query failed (non-critical):", err instanceof Error ? err.message : err);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Internal: Filter protocol (real-time subscription)
-// ---------------------------------------------------------------------------
-
-async function subscribeRealtime(node: import("@waku/sdk").LightNode): Promise<void> {
-  const decoder = node.createDecoder({ contentTopic: WAKU_CONTENT_TOPIC });
-
-  const callback = (msg: { payload?: Uint8Array }): void => {
-    if (!msg.payload) return;
-    const announcement = decodeEventAnnouncement(msg.payload);
-    if (announcement) {
-      processAnnouncement(announcement);
-      console.log(`[waku] Received announcement: ${announcement.action} ${announcement.eventId}`);
+    const resp = await fetch(`${API_BASE}/api/events/waku-discovered`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      wakuError = `Server returned ${resp.status}`;
+      wakuConnecting = false;
+      return;
     }
-  };
 
-  const success = await node.filter.subscribe([decoder], callback);
-  if (!success) {
-    console.warn("[waku] Filter subscription failed");
-    return;
+    const json = (await resp.json()) as {
+      ok: boolean;
+      data?: EventDirectoryEntry[];
+      error?: string;
+    };
+
+    if (!json.ok || !json.data) {
+      wakuError = json.error || "Unknown error";
+      wakuConnecting = false;
+      return;
+    }
+
+    // Update reactive state
+    const next = new Map<string, EventDirectoryEntry>();
+    for (const e of json.data) {
+      next.set(e.eventId, e);
+    }
+    wakuEvents = next;
+
+    wakuReady = true;
+    wakuConnecting = false;
+  } catch (err) {
+    wakuError = err instanceof Error ? err.message : "Fetch failed";
+    wakuConnecting = false;
   }
-
-  _filterNode = node;
 }
