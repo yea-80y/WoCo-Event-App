@@ -278,6 +278,23 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
 
 export { addToEventDirectory as addEventToDirectory };
 
+/** Strip empty/default fields to keep directory entries small (must fit in 4096-byte Bee chunk). */
+function compactEntry(e: EventDirectoryEntry): EventDirectoryEntry {
+  const compact: Record<string, unknown> = {
+    eventId: e.eventId,
+    title: e.title,
+    imageHash: e.imageHash,
+    startDate: e.startDate,
+    creatorAddress: e.creatorAddress,
+    seriesCount: e.seriesCount,
+    totalTickets: e.totalTickets,
+    createdAt: e.createdAt,
+  };
+  if (e.location) compact.location = e.location;
+  if (e.apiUrl) compact.apiUrl = e.apiUrl;
+  return compact as unknown as EventDirectoryEntry;
+}
+
 async function addToEventDirectory(
   entry: EventDirectoryEntry,
   opts: { skipPublicDirectory?: boolean } = {},
@@ -290,9 +307,12 @@ async function addToEventDirectory(
       : { v: 1, entries: [], updatedAt: "" };
 
     if (!dir.entries.some((e) => e.eventId === entry.eventId)) {
-      dir.entries.unshift(entry);
+      dir.entries.unshift(compactEntry(entry));
       dir.updatedAt = new Date().toISOString();
-      if (dir.entries.length > 128) dir.entries = dir.entries.slice(0, 128);
+      // Keep entries compact so the feed fits in a single 4096-byte Bee chunk
+      if (dir.entries.length > 50) dir.entries = dir.entries.slice(0, 50);
+      // Strip empty fields from all entries to save space
+      dir.entries = dir.entries.map(compactEntry);
       await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
       console.log(`[event] Directory updated: ${dir.entries.length} events`);
     }
@@ -306,9 +326,10 @@ async function addToEventDirectory(
     : { v: 1, entries: [], updatedAt: "" };
 
   if (!creatorDir.entries.some((e) => e.eventId === entry.eventId)) {
-    creatorDir.entries.unshift(entry);
+    creatorDir.entries.unshift(compactEntry(entry));
     creatorDir.updatedAt = new Date().toISOString();
-    if (creatorDir.entries.length > 128) creatorDir.entries = creatorDir.entries.slice(0, 128);
+    if (creatorDir.entries.length > 50) creatorDir.entries = creatorDir.entries.slice(0, 50);
+    creatorDir.entries = creatorDir.entries.map(compactEntry);
     await writeFeedPage(creatorTopic, encodeJsonFeed(creatorDir));
     console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${creatorDir.entries.length} events`);
   }
