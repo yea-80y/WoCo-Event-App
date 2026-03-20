@@ -95,10 +95,21 @@ Svelte 5 rune-based reactive store that:
 4. Provides `mergeWithLive()` to layer live events on top of fetched data
 5. Components use `$derived(mergeWithLive(fetchedEvents))` for reactive updates
 
+### Server Catalog Publisher (`apps/server/src/lib/waku/catalog.ts`)
+
+Publishes the full event directory as a single Waku message so that any client connecting
+at any time can discover ALL events — not just those created in the last 48h. Published on:
+- Server startup (after Waku connects)
+- After event create/list/unlist (directory changed)
+- Every 30 minutes (keeps Store fresh within the 48h retention window)
+
 ### Shared Protocol (`packages/shared/src/waku/`)
 
-- `constants.ts`: Content topic (`/woco/1/event-announce/proto`), cluster ID (42), shard index (0)
+- `constants.ts`: Content topics, cluster ID (42), shard index (0)
+  - `/woco/1/event-announce/proto` — individual create/list/unlist announcements
+  - `/woco/1/event-catalog/proto` — full event directory snapshots
 - `event-announce.ts`: Protobuf encoding/decoding for `EventAnnouncement` messages
+- `event-catalog.ts`: Protobuf encoding/decoding for `EventCatalog` messages (array of entries + timestamp)
 
 ## Connection Details
 
@@ -107,6 +118,22 @@ Svelte 5 rune-based reactive store that:
 Correct multiaddr format: `/ip4/<IP>/tcp/<WS_PORT>/ws/p2p/<PEER_ID>`
 
 ## Message Format
+
+### Two content topics, two purposes
+
+| Topic | Purpose | Published when | Retention |
+|---|---|---|---|
+| `/woco/1/event-announce/proto` | Real-time delta (create/list/unlist) | Event created, listed, or unlisted | 48h in Store |
+| `/woco/1/event-catalog/proto` | Full directory snapshot | Startup, after changes, every 30 min | 48h in Store |
+
+**Why two topics?** Announcements are instant but ephemeral. If a client connects after 48h, all announcements are gone. The catalog solves this — the server republishes the full directory every 30 minutes, so the most recent catalog in Store always has the complete picture.
+
+**Browser startup flow:**
+1. Query Store for latest catalog → get ALL events
+2. Subscribe to announcements via Filter → get real-time updates
+3. Any new catalog that arrives replaces the old one (and clears the live buffer)
+
+### EventAnnouncement
 
 Announcements are Protobuf-encoded with the following schema:
 
@@ -124,6 +151,15 @@ Announcements are Protobuf-encoded with the following schema:
 | apiUrl          | string | API server URL (for external events) |
 | announcedAt     | string | ISO 8601 announcement timestamp   |
 | action          | string | "created", "listed", or "unlisted" |
+
+### EventCatalog
+
+| Field           | Type            | Description                       |
+|-----------------|-----------------|-----------------------------------|
+| publishedAt     | string          | ISO 8601 timestamp of this publish |
+| entries         | CatalogEntry[]  | Full event directory               |
+
+Each CatalogEntry has the same fields as EventAnnouncement minus `announcedAt` and `action`.
 
 ## Environment Variables
 

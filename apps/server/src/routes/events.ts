@@ -5,6 +5,7 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
 import { announceEvent as wakuAnnounce, announceUnlist as wakuUnlist } from "../lib/waku/announce.js";
+import { publishCatalog as wakuPublishCatalog } from "../lib/waku/catalog.js";
 import { getWakuDiscoveredEvents } from "../lib/waku/discovery.js";
 
 const events = new Hono<AppEnv>();
@@ -294,6 +295,7 @@ events.post("/:id/list", requireAuth, async (c) => {
       createdAt: eventFeed.createdAt,
       ...(body.sourceApiUrl ? { apiUrl: body.sourceApiUrl.trim().replace(/\/$/, "") } : {}),
     }, "listed").catch(() => {});
+    wakuPublishCatalog().catch(() => {});
   } catch (err) {
     console.error("[api] list event error:", err);
     return c.json({ ok: false, error: "Failed to add event to directory" }, 500);
@@ -341,6 +343,7 @@ events.post("/:id/unlist", requireAuth, async (c) => {
 
     // Announce unlist on Waku (fire-and-forget)
     wakuUnlist(eventId, parentAddress).catch(() => {});
+    wakuPublishCatalog().catch(() => {});
   } catch (err) {
     console.error("[api] unlist event error:", err);
     return c.json({ ok: false, error: "Failed to remove event from directory" }, 500);
