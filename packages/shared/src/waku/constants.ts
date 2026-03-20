@@ -7,9 +7,6 @@
 /** Real-time event announcements (create/list/unlist). */
 export const WAKU_CONTENT_TOPIC = "/woco/1/event-announce/proto";
 
-/** Full event catalog — published periodically so any client can discover all events. */
-export const WAKU_CATALOG_TOPIC = "/woco/1/event-catalog/proto";
-
 /** Waku cluster ID — custom cluster for self-hosted nwaku node */
 export const WAKU_CLUSTER_ID = 42;
 

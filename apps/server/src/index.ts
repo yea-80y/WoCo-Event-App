@@ -139,13 +139,9 @@ const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
 
-// Start Waku discovery + catalog publishing in the background (non-blocking)
+// Start Waku discovery + re-announce all events on startup (non-blocking)
 import("./lib/waku/discovery.js")
   .then(({ startWakuDiscovery }) => startWakuDiscovery())
-  .then(() => import("./lib/waku/catalog.js"))
-  .then(({ publishCatalog, startCatalogRepublish }) => {
-    // Publish initial catalog, then republish every 30 minutes
-    publishCatalog();
-    startCatalogRepublish();
-  })
-  .catch((err) => console.error("[waku] Discovery/catalog startup failed:", err));
+  .then(() => import("./lib/waku/announce.js"))
+  .then(({ reannounceAllEvents }) => reannounceAllEvents())
+  .catch((err) => console.error("[waku] Discovery/announce startup failed:", err));

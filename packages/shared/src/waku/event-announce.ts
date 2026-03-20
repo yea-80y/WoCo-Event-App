@@ -35,6 +35,10 @@ const root = protobuf.Root.fromJSON({
         apiUrl:         { id: 10, type: "string" },
         announcedAt:    { id: 11, type: "string" },
         action:         { id: 12, type: "string" },
+        category:       { id: 13, type: "string" },
+        tags:           { id: 14, type: "string", rule: "repeated" },
+        region:         { id: 15, type: "string" },
+        swarmRef:       { id: 16, type: "string" },
       },
     },
   },
@@ -62,6 +66,14 @@ export interface EventAnnouncement {
   announcedAt: string;
   /** "created" | "listed" | "unlisted" */
   action: WakuAnnounceAction;
+  /** Event category (e.g. "conference", "music", "art") */
+  category: string;
+  /** Searchable tags */
+  tags: string[];
+  /** Geographic region (e.g. "europe", "asia", city name) */
+  region: string;
+  /** Swarm content reference — clients can fetch event data directly from Swarm */
+  swarmRef: string;
 }
 
 // ---------------------------------------------------------------------------

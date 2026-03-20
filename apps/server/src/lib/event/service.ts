@@ -1,7 +1,6 @@
 import type { Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary, OrderField, ClaimMode } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import { announceEvent as wakuAnnounce } from "../waku/announce.js";
-import { publishCatalog as wakuPublishCatalog } from "../waku/catalog.js";
 import {
   pack4096,
   decode4096,
@@ -227,7 +226,6 @@ export async function createEvent(opts: {
   wakuAnnounce(dirEntry, "created")
     .catch((err) => console.error("[waku] Announce failed:", err));
   addToEventDirectory(dirEntry, { skipPublicDirectory: !!skipAutoList })
-    .then(() => wakuPublishCatalog())
     .catch((err) => console.error("[event] Failed to update directory (non-critical):", err));
 
   emit("finalize", 1, 1, "Event published!");
