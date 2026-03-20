@@ -1,0 +1,30 @@
+services:
+  nwaku:
+    image: wakuorg/nwaku:v0.36.0
+    ports:
+      - "60000:60000"   # TCP libp2p
+      - "8546:8546"     # WebSocket (browsers + light clients)
+      - "8645:8645"     # REST API (debugging + peer ID discovery)
+    volumes:
+      - nwaku-data:/data
+    command:
+      - --relay=true
+      - --filter=true
+      - --lightpush=true
+      - --store=true
+      - --store-message-db-url=sqlite:///data/store.db
+      - --store-message-retention-policy=time:172800
+      - --websocket-support=true
+      - --websocket-port=8546
+      - --tcp-port=60000
+      - --rest=true
+      - --rest-port=8645
+      - --rest-address=0.0.0.0
+      - --nat=extip:192.168.0.144
+      - --cluster-id=42
+      - --shard=0
+      - --rln-relay=false
+    restart: unless-stopped
+
+volumes:
+  nwaku-data:

@@ -29,14 +29,30 @@ export async function getWakuNode(): Promise<LightNode | null> {
   return node;
 }
 
+function getBootstrapPeers(): string[] | undefined {
+  const raw = process.env.WAKU_BOOTSTRAP_PEERS;
+  if (!raw) return undefined;
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 async function initNode(): Promise<LightNode | null> {
   try {
-    console.log("[waku] Initialising light node...");
+    const peers = getBootstrapPeers();
+    console.log(
+      peers
+        ? `[waku] Initialising light node with bootstrap peers: ${peers.join(", ")}`
+        : "[waku] Initialising light node with default bootstrap...",
+    );
     const { createLightNode, Protocols } = await import("@waku/sdk");
 
-    const node = await createLightNode({
-      defaultBootstrap: true,
-    });
+    const node = await createLightNode(
+      peers
+        ? {
+            bootstrapPeers: peers,
+            networkConfig: { clusterId: 42, numShardsInCluster: 1 },
+          }
+        : { defaultBootstrap: true },
+    );
 
     await node.start();
     console.log("[waku] Node started, waiting for peers...");

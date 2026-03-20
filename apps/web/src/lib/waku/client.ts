@@ -12,6 +12,12 @@ import type { LightNode } from "@waku/sdk";
 let _node: LightNode | null = null;
 let _initialising: Promise<LightNode | null> | null = null;
 
+function getBootstrapPeers(): string[] | undefined {
+  const raw = import.meta.env.VITE_WAKU_BOOTSTRAP_PEERS as string | undefined;
+  if (!raw) return undefined;
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 /**
  * Get the Waku light node, creating it on first call.
  * Returns null if initialisation fails (network issues, etc.).
@@ -28,12 +34,22 @@ export async function getWakuNode(): Promise<LightNode | null> {
 
 async function initNode(): Promise<LightNode | null> {
   try {
-    console.log("[waku] Initialising browser light node...");
+    const peers = getBootstrapPeers();
+    console.log(
+      peers
+        ? `[waku] Initialising browser light node with bootstrap peers: ${peers.join(", ")}`
+        : "[waku] Initialising browser light node with default bootstrap...",
+    );
     const { createLightNode, Protocols } = await import("@waku/sdk");
 
-    const node = await createLightNode({
-      defaultBootstrap: true,
-    });
+    const node = await createLightNode(
+      peers
+        ? {
+            bootstrapPeers: peers,
+            networkConfig: { clusterId: 42, numShardsInCluster: 1 },
+          }
+        : { defaultBootstrap: true },
+    );
 
     await node.start();
     console.log("[waku] Node started, waiting for peers...");
