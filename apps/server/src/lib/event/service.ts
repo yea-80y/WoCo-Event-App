@@ -263,13 +263,31 @@ interface EventDirectory {
   v: 1;
   entries: EventDirectoryEntry[];
   updatedAt: string;
+  /** Number of overflow pages (0 = all entries fit on page 0) */
+  pages?: number;
 }
 
+/** Max JSON bytes per directory page (must fit in a single 4096-byte Bee chunk). */
+const DIR_PAGE_LIMIT = 4096;
+
 export async function listEvents(): Promise<EventDirectoryEntry[]> {
-  const page = await readFeedPage(topicEventDirectory());
-  if (!page) return [];
-  const dir = decodeJsonFeed<EventDirectory>(page);
-  return dir?.entries ?? [];
+  const page0 = await readFeedPage(topicEventDirectory());
+  if (!page0) return [];
+  const dir = decodeJsonFeed<EventDirectory>(page0);
+  if (!dir) return [];
+
+  const all = [...dir.entries];
+
+  // Read overflow pages
+  const totalPages = dir.pages ?? 0;
+  for (let p = 1; p <= totalPages; p++) {
+    const pageData = await readFeedPage(topicEventDirectory(p));
+    if (!pageData) break;
+    const overflow = decodeJsonFeed<EventDirectory>(pageData);
+    if (overflow?.entries) all.push(...overflow.entries);
+  }
+
+  return all;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,70 +313,105 @@ function compactEntry(e: EventDirectoryEntry): EventDirectoryEntry {
   return compact as unknown as EventDirectoryEntry;
 }
 
+/**
+ * Write a directory (page 0 + overflow pages) to paginated feeds.
+ * Each page stays within DIR_PAGE_LIMIT so bee-js uses the direct SOC path.
+ */
+async function writeDirectoryPages(
+  allEntries: EventDirectoryEntry[],
+  updatedAt: string,
+  topicFn: (page: number) => import("@ethersphere/bee-js").Topic,
+): Promise<void> {
+  const compact = allEntries.map(compactEntry);
+
+  // Split entries across pages that fit within 4096 bytes each
+  const pages: EventDirectoryEntry[][] = [];
+  let current: EventDirectoryEntry[] = [];
+  for (const entry of compact) {
+    current.push(entry);
+    const testDir: EventDirectory = {
+      v: 1,
+      entries: current,
+      updatedAt,
+      ...(pages.length > 0 ? {} : { pages: pages.length }),
+    };
+    if (JSON.stringify(testDir).length > DIR_PAGE_LIMIT) {
+      current.pop();
+      if (current.length > 0) pages.push(current);
+      current = [entry];
+    }
+  }
+  if (current.length > 0) pages.push(current);
+
+  // Write page 0 with the page count
+  const page0: EventDirectory = {
+    v: 1,
+    entries: pages[0] ?? [],
+    updatedAt,
+    pages: pages.length - 1, // number of OVERFLOW pages
+  };
+  await writeFeedPage(topicFn(0), encodeJsonFeed(page0));
+
+  // Write overflow pages
+  for (let p = 1; p < pages.length; p++) {
+    const overflow: EventDirectory = { v: 1, entries: pages[p], updatedAt };
+    await writeFeedPage(topicFn(p), encodeJsonFeed(overflow));
+  }
+}
+
 async function addToEventDirectory(
   entry: EventDirectoryEntry,
   opts: { skipPublicDirectory?: boolean } = {},
 ): Promise<void> {
   // Write to global public directory (skipped for site-builder events until explicitly listed)
   if (!opts.skipPublicDirectory) {
-    const page = await readFeedPage(topicEventDirectory());
-    const dir: EventDirectory = page
-      ? decodeJsonFeed<EventDirectory>(page) ?? { v: 1, entries: [], updatedAt: "" }
-      : { v: 1, entries: [], updatedAt: "" };
-
-    if (!dir.entries.some((e) => e.eventId === entry.eventId)) {
-      dir.entries.unshift(compactEntry(entry));
-      dir.updatedAt = new Date().toISOString();
-      // Keep entries compact so the feed fits in a single 4096-byte Bee chunk
-      if (dir.entries.length > 50) dir.entries = dir.entries.slice(0, 50);
-      // Strip empty fields from all entries to save space
-      dir.entries = dir.entries.map(compactEntry);
-      // Trim oldest entries until data fits in a single 4096-byte Bee chunk
-      while (JSON.stringify(dir).length > 4096 && dir.entries.length > 1) {
-        dir.entries.pop();
-      }
-      await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
-      console.log(`[event] Directory updated: ${dir.entries.length} events`);
+    const allEntries = await listEvents();
+    if (!allEntries.some((e) => e.eventId === entry.eventId)) {
+      allEntries.unshift(entry);
+      const updatedAt = new Date().toISOString();
+      await writeDirectoryPages(allEntries, updatedAt, topicEventDirectory);
+      console.log(`[event] Directory updated: ${allEntries.length} events`);
     }
   }
 
   // Also write to per-creator index (never removed from — listing status doesn't affect organiser view)
-  const creatorTopic = topicCreatorDirectory(entry.creatorAddress);
-  const creatorPage = await readFeedPage(creatorTopic);
-  const creatorDir: EventDirectory = creatorPage
-    ? decodeJsonFeed<EventDirectory>(creatorPage) ?? { v: 1, entries: [], updatedAt: "" }
-    : { v: 1, entries: [], updatedAt: "" };
-
-  if (!creatorDir.entries.some((e) => e.eventId === entry.eventId)) {
-    creatorDir.entries.unshift(compactEntry(entry));
-    creatorDir.updatedAt = new Date().toISOString();
-    if (creatorDir.entries.length > 50) creatorDir.entries = creatorDir.entries.slice(0, 50);
-    creatorDir.entries = creatorDir.entries.map(compactEntry);
-    while (JSON.stringify(creatorDir).length > 4096 && creatorDir.entries.length > 1) {
-      creatorDir.entries.pop();
-    }
-    await writeFeedPage(creatorTopic, encodeJsonFeed(creatorDir));
-    console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${creatorDir.entries.length} events`);
+  const creatorEntries = await getCreatorEvents(entry.creatorAddress);
+  if (!creatorEntries.some((e) => e.eventId === entry.eventId)) {
+    creatorEntries.unshift(entry);
+    const updatedAt = new Date().toISOString();
+    await writeDirectoryPages(
+      creatorEntries,
+      updatedAt,
+      (p) => topicCreatorDirectory(entry.creatorAddress, p),
+    );
+    console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${creatorEntries.length} events`);
   }
 }
 
 export async function getCreatorEvents(ethAddress: string): Promise<EventDirectoryEntry[]> {
-  const page = await readFeedPage(topicCreatorDirectory(ethAddress));
-  if (!page) return [];
-  const dir = decodeJsonFeed<EventDirectory>(page);
-  return dir?.entries ?? [];
+  const page0 = await readFeedPage(topicCreatorDirectory(ethAddress));
+  if (!page0) return [];
+  const dir = decodeJsonFeed<EventDirectory>(page0);
+  if (!dir) return [];
+
+  const all = [...dir.entries];
+  const totalPages = dir.pages ?? 0;
+  for (let p = 1; p <= totalPages; p++) {
+    const pageData = await readFeedPage(topicCreatorDirectory(ethAddress, p));
+    if (!pageData) break;
+    const overflow = decodeJsonFeed<EventDirectory>(pageData);
+    if (overflow?.entries) all.push(...overflow.entries);
+  }
+  return all;
 }
 
 export async function removeEventFromDirectory(eventId: string): Promise<void> {
-  const page = await readFeedPage(topicEventDirectory());
-  if (!page) return;
+  const allEntries = await listEvents();
+  const before = allEntries.length;
+  const filtered = allEntries.filter((e) => e.eventId !== eventId);
+  if (filtered.length === before) return; // not in directory
 
-  const dir: EventDirectory = decodeJsonFeed<EventDirectory>(page) ?? { v: 1, entries: [], updatedAt: "" };
-  const before = dir.entries.length;
-  dir.entries = dir.entries.filter((e) => e.eventId !== eventId);
-  if (dir.entries.length === before) return; // not in directory, nothing to do
-
-  dir.updatedAt = new Date().toISOString();
-  await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
-  console.log(`[event] Directory updated (removed ${eventId}): ${dir.entries.length} events`);
+  const updatedAt = new Date().toISOString();
+  await writeDirectoryPages(filtered, updatedAt, topicEventDirectory);
+  console.log(`[event] Directory updated (removed ${eventId}): ${filtered.length} events`);
 }

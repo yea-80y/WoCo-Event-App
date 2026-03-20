@@ -8,8 +8,12 @@ import { Topic } from "@ethersphere/bee-js";
 const EVENT_NS = "woco/event";
 const POD_NS = "woco/pod";
 
-export const topicEventDirectory = () =>
-  Topic.fromString(`${EVENT_NS}/directory`);
+export const topicEventDirectory = (page = 0) =>
+  Topic.fromString(
+    page === 0
+      ? `${EVENT_NS}/directory`
+      : `${EVENT_NS}/directory/p${page}`,
+  );
 
 export const topicEvent = (eventId: string) =>
   Topic.fromString(`${EVENT_NS}/${eventId}`);
@@ -49,8 +53,12 @@ export const topicCreator = (creatorPodKey: string) =>
  * Written whenever an event is added to the directory (create or list).
  * Never removed from — so organiser's view is unaffected by public listing status.
  */
-export const topicCreatorDirectory = (ethAddress: string) =>
-  Topic.fromString(`${EVENT_NS}/creator/${ethAddress.toLowerCase()}`);
+export const topicCreatorDirectory = (ethAddress: string, page = 0) =>
+  Topic.fromString(
+    page === 0
+      ? `${EVENT_NS}/creator/${ethAddress.toLowerCase()}`
+      : `${EVENT_NS}/creator/${ethAddress.toLowerCase()}/p${page}`,
+  );
 
 export const topicPendingClaims = (seriesId: string) =>
   Topic.fromString(`${POD_NS}/pending-claims/${seriesId}`);
