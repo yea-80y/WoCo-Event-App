@@ -146,11 +146,17 @@ export async function writeFeedPage(topic: Topic, page: Uint8Array): Promise<voi
 // JSON feed helpers (pad to 4096, trim nulls on read)
 // ---------------------------------------------------------------------------
 
+/**
+ * Encode JSON data into a 4096-byte feed page.
+ * MUST stay at exactly 4096 bytes — bee-js uses a broken upload→download
+ * path for data > 4096 that fails on some Bee node configurations.
+ */
 export function encodeJsonFeed(data: unknown): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(data));
-  // Use at least 4096 bytes (Swarm chunk minimum), but grow if data is larger
-  const size = Math.max(4096, json.length);
-  const page = new Uint8Array(size);
+  if (json.length > 4096) {
+    throw new RangeError(`JSON feed data exceeds 4096 bytes (${json.length}). Reduce entries before encoding.`);
+  }
+  const page = new Uint8Array(4096);
   page.set(json);
   return page;
 }

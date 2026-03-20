@@ -313,6 +313,10 @@ async function addToEventDirectory(
       if (dir.entries.length > 50) dir.entries = dir.entries.slice(0, 50);
       // Strip empty fields from all entries to save space
       dir.entries = dir.entries.map(compactEntry);
+      // Trim oldest entries until data fits in a single 4096-byte Bee chunk
+      while (JSON.stringify(dir).length > 4096 && dir.entries.length > 1) {
+        dir.entries.pop();
+      }
       await writeFeedPage(topicEventDirectory(), encodeJsonFeed(dir));
       console.log(`[event] Directory updated: ${dir.entries.length} events`);
     }
@@ -330,6 +334,9 @@ async function addToEventDirectory(
     creatorDir.updatedAt = new Date().toISOString();
     if (creatorDir.entries.length > 50) creatorDir.entries = creatorDir.entries.slice(0, 50);
     creatorDir.entries = creatorDir.entries.map(compactEntry);
+    while (JSON.stringify(creatorDir).length > 4096 && creatorDir.entries.length > 1) {
+      creatorDir.entries.pop();
+    }
     await writeFeedPage(creatorTopic, encodeJsonFeed(creatorDir));
     console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${creatorDir.entries.length} events`);
   }
