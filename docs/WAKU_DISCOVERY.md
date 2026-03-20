@@ -5,28 +5,36 @@ WoCo uses the [Waku](https://waku.org/) protocol for decentralized event discove
 ## Architecture
 
 ```
-┌──────────────┐     LightPush/Filter/Store      ┌──────────────┐
-│  WoCo Server │ ◄──────────────────────────────► │  nwaku Relay  │
-│  (gateway)   │         WebSocket (ws)           │  (your node)  │
-└──────┬───────┘                                  └──────────────┘
-       │                                                │
-  GET /api/events/                                Relay gossip
-   waku-discovered                                      │
-       │                                          ┌─────▼─────┐
-┌──────▼───────┐                                  │  Public    │
-│   Browser    │                                  │  Waku Net  │
-│  (polls API) │                                  └───────────┘
-└──────────────┘
+                          ┌──────────────┐
+              ┌──────────►│  nwaku Relay  │◄──────────┐
+              │           │  (your node)  │           │
+              │           └──────┬────────┘           │
+              │                  │                    │
+         LightPush          Filter/Store          Filter/Store
+         Filter/Store           │                    │
+              │                 │                    │
+       ┌──────┴───────┐   ┌────▼─────┐        ┌─────▼─────┐
+       │  WoCo Server │   │ Browser  │        │ Browser   │
+       │  (Swarm +    │   │ (light   │  ...   │ (light    │
+       │   publish)   │   │  node)   │        │  node)    │
+       └──────────────┘   └──────────┘        └───────────┘
 ```
 
-- **Server** is the sole Waku client: publishes via LightPush, subscribes via Filter, queries Store
-- **nwaku relay node** receives, stores (48h), and serves messages
-- **Browser** does NOT connect to Waku directly — it polls `GET /api/events/waku-discovered` every 30s
-- **Swarm directory** remains the authoritative source of truth; Waku only adds events not already in Swarm
+- **Browser** connects directly to nwaku as a Waku light node peer
+  - Filter subscription: real-time event announcements (instant)
+  - Store query: historical announcements (last 48h on startup)
+- **Server** also connects as a Waku peer: publishes via LightPush, subscribes via Filter
+  - `GET /api/events` merges Swarm directory + Waku discoveries server-side
+- **nwaku relay node** receives, stores (48h), relays messages, serves all light clients
+- **Swarm** stores the actual event data; Waku carries lightweight announcements
 
-### Why server-as-gateway?
+### Why browser-direct?
 
-Running a Waku light node in the browser requires ~500KB of JS and a direct WebSocket connection to nwaku. This adds load time and connectivity complexity. Instead, the server acts as a Waku gateway — one light node serves all clients. When Waku light clients mature (like Swarm light nodes), browsers can connect directly.
+Every client is a Waku peer. No server intermediary for discovery. This means:
+- Events appear instantly in the browser (Filter subscription, no polling)
+- Discovery works even if the WoCo API server is down
+- Migration to public Waku network requires zero frontend changes
+- The server is only needed for Swarm writes and the REST API
 
 ## Components
 
@@ -72,17 +80,20 @@ Publishes event announcements via LightPush when events are created, listed, or 
 
 Returns all Waku-discovered events as JSON. Used by the browser's polling client.
 
-### Browser Discovery Client (`apps/web/src/lib/waku/discovery.svelte.ts`)
+### Browser Waku Client (`apps/web/src/lib/waku/client.ts`)
+
+Singleton light node running in the browser. Connects directly to nwaku via WebSocket.
+Dynamic import avoids loading the Waku SDK (~500KB) until the home page mounts.
+
+### Browser Discovery (`apps/web/src/lib/waku/discovery.svelte.ts`)
 
 Svelte 5 rune-based reactive store that:
 
-1. Polls `GET /api/events/waku-discovered` every 30 seconds
-2. Merges discovered events with the Swarm directory (Swarm takes priority)
-3. Provides `mergeWithWaku()`, `getWakuDiscoveredEvents()`, etc.
-
-### Browser Waku Client (`apps/web/src/lib/waku/client.ts`)
-
-Kept for future use — not currently imported by anything. When Waku light clients mature, browsers can connect directly to nwaku instead of polling the server API.
+1. Connects to nwaku directly (browser is a Waku light node peer)
+2. Queries Store for 48h of historical announcements on startup
+3. Subscribes via Filter for real-time announcements (events appear instantly)
+4. Provides `mergeWithLive()` to layer live events on top of fetched data
+5. Components use `$derived(mergeWithLive(fetchedEvents))` for reactive updates
 
 ### Shared Protocol (`packages/shared/src/waku/`)
 
@@ -123,7 +134,7 @@ Announcements are Protobuf-encoded with the following schema:
 WAKU_ENABLED=true
 
 # nwaku WebSocket multiaddr (get peer ID from: curl http://192.168.0.144:8645/debug/v1/info)
-WAKU_BOOTSTRAP_PEERS=/ip4/127.0.0.1/tcp/8546/ws/p2p/<PEER_ID>
+WAKU_BOOTSTRAP_PEERS=/ip4/192.168.0.144/tcp/8546/ws/p2p/<PEER_ID>
 ```
 
 ## Operations
@@ -167,13 +178,77 @@ docker compose up -d
 
 **Note**: The peer ID changes if the volume is removed (`docker volume rm nwaku_nwaku-data`). Update the bootstrap peer multiaddr in the server `.env` if this happens.
 
-## Centralization & Future
+## Role of Swarm vs Waku
+
+Swarm and Waku serve complementary purposes:
+
+| | Swarm | Waku |
+|---|---|---|
+| **Purpose** | Persistent storage (source of truth) | Real-time messaging + discovery |
+| **Data** | Full event data, tickets, feeds | Lightweight announcements (metadata only) |
+| **Latency** | Slower (feed writes, propagation) | Near-instant (pubsub) |
+| **Durability** | Permanent (paid via postage) | Ephemeral (48h store, then gone) |
+| **Trust model** | Verifiable (content-addressed) | Announced but unverified |
+
+**Current flow**: Waku announces events after the event feed is verified on Swarm. Browsers subscribe directly to nwaku via Filter and see new events instantly. `GET /api/events` also merges Swarm + Waku server-side as a fallback for initial page load.
+
+**Will we always need the Swarm directory?** Yes, but its role will shift. Today it's the primary listing; Waku supplements it. Long-term, Waku becomes the primary discovery channel, with the Swarm directory serving as a durable backup and verification layer for clients that weren't online when the announcement was broadcast.
+
+## Waku Roadmap
+
+### Phase 1: Real-time Event Discovery (DONE)
+
+- Server publishes announcements via LightPush on create/list/unlist
+- Browser connects directly to nwaku as a light node peer (no server intermediary)
+- Browser subscribes via Filter (real-time) and queries Store (48h history)
+- Events appear instantly in the UI — no polling delay
+- `GET /api/events` also merges Swarm + Waku server-side (fallback for initial load)
+- Waku fires after event feed is verified on Swarm — ensures discoverable events are loadable
+
+### Phase 2: Cross-Server Discovery (NEXT)
+
+Multiple self-hosted WoCo servers (e.g., different organisers) each run their own nwaku node on the same cluster. Events created on Server A are automatically discovered by Server B via Waku, without manual import.
+
+- Each organiser's server announces events with their `apiUrl`
+- Receiving servers validate announcements (check the event feed exists on the announced apiUrl)
+- The existing discover/import flow becomes automatic via Waku instead of manual URL entry
+
+### Phase 3: Decentralized Indexing via Waku
+
+Waku can replace or supplement the Swarm-based event directory as an index:
+
+- **Category/tag announcements**: Events announce their category, date range, location — receivers build local indexes without reading every Swarm feed
+- **Search without a central index**: Each WoCo server maintains its own index from Waku messages. No single server owns the global directory.
+- **Claim activity signals**: Lightweight Waku messages like "event X is trending" (N claims in last hour) help surface popular events without polling Swarm feeds
+- **Organiser reputation index**: Aggregate announcement history per creator address — how many events, how recent, verified vs unverified
+
+The key insight: Waku messages are cheap and fast. Use them to build local indexes that would be expensive to maintain on Swarm (which charges per write and is slow to update). Swarm stores the actual data; Waku tells you what data exists and where to find it.
+
+### Phase 4: Public Network Migration
+
+Move from custom cluster 42 to the public Waku network (TWN):
+
+- Evaluate RLN rate-limiting requirements and costs
+- Update cluster ID and bootstrap peers
+- Events become discoverable by any Waku peer globally, not just WoCo's nwaku node
+- Browser-direct architecture means this is a config change, not a code change
+
+### Phase 5: Ticket Activity Channel
+
+Beyond discovery, Waku can carry real-time ticket activity:
+
+- **Claim notifications**: "Your event just got a new attendee" (organiser push)
+- **Capacity updates**: "Only 5 tickets left" broadcast to all interested clients
+- **Approval flow**: Pending claim requests and approvals as Waku messages (faster than polling Swarm feeds)
+- **Check-in signals**: Real-time door check-in status at live events
+
+## Centralization & Mitigation
 
 The nwaku node is a centralization point (similar to the Swarm gateway). Mitigation paths:
 
 1. **Multiple relay nodes**: Run 2-3 for redundancy; light clients can list multiple bootstrap peers
-2. **Community nodes**: Other WoCo users can run their own nwaku nodes
-3. **Browser direct connect**: The browser Waku client (`apps/web/src/lib/waku/client.ts`) is ready for when browsers can connect directly — just wire it in and remove the polling
-4. **Public network improvement**: As the Waku network matures, dedicated relay nodes become optional
+2. **Community nodes**: Other WoCo users can run their own nwaku nodes on cluster 42
+3. **Browser direct connect**: Remove the server-as-gateway bottleneck entirely (Phase 4)
+4. **Public network migration**: As the Waku network matures and RLN becomes accessible, move from custom cluster 42 to the public TWN
 
 The architecture is designed so that if Waku is unavailable, the app works exactly as before using only the Swarm directory.

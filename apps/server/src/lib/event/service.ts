@@ -87,6 +87,8 @@ export async function createEvent(opts: {
   const imageHash = await uploadToBytes(imageData);
   emit("image", 1, 1, "Image uploaded");
 
+  const createdAt = new Date().toISOString();
+
   // 2. For each series: upload tickets, write editions feed(s), init claims feed(s)
   const seriesSummaries: SeriesSummary[] = [];
 
@@ -103,9 +105,9 @@ export async function createEvent(opts: {
       `[event] Processing series "${s.name}" (${s.totalSupply} tickets, ${pages} page${pages > 1 ? "s" : ""})...`,
     );
 
-    // Upload tickets to /bytes in parallel batches of 10
+    // Upload tickets to /bytes in parallel batches of 20
     const ticketHashes: string[] = [];
-    const BATCH_SIZE = 10;
+    const BATCH_SIZE = 20;
     for (let batchStart = 0; batchStart < tickets.length; batchStart += BATCH_SIZE) {
       const batch = tickets.slice(batchStart, batchStart + BATCH_SIZE);
       const batchResults = await Promise.all(batch.map((t) => uploadToBytes(t)));
@@ -119,7 +121,6 @@ export async function createEvent(opts: {
       );
       if (ticketHashes.length < tickets.length) {
         console.log(`[event]   Uploaded ${ticketHashes.length}/${tickets.length} tickets...`);
-        await new Promise((r) => setTimeout(r, 100));
       }
     }
     console.log(`[event]   All ${ticketHashes.length} tickets uploaded`);
@@ -136,38 +137,38 @@ export async function createEvent(opts: {
       creatorAddress,
       totalSupply: s.totalSupply,
       pageCount: pages,
-      createdAt: new Date().toISOString(),
+      createdAt,
       ...(s.approvalRequired ? { approvalRequired: true } : {}),
     };
     const metaRef = await uploadToBytes(JSON.stringify(seriesMeta));
 
-    // Write editions across pages
-    emit("feeds", 0, pages, `Writing edition feeds for "${s.name}"...`);
+    // Build page data for all edition pages
+    const editionPages: Uint8Array[] = [];
     for (let p = 0; p < pages; p++) {
       let pageRefs: string[];
-
       if (p === 0) {
-        const chunk = ticketHashes.slice(0, PAGE_0_CAPACITY);
-        pageRefs = [metaRef, ...chunk];
+        pageRefs = [metaRef, ...ticketHashes.slice(0, PAGE_0_CAPACITY)];
       } else {
         const start = PAGE_0_CAPACITY + (p - 1) * PAGE_N_CAPACITY;
         pageRefs = ticketHashes.slice(start, start + PAGE_N_CAPACITY);
       }
-
-      const editionsPage = pack4096(pageRefs);
-      await writeFeedPage(topicEditions(s.seriesId, p), editionsPage);
-      emit("feeds", p + 1, pages, `Writing edition feeds for "${s.name}" (${p + 1}/${pages})...`);
+      editionPages.push(pack4096(pageRefs));
     }
+
+    // Write edition pages + claims pages in parallel
+    emit("feeds", 0, pages, `Writing feeds for "${s.name}"...`);
+    const feedWrites: Promise<void>[] = [];
+    for (let p = 0; p < pages; p++) {
+      feedWrites.push(writeFeedPage(topicEditions(s.seriesId, p), editionPages[p]));
+      feedWrites.push(writeFeedPage(topicClaims(s.seriesId, p), new Uint8Array(4096)));
+    }
+    await Promise.all(feedWrites);
+    emit("feeds", pages, pages, `Feeds written for "${s.name}"`);
 
     // Verify page 0
     const verified = await readFeedPageWithRetry(topicEditions(s.seriesId, 0), 3, 500);
     if (!verified) {
       throw new Error(`Failed to verify editions feed for series ${s.seriesId}`);
-    }
-
-    // Init empty claims feed(s) - one per edition page
-    for (let p = 0; p < pages; p++) {
-      await writeFeedPage(topicClaims(s.seriesId, p), new Uint8Array(4096));
     }
 
     seriesSummaries.push({
@@ -184,7 +185,7 @@ export async function createEvent(opts: {
     });
   }
 
-  // 3. Build and write event feed
+  // 4. Build and write event feed
   const eventFeed: EventFeed = {
     v: 1,
     eventId,
@@ -197,7 +198,7 @@ export async function createEvent(opts: {
     creatorAddress,
     creatorPodKey,
     series: seriesSummaries,
-    createdAt: new Date().toISOString(),
+    createdAt,
     ...(encryptionKey ? { encryptionKey } : {}),
     ...(orderFields?.length ? { orderFields } : {}),
     ...(claimMode && claimMode !== "wallet" ? { claimMode } : {}),
@@ -213,36 +214,19 @@ export async function createEvent(opts: {
     throw new Error("Failed to verify event feed write");
   }
 
-  // 4. Update directories (best-effort).
-  // Creator index is always updated so the organiser can see their events in the dashboard.
-  // Public directory is skipped for site-builder events (skipAutoList: true) — listing
-  // is done explicitly via POST /api/events/:id/list once the organiser is ready.
-  try {
-    await addToEventDirectory({
-      eventId,
-      title,
-      imageHash,
-      startDate,
-      location,
-      creatorAddress,
-      seriesCount: series.length,
-      totalTickets: series.reduce((sum, s) => sum + s.totalSupply, 0),
-      createdAt: eventFeed.createdAt,
-    }, { skipPublicDirectory: !!skipAutoList });
-  } catch (err) {
-    console.error("[event] Failed to update directory (non-critical):", err);
-  }
-
-  // 5. Announce on Waku (fire-and-forget — never blocks the response)
-  wakuAnnounce(
-    {
-      eventId, title, imageHash, startDate, location, creatorAddress,
-      seriesCount: series.length,
-      totalTickets: series.reduce((sum, s) => sum + s.totalSupply, 0),
-      createdAt: eventFeed.createdAt,
-    },
-    "created",
-  ).catch((err) => console.error("[waku] Announce failed:", err));
+  // 5. Event is now fully on Swarm — announce on Waku + update directories.
+  // Both are fire-and-forget: the event is complete and verifiable at this point,
+  // so any client that receives the Waku announcement can load the event page.
+  const dirEntry: EventDirectoryEntry = {
+    eventId, title, imageHash, startDate, location, creatorAddress,
+    seriesCount: series.length,
+    totalTickets,
+    createdAt,
+  };
+  wakuAnnounce(dirEntry, "created")
+    .catch((err) => console.error("[waku] Announce failed:", err));
+  addToEventDirectory(dirEntry, { skipPublicDirectory: !!skipAutoList })
+    .catch((err) => console.error("[event] Failed to update directory (non-critical):", err));
 
   emit("finalize", 1, 1, "Event published!");
   console.log(`[event] Event ${eventId} created successfully`);

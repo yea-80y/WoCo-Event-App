@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
-import type { Hex0x, CreateEventRequest } from "@woco/shared";
+import type { Hex0x, CreateEventRequest, EventDirectoryEntry } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
@@ -9,23 +9,21 @@ import { getWakuDiscoveredEvents } from "../lib/waku/discovery.js";
 
 const events = new Hono<AppEnv>();
 
-// GET /api/events/waku-discovered - events found via Waku (not yet in Swarm directory)
-// Must be registered BEFORE /:id to prevent "waku-discovered" being treated as an eventId.
-events.get("/waku-discovered", async (c) => {
-  try {
-    const entries = getWakuDiscoveredEvents();
-    return c.json({ ok: true, data: entries });
-  } catch (err) {
-    console.error("[api] waku-discovered error:", err);
-    return c.json({ ok: false, error: "Failed to get Waku discoveries" }, 500);
+/** Merge Swarm directory + Waku discoveries into a single list (Swarm wins on duplicates). */
+function mergedEventList(swarmEntries: EventDirectoryEntry[]): EventDirectoryEntry[] {
+  const merged = new Map<string, EventDirectoryEntry>();
+  for (const e of swarmEntries) merged.set(e.eventId, e);
+  for (const e of getWakuDiscoveredEvents()) {
+    if (!merged.has(e.eventId)) merged.set(e.eventId, e);
   }
-});
+  return [...merged.values()];
+}
 
-// GET /api/events - public listing
+// GET /api/events - public listing (Swarm directory + Waku discoveries merged)
 events.get("/", async (c) => {
   try {
-    const entries = await listEvents();
-    return c.json({ ok: true, data: entries });
+    const swarmEntries = await listEvents();
+    return c.json({ ok: true, data: mergedEventList(swarmEntries) });
   } catch (err) {
     console.error("[api] listEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);

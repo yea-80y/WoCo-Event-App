@@ -7,11 +7,10 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount, onDestroy } from "svelte";
   import {
-    startWakuDiscovery,
-    stopWakuDiscovery,
-    mergeWithWaku,
-    isWakuReady,
-    getWakuEventCount,
+    startEventStream,
+    stopEventStream,
+    mergeWithLive,
+    clearLiveEvents,
   } from "../../waku/discovery.svelte.js";
 
   // Read cache synchronously in script init — runs before the first render.
@@ -19,32 +18,32 @@
   const _KEY = cacheKey.directory();
   const _cached = cacheGet<EventDirectoryEntry[]>(_KEY);
 
-  let swarmEvents = $state<EventDirectoryEntry[]>(_cached ?? []);
+  let fetchedEvents = $state<EventDirectoryEntry[]>(_cached ?? []);
   let loading = $state(_cached === null); // false on cache hit = no spinner
 
-  // Merge Swarm directory with Waku-discovered events.
-  // Swarm is authoritative — Waku only adds events not already in Swarm.
-  let events = $derived(mergeWithWaku(swarmEvents));
+  // Merge fetched events with any real-time SSE events that arrived after the fetch.
+  let events = $derived(mergeWithLive(fetchedEvents));
 
   onMount(() => {
-    // Always fetch fresh regardless of cache state
+    // Always fetch fresh regardless of cache state.
+    // GET /api/events now returns Swarm + Waku merged server-side.
     listEvents()
       .then((fresh) => {
         cacheSet(_KEY, fresh, TTL.EVENT);
-        swarmEvents = fresh;
+        fetchedEvents = fresh;
+        clearLiveEvents(); // Server response is authoritative — reset SSE buffer
         loading = false;
       })
       .catch(() => {
-        // Only stop the spinner if there's nothing cached to fall back on
         if (_cached === null) loading = false;
       });
 
-    // Start Waku discovery in the background — non-blocking, gracefully degrades
-    startWakuDiscovery();
+    // SSE stream — new events appear instantly as they're announced on Waku
+    startEventStream();
   });
 
   onDestroy(() => {
-    stopWakuDiscovery();
+    stopEventStream();
   });
 </script>
 
@@ -167,11 +166,6 @@
 <section class="events-section">
   <div class="events-header">
     <h2>Events</h2>
-    {#if isWakuReady() && getWakuEventCount() > 0}
-      <span class="waku-badge" title="Discovering events via Waku peer-to-peer network">
-        +{getWakuEventCount()} via p2p
-      </span>
-    {/if}
   </div>
   {#if loading}
     <p class="status">Loading events...</p>
@@ -530,16 +524,6 @@
 
   .events-header h2 {
     margin: 0;
-  }
-
-  .waku-badge {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    color: var(--accent-text);
-    background: var(--accent-subtle);
-    padding: 0.175rem 0.5rem;
-    border-radius: 9999px;
-    white-space: nowrap;
   }
 
   .event-grid {

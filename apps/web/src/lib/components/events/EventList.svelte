@@ -5,9 +5,10 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount, onDestroy } from "svelte";
   import {
-    startWakuDiscovery,
-    stopWakuDiscovery,
-    mergeWithWaku,
+    startEventStream,
+    stopEventStream,
+    mergeWithLive,
+    clearLiveEvents,
   } from "../../waku/discovery.svelte.js";
 
   interface Props {
@@ -19,18 +20,18 @@
   const _KEY = cacheKey.directory();
   const _cached = cacheGet<EventDirectoryEntry[]>(_KEY);
 
-  let swarmEvents = $state<EventDirectoryEntry[]>(_cached ?? []);
+  let fetchedEvents = $state<EventDirectoryEntry[]>(_cached ?? []);
   let loading = $state(_cached === null);
   let error = $state<string | null>(null);
 
-  // Merge Swarm + Waku events (Swarm authoritative)
-  let events = $derived(mergeWithWaku(swarmEvents));
+  let events = $derived(mergeWithLive(fetchedEvents));
 
   onMount(() => {
     listEvents()
       .then((fresh) => {
         cacheSet(_KEY, fresh, TTL.EVENT);
-        swarmEvents = fresh;
+        fetchedEvents = fresh;
+        clearLiveEvents();
         loading = false;
         error = null;
       })
@@ -41,12 +42,11 @@
         }
       });
 
-    // Start Waku discovery (safe to call multiple times — singleton)
-    startWakuDiscovery();
+    startEventStream();
   });
 
   onDestroy(() => {
-    stopWakuDiscovery();
+    stopEventStream();
   });
 </script>
 
