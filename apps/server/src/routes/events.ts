@@ -6,7 +6,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
 const events = new Hono<AppEnv>();
 
-// GET /api/events - public listing (Swarm directory + Waku discoveries merged)
+// GET /api/events - public listing (served from in-memory cache, backed by Swarm directory)
 events.get("/", async (c) => {
   try {
     const swarmEntries = await listEvents();

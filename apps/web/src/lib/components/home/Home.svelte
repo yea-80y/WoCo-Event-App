@@ -26,19 +26,17 @@
 
   onMount(() => {
     // Always fetch fresh regardless of cache state.
-    // GET /api/events now returns Swarm + Waku merged server-side.
     listEvents()
       .then((fresh) => {
         cacheSet(_KEY, fresh, TTL.EVENT);
         fetchedEvents = fresh;
-        clearLiveEvents(); // Server response is authoritative — reset SSE buffer
+        clearLiveEvents();
         loading = false;
       })
       .catch(() => {
         if (_cached === null) loading = false;
       });
 
-    // SSE stream — new events appear instantly as they're announced on Waku
     startEventStream();
   });
 
