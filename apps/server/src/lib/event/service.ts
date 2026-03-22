@@ -251,7 +251,17 @@ interface EventDirectory {
 /** Max JSON bytes per directory page (must fit in a single 4096-byte Bee chunk). */
 const DIR_PAGE_LIMIT = 4096;
 
-export async function listEvents(): Promise<EventDirectoryEntry[]> {
+// ---------------------------------------------------------------------------
+// In-memory directory cache
+// ---------------------------------------------------------------------------
+// Avoids re-reading Swarm feeds on every GET /api/events request.
+// The cache is populated on the first read and kept in sync by
+// addToEventDirectory / removeEventFromDirectory.
+
+let _dirCache: EventDirectoryEntry[] | null = null;
+
+/** Read directory from Swarm (used on first call and cache miss). */
+async function readDirectoryFromSwarm(): Promise<EventDirectoryEntry[]> {
   const page0 = await readFeedPage(topicEventDirectory());
   if (!page0) return [];
   const dir = decodeJsonFeed<EventDirectory>(page0);
@@ -259,7 +269,6 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
 
   const all = [...dir.entries];
 
-  // Read overflow pages
   const totalPages = dir.pages ?? 0;
   for (let p = 1; p <= totalPages; p++) {
     const pageData = await readFeedPage(topicEventDirectory(p));
@@ -269,6 +278,12 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
   }
 
   return all;
+}
+
+export async function listEvents(): Promise<EventDirectoryEntry[]> {
+  if (_dirCache !== null) return _dirCache;
+  _dirCache = await readDirectoryFromSwarm();
+  return _dirCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +364,8 @@ async function addToEventDirectory(
     const allEntries = await listEvents();
     if (!allEntries.some((e) => e.eventId === entry.eventId)) {
       allEntries.unshift(entry);
+      // Update cache immediately so GET /api/events returns the new event
+      _dirCache = [...allEntries];
       const updatedAt = new Date().toISOString();
       await writeDirectoryPages(allEntries, updatedAt, topicEventDirectory);
       console.log(`[event] Directory updated: ${allEntries.length} events`);
@@ -392,6 +409,8 @@ export async function removeEventFromDirectory(eventId: string): Promise<void> {
   const filtered = allEntries.filter((e) => e.eventId !== eventId);
   if (filtered.length === before) return; // not in directory
 
+  // Update cache immediately
+  _dirCache = filtered;
   const updatedAt = new Date().toISOString();
   await writeDirectoryPages(filtered, updatedAt, topicEventDirectory);
   console.log(`[event] Directory updated (removed ${eventId}): ${filtered.length} events`);
