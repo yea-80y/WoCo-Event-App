@@ -138,15 +138,3 @@ app.route("/api/profile", profiles);
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
-
-// Start Waku discovery, re-announce all events, and publish index announcement (non-blocking)
-import("./lib/waku/discovery.js")
-  .then(({ startWakuDiscovery }) => startWakuDiscovery())
-  .then(() => Promise.all([
-    import("./lib/waku/announce.js").then(({ reannounceAllEvents }) => reannounceAllEvents()),
-    import("./lib/waku/index-announce.js").then(({ publishIndexAnnouncement, startIndexAnnounceRepublish }) => {
-      publishIndexAnnouncement();
-      startIndexAnnounceRepublish();
-    }),
-  ]))
-  .catch((err) => console.error("[waku] Discovery/announce startup failed:", err));

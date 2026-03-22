@@ -4,26 +4,13 @@ import type { Hex0x, CreateEventRequest, EventDirectoryEntry } from "@woco/share
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
-import { announceEvent as wakuAnnounce, announceUnlist as wakuUnlist } from "../lib/waku/announce.js";
-import { getWakuDiscoveredEvents } from "../lib/waku/discovery.js";
-
 const events = new Hono<AppEnv>();
-
-/** Merge Swarm directory + Waku discoveries into a single list (Swarm wins on duplicates). */
-function mergedEventList(swarmEntries: EventDirectoryEntry[]): EventDirectoryEntry[] {
-  const merged = new Map<string, EventDirectoryEntry>();
-  for (const e of swarmEntries) merged.set(e.eventId, e);
-  for (const e of getWakuDiscoveredEvents()) {
-    if (!merged.has(e.eventId)) merged.set(e.eventId, e);
-  }
-  return [...merged.values()];
-}
 
 // GET /api/events - public listing (Swarm directory + Waku discoveries merged)
 events.get("/", async (c) => {
   try {
     const swarmEntries = await listEvents();
-    return c.json({ ok: true, data: mergedEventList(swarmEntries) });
+    return c.json({ ok: true, data: swarmEntries });
   } catch (err) {
     console.error("[api] listEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
@@ -281,19 +268,6 @@ events.post("/:id/list", requireAuth, async (c) => {
       ...(body.sourceApiUrl ? { apiUrl: body.sourceApiUrl.trim().replace(/\/$/, "") } : {}),
     });
 
-    // Announce on Waku (fire-and-forget)
-    wakuAnnounce({
-      eventId: eventFeed.eventId,
-      title: eventFeed.title,
-      imageHash: eventFeed.imageHash,
-      startDate: eventFeed.startDate,
-      location: eventFeed.location || "",
-      creatorAddress: eventFeed.creatorAddress,
-      seriesCount: eventFeed.series.length,
-      totalTickets: eventFeed.series.reduce((sum, s) => sum + s.totalSupply, 0),
-      createdAt: eventFeed.createdAt,
-      ...(body.sourceApiUrl ? { apiUrl: body.sourceApiUrl.trim().replace(/\/$/, "") } : {}),
-    }, "listed").catch(() => {});
   } catch (err) {
     console.error("[api] list event error:", err);
     return c.json({ ok: false, error: "Failed to add event to directory" }, 500);
@@ -339,8 +313,6 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   try {
     await removeEventFromDirectory(eventId);
 
-    // Announce unlist on Waku (fire-and-forget)
-    wakuUnlist(eventId, parentAddress).catch(() => {});
   } catch (err) {
     console.error("[api] unlist event error:", err);
     return c.json({ ok: false, error: "Failed to remove event from directory" }, 500);

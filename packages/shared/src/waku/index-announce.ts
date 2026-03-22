@@ -1,87 +1,29 @@
 /**
- * IndexAnnouncement protobuf schema for Waku decentralised discovery.
+ * IndexAnnouncement type definition for decentralised discovery.
  *
  * Any server/node can announce that it maintains an event index on Swarm.
- * Clients discover index providers via this topic, fetch their Swarm feeds,
- * and merge multiple independent indexes into a decentralised directory.
+ * Clients discover index providers, fetch their Swarm feeds, and merge
+ * multiple independent indexes into a decentralised directory.
  *
- * Published to WAKU_INDEX_ANNOUNCE_TOPIC on:
- * - Server startup
- * - Periodically (e.g. every hour) to stay visible in the 48h Store window
+ * Currently dormant — retained as the contract for when a real-time
+ * transport is implemented. Protobuf field IDs preserved in comments.
  */
-import protobuf from "protobufjs/light.js";
-
-// ---------------------------------------------------------------------------
-// Static protobuf descriptor
-// ---------------------------------------------------------------------------
-
-const root = protobuf.Root.fromJSON({
-  nested: {
-    IndexAnnouncement: {
-      fields: {
-        maintainer:         { id: 1,  type: "string" },
-        swarmFeedTopic:     { id: 2,  type: "string" },
-        swarmSignerAddress: { id: 3,  type: "string" },
-        eventCount:         { id: 4,  type: "uint32" },
-        categories:         { id: 5,  type: "string", rule: "repeated" },
-        region:             { id: 6,  type: "string" },
-        updatedAt:          { id: 7,  type: "string" },
-        apiUrl:             { id: 8,  type: "string" },
-      },
-    },
-  },
-});
-
-const IndexAnnouncementType = root.lookupType("IndexAnnouncement");
-
-// ---------------------------------------------------------------------------
-// TypeScript interface
-// ---------------------------------------------------------------------------
 
 export interface IndexAnnouncement {
   /** Eth address of the index maintainer */
-  maintainer: string;
+  maintainer: string;               // proto id: 1
   /** Swarm feed topic string for this index (e.g. "woco/event/directory") */
-  swarmFeedTopic: string;
+  swarmFeedTopic: string;           // proto id: 2
   /** Swarm feed signer's Ethereum address (needed to read the feed) */
-  swarmSignerAddress: string;
+  swarmSignerAddress: string;       // proto id: 3
   /** Number of events in this index */
-  eventCount: number;
+  eventCount: number;               // proto id: 4
   /** Categories this index covers */
-  categories: string[];
+  categories: string[];             // proto id: 5
   /** Geographic region this index covers (empty = global) */
-  region: string;
+  region: string;                   // proto id: 6
   /** ISO 8601 timestamp of last index update */
-  updatedAt: string;
+  updatedAt: string;                // proto id: 7
   /** API URL for fetching event data (optional — clients can also read Swarm directly) */
-  apiUrl: string;
-}
-
-// ---------------------------------------------------------------------------
-// Encode / Decode
-// ---------------------------------------------------------------------------
-
-export function encodeIndexAnnouncement(msg: IndexAnnouncement): Uint8Array {
-  const errMsg = IndexAnnouncementType.verify(msg);
-  if (errMsg) throw new Error(`Invalid IndexAnnouncement: ${errMsg}`);
-  return IndexAnnouncementType.encode(
-    IndexAnnouncementType.create(msg),
-  ).finish();
-}
-
-export function decodeIndexAnnouncement(
-  data: Uint8Array,
-): IndexAnnouncement | null {
-  try {
-    const decoded = IndexAnnouncementType.decode(data);
-    const obj = IndexAnnouncementType.toObject(decoded, {
-      defaults: true,
-      arrays: true,
-      longs: Number,
-    }) as IndexAnnouncement;
-    if (!obj.maintainer || !obj.swarmFeedTopic) return null;
-    return obj;
-  } catch {
-    return null;
-  }
+  apiUrl: string;                   // proto id: 8
 }

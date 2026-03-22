@@ -1,108 +1,36 @@
 /**
- * EventAnnouncement protobuf schema for Waku discovery.
+ * EventAnnouncement type definition for event discovery.
  *
- * Uses protobufjs/light with a static JSON descriptor — no runtime .proto
- * parsing, small bundle footprint (~20KB).
+ * This interface defines the shape of event announcement messages used for
+ * real-time discovery. Currently dormant — retained as the contract for when
+ * a real-time transport (WebSocket, SSE, Waku) is implemented.
  *
- * This message is published to WAKU_CONTENT_TOPIC when:
- * - An event is created (action = "created")
- * - An event is listed on the WoCo directory (action = "listed")
- * - An event is unlisted from the WoCo directory (action = "unlisted")
- *
- * Frontends subscribe to the topic and merge announcements with the
- * Swarm directory feed for decentralized event discovery.
+ * Protobuf field IDs are preserved in comments for future Waku re-integration.
  */
-import protobuf from "protobufjs/light.js";
 import type { WakuAnnounceAction } from "./constants.js";
 
-// ---------------------------------------------------------------------------
-// Static protobuf descriptor (equivalent to .proto file)
-// ---------------------------------------------------------------------------
-
-const root = protobuf.Root.fromJSON({
-  nested: {
-    EventAnnouncement: {
-      fields: {
-        eventId:        { id: 1,  type: "string" },
-        title:          { id: 2,  type: "string" },
-        imageHash:      { id: 3,  type: "string" },
-        startDate:      { id: 4,  type: "string" },
-        location:       { id: 5,  type: "string" },
-        creatorAddress: { id: 6,  type: "string" },
-        seriesCount:    { id: 7,  type: "uint32" },
-        totalTickets:   { id: 8,  type: "uint32" },
-        createdAt:      { id: 9,  type: "string" },
-        apiUrl:         { id: 10, type: "string" },
-        announcedAt:    { id: 11, type: "string" },
-        action:         { id: 12, type: "string" },
-        category:       { id: 13, type: "string" },
-        tags:           { id: 14, type: "string", rule: "repeated" },
-        region:         { id: 15, type: "string" },
-        swarmRef:       { id: 16, type: "string" },
-      },
-    },
-  },
-});
-
-const EventAnnouncementType = root.lookupType("EventAnnouncement");
-
-// ---------------------------------------------------------------------------
-// TypeScript interface (mirrors the protobuf fields)
-// ---------------------------------------------------------------------------
-
 export interface EventAnnouncement {
-  eventId: string;
-  title: string;
-  imageHash: string;
-  startDate: string;
-  location: string;
-  creatorAddress: string;
-  seriesCount: number;
-  totalTickets: number;
-  createdAt: string;
+  eventId: string;            // proto id: 1
+  title: string;              // proto id: 2
+  imageHash: string;          // proto id: 3
+  startDate: string;          // proto id: 4
+  location: string;           // proto id: 5
+  creatorAddress: string;     // proto id: 6
+  seriesCount: number;        // proto id: 7
+  totalTickets: number;       // proto id: 8
+  createdAt: string;          // proto id: 9
   /** Organiser's self-hosted API URL (empty string if using WoCo's server) */
-  apiUrl: string;
+  apiUrl: string;             // proto id: 10
   /** ISO 8601 timestamp of this announcement */
-  announcedAt: string;
+  announcedAt: string;        // proto id: 11
   /** "created" | "listed" | "unlisted" */
-  action: WakuAnnounceAction;
+  action: WakuAnnounceAction; // proto id: 12
   /** Event category (e.g. "conference", "music", "art") */
-  category: string;
+  category: string;           // proto id: 13
   /** Searchable tags */
-  tags: string[];
+  tags: string[];             // proto id: 14
   /** Geographic region (e.g. "europe", "asia", city name) */
-  region: string;
+  region: string;             // proto id: 15
   /** Swarm content reference — clients can fetch event data directly from Swarm */
-  swarmRef: string;
-}
-
-// ---------------------------------------------------------------------------
-// Encode / Decode
-// ---------------------------------------------------------------------------
-
-/** Encode an EventAnnouncement to a Uint8Array for Waku transmission. */
-export function encodeEventAnnouncement(msg: EventAnnouncement): Uint8Array {
-  const errMsg = EventAnnouncementType.verify(msg);
-  if (errMsg) throw new Error(`Invalid EventAnnouncement: ${errMsg}`);
-  return EventAnnouncementType.encode(
-    EventAnnouncementType.create(msg),
-  ).finish();
-}
-
-/** Decode a Uint8Array from Waku into an EventAnnouncement. Returns null on invalid data. */
-export function decodeEventAnnouncement(
-  data: Uint8Array,
-): EventAnnouncement | null {
-  try {
-    const decoded = EventAnnouncementType.decode(data);
-    const obj = EventAnnouncementType.toObject(decoded, {
-      defaults: true,
-      longs: Number,
-    }) as EventAnnouncement;
-    // Minimal validation
-    if (!obj.eventId || !obj.action) return null;
-    return obj;
-  } catch {
-    return null;
-  }
+  swarmRef: string;           // proto id: 16
 }
