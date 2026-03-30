@@ -16,6 +16,8 @@
     "build:embed": "npm run build -w @woco/embed",
     "build:deploy": "npm run build:web",
     "build:site": "npm run build:site -w @woco/web",
+    "build:registry": "npm run build -w @woco/registry",
+    "dev:registry": "npm run dev -w @woco/registry",
     "upload:swarm": "node scripts/upload-to-swarm-feed.cjs",
     "upload:site": "node scripts/upload-site-to-swarm.cjs",
     "deploy": "npm run build:deploy && npm run upload:swarm",

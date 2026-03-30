@@ -1,4 +1,8 @@
 <script lang="ts">
+  import type { PaymentConfig, PaymentChainId, Hex0x } from "@woco/shared";
+  import { CHAIN_NAMES } from "@woco/shared";
+  import { auth } from "../../auth/auth-store.svelte.js";
+
   interface WaveItem {
     id: string;
     label: string;
@@ -14,6 +18,14 @@
     description: string;
     approvalRequired: boolean;
     waves: WaveItem[];
+    /** Whether this tier is a paid ticket */
+    isPaid: boolean;
+    /** Price as decimal string */
+    price: string;
+    /** USD (paid in ETH equivalent), ETH, or USDC */
+    currency: "USD" | "ETH" | "USDC";
+    /** Accepted chains */
+    acceptedChains: PaymentChainId[];
   }
 
   interface SeriesDraft {
@@ -25,6 +37,7 @@
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
+    payment?: PaymentConfig;
   }
 
   interface Props {
@@ -38,6 +51,10 @@
     tierName: "General Admission",
     description: "",
     approvalRequired: false,
+    isPaid: false,
+    price: "",
+    currency: "USD",
+    acceptedChains: [8453] as PaymentChainId[],
     waves: [{
       id: crypto.randomUUID(),
       label: "",
@@ -50,20 +67,34 @@
 
   // Keep series in sync with tier groups
   $effect(() => {
-    series = tierGroups.flatMap(tier =>
-      tier.waves.map(wave => ({
-        seriesId: wave.id,
-        name: tier.waves.length > 1 && wave.label.trim()
-          ? `${tier.tierName.trim()} — ${wave.label.trim()}`
-          : tier.tierName.trim(),
-        description: tier.description.trim(),
-        totalSupply: wave.totalSupply,
-        approvalRequired: tier.approvalRequired,
-        ...(tier.waves.length > 1 && wave.label.trim() ? { wave: wave.label.trim() } : {}),
-        ...(wave.saleStart ? { saleStart: wave.saleStart } : {}),
-        ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
-      }))
+    const built = tierGroups.flatMap(tier =>
+      tier.waves.map(wave => {
+        const base: SeriesDraft = {
+          seriesId: wave.id,
+          name: tier.waves.length > 1 && wave.label.trim()
+            ? `${tier.tierName.trim()} — ${wave.label.trim()}`
+            : tier.tierName.trim(),
+          description: tier.description.trim(),
+          totalSupply: wave.totalSupply,
+          approvalRequired: tier.approvalRequired,
+          ...(tier.waves.length > 1 && wave.label.trim() ? { wave: wave.label.trim() } : {}),
+          ...(wave.saleStart ? { saleStart: wave.saleStart } : {}),
+          ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
+        };
+        if (tier.isPaid && tier.price && parseFloat(tier.price) > 0) {
+          base.payment = {
+            price: tier.price,
+            currency: tier.currency,
+            recipientAddress: (auth.parent?.toLowerCase() ?? "0x0") as Hex0x,
+            acceptedChains: tier.acceptedChains,
+            escrow: true, // default: escrow for all new events (server can override)
+          };
+        }
+        return base;
+      })
     );
+    console.log("[TicketSeriesEditor] series built:", built.map(s => ({ name: s.name, payment: s.payment })));
+    series = built;
   });
 
   function addTier() {
@@ -72,6 +103,10 @@
       tierName: "",
       description: "",
       approvalRequired: false,
+      isPaid: false,
+      price: "",
+      currency: "USD",
+      acceptedChains: [8453] as PaymentChainId[],
       waves: [{
         id: crypto.randomUUID(),
         label: "",
@@ -144,6 +179,54 @@
           <span class="approval-label">Require organiser approval</span>
           <span class="approval-hint">Attendees submit a request; you approve each one from the dashboard</span>
         </label>
+
+        <!-- Payment config -->
+        <label class="approval-toggle">
+          <input type="checkbox" bind:checked={tier.isPaid} />
+          <span class="approval-label">Paid ticket</span>
+          <span class="approval-hint">Set a price — attendees pay with crypto to claim this ticket</span>
+        </label>
+
+        {#if tier.isPaid}
+          <div class="payment-config">
+            <div class="payment-row">
+              <label class="field payment-price-field">
+                <span class="field-label">Price</span>
+                <input type="text" bind:value={tier.price} placeholder="e.g. 5.00" inputmode="decimal" />
+              </label>
+              <label class="field payment-currency-field">
+                <span class="field-label">Currency</span>
+                <select bind:value={tier.currency}>
+                  <option value="USD">USD</option>
+                  <option value="ETH">ETH</option>
+                  <option value="USDC">USDC</option>
+                </select>
+              </label>
+            </div>
+            <div class="payment-chains">
+              <span class="field-label">Accepted networks</span>
+              <div class="chain-checkboxes">
+                {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, name]}
+                  <label class="chain-check">
+                    <input
+                      type="checkbox"
+                      checked={tier.acceptedChains.includes(chainId as PaymentChainId)}
+                      onchange={(e) => {
+                        const cid = chainId as PaymentChainId;
+                        if ((e.target as HTMLInputElement).checked) {
+                          if (!tier.acceptedChains.includes(cid)) tier.acceptedChains = [...tier.acceptedChains, cid];
+                        } else {
+                          tier.acceptedChains = tier.acceptedChains.filter(c => c !== cid);
+                        }
+                      }}
+                    />
+                    <span>{name}</span>
+                  </label>
+                {/each}
+              </div>
+            </div>
+          </div>
+        {/if}
 
         <!-- Sale waves -->
         <div class="waves-section">
@@ -531,5 +614,67 @@
   .add-tier-btn:hover {
     border-color: var(--accent);
     background: var(--accent-subtle);
+  }
+
+  /* ── Payment config ── */
+  .payment-config {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    padding: 0.625rem 0.75rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .payment-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .payment-price-field {
+    flex: 1;
+  }
+
+  .payment-currency-field {
+    width: 5rem;
+  }
+
+  .payment-currency-field select {
+    width: 100%;
+    padding: 0.375rem 0.5rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.8125rem;
+    font-family: inherit;
+  }
+
+  .payment-chains {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .chain-checkboxes {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .chain-check {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: pointer;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+
+  .chain-check input[type="checkbox"] {
+    width: 0.875rem;
+    height: 0.875rem;
+    accent-color: var(--accent);
   }
 </style>

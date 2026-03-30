@@ -102,6 +102,12 @@ events.post("/", requireAuth, async (c) => {
 
   const eventId = crypto.randomUUID();
 
+  // Debug: log incoming series payment data
+  for (const s of series) {
+    const pay = (s as { payment?: unknown }).payment;
+    console.log(`[api] Incoming series "${s.name}" payment:`, pay ? JSON.stringify(pay) : "none");
+  }
+
   return streamText(c, async (stream) => {
     try {
       const result = await createEvent({
@@ -124,6 +130,7 @@ events.post("/", requireAuth, async (c) => {
           ...((s as { saleStart?: string }).saleStart ? { saleStart: (s as { saleStart?: string }).saleStart } : {}),
           ...((s as { saleEnd?: string }).saleEnd ? { saleEnd: (s as { saleEnd?: string }).saleEnd } : {}),
           ...((s as { paymentRedirectUrl?: string }).paymentRedirectUrl ? { paymentRedirectUrl: (s as { paymentRedirectUrl?: string }).paymentRedirectUrl } : {}),
+          ...((s as { payment?: import("@woco/shared").PaymentConfig }).payment ? { payment: (s as { payment?: import("@woco/shared").PaymentConfig }).payment } : {}),
         })),
         signedTickets: serializedTickets,
         encryptionKey: encryptionKey as string | undefined,

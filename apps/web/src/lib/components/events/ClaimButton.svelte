@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { OrderField, SealedBox, ClaimMode } from "@woco/shared";
-  import { sealJson } from "@woco/shared";
+  import type { OrderField, SealedBox, ClaimMode, PaymentConfig, PaymentChainId, PaymentProof } from "@woco/shared";
+  import { sealJson, CHAIN_NAMES, USDC_ADDRESSES } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
@@ -22,9 +22,48 @@
     approvalRequired?: boolean;
     /** Override API base URL — used when event is hosted on an organiser's own server */
     apiUrl?: string;
+    /** Crypto payment config — present for paid events */
+    payment?: PaymentConfig;
+    /** Event end date ISO string — used to set escrow release time (end + 48h) */
+    eventEndDate?: string;
   }
 
-  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl }: Props = $props();
+  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate }: Props = $props();
+
+  console.log(`[ClaimButton] seriesId=${seriesId} payment:`, payment ?? "FREE");
+
+  // Payment state
+  const isPaid = $derived(!!payment && parseFloat(payment.price) > 0);
+  let showChainSelector = $state(false);
+  let selectedChain = $state<PaymentChainId | null>(null);
+  let paymentProofResult = $state<PaymentProof | null>(null);
+  /** ETH equivalent for USD-priced events (fetched when chain selector opens) */
+  let ethEquivalent = $state<string | null>(null);
+  let ethPriceLoading = $state(false);
+  /** User's chosen payment method — relevant for USD-priced events where ETH or USDC are both options */
+  let selectedPayMethod = $state<"ETH" | "USDC">("ETH");
+  const priceLabel = $derived(
+    payment
+      ? payment.currency === "USD"
+        ? `$${payment.price}`
+        : `${payment.price} ${payment.currency}`
+      : "",
+  );
+  /** Whether USDC is available on the selected chain */
+  const usdcAvailableOnChain = $derived(
+    selectedChain ? !!USDC_ADDRESSES[selectedChain] : false,
+  );
+  /** Whether the user can choose between ETH and USDC (USD-priced + chain supports USDC) */
+  const showPayMethodChoice = $derived(
+    payment?.currency === "USD" && usdcAvailableOnChain,
+  );
+  /** Chain indicator colors for visual identity */
+  const CHAIN_COLORS: Record<number, string> = {
+    1: "#627eea",     // Ethereum blue
+    8453: "#0052ff",  // Base blue
+    10: "#ff0420",    // Optimism red
+    11155111: "#888",  // Sepolia grey
+  };
 
   // ---------------------------------------------------------------------------
   // Synchronous cache init — runs before first render so the claim button
@@ -198,11 +237,190 @@
       showOrderForm = true;
       return;
     }
+
+    // For paid events: always route through payment flow
+    if (isPaid && !paymentProofResult) {
+      if (!showChainSelector) {
+        if (payment!.acceptedChains.length === 1) {
+          selectedChain = payment!.acceptedChains[0];
+        }
+        if (payment!.currency === "USD" && !ethEquivalent) {
+          ethPriceLoading = true;
+          import("../../payment/eth-price.js").then(({ usdToETH }) =>
+            usdToETH(payment!.price).then((eth) => { ethEquivalent = eth; ethPriceLoading = false; })
+          ).catch(() => { ethPriceLoading = false; });
+        }
+        showChainSelector = true;
+      }
+      // Always return for paid events — Pay button triggers handlePaymentAndClaim
+      return;
+    }
+
     handleClaim();
+  }
+
+  async function handlePaymentAndClaim() {
+    if (!payment || !selectedChain) return;
+    claiming = true;
+    error = null;
+
+    try {
+      // Ensure wallet is connected for payment
+      if (!auth.isConnected) {
+        step = "Waiting for sign-in...";
+        const ok = await loginRequest.request();
+        if (!ok) { error = "Login cancelled"; return; }
+      }
+
+      // Local accounts can't pay — need real wallet
+      if (auth.kind === "local") {
+        error = "Crypto payments require a wallet. Please sign in with a Web3 wallet or Para.";
+        return;
+      }
+
+      // For USD-priced events, resolve to the user's chosen pay method
+      let paymentConfig = payment;
+      if (payment.currency === "USD") {
+        if (selectedPayMethod === "USDC") {
+          // Pay exact USD amount in USDC (1:1 stablecoin)
+          paymentConfig = { ...payment, price: payment.price, currency: "USDC" };
+        } else {
+          // Pay in ETH — convert USD to ETH equivalent
+          step = "Fetching ETH price...";
+          const { usdToETH } = await import("../../payment/eth-price.js");
+          const ethAmount = await usdToETH(payment.price);
+          ethEquivalent = ethAmount;
+          paymentConfig = { ...payment, price: ethAmount, currency: "ETH" };
+        }
+      }
+
+      step = "Switching chain...";
+      const { executePayment } = await import("../../payment/pay.js");
+
+      const displayAmount = payment.currency === "USD"
+        ? `${ethEquivalent} ETH ($${payment.price})`
+        : `${payment.price} ${payment.currency}`;
+      step = `Confirm ${displayAmount} payment...`;
+      const result = await executePayment(paymentConfig, selectedChain, eventId, eventEndDate);
+      paymentProofResult = result.proof;
+      showChainSelector = false;
+
+      step = "Payment confirmed. Claiming ticket...";
+
+      // Now proceed with the normal claim flow (proof is attached)
+      await handleClaimWithProof(result.proof);
+    } catch (e) {
+      error = e instanceof Error ? e.message : "Payment failed";
+    } finally {
+      claiming = false;
+    }
+  }
+
+  async function handleClaimWithProof(proof: PaymentProof) {
+    const method = effectiveMethod();
+
+    if (method === "email") {
+      const email = getEmailFromForm();
+      if (!email) { error = "Please enter a valid email address"; return; }
+
+      let encryptedOrder: SealedBox | undefined;
+      if (encryptionKey) {
+        encryptedOrder = await sealJson(encryptionKey, {
+          ...(Object.keys(formData).length > 0 ? { fields: formData } : {}),
+          seriesId,
+          claimerEmail: email,
+        });
+      }
+
+      const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl, proof);
+      if (!result.ok) { error = result.error || "Failed to claim ticket"; return; }
+
+      if (result.approvalPending) {
+        approvalPending = true;
+        pendingId = result.pendingId ?? null;
+        showOrderForm = false;
+        step = "";
+        return;
+      }
+
+      claimed = true;
+      claimedEdition = result.edition ?? null;
+      claimedVia = "email";
+      showOrderForm = false;
+      step = "";
+      cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
+    } else {
+      // Wallet — session already ensured in handlePaymentAndClaim if paid
+      if (!auth.hasSession) {
+        step = "Approving session...";
+        const ok = await auth.ensureSession();
+        if (!ok) { error = "Session approval cancelled"; return; }
+      }
+
+      let encryptedOrder: SealedBox | undefined;
+      if (encryptionKey) {
+        encryptedOrder = await sealJson(encryptionKey, {
+          ...(Object.keys(formData).length > 0 ? { fields: formData } : {}),
+          seriesId,
+          claimerAddress: auth.parent,
+        });
+      }
+
+      const result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl, proof);
+      if (!result.ok) { error = result.error || "Failed to claim ticket"; return; }
+
+      if (result.approvalPending) {
+        approvalPending = true;
+        pendingId = result.pendingId ?? null;
+        showOrderForm = false;
+        step = "";
+        if (auth.parent) {
+          const addr = auth.parent.toLowerCase();
+          const sk = cacheKey.claimStatus(eventId, seriesId, addr);
+          const cur = cacheGet<SeriesClaimStatus>(sk);
+          const base = cur ?? ({ seriesId, totalSupply, claimed: 0, available: totalSupply } as SeriesClaimStatus);
+          cacheSet(sk, { ...base, userPendingId: pendingId ?? undefined }, TTL.CLAIM_STATUS);
+        }
+        return;
+      }
+
+      claimed = true;
+      claimedEdition = result.edition ?? null;
+      claimedVia = "wallet";
+      showOrderForm = false;
+      step = "";
+
+      if (auth.parent) {
+        const addr = auth.parent.toLowerCase();
+        cacheSet(cacheKey.claimed(eventId, seriesId, addr), { edition: claimedEdition, via: "wallet" }, TTL.PERMANENT);
+        cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
+      }
+    }
   }
 
   async function handleClaim() {
     if (claiming) return;
+
+    // Hard gate: paid events MUST go through the payment flow — never fall through
+    if (isPaid && !paymentProofResult) {
+      if (!showChainSelector) {
+        if (payment!.acceptedChains.length === 1) {
+          selectedChain = payment!.acceptedChains[0];
+        }
+        // Fetch ETH equivalent for USD-priced events
+        if (payment!.currency === "USD" && !ethEquivalent) {
+          ethPriceLoading = true;
+          import("../../payment/eth-price.js").then(({ usdToETH }) =>
+            usdToETH(payment!.price).then((eth) => { ethEquivalent = eth; ethPriceLoading = false; })
+          ).catch(() => { ethPriceLoading = false; });
+        }
+        showChainSelector = true;
+        showOrderForm = false;
+      }
+      // Always return — chain selector's Pay button calls handlePaymentAndClaim()
+      return;
+    }
+
     claiming = true;
     error = null;
 
@@ -453,9 +671,125 @@
         <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
       {/if}
     </div>
+  {:else if showChainSelector && isPaid && payment}
+    <div class="pay-sheet" class:pay-sheet--ready={!!selectedChain}>
+      <!-- Price header -->
+      <div class="pay-header">
+        <span class="pay-header-label">Total</span>
+        <div class="pay-price-stack">
+          <span class="pay-price-primary">{priceLabel}</span>
+          {#if payment.currency === "USD"}
+            <span class="pay-price-secondary">
+              {#if ethPriceLoading}
+                fetching rate...
+              {:else if ethEquivalent}
+                ≈ {ethEquivalent} ETH
+              {/if}
+            </span>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Payment method toggle (USD-priced only, when chain supports USDC) -->
+      {#if payment.currency === "USD"}
+        <div class="pay-section">
+          <span class="pay-section-label">Pay with</span>
+          <div class="pay-method-toggle">
+            <button
+              class="pay-method-btn"
+              class:pay-method-btn--active={selectedPayMethod === "ETH"}
+              onclick={() => { selectedPayMethod = "ETH"; }}
+            >
+              <span class="pay-method-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1L3.5 8.5L8 11L12.5 8.5L8 1Z" fill="currentColor" opacity="0.7"/><path d="M8 11L3.5 8.5L8 15L12.5 8.5L8 11Z" fill="currentColor"/></svg>
+              </span>
+              <span class="pay-method-label">ETH</span>
+              {#if ethEquivalent}
+                <span class="pay-method-amount">{ethEquivalent}</span>
+              {/if}
+            </button>
+            <button
+              class="pay-method-btn"
+              class:pay-method-btn--active={selectedPayMethod === "USDC"}
+              class:pay-method-btn--disabled={!usdcAvailableOnChain}
+              disabled={!usdcAvailableOnChain}
+              onclick={() => { selectedPayMethod = "USDC"; }}
+            >
+              <span class="pay-method-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/><text x="8" y="11" text-anchor="middle" font-size="9" font-weight="700" fill="currentColor">$</text></svg>
+              </span>
+              <span class="pay-method-label">USDC</span>
+              <span class="pay-method-amount">{payment.price}</span>
+            </button>
+          </div>
+          {#if selectedChain && !usdcAvailableOnChain && selectedPayMethod === "ETH"}
+            <span class="pay-method-note">USDC not available on {CHAIN_NAMES[selectedChain]}</span>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Network selector -->
+      <div class="pay-section">
+        <span class="pay-section-label">Network</span>
+        <div class="pay-chains">
+          {#each payment.acceptedChains as chainId}
+            <button
+              class="pay-chain-card"
+              class:pay-chain-card--selected={selectedChain === chainId}
+              onclick={() => {
+                selectedChain = chainId;
+                // If switching to a chain without USDC, fall back to ETH
+                if (selectedPayMethod === "USDC" && !USDC_ADDRESSES[chainId]) {
+                  selectedPayMethod = "ETH";
+                }
+              }}
+            >
+              <span class="pay-chain-dot" style="background: {CHAIN_COLORS[chainId] || '#888'}"></span>
+              <span class="pay-chain-name">{CHAIN_NAMES[chainId]}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <!-- CTA + cancel -->
+      <div class="pay-actions">
+        {#if claiming}
+          <button class="pay-cta" disabled>
+            <span class="pay-spinner"></span>
+            {step}
+          </button>
+        {:else}
+          <button
+            class="pay-cta"
+            onclick={handlePaymentAndClaim}
+            disabled={!selectedChain || ethPriceLoading}
+          >
+            {#if !selectedChain}
+              Select a network
+            {:else if payment.currency === "USDC"}
+              Pay {payment.price} USDC
+            {:else if payment.currency === "ETH"}
+              Pay {payment.price} ETH
+            {:else if selectedPayMethod === "USDC"}
+              Pay {payment.price} USDC
+            {:else if ethEquivalent}
+              Pay {ethEquivalent} ETH
+            {:else}
+              Pay {priceLabel}
+            {/if}
+          </button>
+        {/if}
+        <button class="pay-cancel" onclick={() => { showChainSelector = false; selectedChain = null; selectedPayMethod = "ETH"; }}>Cancel</button>
+      </div>
+
+      {#if auth.kind === "local"}
+        <p class="pay-note">Crypto payments require a Web3 wallet or Para account.</p>
+      {/if}
+    </div>
   {:else}
     <button
       class="claim-btn"
+      class:claim-btn--paid={isPaid}
       onclick={() => handleClaimClick()}
       disabled={claiming || (status?.available === 0)}
     >
@@ -465,6 +799,10 @@
         Sold out
       {:else if approvalRequired}
         Request to attend
+      {:else if isPaid}
+        <span class="claim-btn-price">{priceLabel}</span>
+        <span class="claim-btn-sep"></span>
+        <span>Get ticket</span>
       {:else if claimMode === "email"}
         Claim with email
       {:else}
@@ -510,6 +848,23 @@
   .claim-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .claim-btn--paid {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .claim-btn-price {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  .claim-btn-sep {
+    width: 1px;
+    height: 14px;
+    background: rgba(255, 255, 255, 0.25);
   }
 
   .claim-btn--outline {
@@ -671,5 +1026,254 @@
     color: var(--text-muted);
     margin: 0;
     text-align: right;
+  }
+
+  /* ── Payment sheet ── */
+  .pay-sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+    min-width: 260px;
+    max-width: 320px;
+    padding: 1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+
+  .pay-sheet--ready {
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    box-shadow: 0 0 20px -6px color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+
+  /* Price header */
+  .pay-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 0.625rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pay-header-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .pay-price-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.0625rem;
+  }
+
+  .pay-price-primary {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pay-price-secondary {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Sections */
+  .pay-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .pay-section-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  /* Payment method toggle */
+  .pay-method-toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.375rem;
+  }
+
+  .pay-method-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 0.625rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+
+  .pay-method-btn:hover:not(:disabled) {
+    border-color: var(--border-hover);
+    color: var(--text);
+  }
+
+  .pay-method-btn--active {
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .pay-method-btn--disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .pay-method-icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--text-muted);
+  }
+
+  .pay-method-btn--active .pay-method-icon {
+    color: var(--accent-text);
+  }
+
+  .pay-method-label {
+    font-weight: 600;
+  }
+
+  .pay-method-amount {
+    margin-left: auto;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pay-method-note {
+    font-size: 0.625rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* Chain selector cards */
+  .pay-chains {
+    display: flex;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+  }
+
+  .pay-chain-card {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.4375rem 0.625rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+
+  .pay-chain-card:hover {
+    border-color: var(--border-hover);
+  }
+
+  .pay-chain-card--selected {
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-input));
+    border-color: var(--accent);
+  }
+
+  .pay-chain-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .pay-chain-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .pay-chain-card--selected .pay-chain-name {
+    color: var(--text);
+  }
+
+  /* CTA button */
+  .pay-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.25rem;
+  }
+
+  .pay-cta {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: #fff;
+    white-space: nowrap;
+    transition: background 0.2s ease, opacity 0.2s ease;
+  }
+
+  .pay-cta:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  .pay-cta:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .pay-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: pay-spin 0.6s linear infinite;
+  }
+
+  @keyframes pay-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .pay-cancel {
+    padding: 0.625rem 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    transition: color var(--transition);
+    white-space: nowrap;
+  }
+
+  .pay-cancel:hover {
+    color: var(--text-secondary);
+  }
+
+  .pay-note {
+    font-size: 0.625rem;
+    color: var(--text-muted);
+    margin: 0;
+    text-align: center;
   }
 </style>

@@ -32,12 +32,42 @@ app.use(
       "Content-Type",
       "X-Session-Address",
       "X-Session-Delegation",
+      "X-PAYMENT",
+    ],
+    exposeHeaders: [
+      "PAYMENT-REQUIRED",
+      "X-FACILITATOR-URL",
+      "PAYMENT-RESPONSE",
     ],
   }),
 );
 
 // Health check
 app.get("/api/health", (c) => c.json({ ok: true }));
+
+// ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
+app.get("/api/eth-price", async (c) => {
+  try {
+    const { getETHPriceUSD } = await import("./lib/payment/eth-price.js");
+    const price = await getETHPriceUSD();
+    return c.json({ ok: true, price });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to fetch ETH price";
+    return c.json({ ok: false, error: msg });
+  }
+});
+
+// Escrow contract addresses per chain — frontend needs these to send payment to the right contract
+app.get("/api/payment/escrow-addresses", async (c) => {
+  const { getEscrowAddress } = await import("./lib/payment/constants.js");
+  const chainIds = [1, 8453, 10, 11155111] as const;
+  const addresses: Record<number, string> = {};
+  for (const chainId of chainIds) {
+    const addr = getEscrowAddress(chainId);
+    if (addr) addresses[chainId] = addr;
+  }
+  return c.json({ ok: true, addresses });
+});
 
 // Serve embed iframe frame page
 app.get("/embed/frame/:eventId", (c) => {

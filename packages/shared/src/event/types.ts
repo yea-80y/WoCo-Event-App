@@ -4,6 +4,55 @@ import type { OrderField, SealedBox } from "../crypto/types.js";
 /** How attendees can claim tickets for an event */
 export type ClaimMode = "wallet" | "email" | "both";
 
+// ---------------------------------------------------------------------------
+// Payment types
+// ---------------------------------------------------------------------------
+
+/** Supported payment chains: Ethereum mainnet, Base, Optimism, + Sepolia (testnet) */
+export type PaymentChainId = 1 | 8453 | 10 | 11155111;
+
+/** Payment configuration per ticket series */
+export interface PaymentConfig {
+  /** Price as a decimal string (e.g. "5.00" for USD/USDC, "0.005" for ETH) */
+  price: string;
+  /** Pricing currency: USD = priced in dollars paid in ETH, ETH = priced in ETH, USDC = priced in USDC */
+  currency: "USD" | "ETH" | "USDC";
+  /** Recipient address (organiser wallet or escrow contract) */
+  recipientAddress: Hex0x;
+  /** Accepted chains (default: [8453] = Base) */
+  acceptedChains: PaymentChainId[];
+  /** Whether payment goes through escrow (server sets based on organiser trust) */
+  escrow: boolean;
+}
+
+/** Payment proof submitted alongside a claim request */
+export interface PaymentProof {
+  /** "x402" for USDC via x402 protocol, "tx" for direct on-chain tx */
+  type: "x402" | "tx";
+  /** Transaction hash (for type: "tx") */
+  txHash?: string;
+  /** Chain ID where payment was made */
+  chainId: PaymentChainId;
+  /** x402 payment header value (for type: "x402") */
+  x402Header?: string;
+}
+
+/** USDC contract addresses by chain (native Circle-issued USDC) */
+export const USDC_ADDRESSES: Partial<Record<PaymentChainId, Hex0x>> = {
+  1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex0x,
+  8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Hex0x,
+  10: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85" as Hex0x,
+  // No USDC on Sepolia testnet — ETH only for testing
+};
+
+/** Human-readable chain names */
+export const CHAIN_NAMES: Record<PaymentChainId, string> = {
+  1: "Ethereum",
+  8453: "Base",
+  10: "Optimism",
+  11155111: "Sepolia",
+};
+
 /** Full event metadata stored in Swarm feed */
 export interface EventFeed {
   v: 1;
@@ -43,6 +92,8 @@ export interface SeriesSummary {
   saleEnd?: string;
   /** If set, claim button becomes "Register & Pay" and redirects here */
   paymentRedirectUrl?: string;
+  /** Crypto payment config — absent means free event */
+  payment?: PaymentConfig;
 }
 
 /** Entry in the global event directory feed */
@@ -100,6 +151,8 @@ export interface CreateEventRequest {
     saleStart?: string;
     saleEnd?: string;
     paymentRedirectUrl?: string;
+    /** Crypto payment config — absent means free event */
+    payment?: PaymentConfig;
   }>;
   /** Signed tickets grouped by seriesId */
   signedTickets: Record<string, SignedTicket[]>;
@@ -166,6 +219,8 @@ export interface ClaimTicketRequest {
   apiKey?: string;
   /** ECIES-encrypted order data — only the event organizer can decrypt */
   encryptedOrder?: SealedBox;
+  /** On-chain payment proof (for paid events) */
+  paymentProof?: PaymentProof;
 }
 
 // ---------------------------------------------------------------------------

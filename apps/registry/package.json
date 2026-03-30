@@ -1,24 +1,15 @@
 {
-  "name": "@woco/web",
+  "name": "@woco/registry",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "dev:site": "vite --config vite.site.config.ts --mode site",
-    "build:site": "vite build --config vite.site.config.ts --mode site",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
   },
   "dependencies": {
-    "@getpara/ethers-v6-integration": "^2.12.0",
-    "@getpara/web-sdk": "^2.12.0",
-    "@noble/ed25519": "^2.2.0",
-    "@noble/hashes": "^1.7.0",
-    "@walletconnect/ethereum-provider": "^2.23.6",
-    "@woco/shared": "*",
-    "@x402/fetch": "^2.7.0",
     "ethers": "^6.13.0"
   },
   "devDependencies": {

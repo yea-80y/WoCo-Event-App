@@ -1,12 +1,15 @@
 import { Hono } from "hono";
 import { verifyMessage } from "ethers";
-import type { Hex0x, SealedBox } from "@woco/shared";
-import { PASSKEY_CLAIM_MAX_AGE_MS, PASSKEY_CLAIM_PREFIX } from "@woco/shared";
+import type { Hex0x, SealedBox, PaymentProof, PaymentConfig } from "@woco/shared";
+import { PASSKEY_CLAIM_MAX_AGE_MS, PASSKEY_CLAIM_PREFIX, USDC_ADDRESSES, CHAIN_NAMES } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { claimTicket, hashEmail, getClaimStatus, addToUserCollection, addToEmailCollection, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
+import { verifyPayment } from "../lib/payment/verify.js";
+import { getEscrowAddress } from "../lib/payment/constants.js";
+import { usdToETH, usdToETHWithSlippage, getETHPriceUSD } from "../lib/payment/eth-price.js";
 
 const claims = new Hono<AppEnv>();
 
@@ -163,6 +166,95 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   }
 
   const encryptedOrder = rawBody.encryptedOrder as SealedBox | undefined;
+  const paymentProof = rawBody.paymentProof as PaymentProof | undefined;
+
+  // ---------------------------------------------------------------------------
+  // Payment verification — if series requires payment, validate proof
+  // ---------------------------------------------------------------------------
+  const eventId = c.req.param("eventId");
+  const event = await getEvent(eventId);
+  if (!event) {
+    return c.json({ ok: false, error: "Event not found" }, 404);
+  }
+  const series = event.series.find((s) => s.seriesId === seriesId);
+  if (!series) {
+    return c.json({ ok: false, error: "Series not found" }, 404);
+  }
+
+  if (series.payment) {
+    // Series requires crypto payment
+    if (!paymentProof) {
+      // For USD-priced events, include the current ETH equivalent
+      let ethEquivalent: string | undefined;
+      let ethPriceUSD: number | undefined;
+      if (series.payment.currency === "USD") {
+        try {
+          ethPriceUSD = await getETHPriceUSD();
+          ethEquivalent = await usdToETH(series.payment.price);
+        } catch { /* price feed unavailable — client can fetch independently */ }
+      }
+
+      // Return 402 with payment requirements
+      return c.json({
+        ok: false,
+        error: "Payment required",
+        paymentRequired: {
+          price: series.payment.price,
+          currency: series.payment.currency,
+          recipientAddress: series.payment.recipientAddress,
+          acceptedChains: series.payment.acceptedChains,
+          escrow: series.payment.escrow,
+          ...(ethEquivalent ? { ethEquivalent, ethPriceUSD } : {}),
+          chainDetails: series.payment.acceptedChains.map((chainId) => ({
+            chainId,
+            name: CHAIN_NAMES[chainId],
+            ...(series.payment!.currency === "USDC"
+              ? { usdcAddress: USDC_ADDRESSES[chainId] }
+              : {}),
+            ...(series.payment!.escrow ? { escrowAddress: getEscrowAddress(chainId) } : {}),
+          })),
+        },
+      }, 402);
+    }
+
+    // Validate the chain is accepted
+    if (!series.payment.acceptedChains.includes(paymentProof.chainId)) {
+      return c.json({
+        ok: false,
+        error: `Chain ${paymentProof.chainId} not accepted. Use: ${series.payment.acceptedChains.map((c) => CHAIN_NAMES[c]).join(", ")}`,
+      }, 400);
+    }
+
+    // Determine recipient: escrow contract or organiser's address
+    const recipient = series.payment.escrow
+      ? getEscrowAddress(paymentProof.chainId)
+      : series.payment.recipientAddress;
+    if (!recipient) {
+      return c.json({ ok: false, error: "Escrow not configured for this chain" }, 500);
+    }
+
+    // Verify the on-chain payment
+    if (paymentProof.type === "tx") {
+      let verifyAmount = series.payment.price;
+      let verifyCurrency: "ETH" | "USDC" = series.payment.currency === "USDC" ? "USDC" : "ETH";
+
+      // USD-priced: convert to ETH with slippage tolerance (3%)
+      if (series.payment.currency === "USD") {
+        verifyCurrency = "ETH";
+        verifyAmount = await usdToETHWithSlippage(series.payment.price);
+      }
+
+      const verification = await verifyPayment(paymentProof, {
+        amount: verifyAmount,
+        currency: verifyCurrency,
+        recipient,
+      });
+      if (!verification.valid) {
+        return c.json({ ok: false, error: `Payment verification failed: ${verification.error}` }, 402);
+      }
+    }
+    // x402 proofs are handled by the x402 middleware layer (Phase 6)
+  }
 
   // Build dedup key from the verified identifier
   const identifierKey = identifier.type === "wallet"

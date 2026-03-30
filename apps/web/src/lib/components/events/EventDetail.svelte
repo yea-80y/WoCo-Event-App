@@ -56,6 +56,10 @@
         event = fresh;
         loading = false;
         error = null;
+        // Debug: log series payment data from API
+        for (const s of fresh.series) {
+          console.log(`[EventDetail] series "${s.name}" payment:`, s.payment ?? "FREE");
+        }
         // Fetch creator profile
         getProfile(fresh.creatorAddress).then((p) => { creatorProfile = p; });
       })
@@ -131,7 +135,14 @@
       {#each event.series as s}
         <div class="series-card">
           <div class="series-info">
-            <h3>{s.name}</h3>
+            <div class="series-header">
+              <h3>{s.name}</h3>
+              {#if s.payment && parseFloat(s.payment.price) > 0}
+                <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
+              {:else}
+                <span class="series-price series-price--free">Free</span>
+              {/if}
+            </div>
             {#if s.description}
               <p class="series-desc">{s.description}</p>
             {/if}
@@ -145,6 +156,8 @@
             claimMode={event.claimMode ?? "wallet"}
             approvalRequired={s.approvalRequired ?? false}
             apiUrl={externalApiUrl}
+            payment={s.payment}
+            eventEndDate={event.endDate}
           />
         </div>
       {/each}
@@ -282,6 +295,27 @@
     color: var(--text);
     font-size: 0.9375rem;
     font-weight: 500;
+  }
+
+  .series-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .series-price {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    background: var(--accent-subtle);
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+
+  .series-price--free {
+    color: var(--success);
+    background: transparent;
   }
 
   .series-desc {

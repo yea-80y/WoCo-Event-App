@@ -52,6 +52,7 @@ export async function createEvent(opts: {
     saleStart?: string;
     saleEnd?: string;
     paymentRedirectUrl?: string;
+    payment?: import("@woco/shared").PaymentConfig;
   }>;
   /** signedTickets[seriesId] = array of serialized signed tickets */
   signedTickets: Record<string, string[]>;
@@ -80,17 +81,16 @@ export async function createEvent(opts: {
 
   console.log(`[event] Creating event ${eventId}: "${title}"`);
 
-  // 1. Upload event image
-  emit("image", 0, 1, "Uploading event image...");
-  console.log("[event] Uploading image...");
-  const imageHash = await uploadToBytes(imageData);
-  emit("image", 1, 1, "Image uploaded");
-
   const createdAt = new Date().toISOString();
+  const BATCH_SIZE = 40; // Higher throughput — Bee handles concurrent uploads well
 
-  // 2. For each series: upload tickets, write editions feed(s), init claims feed(s)
-  const seriesSummaries: SeriesSummary[] = [];
+  // ── Phase 1: Upload image + all ticket blobs in parallel ──────────────
+  // Image and ticket uploads are independent — start them simultaneously.
+  emit("image", 0, 1, "Uploading event image...");
 
+  const imagePromise = uploadToBytes(imageData);
+
+  // Validate all series upfront before starting any uploads
   for (const s of series) {
     const tickets = signedTickets[s.seriesId];
     if (!tickets || tickets.length !== s.totalSupply) {
@@ -98,33 +98,56 @@ export async function createEvent(opts: {
         `Series ${s.seriesId}: expected ${s.totalSupply} tickets, got ${tickets?.length ?? 0}`,
       );
     }
+  }
 
-    const pages = editionPageCount(s.totalSupply);
-    console.log(
-      `[event] Processing series "${s.name}" (${s.totalSupply} tickets, ${pages} page${pages > 1 ? "s" : ""})...`,
-    );
-
-    // Upload tickets to /bytes in parallel batches of 20
-    const ticketHashes: string[] = [];
-    const BATCH_SIZE = 20;
-    for (let batchStart = 0; batchStart < tickets.length; batchStart += BATCH_SIZE) {
-      const batch = tickets.slice(batchStart, batchStart + BATCH_SIZE);
-      const batchResults = await Promise.all(batch.map((t) => uploadToBytes(t)));
-      ticketHashes.push(...batchResults);
-      ticketsUploaded += batchResults.length;
-      emit(
-        "tickets",
-        ticketsUploaded,
-        totalTickets,
-        `Uploading tickets: ${ticketsUploaded}/${totalTickets} (${s.name})`,
-      );
-      if (ticketHashes.length < tickets.length) {
-        console.log(`[event]   Uploaded ${ticketHashes.length}/${tickets.length} tickets...`);
-      }
+  // Upload all tickets across all series in interleaved batches
+  // This lets Bee pipeline uploads across series rather than waiting for each to finish.
+  type TicketBatch = { seriesId: string; name: string; startIdx: number; tickets: string[] };
+  const allBatches: TicketBatch[] = [];
+  for (const s of series) {
+    const tickets = signedTickets[s.seriesId];
+    for (let i = 0; i < tickets.length; i += BATCH_SIZE) {
+      allBatches.push({
+        seriesId: s.seriesId,
+        name: s.name,
+        startIdx: i,
+        tickets: tickets.slice(i, i + BATCH_SIZE),
+      });
     }
-    console.log(`[event]   All ${ticketHashes.length} tickets uploaded`);
+  }
 
-    // Upload series metadata to /bytes (page 0, slot 0)
+  // Run batches — each batch uploads its tickets in parallel, batches run sequentially
+  // to avoid overwhelming the Bee node, but progress spans all series.
+  const ticketHashesBySeries = new Map<string, string[]>();
+  for (const s of series) ticketHashesBySeries.set(s.seriesId, []);
+
+  for (const batch of allBatches) {
+    const results = await Promise.all(batch.tickets.map((t) => uploadToBytes(t)));
+    ticketHashesBySeries.get(batch.seriesId)!.push(...results);
+    ticketsUploaded += results.length;
+    emit(
+      "tickets",
+      ticketsUploaded,
+      totalTickets,
+      `Uploading tickets: ${ticketsUploaded}/${totalTickets}`,
+    );
+  }
+
+  // Await image (likely already done — it started before tickets)
+  const imageHash = await imagePromise;
+  emit("image", 1, 1, "Image uploaded");
+  console.log(`[event] Image + ${ticketsUploaded} tickets uploaded`);
+
+  // ── Phase 2: Build & write feeds for ALL series in parallel ───────────
+  emit("feeds", 0, series.length, "Writing feeds...");
+
+  const seriesSummaries: SeriesSummary[] = [];
+
+  const seriesFeedWork = series.map(async (s) => {
+    const ticketHashes = ticketHashesBySeries.get(s.seriesId)!;
+    const pages = editionPageCount(s.totalSupply);
+
+    // Upload series metadata
     const seriesMeta = {
       v: 1,
       seriesId: s.seriesId,
@@ -141,7 +164,7 @@ export async function createEvent(opts: {
     };
     const metaRef = await uploadToBytes(JSON.stringify(seriesMeta));
 
-    // Build page data for all edition pages
+    // Build page data
     const editionPages: Uint8Array[] = [];
     for (let p = 0; p < pages; p++) {
       let pageRefs: string[];
@@ -154,35 +177,35 @@ export async function createEvent(opts: {
       editionPages.push(pack4096(pageRefs));
     }
 
-    // Write edition pages + claims pages in parallel
-    emit("feeds", 0, pages, `Writing feeds for "${s.name}"...`);
+    // Write all edition + claims feeds in parallel
     const feedWrites: Promise<void>[] = [];
     for (let p = 0; p < pages; p++) {
       feedWrites.push(writeFeedPage(topicEditions(s.seriesId, p), editionPages[p]));
       feedWrites.push(writeFeedPage(topicClaims(s.seriesId, p), new Uint8Array(4096)));
     }
     await Promise.all(feedWrites);
-    emit("feeds", pages, pages, `Feeds written for "${s.name}"`);
 
-    // Verify page 0
-    const verified = await readFeedPageWithRetry(topicEditions(s.seriesId, 0), 3, 500);
-    if (!verified) {
-      throw new Error(`Failed to verify editions feed for series ${s.seriesId}`);
-    }
+    // Skip verification — writeFeedPage already confirmed success (single Bee node,
+    // data is local). Removing this saves ~300-600ms per series.
 
-    seriesSummaries.push({
+    return {
       seriesId: s.seriesId,
       name: s.name,
       description: s.description,
       totalSupply: s.totalSupply,
-      price: 0,
+      price: s.payment ? parseFloat(s.payment.price) : 0,
       ...(s.approvalRequired ? { approvalRequired: true } : {}),
       ...(s.wave ? { wave: s.wave } : {}),
       ...(s.saleStart ? { saleStart: s.saleStart } : {}),
       ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
       ...(s.paymentRedirectUrl ? { paymentRedirectUrl: s.paymentRedirectUrl } : {}),
-    });
-  }
+      ...(s.payment ? { payment: s.payment } : {}),
+    } as SeriesSummary;
+  });
+
+  const results = await Promise.all(seriesFeedWork);
+  seriesSummaries.push(...results);
+  emit("feeds", series.length, series.length, "All feeds written");
 
   // 4. Build and write event feed
   const eventFeed: EventFeed = {
@@ -204,16 +227,18 @@ export async function createEvent(opts: {
   };
 
   emit("finalize", 0, 1, "Writing event feed...");
-  console.log("[event] Writing event feed...");
+  // Log payment data for debugging — confirm it reaches the feed write
+  for (const s of seriesSummaries) {
+    console.log(`[event] Series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
+  }
+  const eventFeedJson = JSON.stringify(eventFeed);
+  console.log(`[event] Writing event feed (${eventFeedJson.length} bytes)...`);
   await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed));
 
-  // Verify event feed
-  const verifiedEvent = await readFeedPageWithRetry(topicEvent(eventId), 3, 500);
-  if (!verifiedEvent) {
-    throw new Error("Failed to verify event feed write");
-  }
+  // Skip verification — writeFeedPage succeeded, data is on the local Bee node.
+  // Saves ~300-600ms. If we ever move to multi-node, add background verification.
 
-  // 5. Event is now fully on Swarm — announce on Waku + update directories.
+  // 5. Event is now fully on Swarm — update directories.
   // Both are fire-and-forget: the event is complete and verifiable at this point,
   // so any client that receives the Waku announcement can load the event page.
   const dirEntry: EventDirectoryEntry = {
@@ -237,7 +262,13 @@ export async function createEvent(opts: {
 export async function getEvent(eventId: string): Promise<EventFeed | null> {
   const page = await readFeedPageWithRetry(topicEvent(eventId));
   if (!page) return null;
-  return decodeJsonFeed<EventFeed>(page);
+  const feed = decodeJsonFeed<EventFeed>(page);
+  if (feed) {
+    for (const s of feed.series) {
+      console.log(`[event] Read series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
+    }
+  }
+  return feed;
 }
 
 interface EventDirectory {

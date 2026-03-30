@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ClaimMode, OrderFieldType, SignedTicket } from "@woco/shared";
+  import type { ClaimMode, OrderFieldType, SignedTicket, PaymentConfig, PaymentChainId, Hex0x } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -55,7 +55,13 @@
     tierName: string;
     description: string;
     approvalRequired: boolean;
+    /** "none" = free, "redirect" = external URL, "crypto" = on-chain payment */
+    paymentMode: "none" | "redirect" | "crypto";
     paymentRedirectUrl: string;
+    isPaid: boolean;
+    price: string;
+    currency: "USD" | "ETH" | "USDC";
+    acceptedChains: PaymentChainId[];
     waves: WaveItem[];
   }
 
@@ -79,7 +85,12 @@
     tierName: "General Admission",
     description: "",
     approvalRequired: false,
+    paymentMode: "none",
     paymentRedirectUrl: "",
+    isPaid: false,
+    price: "",
+    currency: "USD",
+    acceptedChains: [8453] as PaymentChainId[],
     waves: [{
       id: crypto.randomUUID(),
       label: "",
@@ -108,6 +119,7 @@
     saleStart?: string;
     saleEnd?: string;
     paymentRedirectUrl?: string;
+    payment?: PaymentConfig;
   }
   let storedSeries = $state<StoredSeries[]>([]);
   let storedSignedTickets = $state<Record<string, SignedTicket[]>>({});
@@ -282,8 +294,12 @@ PORT=3001`);
       tierName: "",
       description: "",
       approvalRequired: false,
-      mockPayment: false,
+      paymentMode: "none",
       paymentRedirectUrl: "",
+      isPaid: false,
+      price: "",
+      currency: "USD",
+      acceptedChains: [8453] as PaymentChainId[],
       waves: [{
         id: crypto.randomUUID(),
         label: "",
@@ -389,7 +405,20 @@ PORT=3001`);
           ...(tier.waves.length > 1 && wave.label.trim() ? { wave: wave.label.trim() } : {}),
           ...(wave.saleStart ? { saleStart: wave.saleStart } : {}),
           ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
-          ...(tier.paymentRedirectUrl.trim() ? { paymentRedirectUrl: tier.paymentRedirectUrl.trim() } : {}),
+          ...(tier.paymentMode === "redirect" && tier.paymentRedirectUrl.trim()
+            ? { paymentRedirectUrl: tier.paymentRedirectUrl.trim() }
+            : {}),
+          ...(tier.paymentMode === "crypto" && tier.isPaid && tier.price && parseFloat(tier.price) > 0
+            ? {
+                payment: {
+                  price: tier.price,
+                  currency: tier.currency,
+                  recipientAddress: (auth.parent?.toLowerCase() ?? "0x0") as Hex0x,
+                  acceptedChains: tier.acceptedChains,
+                  escrow: false,
+                } satisfies PaymentConfig,
+              }
+            : {}),
         }))
       );
 
@@ -938,16 +967,80 @@ cp apps/server/.env.example apps/server/.env
                   <span><strong>Require approval</strong> — you manually approve each claim from the dashboard</span>
                 </label>
 
+                <!-- Payment options -->
                 <div class="field-group" style="margin-top:0.75rem">
-                  <label class="field-label">Payment redirect URL <span class="optional">optional</span></label>
-                  <input
-                    class="input"
-                    type="url"
-                    bind:value={tier.paymentRedirectUrl}
-                    placeholder="https://your-payment-processor.com/pay"
-                  />
-                  <p class="field-hint">If set, the claim button becomes "Register &amp; Pay" and redirects to your payment processor. After payment, redirect back with <code>?claimed=1&amp;edition=N</code> or use a webhook to mint the ticket.</p>
+                  <label class="field-label">Payment <span class="optional">optional</span></label>
+                  <div class="payment-mode-selector">
+                    <label class="payment-mode-option">
+                      <input type="radio" bind:group={tier.paymentMode} value="none" onchange={() => { tier.isPaid = false; }} />
+                      <span>Free</span>
+                    </label>
+                    <label class="payment-mode-option">
+                      <input type="radio" bind:group={tier.paymentMode} value="redirect" onchange={() => { tier.isPaid = false; }} />
+                      <span>Payment URL</span>
+                      <span class="payment-mode-hint">Worldpay, Stripe, etc.</span>
+                    </label>
+                    <label class="payment-mode-option">
+                      <input type="radio" bind:group={tier.paymentMode} value="crypto" onchange={() => { tier.isPaid = true; }} />
+                      <span>Crypto</span>
+                      <span class="payment-mode-hint">ETH / USDC on-chain</span>
+                    </label>
+                  </div>
                 </div>
+
+                {#if tier.paymentMode === "redirect"}
+                  <div class="field-group">
+                    <input
+                      class="input"
+                      type="url"
+                      bind:value={tier.paymentRedirectUrl}
+                      placeholder="https://your-payment-processor.com/pay"
+                    />
+                    <p class="field-hint">Claim button becomes "Register &amp; Pay" and redirects here. After payment, redirect back with <code>?claimed=1&amp;edition=N</code> or use a webhook to mint the ticket.</p>
+                  </div>
+                {/if}
+
+                {#if tier.paymentMode === "crypto"}
+                  <div class="payment-config">
+                    <div class="payment-row">
+                      <div class="field-group payment-price-field">
+                        <label class="field-label">Price</label>
+                        <input class="input" type="text" bind:value={tier.price} placeholder="e.g. 5.00" inputmode="decimal" />
+                      </div>
+                      <div class="field-group payment-currency-field">
+                        <label class="field-label">Currency</label>
+                        <select class="input" bind:value={tier.currency}>
+                          <option value="USD">USD</option>
+                          <option value="ETH">ETH</option>
+                          <option value="USDC">USDC</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label">Accepted networks</label>
+                      <div class="chain-checkboxes">
+                        {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, chainName]}
+                          <label class="chain-check">
+                            <input
+                              type="checkbox"
+                              checked={tier.acceptedChains.includes(chainId as PaymentChainId)}
+                              onchange={(e) => {
+                                const cid = chainId as PaymentChainId;
+                                if ((e.target as HTMLInputElement).checked) {
+                                  if (!tier.acceptedChains.includes(cid)) tier.acceptedChains = [...tier.acceptedChains, cid];
+                                } else {
+                                  tier.acceptedChains = tier.acceptedChains.filter(c => c !== cid);
+                                }
+                              }}
+                            />
+                            <span>{chainName}</span>
+                          </label>
+                        {/each}
+                      </div>
+                    </div>
+                    <p class="field-hint">Payment goes directly to your connected wallet address. Attendees pay with their wallet before receiving the ticket.</p>
+                  </div>
+                {/if}
 
                 <!-- Waves -->
                 <div class="waves-header">
@@ -2599,6 +2692,92 @@ cp apps/server/.env.example apps/server/.env
 
   .sale-window-row {
     padding-top: 0.25rem;
+  }
+
+  /* ── Payment mode ─────────────────────────────────────────────────────────── */
+  .payment-mode-selector {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.375rem;
+  }
+
+  .payment-mode-option {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.8125rem;
+    background: var(--bg-input);
+    transition: border-color var(--transition);
+  }
+
+  .payment-mode-option:has(input:checked) {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+
+  .payment-mode-option input[type="radio"] {
+    accent-color: var(--accent);
+  }
+
+  .payment-mode-hint {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+
+  .payment-config {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    padding: 0.75rem;
+    background: color-mix(in srgb, var(--accent) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+    border-radius: var(--radius-sm);
+  }
+
+  .payment-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .payment-price-field {
+    flex: 1;
+  }
+
+  .payment-currency-field {
+    width: 6rem;
+  }
+
+  .chain-checkboxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-top: 0.25rem;
+  }
+
+  .chain-check {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+  }
+
+  .chain-check:has(input:checked) {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+
+  .chain-check input[type="checkbox"] {
+    accent-color: var(--accent);
   }
 
   /* ── Add tier / add question button ─────────────────────────────────────── */

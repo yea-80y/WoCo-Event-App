@@ -6,6 +6,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
+  import ClaimButton from "../events/ClaimButton.svelte";
 
   interface Props {
     eventId: string;
@@ -471,6 +472,11 @@
                 {#if s.wave}
                   <span class="wave-pill">{s.wave}</span>
                 {/if}
+                {#if s.payment && parseFloat(s.payment.price) > 0}
+                  <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
+                {:else if !s.paymentRedirectUrl}
+                  <span class="series-price series-price--free">Free</span>
+                {/if}
               </div>
               {#if s.description}
                 <p class="series-desc">{s.description}</p>
@@ -516,7 +522,21 @@
     <!-- Claim section — shown when a series is selected -->
     {#if selectedSeries}
       <div class="claim-section" id="claim-section">
-        {#if claimed}
+        {#if selectedSeries.payment && parseFloat(selectedSeries.payment.price) > 0}
+          <!-- Crypto paid ticket — ClaimButton handles chain selector + payment + claim -->
+          <ClaimButton
+            eventId={eventId}
+            seriesId={selectedSeries.seriesId}
+            totalSupply={selectedSeries.totalSupply}
+            encryptionKey={event.encryptionKey}
+            orderFields={event.orderFields}
+            claimMode={claimMode}
+            approvalRequired={selectedSeries.approvalRequired ?? false}
+            apiUrl={apiUrl}
+            payment={selectedSeries.payment}
+            eventEndDate={event.endDate}
+          />
+        {:else if claimed}
           <div class="claim-success">
             <span class="success-icon">✓</span>
             <div class="success-body">
@@ -902,6 +922,22 @@
     color: var(--accent-text);
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  .series-price {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 9999px;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent-text);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .series-price--free {
+    background: color-mix(in srgb, var(--success, #4ade80) 12%, transparent);
+    color: var(--success, #4ade80);
   }
 
   .series-desc {

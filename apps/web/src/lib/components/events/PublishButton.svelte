@@ -16,6 +16,7 @@
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
+    payment?: import("@woco/shared").PaymentConfig;
   }
 
   interface Props {

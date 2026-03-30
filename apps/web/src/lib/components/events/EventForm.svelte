@@ -18,7 +18,7 @@
   let location = $state("");
   let imageDataUrl = $state<string | null>(null);
   // series is populated and kept in sync by TicketSeriesEditor via $bindable
-  let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string }[]>([]);
+  let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: import("@woco/shared").PaymentConfig }[]>([]);
   let claimMode = $state<ClaimMode>("wallet");
   let collectEmail = $state(false);
   let collectInfo = $state(false);

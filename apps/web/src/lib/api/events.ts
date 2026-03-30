@@ -40,6 +40,13 @@ export async function createEventStreaming(
   const signed = await auth.signRequest(JSON.stringify(req));
   if (!signed) throw new Error("Not authenticated");
 
+  // Debug: log series payment data being sent to server
+  if (req.series) {
+    for (const s of req.series) {
+      console.log(`[createEventStreaming] series "${s.name}" payment:`, s.payment ?? "FREE");
+    }
+  }
+
   const resp = await fetch(`${base}/api/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -126,11 +133,12 @@ export async function claimTicket(
   walletAddress: string,
   encryptedOrder?: SealedBox,
   apiUrl?: string,
+  paymentProof?: import("@woco/shared").PaymentProof,
 ): Promise<ClaimTicketResponse> {
   // Wallet claims require session delegation (proves address ownership)
   const json = await authPost<ClaimTicketResponse>(
     `/api/events/${eventId}/series/${seriesId}/claim`,
-    { mode: "wallet", walletAddress, encryptedOrder },
+    { mode: "wallet", walletAddress, encryptedOrder, ...(paymentProof ? { paymentProof } : {}) },
     apiUrl,
   );
   return {
@@ -149,11 +157,12 @@ export async function claimTicketByEmail(
   email: string,
   encryptedOrder?: SealedBox,
   apiUrl?: string,
+  paymentProof?: import("@woco/shared").PaymentProof,
 ): Promise<ClaimTicketResponse> {
   const resp = await fetch(`${apiUrl ?? apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "email", email, encryptedOrder }),
+    body: JSON.stringify({ mode: "email", email, encryptedOrder, ...(paymentProof ? { paymentProof } : {}) }),
   });
   const json = await resp.json();
   return {
