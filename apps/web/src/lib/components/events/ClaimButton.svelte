@@ -278,6 +278,14 @@
         return;
       }
 
+      // Ensure session BEFORE payment so all wallet signing is done upfront.
+      // This avoids a third MetaMask round-trip after the transaction lands.
+      if (!auth.hasSession) {
+        step = "Approving session...";
+        const ok = await auth.ensureSession();
+        if (!ok) { error = "Session approval cancelled"; return; }
+      }
+
       // For USD-priced events, resolve to the user's chosen pay method
       let paymentConfig = payment;
       if (payment.currency === "USD") {
@@ -301,16 +309,29 @@
         ? `${ethEquivalent} ETH ($${payment.price})`
         : `${payment.price} ${payment.currency}`;
       step = `Confirm ${displayAmount} payment...`;
-      const result = await executePayment(paymentConfig, selectedChain, eventId, eventEndDate);
+      const result = await executePayment(paymentConfig, selectedChain, eventId, eventEndDate, auth.parent ?? undefined);
       paymentProofResult = result.proof;
-      showChainSelector = false;
 
+      // Persist proof before claiming — if the claim fetch fails, the user's tx hash
+      // is preserved and shown in the error so they can contact support or retry.
+      try {
+        sessionStorage.setItem(`woco-proof-${eventId}-${seriesId}`, JSON.stringify(result.proof));
+      } catch { /* storage unavailable */ }
+
+      showChainSelector = false;
       step = "Payment confirmed. Claiming ticket...";
 
       // Now proceed with the normal claim flow (proof is attached)
       await handleClaimWithProof(result.proof);
     } catch (e) {
-      error = e instanceof Error ? e.message : "Payment failed";
+      const msg = e instanceof Error ? e.message : "Payment failed";
+      // If payment already landed (we have a proof), surface the tx hash in the error
+      // so the user isn't left wondering whether they were charged.
+      if (paymentProofResult && paymentProofResult.type === "tx") {
+        error = `${msg} — your payment went through (tx: ${paymentProofResult.txHash}). Please try again or contact support.`;
+      } else {
+        error = msg;
+      }
     } finally {
       claiming = false;
     }
@@ -350,7 +371,7 @@
       step = "";
       cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
     } else {
-      // Wallet — session already ensured in handlePaymentAndClaim if paid
+      // Wallet — session ensured before payment in handlePaymentAndClaim
       if (!auth.hasSession) {
         step = "Approving session...";
         const ok = await auth.ensureSession();
@@ -366,7 +387,23 @@
         });
       }
 
-      const result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl, proof);
+      // Retry up to 3 times on network errors — mobile connections drop during
+      // app-switching, so a transient fetch failure shouldn't lose the ticket.
+      let result;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl, proof);
+          break;
+        } catch (e) {
+          if (attempt < 2) {
+            step = `Claiming ticket (retry ${attempt + 1})...`;
+            await new Promise(r => setTimeout(r, 1200 * (attempt + 1)));
+          } else {
+            throw e; // rethrow after 3 failures — caught by handlePaymentAndClaim
+          }
+        }
+      }
+      if (!result) return;
       if (!result.ok) { error = result.error || "Failed to claim ticket"; return; }
 
       if (result.approvalPending) {

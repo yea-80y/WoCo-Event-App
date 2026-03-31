@@ -1,5 +1,6 @@
 import type { PaymentChainId } from "@woco/shared";
 import { CHAIN_NAMES } from "@woco/shared";
+import { requireProvider } from "../wallet/provider.js";
 
 /** Chain metadata for the payment UI */
 export interface ChainInfo {
@@ -52,8 +53,17 @@ export const CHAIN_INFO: Record<PaymentChainId, ChainInfo> = {
  * Works with MetaMask / any EIP-3085 compliant wallet.
  */
 export async function switchChain(chainId: PaymentChainId): Promise<void> {
-  const provider = (window as any).ethereum;
+  const provider = requireProvider();
   if (!provider) throw new Error("No wallet detected");
+
+  // Skip switch if already on the correct chain — avoids an unnecessary WalletConnect
+  // round-trip that can cause stale/empty prompts in MetaMask mobile.
+  try {
+    const currentChainId = await provider.request({ method: "eth_chainId", params: [] }) as string;
+    if (parseInt(currentChainId, 16) === chainId) return;
+  } catch {
+    // If we can't read the current chain, proceed with the switch anyway
+  }
 
   const info = CHAIN_INFO[chainId];
   try {

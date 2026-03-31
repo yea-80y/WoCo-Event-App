@@ -1,8 +1,9 @@
-import { BrowserProvider, parseUnits, Contract, id as keccak256Utf8 } from "ethers";
+import { JsonRpcSigner, parseUnits, Contract, id as keccak256Utf8 } from "ethers";
 import type { PaymentConfig, PaymentChainId, PaymentProof, Hex0x } from "@woco/shared";
 import { USDC_ADDRESSES } from "@woco/shared";
 import { switchChain } from "./chains.js";
 import { apiBase } from "../api/client.js";
+import { getEthersProvider } from "../wallet/provider.js";
 
 /** WoCoEscrow ABI — only the functions we call */
 const ESCROW_ABI = [
@@ -54,13 +55,19 @@ export async function executePayment(
   chainId: PaymentChainId,
   eventId: string,
   eventEndDate?: string,
+  signerAddress?: string,
 ): Promise<PaymentResult> {
-  const provider = new BrowserProvider((window as any).ethereum);
-
-  // Switch to the correct chain
   await switchChain(chainId);
 
-  const signer = await provider.getSigner();
+  // Allow WalletConnect session to settle after chain change before sending the tx.
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // Use the cached provider; construct signer directly to avoid an eth_accounts
+  // round-trip that can return stale results after a chain switch.
+  const provider = getEthersProvider();
+  const signer = signerAddress
+    ? new JsonRpcSigner(provider, signerAddress)
+    : await provider.getSigner();
 
   if (payment.escrow) {
     // Route through WoCoEscrow contract
@@ -181,7 +188,7 @@ export async function getUSDCBalance(
   chainId: PaymentChainId,
   address: string,
 ): Promise<string> {
-  const provider = new BrowserProvider((window as any).ethereum);
+  const provider = getEthersProvider();
   const usdcAddress = USDC_ADDRESSES[chainId];
   if (!usdcAddress) throw new Error(`USDC not supported on chain ${chainId}`);
   const usdc = new Contract(usdcAddress, ERC20_ABI, provider);

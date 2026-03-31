@@ -440,8 +440,23 @@ async function clearAllAuth(): Promise<void> {
 // Account change handler (web3 only)
 // ---------------------------------------------------------------------------
 
+// WalletConnect emits accountsChanged([]) transiently during chain switches.
+// Debounce empty-accounts to avoid logging out mid-chain-switch.
+let _emptyAccountsTimer: ReturnType<typeof setTimeout> | null = null;
+
 function handleAccountsChanged(accounts: string[]): void {
-  if (accounts.length === 0 || accounts[0]?.toLowerCase() !== _parent) {
+  if (_emptyAccountsTimer) {
+    clearTimeout(_emptyAccountsTimer);
+    _emptyAccountsTimer = null;
+  }
+  if (accounts.length === 0) {
+    // Delay logout — WalletConnect emits empty accounts transiently during chain switching.
+    // If accounts repopulate within 3s (chain switch), the logout is cancelled.
+    _emptyAccountsTimer = setTimeout(() => {
+      _emptyAccountsTimer = null;
+      logout();
+    }, 3000);
+  } else if (accounts[0]?.toLowerCase() !== _parent) {
     logout();
   }
 }
