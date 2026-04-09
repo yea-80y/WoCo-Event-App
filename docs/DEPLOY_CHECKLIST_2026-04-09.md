@@ -65,6 +65,20 @@ You've told me there are no real users, so all of these are fine to ship as-is. 
 - [x] **Payment `tx.from` binding** — any cached/stored payment proofs from before this change lack the `from` field. Server will reject them with "Transaction signed by ..., expected ...".
   - Confirmed acceptable: no live pending payments.
 
+### Round 4 (commit `ecbe127`, 2026-04-09)
+
+- [x] **Passkey / embed wallet claims now EIP-712** — old EIP-191 `woco:claim:<eventId>:<seriesId>:<timestamp>` signatures are rejected. Embed IIFE bundle must be rebuilt AND redeployed (`npm run build:embed` → rsync → server serves it at `/embed/woco-embed.js`). Any page that loaded the old embed within the last hour may retry the claim with a stale `woco-embed.js` and get "Invalid signature"; hard-refresh fixes it.
+  - Confirmed acceptable: no real users, test data only.
+
+- [x] **POD seed byte fix (`toUtf8Bytes` → `getBytes`)** — any user who derived a POD identity before this commit gets a *different* ed25519 key on next derivation. Tickets signed under the old key fail `verifyTicketSignature`. Same breakage surface as the POD domain salt change, same mitigation (none — just re-derive).
+  - Confirmed acceptable: no active POD identities.
+
+- [x] **AES-GCM AAD on device-key ciphertexts** — any IndexedDB blob encrypted before this commit (local-account key, session key, session delegation, POD seed) becomes undecryptable. Users transparently re-login / re-derive. Only affects people who had the app open before the deploy.
+  - Zero action required beyond the expected re-login flow.
+
+- [x] **Revocation file format v1** — `.data/revoked-sessions.json` auto-migrates on first load (legacy `string[]` → `{nonce, expiresAt}[]`, assuming worst-case expiry of now + 30 days). Look for `[revocation] Migrated N legacy revoked nonces` in `server.log` after first boot — expected if the file existed before.
+  - Zero action required, just watch for the log line.
+
 ---
 
 ## 4. Deploy procedure
@@ -132,6 +146,11 @@ curl http://localhost:3001/api/health  # from local if tunnel is up, or via ssh
 - [ ] Wallet A claims the same txHash — should succeed
 - [ ] Wallet A tries to claim a second ticket with the same txHash — should 409 "already used"
 
+### EIP-712 claim signatures (NEW in Round 4)
+- [ ] Embed widget + MetaMask: click "Connect Wallet & Claim". Wallet should render a structured typed-data prompt showing `eventId / seriesId / claimer / timestamp`, NOT an opaque `woco:claim:...` string.
+- [ ] Embed widget + passkey: authenticate via passkey and claim. Server accepts the signature (exercises the hand-rolled noble digest → `verifyTypedData` round trip).
+- [ ] Server logs show no "Invalid signature" 403s on either path.
+
 ### Session revocation persistence
 - [ ] `ls -la ~/woco-events-server/.data/` — confirm `revoked-sessions.json` and `consumed-tx-hashes.json` exist after first use
 - [ ] Restart the server — confirm revoked sessions are still rejected after restart
@@ -140,13 +159,13 @@ curl http://localhost:3001/api/health  # from local if tunnel is up, or via ssh
 
 ## 6. Known unresolved items (NOT in scope for this deploy)
 
-- `.data/` may not be in `.gitignore` — check before next commit. If the server ever runs inside the repo dir (it doesn't today, but the `scripts/` dir does), these state files could leak.
-- `apps/web/src/lib/auth/pod-identity.ts` still uses `keccak256(toUtf8Bytes(signature))` — hashes the hex *string* of the signature instead of its bytes. Works, but not canonical. **Round 4 fix, breaking change** — will regenerate the ed25519 key for any previously-used POD identity.
-- Dead `ENCRYPTION_DOMAIN`/`ENCRYPTION_TYPES`/`ENCRYPTION_NONCE` constants still present in `packages/shared/src/crypto/constants.ts` — Round 4 cleanup.
-- `apps/web/src/lib/auth/storage/encryption.ts` device-key AES-GCM has no AAD — Round 4 defense in depth.
-- Passkey / wallet-signed claim still uses EIP-191 `personal_sign` — migrating to EIP-712 typed data is a planned Round 4 improvement.
-- Session revocation file grows unbounded until server restart — prune expired nonces periodically (Round 4).
-- WoCoEscrow.sol not yet deployed to mainnet/Base — needs `ReentrancyGuard` + token array cap before mainnet.
+All Round 4 items landed in commit `ecbe127`. Remaining work:
+
+- **WoCoEscrow.sol hardening** — before mainnet/Base deploy, add:
+  - `ReentrancyGuard` on `deposit()` / `claim()` / `refund()`
+  - Token array length cap (`require(tokens.length <= 20)` or similar)
+  - Per-claimer deposit binding so an attacker can't claim someone else's escrow slot with their own address
+- **Rate limiting persistence** — current in-memory rate limiter resets on every restart. Fine for Devcon scale, revisit if it becomes a problem.
 
 ---
 
@@ -165,7 +184,8 @@ If the deploy goes sideways and you need to revert:
 
 ```bash
 git log --oneline -10   # find the pre-audit commit (1003689 or earlier)
-git revert 69e312e d262a81 a448cc9   # revert the three audit commits
+# Revert the audit commits in reverse order:
+git revert ecbe127 8ad0a4b 69e312e d262a81 a448cc9
 # or, nuclear option (discards uncommitted work too):
 # git reset --hard 1003689
 # (only do this if you're SURE)
