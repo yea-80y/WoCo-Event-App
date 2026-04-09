@@ -32,7 +32,7 @@ Full audit: `docs/CRYPTO_AUDIT_2026-04-08.md`
 | `apps/server/src/lib/auth/verify-delegation.ts` | P2 (1.2) | Verifies `sessionProof` — recovers signer from `"${host}:${nonce}"` and checks it matches `message.session` |
 | `apps/server/src/lib/auth/verify-delegation.ts` | P1 (1.4) | Checks `isSessionRevoked(nonce, parent, issuedAt)` |
 | `apps/server/src/index.ts` | P1 (1.4) | Added `POST /api/auth/revoke-session` and `POST /api/auth/revoke-all` |
-| `apps/server/src/lib/event/claim-service.ts` | P2 (9.3) | `hashEmail()` uses HMAC-SHA256 when `EMAIL_HASH_SECRET` set; `hashEmailLegacy()` for dedup transition; `ClaimIdentifier` carries optional `legacyEmailHash` |
+| `apps/server/src/lib/event/claim-service.ts` | P2 (9.3) | `hashEmail()` is HMAC-SHA256 only — throws if `EMAIL_HASH_SECRET` unset. `hashEmailLegacy()` and `legacyEmailHash` dual-lookup removed in Round 3. `index.ts` fails fast at startup if env var missing |
 | `apps/server/src/lib/event/claim-service.ts` | P2 (9.4) | `claimTicket()` calls `verifyTicketSignature()` before creating claimed ticket |
 | `apps/web/src/lib/api/client.ts` | P1 (9.1) | `authPost` sends `sessionSig` in body; `authGet` sends `X-Session-Sig` header |
 | `apps/web/src/lib/api/events.ts` | P1 (9.1) | `createEventStreaming` sends `sessionSig` in body |
@@ -56,7 +56,8 @@ EMAIL_HASH_SECRET=<64-char-hex>
 | EIP-712 domain salt added | Existing session delegations invalid | Users re-delegate on next login (auto, transparent) |
 | EIP-712 salt on POD identity domain | **Changes derived ed25519 key** | Only breaks if organisers have published events. Verify before deploying — see warning below |
 | Session expiry 30 days | Existing 1-year sessions expire sooner | No action — natural expiry |
-| HMAC email hashing | New hashes differ from old SHA-256 | Handled automatically via `legacyEmailHash` dual-check |
+| HMAC email hashing (Round 3) | Legacy fallback + dual-lookup removed. Any old unsalted-SHA-256 claims become invisible | Confirm no legacy email claims exist, OR rotate `EMAIL_HASH_SECRET` to resurrect the unsalted case and rehash as HMAC (one-time migration) |
+| `EMAIL_HASH_SECRET` mandatory (Round 3) | Server refuses to start without it | Set env var before deploying (generated hex, 32 bytes) |
 
 ### WARNING: POD Identity Salt
 

@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type {
   Hex0x,
   ClaimedTicket,
@@ -44,30 +44,25 @@ export type ClaimResult = ClaimedTicket & { _pendingId?: string };
 
 export type ClaimIdentifier =
   | { type: "wallet"; address: Hex0x }
-  | { type: "email"; email: string; emailHash: string; legacyEmailHash?: string };
+  | { type: "email"; email: string; emailHash: string };
 
 /**
- * Hash email for privacy-safe storage.
- * Uses HMAC-SHA256 with a server-side secret to prevent rainbow table reversal
- * (email hashes are stored on publicly-readable Swarm feeds).
- * Falls back to unsalted SHA-256 only if EMAIL_HASH_SECRET is not configured.
+ * Hash email for privacy-safe storage using HMAC-SHA256 with a server-side
+ * secret. Email hashes live on publicly-readable Swarm feeds — without the
+ * HMAC key, an unsalted SHA-256 is trivially reversible via rainbow tables.
+ *
+ * `EMAIL_HASH_SECRET` is mandatory: startup fails if unset (see index.ts).
+ * The legacy unsalted-SHA-256 path + `legacyEmailHash` dual-lookup were
+ * removed after confirming no active claims on the old hash format.
  */
 export function hashEmail(email: string): string {
   const normalized = email.trim().toLowerCase();
   const secret = process.env.EMAIL_HASH_SECRET;
-  if (secret) {
-    return createHmac("sha256", secret).update(normalized).digest("hex");
+  if (!secret) {
+    // Should never hit this in practice — index.ts refuses to start without the env var.
+    throw new Error("EMAIL_HASH_SECRET is not set");
   }
-  // Legacy fallback — unsalted SHA-256 (set EMAIL_HASH_SECRET to upgrade)
-  return createHash("sha256").update(normalized).digest("hex");
-}
-
-/**
- * Legacy unsalted hash — used for backward-compatible dedup lookups
- * during the migration period (existing claims used unsalted SHA-256).
- */
-export function hashEmailLegacy(email: string): string {
-  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
+  return createHmac("sha256", secret).update(normalized).digest("hex");
 }
 
 // ---------------------------------------------------------------------------
@@ -90,17 +85,11 @@ export async function claimTicket(opts: {
     ? identifier.address.toLowerCase()
     : `email:${identifier.emailHash}`;
 
-  // For email claims, also check the legacy (unsalted) hash for backward compat
-  const legacyClaimerKey = identifier.type === "email" && identifier.legacyEmailHash
-    ? `email:${identifier.legacyEmailHash}`
-    : null;
-
   const existingClaimersPage = await readFeedPage(topicClaimers(seriesId));
   if (existingClaimersPage) {
     const existingFeed = decodeJsonFeed<ClaimersFeed>(existingClaimersPage);
     if (existingFeed?.claimers.some(
-      (c) => c.claimerAddress.toLowerCase() === claimerKey ||
-             (legacyClaimerKey && c.claimerAddress.toLowerCase() === legacyClaimerKey),
+      (c) => c.claimerAddress.toLowerCase() === claimerKey,
     )) {
       throw new Error("Already claimed");
     }

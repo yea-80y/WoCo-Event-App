@@ -41,6 +41,21 @@ if (!process.env.ALLOWED_HOSTS) {
   );
 }
 
+// EMAIL_HASH_SECRET is the HMAC key for hashing claimer emails before they
+// land on publicly-readable Swarm feeds. Without it, hashes are unsalted
+// SHA-256 and trivially reversible via rainbow tables. Refuse to boot without
+// it in ANY environment — the dev fallback was removed in Round 3 (2026-04-09).
+if (!process.env.EMAIL_HASH_SECRET) {
+  console.error(
+    "\n[startup] FATAL: EMAIL_HASH_SECRET is not set.\n" +
+    "  Generate one with:\n" +
+    "    node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"\n" +
+    "  and add to apps/server/.env as EMAIL_HASH_SECRET=<hex>\n" +
+    "  Required for privacy-safe email hashing on public Swarm feeds.\n",
+  );
+  process.exit(1);
+}
+
 const app = new Hono<AppEnv>();
 
 // CORS - allow frontend dev server

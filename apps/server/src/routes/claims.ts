@@ -4,7 +4,7 @@ import { verifyMessage } from "ethers";
 import type { Hex0x, SealedBox, PaymentProof } from "@woco/shared";
 import { PASSKEY_CLAIM_MAX_AGE_MS, PASSKEY_CLAIM_PREFIX, USDC_ADDRESSES, CHAIN_NAMES } from "@woco/shared";
 import type { AppEnv } from "../types.js";
-import { claimTicket, hashEmail, hashEmailLegacy, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
 import { verifyPayment } from "../lib/payment/verify.js";
@@ -57,16 +57,12 @@ function checkEmailRateLimit(ip: string): boolean {
   return true;
 }
 
-/** Build an email claim identifier, including legacy hash for backward-compat dedup */
+/** Build an email claim identifier */
 function buildEmailIdentifier(email: string): ClaimIdentifier {
-  const emailHash = hashEmail(email);
-  const legacyHash = hashEmailLegacy(email);
   return {
     type: "email",
     email,
-    emailHash,
-    // Only include legacy hash if it differs (i.e., EMAIL_HASH_SECRET is set)
-    ...(legacyHash !== emailHash ? { legacyEmailHash: legacyHash } : {}),
+    emailHash: hashEmail(email),
   };
 }
 
