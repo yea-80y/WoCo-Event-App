@@ -44,3 +44,25 @@ export const POD_IDENTITY_TYPES = {
     { name: "nonce", type: "string" },
   ],
 } as const;
+
+/**
+ * Domain for ticket-claim signatures (passkey + embed wallet-signed paths).
+ * Replaces the legacy EIP-191 personal_sign challenge `woco:claim:<eventId>:<seriesId>:<timestamp>`
+ * with a structured EIP-712 envelope, so wallets display each field to the
+ * user instead of an opaque string.
+ */
+export const CLAIM_DOMAIN = {
+  name: "WoCo Claim",
+  version: "1",
+  salt: "0x3065fa744343298ca5fb565b5758daf8c27fc865afaa3be81f9e4981871b57ae",
+} as const;
+
+/** EIP-712 types for ClaimTicket */
+export const CLAIM_TYPES = {
+  ClaimTicket: [
+    { name: "eventId", type: "string" },
+    { name: "seriesId", type: "string" },
+    { name: "claimer", type: "address" },
+    { name: "timestamp", type: "uint256" },
+  ],
+} as const;

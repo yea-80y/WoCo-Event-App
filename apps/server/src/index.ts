@@ -194,10 +194,11 @@ app.post("/api/auth/revoke-session", requireAuth, (c) => {
   try {
     const delegation = JSON.parse(Buffer.from(header, "base64").toString("utf-8"));
     const nonce = delegation?.message?.nonce;
-    if (!nonce) {
-      return c.json({ ok: false, error: "Could not extract session nonce" }, 400);
+    const expiresAt = delegation?.message?.expiresAt;
+    if (!nonce || !expiresAt) {
+      return c.json({ ok: false, error: "Could not extract session nonce/expiry" }, 400);
     }
-    revokeSession(nonce);
+    revokeSession(nonce, expiresAt);
     return c.json({ ok: true, message: "Session revoked" });
   } catch {
     return c.json({ ok: false, error: "Invalid delegation header" }, 400);

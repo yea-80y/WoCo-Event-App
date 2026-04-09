@@ -1,8 +1,15 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
-import { connectWallet, signClaimMessage as signWithWallet, isWalletAvailable } from "../auth/wallet.js";
-import { isPasskeySupported, passkeyAuthenticate, signClaimMessage } from "../auth/passkey.js";
+import { connectWallet, signClaimTypedData, isWalletAvailable } from "../auth/wallet.js";
+import { isPasskeySupported, passkeyAuthenticate, signClaimDigest } from "../auth/passkey.js";
 import { getStyles } from "./styles.js";
-import { sealJson, PASSKEY_CLAIM_PREFIX, type OrderField, type SealedBox } from "@woco/shared";
+import {
+  sealJson,
+  CLAIM_DOMAIN,
+  CLAIM_TYPES,
+  eip712Digest,
+  type OrderField,
+  type SealedBox,
+} from "@woco/shared";
 import { cacheGet, cacheSet, TTL_7D, embedCacheKey } from "../cache.js";
 
 interface SeriesSummary {
@@ -675,10 +682,28 @@ export class WocoTickets extends HTMLElement {
       return;
     }
 
-    // Sign claim message — same EIP-191 approach as passkey, no session delegation needed
+    // Sign EIP-712 typed data — wallet displays structured claim fields.
+    // No session delegation needed for embed path.
     const timestamp = Date.now();
-    const message = PASSKEY_CLAIM_PREFIX + this.eventId + ":" + seriesId + ":" + timestamp;
-    const signature = await signWithWallet(address, message);
+    const typedData = {
+      types: {
+        EIP712Domain: [
+          { name: "name", type: "string" },
+          { name: "version", type: "string" },
+          { name: "salt", type: "bytes32" },
+        ],
+        ClaimTicket: CLAIM_TYPES.ClaimTicket,
+      },
+      domain: CLAIM_DOMAIN,
+      primaryType: "ClaimTicket",
+      message: {
+        eventId: this.eventId,
+        seriesId,
+        claimer: address.toLowerCase(),
+        timestamp,
+      },
+    };
+    const signature = await signClaimTypedData(address, typedData);
     if (!signature) {
       st.claiming = false;
       st.error = "Wallet signing rejected";
@@ -741,10 +766,21 @@ export class WocoTickets extends HTMLElement {
       return;
     }
 
-    // Build and sign claim message
+    // Build EIP-712 claim digest and sign with the passkey-derived secp256k1 key
     const timestamp = Date.now();
-    const message = PASSKEY_CLAIM_PREFIX + this.eventId + ":" + seriesId + ":" + timestamp;
-    const signature = signClaimMessage(privateKey, message);
+    const claimMessage = {
+      eventId: this.eventId,
+      seriesId,
+      claimer: address.toLowerCase(),
+      timestamp,
+    };
+    const digest = eip712Digest(
+      CLAIM_DOMAIN,
+      "ClaimTicket",
+      CLAIM_TYPES.ClaimTicket,
+      claimMessage,
+    );
+    const signature = signClaimDigest(privateKey, digest);
 
     try {
       const body: Record<string, unknown> = { mode: "passkey", address, signature, timestamp };

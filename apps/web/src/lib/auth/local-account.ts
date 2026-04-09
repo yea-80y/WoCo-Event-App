@@ -1,6 +1,6 @@
 import { Wallet } from "ethers";
 import { StorageKeys, type EncryptedBlob } from "@woco/shared";
-import { ensureDeviceKey, encrypt, decrypt } from "./storage/encryption.js";
+import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 /**
@@ -17,7 +17,7 @@ export async function createLocalAccount(): Promise<{
   const privateKey = wallet.privateKey;
 
   const deviceKey = await ensureDeviceKey();
-  const encKey = await encrypt(deviceKey, { privateKey, address });
+  const encKey = await encrypt(deviceKey, AAD.LOCAL_ACCOUNT, { privateKey, address });
   await putKV(StorageKeys.LOCAL_KEY, encKey);
 
   return { address, privateKey };
@@ -38,7 +38,7 @@ export async function restoreLocalAccount(): Promise<{
   const { privateKey, address } = await decrypt<{
     privateKey: string;
     address: string;
-  }>(deviceKey, encKey);
+  }>(deviceKey, AAD.LOCAL_ACCOUNT, encKey);
 
   return { address, privateKey };
 }

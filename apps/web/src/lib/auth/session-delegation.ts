@@ -10,7 +10,7 @@ import {
   type EncryptedBlob,
   type EIP712Signer,
 } from "@woco/shared";
-import { ensureDeviceKey, encrypt, decrypt } from "./storage/encryption.js";
+import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 function getHost(): string {
@@ -77,13 +77,13 @@ export async function requestSessionDelegation(
   // 5. Encrypt and store
   const deviceKey = await ensureDeviceKey();
 
-  const encSessionKey = await encrypt(deviceKey, {
+  const encSessionKey = await encrypt(deviceKey, AAD.SESSION_KEY, {
     privateKey: sessionWallet.privateKey,
     address: sessionAddress,
   });
   await putKV(StorageKeys.SESSION_KEY, encSessionKey);
 
-  const encDelegation = await encrypt(deviceKey, delegation);
+  const encDelegation = await encrypt(deviceKey, AAD.SESSION_DELEGATION, delegation);
   await putKV(StorageKeys.SESSION_DELEGATION, encDelegation);
 
   return { sessionAddress, delegation };
@@ -106,9 +106,13 @@ export async function restoreSession(): Promise<{
   const { privateKey, address } = await decrypt<{
     privateKey: string;
     address: string;
-  }>(deviceKey, encKey);
+  }>(deviceKey, AAD.SESSION_KEY, encKey);
 
-  const delegation = await decrypt<SessionDelegation>(deviceKey, encDel);
+  const delegation = await decrypt<SessionDelegation>(
+    deviceKey,
+    AAD.SESSION_DELEGATION,
+    encDel,
+  );
 
   // Check expiration
   if (new Date(delegation.message.expiresAt).getTime() < Date.now()) {
@@ -155,7 +159,7 @@ export async function getSessionDelegation(): Promise<SessionDelegation | null> 
   if (!encDel) return null;
 
   const deviceKey = await ensureDeviceKey();
-  return decrypt<SessionDelegation>(deviceKey, encDel);
+  return decrypt<SessionDelegation>(deviceKey, AAD.SESSION_DELEGATION, encDel);
 }
 
 export async function clearSession(): Promise<void> {

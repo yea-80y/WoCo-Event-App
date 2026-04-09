@@ -20,15 +20,20 @@ export async function connectWallet(): Promise<string | null> {
   }
 }
 
-/** Sign a claim message via MetaMask personal_sign (EIP-191). Returns hex signature or null. */
-export async function signClaimMessage(address: string, message: string): Promise<string | null> {
+/**
+ * Sign an EIP-712 typed-data claim via `eth_signTypedData_v4`.
+ * Wallets render the structured fields (event/series/claimer/timestamp)
+ * so the user can see exactly what they're authorising.
+ */
+export async function signClaimTypedData(
+  address: string,
+  typedData: unknown,
+): Promise<string | null> {
   if (!window.ethereum) return null;
   try {
-    const msgHex = "0x" + Array.from(new TextEncoder().encode(message))
-      .map((b) => b.toString(16).padStart(2, "0")).join("");
     return (await window.ethereum.request({
-      method: "personal_sign",
-      params: [msgHex, address],
+      method: "eth_signTypedData_v4",
+      params: [address, JSON.stringify(typedData)],
     })) as string;
   } catch {
     return null;

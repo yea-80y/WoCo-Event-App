@@ -1,4 +1,4 @@
-import { keccak256, toUtf8Bytes } from "ethers";
+import { keccak256, getBytes } from "ethers";
 import {
   POD_IDENTITY_DOMAIN,
   POD_IDENTITY_TYPES,
@@ -8,7 +8,7 @@ import {
   type EIP712Signer,
 } from "@woco/shared";
 import { deriveKeypair } from "../pod/keys.js";
-import { ensureDeviceKey, encrypt, decrypt } from "./storage/encryption.js";
+import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 /**
@@ -36,15 +36,21 @@ export async function requestPodIdentity(
     message as unknown as Record<string, unknown>,
   );
 
-  // Deterministic: same wallet → same signature → same seed
-  const seed = keccak256(toUtf8Bytes(signature));
+  // Deterministic: same wallet → same signature → same seed.
+  // Use getBytes(signature) to hash the canonical signature bytes (65 bytes),
+  // not toUtf8Bytes(signature) which hashes the hex string representation
+  // (132 bytes of ASCII). The byte form is the standard way to compress an
+  // ECDSA signature into a uniform-distribution seed and is what every other
+  // library in the ecosystem does. BREAKING (2026-04-09): changes the derived
+  // ed25519 keypair for any user who previously called this function.
+  const seed = keccak256(getBytes(signature));
 
   // Derive keypair to get public key
   const keypair = await deriveKeypair(seed);
 
   // Encrypt and store seed
   const deviceKey = await ensureDeviceKey();
-  const encSeed = await encrypt(deviceKey, { seed });
+  const encSeed = await encrypt(deviceKey, AAD.POD_SEED, { seed });
   await putKV(StorageKeys.POD_SEED, encSeed);
 
   return { podPublicKeyHex: keypair.publicKeyHex, seed };
@@ -59,7 +65,7 @@ export async function restorePodSeed(): Promise<string | null> {
   if (!encSeed) return null;
 
   const deviceKey = await ensureDeviceKey();
-  const { seed } = await decrypt<{ seed: string }>(deviceKey, encSeed);
+  const { seed } = await decrypt<{ seed: string }>(deviceKey, AAD.POD_SEED, encSeed);
   return seed;
 }
 

@@ -1,8 +1,14 @@
 import { Hono } from "hono";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { verifyMessage } from "ethers";
+import { verifyMessage, verifyTypedData, type TypedDataField } from "ethers";
 import type { Hex0x, SealedBox, PaymentProof } from "@woco/shared";
-import { PASSKEY_CLAIM_MAX_AGE_MS, PASSKEY_CLAIM_PREFIX, USDC_ADDRESSES, CHAIN_NAMES } from "@woco/shared";
+import {
+  PASSKEY_CLAIM_MAX_AGE_MS,
+  CLAIM_DOMAIN,
+  CLAIM_TYPES,
+  USDC_ADDRESSES,
+  CHAIN_NAMES,
+} from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
@@ -179,7 +185,9 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
     identifier = buildEmailIdentifier(email);
 
   } else if (mode === "passkey" || mode === "wallet-signed") {
-    // Both passkey and wallet-signed use EIP-191 personal_sign — same server-side verification
+    // Both passkey and wallet-signed use EIP-712 typed-data signatures —
+    // wallets display the structured fields (event/series/claimer/timestamp)
+    // instead of an opaque `woco:claim:...` string (Round 4, 2026-04-09).
     const address = rawBody.address as string;
     const signature = rawBody.signature as string;
     const timestamp = rawBody.timestamp as number;
@@ -193,13 +201,23 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       return c.json({ ok: false, error: "Claim signature expired" }, 400);
     }
 
-    // Reconstruct and verify the signed message
+    // Reconstruct the typed-data payload and recover the signer
     const eventId = c.req.param("eventId");
-    const message = PASSKEY_CLAIM_PREFIX + eventId + ":" + seriesId + ":" + timestamp;
+    const claimMessage = {
+      eventId,
+      seriesId,
+      claimer: address.toLowerCase(),
+      timestamp,
+    };
 
     let recoveredAddress: string;
     try {
-      recoveredAddress = verifyMessage(message, signature);
+      recoveredAddress = verifyTypedData(
+        CLAIM_DOMAIN,
+        CLAIM_TYPES as unknown as Record<string, TypedDataField[]>,
+        claimMessage,
+        signature,
+      );
     } catch {
       return c.json({ ok: false, error: "Invalid signature" }, 403);
     }

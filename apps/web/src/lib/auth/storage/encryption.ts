@@ -22,15 +22,35 @@ export async function ensureDeviceKey(): Promise<CryptoKey> {
   return key;
 }
 
+/**
+ * Context strings used as AES-GCM Additional Authenticated Data (AAD).
+ *
+ * Binding each ciphertext to a distinct context prevents an attacker who
+ * has IndexedDB write access from swapping blobs across slots — e.g.
+ * decrypting a delegation blob as a raw local-account key and tricking
+ * the wallet code into signing with the wrong material. The AAD is
+ * authenticated but NOT encrypted; mismatched context → decrypt throws.
+ */
+export const AAD = {
+  LOCAL_ACCOUNT: "woco/device/local-account/v1",
+  SESSION_KEY: "woco/device/session-key/v1",
+  SESSION_DELEGATION: "woco/device/session-delegation/v1",
+  POD_SEED: "woco/device/pod-seed/v1",
+} as const;
+
+export type EncryptionContext = typeof AAD[keyof typeof AAD];
+
 export async function encrypt(
   deviceKey: CryptoKey,
+  context: EncryptionContext,
   data: unknown,
 ): Promise<EncryptedBlob> {
   const plaintext = new TextEncoder().encode(JSON.stringify(data));
   const iv = crypto.getRandomValues(new Uint8Array(12));
+  const additionalData = new TextEncoder().encode(context);
 
   const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
+    { name: "AES-GCM", iv, additionalData },
     deviceKey,
     plaintext,
   );
@@ -43,6 +63,7 @@ export async function encrypt(
 
 export async function decrypt<T = unknown>(
   deviceKey: CryptoKey,
+  context: EncryptionContext,
   blob: EncryptedBlob,
 ): Promise<T> {
   const ivBytes = hexToBytes(blob.iv);
@@ -54,9 +75,10 @@ export async function decrypt<T = unknown>(
   new Uint8Array(iv).set(ivBytes);
   const ct = new ArrayBuffer(ctBytes.byteLength);
   new Uint8Array(ct).set(ctBytes);
+  const additionalData = new TextEncoder().encode(context);
 
   const plaintext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
+    { name: "AES-GCM", iv, additionalData },
     deviceKey,
     ct,
   );

@@ -211,25 +211,21 @@ async function restorePasskey(meta: CredentialMeta): Promise<{ privateKey: Uint8
 }
 
 // ---------------------------------------------------------------------------
-// EIP-191 signing (noble secp256k1 — no ethers)
+// EIP-712 signing (noble secp256k1 — no ethers)
 // ---------------------------------------------------------------------------
 
 /**
- * Sign a message using EIP-191 personal_sign format.
- * Returns hex signature with recovery byte (v = 27 or 28).
+ * Sign a pre-computed EIP-712 digest with a raw secp256k1 private key.
+ * Returns the 65-byte r/s/v hex signature matching what ethers
+ * `verifyTypedData` expects.
+ *
+ * The caller must pass the digest produced by `eip712Digest(...)` — this
+ * function does NOT apply any additional hashing or EIP-191 prefix.
  */
-export function signClaimMessage(privateKey: Uint8Array, message: string): string {
-  const enc = new TextEncoder();
-  const msgBytes = enc.encode(message);
+export function signClaimDigest(privateKey: Uint8Array, digest: Uint8Array): string {
+  if (digest.length !== 32) throw new Error("eip712 digest must be 32 bytes");
 
-  // EIP-191: "\x19Ethereum Signed Message:\n" + len + message
-  const prefix = enc.encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
-  const prefixed = new Uint8Array(prefix.length + msgBytes.length);
-  prefixed.set(prefix);
-  prefixed.set(msgBytes, prefix.length);
-
-  const hash = keccak_256(prefixed);
-  const sig = secp256k1.sign(hash, privateKey);
+  const sig = secp256k1.sign(digest, privateKey);
 
   // Encode as 65-byte signature: r (32) + s (32) + v (1)
   const r = sig.r.toString(16).padStart(64, "0");

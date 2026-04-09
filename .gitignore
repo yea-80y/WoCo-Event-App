@@ -27,8 +27,11 @@ npm-debug.log*
 *.tar
 *.tar.gz
 
-# Server runtime data
+# Server runtime data (consumed-tx-hashes.json, revoked-sessions.json, etc.)
 apps/server/data/
+.data/
+**/.data/
+packages/shared/tsconfig.tsbuildinfo
 
 # Swarm deployment state
 .swarm/
