@@ -33,6 +33,21 @@ export interface PaymentProof {
   txHash?: string;
   /** Chain ID where payment was made */
   chainId: PaymentChainId;
+  /**
+   * Address that sent the transaction (for type: "tx").
+   * Server MUST verify tx.from === this value AND bind it to the claimer
+   * (parentAddress for wallet mode, signed claimerProof for email/passkey).
+   * Prevents front-running attackers from reusing someone else's pending payment.
+   */
+  from?: Hex0x;
+  /**
+   * For non-wallet claims (email, passkey): EIP-191 signature by `from` over the
+   * canonical message `woco-payment-v1:{txHash}:{claimContext}`. Proves the
+   * person submitting the claim controls the paying wallet.
+   * claimContext = `{eventId}:{seriesId}:{identifier}` where identifier is the
+   * email or passkey-address the claim is being made against.
+   */
+  claimerProof?: string;
   /** x402 payment header value (for type: "x402") */
   x402Header?: string;
 }
@@ -102,6 +117,7 @@ export interface EventDirectoryEntry {
   title: string;
   imageHash: Hex64;
   startDate: string;
+  endDate?: string;
   location: string;
   creatorAddress: Hex0x;
   seriesCount: number;

@@ -1,12 +1,20 @@
 import { JsonRpcProvider, parseUnits, formatUnits } from "ethers";
 import type { PaymentProof, PaymentChainId, Hex0x } from "@woco/shared";
 import { USDC_ADDRESSES } from "@woco/shared";
-import { getRpcUrl, ERC20_TRANSFER_TOPIC, MIN_CONFIRMATIONS } from "./constants.js";
+import { getRpcUrl, ERC20_TRANSFER_TOPIC, getMinConfirmations } from "./constants.js";
 
 export interface PaymentExpectation {
   amount: string;        // Decimal string e.g. "5.00" or "0.005"
   currency: "ETH" | "USDC";
   recipient: Hex0x;      // Escrow address or organiser address
+  /**
+   * Expected tx.from — the EOA that signed the payment tx. Server binds this
+   * to the claimer (verified parentAddress for wallet claims, or recovered
+   * address from claimerProof signature for email/passkey claims).
+   * REQUIRED for all claims — prevents an attacker from reusing another user's
+   * pending payment by front-running with the same txHash.
+   */
+  expectedFrom: Hex0x;
 }
 
 export interface VerificationResult {
@@ -60,11 +68,23 @@ export async function verifyPayment(
     return { valid: false, error: "Transaction reverted" };
   }
 
-  // Check confirmations
+  // Check confirmations (per-chain threshold)
   const currentBlock = await provider.getBlockNumber();
   const confirmations = currentBlock - receipt.blockNumber + 1;
-  if (confirmations < MIN_CONFIRMATIONS) {
-    return { valid: false, error: `Need ${MIN_CONFIRMATIONS} confirmations, have ${confirmations}` };
+  const minConf = getMinConfirmations(proof.chainId);
+  if (confirmations < minConf) {
+    return { valid: false, error: `Need ${minConf} confirmations, have ${confirmations}` };
+  }
+
+  // Bind tx to the claimer — prevents front-running a pending payment.
+  // tx.from is the EOA that signed. We require an exact match against the
+  // expected claimer address. Meta-transactions / batched relayers are not
+  // supported (tx.from would be the relayer, not the user).
+  if (!tx.from || tx.from.toLowerCase() !== expected.expectedFrom.toLowerCase()) {
+    return {
+      valid: false,
+      error: `Transaction signed by ${tx.from ?? "unknown"}, expected ${expected.expectedFrom}`,
+    };
   }
 
   if (expected.currency === "ETH") {

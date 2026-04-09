@@ -22,8 +22,8 @@ export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
 /** Fixed nonce for deterministic POD identity derivation */
 export const POD_IDENTITY_NONCE = "WOCO-POD-IDENTITY-V1";
 
-/** Session delegation expiry duration (1 year in ms) */
-export const SESSION_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
+/** Session delegation expiry duration (30 days in ms) */
+export const SESSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Session delegation purpose string */
 export const SESSION_PURPOSE = "session";

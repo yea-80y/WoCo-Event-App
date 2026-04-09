@@ -242,7 +242,7 @@ export async function createEvent(opts: {
   // Both are fire-and-forget: the event is complete and verifiable at this point,
   // so any client that receives the Waku announcement can load the event page.
   const dirEntry: EventDirectoryEntry = {
-    eventId, title, imageHash, startDate, location, creatorAddress,
+    eventId, title, imageHash, startDate, endDate, location, creatorAddress,
     seriesCount: series.length,
     totalTickets,
     createdAt,
@@ -335,9 +335,26 @@ function compactEntry(e: EventDirectoryEntry): EventDirectoryEntry {
     totalTickets: e.totalTickets,
     createdAt: e.createdAt,
   };
+  if (e.endDate) compact.endDate = e.endDate;
   if (e.location) compact.location = e.location;
   if (e.apiUrl) compact.apiUrl = e.apiUrl;
   return compact as unknown as EventDirectoryEntry;
+}
+
+/**
+ * Returns true if the organiser has at least one event that has demonstrably
+ * completed (endDate, or startDate as fallback, + 24 hours is in the past).
+ * Used to decide whether to force escrow on new paid events.
+ */
+export async function isOrganiserTrusted(creatorAddress: string): Promise<boolean> {
+  const events = await getCreatorEvents(creatorAddress);
+  const now = Date.now();
+  const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+  return events.some((e) => {
+    const completionDate = e.endDate ?? e.startDate;
+    const completionTime = new Date(completionDate).getTime();
+    return completionTime + twentyFourHoursMs < now;
+  });
 }
 
 /**

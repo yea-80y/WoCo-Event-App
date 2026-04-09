@@ -7,6 +7,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppEnv } from "./types.js";
 import { requireAuth } from "./middleware/auth.js";
+import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
@@ -20,6 +21,26 @@ import { domains } from "./routes/domains.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// ---------------------------------------------------------------------------
+// Startup safety checks
+// ---------------------------------------------------------------------------
+// ALLOWED_HOSTS is the primary replay-protection guard for session delegations
+// (SESSION_DOMAIN has no chainId — host binding is what prevents cross-origin
+// delegation reuse). Refuse to boot in production without it.
+if (process.env.NODE_ENV === "production" && !process.env.ALLOWED_HOSTS) {
+  console.error(
+    "\n[startup] FATAL: ALLOWED_HOSTS is not set in production.\n" +
+    "  Set ALLOWED_HOSTS=host1,host2 (e.g. gateway.woco-net.com,woco.eth.limo)\n" +
+    "  This is required for session delegation replay protection.\n",
+  );
+  process.exit(1);
+}
+if (!process.env.ALLOWED_HOSTS) {
+  console.warn(
+    "[startup] ALLOWED_HOSTS not set — using dev default (localhost:5173,localhost:3001)",
+  );
+}
+
 const app = new Hono<AppEnv>();
 
 // CORS - allow frontend dev server
@@ -32,6 +53,9 @@ app.use(
       "Content-Type",
       "X-Session-Address",
       "X-Session-Delegation",
+      "X-Session-Sig",
+      "X-Session-Nonce",
+      "X-Session-Timestamp",
       "X-PAYMENT",
     ],
     exposeHeaders: [
@@ -143,6 +167,33 @@ app.post("/api/auth/whoami", requireAuth, (c) => {
       sessionAddress: c.get("sessionAddress"),
     },
   });
+});
+
+// Revoke current session (requires valid delegation to prove ownership)
+app.post("/api/auth/revoke-session", requireAuth, (c) => {
+  // requireAuth already verified the delegation — read its nonce from the header.
+  const header = c.req.header("x-session-delegation");
+  if (!header) {
+    return c.json({ ok: false, error: "Missing X-Session-Delegation" }, 400);
+  }
+  try {
+    const delegation = JSON.parse(Buffer.from(header, "base64").toString("utf-8"));
+    const nonce = delegation?.message?.nonce;
+    if (!nonce) {
+      return c.json({ ok: false, error: "Could not extract session nonce" }, 400);
+    }
+    revokeSession(nonce);
+    return c.json({ ok: true, message: "Session revoked" });
+  } catch {
+    return c.json({ ok: false, error: "Invalid delegation header" }, 400);
+  }
+});
+
+// Revoke all sessions for the authenticated parent address
+app.post("/api/auth/revoke-all", requireAuth, (c) => {
+  const parentAddress = c.get("parentAddress") as string;
+  revokeAllSessions(parentAddress);
+  return c.json({ ok: true, message: "All sessions revoked" });
 });
 
 // Event routes

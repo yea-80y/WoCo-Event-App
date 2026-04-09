@@ -10,6 +10,7 @@
 export const SESSION_DOMAIN = {
   name: "WoCo Session",
   version: "1",
+  salt: "0x6f4cd6d4884d2ce64f043d7771738e9e50d62d873557ab8c13d2e219ec7ecbe3",
 } as const;
 
 /** EIP-712 types for AuthorizeSession */
@@ -32,6 +33,7 @@ export const SESSION_TYPES = {
 export const POD_IDENTITY_DOMAIN = {
   name: "WoCo POD Identity",
   version: "1",
+  salt: "0x8aee435983f8f356cb689567d575fe89bbd9f0d85e8e28c0d52c2fc340a9085a",
 } as const;
 
 /** EIP-712 types for DerivePodIdentity */

@@ -69,26 +69,29 @@ export async function executePayment(
     ? new JsonRpcSigner(provider, signerAddress)
     : await provider.getSigner();
 
+  // Capture the paying address — the server binds txHash → claimer via this field.
+  const from = ((signerAddress ?? await signer.getAddress()).toLowerCase()) as Hex0x;
+
   if (payment.escrow) {
     // Route through WoCoEscrow contract
     const escrowAddr = await getEscrowAddress(chainId);
     const eventBytes32 = eventIdToBytes32(eventId);
-    // releaseTime = event end date + 48 hours, or 7 days from now as fallback
+    // releaseTime = event end date + 24 hours, or 7 days from now as fallback
     const releaseTime = eventEndDate
-      ? Math.floor(new Date(eventEndDate).getTime() / 1000) + 48 * 3600
+      ? Math.floor(new Date(eventEndDate).getTime() / 1000) + 24 * 3600
       : Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
     const organiser = payment.recipientAddress;
     if (payment.currency === "ETH") {
-      return executeEscrowETHPayment(signer, payment.price, escrowAddr, eventBytes32, chainId, organiser, releaseTime);
+      return executeEscrowETHPayment(signer, payment.price, escrowAddr, eventBytes32, chainId, organiser, releaseTime, from);
     } else {
-      return executeEscrowTokenPayment(signer, payment.price, escrowAddr, eventBytes32, chainId, organiser, releaseTime);
+      return executeEscrowTokenPayment(signer, payment.price, escrowAddr, eventBytes32, chainId, organiser, releaseTime, from);
     }
   } else {
     // Direct payment to organiser
     if (payment.currency === "ETH") {
-      return executeETHPayment(signer, payment.price, payment.recipientAddress, chainId);
+      return executeETHPayment(signer, payment.price, payment.recipientAddress, chainId, from);
     } else {
-      return executeUSDCPayment(signer, payment.price, payment.recipientAddress, chainId);
+      return executeUSDCPayment(signer, payment.price, payment.recipientAddress, chainId, from);
     }
   }
 }
@@ -101,11 +104,12 @@ async function executeEscrowETHPayment(
   chainId: PaymentChainId,
   organiser: Hex0x,
   releaseTime: number,
+  from: Hex0x,
 ): Promise<PaymentResult> {
   const escrow = new Contract(escrowAddr, ESCROW_ABI, signer);
   const tx = await escrow.payETH(eventBytes32, organiser, releaseTime, { value: parseUnits(amount, 18) });
   await tx.wait(1);
-  return { proof: { type: "tx", txHash: tx.hash, chainId } };
+  return { proof: { type: "tx", txHash: tx.hash, chainId, from } };
 }
 
 async function executeEscrowTokenPayment(
@@ -116,6 +120,7 @@ async function executeEscrowTokenPayment(
   chainId: PaymentChainId,
   organiser: Hex0x,
   releaseTime: number,
+  from: Hex0x,
 ): Promise<PaymentResult> {
   const usdcAddress = USDC_ADDRESSES[chainId];
   if (!usdcAddress) throw new Error(`USDC not supported on chain ${chainId}`);
@@ -130,7 +135,7 @@ async function executeEscrowTokenPayment(
   const escrow = new Contract(escrowAddr, ESCROW_ABI, signer);
   const tx = await escrow.payToken(eventBytes32, usdcAddress, parsedAmount, organiser, releaseTime);
   await tx.wait(1);
-  return { proof: { type: "tx", txHash: tx.hash, chainId } };
+  return { proof: { type: "tx", txHash: tx.hash, chainId, from } };
 }
 
 async function executeETHPayment(
@@ -138,6 +143,7 @@ async function executeETHPayment(
   amount: string,
   recipient: Hex0x,
   chainId: PaymentChainId,
+  from: Hex0x,
 ): Promise<PaymentResult> {
   const tx = await signer.sendTransaction({
     to: recipient,
@@ -152,6 +158,7 @@ async function executeETHPayment(
       type: "tx",
       txHash: tx.hash,
       chainId,
+      from,
     },
   };
 }
@@ -161,6 +168,7 @@ async function executeUSDCPayment(
   amount: string,
   recipient: Hex0x,
   chainId: PaymentChainId,
+  from: Hex0x,
 ): Promise<PaymentResult> {
   const usdcAddress = USDC_ADDRESSES[chainId];
   if (!usdcAddress) throw new Error(`USDC not supported on chain ${chainId}`);
@@ -177,6 +185,7 @@ async function executeUSDCPayment(
       type: "tx",
       txHash: tx.hash,
       chainId,
+      from,
     },
   };
 }

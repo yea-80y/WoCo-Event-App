@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type {
   Hex0x,
   ClaimedTicket,
@@ -12,6 +12,7 @@ import type {
   PendingClaimEntry,
   PendingClaimsFeed,
 } from "@woco/shared";
+import { verifyTicketSignature } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import {
   pack4096,
@@ -43,10 +44,29 @@ export type ClaimResult = ClaimedTicket & { _pendingId?: string };
 
 export type ClaimIdentifier =
   | { type: "wallet"; address: Hex0x }
-  | { type: "email"; email: string; emailHash: string };
+  | { type: "email"; email: string; emailHash: string; legacyEmailHash?: string };
 
-/** Hash email for privacy-safe storage */
+/**
+ * Hash email for privacy-safe storage.
+ * Uses HMAC-SHA256 with a server-side secret to prevent rainbow table reversal
+ * (email hashes are stored on publicly-readable Swarm feeds).
+ * Falls back to unsalted SHA-256 only if EMAIL_HASH_SECRET is not configured.
+ */
 export function hashEmail(email: string): string {
+  const normalized = email.trim().toLowerCase();
+  const secret = process.env.EMAIL_HASH_SECRET;
+  if (secret) {
+    return createHmac("sha256", secret).update(normalized).digest("hex");
+  }
+  // Legacy fallback — unsalted SHA-256 (set EMAIL_HASH_SECRET to upgrade)
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+/**
+ * Legacy unsalted hash — used for backward-compatible dedup lookups
+ * during the migration period (existing claims used unsalted SHA-256).
+ */
+export function hashEmailLegacy(email: string): string {
   return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 }
 
@@ -70,11 +90,17 @@ export async function claimTicket(opts: {
     ? identifier.address.toLowerCase()
     : `email:${identifier.emailHash}`;
 
+  // For email claims, also check the legacy (unsalted) hash for backward compat
+  const legacyClaimerKey = identifier.type === "email" && identifier.legacyEmailHash
+    ? `email:${identifier.legacyEmailHash}`
+    : null;
+
   const existingClaimersPage = await readFeedPage(topicClaimers(seriesId));
   if (existingClaimersPage) {
     const existingFeed = decodeJsonFeed<ClaimersFeed>(existingClaimersPage);
     if (existingFeed?.claimers.some(
-      (c) => c.claimerAddress.toLowerCase() === claimerKey,
+      (c) => c.claimerAddress.toLowerCase() === claimerKey ||
+             (legacyClaimerKey && c.claimerAddress.toLowerCase() === legacyClaimerKey),
     )) {
       throw new Error("Already claimed");
     }
@@ -166,9 +192,15 @@ export async function claimTicket(opts: {
 
   console.log(`[claim] Found unclaimed slot: page ${foundPage}, slot ${foundSlot}, edition ${editionNumber}`);
 
-  // 4. Download original signed ticket
+  // 4. Download and verify original signed ticket
   const originalJson = await downloadFromBytes(ticketRef);
   const originalTicket = JSON.parse(originalJson) as SignedTicket;
+
+  // Verify ed25519 signature — defence-in-depth against feed tampering
+  if (!verifyTicketSignature(originalTicket)) {
+    console.error(`[claim] INVALID SIGNATURE on ticket ref ${ticketRef}, edition ${editionNumber}`);
+    throw new Error("Ticket signature verification failed");
+  }
 
   // 5. Create claimed ticket
   const claimedTicket: ClaimedTicket = {

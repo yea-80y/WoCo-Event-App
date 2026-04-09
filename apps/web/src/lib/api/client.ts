@@ -24,42 +24,62 @@ const BASE =
 export const apiBase = BASE;
 
 /**
+ * Build the auth headers for an authenticated request.
+ *
+ * The session key signs a challenge derived from method + path + timestamp +
+ * nonce + sha256(body). Delegation, session address, signature, nonce, and
+ * timestamp all ride in headers — the request body is never modified.
+ */
+async function buildAuthHeaders(
+  method: string,
+  path: string,
+  body: string,
+): Promise<Record<string, string>> {
+  const signed = await auth.signRequest(method, path, body);
+  if (!signed) throw new Error("Not authenticated");
+
+  // btoa can't handle non-ASCII in the delegation JSON — use UTF-8 safe encoding
+  const delegationJson = JSON.stringify(signed.delegation);
+  const delegationB64 = typeof btoa === "function"
+    ? btoa(unescape(encodeURIComponent(delegationJson)))
+    : Buffer.from(delegationJson, "utf-8").toString("base64");
+
+  return {
+    "X-Session-Address": signed.sessionAddress,
+    "X-Session-Delegation": delegationB64,
+    "X-Session-Sig": signed.signature,
+    "X-Session-Nonce": signed.nonce,
+    "X-Session-Timestamp": signed.timestamp,
+  };
+}
+
+/**
  * Authenticated POST request.
- * Attaches session address + delegation to the body.
+ * Session proof rides in headers — body is untouched.
  */
 export async function authPost<T>(
   path: string,
   body: Record<string, unknown>,
   baseUrl?: string,
 ): Promise<ApiResponse<T>> {
-  const signed = await auth.signRequest(JSON.stringify(body));
-  if (!signed) throw new Error("Not authenticated");
+  const bodyText = JSON.stringify(body);
+  const authHeaders = await buildAuthHeaders("POST", path, bodyText);
 
   const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...body,
-      session: signed.sessionAddress,
-      delegation: signed.delegation,
-    }),
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: bodyText,
   });
 
   return resp.json();
 }
 
-/** Authenticated GET request (delegation via headers). */
+/** Authenticated GET request. */
 export async function authGet<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
-  const signed = await auth.signRequest("");
-  if (!signed) throw new Error("Not authenticated");
-
-  const delegationB64 = btoa(JSON.stringify(signed.delegation));
+  const authHeaders = await buildAuthHeaders("GET", path, "");
 
   const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
-    headers: {
-      "X-Session-Address": signed.sessionAddress,
-      "X-Session-Delegation": delegationB64,
-    },
+    headers: authHeaders,
   });
 
   const json = await resp.json() as ApiResponse<T>;
@@ -68,6 +88,9 @@ export async function authGet<T>(path: string, baseUrl?: string): Promise<ApiRes
   }
   return json;
 }
+
+/** Exported so callers that need to build a custom fetch (streaming, etc.) can reuse the same auth flow. */
+export { buildAuthHeaders };
 
 /** Unauthenticated GET request. */
 export async function get<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {

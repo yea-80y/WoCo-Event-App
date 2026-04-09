@@ -11,7 +11,7 @@ import type {
   OrderEntry,
 } from "@woco/shared";
 export type { OrderEntry };
-import { authPost, authGet, get, apiBase } from "./client.js";
+import { authPost, authGet, get, apiBase, buildAuthHeaders } from "./client.js";
 
 export interface PublishProgress {
   type: "progress";
@@ -35,11 +35,6 @@ export async function createEventStreaming(
 ): Promise<CreateEventResponse> {
   const base = baseUrlOverride ?? apiBase;
 
-  // We need the auth headers, so build the request manually
-  const { auth } = await import("../auth/auth-store.svelte.js");
-  const signed = await auth.signRequest(JSON.stringify(req));
-  if (!signed) throw new Error("Not authenticated");
-
   // Debug: log series payment data being sent to server
   if (req.series) {
     for (const s of req.series) {
@@ -47,14 +42,15 @@ export async function createEventStreaming(
     }
   }
 
-  const resp = await fetch(`${base}/api/events`, {
+  // Sign the canonical challenge for this request — auth rides in headers, body is untouched
+  const bodyText = JSON.stringify(req);
+  const path = "/api/events";
+  const authHeaders = await buildAuthHeaders("POST", path, bodyText);
+
+  const resp = await fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...req,
-      session: signed.sessionAddress,
-      delegation: signed.delegation,
-    }),
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: bodyText,
   });
 
   if (!resp.ok && !resp.body) {

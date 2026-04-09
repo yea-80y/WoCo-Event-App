@@ -380,10 +380,26 @@ async function ensurePodIdentity(): Promise<string | null> {
 // API request signing
 // ---------------------------------------------------------------------------
 
+/**
+ * Sign an authenticated request.
+ *
+ * Produces an EIP-191 signature over a canonical challenge string:
+ *   "woco-session-v1\n{method}\n{path}\n{timestamp}\n{nonce}\n{sha256(body)}"
+ *
+ * The challenge binds the signature to a specific method + path + body + time,
+ * so the delegation bundle alone can't be replayed against other endpoints.
+ *
+ * Callers pass the raw body string (the exact bytes the fetch() body will be),
+ * so there's no JSON.stringify canonicalization drift between client and server.
+ */
 async function signRequest(
-  payload: string,
+  method: string,
+  path: string,
+  body: string,
 ): Promise<{
   signature: string;
+  nonce: string;
+  timestamp: string;
   sessionAddress: string;
   delegation: SessionDelegation;
 } | null> {
@@ -393,13 +409,41 @@ async function signRequest(
     if (!ok) return null;
   }
 
-  const result = await signWithSession(payload);
+  const nonce = crypto.randomUUID();
+  const timestamp = Date.now().toString();
+  const bodyHash = await sha256Hex(body);
+  const challenge = [
+    "woco-session-v1",
+    method.toUpperCase(),
+    path,
+    timestamp,
+    nonce,
+    bodyHash,
+  ].join("\n");
+
+  const result = await signWithSession(challenge);
   if (!result) return null;
 
   const delegation = await getSessionDelegation();
   if (!delegation) return null;
 
-  return { ...result, delegation };
+  return {
+    signature: result.signature,
+    sessionAddress: result.sessionAddress,
+    nonce,
+    timestamp,
+    delegation,
+  };
+}
+
+/** SHA-256 hex of a UTF-8 string (for request body binding). */
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return hex;
 }
 
 // ---------------------------------------------------------------------------

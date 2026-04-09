@@ -1,10 +1,11 @@
-import { verifyTypedData, getAddress, type TypedDataField } from "ethers";
+import { verifyTypedData, verifyMessage, getAddress, type TypedDataField } from "ethers";
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
   type SessionDelegation,
   type VerifyDelegationResult,
 } from "@woco/shared";
+import { isSessionRevoked } from "./revocation.js";
 
 /**
  * Verify a session delegation bundle.
@@ -16,6 +17,8 @@ import {
  * 4. Host matches allowed list (if provided)
  * 5. Claimed session address matches delegation
  * 6. EIP-712 signature recovers to the claimed parent
+ * 7. sessionProof was signed by the claimed session key
+ * 8. Session not revoked
  */
 export function verifyDelegation(
   delegation: SessionDelegation,
@@ -75,6 +78,27 @@ export function verifyDelegation(
       };
     }
 
+    // Verify sessionProof: the session key signed "${host}:${nonce}"
+    if (message.sessionProof) {
+      try {
+        const proofMessage = `${message.host}:${message.nonce}`;
+        const proofSigner = verifyMessage(proofMessage, message.sessionProof);
+        if (proofSigner.toLowerCase() !== message.session.toLowerCase()) {
+          return {
+            valid: false,
+            error: "Session proof does not match session address",
+          };
+        }
+      } catch {
+        return { valid: false, error: "Invalid session proof signature" };
+      }
+    }
+
+    // Check server-side revocation
+    if (isSessionRevoked(message.nonce, recovered, message.issuedAt)) {
+      return { valid: false, error: "Session has been revoked" };
+    }
+
     return {
       valid: true,
       parentAddress: getAddress(recovered),
@@ -86,27 +110,22 @@ export function verifyDelegation(
 }
 
 /**
- * Extract delegation from request body or X-Session-Delegation header.
+ * Extract delegation from the X-Session-Delegation header (base64-encoded JSON).
+ *
+ * As of auth v2 (2026-04-09), delegation is header-only — the legacy
+ * `body.delegation` path has been removed to keep the signed-challenge
+ * surface clean (auth never pollutes request bodies).
  */
-export function extractDelegation(
-  req: Request,
-  body?: { delegation?: SessionDelegation },
-): SessionDelegation | null {
-  if (body?.delegation?.message && body?.delegation?.parentSig) {
-    return body.delegation;
-  }
-
+export function extractDelegation(req: Request): SessionDelegation | null {
   const header = req.headers.get("x-session-delegation");
-  if (header) {
-    try {
-      const decoded = JSON.parse(
-        Buffer.from(header, "base64").toString("utf-8"),
-      );
-      if (decoded?.message && decoded?.parentSig) return decoded;
-    } catch {
-      // invalid header
-    }
+  if (!header) return null;
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(header, "base64").toString("utf-8"),
+    );
+    if (decoded?.message && decoded?.parentSig) return decoded as SessionDelegation;
+  } catch {
+    // invalid header
   }
-
   return null;
 }

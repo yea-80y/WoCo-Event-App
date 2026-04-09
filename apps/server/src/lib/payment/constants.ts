@@ -25,5 +25,23 @@ export function getEscrowAddress(chainId: PaymentChainId): Hex0x | undefined {
 export const ERC20_TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-/** Minimum confirmations required */
-export const MIN_CONFIRMATIONS = 1;
+/**
+ * Minimum confirmations required per chain.
+ * - Mainnet: 12 (reorgs happen regularly at depth 1-2)
+ * - L2s (Base, Optimism): 3 (different finality model, lower reorg risk)
+ * - Sepolia testnet: 3
+ */
+export const MIN_CONFIRMATIONS_BY_CHAIN: Record<number, number> = {
+  1: 12,          // Ethereum mainnet
+  8453: 3,        // Base
+  10: 3,          // Optimism
+  11155111: 3,    // Sepolia
+};
+
+/** Fallback if chain not in the map */
+export const DEFAULT_MIN_CONFIRMATIONS = 6;
+
+/** Get minimum confirmations for a chain */
+export function getMinConfirmations(chainId: number): number {
+  return MIN_CONFIRMATIONS_BY_CHAIN[chainId] ?? DEFAULT_MIN_CONFIRMATIONS;
+}

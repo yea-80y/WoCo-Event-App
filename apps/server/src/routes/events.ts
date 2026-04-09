@@ -3,7 +3,7 @@ import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventRequest, EventDirectoryEntry } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory } from "../lib/event/service.js";
+import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
 const events = new Hono<AppEnv>();
 
 // GET /api/events - public listing (served from in-memory cache, backed by Swarm directory)
@@ -108,6 +108,22 @@ events.post("/", requireAuth, async (c) => {
     console.log(`[api] Incoming series "${s.name}" payment:`, pay ? JSON.stringify(pay) : "none");
   }
 
+  // Escrow enforcement: new organisers (no completed events yet) must use escrow
+  // for all paid series. "Completed" = endDate or startDate + 24h is in the past.
+  const hasPaidSeries = series.some((s) => (s as { payment?: unknown }).payment);
+  if (hasPaidSeries) {
+    const trusted = await isOrganiserTrusted(parentAddress);
+    if (!trusted) {
+      console.log(`[api] Organiser ${parentAddress} not yet trusted — forcing escrow on paid series`);
+      for (const s of series) {
+        const pay = (s as { payment?: import("@woco/shared").PaymentConfig }).payment;
+        if (pay) {
+          pay.escrow = true;
+        }
+      }
+    }
+  }
+
   return streamText(c, async (stream) => {
     try {
       const result = await createEvent({
@@ -161,43 +177,19 @@ events.post("/", requireAuth, async (c) => {
 // Does NOT add anything to the directory — that's an explicit action via /list.
 events.post("/discover", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = c.get("body") as { sourceApiUrl?: string; session?: string; delegation?: unknown };
+  const body = c.get("body") as { sourceApiUrl?: string };
 
   const rawUrl = (body.sourceApiUrl ?? "").trim().replace(/\/$/, "");
   if (!rawUrl) return c.json({ ok: false, error: "sourceApiUrl is required" }, 400);
 
   const apiBase = rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl;
 
-  // Try to fetch all creator events (including unlisted) by forwarding session auth.
-  // Falls back to the public directory if the external server doesn't accept the delegation.
+  // Cross-server delegation forwarding is no longer supported (auth v2 signs each
+  // request against a specific method+path+body, so an incoming sig can't be
+  // replayed against a different server). Discover now always uses the public
+  // directory — external unlisted events won't appear until the caller lists them.
   let remoteEntries: import("@woco/shared").EventDirectoryEntry[];
-
-  // authPost sends session/delegation in the JSON body, not headers.
-  // For forwarding to the source server's GET /api/events/mine we need them as headers.
-  const sessionAddress = body.session ?? "";
-  const sessionDelegation = body.delegation
-    ? Buffer.from(JSON.stringify(body.delegation)).toString("base64")
-    : "";
-
-  let usedMine = false;
-  if (sessionAddress && sessionDelegation) {
-    try {
-      const resp = await fetch(`${apiBase}/api/events/mine`, {
-        headers: {
-          "X-Session-Address": sessionAddress,
-          "X-Session-Delegation": sessionDelegation,
-        },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (resp.ok) {
-        const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[] };
-        if (json.ok && json.data) {
-          remoteEntries = json.data;
-          usedMine = true;
-        }
-      }
-    } catch { /* fall through to public directory */ }
-  }
+  const usedMine = false;
 
   if (!usedMine) {
     try {
