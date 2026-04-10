@@ -79,19 +79,21 @@ export function verifyDelegation(
     }
 
     // Verify sessionProof: the session key signed "${host}:${nonce}"
-    if (message.sessionProof) {
-      try {
-        const proofMessage = `${message.host}:${message.nonce}`;
-        const proofSigner = verifyMessage(proofMessage, message.sessionProof);
-        if (proofSigner.toLowerCase() !== message.session.toLowerCase()) {
-          return {
-            valid: false,
-            error: "Session proof does not match session address",
-          };
-        }
-      } catch {
-        return { valid: false, error: "Invalid session proof signature" };
+    // Always required — reject delegations without a valid proof-of-possession.
+    if (!message.sessionProof) {
+      return { valid: false, error: "Missing session proof" };
+    }
+    try {
+      const proofMessage = `${message.host}:${message.nonce}`;
+      const proofSigner = verifyMessage(proofMessage, message.sessionProof);
+      if (proofSigner.toLowerCase() !== message.session.toLowerCase()) {
+        return {
+          valid: false,
+          error: "Session proof does not match session address",
+        };
       }
+    } catch {
+      return { valid: false, error: "Invalid session proof signature" };
     }
 
     // Check server-side revocation

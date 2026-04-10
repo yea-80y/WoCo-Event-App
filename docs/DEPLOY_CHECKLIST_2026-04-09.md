@@ -159,13 +159,33 @@ curl http://localhost:3001/api/health  # from local if tunnel is up, or via ssh
 
 ## 6. Known unresolved items (NOT in scope for this deploy)
 
-All Round 4 items landed in commit `ecbe127`. Remaining work:
+All Round 4 items landed in commit `ecbe127`. Round 5 covers escrow hardening + sessionProof enforcement.
 
-- **WoCoEscrow.sol hardening** — before mainnet/Base deploy, add:
-  - `ReentrancyGuard` on `deposit()` / `claim()` / `refund()`
-  - Token array length cap (`require(tokens.length <= 20)` or similar)
-  - Per-claimer deposit binding so an attacker can't claim someone else's escrow slot with their own address
-- **Rate limiting persistence** — current in-memory rate limiter resets on every restart. Fine for Devcon scale, revisit if it becomes a problem.
+### Completed in Round 5 (2026-04-10)
+
+- [x] **WoCoEscrow.sol hardening** — all three items done:
+  - OpenZeppelin `ReentrancyGuard` (v5.6.1) on `release()` and `resolveDispute()`
+  - Token array length cap (`MAX_TOKENS = 20`)
+  - Per-payer deposit tracking (`ethDeposits` / `tokenDeposits` mappings)
+- [x] **sessionProof enforcement** — server now rejects delegations missing sessionProof (was silently skipped)
+
+### IMPORTANT: contracts/ is a separate Git repo
+
+`contracts/` has its own `.git` directory — it is NOT part of the main monorepo. Escrow changes must be committed separately:
+
+```bash
+cd contracts
+git add -A
+git commit -m "security: ReentrancyGuard (OZ), token cap, deposit tracking"
+```
+
+Deploy the contract independently (Foundry `forge script` or `forge create`) when ready for mainnet/Base.
+
+### Remaining low-priority items
+
+- **Rate limiting persistence** — in-memory rate limiter resets on restart. Fine for Devcon scale, revisit if it becomes a problem.
+- **IP rate limiting hardening** — proof-of-work or CAPTCHA for email claims at scale.
+- **`clientCodeHash`** — always ZeroHash; reserved for content hash registry.
 
 ---
 

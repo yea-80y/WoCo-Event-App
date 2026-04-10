@@ -71,11 +71,35 @@ Session domain salt is safe to deploy immediately — sessions re-issue transpar
 
 ---
 
-## Deferred (P3 — not yet implemented)
+## Round 5 (2026-04-10): Escrow hardening + sessionProof enforcement
 
-- Dead `ENCRYPTION_DOMAIN`/`ENCRYPTION_TYPES`/`ENCRYPTION_NONCE` constants in `packages/shared/src/crypto/constants.ts` — remove when convenient
-- AAD for device-key AES-GCM (`apps/web/src/lib/auth/storage/encryption.ts`)
-- Escrow contract `ReentrancyGuard` (`contracts/src/WoCoEscrow.sol`) — before mainnet deploy
-- `toUtf8Bytes` → `getBytes` in POD seed derivation — breaking change, only if no existing users
-- Persistent file-backed rate limiting — current in-memory is fine until Devcon scale
-- Token array length limit in escrow contract
+| File | Finding | Change |
+|---|---|---|
+| `contracts/src/WoCoEscrow.sol` | P2 (5.3) | OpenZeppelin `ReentrancyGuard` on `release()` and `resolveDispute()` |
+| `contracts/src/WoCoEscrow.sol` | P3 (5.4) | `MAX_TOKENS = 20` enforced on both `release()` and `resolveDispute()` |
+| `contracts/src/WoCoEscrow.sol` | — | Per-payer deposit tracking (`ethDeposits`, `tokenDeposits` mappings + view functions) |
+| `contracts/foundry.toml` | — | Added OZ remapping; installed `openzeppelin-contracts` v5.6.1 |
+| `apps/server/src/lib/auth/verify-delegation.ts` | P2 (1.2) | `sessionProof` is now **mandatory** — server rejects delegations missing it (was silently skipped) |
+
+### IMPORTANT: contracts/ is a separate Git repo
+
+`contracts/` has its own `.git` — it is a nested repo, NOT tracked by the main monorepo. Changes to escrow files must be committed separately:
+
+```bash
+cd contracts
+git add -A
+git commit -m "security: ReentrancyGuard (OZ), token cap, deposit tracking"
+```
+
+The main monorepo commit for Round 5 covers only the `verify-delegation.ts` sessionProof fix.
+
+---
+
+## Deferred (post-audit — low priority)
+
+- **Persistent file-backed rate limiting** — current in-memory is fine until Devcon scale (finding 7.1)
+- **IP rate limiting hardening** — proof-of-work or CAPTCHA for email claims at scale (finding 7.2)
+- **`clientCodeHash` field** — always ZeroHash; reserved for content hash registry integration (finding 9.5)
+- **Empty HKDF salt in encryption key derivation** — spec-compliant, not a vulnerability (finding 3.1)
+- **Claim message delimiter** — now N/A, replaced by EIP-712 structured data in Round 4 (finding 6.1)
+- **ed25519 seed/key naming** — `seedToEd25519` returns seed, not private key; cosmetic (finding 2.2)
