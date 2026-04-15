@@ -81,6 +81,30 @@
       <SiteBuilder />
     {:else if router.route === "profile"}
       <ProfilePage address={router.params.address} />
+    {:else if router.route === "stripe-return"}
+      <div class="stripe-return-page">
+        <h2>Stripe Setup</h2>
+        <p>Checking your onboarding status...</p>
+        {#await import("./lib/api/stripe.js").then(m => m.getStripeAccountStatus())}
+          <p>Loading...</p>
+        {:then status}
+          {#if status.onboardingComplete}
+            <p class="stripe-success">Your Stripe account is connected and ready to accept payments!</p>
+          {:else}
+            <p>Your onboarding is not yet complete. Some information may still be required.</p>
+          {/if}
+          <button class="stripe-dashboard-link" onclick={() => navigate("/dashboard")}>Back to dashboard</button>
+        {:catch}
+          <p>Could not check status. Please try again.</p>
+          <button class="stripe-dashboard-link" onclick={() => navigate("/dashboard")}>Back to dashboard</button>
+        {/await}
+      </div>
+    {:else if router.route === "stripe-refresh"}
+      <div class="stripe-return-page">
+        <h2>Link Expired</h2>
+        <p>Your onboarding link has expired. Go back to the dashboard to get a new one.</p>
+        <button class="stripe-dashboard-link" onclick={() => navigate("/dashboard")}>Back to dashboard</button>
+      </div>
     {/if}
   </section>
 
@@ -299,5 +323,40 @@
     main {
       padding-bottom: 5rem;
     }
+  }
+
+  .stripe-return-page {
+    max-width: 480px;
+    margin: 2rem auto;
+    text-align: center;
+    padding: 2rem 1rem;
+  }
+
+  .stripe-return-page h2 {
+    color: var(--text);
+    margin: 0 0 0.75rem;
+  }
+
+  .stripe-return-page p {
+    color: var(--text-muted);
+    margin: 0 0 1rem;
+    font-size: 0.875rem;
+  }
+
+  .stripe-success {
+    color: var(--success) !important;
+  }
+
+  .stripe-dashboard-link {
+    padding: 0.5rem 1.25rem;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  .stripe-dashboard-link:hover {
+    background: var(--accent-hover);
   }
 </style>

@@ -2,6 +2,7 @@
   import type { PaymentConfig, PaymentChainId, Hex0x } from "@woco/shared";
   import { CHAIN_NAMES } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
 
   interface WaveItem {
     id: string;
@@ -20,12 +21,16 @@
     waves: WaveItem[];
     /** Whether this tier is a paid ticket */
     isPaid: boolean;
-    /** Price as decimal string */
+    /** Price as decimal string (fiat) */
     price: string;
-    /** USD (paid in ETH equivalent), ETH, or USDC */
-    currency: "USD" | "ETH" | "USDC";
-    /** Accepted chains */
+    /** Fiat currency for pricing */
+    currency: "USD" | "GBP" | "EUR";
+    /** Accept crypto payments (ETH/USDC, converted from fiat at claim time) */
+    cryptoEnabled: boolean;
+    /** Accepted chains for crypto */
     acceptedChains: PaymentChainId[];
+    /** Accept Stripe card payments */
+    stripeEnabled: boolean;
   }
 
   interface SeriesDraft {
@@ -46,6 +51,35 @@
 
   let { series = $bindable() }: Props = $props();
 
+  let stripeModalOpen = $state(false);
+  let stripeModalTierId = $state<string | null>(null);
+
+  function handleStripeToggle(tier: TierGroup, checked: boolean) {
+    if (checked) {
+      // Opening the modal — don't enable yet, wait for connection
+      stripeModalTierId = tier.id;
+      stripeModalOpen = true;
+    } else {
+      tier.stripeEnabled = false;
+    }
+  }
+
+  function handleStripeConnected() {
+    // Stripe is fully connected — enable the toggle for the tier that triggered it
+    if (stripeModalTierId) {
+      const tier = tierGroups.find(t => t.id === stripeModalTierId);
+      if (tier) tier.stripeEnabled = true;
+    }
+    stripeModalOpen = false;
+    stripeModalTierId = null;
+  }
+
+  function handleStripeModalClose() {
+    // Closed without connecting — don't enable the toggle
+    stripeModalOpen = false;
+    stripeModalTierId = null;
+  }
+
   let tierGroups = $state<TierGroup[]>([{
     id: crypto.randomUUID(),
     tierName: "General Admission",
@@ -53,8 +87,10 @@
     approvalRequired: false,
     isPaid: false,
     price: "",
-    currency: "USD",
+    currency: "GBP",
+    cryptoEnabled: true,
     acceptedChains: [8453] as PaymentChainId[],
+    stripeEnabled: false,
     waves: [{
       id: crypto.randomUUID(),
       label: "",
@@ -86,8 +122,10 @@
             price: tier.price,
             currency: tier.currency,
             recipientAddress: (auth.parent?.toLowerCase() ?? "0x0") as Hex0x,
-            acceptedChains: tier.acceptedChains,
-            escrow: true, // default: escrow for all new events (server can override)
+            acceptedChains: tier.cryptoEnabled ? tier.acceptedChains : [],
+            escrow: tier.cryptoEnabled, // escrow for crypto payments
+            cryptoEnabled: tier.cryptoEnabled,
+            stripeEnabled: tier.stripeEnabled,
           };
         }
         return base;
@@ -105,8 +143,10 @@
       approvalRequired: false,
       isPaid: false,
       price: "",
-      currency: "USD",
+      currency: "GBP",
+      cryptoEnabled: true,
       acceptedChains: [8453] as PaymentChainId[],
+      stripeEnabled: false,
       waves: [{
         id: crypto.randomUUID(),
         label: "",
@@ -184,7 +224,7 @@
         <label class="approval-toggle">
           <input type="checkbox" bind:checked={tier.isPaid} />
           <span class="approval-label">Paid ticket</span>
-          <span class="approval-hint">Set a price — attendees pay with crypto to claim this ticket</span>
+          <span class="approval-hint">Set a price — attendees can pay with crypto and/or card</span>
         </label>
 
         {#if tier.isPaid}
@@ -192,38 +232,68 @@
             <div class="payment-row">
               <label class="field payment-price-field">
                 <span class="field-label">Price</span>
-                <input type="text" bind:value={tier.price} placeholder="e.g. 5.00" inputmode="decimal" />
+                <input type="text" bind:value={tier.price} placeholder="e.g. 10.00" inputmode="decimal" />
               </label>
               <label class="field payment-currency-field">
                 <span class="field-label">Currency</span>
                 <select bind:value={tier.currency}>
+                  <option value="GBP">GBP</option>
                   <option value="USD">USD</option>
-                  <option value="ETH">ETH</option>
-                  <option value="USDC">USDC</option>
+                  <option value="EUR">EUR</option>
                 </select>
               </label>
             </div>
-            <div class="payment-chains">
-              <span class="field-label">Accepted networks</span>
-              <div class="chain-checkboxes">
-                {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, name]}
-                  <label class="chain-check">
-                    <input
-                      type="checkbox"
-                      checked={tier.acceptedChains.includes(chainId as PaymentChainId)}
-                      onchange={(e) => {
-                        const cid = chainId as PaymentChainId;
-                        if ((e.target as HTMLInputElement).checked) {
-                          if (!tier.acceptedChains.includes(cid)) tier.acceptedChains = [...tier.acceptedChains, cid];
-                        } else {
-                          tier.acceptedChains = tier.acceptedChains.filter(c => c !== cid);
-                        }
-                      }}
-                    />
-                    <span>{name}</span>
-                  </label>
-                {/each}
-              </div>
+
+            <div class="payment-methods">
+              <span class="field-label">Payment methods</span>
+
+              <label class="chain-check">
+                <input type="checkbox" bind:checked={tier.cryptoEnabled} />
+                <span>Crypto (ETH/USDC — converted from {tier.currency} at claim time)</span>
+              </label>
+
+              {#if tier.cryptoEnabled}
+                <div class="payment-chains" style="margin-left: 1.5rem; margin-top: 0.25rem;">
+                  <span class="field-label" style="font-size: 0.6875rem;">Networks</span>
+                  <div class="chain-checkboxes">
+                    {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, name]}
+                      <label class="chain-check">
+                        <input
+                          type="checkbox"
+                          checked={tier.acceptedChains.includes(chainId as PaymentChainId)}
+                          onchange={(e) => {
+                            const cid = chainId as PaymentChainId;
+                            if ((e.target as HTMLInputElement).checked) {
+                              if (!tier.acceptedChains.includes(cid)) tier.acceptedChains = [...tier.acceptedChains, cid];
+                            } else {
+                              tier.acceptedChains = tier.acceptedChains.filter(c => c !== cid);
+                            }
+                          }}
+                        />
+                        <span>{name}</span>
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+
+              <label class="chain-check">
+                <input
+                  type="checkbox"
+                  checked={tier.stripeEnabled}
+                  onchange={(e) => handleStripeToggle(tier, (e.target as HTMLInputElement).checked)}
+                />
+                <span>Card payments via Stripe</span>
+              </label>
+              {#if tier.stripeEnabled}
+                <div class="stripe-connected-badge">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <circle cx="7" cy="7" r="6" fill="var(--success)" opacity="0.15"/>
+                    <path d="M4 7.5L6 9.5L10 5" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>Stripe connected</span>
+                </div>
+              {/if}
             </div>
           </div>
         {/if}
@@ -307,6 +377,12 @@
     + Add tier
   </button>
 </div>
+
+<StripeConnectModal
+  bind:open={stripeModalOpen}
+  onclose={handleStripeModalClose}
+  onconnected={handleStripeConnected}
+/>
 
 <style>
   .tiers-editor {
@@ -676,5 +752,19 @@
     width: 0.875rem;
     height: 0.875rem;
     accent-color: var(--accent);
+  }
+
+  .stripe-connected-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-left: 1.5rem;
+    padding: 0.25rem 0.625rem;
+    background: color-mix(in srgb, var(--success) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 20%, var(--border));
+    border-radius: 9999px;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--success);
   }
 </style>

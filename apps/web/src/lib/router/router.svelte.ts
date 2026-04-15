@@ -18,6 +18,8 @@ function matchRoute(path: string): { route: string; params: Record<string, strin
   if (path === "/dashboard") return { route: "dashboard-index", params: {} };
   if (path === "/site-builder") return { route: "site-builder", params: {} };
   if (path === "/profile") return { route: "profile", params: {} };
+  if (path === "/stripe/return") return { route: "stripe-return", params: {} };
+  if (path === "/stripe/refresh") return { route: "stripe-refresh", params: {} };
 
   const profileMatch = path.match(/^\/profile\/(0x[a-fA-F0-9]{40})$/);
   if (profileMatch) return { route: "profile", params: { address: profileMatch[1] } };

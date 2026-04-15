@@ -111,6 +111,44 @@ async function _ensurePasskeyKey(): Promise<void> {
   _passkeyPrivateKey = result.privateKey;
 }
 
+/**
+ * Background wallet reconnection — polls for MetaMask/injected provider after
+ * external redirects (e.g. Stripe onboarding). If the wallet appears and
+ * matches the stored parent, attach the account change listener. If it
+ * connects to a different address, log out.
+ */
+function _tryReconnectWallet(storedParent: string): void {
+  let attempts = 0;
+  const maxAttempts = 10; // try for ~10 seconds
+  const interval = setInterval(async () => {
+    attempts++;
+    try {
+      const addr = await Promise.race([
+        getConnectedAddress(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      ]);
+      if (addr) {
+        clearInterval(interval);
+        if (addr === storedParent) {
+          _cleanupAccountListener = onAccountsChanged(handleAccountsChanged);
+          console.log("[auth] wallet reconnected in background");
+        } else {
+          // Different wallet — clear session
+          console.warn("[auth] wallet reconnected but address changed, logging out");
+          await clearAllAuth();
+        }
+      } else if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        // Wallet never appeared — session still works for API calls,
+        // new EIP-712 signing will prompt login if needed
+        console.log("[auth] wallet not available after redirect, session-only mode");
+      }
+    } catch {
+      // ignore errors during reconnection attempts
+    }
+  }, 1000);
+}
+
 // ---------------------------------------------------------------------------
 // Initialisation (call once on app mount)
 // ---------------------------------------------------------------------------
@@ -140,14 +178,25 @@ async function init(): Promise<void> {
         ]);
       }
 
-      // Wallet still connected and matches stored parent
       if (walletAddr && storedParent && walletAddr === storedParent) {
+        // Wallet connected and matches stored parent — full restore
         _kind = "web3";
         _parent = storedParent;
         await _restoreCachedAuth();
         _cleanupAccountListener = onAccountsChanged(handleAccountsChanged);
+      } else if (walletAddr && storedParent && walletAddr !== storedParent) {
+        // Wallet switched to a different account — clear stale session
+        await clearAllAuth();
+      } else if (!walletAddr && storedParent) {
+        // Wallet not immediately available (e.g. after external redirect like
+        // Stripe onboarding, or MetaMask slow to inject). The session key in
+        // IndexedDB can still sign API requests without the parent wallet, so
+        // restore auth and attempt wallet reconnection in the background.
+        _kind = "web3";
+        _parent = storedParent;
+        await _restoreCachedAuth();
+        _tryReconnectWallet(storedParent);
       } else {
-        // Wallet disconnected or switched — clear stale session
         await clearAllAuth();
       }
     } else if (kind === "local") {

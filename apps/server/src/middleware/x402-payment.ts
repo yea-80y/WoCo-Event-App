@@ -72,8 +72,8 @@ export async function x402ClaimMiddleware(c: Context<AppEnv>, next: Next) {
   if (!event) return next();
 
   const series = event.series.find((s) => s.seriesId === seriesId);
-  if (!series?.payment || series.payment.currency !== "USDC") {
-    // Not a USDC-paid series — skip x402
+  if (!series?.payment || !series.payment.cryptoEnabled) {
+    // Not a crypto-paid series — skip x402
     return next();
   }
 

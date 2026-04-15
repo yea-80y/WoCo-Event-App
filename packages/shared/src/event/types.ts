@@ -11,18 +11,25 @@ export type ClaimMode = "wallet" | "email" | "both";
 /** Supported payment chains: Ethereum mainnet, Base, Optimism, + Sepolia (testnet) */
 export type PaymentChainId = 1 | 8453 | 10 | 11155111;
 
+/** Fiat currencies supported for ticket pricing */
+export type FiatCurrency = "USD" | "GBP" | "EUR";
+
 /** Payment configuration per ticket series */
 export interface PaymentConfig {
-  /** Price as a decimal string (e.g. "5.00" for USD/USDC, "0.005" for ETH) */
+  /** Price as a decimal string in fiat (e.g. "10.00") */
   price: string;
-  /** Pricing currency: USD = priced in dollars paid in ETH, ETH = priced in ETH, USDC = priced in USDC */
-  currency: "USD" | "ETH" | "USDC";
+  /** Fiat currency the organiser set the price in */
+  currency: FiatCurrency;
   /** Recipient address (organiser wallet or escrow contract) */
   recipientAddress: Hex0x;
-  /** Accepted chains (default: [8453] = Base) */
+  /** Accepted chains for crypto payments (empty = crypto disabled) */
   acceptedChains: PaymentChainId[];
-  /** Whether payment goes through escrow (server sets based on organiser trust) */
+  /** Whether crypto payment goes through escrow */
   escrow: boolean;
+  /** Whether crypto payments are accepted */
+  cryptoEnabled: boolean;
+  /** Whether Stripe card payments are accepted */
+  stripeEnabled: boolean;
 }
 
 /** Payment proof submitted alongside a claim request */

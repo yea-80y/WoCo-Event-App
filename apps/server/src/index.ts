@@ -18,6 +18,7 @@ import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { broadcast } from "./routes/broadcast.js";
 import { domains } from "./routes/domains.js";
+import { stripeRoutes } from "./routes/stripe.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -228,6 +229,9 @@ app.route("/api/site", siteRoute);
 
 // Custom domain routes
 app.route("/api/domains", domains);
+
+// Stripe Connect routes (organiser onboarding + attendee checkout)
+app.route("/api/stripe", stripeRoutes);
 
 // Profile routes
 app.route("/api/profile", profiles);

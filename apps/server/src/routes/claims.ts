@@ -15,7 +15,7 @@ import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
 import { verifyPayment } from "../lib/payment/verify.js";
 import { getEscrowAddress } from "../lib/payment/constants.js";
-import { usdToETH, usdToETHWithSlippage, getETHPriceUSD } from "../lib/payment/eth-price.js";
+import { fiatToETH, fiatToETHWithSlippage, getETHPriceUSD, fiatToUSD } from "../lib/payment/eth-price.js";
 import { checkAndConsumeTxHash } from "../lib/payment/tx-registry.js";
 import { extractDelegation, verifyDelegation } from "../lib/auth/verify-delegation.js";
 
@@ -272,17 +272,32 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   }
 
   if (series.payment) {
-    // Series requires crypto payment
+    // Stripe-only events: if payment has stripeEnabled but NOT cryptoEnabled, and no proof,
+    // redirect to Stripe checkout instead of returning 402 for crypto.
+    const cryptoRequired = series.payment.cryptoEnabled && series.payment.acceptedChains.length > 0;
+
     if (!paymentProof) {
-      // For USD-priced events, include the current ETH equivalent
+      if (!cryptoRequired && series.payment.stripeEnabled) {
+        // Stripe-only: tell client to use Stripe
+        return c.json({
+          ok: false,
+          error: "Payment required",
+          paymentRequired: {
+            price: series.payment.price,
+            currency: series.payment.currency,
+            stripeEnabled: true,
+            cryptoEnabled: false,
+          },
+        }, 402);
+      }
+
+      // Crypto-enabled: include ETH equivalent for the fiat price
       let ethEquivalent: string | undefined;
       let ethPriceUSD: number | undefined;
-      if (series.payment.currency === "USD") {
-        try {
-          ethPriceUSD = await getETHPriceUSD();
-          ethEquivalent = await usdToETH(series.payment.price);
-        } catch { /* price feed unavailable — client can fetch independently */ }
-      }
+      try {
+        ethPriceUSD = await getETHPriceUSD();
+        ethEquivalent = await fiatToETH(series.payment.price, series.payment.currency);
+      } catch { /* price feed unavailable — client can fetch independently */ }
 
       // Return 402 with payment requirements
       return c.json({
@@ -294,13 +309,12 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
           recipientAddress: series.payment.recipientAddress,
           acceptedChains: series.payment.acceptedChains,
           escrow: series.payment.escrow,
+          cryptoEnabled: series.payment.cryptoEnabled,
+          stripeEnabled: series.payment.stripeEnabled ?? false,
           ...(ethEquivalent ? { ethEquivalent, ethPriceUSD } : {}),
           chainDetails: series.payment.acceptedChains.map((chainId) => ({
             chainId,
             name: CHAIN_NAMES[chainId],
-            ...(series.payment!.currency === "USDC"
-              ? { usdcAddress: USDC_ADDRESSES[chainId] }
-              : {}),
             ...(series.payment!.escrow ? { escrowAddress: getEscrowAddress(chainId) } : {}),
           })),
         },
@@ -323,16 +337,10 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       return c.json({ ok: false, error: "Escrow not configured for this chain" }, 500);
     }
 
-    // Verify the on-chain payment
+    // Verify the on-chain payment — all prices are fiat, convert to ETH with slippage
     if (paymentProof.type === "tx") {
-      let verifyAmount = series.payment.price;
-      let verifyCurrency: "ETH" | "USDC" = series.payment.currency === "USDC" ? "USDC" : "ETH";
-
-      // USD-priced: convert to ETH with slippage tolerance (3%)
-      if (series.payment.currency === "USD") {
-        verifyCurrency = "ETH";
-        verifyAmount = await usdToETHWithSlippage(series.payment.price);
-      }
+      const verifyCurrency: "ETH" | "USDC" = "ETH";
+      const verifyAmount = await fiatToETHWithSlippage(series.payment.price, series.payment.currency);
 
       // Determine who is expected to have signed the payment tx.
       // Wallet mode: the verified parentAddress (authenticated by session sig).

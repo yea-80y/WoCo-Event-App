@@ -32,13 +32,33 @@ export async function getETHPriceUSD(): Promise<number> {
   return data.price;
 }
 
+/** Approximate forex rates to USD (fallback values). */
+const FOREX_TO_USD: Record<string, number> = {
+  USD: 1,
+  GBP: 1.27,
+  EUR: 1.09,
+};
+
+/** Convert a fiat amount (USD/GBP/EUR) to its USD equivalent. */
+function fiatToUSD(amount: number, currency: string): number {
+  if (currency === "USD") return amount;
+  const rate = FOREX_TO_USD[currency];
+  if (!rate) return amount; // unknown currency — treat as USD
+  return amount * rate;
+}
+
 /** Convert USD amount string to ETH decimal string. */
 export async function usdToETH(usdAmount: string): Promise<string> {
+  return fiatToETH(usdAmount, "USD");
+}
+
+/** Convert a fiat amount to ETH decimal string. */
+export async function fiatToETH(amount: string, currency: string): Promise<string> {
   const ethPrice = await getETHPriceUSD();
-  const usd = parseFloat(usdAmount);
-  if (isNaN(usd) || usd <= 0) return "0";
+  const fiat = parseFloat(amount);
+  if (isNaN(fiat) || fiat <= 0) return "0";
+  const usd = fiatToUSD(fiat, currency);
   const eth = usd / ethPrice;
-  // Show 6 significant decimals for readability
   if (eth < 0.001) return eth.toFixed(8);
   if (eth < 1) return eth.toFixed(6);
   return eth.toFixed(4);

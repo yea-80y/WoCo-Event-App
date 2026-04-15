@@ -4,6 +4,7 @@
   import { authPost, authGet } from "../../api/client.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
+  import StripeConnect from "./StripeConnect.svelte";
 
   let events = $state<EventDirectoryEntry[]>([]);
   let loading = $state(true);
@@ -138,6 +139,11 @@
   {/if}
 
   {#if auth.isConnected}
+    <div class="stripe-section">
+      <div class="section-divider"></div>
+      <StripeConnect />
+    </div>
+
     <div class="discover-section">
       <div class="section-divider"></div>
       <h2 class="section-heading">Events from my own server</h2>

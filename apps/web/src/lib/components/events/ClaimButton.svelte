@@ -4,6 +4,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
+  import { createCheckoutSession } from "../../api/stripe.js";
   import type { SeriesClaimStatus } from "@woco/shared";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
@@ -34,28 +35,31 @@
 
   // Payment state
   const isPaid = $derived(!!payment && parseFloat(payment.price) > 0);
+  const hasCrypto = $derived(!!payment?.cryptoEnabled && (payment?.acceptedChains?.length ?? 0) > 0);
+  const hasStripe = $derived(!!payment?.stripeEnabled);
+  let stripeLoading = $state(false);
+  let stripeEmail = $state("");
   let showChainSelector = $state(false);
   let selectedChain = $state<PaymentChainId | null>(null);
   let paymentProofResult = $state<PaymentProof | null>(null);
-  /** ETH equivalent for USD-priced events (fetched when chain selector opens) */
+  /** ETH equivalent for fiat-priced events (fetched when chain selector opens) */
   let ethEquivalent = $state<string | null>(null);
   let ethPriceLoading = $state(false);
-  /** User's chosen payment method — relevant for USD-priced events where ETH or USDC are both options */
+  /** User's chosen payment method — ETH or USDC */
   let selectedPayMethod = $state<"ETH" | "USDC">("ETH");
+  const CURRENCY_SYMBOLS: Record<string, string> = { USD: "$", GBP: "\u00a3", EUR: "\u20ac" };
   const priceLabel = $derived(
     payment
-      ? payment.currency === "USD"
-        ? `$${payment.price}`
-        : `${payment.price} ${payment.currency}`
+      ? `${CURRENCY_SYMBOLS[payment.currency] || ""}${payment.price}`
       : "",
   );
   /** Whether USDC is available on the selected chain */
   const usdcAvailableOnChain = $derived(
     selectedChain ? !!USDC_ADDRESSES[selectedChain] : false,
   );
-  /** Whether the user can choose between ETH and USDC (USD-priced + chain supports USDC) */
+  /** Whether the user can choose between ETH and USDC (fiat-priced + chain supports USDC) */
   const showPayMethodChoice = $derived(
-    payment?.currency === "USD" && usdcAvailableOnChain,
+    isPaid && usdcAvailableOnChain,
   );
   /** Chain indicator colors for visual identity */
   const CHAIN_COLORS: Record<number, string> = {
@@ -225,6 +229,30 @@
       .catch(() => {});
   });
 
+  async function handleStripeCheckout() {
+    stripeLoading = true;
+    error = null;
+    try {
+      const email = getEmailFromForm() || stripeEmail.trim() || undefined;
+      const address = auth.parent?.toLowerCase() || undefined;
+      if (!email && !address) {
+        error = "Please enter an email address or sign in with a wallet.";
+        return;
+      }
+      const { url } = await createCheckoutSession({
+        eventId,
+        seriesId,
+        claimerEmail: email,
+        claimerAddress: address,
+      });
+      window.location.href = url;
+    } catch (err) {
+      error = err instanceof Error ? err.message : "Failed to start checkout";
+    } finally {
+      stripeLoading = false;
+    }
+  }
+
   function handleClaimClick(method?: "wallet" | "email") {
     if (method) chosenMethod = method;
 
@@ -238,16 +266,16 @@
       return;
     }
 
-    // For paid events: always route through payment flow
-    if (isPaid && !paymentProofResult) {
+    // For paid events with crypto: route through payment flow
+    if (isPaid && hasCrypto && !paymentProofResult) {
       if (!showChainSelector) {
         if (payment!.acceptedChains.length === 1) {
           selectedChain = payment!.acceptedChains[0];
         }
-        if (payment!.currency === "USD" && !ethEquivalent) {
+        if (!ethEquivalent) {
           ethPriceLoading = true;
-          import("../../payment/eth-price.js").then(({ usdToETH }) =>
-            usdToETH(payment!.price).then((eth) => { ethEquivalent = eth; ethPriceLoading = false; })
+          import("../../payment/eth-price.js").then(({ fiatToETH }) =>
+            fiatToETH(payment!.price, payment!.currency).then((eth) => { ethEquivalent = eth; ethPriceLoading = false; })
           ).catch(() => { ethPriceLoading = false; });
         }
         showChainSelector = true;
@@ -286,28 +314,31 @@
         if (!ok) { error = "Session approval cancelled"; return; }
       }
 
-      // For USD-priced events, resolve to the user's chosen pay method
-      let paymentConfig = payment;
-      if (payment.currency === "USD") {
-        if (selectedPayMethod === "USDC") {
-          // Pay exact USD amount in USDC (1:1 stablecoin)
-          paymentConfig = { ...payment, price: payment.price, currency: "USDC" };
-        } else {
-          // Pay in ETH — convert USD to ETH equivalent
-          step = "Fetching ETH price...";
-          const { usdToETH } = await import("../../payment/eth-price.js");
-          const ethAmount = await usdToETH(payment.price);
-          ethEquivalent = ethAmount;
-          paymentConfig = { ...payment, price: ethAmount, currency: "ETH" };
-        }
+      // Fiat-priced: resolve to the user's chosen crypto pay method
+      let paymentConfig: any = payment;
+      if (selectedPayMethod === "USDC") {
+        // Convert fiat to USD for USDC (1:1 stablecoin)
+        const { fiatToETH: _ } = await import("../../payment/eth-price.js");
+        // For USDC we need USD equivalent — use the fiat price directly for USD,
+        // or convert GBP/EUR to USD for USDC amount
+        const usdAmount = payment.currency === "USD"
+          ? payment.price
+          : (parseFloat(payment.price) * (payment.currency === "GBP" ? 1.27 : 1.09)).toFixed(2);
+        paymentConfig = { ...payment, price: usdAmount, currency: "USDC" };
+      } else {
+        // Pay in ETH — convert fiat to ETH equivalent
+        step = "Fetching ETH price...";
+        const { fiatToETH } = await import("../../payment/eth-price.js");
+        const ethAmount = await fiatToETH(payment.price, payment.currency);
+        ethEquivalent = ethAmount;
+        paymentConfig = { ...payment, price: ethAmount, currency: "ETH" };
       }
 
       step = "Switching chain...";
       const { executePayment } = await import("../../payment/pay.js");
 
-      const displayAmount = payment.currency === "USD"
-        ? `${ethEquivalent} ETH ($${payment.price})`
-        : `${payment.price} ${payment.currency}`;
+      const sym = CURRENCY_SYMBOLS[payment.currency] || "";
+      const displayAmount = `${ethEquivalent} ETH (${sym}${payment.price})`;
       step = `Confirm ${displayAmount} payment...`;
       const result = await executePayment(paymentConfig, selectedChain, eventId, eventEndDate, auth.parent ?? undefined);
       paymentProofResult = result.proof;
@@ -438,23 +469,21 @@
   async function handleClaim() {
     if (claiming) return;
 
-    // Hard gate: paid events MUST go through the payment flow — never fall through
-    if (isPaid && !paymentProofResult) {
+    // Hard gate: paid events with crypto MUST go through the payment flow
+    if (isPaid && hasCrypto && !paymentProofResult) {
       if (!showChainSelector) {
         if (payment!.acceptedChains.length === 1) {
           selectedChain = payment!.acceptedChains[0];
         }
-        // Fetch ETH equivalent for USD-priced events
-        if (payment!.currency === "USD" && !ethEquivalent) {
+        if (!ethEquivalent) {
           ethPriceLoading = true;
-          import("../../payment/eth-price.js").then(({ usdToETH }) =>
-            usdToETH(payment!.price).then((eth) => { ethEquivalent = eth; ethPriceLoading = false; })
+          import("../../payment/eth-price.js").then(({ fiatToETH }) =>
+            fiatToETH(payment!.price, payment!.currency).then((eth) => { ethEquivalent = eth; ethPriceLoading = false; })
           ).catch(() => { ethPriceLoading = false; });
         }
         showChainSelector = true;
         showOrderForm = false;
       }
-      // Always return — chain selector's Pay button calls handlePaymentAndClaim()
       return;
     }
 
@@ -708,62 +737,57 @@
         <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
       {/if}
     </div>
-  {:else if showChainSelector && isPaid && payment}
+  {:else if showChainSelector && isPaid && hasCrypto && payment}
     <div class="pay-sheet" class:pay-sheet--ready={!!selectedChain}>
       <!-- Price header -->
       <div class="pay-header">
         <span class="pay-header-label">Total</span>
         <div class="pay-price-stack">
           <span class="pay-price-primary">{priceLabel}</span>
-          {#if payment.currency === "USD"}
-            <span class="pay-price-secondary">
-              {#if ethPriceLoading}
-                fetching rate...
-              {:else if ethEquivalent}
-                ≈ {ethEquivalent} ETH
-              {/if}
-            </span>
-          {/if}
+          <span class="pay-price-secondary">
+            {#if ethPriceLoading}
+              fetching rate...
+            {:else if ethEquivalent}
+              ≈ {ethEquivalent} ETH
+            {/if}
+          </span>
         </div>
       </div>
 
-      <!-- Payment method toggle (USD-priced only, when chain supports USDC) -->
-      {#if payment.currency === "USD"}
-        <div class="pay-section">
-          <span class="pay-section-label">Pay with</span>
-          <div class="pay-method-toggle">
-            <button
-              class="pay-method-btn"
-              class:pay-method-btn--active={selectedPayMethod === "ETH"}
-              onclick={() => { selectedPayMethod = "ETH"; }}
-            >
-              <span class="pay-method-icon">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1L3.5 8.5L8 11L12.5 8.5L8 1Z" fill="currentColor" opacity="0.7"/><path d="M8 11L3.5 8.5L8 15L12.5 8.5L8 11Z" fill="currentColor"/></svg>
-              </span>
-              <span class="pay-method-label">ETH</span>
-              {#if ethEquivalent}
-                <span class="pay-method-amount">{ethEquivalent}</span>
-              {/if}
-            </button>
-            <button
-              class="pay-method-btn"
-              class:pay-method-btn--active={selectedPayMethod === "USDC"}
-              class:pay-method-btn--disabled={!usdcAvailableOnChain}
-              disabled={!usdcAvailableOnChain}
-              onclick={() => { selectedPayMethod = "USDC"; }}
-            >
-              <span class="pay-method-icon">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/><text x="8" y="11" text-anchor="middle" font-size="9" font-weight="700" fill="currentColor">$</text></svg>
-              </span>
-              <span class="pay-method-label">USDC</span>
-              <span class="pay-method-amount">{payment.price}</span>
-            </button>
-          </div>
-          {#if selectedChain && !usdcAvailableOnChain && selectedPayMethod === "ETH"}
-            <span class="pay-method-note">USDC not available on {CHAIN_NAMES[selectedChain]}</span>
-          {/if}
+      <!-- Payment method toggle (ETH vs USDC) -->
+      <div class="pay-section">
+        <span class="pay-section-label">Pay with</span>
+        <div class="pay-method-toggle">
+          <button
+            class="pay-method-btn"
+            class:pay-method-btn--active={selectedPayMethod === "ETH"}
+            onclick={() => { selectedPayMethod = "ETH"; }}
+          >
+            <span class="pay-method-icon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1L3.5 8.5L8 11L12.5 8.5L8 1Z" fill="currentColor" opacity="0.7"/><path d="M8 11L3.5 8.5L8 15L12.5 8.5L8 11Z" fill="currentColor"/></svg>
+            </span>
+            <span class="pay-method-label">ETH</span>
+            {#if ethEquivalent}
+              <span class="pay-method-amount">{ethEquivalent}</span>
+            {/if}
+          </button>
+          <button
+            class="pay-method-btn"
+            class:pay-method-btn--active={selectedPayMethod === "USDC"}
+            class:pay-method-btn--disabled={!usdcAvailableOnChain}
+            disabled={!usdcAvailableOnChain}
+            onclick={() => { selectedPayMethod = "USDC"; }}
+          >
+            <span class="pay-method-icon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/><text x="8" y="11" text-anchor="middle" font-size="9" font-weight="700" fill="currentColor">$</text></svg>
+            </span>
+            <span class="pay-method-label">USDC</span>
+          </button>
         </div>
-      {/if}
+        {#if selectedChain && !usdcAvailableOnChain && selectedPayMethod === "ETH"}
+          <span class="pay-method-note">USDC not available on {CHAIN_NAMES[selectedChain]}</span>
+        {/if}
+      </div>
 
       <!-- Network selector -->
       <div class="pay-section">
@@ -803,12 +827,8 @@
           >
             {#if !selectedChain}
               Select a network
-            {:else if payment.currency === "USDC"}
-              Pay {payment.price} USDC
-            {:else if payment.currency === "ETH"}
-              Pay {payment.price} ETH
             {:else if selectedPayMethod === "USDC"}
-              Pay {payment.price} USDC
+              Pay ≈ {priceLabel} in USDC
             {:else if ethEquivalent}
               Pay {ethEquivalent} ETH
             {:else}
@@ -822,7 +842,57 @@
       {#if auth.kind === "local"}
         <p class="pay-note">Crypto payments require a Web3 wallet or Para account.</p>
       {/if}
+
+      {#if hasStripe}
+        <div class="pay-divider">
+          <span class="pay-divider-line"></span>
+          <span class="pay-divider-text">or</span>
+          <span class="pay-divider-line"></span>
+        </div>
+        <button
+          class="stripe-btn"
+          disabled={stripeLoading}
+          onclick={handleStripeCheckout}
+        >
+          {#if stripeLoading}
+            Redirecting to Stripe...
+          {:else}
+            Pay with card — {priceLabel}
+          {/if}
+        </button>
+        {#if !auth.isConnected}
+          <input
+            class="stripe-email-input"
+            type="email"
+            placeholder="Email for your ticket"
+            bind:value={stripeEmail}
+          />
+        {/if}
+      {/if}
     </div>
+  {:else if isPaid && !hasCrypto && hasStripe}
+    <!-- Stripe-only paid event -->
+    <button
+      class="stripe-btn"
+      disabled={stripeLoading || (status?.available === 0)}
+      onclick={handleStripeCheckout}
+    >
+      {#if stripeLoading}
+        Redirecting to Stripe...
+      {:else if status?.available === 0}
+        Sold out
+      {:else}
+        Pay with card — {priceLabel}
+      {/if}
+    </button>
+    {#if !auth.isConnected}
+      <input
+        class="stripe-email-input"
+        type="email"
+        placeholder="Email for your ticket"
+        bind:value={stripeEmail}
+      />
+    {/if}
   {:else}
     <button
       class="claim-btn"
@@ -1312,5 +1382,62 @@
     color: var(--text-muted);
     margin: 0;
     text-align: center;
+  }
+
+  /* Stripe card payment */
+  .pay-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.5rem 0;
+  }
+
+  .pay-divider-line {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .pay-divider-text {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .stripe-btn {
+    width: 100%;
+    padding: 0.625rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    background: #635bff;
+    color: #fff;
+    white-space: nowrap;
+    transition: background 0.2s ease, opacity 0.2s ease;
+  }
+
+  .stripe-btn:hover:not(:disabled) {
+    background: #5147e5;
+  }
+
+  .stripe-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .stripe-email-input {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    margin-top: 0.375rem;
+  }
+
+  .stripe-email-input::placeholder {
+    color: var(--text-muted);
   }
 </style>
