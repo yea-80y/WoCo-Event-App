@@ -6,9 +6,12 @@
   import { setExternalEventApi } from "../../api/event-api-registry.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import UserAvatar from "./UserAvatar.svelte";
+  import WalletTab from "./WalletTab.svelte";
   import EventCard from "../events/EventCard.svelte";
   import { get } from "../../api/client.js";
   import { onMount } from "svelte";
+
+  type ProfileTab = "profile" | "wallet";
 
   interface Props {
     address?: string;
@@ -35,6 +38,7 @@
   let avatarPreviewUrl = $state<string | null>(null);
   let events = $state<EventDirectoryEntry[]>([]);
   let eventsLoading = $state(true);
+  let activeTab = $state<ProfileTab>("profile");
 
   // Edit form state
   let editName = $state("");
@@ -363,25 +367,49 @@
     </div>
   </div>
 
-  <!-- Events section -->
-  {#if events.length > 0 || eventsLoading}
-    <section class="profile-events">
-      <h2>
-        {isOwner ? "Your events" : `Events by ${profile?.displayName || displayName}`}
-      </h2>
-      {#if eventsLoading}
-        <p class="status-text">Loading events...</p>
-      {:else}
-        <div class="event-grid">
-          {#each events as event}
-            <EventCard {event} onclick={() => {
-              if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-              navigate(`/event/${event.eventId}`);
-            }} />
-          {/each}
-        </div>
-      {/if}
-    </section>
+  <!-- Tabs (only show for own profile) -->
+  {#if isOwner}
+    <div class="profile-tabs">
+      <button
+        class="tab-btn"
+        class:tab-active={activeTab === "profile"}
+        onclick={() => activeTab = "profile"}
+      >
+        Profile
+      </button>
+      <button
+        class="tab-btn"
+        class:tab-active={activeTab === "wallet"}
+        onclick={() => activeTab = "wallet"}
+      >
+        Wallet
+      </button>
+    </div>
+  {/if}
+
+  {#if activeTab === "profile" || !isOwner}
+    <!-- Events section -->
+    {#if events.length > 0 || eventsLoading}
+      <section class="profile-events">
+        <h2>
+          {isOwner ? "Your events" : `Events by ${profile?.displayName || displayName}`}
+        </h2>
+        {#if eventsLoading}
+          <p class="status-text">Loading events...</p>
+        {:else}
+          <div class="event-grid">
+            {#each events as event}
+              <EventCard {event} onclick={() => {
+                if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
+                navigate(`/event/${event.eventId}`);
+              }} />
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
+  {:else if activeTab === "wallet"}
+    <WalletTab />
   {/if}
 </div>
 
@@ -676,6 +704,35 @@
   .btn-cancel:hover:not(:disabled) {
     border-color: var(--text-secondary);
     color: var(--text);
+  }
+
+  /* Tabs */
+  .profile-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.25rem;
+  }
+
+  .tab-btn {
+    padding: 0.625rem 1.25rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+
+  .tab-btn:hover {
+    color: var(--text-secondary);
+  }
+
+  .tab-active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
   }
 
   /* Events section */

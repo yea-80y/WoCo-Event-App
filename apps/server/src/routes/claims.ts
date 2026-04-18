@@ -15,8 +15,10 @@ import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
 import { verifyPayment } from "../lib/payment/verify.js";
 import { getEscrowAddress } from "../lib/payment/constants.js";
-import { fiatToETH, fiatToETHWithSlippage, getETHPriceUSD, fiatToUSD } from "../lib/payment/eth-price.js";
+import { fiatToETH, getETHPriceUSD } from "../lib/payment/eth-price.js";
 import { checkAndConsumeTxHash } from "../lib/payment/tx-registry.js";
+import { verifyQuote, consumeQuote } from "../lib/payment/quote.js";
+import { formatUnits } from "ethers";
 import { extractDelegation, verifyDelegation } from "../lib/auth/verify-delegation.js";
 
 const claims = new Hono<AppEnv>();
@@ -337,10 +339,36 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       return c.json({ ok: false, error: "Escrow not configured for this chain" }, 500);
     }
 
-    // Verify the on-chain payment — all prices are fiat, convert to ETH with slippage
+    // Verify the on-chain payment — quote-bound exact-match, no slippage band.
+    // The server committed to amountWei in the quote; we verify the on-chain
+    // tx.value is at least that amount (overpayment accepted; underpayment rejected).
     if (paymentProof.type === "tx") {
-      const verifyCurrency: "ETH" | "USDC" = "ETH";
-      const verifyAmount = await fiatToETHWithSlippage(series.payment.price, series.payment.currency);
+      // Quote is mandatory for crypto payments. The pre-quote slippage path is
+      // gone — it created a dual-source race between client and server reading
+      // a moving oracle.
+      if (!paymentProof.quote) {
+        return c.json({
+          ok: false,
+          error: "Payment quote required — request POST /api/payment/quote before paying",
+        }, 400);
+      }
+
+      const quoteCheck = verifyQuote(paymentProof.quote);
+      if (!quoteCheck.ok) {
+        return c.json({ ok: false, error: `Payment quote rejected: ${quoteCheck.error}` }, 402);
+      }
+      const quote = quoteCheck.quote;
+
+      // Sanity-check the quote matches THIS claim's series + chain + recipient.
+      if (quote.seriesId !== seriesId) {
+        return c.json({ ok: false, error: "Quote is for a different series" }, 400);
+      }
+      if (quote.chainId !== paymentProof.chainId) {
+        return c.json({ ok: false, error: "Quote chain does not match payment chain" }, 400);
+      }
+      if (quote.recipient.toLowerCase() !== recipient.toLowerCase()) {
+        return c.json({ ok: false, error: "Quote recipient does not match expected recipient" }, 400);
+      }
 
       // Determine who is expected to have signed the payment tx.
       // Wallet mode: the verified parentAddress (authenticated by session sig).
@@ -367,9 +395,20 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
         }
       }
 
+      // If the quote was bound to a specific claimer, enforce it now.
+      if (quote.boundTo && quote.boundTo.toLowerCase() !== expectedFrom.toLowerCase()) {
+        return c.json({ ok: false, error: "Quote is bound to a different claimer" }, 403);
+      }
+
+      // verify.ts checks tx.value >= expected amount (decimal string in major units).
+      // Convert the quote's wei back to a decimal string so we can pass it through
+      // the existing verifier without changing its signature.
+      const decimals = quote.currency === "ETH" ? 18 : 6;
+      const verifyAmount = formatUnits(BigInt(quote.amountWei), decimals);
+
       const verification = await verifyPayment(paymentProof, {
         amount: verifyAmount,
-        currency: verifyCurrency,
+        currency: quote.currency,
         recipient,
         expectedFrom,
       });
@@ -381,6 +420,9 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       if (paymentProof.txHash && !checkAndConsumeTxHash(paymentProof.txHash)) {
         return c.json({ ok: false, error: "This transaction has already been used for a claim" }, 409);
       }
+
+      // Mark the quote as consumed AFTER tx-replay check passes — one-shot.
+      consumeQuote(quote.quoteId);
     }
     // x402 proofs are handled by the x402 middleware layer (Phase 6)
   }
@@ -399,8 +441,9 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
 
   try {
     // Option 2: serialise all claims for this series through a queue
+    const via = paymentProof?.type === "tx" ? "crypto" : "free";
     const ticket: ClaimResult = await queueSeriesClaim(seriesId, () =>
-      claimTicket({ seriesId, identifier, encryptedOrder }),
+      claimTicket({ seriesId, identifier, encryptedOrder, via }),
     );
 
     // Approval flow: strip internal _pendingId and return pending state

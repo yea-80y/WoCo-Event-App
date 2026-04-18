@@ -1,9 +1,63 @@
-import { JsonRpcSigner, parseUnits, Contract, id as keccak256Utf8 } from "ethers";
-import type { PaymentConfig, PaymentChainId, PaymentProof, Hex0x } from "@woco/shared";
-import { USDC_ADDRESSES } from "@woco/shared";
+import { JsonRpcSigner, Contract, id as keccak256Utf8 } from "ethers";
+import type { PaymentConfig, PaymentChainId, PaymentProof, PaymentQuote, Hex0x } from "@woco/shared";
+import { USDC_ADDRESSES, getMinConfirmations } from "@woco/shared";
 import { switchChain } from "./chains.js";
 import { apiBase } from "../api/client.js";
 import { getEthersProvider } from "../wallet/provider.js";
+
+/**
+ * Progress callback for long-running payment steps. The `phase` identifies the
+ * step; `current` / `total` are optional counts (used during confirmation
+ * waits). UI surfaces this so users understand what the wallet is doing.
+ */
+export type PaymentProgress = (ev: {
+  phase:
+    | "switch-chain"
+    | "approve-token"
+    | "send-tx"
+    | "waiting-confirmations"
+    | "confirmed";
+  current?: number;
+  total?: number;
+  txHash?: string;
+}) => void;
+
+/**
+ * Wait for a transaction to reach the server's required confirmation count
+ * (plus a one-block buffer to absorb RPC-node head skew). Reports progress on
+ * each new block so the UI isn't a frozen spinner.
+ */
+async function waitForConfirmations(
+  tx: { hash: string; wait: (n: number) => Promise<unknown> },
+  chainId: PaymentChainId,
+  onProgress?: PaymentProgress,
+): Promise<void> {
+  const provider = getEthersProvider();
+  const required = getMinConfirmations(chainId) + 1; // +1 = buffer for RPC skew
+  onProgress?.({ phase: "waiting-confirmations", current: 0, total: required, txHash: tx.hash });
+
+  const waitPromise = tx.wait(required);
+
+  let done = false;
+  waitPromise.then(() => { done = true; }).catch(() => { done = true; });
+
+  while (!done) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (done) break;
+    try {
+      const receipt = await provider.getTransactionReceipt(tx.hash);
+      if (!receipt) continue;
+      const current = await provider.getBlockNumber() - receipt.blockNumber + 1;
+      const clamped = Math.max(0, Math.min(current, required));
+      onProgress?.({ phase: "waiting-confirmations", current: clamped, total: required, txHash: tx.hash });
+    } catch {
+      // RPC blip — keep polling; waitPromise is the authoritative barrier
+    }
+  }
+
+  await waitPromise;
+  onProgress?.({ phase: "confirmed", current: required, total: required, txHash: tx.hash });
+}
 
 /** WoCoEscrow ABI — only the functions we call */
 const ESCROW_ABI = [
@@ -11,7 +65,6 @@ const ESCROW_ABI = [
   "function payToken(bytes32 eventId, address token, uint256 amount, address organiser, uint256 releaseTime)",
 ];
 
-/** Fetch escrow contract address for a chain from the server */
 async function getEscrowAddress(chainId: PaymentChainId): Promise<Hex0x> {
   const resp = await fetch(`${apiBase}/api/payment/escrow-addresses`);
   if (!resp.ok) throw new Error("Failed to fetch escrow addresses");
@@ -21,12 +74,10 @@ async function getEscrowAddress(chainId: PaymentChainId): Promise<Hex0x> {
   return addr as Hex0x;
 }
 
-/** Convert event ID string to bytes32 — keccak256(utf8(eventId)), matching the contract */
 function eventIdToBytes32(eventId: string): string {
   return keccak256Utf8(eventId);
 }
 
-/** Minimal ERC-20 ABI for approve + transfer */
 const ERC20_ABI = [
   "function transfer(address to, uint256 amount) returns (bool)",
   "function approve(address spender, uint256 amount) returns (bool)",
@@ -39,154 +90,148 @@ export interface PaymentResult {
 }
 
 /**
- * Execute a crypto payment via the user's connected wallet.
+ * Execute a crypto payment against a server-signed quote.
  *
- * For escrow events: calls payETH/payToken on WoCoEscrow contract (auto-initialises on first payment).
- * For direct events: plain ETH transfer or ERC-20 transfer to organiser.
+ * The quote commits the server to an exact wei amount + recipient. The wallet
+ * sends that exact value; the server later HMAC-verifies its own signature on
+ * the quote and exact-matches tx.value === quote.amountWei. No oracle race.
  *
- * @param payment       Series payment config (price, currency, escrow flag, etc.)
- * @param chainId       Which chain the user selected
- * @param eventId       Event ID string — needed to call the escrow contract
- * @param eventEndDate  ISO date string for the event end — sets escrow releaseTime (end + 48h)
- * @returns PaymentProof to attach to the claim request
+ * For escrow events: calls payETH/payToken on WoCoEscrow contract. The quote's
+ * recipient is the escrow address; the organiser address travels separately
+ * via `payment.recipientAddress` so the contract knows where to release to.
+ *
+ * @returns PaymentProof carrying the full signed quote (server verifies statelessly)
  */
-export async function executePayment(
-  payment: PaymentConfig,
-  chainId: PaymentChainId,
-  eventId: string,
-  eventEndDate?: string,
-  signerAddress?: string,
-): Promise<PaymentResult> {
+export async function executePayment(opts: {
+  quote: PaymentQuote;
+  payment: PaymentConfig;
+  eventId: string;
+  eventEndDate?: string;
+  signerAddress?: string;
+  onProgress?: PaymentProgress;
+}): Promise<PaymentResult> {
+  const { quote, payment, eventId, eventEndDate, signerAddress, onProgress } = opts;
+  const chainId = quote.chainId;
+  const amountWei = BigInt(quote.amountWei);
+
+  onProgress?.({ phase: "switch-chain" });
   await switchChain(chainId);
+  await new Promise((r) => setTimeout(r, 500));
 
-  // Allow WalletConnect session to settle after chain change before sending the tx.
-  await new Promise(resolve => setTimeout(resolve, 500));
-
-  // Use the cached provider; construct signer directly to avoid an eth_accounts
-  // round-trip that can return stale results after a chain switch.
   const provider = getEthersProvider();
   const signer = signerAddress
     ? new JsonRpcSigner(provider, signerAddress)
     : await provider.getSigner();
 
-  // Capture the paying address — the server binds txHash → claimer via this field.
   const from = ((signerAddress ?? await signer.getAddress()).toLowerCase()) as Hex0x;
 
   if (payment.escrow) {
-    // Route through WoCoEscrow contract
     const escrowAddr = await getEscrowAddress(chainId);
     const eventBytes32 = eventIdToBytes32(eventId);
-    // releaseTime = event end date + 24 hours, or 7 days from now as fallback
     const releaseTime = eventEndDate
       ? Math.floor(new Date(eventEndDate).getTime() / 1000) + 24 * 3600
       : Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
     const organiser = payment.recipientAddress;
-    if (payment.currency === "ETH") {
-      return executeEscrowETHPayment(signer, payment.price, escrowAddr, eventBytes32, chainId, organiser, releaseTime, from);
+
+    if (quote.currency === "ETH") {
+      return executeEscrowETHPayment(signer, amountWei, escrowAddr, eventBytes32, chainId, organiser, releaseTime, from, quote, onProgress);
     } else {
-      return executeEscrowTokenPayment(signer, payment.price, escrowAddr, eventBytes32, chainId, organiser, releaseTime, from);
+      return executeEscrowTokenPayment(signer, amountWei, escrowAddr, eventBytes32, chainId, organiser, releaseTime, from, quote, onProgress);
     }
   } else {
-    // Direct payment to organiser
-    if (payment.currency === "ETH") {
-      return executeETHPayment(signer, payment.price, payment.recipientAddress, chainId, from);
+    if (quote.currency === "ETH") {
+      return executeETHPayment(signer, amountWei, payment.recipientAddress, chainId, from, quote, onProgress);
     } else {
-      return executeUSDCPayment(signer, payment.price, payment.recipientAddress, chainId, from);
+      return executeUSDCPayment(signer, amountWei, payment.recipientAddress, chainId, from, quote, onProgress);
     }
   }
 }
 
 async function executeEscrowETHPayment(
   signer: any,
-  amount: string,
+  amountWei: bigint,
   escrowAddr: Hex0x,
   eventBytes32: string,
   chainId: PaymentChainId,
   organiser: Hex0x,
   releaseTime: number,
   from: Hex0x,
+  quote: PaymentQuote,
+  onProgress?: PaymentProgress,
 ): Promise<PaymentResult> {
   const escrow = new Contract(escrowAddr, ESCROW_ABI, signer);
-  const tx = await escrow.payETH(eventBytes32, organiser, releaseTime, { value: parseUnits(amount, 18) });
-  await tx.wait(1);
-  return { proof: { type: "tx", txHash: tx.hash, chainId, from } };
+  onProgress?.({ phase: "send-tx" });
+  const tx = await escrow.payETH(eventBytes32, organiser, releaseTime, { value: amountWei });
+  await waitForConfirmations(tx, chainId, onProgress);
+  return { proof: { type: "tx", txHash: tx.hash, chainId, from, quote } };
 }
 
 async function executeEscrowTokenPayment(
   signer: any,
-  amount: string,
+  amountWei: bigint,
   escrowAddr: Hex0x,
   eventBytes32: string,
   chainId: PaymentChainId,
   organiser: Hex0x,
   releaseTime: number,
   from: Hex0x,
+  quote: PaymentQuote,
+  onProgress?: PaymentProgress,
 ): Promise<PaymentResult> {
   const usdcAddress = USDC_ADDRESSES[chainId];
   if (!usdcAddress) throw new Error(`USDC not supported on chain ${chainId}`);
 
-  const parsedAmount = parseUnits(amount, 6);
   const usdc = new Contract(usdcAddress, ERC20_ABI, signer);
 
-  // Approve escrow to spend USDC, then call payToken
-  const approveTx = await usdc.approve(escrowAddr, parsedAmount);
+  onProgress?.({ phase: "approve-token" });
+  const approveTx = await usdc.approve(escrowAddr, amountWei);
   await approveTx.wait(1);
 
   const escrow = new Contract(escrowAddr, ESCROW_ABI, signer);
-  const tx = await escrow.payToken(eventBytes32, usdcAddress, parsedAmount, organiser, releaseTime);
-  await tx.wait(1);
-  return { proof: { type: "tx", txHash: tx.hash, chainId, from } };
+  onProgress?.({ phase: "send-tx" });
+  const tx = await escrow.payToken(eventBytes32, usdcAddress, amountWei, organiser, releaseTime);
+  await waitForConfirmations(tx, chainId, onProgress);
+  return { proof: { type: "tx", txHash: tx.hash, chainId, from, quote } };
 }
 
 async function executeETHPayment(
   signer: any,
-  amount: string,
+  amountWei: bigint,
   recipient: Hex0x,
   chainId: PaymentChainId,
   from: Hex0x,
+  quote: PaymentQuote,
+  onProgress?: PaymentProgress,
 ): Promise<PaymentResult> {
+  onProgress?.({ phase: "send-tx" });
   const tx = await signer.sendTransaction({
     to: recipient,
-    value: parseUnits(amount, 18),
+    value: amountWei,
   });
-
-  // Wait for 1 confirmation
-  await tx.wait(1);
-
+  await waitForConfirmations(tx, chainId, onProgress);
   return {
-    proof: {
-      type: "tx",
-      txHash: tx.hash,
-      chainId,
-      from,
-    },
+    proof: { type: "tx", txHash: tx.hash, chainId, from, quote },
   };
 }
 
 async function executeUSDCPayment(
   signer: any,
-  amount: string,
+  amountWei: bigint,
   recipient: Hex0x,
   chainId: PaymentChainId,
   from: Hex0x,
+  quote: PaymentQuote,
+  onProgress?: PaymentProgress,
 ): Promise<PaymentResult> {
   const usdcAddress = USDC_ADDRESSES[chainId];
   if (!usdcAddress) throw new Error(`USDC not supported on chain ${chainId}`);
   const usdc = new Contract(usdcAddress, ERC20_ABI, signer);
 
-  const parsedAmount = parseUnits(amount, 6); // USDC = 6 decimals
-
-  // Direct transfer (no approve needed when user is the sender)
-  const tx = await usdc.transfer(recipient, parsedAmount);
-  await tx.wait(1);
-
+  onProgress?.({ phase: "send-tx" });
+  const tx = await usdc.transfer(recipient, amountWei);
+  await waitForConfirmations(tx, chainId, onProgress);
   return {
-    proof: {
-      type: "tx",
-      txHash: tx.hash,
-      chainId,
-      from,
-    },
+    proof: { type: "tx", txHash: tx.hash, chainId, from, quote },
   };
 }
 

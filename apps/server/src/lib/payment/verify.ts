@@ -3,6 +3,18 @@ import type { PaymentProof, PaymentChainId, Hex0x } from "@woco/shared";
 import { USDC_ADDRESSES } from "@woco/shared";
 import { getRpcUrl, ERC20_TRANSFER_TOPIC, getMinConfirmations } from "./constants.js";
 
+/**
+ * ERC-4337 canonical EntryPoint addresses. If a tx targets one of these, the
+ * payment was a bundled user operation — `tx.from` is the bundler, NOT the
+ * user. Our current binding (`tx.from === expectedFrom`) assumes an EOA
+ * signed the tx directly, so AA is not yet supported. See DEVLOG "Account
+ * abstraction roadmap" for the proper fix.
+ */
+const ERC4337_ENTRYPOINTS = new Set<string>([
+  "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789", // EntryPoint v0.6
+  "0x0000000071727de22e5e9d8baf0edac6f37da032", // EntryPoint v0.7
+]);
+
 export interface PaymentExpectation {
   amount: string;        // Decimal string e.g. "5.00" or "0.005"
   currency: "ETH" | "USDC";
@@ -51,36 +63,78 @@ export async function verifyPayment(
   }
 
   const provider = getProvider(proof.chainId);
+  const minConf = getMinConfirmations(proof.chainId);
 
-  // Fetch tx and receipt in parallel
-  const [tx, receipt] = await Promise.all([
-    provider.getTransaction(proof.txHash),
-    provider.getTransactionReceipt(proof.txHash),
-  ]);
-
+  // Fetch tx first so we can return "not found" fast without waiting.
+  const tx = await provider.getTransaction(proof.txHash);
   if (!tx) {
     return { valid: false, error: "Transaction not found" };
   }
-  if (!receipt) {
-    return { valid: false, error: "Transaction not yet confirmed" };
-  }
-  if (receipt.status !== 1) {
-    return { valid: false, error: "Transaction reverted" };
+
+  // Wait for the RPC's view to actually reach the required conf depth.
+  // Public RPC endpoints (e.g. 1rpc.io) are load-balanced across nodes;
+  // a naive `currentBlock - receipt.blockNumber` can go NEGATIVE when the
+  // block-number read hits a node that's several blocks behind the one
+  // that indexed the receipt. `waitForTransaction(hash, n, timeout)` polls
+  // until the same RPC node sees `n` confirmations or the timeout fires —
+  // this is the authoritative barrier, not a tip-skew race.
+  let receipt: Awaited<ReturnType<typeof provider.getTransactionReceipt>>;
+  try {
+    receipt = await provider.waitForTransaction(proof.txHash, minConf, 30_000);
+  } catch {
+    receipt = null;
   }
 
-  // Check confirmations (per-chain threshold)
-  const currentBlock = await provider.getBlockNumber();
-  const confirmations = currentBlock - receipt.blockNumber + 1;
-  const minConf = getMinConfirmations(proof.chainId);
-  if (confirmations < minConf) {
-    return { valid: false, error: `Need ${minConf} confirmations, have ${confirmations}` };
+  if (!receipt) {
+    // Timed out. Fall back to a best-effort receipt fetch so we can return
+    // an accurate progress message to the client. The client retries.
+    const partial = await provider.getTransactionReceipt(proof.txHash);
+    if (!partial) {
+      return { valid: false, error: "Transaction not yet confirmed" };
+    }
+    const head = await provider.getBlockNumber();
+    const have = Math.max(0, head - partial.blockNumber + 1);
+    return { valid: false, error: `Need ${minConf} confirmations, have ${have}` };
+  }
+
+  if (receipt.status !== 1) {
+    return { valid: false, error: "Transaction reverted" };
   }
 
   // Bind tx to the claimer — prevents front-running a pending payment.
   // tx.from is the EOA that signed. We require an exact match against the
   // expected claimer address. Meta-transactions / batched relayers are not
   // supported (tx.from would be the relayer, not the user).
+  //
+  // Detect smart-account wallets (ERC-4337 bundled user ops, Safe-style
+  // contract accounts) and return a clear error rather than the raw "tx.from
+  // mismatch" message. Proper AA support requires parsing userOp calldata
+  // and EIP-1271 verification — see DEVLOG "Account abstraction roadmap".
   if (!tx.from || tx.from.toLowerCase() !== expected.expectedFrom.toLowerCase()) {
+    // AA detection 1: tx routed through a known ERC-4337 EntryPoint
+    if (tx.to && ERC4337_ENTRYPOINTS.has(tx.to.toLowerCase())) {
+      return {
+        valid: false,
+        error:
+          "Smart-account wallet detected (ERC-4337). WoCo currently only accepts " +
+          "payments from EOA wallets (MetaMask, Rabby, Coinbase Wallet, Para). " +
+          "Account abstraction support is on the roadmap.",
+      };
+    }
+    // AA detection 2: tx.from is itself a contract (Safe direct tx, etc.)
+    try {
+      const code = await provider.getCode(tx.from);
+      if (code && code !== "0x") {
+        return {
+          valid: false,
+          error:
+            "Smart-account wallet detected (contract-based signer). WoCo currently " +
+            "only accepts payments from EOA wallets. AA support is on the roadmap.",
+        };
+      }
+    } catch {
+      // getCode failure — fall through to the generic mismatch error
+    }
     return {
       valid: false,
       error: `Transaction signed by ${tx.from ?? "unknown"}, expected ${expected.expectedFrom}`,

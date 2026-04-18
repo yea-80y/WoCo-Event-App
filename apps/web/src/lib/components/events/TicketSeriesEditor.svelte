@@ -1,8 +1,12 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x } from "@woco/shared";
-  import { CHAIN_NAMES } from "@woco/shared";
+  import { CHAIN_NAMES, PLATFORM_FEE_BP } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
+  import ConnectWalletModal from "../profile/ConnectWalletModal.svelte";
+  import { isWalletAvailable } from "../../wallet/provider.js";
+  import { getConnectedAddress } from "../../wallet/connection.js";
+  import { onMount } from "svelte";
 
   interface WaveItem {
     id: string;
@@ -31,6 +35,8 @@
     acceptedChains: PaymentChainId[];
     /** Accept Stripe card payments */
     stripeEnabled: boolean;
+    /** Pass processing fees to the buyer (default: true) */
+    feePassedToCustomer: boolean;
   }
 
   interface SeriesDraft {
@@ -47,12 +53,41 @@
 
   interface Props {
     series: SeriesDraft[];
+    /**
+     * True when crypto is enabled on at least one tier but no payout wallet has
+     * been connected. Bound back to the parent so the publish button can be
+     * disabled until the organiser provides a recipient address.
+     */
+    cryptoRecipientMissing?: boolean;
   }
 
-  let { series = $bindable() }: Props = $props();
+  let { series = $bindable(), cryptoRecipientMissing = $bindable(false) }: Props = $props();
 
   let stripeModalOpen = $state(false);
   let stripeModalTierId = $state<string | null>(null);
+  let walletModalOpen = $state(false);
+
+  /** Whether the current auth identity owns a real EVM wallet. */
+  const hasNativeWallet = $derived(auth.kind === "web3" || auth.kind === "para");
+
+  /**
+   * Crypto payout recipient address — separate from auth identity.
+   *
+   * - web3/para users: auto-set to auth.parent (their wallet IS the payout address).
+   * - passkey/local users: must explicitly connect a wallet to receive crypto.
+   *   `auth.parent` for these users is a passkey/browser key — NOT something
+   *   they can withdraw funds from on-chain.
+   */
+  let cryptoRecipientAddress = $state<string | null>(null);
+
+  function handleWalletConnected(addr: string) {
+    cryptoRecipientAddress = addr.toLowerCase();
+    walletModalOpen = false;
+  }
+
+  function truncateAddr(a: string): string {
+    return `${a.slice(0, 6)}...${a.slice(-4)}`;
+  }
 
   function handleStripeToggle(tier: TierGroup, checked: boolean) {
     if (checked) {
@@ -91,6 +126,7 @@
     cryptoEnabled: true,
     acceptedChains: [8453] as PaymentChainId[],
     stripeEnabled: false,
+    feePassedToCustomer: true,
     waves: [{
       id: crypto.randomUUID(),
       label: "",
@@ -100,6 +136,34 @@
       showSaleWindow: false,
     }],
   }]);
+
+  /** True when at least one tier has crypto enabled — controls whether to show the recipient prompt */
+  const anyCryptoEnabled = $derived(tierGroups.some((t) => t.isPaid && t.cryptoEnabled));
+
+  // Push the missing-recipient state up to the parent so PublishButton can disable.
+  $effect(() => {
+    cryptoRecipientMissing = anyCryptoEnabled && !cryptoRecipientAddress;
+  });
+
+  onMount(async () => {
+    // Native-wallet users: payout goes to their auth address by default.
+    if (hasNativeWallet && auth.parent) {
+      cryptoRecipientAddress = auth.parent.toLowerCase();
+      return;
+    }
+    // Passkey/local: see if they already have an external wallet connected
+    if (isWalletAvailable()) {
+      const addr = await getConnectedAddress();
+      if (addr) cryptoRecipientAddress = addr;
+    }
+  });
+
+  // Keep recipient in sync if auth changes (e.g. user finishes Para login mid-form)
+  $effect(() => {
+    if (hasNativeWallet && auth.parent && !cryptoRecipientAddress) {
+      cryptoRecipientAddress = auth.parent.toLowerCase();
+    }
+  });
 
   // Keep series in sync with tier groups
   $effect(() => {
@@ -118,14 +182,21 @@
           ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
         };
         if (tier.isPaid && tier.price && parseFloat(tier.price) > 0) {
+          // Crypto payments need a real EVM recipient. Fall back to "0x0" only when
+          // crypto is disabled — the payment config is still required for Stripe-only
+          // flows but won't be used to send funds. Publish is blocked above when
+          // cryptoRecipientMissing is true, so we should never actually ship "0x0"
+          // for a crypto-enabled series.
+          const recipient = cryptoRecipientAddress ?? (tier.cryptoEnabled ? null : "0x0");
           base.payment = {
             price: tier.price,
             currency: tier.currency,
-            recipientAddress: (auth.parent?.toLowerCase() ?? "0x0") as Hex0x,
+            recipientAddress: (recipient ?? "0x0") as Hex0x,
             acceptedChains: tier.cryptoEnabled ? tier.acceptedChains : [],
             escrow: tier.cryptoEnabled, // escrow for crypto payments
             cryptoEnabled: tier.cryptoEnabled,
             stripeEnabled: tier.stripeEnabled,
+            feePassedToCustomer: tier.feePassedToCustomer,
           };
         }
         return base;
@@ -134,6 +205,51 @@
     console.log("[TicketSeriesEditor] series built:", built.map(s => ({ name: s.name, payment: s.payment })));
     series = built;
   });
+
+  const CURRENCY_SYMBOLS: Record<string, string> = { GBP: "£", USD: "$", EUR: "€" };
+
+  /** Stripe processing fee estimates (UK/EU domestic cards) */
+  const STRIPE_PERCENT = 0.029; // 2.9% (Connect includes +0.5%)
+  const STRIPE_FIXED: Record<string, number> = { GBP: 0.20, USD: 0.30, EUR: 0.25 };
+
+  function feeBreakdown(price: string, currency: string, passToCustomer: boolean, hasStripe: boolean, hasCrypto: boolean) {
+    const amount = parseFloat(price);
+    if (!amount || amount <= 0) return null;
+    const sym = CURRENCY_SYMBOLS[currency] ?? "";
+    const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
+    const stripeFee = hasStripe ? amount * STRIPE_PERCENT + (STRIPE_FIXED[currency] ?? 0.20) : 0;
+    const platformFee = amount * PLATFORM_FEE_BP / 10_000;
+
+    if (passToCustomer) {
+      // Buyer pays the fees — organiser receives the full ticket price
+      const cardTotal = amount + stripeFee + platformFee;
+      const cryptoTotal = amount + platformFee;
+      return {
+        mode: "pass" as const,
+        basePrice: fmt(amount),
+        stripeFee: hasStripe ? `~${fmt(stripeFee)}` : null,
+        platformFee: fmt(platformFee),
+        cardTotal: hasStripe ? `~${fmt(cardTotal)}` : null,
+        cryptoTotal: hasCrypto ? fmt(cryptoTotal) : null,
+        payout: fmt(amount),
+      };
+    } else {
+      // Organiser absorbs fees — buyer pays the ticket price only
+      const payoutCard = amount - stripeFee - platformFee;
+      const payoutCrypto = amount - platformFee;
+      return {
+        mode: "absorb" as const,
+        basePrice: fmt(amount),
+        stripeFee: hasStripe ? `~${fmt(stripeFee)}` : null,
+        platformFee: fmt(platformFee),
+        cardTotal: null,
+        cryptoTotal: null,
+        payoutCard: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : null,
+        payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
+        payout: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : fmt(Math.max(0, payoutCrypto)),
+      };
+    }
+  }
 
   function addTier() {
     tierGroups.push({
@@ -147,6 +263,7 @@
       cryptoEnabled: true,
       acceptedChains: [8453] as PaymentChainId[],
       stripeEnabled: false,
+      feePassedToCustomer: true,
       waves: [{
         id: crypto.randomUUID(),
         label: "",
@@ -188,6 +305,39 @@
 
 <div class="tiers-editor">
   <h3>Ticket tiers</h3>
+
+  {#if anyCryptoEnabled}
+    <div class="crypto-recipient-card" class:crypto-recipient-card--missing={cryptoRecipientMissing}>
+      <div class="crypto-recipient-header">
+        <span class="crypto-recipient-title">Crypto payout address</span>
+        <span class="crypto-recipient-sub">
+          {#if hasNativeWallet}
+            Funds from crypto sales are sent to your connected wallet (or escrow until event ends).
+          {:else}
+            You're signed in with a {auth.kind === "passkey" ? "passkey" : "browser account"}.
+            Connect a real EVM wallet to receive crypto payments — your sign-in identity can't hold funds on-chain.
+          {/if}
+        </span>
+      </div>
+      {#if cryptoRecipientAddress}
+        <div class="crypto-recipient-row">
+          <span class="crypto-recipient-addr" title={cryptoRecipientAddress}>{truncateAddr(cryptoRecipientAddress)}</span>
+          {#if !hasNativeWallet}
+            <button type="button" class="crypto-recipient-btn-link" onclick={() => walletModalOpen = true}>
+              Change
+            </button>
+          {/if}
+        </div>
+      {:else}
+        <button type="button" class="crypto-recipient-btn" onclick={() => walletModalOpen = true}>
+          Connect wallet for crypto payouts
+        </button>
+        <p class="crypto-recipient-warn">
+          You won't be able to publish until you connect a wallet, or disable crypto on all tiers.
+        </p>
+      {/if}
+    </div>
+  {/if}
 
   {#each tierGroups as tier, i (tier.id)}
     <div class="tier-card">
@@ -295,6 +445,73 @@
                 </div>
               {/if}
             </div>
+
+            {#if (tier.stripeEnabled || tier.cryptoEnabled) && tier.price && parseFloat(tier.price) > 0}
+              <!-- Fee handling toggle -->
+              <div class="fee-mode">
+                <span class="fee-mode-label">Who pays the fees?</span>
+                <div class="fee-mode-toggle">
+                  <button
+                    type="button"
+                    class="fee-mode-btn"
+                    class:fee-mode-btn--active={tier.feePassedToCustomer}
+                    onclick={() => { tier.feePassedToCustomer = true; }}
+                  >Buyer pays</button>
+                  <button
+                    type="button"
+                    class="fee-mode-btn"
+                    class:fee-mode-btn--active={!tier.feePassedToCustomer}
+                    onclick={() => { tier.feePassedToCustomer = false; }}
+                  >I absorb</button>
+                </div>
+              </div>
+
+              {@const fees = feeBreakdown(tier.price, tier.currency, tier.feePassedToCustomer, tier.stripeEnabled, tier.cryptoEnabled)}
+              {#if fees}
+                <div class="fee-breakdown">
+                  {#if fees.mode === "pass"}
+                    <span class="fee-breakdown-title">Buyer pays (per ticket)</span>
+                    {#if tier.stripeEnabled}
+                      <div class="fee-breakdown-col">
+                        <span class="fee-col-label">Card checkout</span>
+                        <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
+                        <div class="fee-row fee-deduction"><span>Processing (~2.9% + fixed)</span><span>+{fees.stripeFee}</span></div>
+                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>+{fees.platformFee}</span></div>
+                        <div class="fee-row fee-total"><span>Card total</span><span>{fees.cardTotal}</span></div>
+                      </div>
+                    {/if}
+                    {#if tier.cryptoEnabled}
+                      <div class="fee-breakdown-col">
+                        <span class="fee-col-label">Crypto checkout</span>
+                        <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
+                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>+{fees.platformFee}</span></div>
+                        <div class="fee-row fee-total"><span>Crypto total</span><span>{fees.cryptoTotal}</span></div>
+                      </div>
+                    {/if}
+                    <div class="fee-payout-line">
+                      <span>You receive</span><span class="fee-payout-value">{fees.payout}</span>
+                    </div>
+                  {:else}
+                    <span class="fee-breakdown-title">Your payout (per ticket)</span>
+                    <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
+                    <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>−{fees.platformFee}</span></div>
+                    {#if tier.stripeEnabled}
+                      <div class="fee-row fee-deduction"><span>Stripe processing</span><span>−{fees.stripeFee}</span></div>
+                      <div class="fee-row fee-total"><span>Card payout</span><span>{fees.payoutCard}</span></div>
+                    {/if}
+                    {#if tier.cryptoEnabled}
+                      {#if tier.stripeEnabled}
+                        <div class="fee-row fee-total" style="border-top: none; padding-top: 0; margin-top: 0;">
+                          <span>Crypto payout</span><span>{fees.payoutCrypto}</span>
+                        </div>
+                      {:else}
+                        <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCrypto}</span></div>
+                      {/if}
+                    {/if}
+                  {/if}
+                </div>
+              {/if}
+            {/if}
           </div>
         {/if}
 
@@ -383,6 +600,13 @@
   onclose={handleStripeModalClose}
   onconnected={handleStripeConnected}
 />
+
+{#if walletModalOpen}
+  <ConnectWalletModal
+    onConnect={handleWalletConnected}
+    onClose={() => walletModalOpen = false}
+  />
+{/if}
 
 <style>
   .tiers-editor {
@@ -754,6 +978,121 @@
     accent-color: var(--accent);
   }
 
+  /* ── Fee mode toggle ── */
+  .fee-mode {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .fee-mode-label {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .fee-mode-toggle {
+    display: flex;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .fee-mode-btn {
+    padding: 0.3125rem 0.625rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: all var(--transition);
+    white-space: nowrap;
+  }
+
+  .fee-mode-btn:hover {
+    color: var(--text-secondary);
+  }
+
+  .fee-mode-btn--active {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .fee-mode-btn--active:hover {
+    color: #fff;
+  }
+
+  /* ── Fee breakdown ── */
+  .fee-breakdown {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.625rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+  }
+
+  .fee-breakdown-title {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.25rem;
+  }
+
+  .fee-breakdown-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1875rem;
+    margin-bottom: 0.375rem;
+  }
+
+  .fee-col-label {
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.0625rem;
+  }
+
+  .fee-row {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .fee-deduction {
+    color: var(--text-muted);
+  }
+
+  .fee-total {
+    border-top: 1px solid var(--border);
+    padding-top: 0.25rem;
+    margin-top: 0.125rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .fee-payout-line {
+    display: flex;
+    justify-content: space-between;
+    border-top: 1px dashed var(--border);
+    padding-top: 0.375rem;
+    margin-top: 0.125rem;
+    font-weight: 600;
+    color: var(--success);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .fee-payout-value {
+    color: var(--success);
+  }
+
   .stripe-connected-badge {
     display: inline-flex;
     align-items: center;
@@ -766,5 +1105,94 @@
     font-size: 0.6875rem;
     font-weight: 500;
     color: var(--success);
+  }
+
+  /* ── Crypto recipient prompt ── */
+  .crypto-recipient-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.75rem 0.875rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+  }
+
+  .crypto-recipient-card--missing {
+    border-color: color-mix(in srgb, var(--accent, #d97706) 35%, var(--border));
+    background: color-mix(in srgb, var(--accent, #d97706) 5%, var(--bg-surface));
+  }
+
+  .crypto-recipient-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1875rem;
+  }
+
+  .crypto-recipient-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .crypto-recipient-sub {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .crypto-recipient-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.4375rem 0.625rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .crypto-recipient-addr {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .crypto-recipient-btn-link {
+    font-size: 0.75rem;
+    color: var(--accent-text);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .crypto-recipient-btn-link:hover {
+    text-decoration: underline;
+  }
+
+  .crypto-recipient-btn {
+    align-self: flex-start;
+    padding: 0.5rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition);
+  }
+
+  .crypto-recipient-btn:hover {
+    background: var(--accent-hover);
+  }
+
+  .crypto-recipient-warn {
+    margin: 0;
+    font-size: 0.6875rem;
+    color: var(--accent-text, #d97706);
+    font-style: italic;
   }
 </style>

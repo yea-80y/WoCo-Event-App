@@ -132,13 +132,14 @@
   }
 
   function downloadCSV(seriesName: string, seriesOrders: OrderEntry[], fields: OrderField[]) {
-    const headers = ["Edition", "Claimer", "Email", "Claimed At", ...fields.map((f) => f.label)];
+    const headers = ["Edition", "Claimer", "Email", "Paid via", "Claimed At", ...fields.map((f) => f.label)];
     const rows = seriesOrders.map((order) => {
       const dec = decryptedOrders.get(ordersResponse!.orders.indexOf(order));
       return [
         String(order.edition),
         order.claimerAddress.startsWith("email:") ? "" : order.claimerAddress,
         dec?.claimerEmail ?? "",
+        order.via ?? "",
         new Date(order.claimedAt).toLocaleString(),
         ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
@@ -858,6 +859,7 @@
                   <tr>
                     <th>Edition</th>
                     <th>Claimer</th>
+                    <th>Paid via</th>
                     <th>Claimed At</th>
                     {#if event.orderFields}
                       {#each event.orderFields as field}
@@ -885,6 +887,17 @@
                           {/if}
                         {:else}
                           {order.claimerAddress.slice(0, 6)}...{order.claimerAddress.slice(-4)}
+                        {/if}
+                      </td>
+                      <td>
+                        {#if order.via === "stripe"}
+                          <span class="via-badge via-badge--stripe">Card</span>
+                        {:else if order.via === "crypto"}
+                          <span class="via-badge via-badge--crypto">Crypto</span>
+                        {:else if order.via === "free"}
+                          <span class="via-badge via-badge--free">Free</span>
+                        {:else}
+                          <span class="via-badge via-badge--unknown">—</span>
                         {/if}
                       </td>
                       <td>{new Date(order.claimedAt).toLocaleString()}</td>
@@ -1215,6 +1228,20 @@
     border-radius: 9999px;
     letter-spacing: 0.02em;
   }
+
+  .via-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    border-radius: 9999px;
+    letter-spacing: 0.02em;
+    border: 1px solid currentColor;
+  }
+  .via-badge--stripe { color: #635bff; background: rgba(99, 91, 255, 0.1); }
+  .via-badge--crypto { color: #f59e0b; background: rgba(245, 158, 11, 0.1); }
+  .via-badge--free   { color: var(--text-muted); background: rgba(125, 125, 125, 0.1); }
+  .via-badge--unknown { color: var(--text-muted); border-color: transparent; }
 
   .badge-sent {
     background: rgba(34, 197, 94, 0.15);

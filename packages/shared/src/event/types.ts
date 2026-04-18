@@ -30,6 +30,9 @@ export interface PaymentConfig {
   cryptoEnabled: boolean;
   /** Whether Stripe card payments are accepted */
   stripeEnabled: boolean;
+  /** When true, processing fees are added on top of the ticket price (buyer pays).
+   *  When false (default), fees come out of the organiser's revenue. */
+  feePassedToCustomer?: boolean;
 }
 
 /** Payment proof submitted alongside a claim request */
@@ -57,7 +60,42 @@ export interface PaymentProof {
   claimerProof?: string;
   /** x402 payment header value (for type: "x402") */
   x402Header?: string;
+  /**
+   * Server-issued, HMAC-signed payment quote. When present, the server verifies
+   * its own signature over the quote and uses quote.amountWei as the exact wei
+   * the on-chain tx.value must satisfy — no slippage tolerance, no oracle race.
+   * The full quote travels with the proof so the server can verify statelessly
+   * (only the consumed-quoteId set needs to persist).
+   */
+  quote?: PaymentQuote;
 }
+
+/**
+ * Server-issued payment quote — the server commits cryptographically (HMAC) to an
+ * exact wei amount + recipient + expiry. The client pays exactly amountWei; the
+ * server verifies the on-chain tx.value matches exactly. One-shot consumption.
+ */
+export interface PaymentQuote {
+  quoteId: string;
+  seriesId: string;
+  chainId: PaymentChainId;
+  currency: "ETH" | "USDC";
+  recipient: Hex0x;
+  /** Exact amount in the chain's smallest unit (wei for ETH, 6-dec atomic for USDC) */
+  amountWei: string;
+  /** Display-only — what the user sees in the UI */
+  fiatPrice: string;
+  fiatCurrency: string;
+  /** Unix milliseconds. Quote rejected after this. */
+  expiresAt: number;
+  /** Optional binding to a specific claimer address (lower-cased) */
+  boundTo?: string;
+  /** HMAC-SHA256 hex over the canonical quote string */
+  sig: string;
+}
+
+/** Platform fee in basis points — must match WoCoEscrow.sol FEE_BASIS_POINTS */
+export const PLATFORM_FEE_BP = 150; // 1.5%
 
 /** USDC contract addresses by chain (native Circle-issued USDC) */
 export const USDC_ADDRESSES: Partial<Record<PaymentChainId, Hex0x>> = {
@@ -74,6 +112,41 @@ export const CHAIN_NAMES: Record<PaymentChainId, string> = {
   10: "Optimism",
   11155111: "Sepolia",
 };
+
+/**
+ * Minimum on-chain confirmations required before the server will issue a ticket.
+ *
+ * These protect against chain reorgs — if the server mints a Swarm-feed ticket
+ * against an orphaned payment tx, there's no "undo" because feeds are
+ * append-only. The numbers reflect realistic reorg depths per chain under PoS:
+ *
+ * - Mainnet (12): conservative; PoS reorgs beyond 2 blocks require validator
+ *   misbehaviour, but 12 brings us close to a justified slot.
+ * - Sepolia (3): testnet PoS; same model as mainnet but we accept a lower bar.
+ * - Base/Optimism (3): L2 soft finality — we trust the sequencer has published.
+ *   True L1 finality takes hours/days; nobody waits for it for ticketing.
+ *
+ * The client MUST wait for at least this many confirmations before posting the
+ * claim — the server re-verifies against the same threshold. Client usually
+ * waits for +1 to absorb RPC-node head-of-chain skew.
+ *
+ * DO NOT lower these without understanding the reorg threat model; see
+ * docs/CRYPTO_AUDIT_2026-04-08.md.
+ */
+export const MIN_CONFIRMATIONS_BY_CHAIN: Record<PaymentChainId, number> = {
+  1: 12,          // Ethereum mainnet
+  8453: 3,        // Base
+  10: 3,          // Optimism
+  11155111: 3,    // Sepolia
+};
+
+/** Fallback if a chain is somehow not in the map (should never happen at runtime). */
+export const DEFAULT_MIN_CONFIRMATIONS = 6;
+
+/** Get the required confirmations for a chain. */
+export function getMinConfirmations(chainId: number): number {
+  return MIN_CONFIRMATIONS_BY_CHAIN[chainId as PaymentChainId] ?? DEFAULT_MIN_CONFIRMATIONS;
+}
 
 /** Full event metadata stored in Swarm feed */
 export interface EventFeed {
@@ -302,7 +375,12 @@ export interface ClaimerEntry {
   claimedAt: string;
   /** Swarm ref to ECIES-encrypted order data (only organizer can decrypt) */
   orderRef?: string;
+  /** How this claim was paid for. Absent on legacy entries. */
+  via?: ClaimVia;
 }
+
+/** Payment method used to obtain a ticket. */
+export type ClaimVia = "stripe" | "crypto" | "free";
 
 /** Claimers JSON feed stored per series */
 export interface ClaimersFeed {
@@ -324,6 +402,8 @@ export interface OrderEntry {
   claimerAddress: string;
   claimedAt: string;
   encryptedOrder?: SealedBox;
+  /** How this claim was paid for. Absent on legacy entries. */
+  via?: ClaimVia;
 }
 
 // ---------------------------------------------------------------------------

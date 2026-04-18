@@ -4,10 +4,12 @@
 
   interface Props {
     event: EventDirectoryEntry;
+    /** Whether the current user owns a ticket for this event */
+    owned?: boolean;
     onclick?: () => void;
   }
 
-  let { event, onclick }: Props = $props();
+  let { event, owned = false, onclick }: Props = $props();
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
@@ -37,9 +39,14 @@
   <div class="card-body">
     <div class="card-title-row">
       <span class="date">{formatDate(event.startDate)}</span>
-      {#if event.apiUrl}
-        <span class="site-badge" title="Self-hosted event">&#9670;</span>
-      {/if}
+      <div class="card-badges">
+        {#if owned}
+          <span class="owned-badge" title="You have a ticket">&#10003; Ticket</span>
+        {/if}
+        {#if event.apiUrl}
+          <span class="site-badge" title="Self-hosted event">&#9670;</span>
+        {/if}
+      </div>
     </div>
     <h3>{event.title}</h3>
     {#if event.location}
@@ -101,6 +108,29 @@
     margin: 0;
     color: var(--text-secondary);
     font-size: 0.8125rem;
+  }
+
+  .card-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .card-badges {
+    display: flex;
+    gap: 0.375rem;
+    align-items: center;
+  }
+
+  .owned-badge {
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--accent-text, #22c55e);
+    background: color-mix(in srgb, var(--accent-text, #22c55e) 12%, transparent);
+    padding: 0.125rem 0.4375rem;
+    border-radius: 9999px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
   }
 
   .card-footer {

@@ -101,6 +101,83 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Account abstraction (AA) wallets — roadmap
+
+**Status** (2026-04-17): unsupported. Server rejects any payment tx where
+`tx.from` is not an EOA matching the claimer. Smart-account wallets (Safe,
+ERC-4337 bundled user ops, Argent, Biconomy) currently see a clear error:
+
+> "Smart-account wallet detected. WoCo currently only accepts payments from EOA
+> wallets. AA support is on the roadmap."
+
+Detection sits in `apps/server/src/lib/payment/verify.ts`:
+- `tx.to` against a set of canonical ERC-4337 EntryPoints (v0.6 / v0.7)
+- `provider.getCode(tx.from)` — non-empty code means `tx.from` is itself a
+  contract (Safe direct path)
+
+### Why we don't just "allow AA"
+
+The Round 2 hardening (2026-04-09) binds a payment tx to the claimer via
+`tx.from === expectedFrom`. This defends against mempool front-running —
+an attacker watching pending txs and racing the legitimate buyer to the
+claim endpoint to reuse their payment.
+
+For smart accounts this invariant is wrong:
+- **ERC-4337**: `tx.from` is the *bundler*, not the user. The real signer is
+  inside the `UserOperation` calldata.
+- **Safe / proxy wallets**: `tx.from` can be any EOA owner (or a relayer), and
+  authorisation is a multi-sig threshold inside the Safe contract.
+
+Shipping a half-baked "if tx.from is a contract, trust it" would open a silent
+hole: anyone paying through any smart account with any tx.from could claim on
+behalf of any other address. Front-running defence broken.
+
+### Proper AA support — design sketch
+
+For a future branch, not a now task.
+
+1. **Detect the wallet type** deterministically:
+   - ERC-4337: tx targets a known EntryPoint. Extract the `UserOperation[]`
+     from calldata. The `sender` field is the smart-account address; the
+     `signature` field authorises the op.
+   - Safe: `tx.to` is a Safe singleton/proxy; the `execTransaction` call
+     contains the operation and threshold signatures.
+   - Contract-based owner wallet (rare): generic ERC-1271 fallback.
+
+2. **Verify signer authority** via **EIP-1271** — call
+   `isValidSignature(hash, signature)` on the smart-account contract. Returns
+   the magic value `0x1626ba7e` iff the signature is authorised by the
+   account's owner(s). This abstracts over Safe thresholds, social-recovery
+   schemes, passkey-based owners, etc.
+
+3. **Rebind to "the smart account"**: the claimer's proven address becomes
+   the smart-account address, not an EOA. Replay protection still holds:
+   `claimerProof` is signed by an EOA owner, we verify via EIP-1271 that the
+   smart account authorises it, then bind to the smart-account address.
+
+4. **Test fixtures**: Safe v1.3/v1.4, Biconomy smart account, Argent, Kernel
+   (ZeroDev). Each has a subtly different calldata layout.
+
+5. **UX**: surface clearly which address is the claimer — the smart account,
+   not the owner EOA — so the user understands their ticket is tied to the SA.
+
+6. **Docs**: add an `AA_SUPPORT.md` spec in `docs/` before the implementation
+   lands; this is exactly the kind of change that needs a review round.
+
+### What you gain
+
+Safe users (significant chunk of crypto-native orgs and DAOs), mobile users
+on Argent / Coinbase Smart Wallet, anyone who pays through a session-key
+wallet like Biconomy. These are the wallets Devcon-style events see most.
+
+### What it costs
+
+~1 week of careful work (including tests), a new attack-surface review, and a
+bump in audit scope. Worth doing — just not in the same breath as a
+confirmation-count bugfix.
+
+---
+
 ## Real-time discovery (transport slot — dormant)
 
 **Status**: Waku SDK stripped out (2026-03-22). Architecture was sound but not production-ready: browsers can't connect over ws:// from HTTPS pages (need wss), and single nwaku node = no real P2P. Revisit when Waku matures or implement via WebSocket/SSE on the Hono server instead.

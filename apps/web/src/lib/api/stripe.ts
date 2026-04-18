@@ -3,6 +3,7 @@
  */
 
 import { authPost, authGet, apiBase } from "./client.js";
+import type { SealedBox } from "@woco/shared";
 
 export interface RequirementCategory {
   label: string;
@@ -59,4 +60,20 @@ export async function createCheckoutSession(params: {
   const data = await resp.json() as { ok: boolean; url?: string; error?: string };
   if (!data.ok || !data.url) throw new Error(data.error || "Failed to create checkout session");
   return { url: data.url };
+}
+
+/** Save encrypted order data after successful Stripe payment */
+export async function saveStripeOrder(params: {
+  seriesId: string;
+  encryptedOrder: SealedBox;
+  claimerEmail?: string;
+  claimerAddress?: string;
+}): Promise<void> {
+  const resp = await fetch(`${apiBase}/api/stripe/save-order`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  const data = await resp.json() as { ok: boolean; error?: string };
+  if (!data.ok) throw new Error(data.error || "Failed to save order data");
 }

@@ -1,8 +1,9 @@
 <script lang="ts">
-  import type { EventDirectoryEntry } from "@woco/shared";
-  import { listEvents } from "../../api/events.js";
+  import type { EventDirectoryEntry, UserCollection } from "@woco/shared";
+  import { listEvents, getMyCollection } from "../../api/events.js";
   import EventCard from "./EventCard.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
+  import { auth } from "../../auth/auth-store.svelte.js";
   import { onMount, onDestroy } from "svelte";
   import {
     startEventStream,
@@ -24,6 +25,14 @@
   let loading = $state(_cached === null);
   let error = $state<string | null>(null);
 
+  // Owned events lookup — populated from user's collection (wallet-claimed tickets only)
+  // Read from collection cache synchronously for instant badge render on first paint.
+  const _addr = auth.parent?.toLowerCase();
+  const _cachedCollection = _addr ? cacheGet<UserCollection>(cacheKey.collection(_addr)) : null;
+  let ownedEventIds = $state<Set<string>>(
+    new Set(_cachedCollection?.entries.map((e) => e.eventId) ?? []),
+  );
+
   let events = $derived(mergeWithLive(fetchedEvents));
 
   onMount(() => {
@@ -41,6 +50,18 @@
           loading = false;
         }
       });
+
+    // Refresh owned-tickets set in background (only if signed in with wallet identity).
+    // Failure is silent — badges fall back to whatever was in cache.
+    if (auth.isConnected && auth.parent) {
+      getMyCollection()
+        .then((collection) => {
+          const addr = auth.parent!.toLowerCase();
+          cacheSet(cacheKey.collection(addr), collection, TTL.COLLECTION);
+          ownedEventIds = new Set(collection.entries.map((e) => e.eventId));
+        })
+        .catch(() => {/* non-critical */});
+    }
 
     startEventStream();
   });
@@ -63,7 +84,7 @@
   {:else}
     <div class="grid">
       {#each events as event (event.eventId)}
-        <EventCard {event} onclick={() => onselect?.(event.eventId)} />
+        <EventCard {event} owned={ownedEventIds.has(event.eventId)} onclick={() => onselect?.(event.eventId)} />
       {/each}
     </div>
   {/if}

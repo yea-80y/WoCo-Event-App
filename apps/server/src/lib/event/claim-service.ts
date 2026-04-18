@@ -73,8 +73,10 @@ export async function claimTicket(opts: {
   seriesId: string;
   identifier: ClaimIdentifier;
   encryptedOrder?: SealedBox;
+  /** Payment method, if known. Stored on the claim entry for dashboard display. */
+  via?: import("@woco/shared").ClaimVia;
 }): Promise<ClaimResult> {
-  const { seriesId, identifier, encryptedOrder } = opts;
+  const { seriesId, identifier, encryptedOrder, via } = opts;
 
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
@@ -258,6 +260,7 @@ export async function claimTicket(opts: {
       claimedRef,
       claimedAt: claimedTicket.claimedAt,
       orderRef,
+      ...(via ? { via } : {}),
     });
   } catch (err) {
     console.error("[claim] Failed to update claimers feed:", err);

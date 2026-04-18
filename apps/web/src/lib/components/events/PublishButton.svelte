@@ -31,12 +31,17 @@
     orderFields?: OrderField[];
     /** How attendees can claim tickets */
     claimMode?: ClaimMode;
+    /** External disable flag (e.g. crypto enabled but no payout wallet connected) */
+    disabled?: boolean;
+    /** Hint shown when externally disabled */
+    disabledReason?: string;
     onpublished?: (eventId: string) => void;
   }
 
   let {
     title, description, startDate, endDate, location,
-    imageDataUrl, series, orderFields, claimMode, onpublished,
+    imageDataUrl, series, orderFields, claimMode,
+    disabled = false, disabledReason, onpublished,
   }: Props = $props();
 
   let publishing = $state(false);
@@ -75,7 +80,7 @@
   }
 
   async function handlePublish() {
-    if (!canPublish || publishing) return;
+    if (!canPublish || publishing || disabled) return;
     publishing = true;
     error = null;
     progress = 0;
@@ -176,7 +181,7 @@
   <button
     class="publish-btn"
     onclick={handlePublish}
-    disabled={!canPublish || publishing}
+    disabled={!canPublish || publishing || disabled}
   >
     {#if publishing}
       {step}
@@ -202,7 +207,9 @@
     </p>
   {/if}
 
-  {#if !canPublish && !publishing}
+  {#if disabled && disabledReason && !publishing}
+    <p class="hint">{disabledReason}</p>
+  {:else if !canPublish && !publishing}
     <p class="hint">Fill in all required fields to publish</p>
   {/if}
 

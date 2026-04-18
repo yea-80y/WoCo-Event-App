@@ -24,8 +24,21 @@ let cachedPrice: number | null = null;
 let cachedAt = 0;
 const CACHE_TTL = 60_000; // 1 minute
 
-/** Slippage tolerance: accept payments within 3% of expected amount */
-export const PRICE_SLIPPAGE = 0.03;
+/**
+ * Slippage tolerance — accept payments within this fraction of the
+ * server-derived ETH amount. 5% absorbs:
+ *   - Chainlink oracle update intervals (Sepolia is updated less often than
+ *     mainnet — can drift several percent before a new round)
+ *   - Time elapsed between the user's wallet sign and on-chain confirmation
+ *     (3-block wait + RPC propagation)
+ *   - Forex rate cache mismatch (1 hour TTL)
+ *
+ * TODO: replace this slippage band with a server-issued payment quote
+ * (HMAC-signed { amountWei, expiresAt }), so the client pays an exact amount
+ * the server has already committed to verify against. Eliminates the price-
+ * race entirely. See docs/DEVLOG.md for design.
+ */
+export const PRICE_SLIPPAGE = 0.05;
 
 /** Try chains in order until one succeeds */
 const CHAIN_ORDER = [1, 8453, 10, 11155111] as const;

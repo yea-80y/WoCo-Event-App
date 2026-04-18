@@ -1,13 +1,15 @@
 <script lang="ts">
   import type { OrderField, SealedBox, ClaimMode, PaymentConfig, PaymentChainId, PaymentProof } from "@woco/shared";
-  import { sealJson, CHAIN_NAMES, USDC_ADDRESSES } from "@woco/shared";
+  import { sealJson, CHAIN_NAMES, USDC_ADDRESSES, PLATFORM_FEE_BP } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
   import { createCheckoutSession } from "../../api/stripe.js";
+  import { CHAIN_INFO } from "../../payment/chains.js";
   import type { SeriesClaimStatus } from "@woco/shared";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
+  import ConnectWalletModal from "../profile/ConnectWalletModal.svelte";
 
   interface Props {
     eventId: string;
@@ -39,6 +41,24 @@
   const hasStripe = $derived(!!payment?.stripeEnabled);
   let stripeLoading = $state(false);
   let stripeEmail = $state("");
+  // True while we're polling after a Stripe-success redirect, waiting for the
+  // webhook to mint the ticket. Drives a dedicated processing card so the user
+  // doesn't see the "buy a ticket" button reappear during the 2–12s window.
+  let stripeReturning = $state(false);
+  /**
+   * On-chain payment succeeded but the amount was short of what the server
+   * requires (price moved beyond the slippage tolerance between quote and
+   * verification). The tx is confirmed on-chain but the ticket was NOT issued.
+   * Surfaces a dedicated receipt card so the user sees exactly what happened.
+   */
+  let paymentShortfall = $state<{
+    txHash: string;
+    chainId: PaymentChainId;
+    paid: string;
+    expected: string;
+    currency: string;
+    at: string;
+  } | null>(null);
   let showChainSelector = $state(false);
   let selectedChain = $state<PaymentChainId | null>(null);
   let paymentProofResult = $state<PaymentProof | null>(null);
@@ -47,6 +67,36 @@
   let ethPriceLoading = $state(false);
   /** User's chosen payment method — ETH or USDC */
   let selectedPayMethod = $state<"ETH" | "USDC">("ETH");
+  /** Card-first users: passkey, local (no crypto wallet). Crypto-first: web3, para. */
+  const isCardFirst = $derived(auth.kind === "passkey" || auth.kind === "local" || !auth.kind);
+
+  /** Stripe processing fee estimates (UK/EU domestic) */
+  const STRIPE_PERCENT = 0.029;
+  const STRIPE_FIXED: Record<string, number> = { GBP: 0.20, USD: 0.30, EUR: 0.25 };
+
+  /** Whether fees are passed to the buyer */
+  const feePassedToCustomer = $derived(!!payment?.feePassedToCustomer);
+
+  /** Fee breakdown for buyer display */
+  const buyerFees = $derived.by(() => {
+    if (!payment || !feePassedToCustomer) return null;
+    const amount = parseFloat(payment.price);
+    if (!amount || amount <= 0) return null;
+    const sym = CURRENCY_SYMBOLS[payment.currency] ?? "";
+    const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
+    const platformFee = amount * PLATFORM_FEE_BP / 10_000;
+    const stripeFee = payment.stripeEnabled
+      ? amount * STRIPE_PERCENT + (STRIPE_FIXED[payment.currency] ?? 0.20)
+      : 0;
+    return {
+      base: fmt(amount),
+      platform: fmt(platformFee),
+      stripe: payment.stripeEnabled ? `~${fmt(stripeFee)}` : null,
+      cardTotal: payment.stripeEnabled ? `~${fmt(amount + platformFee + stripeFee)}` : null,
+      cryptoTotal: payment.cryptoEnabled ? fmt(amount + platformFee) : null,
+    };
+  });
+
   const CURRENCY_SYMBOLS: Record<string, string> = { USD: "$", GBP: "\u00a3", EUR: "\u20ac" };
   const priceLabel = $derived(
     payment
@@ -111,6 +161,10 @@
   let formData = $state<Record<string, string>>({});
   /** When claimMode is "both", which method has the user picked? */
   let chosenMethod = $state<"wallet" | "email" | null>(null);
+  /** When true, the order form was opened to collect data before Stripe checkout */
+  let stripeAfterForm = $state(false);
+  /** Show the connect wallet modal for passkey/local users wanting to pay crypto */
+  let showWalletModal = $state(false);
   /** Inline email input for email claims when no email field in order form */
   let inlineEmail = $state("");
   /** Whether the order form already includes an email-type field */
@@ -173,6 +227,26 @@
   }
 
   onMount(() => {
+    // Restore a persisted payment-shortfall receipt if present (session-scoped
+    // so it doesn't linger forever — user sees it until they dismiss or close tab).
+    try {
+      const raw = sessionStorage.getItem(SHORTFALL_KEY);
+      if (raw) paymentShortfall = JSON.parse(raw);
+    } catch { /* ignore */ }
+
+    // Detect Stripe success redirect — save stashed order data + force-refresh
+    const hash = window.location.hash;
+    const isStripeReturn = hash.includes("stripe=success");
+    if (isStripeReturn) {
+      if (sessionStorage.getItem(STRIPE_FORM_KEY)) {
+        saveStashedOrderData();
+      }
+      // Webhook claims the ticket asynchronously — invalidate caches and poll
+      // so the UI catches up to the fresh state as soon as the claim lands.
+      handleStripeSuccessReturn();
+      return;
+    }
+
     // Permanent claimed from cache: no network call ever needed
     if (_permanentClaimed) return;
 
@@ -206,6 +280,99 @@
       });
   });
 
+  /**
+   * Handle returning from a successful Stripe checkout.
+   *
+   * The webhook claims the ticket asynchronously, so the claim may not be
+   * visible in feed reads for a few seconds after redirect. Strategy:
+   *  1. Invalidate any cached status (both addr-keyed and anon)
+   *  2. Show a "Finalising your ticket..." spinner state immediately
+   *  3. Poll getClaimStatus with backoff until availability decreases or
+   *     userEdition appears (max ~12s total)
+   *  4. Strip the stripe=success param so refreshes don't re-trigger this
+   */
+  async function handleStripeSuccessReturn() {
+    const addr = auth.parent?.toLowerCase();
+    // Force a fresh server read by clearing all caches that could mask the new claim
+    cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
+    cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
+    cacheDel(cacheKey.claimStatus(eventId, seriesId, undefined));
+
+    claiming = true;
+    stripeReturning = true;
+    step = "Finalising your ticket...";
+
+    // Capture the pre-payment availability so we can detect the decrement
+    const baselineAvailable = status?.available;
+
+    // Poll: 1s, 2s, 3s, 3s, 3s, 3s, 4s, 4s, 5s — total ~28s. Webhook usually
+    // fires within 2–3s but can be delayed under load or on first-deploy cold
+    // starts. Generous window keeps the processing card visible instead of
+    // flashing back to the claim button.
+    const delays = [1000, 2000, 3000, 3000, 3000, 3000, 4000, 4000, 5000];
+    let lastFresh: SeriesClaimStatus | null = null;
+
+    for (let i = 0; i < delays.length; i++) {
+      await new Promise((r) => setTimeout(r, delays[i]));
+      try {
+        const fresh = await getClaimStatus(eventId, seriesId, addr || undefined, undefined, apiUrl);
+        if (!fresh) continue;
+        lastFresh = fresh;
+
+        // Success conditions: server confirms our claim OR availability dropped
+        const claimVisible = fresh.userEdition != null;
+        const availabilityDropped =
+          baselineAvailable != null && fresh.available < baselineAvailable;
+
+        if (claimVisible || availabilityDropped) {
+          cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), fresh, TTL.CLAIM_STATUS);
+
+          if (claimVisible && addr) {
+            // Persist permanent claim cache for the wallet user
+            cacheSet(
+              cacheKey.claimed(eventId, seriesId, addr),
+              { edition: fresh.userEdition!, via: "wallet" },
+              TTL.PERMANENT,
+            );
+            claimed = true;
+            claimedEdition = fresh.userEdition!;
+            claimedVia = "wallet";
+          } else {
+            // Anonymous (email) claim — no userEdition will ever come back, but
+            // availability dropped, so show a generic confirmation
+            claimed = true;
+            claimedVia = "email";
+          }
+          applyStatus(fresh);
+          break;
+        }
+      } catch {
+        // Network blip — keep polling
+      }
+    }
+
+    // If we exhausted polls without confirmation, leave whatever state the
+    // server returned (availability may still be cached on the relay) and
+    // surface a hint so the user knows to refresh.
+    if (!claimed && lastFresh) {
+      applyStatus(lastFresh);
+      cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), lastFresh, TTL.CLAIM_STATUS);
+    }
+
+    claiming = false;
+    stripeReturning = false;
+    step = "";
+
+    // Strip the stripe=success query so a refresh doesn't re-run this flow
+    try {
+      const url = new URL(window.location.href);
+      const newHash = window.location.hash
+        .replace(/[?&]stripe=success/, "")
+        .replace(/[?&]session_id=[^&]*/, "");
+      window.history.replaceState(null, "", url.pathname + url.search + newHash);
+    } catch { /* ignore */ }
+  }
+
   // Re-fetch with address when auth restores asynchronously (page refresh scenario).
   // At onMount time, auth.parent may be null if IDB restore hasn't completed yet.
   // Without an address the server can't return userPendingId/userEdition.
@@ -229,7 +396,70 @@
       .catch(() => {});
   });
 
+  /** sessionStorage key for stashing form data across Stripe redirect */
+  const STRIPE_FORM_KEY = `woco:stripe-form:${eventId}:${seriesId}`;
+
+  /** Detect "already claimed" responses and transition to claimed state instead of error */
+  function handleAlreadyClaimed(msg: string): boolean {
+    const lc = msg.toLowerCase();
+    if (lc.includes("already claimed") || lc.includes("already have a ticket") || lc.includes("already requested")) {
+      claimed = true;
+      error = null;
+      return true;
+    }
+    return false;
+  }
+
+  const SHORTFALL_KEY = `woco:payment-shortfall:${eventId}:${seriesId}`;
+
+  /**
+   * Detect a server "Paid X ETH, expected Y ETH" response and, if matched,
+   * transition into the dedicated shortfall receipt card. Persists to
+   * sessionStorage so the user can navigate away and come back to it.
+   */
+  function handleShortfall(msg: string, proof: PaymentProof): boolean {
+    const m = msg.match(/Paid\s+([\d.]+)\s+(ETH|USDC),\s*expected\s+([\d.]+)\s+(?:ETH|USDC)/i);
+    if (!m || proof.type !== "tx" || !proof.txHash) return false;
+    const data = {
+      txHash: proof.txHash,
+      chainId: proof.chainId,
+      paid: m[1],
+      expected: m[3],
+      currency: m[2].toUpperCase(),
+      at: new Date().toISOString(),
+    };
+    paymentShortfall = data;
+    try { sessionStorage.setItem(SHORTFALL_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+    error = null;
+    return true;
+  }
+
+  function dismissShortfall() {
+    paymentShortfall = null;
+    try { sessionStorage.removeItem(SHORTFALL_KEY); } catch { /* ignore */ }
+  }
+
+  async function copyTxHash() {
+    if (!paymentShortfall) return;
+    try { await navigator.clipboard.writeText(paymentShortfall.txHash); } catch { /* ignore */ }
+  }
+
+  function explorerUrl(chainId: PaymentChainId, txHash: string): string {
+    return `${CHAIN_INFO[chainId].blockExplorer}/tx/${txHash}`;
+  }
+
+  function shortHash(h: string): string {
+    return h.length > 14 ? `${h.slice(0, 8)}…${h.slice(-6)}` : h;
+  }
+
   async function handleStripeCheckout() {
+    // If there's an order form and it hasn't been shown yet, show it first
+    if (hasOrderForm && !showOrderForm) {
+      stripeAfterForm = true;
+      showOrderForm = true;
+      return;
+    }
+
     stripeLoading = true;
     error = null;
     try {
@@ -239,6 +469,17 @@
         error = "Please enter an email address or sign in with a wallet.";
         return;
       }
+
+      // Stash form data in sessionStorage — will be encrypted and saved
+      // after Stripe redirects back on successful payment
+      if (Object.keys(formData).length > 0) {
+        sessionStorage.setItem(STRIPE_FORM_KEY, JSON.stringify({
+          fields: formData,
+          claimerEmail: email,
+          claimerAddress: address,
+        }));
+      }
+
       const { url } = await createCheckoutSession({
         eventId,
         seriesId,
@@ -247,9 +488,45 @@
       });
       window.location.href = url;
     } catch (err) {
-      error = err instanceof Error ? err.message : "Failed to start checkout";
+      const msg = err instanceof Error ? err.message : "Failed to start checkout";
+      if (!handleAlreadyClaimed(msg)) error = msg;
     } finally {
       stripeLoading = false;
+    }
+  }
+
+  /** After Stripe redirect back, encrypt and save stashed form data */
+  async function saveStashedOrderData() {
+    const raw = sessionStorage.getItem(STRIPE_FORM_KEY);
+    if (!raw || !encryptionKey) return;
+
+    try {
+      const stashed = JSON.parse(raw) as {
+        fields: Record<string, string>;
+        claimerEmail?: string;
+        claimerAddress?: string;
+      };
+
+      const sealed = await sealJson(encryptionKey, {
+        fields: stashed.fields,
+        seriesId,
+        ...(stashed.claimerAddress ? { claimerAddress: stashed.claimerAddress } : {}),
+        ...(stashed.claimerEmail ? { claimerEmail: stashed.claimerEmail } : {}),
+      });
+
+      const { saveStripeOrder } = await import("../../api/stripe.js");
+      await saveStripeOrder({
+        seriesId,
+        encryptedOrder: sealed,
+        claimerEmail: stashed.claimerEmail,
+        claimerAddress: stashed.claimerAddress,
+      });
+
+      console.log("[ClaimButton] Order data saved after Stripe payment");
+    } catch (err) {
+      console.error("[ClaimButton] Failed to save order data after Stripe payment:", err);
+    } finally {
+      sessionStorage.removeItem(STRIPE_FORM_KEY);
     }
   }
 
@@ -292,6 +569,11 @@
     claiming = true;
     error = null;
 
+    // Lock wallet UI in the Profile tab — prevents the user from switching
+    // wallets mid-payment, which could cause tx.from / claimer mismatch on
+    // the server. Cleared in finally{}.
+    try { window.localStorage.setItem("woco:payment-in-flight", "1"); } catch { /* storage unavailable */ }
+
     try {
       // Ensure wallet is connected for payment
       if (!auth.isConnected) {
@@ -314,33 +596,64 @@
         if (!ok) { error = "Session approval cancelled"; return; }
       }
 
-      // Fiat-priced: resolve to the user's chosen crypto pay method
-      let paymentConfig: any = payment;
-      if (selectedPayMethod === "USDC") {
-        // Convert fiat to USD for USDC (1:1 stablecoin)
-        const { fiatToETH: _ } = await import("../../payment/eth-price.js");
-        // For USDC we need USD equivalent — use the fiat price directly for USD,
-        // or convert GBP/EUR to USD for USDC amount
-        const usdAmount = payment.currency === "USD"
-          ? payment.price
-          : (parseFloat(payment.price) * (payment.currency === "GBP" ? 1.27 : 1.09)).toFixed(2);
-        paymentConfig = { ...payment, price: usdAmount, currency: "USDC" };
-      } else {
-        // Pay in ETH — convert fiat to ETH equivalent
-        step = "Fetching ETH price...";
-        const { fiatToETH } = await import("../../payment/eth-price.js");
-        const ethAmount = await fiatToETH(payment.price, payment.currency);
-        ethEquivalent = ethAmount;
-        paymentConfig = { ...payment, price: ethAmount, currency: "ETH" };
+      // Request a server-signed payment quote — server commits to the EXACT
+      // wei the user must pay. No client-side oracle read, no slippage band.
+      step = "Requesting payment quote...";
+      const { fetchPaymentQuote } = await import("../../api/payment.js");
+      const quoteCurrency: "ETH" | "USDC" = selectedPayMethod === "USDC" ? "USDC" : "ETH";
+      const quote = await fetchPaymentQuote({
+        eventId,
+        seriesId,
+        chainId: selectedChain,
+        currency: quoteCurrency,
+        ...(auth.parent ? { claimerAddress: auth.parent } : {}),
+      });
+
+      // Mirror the quote back into the UI so the displayed ETH amount matches
+      // what the wallet will actually be asked to send.
+      if (quoteCurrency === "ETH") {
+        const { formatUnits } = await import("ethers");
+        ethEquivalent = formatUnits(BigInt(quote.amountWei), 18)
+          .replace(/0+$/, "")
+          .replace(/\.$/, "");
       }
 
       step = "Switching chain...";
       const { executePayment } = await import("../../payment/pay.js");
 
       const sym = CURRENCY_SYMBOLS[payment.currency] || "";
-      const displayAmount = `${ethEquivalent} ETH (${sym}${payment.price})`;
+      const displayAmount = quoteCurrency === "ETH"
+        ? `${ethEquivalent} ETH (${sym}${payment.price})`
+        : `${(Number(quote.amountWei) / 1_000_000).toFixed(2)} USDC (${sym}${payment.price})`;
       step = `Confirm ${displayAmount} payment...`;
-      const result = await executePayment(paymentConfig, selectedChain, eventId, eventEndDate, auth.parent ?? undefined);
+
+      // Progress callback — translates pay-flow phases into user-visible steps.
+      // The "waiting-confirmations" phase runs for ~10-40s depending on chain,
+      // so it's critical the user sees live progress, not a frozen spinner.
+      const onProgress = (ev: {
+        phase: "switch-chain" | "approve-token" | "send-tx" | "waiting-confirmations" | "confirmed";
+        current?: number;
+        total?: number;
+      }) => {
+        switch (ev.phase) {
+          case "switch-chain": step = "Switching chain..."; break;
+          case "approve-token": step = "Approving token..."; break;
+          case "send-tx": step = `Confirm ${displayAmount} payment...`; break;
+          case "waiting-confirmations":
+            step = `Waiting for confirmations (${ev.current ?? 0}/${ev.total ?? "?"})...`;
+            break;
+          case "confirmed": step = "Payment confirmed. Claiming ticket..."; break;
+        }
+      };
+
+      const result = await executePayment({
+        quote,
+        payment,
+        eventId,
+        eventEndDate,
+        signerAddress: auth.parent ?? undefined,
+        onProgress,
+      });
       paymentProofResult = result.proof;
 
       // Persist proof before claiming — if the claim fetch fails, the user's tx hash
@@ -365,6 +678,7 @@
       }
     } finally {
       claiming = false;
+      try { window.localStorage.removeItem("woco:payment-in-flight"); } catch { /* storage unavailable */ }
     }
   }
 
@@ -385,7 +699,12 @@
       }
 
       const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl, proof);
-      if (!result.ok) { error = result.error || "Failed to claim ticket"; return; }
+      if (!result.ok) {
+        const msg = result.error || "Failed to claim ticket";
+        if (handleAlreadyClaimed(msg)) return;
+        if (handleShortfall(msg, proof)) return;
+        error = msg; return;
+      }
 
       if (result.approvalPending) {
         approvalPending = true;
@@ -418,24 +737,44 @@
         });
       }
 
-      // Retry up to 3 times on network errors — mobile connections drop during
-      // app-switching, so a transient fetch failure shouldn't lose the ticket.
+      // Retry on two classes of failure:
+      //  1. Network throws — mobile connections drop during app-switching, a
+      //     transient fetch failure shouldn't lose the ticket.
+      //  2. Server returns { ok: false, error: "Need N confirmations, have M" }
+      //     — the client already waited for minConfs+1, but the server's RPC
+      //     may be 1 block behind the client's RPC (block propagation lag).
+      //     Back off and retry; the tx is on-chain, confs will catch up.
       let result;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 5; attempt++) {
         try {
           result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl, proof);
+          // If server still sees too few confs, backoff and retry — the tx is
+          // on-chain, it just hasn't propagated to the server's RPC yet.
+          if (!result.ok && /Need \d+ confirmations/.test(result.error ?? "")) {
+            if (attempt < 4) {
+              step = `Waiting for confirmations to propagate (retry ${attempt + 1})...`;
+              await new Promise(r => setTimeout(r, 4000 + attempt * 2000));
+              result = undefined;
+              continue;
+            }
+          }
           break;
         } catch (e) {
-          if (attempt < 2) {
+          if (attempt < 4) {
             step = `Claiming ticket (retry ${attempt + 1})...`;
             await new Promise(r => setTimeout(r, 1200 * (attempt + 1)));
           } else {
-            throw e; // rethrow after 3 failures — caught by handlePaymentAndClaim
+            throw e; // rethrow after 5 failures — caught by handlePaymentAndClaim
           }
         }
       }
       if (!result) return;
-      if (!result.ok) { error = result.error || "Failed to claim ticket"; return; }
+      if (!result.ok) {
+        const msg = result.error || "Failed to claim ticket";
+        if (handleAlreadyClaimed(msg)) return;
+        if (handleShortfall(msg, proof)) return;
+        error = msg; return;
+      }
 
       if (result.approvalPending) {
         approvalPending = true;
@@ -514,8 +853,9 @@
         const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl);
 
         if (!result.ok) {
-          error = result.error || "Failed to claim ticket";
-          return;
+          const msg = result.error || "Failed to claim ticket";
+          if (handleAlreadyClaimed(msg)) return;
+          error = msg; return;
         }
 
         if (result.approvalPending) {
@@ -568,8 +908,9 @@
         const result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl);
 
         if (!result.ok) {
-          error = result.error || "Failed to claim ticket";
-          return;
+          const msg = result.error || "Failed to claim ticket";
+          if (handleAlreadyClaimed(msg)) return;
+          error = msg; return;
         }
 
         if (result.approvalPending) {
@@ -627,7 +968,85 @@
 </script>
 
 <div class="claim-area">
-  {#if approvalPending}
+  {#if paymentShortfall && !claimed}
+    <!--
+      Ledger-receipt card for an on-chain payment that was confirmed but
+      rejected by the server because the ETH amount was short of the
+      slippage tolerance. Shows: what you paid vs required, tx hash with
+      explorer link + copy, and the recovery options.
+    -->
+    <div class="receipt">
+      <header class="receipt-head">
+        <span class="receipt-stripe" aria-hidden="true"></span>
+        <div class="receipt-head-text">
+          <h3 class="receipt-title">Payment recorded, ticket pending</h3>
+          <p class="receipt-sub">Your transaction confirmed on-chain — but the market moved between your sign and our verification. The amount came up short of the {paymentShortfall.currency} we need for this ticket.</p>
+        </div>
+      </header>
+
+      <div class="receipt-body">
+        <dl class="receipt-rows">
+          <div class="receipt-row">
+            <dt>You paid</dt>
+            <dd class="mono tnum">{paymentShortfall.paid} {paymentShortfall.currency}</dd>
+          </div>
+          <div class="receipt-row">
+            <dt>We required</dt>
+            <dd class="mono tnum">{paymentShortfall.expected} {paymentShortfall.currency}</dd>
+          </div>
+          <div class="receipt-row receipt-row--delta">
+            <dt>Shortfall</dt>
+            <dd class="mono tnum">
+              −{(parseFloat(paymentShortfall.expected) - parseFloat(paymentShortfall.paid)).toFixed(8).replace(/0+$/, "").replace(/\.$/, "")} {paymentShortfall.currency}
+              <span class="receipt-delta-pct">{((1 - parseFloat(paymentShortfall.paid) / parseFloat(paymentShortfall.expected)) * 100).toFixed(1)}%</span>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="receipt-tx">
+          <span class="receipt-tx-label">Transaction</span>
+          <div class="receipt-tx-body">
+            <code class="mono receipt-tx-hash" title={paymentShortfall.txHash}>{shortHash(paymentShortfall.txHash)}</code>
+            <span class="receipt-tx-chain">on {CHAIN_NAMES[paymentShortfall.chainId]}</span>
+          </div>
+          <div class="receipt-tx-actions">
+            <button type="button" class="receipt-icon-btn" onclick={copyTxHash} title="Copy hash">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+            <a
+              class="receipt-icon-btn"
+              href={explorerUrl(paymentShortfall.chainId, paymentShortfall.txHash)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="View on explorer"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <footer class="receipt-foot">
+        <button type="button" class="receipt-btn receipt-btn--primary" onclick={() => { dismissShortfall(); showChainSelector = true; }}>
+          Retry with a fresh payment
+        </button>
+        <button type="button" class="receipt-btn receipt-btn--ghost" onclick={dismissShortfall}>
+          Dismiss
+        </button>
+        <p class="receipt-note">
+          Your prior transaction is irreversible — contact the event organiser if you'd like a refund rather than retrying.
+        </p>
+      </footer>
+    </div>
+  {:else if stripeReturning && !claimed}
+    <div class="stripe-processing">
+      <span class="stripe-processing-spinner"></span>
+      <div class="stripe-processing-body">
+        <strong class="stripe-processing-title">Processing your payment</strong>
+        <span class="stripe-processing-sub">{step || "Finalising your ticket..."}</span>
+      </div>
+    </div>
+  {:else if approvalPending}
     <div class="pending-badge">
       <span class="pending-icon">&#9679;</span>
       Pending Approval
@@ -696,10 +1115,33 @@
             placeholder="your@email.com"
           />
         </label>
+      {:else if stripeAfterForm && !hasEmailField && !auth.isConnected}
+        <!-- Need an email for Stripe checkout when user isn't logged in -->
+        <label class="form-field">
+          <span class="form-label">Email <span class="required">*</span></span>
+          <input
+            type="email"
+            bind:value={stripeEmail}
+            placeholder="your@email.com"
+          />
+        </label>
       {/if}
 
       <div class="form-actions">
-        {#if claimMode === "both"}
+        {#if stripeAfterForm}
+          <!-- Order form was shown before Stripe checkout -->
+          {#if stripeLoading}
+            <button class="stripe-btn stripe-btn--primary" disabled>Redirecting to Stripe...</button>
+          {:else}
+            <button
+              class="stripe-btn stripe-btn--primary"
+              onclick={handleStripeCheckout}
+              disabled={!formValid()}
+            >
+              Continue to payment {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
+            </button>
+          {/if}
+        {:else if claimMode === "both"}
           {#if claiming}
             <button class="claim-btn" disabled>{step}</button>
           {:else}
@@ -731,7 +1173,7 @@
             {/if}
           </button>
         {/if}
-        <button class="cancel-btn" onclick={() => { showOrderForm = false; chosenMethod = null; }}>Cancel</button>
+        <button class="cancel-btn" onclick={() => { showOrderForm = false; chosenMethod = null; stripeAfterForm = false; }}>Cancel</button>
       </div>
       {#if hasOrderForm}
         <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
@@ -743,7 +1185,7 @@
       <div class="pay-header">
         <span class="pay-header-label">Total</span>
         <div class="pay-price-stack">
-          <span class="pay-price-primary">{priceLabel}</span>
+          <span class="pay-price-primary">{buyerFees?.cryptoTotal ?? priceLabel}</span>
           <span class="pay-price-secondary">
             {#if ethPriceLoading}
               fetching rate...
@@ -753,6 +1195,14 @@
           </span>
         </div>
       </div>
+
+      <!-- Fee receipt (when buyer pays fees) -->
+      {#if buyerFees}
+        <div class="pay-receipt">
+          <div class="pay-receipt-row"><span>Ticket</span><span>{buyerFees.base}</span></div>
+          <div class="pay-receipt-row pay-receipt-fee"><span>Platform fee (1.5%)</span><span>{buyerFees.platform}</span></div>
+        </div>
+      {/if}
 
       <!-- Payment method toggle (ETH vs USDC) -->
       <div class="pay-section">
@@ -857,7 +1307,7 @@
           {#if stripeLoading}
             Redirecting to Stripe...
           {:else}
-            Pay with card — {priceLabel}
+            Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
           {/if}
         </button>
         {#if !auth.isConnected}
@@ -870,29 +1320,92 @@
         {/if}
       {/if}
     </div>
-  {:else if isPaid && !hasCrypto && hasStripe}
-    <!-- Stripe-only paid event -->
-    <button
-      class="stripe-btn"
-      disabled={stripeLoading || (status?.available === 0)}
-      onclick={handleStripeCheckout}
-    >
-      {#if stripeLoading}
-        Redirecting to Stripe...
-      {:else if status?.available === 0}
-        Sold out
-      {:else}
-        Pay with card — {priceLabel}
+  {:else if isPaid && hasStripe && (!hasCrypto || isCardFirst)}
+    <!-- Card-first: passkey/local users, or Stripe-only events -->
+    <div class="pay-sheet">
+      {#if buyerFees}
+        <div class="pay-receipt">
+          <div class="pay-receipt-row"><span>Ticket</span><span>{buyerFees.base}</span></div>
+          {#if buyerFees.stripe}
+            <div class="pay-receipt-row pay-receipt-fee"><span>Processing</span><span>{buyerFees.stripe}</span></div>
+          {/if}
+          <div class="pay-receipt-row pay-receipt-fee"><span>Platform fee (1.5%)</span><span>{buyerFees.platform}</span></div>
+          <div class="pay-receipt-row pay-receipt-total"><span>Total</span><span>{buyerFees.cardTotal ?? priceLabel}</span></div>
+        </div>
       {/if}
-    </button>
-    {#if !auth.isConnected}
-      <input
-        class="stripe-email-input"
-        type="email"
-        placeholder="Email for your ticket"
-        bind:value={stripeEmail}
-      />
-    {/if}
+
+      <button
+        class="stripe-btn stripe-btn--primary"
+        disabled={stripeLoading || (status?.available === 0)}
+        onclick={handleStripeCheckout}
+      >
+        {#if stripeLoading}
+          Redirecting to Stripe...
+        {:else if status?.available === 0}
+          Sold out
+        {:else}
+          Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
+        {/if}
+      </button>
+      {#if !auth.isConnected}
+        <input
+          class="stripe-email-input"
+          type="email"
+          placeholder="Email for your ticket"
+          bind:value={stripeEmail}
+        />
+      {/if}
+
+      {#if hasCrypto}
+        <div class="pay-divider">
+          <span class="pay-divider-line"></span>
+          <span class="pay-divider-text">or</span>
+          <span class="pay-divider-line"></span>
+        </div>
+        <button
+          class="pay-crypto-link"
+          onclick={() => isCardFirst ? showWalletModal = true : handleClaimClick()}
+        >
+          Pay with crypto {buyerFees?.cryptoTotal ? `— ${buyerFees.cryptoTotal}` : `— ${priceLabel}`}
+        </button>
+      {/if}
+    </div>
+  {:else if isPaid && !hasCrypto && hasStripe}
+    <!-- Stripe-only, no crypto at all -->
+    <div class="pay-sheet">
+      {#if buyerFees}
+        <div class="pay-receipt">
+          <div class="pay-receipt-row"><span>Ticket</span><span>{buyerFees.base}</span></div>
+          {#if buyerFees.stripe}
+            <div class="pay-receipt-row pay-receipt-fee"><span>Processing</span><span>{buyerFees.stripe}</span></div>
+          {/if}
+          <div class="pay-receipt-row pay-receipt-fee"><span>Platform fee (1.5%)</span><span>{buyerFees.platform}</span></div>
+          <div class="pay-receipt-row pay-receipt-total"><span>Total</span><span>{buyerFees.cardTotal ?? priceLabel}</span></div>
+        </div>
+      {/if}
+
+      <button
+        class="stripe-btn stripe-btn--primary"
+        disabled={stripeLoading || (status?.available === 0)}
+        onclick={handleStripeCheckout}
+      >
+        {#if stripeLoading}
+          Redirecting to Stripe...
+        {:else if status?.available === 0}
+          Sold out
+        {:else}
+          Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
+        {/if}
+      </button>
+      {#if !auth.isConnected}
+        <input
+          class="stripe-email-input"
+          type="email"
+          placeholder="Email for your ticket"
+          bind:value={stripeEmail}
+        />
+      {/if}
+    </div>
   {:else}
     <button
       class="claim-btn"
@@ -928,6 +1441,17 @@
     <p class="error">{error}</p>
   {/if}
 </div>
+
+{#if showWalletModal}
+  <ConnectWalletModal
+    onConnect={(addr) => {
+      showWalletModal = false;
+      // Wallet connected — proceed to crypto payment flow
+      handleClaimClick();
+    }}
+    onClose={() => showWalletModal = false}
+  />
+{/if}
 
 <style>
   .claim-area {
@@ -982,6 +1506,48 @@
 
   .claim-btn--outline:hover:not(:disabled) {
     background: var(--accent-subtle);
+  }
+
+  .stripe-processing {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--accent);
+    background: var(--accent-subtle);
+    border-radius: var(--radius-sm);
+    max-width: 320px;
+  }
+
+  .stripe-processing-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: stripe-processing-spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes stripe-processing-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .stripe-processing-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .stripe-processing-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .stripe-processing-sub {
+    font-size: 0.75rem;
+    color: var(--text-muted);
   }
 
   .pending-badge {
@@ -1405,6 +1971,39 @@
     letter-spacing: 0.05em;
   }
 
+  /* ── Buyer fee receipt ── */
+  .pay-receipt {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1875rem;
+    padding: 0.5rem 0.625rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pay-receipt-row {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-secondary);
+  }
+
+  .pay-receipt-fee {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+
+  .pay-receipt-total {
+    border-top: 1px solid var(--border);
+    padding-top: 0.25rem;
+    margin-top: 0.125rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  /* ── Stripe card payment ── */
   .stripe-btn {
     width: 100%;
     padding: 0.625rem 1rem;
@@ -1417,6 +2016,19 @@
     transition: background 0.2s ease, opacity 0.2s ease;
   }
 
+  .stripe-btn--primary {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, #635bff 0%, #7c6cf0 100%);
+    box-shadow: 0 2px 12px -2px rgba(99, 91, 255, 0.3);
+  }
+
+  .stripe-btn--primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, #5147e5 0%, #6b5ad8 100%);
+    box-shadow: 0 4px 16px -2px rgba(99, 91, 255, 0.4);
+  }
+
   .stripe-btn:hover:not(:disabled) {
     background: #5147e5;
   }
@@ -1426,18 +2038,275 @@
     cursor: not-allowed;
   }
 
+  .pay-crypto-link {
+    width: 100%;
+    padding: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--accent-text);
+    text-align: center;
+    transition: opacity var(--transition);
+  }
+
+  .pay-crypto-link:hover {
+    opacity: 0.75;
+    text-decoration: underline;
+  }
+
   .stripe-email-input {
     width: 100%;
     padding: 0.5rem 0.75rem;
     font-size: 0.8125rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--surface);
+    background: var(--bg-input);
     color: var(--text);
     margin-top: 0.375rem;
   }
 
   .stripe-email-input::placeholder {
     color: var(--text-muted);
+  }
+
+  /* ── Ledger-receipt: payment-shortfall card ─────────────────────────
+     Amber-tinted, monospace, dashed receipt rules. Composed tone — the
+     payment confirmed, the user is owed an explanation, not an apology. */
+  .receipt {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 28rem;
+    margin: 0 auto;
+    background: color-mix(in srgb, var(--accent) 5%, var(--bg-card, var(--bg)));
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: var(--radius-md);
+    box-shadow:
+      0 1px 0 color-mix(in srgb, var(--accent) 12%, transparent) inset,
+      0 8px 24px -16px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+    animation: receipt-rise 320ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes receipt-rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .receipt-head {
+    position: relative;
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem 0.75rem;
+  }
+
+  /* Caution-tape stripe — diagonal amber/transparent across the top edge */
+  .receipt-stripe {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: repeating-linear-gradient(
+      135deg,
+      var(--accent) 0 8px,
+      transparent 8px 16px
+    );
+    opacity: 0.7;
+  }
+
+  .receipt-head-text { flex: 1; min-width: 0; }
+
+  .receipt-title {
+    margin: 0 0 0.25rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    color: var(--text);
+  }
+
+  .receipt-sub {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+
+  .receipt-body {
+    padding: 0.25rem 1rem 0.75rem;
+  }
+
+  .receipt-rows {
+    margin: 0;
+    padding: 0.25rem 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .receipt-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    padding: 0.4375rem 0;
+    font-size: 0.8125rem;
+    border-bottom: 1px dashed color-mix(in srgb, var(--text-muted) 28%, transparent);
+  }
+
+  .receipt-row:last-child { border-bottom: none; }
+
+  .receipt-row dt {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    letter-spacing: 0.01em;
+  }
+
+  .receipt-row dd {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.8125rem;
+    text-align: right;
+  }
+
+  .receipt-row--delta dt,
+  .receipt-row--delta dd {
+    color: var(--accent-text, var(--accent));
+    font-weight: 600;
+  }
+
+  .receipt-delta-pct {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.0625rem 0.375rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--accent-text, var(--accent));
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: 999px;
+    vertical-align: 1px;
+  }
+
+  .receipt-tx {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    margin-top: 0.625rem;
+    padding: 0.5rem 0.625rem;
+    background: color-mix(in srgb, var(--text) 4%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+    border-radius: var(--radius-sm);
+  }
+
+  .receipt-tx-label {
+    flex-shrink: 0;
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+  }
+
+  .receipt-tx-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4375rem;
+    overflow: hidden;
+  }
+
+  .receipt-tx-hash {
+    font-size: 0.75rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .receipt-tx-chain {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .receipt-tx-actions {
+    display: flex;
+    gap: 0.125rem;
+    flex-shrink: 0;
+  }
+
+  .receipt-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.625rem;
+    height: 1.625rem;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .receipt-icon-btn:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 6%, transparent);
+    border-color: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  }
+
+  .receipt-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.625rem 1rem 0.875rem;
+    border-top: 1px solid color-mix(in srgb, var(--text-muted) 16%, transparent);
+    background: color-mix(in srgb, var(--accent) 3%, transparent);
+  }
+
+  .receipt-btn {
+    width: 100%;
+    padding: 0.5625rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+
+  .receipt-btn--primary {
+    background: var(--accent);
+    color: var(--accent-on, #fff);
+  }
+
+  .receipt-btn--primary:hover {
+    background: color-mix(in srgb, var(--accent) 88%, #000);
+  }
+
+  .receipt-btn--ghost {
+    background: transparent;
+    color: var(--text-muted);
+    border-color: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  }
+
+  .receipt-btn--ghost:hover {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--text-muted) 38%, transparent);
+  }
+
+  .receipt-note {
+    margin: 0.125rem 0 0;
+    font-size: 0.6875rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    text-align: center;
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", monospace;
+  }
+
+  .tnum {
+    font-variant-numeric: tabular-nums;
   }
 </style>

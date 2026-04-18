@@ -109,6 +109,86 @@ app.get("/api/payment/escrow-addresses", async (c) => {
   return c.json({ ok: true, addresses });
 });
 
+/**
+ * Signed payment quote — server commits to an EXACT wei amount the user must
+ * pay. Eliminates the dual-source price race between client and server reading
+ * a moving oracle. Quote is HMAC-signed, short-TTL, and one-shot.
+ *
+ * Request body: { eventId, seriesId, chainId, currency, claimerAddress? }
+ * Response: { ok: true, quote: PaymentQuote }
+ */
+app.post("/api/payment/quote", async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => null)) as {
+      eventId?: string;
+      seriesId?: string;
+      chainId?: number;
+      currency?: "ETH" | "USDC";
+      claimerAddress?: string;
+    } | null;
+
+    if (!body?.eventId || !body.seriesId || !body.chainId || !body.currency) {
+      return c.json({ ok: false, error: "Missing eventId, seriesId, chainId, or currency" }, 400);
+    }
+
+    const { getEvent } = await import("./lib/event/service.js");
+    const event = await getEvent(body.eventId);
+    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+
+    const series = event.series.find((s) => s.seriesId === body.seriesId);
+    if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+    if (!series.payment) return c.json({ ok: false, error: "Series has no payment config" }, 400);
+    if (!series.payment.cryptoEnabled) {
+      return c.json({ ok: false, error: "Crypto payments not enabled for this series" }, 400);
+    }
+
+    const chainId = body.chainId as import("@woco/shared").PaymentChainId;
+    if (!series.payment.acceptedChains.includes(chainId)) {
+      return c.json({ ok: false, error: `Chain ${chainId} not accepted for this series` }, 400);
+    }
+
+    const { getEscrowAddress } = await import("./lib/payment/constants.js");
+    const recipient = (series.payment.escrow
+      ? getEscrowAddress(chainId)
+      : series.payment.recipientAddress) as import("@woco/shared").Hex0x | undefined;
+    if (!recipient) return c.json({ ok: false, error: "Recipient not configured for this chain" }, 500);
+
+    const { parseUnits } = await import("ethers");
+    const { fiatToETH } = await import("./lib/payment/eth-price.js");
+    const { signQuote } = await import("./lib/payment/quote.js");
+
+    let amountWei: string;
+    if (body.currency === "ETH") {
+      const ethStr = await fiatToETH(series.payment.price, series.payment.currency);
+      amountWei = parseUnits(ethStr, 18).toString();
+    } else if (body.currency === "USDC") {
+      // USDC is dollar-pegged 1:1 — convert fiat→USD then to 6-dec atomic units.
+      const { fiatToUSD } = await import("./lib/payment/eth-price.js");
+      const usd = await fiatToUSD(series.payment.price, series.payment.currency);
+      amountWei = parseUnits(usd.toFixed(6), 6).toString();
+    } else {
+      return c.json({ ok: false, error: "Unsupported currency" }, 400);
+    }
+
+    const quote = signQuote({
+      seriesId: series.seriesId,
+      chainId,
+      currency: body.currency,
+      recipient,
+      amountWei,
+      fiatPrice: series.payment.price,
+      fiatCurrency: series.payment.currency,
+      ...(body.claimerAddress ? { boundTo: body.claimerAddress } : {}),
+    });
+
+    return c.json({ ok: true, quote });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Quote failed";
+    console.error("[quote] error:", err);
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
 // Serve embed iframe frame page
 app.get("/embed/frame/:eventId", (c) => {
   const eventId = c.req.param("eventId").replace(/[^a-zA-Z0-9\-]/g, "");

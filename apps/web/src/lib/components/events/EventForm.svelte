@@ -19,6 +19,8 @@
   let imageDataUrl = $state<string | null>(null);
   // series is populated and kept in sync by TicketSeriesEditor via $bindable
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: import("@woco/shared").PaymentConfig }[]>([]);
+  // True when crypto is enabled on a tier but no payout wallet is connected — blocks publish
+  let cryptoRecipientMissing = $state(false);
   let claimMode = $state<ClaimMode>("wallet");
   let collectEmail = $state(false);
   let collectInfo = $state(false);
@@ -89,7 +91,7 @@
     </label>
   </div>
 
-  <TicketSeriesEditor bind:series />
+  <TicketSeriesEditor bind:series bind:cryptoRecipientMissing />
 
   <fieldset class="claim-mode-section">
     <legend>Claim method</legend>
@@ -146,6 +148,8 @@
     {series}
     orderFields={collectInfo ? orderFields : undefined}
     {claimMode}
+    disabled={cryptoRecipientMissing}
+    disabledReason={cryptoRecipientMissing ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers." : undefined}
     {onpublished}
   />
 </div>

@@ -54,6 +54,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           claimerAddress: claimer.claimerAddress,
           claimedAt: claimer.claimedAt,
           ...(encryptedOrder ? { encryptedOrder } : {}),
+          ...(claimer.via ? { via: claimer.via } : {}),
         });
       }
     }
