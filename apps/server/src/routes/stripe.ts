@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, tryVerifyAuth } from "../middleware/auth.js";
 import { getStripe } from "../lib/stripe/client.js";
 import {
   getStripeAccount,
@@ -255,31 +255,53 @@ stripe.get("/account-status", requireAuth, async (c) => {
 /**
  * POST /api/stripe/create-checkout
  *
- * Body: { eventId, seriesId, claimerEmail?, claimerAddress? }
+ * Body: { eventId, seriesId, claimerEmail? }
  *
  * Creates a Checkout Session with a destination charge to the organiser's
- * connected account. The ticket is claimed via webhook on payment success.
+ * connected account. Two auth flows:
+ *
+ *   1. Wallet / passkey / local / para user — sends session delegation
+ *      headers. Server verifies, sets metadata.claimerAddress from the
+ *      VERIFIED parentAddress (body claimerAddress is ignored).
+ *   2. Anonymous email-only user — no auth headers. Requires claimerEmail
+ *      in the body. metadata.claimerAddress is empty.
+ *
+ * Never trust claimerAddress from the body. A front-runner could submit an
+ * arbitrary address and bind a charge to a wallet they don't control.
  */
 stripe.post("/create-checkout", async (c) => {
+  // Read raw body once — we need the exact bytes for canonical sig verification.
+  const rawBody = await c.req.text();
   let body: Record<string, unknown>;
   try {
-    body = await c.req.json();
+    body = rawBody.length > 0 ? JSON.parse(rawBody) : {};
   } catch {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, claimerAddress } = body as {
+  const { eventId, seriesId, claimerEmail } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
-    claimerAddress?: string;
   };
 
   if (!eventId || !seriesId) {
     return c.json({ ok: false, error: "eventId and seriesId are required" }, 400);
   }
-  if (!claimerEmail && !claimerAddress) {
-    return c.json({ ok: false, error: "claimerEmail or claimerAddress is required" }, 400);
+
+  // Soft auth: if session headers are present, verify them. Malformed auth
+  // headers are rejected — never silently fall through to anonymous path.
+  const authResult = tryVerifyAuth(c, rawBody);
+  let verifiedAddress: string | undefined;
+  if (authResult) {
+    if (!authResult.ok) {
+      return c.json({ ok: false, error: authResult.error }, 401);
+    }
+    verifiedAddress = authResult.parentAddress.toLowerCase();
+  }
+
+  if (!claimerEmail && !verifiedAddress) {
+    return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
   }
 
   // Load event + series
@@ -307,11 +329,14 @@ stripe.post("/create-checkout", async (c) => {
   // when handleSuccessfulPayment fails to claim. (TODO in webhook handler.)
   try {
     const userEmailHash = claimerEmail ? hashEmail(claimerEmail) : undefined;
-    const status = await getClaimStatus(seriesId, claimerAddress?.toLowerCase(), userEmailHash);
+    const status = await getClaimStatus(seriesId, verifiedAddress, userEmailHash);
     if (status.available <= 0) {
       return c.json({ ok: false, error: "Sold out" }, 409);
     }
-    if (status.userEdition != null) {
+    // Paid Stripe series allow multi-purchase (each payment_intent is unique).
+    // Only block a repeat if approval is required — that's a pending-request
+    // spam gate, not a paid-ticket gate.
+    if (status.userEdition != null && series.approvalRequired) {
       return c.json({ ok: false, error: "You already have a ticket for this series" }, 409);
     }
   } catch (err) {
@@ -384,7 +409,9 @@ stripe.post("/create-checkout", async (c) => {
         eventId,
         seriesId,
         claimerEmail: claimerEmail || "",
-        claimerAddress: claimerAddress || "",
+        // Server-vouched: only set from a verified session, never from the body.
+        // The webhook trusts this field because we wrote it.
+        claimerAddress: verifiedAddress || "",
       },
       success_url: `${frontendUrl}/#/event/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/#/event/${eventId}?stripe=cancelled`,
@@ -497,7 +524,16 @@ async function handleSuccessfulPayment(
 
   let identifier: ClaimIdentifier;
   if (claimerAddress) {
-    identifier = { type: "wallet", address: claimerAddress.toLowerCase() as `0x${string}` };
+    // Dual-identity when Stripe also gave us an email: record both so dedup
+    // catches future wallet OR email claims, and the organiser dashboard can
+    // contact the attendee.
+    identifier = {
+      type: "wallet",
+      address: claimerAddress.toLowerCase() as `0x${string}`,
+      ...(claimerEmail
+        ? { secondaryEmail: claimerEmail, secondaryEmailHash: hashEmail(claimerEmail) }
+        : {}),
+    };
   } else if (claimerEmail) {
     identifier = {
       type: "email",
@@ -510,7 +546,18 @@ async function handleSuccessfulPayment(
   }
 
   try {
-    const result = await claimTicket({ seriesId, identifier, via: "stripe" });
+    // Stripe only ever fires for paid tickets. Mark the claim as paid so
+    // claim-service skips the single-purchase-per-identifier rule and lets
+    // the same attendee buy multiple editions of the same series. Each
+    // Stripe checkout is its own payment_intent, so replay is impossible.
+    // (Approval-required paid series don't use the Stripe flow — payment is
+    // only taken after approval — so we don't need to gate by that here.)
+    const result = await claimTicket({
+      seriesId,
+      identifier,
+      via: "stripe",
+      paid: true,
+    });
     console.log(`[stripe-webhook] Ticket claimed: series=${seriesId}, edition=${result.edition}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

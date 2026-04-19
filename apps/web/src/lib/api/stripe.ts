@@ -3,6 +3,7 @@
  */
 
 import { authPost, authGet, apiBase } from "./client.js";
+import { auth } from "../auth/auth-store.svelte.js";
 import type { SealedBox } from "@woco/shared";
 
 export interface RequirementCategory {
@@ -45,17 +46,38 @@ export async function getStripeAccountStatus(): Promise<StripeAccountStatus> {
   return resp as any as StripeAccountStatus;
 }
 
-/** Create a Stripe Checkout Session for an attendee to pay for a ticket */
+/**
+ * Create a Stripe Checkout Session for an attendee to pay for a ticket.
+ *
+ * When the user is logged in (any auth kind), the request is signed so the
+ * server can bind the claim to the VERIFIED parent wallet — this is what lets
+ * us record both wallet + email on Stripe claims. The body never carries the
+ * claimer address; the server reads it from the session.
+ *
+ * Anonymous (no session) flow: email-only. Requires `claimerEmail`.
+ */
 export async function createCheckoutSession(params: {
   eventId: string;
   seriesId: string;
   claimerEmail?: string;
-  claimerAddress?: string;
 }): Promise<{ url: string }> {
+  const body = {
+    eventId: params.eventId,
+    seriesId: params.seriesId,
+    ...(params.claimerEmail ? { claimerEmail: params.claimerEmail } : {}),
+  };
+
+  if (auth.isConnected) {
+    const resp = await authPost<{ url: string }>("/api/stripe/create-checkout", body);
+    const data = resp as { ok: boolean; url?: string; error?: string };
+    if (!data.ok || !data.url) throw new Error(data.error || "Failed to create checkout session");
+    return { url: data.url };
+  }
+
   const resp = await fetch(`${apiBase}/api/stripe/create-checkout`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify(body),
   });
   const data = await resp.json() as { ok: boolean; url?: string; error?: string };
   if (!data.ok || !data.url) throw new Error(data.error || "Failed to create checkout session");

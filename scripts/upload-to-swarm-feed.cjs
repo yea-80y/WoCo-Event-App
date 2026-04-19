@@ -143,9 +143,17 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     }
 
     // 4) Update feed to point at new site
-    console.log('Updating feed...');
+    // IMPORTANT: bee-js v11 has THREE upload methods on FeedWriter:
+    //   - upload()          — DOES NOT correctly write a reference; writes 768-byte
+    //                         garbage that the manifest cannot resolve. Avoid.
+    //   - uploadPayload()   — writes raw bytes as a v2-format feed entry; the
+    //                         old createFeedManifest()-style manifests can't resolve v2.
+    //   - uploadReference() — writes a Reference as a v1-format feed entry; this is
+    //                         what createFeedManifest() expects. USE THIS.
+    // If you switch to v2 feeds you'll need to recreate the manifest as well.
+    console.log('Updating feed (uploadReference / v1)...');
     const writer = bee.makeFeedWriter(topic, signer);
-    await writer.upload(POSTAGE_BATCH_ID, new Reference(siteRef));
+    await writer.uploadReference(POSTAGE_BATCH_ID, new Reference(siteRef));
 
     // Wait for propagation
     await new Promise(r => setTimeout(r, 3000));

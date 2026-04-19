@@ -43,7 +43,15 @@ export type ClaimResult = ClaimedTicket & { _pendingId?: string };
 // ---------------------------------------------------------------------------
 
 export type ClaimIdentifier =
-  | { type: "wallet"; address: Hex0x }
+  | {
+      type: "wallet";
+      address: Hex0x;
+      /** Optional secondary email identifier — set when a logged-in wallet user
+       *  pays by Stripe with a customer email. Recorded on the claim so dedup
+       *  works against both handles (wallet OR email). */
+      secondaryEmail?: string;
+      secondaryEmailHash?: string;
+    }
   | { type: "email"; email: string; emailHash: string };
 
 /**
@@ -75,8 +83,18 @@ export async function claimTicket(opts: {
   encryptedOrder?: SealedBox;
   /** Payment method, if known. Stored on the claim entry for dashboard display. */
   via?: import("@woco/shared").ClaimVia;
+  /**
+   * True when this claim represents a real paid purchase. Paid claims allow
+   * the same identifier to purchase multiple tickets of the same series —
+   * per-purchase uniqueness is enforced by txHash-replay prevention (crypto)
+   * or the Stripe payment_intent (card), not by identifier dedup.
+   *
+   * Free and approval-required series keep the single-claim-per-identifier
+   * rule (spam prevention).
+   */
+  paid?: boolean;
 }): Promise<ClaimResult> {
-  const { seriesId, identifier, encryptedOrder, via } = opts;
+  const { seriesId, identifier, encryptedOrder, via, paid } = opts;
 
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
@@ -87,13 +105,36 @@ export async function claimTicket(opts: {
     ? identifier.address.toLowerCase()
     : `email:${identifier.emailHash}`;
 
-  const existingClaimersPage = await readFeedPage(topicClaimers(seriesId));
-  if (existingClaimersPage) {
-    const existingFeed = decodeJsonFeed<ClaimersFeed>(existingClaimersPage);
-    if (existingFeed?.claimers.some(
-      (c) => c.claimerAddress.toLowerCase() === claimerKey,
-    )) {
-      throw new Error("Already claimed");
+  // For dual-identity Stripe claims (wallet + email), dedup against BOTH
+  // handles: wallet claim would match the primary key; an earlier email-only
+  // claim with the same email would match via the email-prefixed key or a
+  // secondaryEmailHash on some prior dual-identity entry.
+  const secondaryEmailHash =
+    identifier.type === "wallet" ? identifier.secondaryEmailHash : undefined;
+
+  // Paid series allow multi-purchase: one identifier can hold multiple editions
+  // because each purchase is independently verified (on-chain txHash consumed,
+  // or Stripe payment_intent settled). Free/approval series keep the one-per-
+  // identifier rule to stop spam.
+  if (!paid) {
+    const existingClaimersPage = await readFeedPage(topicClaimers(seriesId));
+    if (existingClaimersPage) {
+      const existingFeed = decodeJsonFeed<ClaimersFeed>(existingClaimersPage);
+      const duplicate = existingFeed?.claimers.some((c) => {
+        const key = c.claimerAddress.toLowerCase();
+        if (key === claimerKey) return true;
+        if (secondaryEmailHash) {
+          if (key === `email:${secondaryEmailHash}`) return true;
+          if (c.secondaryEmailHash === secondaryEmailHash) return true;
+        }
+        if (identifier.type === "email") {
+          if (c.secondaryEmailHash === identifier.emailHash) return true;
+        }
+        return false;
+      });
+      if (duplicate) {
+        throw new Error("Already claimed");
+      }
     }
   }
 
@@ -205,7 +246,10 @@ export async function claimTicket(opts: {
     creator: originalTicket.data.creator,
     mintedAt: originalTicket.data.mintedAt,
     ownerAddress: identifier.type === "wallet" ? identifier.address : undefined,
-    ownerEmailHash: identifier.type === "email" ? identifier.emailHash : undefined,
+    ownerEmailHash:
+      identifier.type === "email"
+        ? identifier.emailHash
+        : identifier.secondaryEmailHash,
     claimedAt: new Date().toISOString(),
     originalPodHash: ticketRef,
     originalSignature: originalTicket.signature,
@@ -261,6 +305,7 @@ export async function claimTicket(opts: {
       claimedAt: claimedTicket.claimedAt,
       orderRef,
       ...(via ? { via } : {}),
+      ...(secondaryEmailHash ? { secondaryEmailHash } : {}),
     });
   } catch (err) {
     console.error("[claim] Failed to update claimers feed:", err);
@@ -366,10 +411,33 @@ export async function getClaimStatus(
 // Collection reader (used by collection routes)
 // ---------------------------------------------------------------------------
 
+/** Safety cap to bound probe cost — ~20 entries/page × 50 = 1000 tickets/user. */
+const COLLECTION_MAX_PAGES = 50;
+
+/**
+ * Read a user's full collection across all pages. Probes sequentially
+ * starting at page 0 and stops at the first missing page. Writers write
+ * contiguously so a gap means end-of-data.
+ */
 export async function getUserCollection(address: string): Promise<UserCollection | null> {
-  const page = await readFeedPage(topicUserCollection(address));
-  if (!page) return null;
-  return decodeJsonFeed<UserCollection>(page);
+  const page0Raw = await readFeedPage(topicUserCollection(address, 0));
+  if (!page0Raw) return null;
+  const page0 = decodeJsonFeed<UserCollection>(page0Raw);
+  if (!page0) return null;
+
+  const allEntries: CollectionEntry[] = [...page0.entries];
+  let latestUpdatedAt = page0.updatedAt;
+
+  for (let i = 1; i < COLLECTION_MAX_PAGES; i++) {
+    const raw = await readFeedPage(topicUserCollection(address, i));
+    if (!raw) break;
+    const parsed = decodeJsonFeed<UserCollection>(raw);
+    if (!parsed) break;
+    allEntries.push(...parsed.entries);
+    if (parsed.updatedAt > latestUpdatedAt) latestUpdatedAt = parsed.updatedAt;
+  }
+
+  return { v: 1, entries: allEntries, updatedAt: latestUpdatedAt };
 }
 
 export async function getClaimedTicketDetail(ref: string): Promise<ClaimedTicket | null> {
@@ -546,8 +614,11 @@ async function updateClaimersFeed(seriesId: string, entry: ClaimerEntry): Promis
     ? decodeJsonFeed<ClaimersFeed>(page) ?? { v: 1, seriesId, claimers: [], updatedAt: "" }
     : { v: 1, seriesId, claimers: [], updatedAt: "" };
 
-  // Idempotent - don't add duplicate claims for same address
-  if (feed.claimers.some((c) => c.claimerAddress.toLowerCase() === entry.claimerAddress.toLowerCase())) {
+  // Idempotent by edition — each edition is unique per series, so this
+  // protects against duplicate writes from the same claim operation while
+  // still allowing the same identifier to hold multiple editions of a paid
+  // series (claimerAddress is no longer unique per entry).
+  if (feed.claimers.some((c) => c.edition === entry.edition)) {
     return;
   }
 
@@ -559,19 +630,58 @@ async function updateClaimersFeed(seriesId: string, entry: ClaimerEntry): Promis
 }
 
 export async function addToUserCollection(ethAddress: string, entry: CollectionEntry): Promise<void> {
-  const page = await readFeedPage(topicUserCollection(ethAddress));
-  const collection: UserCollection = page
-    ? decodeJsonFeed<UserCollection>(page) ?? { v: 1, entries: [], updatedAt: "" }
-    : { v: 1, entries: [], updatedAt: "" };
+  // Probe pages 0..N until a gap; accumulate entries for dedup and locate the
+  // current tail page. Contiguous writes mean the first missing page = end.
+  const pages: UserCollection[] = [];
+  for (let i = 0; i < COLLECTION_MAX_PAGES; i++) {
+    const raw = await readFeedPage(topicUserCollection(ethAddress, i));
+    if (!raw) break;
+    const parsed = decodeJsonFeed<UserCollection>(raw);
+    if (!parsed) break;
+    pages.push(parsed);
+  }
 
-  // Idempotent
-  if (collection.entries.some((e) => e.seriesId === entry.seriesId)) return;
+  const allEntries = pages.flatMap((p) => p.entries);
 
-  collection.entries.push(entry);
-  collection.updatedAt = new Date().toISOString();
+  // Dedup by claimedRef (unique per edition) — a user who buys multiple
+  // editions of the same paid series should see every one of them in their
+  // collection. Only true duplicate writes of the same claim are dropped.
+  if (allEntries.some((e) => e.claimedRef === entry.claimedRef)) return;
 
-  await writeFeedPage(topicUserCollection(ethAddress), encodeJsonFeed(collection));
-  console.log(`[claim] User collection updated: ${collection.entries.length} tickets`);
+  const updatedAt = new Date().toISOString();
+
+  if (pages.length === 0) {
+    // First ticket for this address.
+    const firstPage: UserCollection = { v: 1, entries: [entry], updatedAt };
+    await writeFeedPage(topicUserCollection(ethAddress, 0), encodeJsonFeed(firstPage));
+    console.log(`[claim] User collection created: page 0, 1 entry`);
+    return;
+  }
+
+  if (pages.length >= COLLECTION_MAX_PAGES) {
+    throw new Error(`Collection exceeds ${COLLECTION_MAX_PAGES} pages — refusing further writes`);
+  }
+
+  // Try to append to the last page; on JSON-feed overflow, spill to a new page.
+  const lastPageIdx = pages.length - 1;
+  const lastPage = pages[lastPageIdx];
+  const candidate: UserCollection = {
+    ...lastPage,
+    entries: [...lastPage.entries, entry],
+    updatedAt,
+  };
+
+  try {
+    const bytes = encodeJsonFeed(candidate);
+    await writeFeedPage(topicUserCollection(ethAddress, lastPageIdx), bytes);
+    console.log(`[claim] User collection updated: page ${lastPageIdx}, ${candidate.entries.length} entries on page`);
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    const newPageIdx = pages.length;
+    const newPage: UserCollection = { v: 1, entries: [entry], updatedAt };
+    await writeFeedPage(topicUserCollection(ethAddress, newPageIdx), encodeJsonFeed(newPage));
+    console.log(`[claim] User collection spilled to page ${newPageIdx}`);
+  }
 }
 
 /** Add a ticket entry to an email-keyed collection feed (woco/pod/collection/email:{hash}) */

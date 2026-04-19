@@ -128,6 +128,86 @@ function sha256Hex(text: string): string {
 }
 
 /**
+ * Soft-auth variant of `requireAuth` for endpoints that must support BOTH
+ * authenticated and anonymous flows (e.g. Stripe checkout — logged-in users
+ * bind the claim to their wallet; email-only users pay anonymously).
+ *
+ * Returns:
+ *   - `{ parentAddress, sessionAddress, bodyInvalid: false }` — auth verified
+ *   - `null` — no auth headers present (anonymous path)
+ *   - `{ bodyInvalid: true, error }` — auth headers present but invalid; the
+ *     caller MUST reject the request (don't silently downgrade — that would
+ *     let an attacker pretend to be anonymous after a bad sig).
+ *
+ * Caller is responsible for reading the raw body via `c.req.text()` once and
+ * passing it in — we must hash the exact bytes the client signed.
+ */
+export function tryVerifyAuth(
+  c: Context<AppEnv>,
+  rawBody: string,
+):
+  | { ok: true; parentAddress: string; sessionAddress: string }
+  | { ok: false; error: string }
+  | null {
+  const sessionAddress = c.req.header("x-session-address");
+  const sessionSig = c.req.header("x-session-sig");
+  const sessionNonce = c.req.header("x-session-nonce");
+  const sessionTimestamp = c.req.header("x-session-timestamp");
+  const delegationHeader = c.req.header("x-session-delegation");
+
+  // No auth material at all → anonymous path
+  if (!sessionAddress && !sessionSig && !sessionNonce && !sessionTimestamp && !delegationHeader) {
+    return null;
+  }
+
+  // Partial headers → malformed request, reject
+  if (!sessionAddress) return { ok: false, error: "Missing X-Session-Address header" };
+  if (!sessionSig || !sessionNonce || !sessionTimestamp) {
+    return { ok: false, error: "Missing session signature headers" };
+  }
+
+  const delegation = extractDelegation(c.req.raw);
+  if (!delegation) return { ok: false, error: "Missing or invalid X-Session-Delegation" };
+
+  const tsNum = Number(sessionTimestamp);
+  if (!Number.isFinite(tsNum)) return { ok: false, error: "Invalid X-Session-Timestamp" };
+  if (Math.abs(Date.now() - tsNum) > MAX_TIMESTAMP_SKEW_MS) {
+    return { ok: false, error: "Session timestamp out of window" };
+  }
+
+  const allowedHosts = getAllowedHosts();
+  const result = verifyDelegation(delegation, sessionAddress, allowedHosts);
+  if (!result.valid) return { ok: false, error: result.error ?? "Invalid delegation" };
+
+  const method = c.req.method.toUpperCase();
+  const path = new URL(c.req.url).pathname + new URL(c.req.url).search;
+  const bodyHash = sha256Hex(rawBody);
+  const challenge = [
+    "woco-session-v1",
+    method,
+    path,
+    sessionTimestamp,
+    sessionNonce,
+    bodyHash,
+  ].join("\n");
+
+  try {
+    const signerAddress = verifyMessage(challenge, sessionSig);
+    if (signerAddress.toLowerCase() !== result.sessionAddress!.toLowerCase()) {
+      return { ok: false, error: "Session signature does not match session key" };
+    }
+  } catch {
+    return { ok: false, error: "Invalid session signature" };
+  }
+
+  return {
+    ok: true,
+    parentAddress: result.parentAddress!,
+    sessionAddress: result.sessionAddress!,
+  };
+}
+
+/**
  * Resolve the ALLOWED_HOSTS configuration.
  *
  * In production, the server refuses to start without ALLOWED_HOSTS (see index.ts).

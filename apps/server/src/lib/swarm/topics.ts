@@ -42,8 +42,17 @@ export const topicClaims = (seriesId: string, page = 0) =>
 export const topicClaimers = (seriesId: string) =>
   Topic.fromString(`${POD_NS}/claimers/${seriesId}`);
 
-export const topicUserCollection = (ethAddress: string) =>
-  Topic.fromString(`${POD_NS}/collection/${ethAddress.toLowerCase()}`);
+/**
+ * User collection feed topic. Page 0 is the base topic; overflow entries
+ * spill onto pages 1+ as `/pN` suffixes. Page 0 records `pageCount` so
+ * readers know how many pages to fetch without probing.
+ */
+export const topicUserCollection = (ethAddress: string, page = 0) =>
+  Topic.fromString(
+    page === 0
+      ? `${POD_NS}/collection/${ethAddress.toLowerCase()}`
+      : `${POD_NS}/collection/${ethAddress.toLowerCase()}/p${page}`,
+  );
 
 export const topicCreator = (creatorPodKey: string) =>
   Topic.fromString(`${POD_NS}/creator/${creatorPodKey}`);

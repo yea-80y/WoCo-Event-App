@@ -484,7 +484,6 @@
         eventId,
         seriesId,
         claimerEmail: email,
-        claimerAddress: address,
       });
       window.location.href = url;
     } catch (err) {
@@ -968,6 +967,20 @@
 </script>
 
 <div class="claim-area">
+  {#if claimed && isPaid}
+    <!--
+      Paid tickets support multi-purchase. Keep the buy UI available and
+      surface ownership in a subtle chip above it — so a user who already
+      holds an edition can still grab another without losing sight of it.
+    -->
+    <div class="own-chip" role="status">
+      <span class="own-chip-dot" aria-hidden="true">&#10003;</span>
+      <span class="own-chip-text">
+        You own {#if claimedEdition != null}edition #{claimedEdition}{:else}this ticket{/if}
+      </span>
+      <span class="own-chip-hint">Buy another below</span>
+    </div>
+  {/if}
   {#if paymentShortfall && !claimed}
     <!--
       Ledger-receipt card for an on-chain payment that was confirmed but
@@ -1052,7 +1065,8 @@
       Pending Approval
     </div>
     <p class="pending-note">Your request has been submitted. You'll receive your ticket once the organiser approves it.</p>
-  {:else if claimed}
+  {:else if claimed && !isPaid}
+    <!-- Free tickets: one per user, so the claimed badge replaces the buy UI. -->
     <div class="claimed-badge">
       <span class="check">&#10003;</span>
       Claimed {#if claimedEdition != null}#{claimedEdition}{/if}
@@ -1598,6 +1612,33 @@
     color: var(--text-muted);
     margin: 0;
     text-align: right;
+  }
+
+  /* Multi-purchase paid tickets: subtle ownership chip above the buy UI. */
+  .own-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.75rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+    border-radius: var(--radius-sm);
+    align-self: flex-end;
+  }
+  .own-chip-dot {
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+  .own-chip-text {
+    font-weight: 600;
+  }
+  .own-chip-hint {
+    color: var(--text-muted);
+    font-weight: 400;
   }
 
   .availability {

@@ -111,44 +111,6 @@ async function _ensurePasskeyKey(): Promise<void> {
   _passkeyPrivateKey = result.privateKey;
 }
 
-/**
- * Background wallet reconnection — polls for MetaMask/injected provider after
- * external redirects (e.g. Stripe onboarding). If the wallet appears and
- * matches the stored parent, attach the account change listener. If it
- * connects to a different address, log out.
- */
-function _tryReconnectWallet(storedParent: string): void {
-  let attempts = 0;
-  const maxAttempts = 10; // try for ~10 seconds
-  const interval = setInterval(async () => {
-    attempts++;
-    try {
-      const addr = await Promise.race([
-        getConnectedAddress(),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-      ]);
-      if (addr) {
-        clearInterval(interval);
-        if (addr === storedParent) {
-          _cleanupAccountListener = onAccountsChanged(handleAccountsChanged);
-          console.log("[auth] wallet reconnected in background");
-        } else {
-          // Different wallet — clear session
-          console.warn("[auth] wallet reconnected but address changed, logging out");
-          await clearAllAuth();
-        }
-      } else if (attempts >= maxAttempts) {
-        clearInterval(interval);
-        // Wallet never appeared — session still works for API calls,
-        // new EIP-712 signing will prompt login if needed
-        console.log("[auth] wallet not available after redirect, session-only mode");
-      }
-    } catch {
-      // ignore errors during reconnection attempts
-    }
-  }, 1000);
-}
-
 // ---------------------------------------------------------------------------
 // Initialisation (call once on app mount)
 // ---------------------------------------------------------------------------
@@ -188,14 +150,14 @@ async function init(): Promise<void> {
         // Wallet switched to a different account — clear stale session
         await clearAllAuth();
       } else if (!walletAddr && storedParent) {
-        // Wallet not immediately available (e.g. after external redirect like
-        // Stripe onboarding, or MetaMask slow to inject). The session key in
-        // IndexedDB can still sign API requests without the parent wallet, so
-        // restore auth and attempt wallet reconnection in the background.
-        _kind = "web3";
-        _parent = storedParent;
-        await _restoreCachedAuth();
-        _tryReconnectWallet(storedParent);
+        // Wallet not accessible: extension locked, uninstalled, or WC
+        // pairing lapsed. The 30-day session key alone MUST NOT grant
+        // authenticated access — a locked wallet = logged-out UX.
+        // Leave encrypted session + POD seed in IndexedDB untouched so the
+        // user gets back in with a single wallet unlock (no EIP-712 re-sign)
+        // via loginWeb3(), which restores the cached auth if addresses match.
+        _kind = "none";
+        _parent = null;
       } else {
         await clearAllAuth();
       }
@@ -253,13 +215,24 @@ async function loginWeb3(): Promise<boolean> {
     const address = await connectWallet();
     if (!address) return false;
 
+    // If IndexedDB holds a session/POD for a different parent, wipe them
+    // before adopting the new address — otherwise the cached session (signed
+    // by the prior wallet) would be misattributed to the newly unlocked one.
+    const priorParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
+    if (priorParent && priorParent !== address) {
+      await clearSession();
+      await clearPodIdentity();
+    }
+
     await putKV(StorageKeys.AUTH_KIND, "web3" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, address);
     _kind = "web3";
     _parent = address;
     _localPrivateKey = null;
 
-    // Restore any cached session/POD from a previous login
+    // Restore any cached session/POD from a previous login with the same
+    // parent. When unlocking MetaMask after init() skipped the session-only
+    // path, this is the rehydration point — no EIP-712 re-prompt needed.
     await _restoreCachedAuth();
 
     // Listen for account changes

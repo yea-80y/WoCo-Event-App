@@ -442,8 +442,14 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   try {
     // Option 2: serialise all claims for this series through a queue
     const via = paymentProof?.type === "tx" ? "crypto" : "free";
+    // Paid + non-approval series: allow one identifier to hold multiple
+    // editions. Each purchase is independently gated by on-chain txHash
+    // consumption, so identifier dedup would only block legitimate buyers.
+    const paid = !!series.payment
+      && parseFloat(series.payment.price) > 0
+      && !series.approvalRequired;
     const ticket: ClaimResult = await queueSeriesClaim(seriesId, () =>
-      claimTicket({ seriesId, identifier, encryptedOrder, via }),
+      claimTicket({ seriesId, identifier, encryptedOrder, via, paid }),
     );
 
     // Approval flow: strip internal _pendingId and return pending state

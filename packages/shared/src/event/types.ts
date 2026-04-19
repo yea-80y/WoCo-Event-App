@@ -295,7 +295,10 @@ export interface ClaimedTicket {
   owner?: string;
   /** Wallet address (for wallet-based claims) */
   ownerAddress?: Hex0x;
-  /** SHA-256 hash of email (for email-based claims) */
+  /** HMAC-SHA256 hash of email.
+   *  - Email-only claim: primary identifier.
+   *  - Wallet + Stripe dual-identity: secondary identifier (email from Stripe,
+   *    wallet from verified session). Both are valid claim handles. */
   ownerEmailHash?: string;
   claimedAt: string;
   originalPodHash: string;
@@ -332,7 +335,14 @@ export interface CollectionEntry {
   claimedAt: string;
 }
 
-/** A user's full ticket collection (stored as JSON feed) */
+/**
+ * A user's full ticket collection (stored as JSON feed, paginated).
+ *
+ * Each 4096-byte page holds roughly 20 entries before overflow. On overflow,
+ * the server spills to `/pN` pages. Pages are discovered by probing
+ * sequentially until a page is missing — no central page counter, so a
+ * partial-write failure can't lock out future updates.
+ */
 export interface UserCollection {
   v: 1;
   entries: CollectionEntry[];
@@ -370,6 +380,7 @@ export interface SeriesClaimStatus {
 /** Single entry in the claimers JSON feed */
 export interface ClaimerEntry {
   edition: number;
+  /** Primary claim handle — lowercase wallet address, or "email:{hmacHash}" */
   claimerAddress: string;
   claimedRef: string;
   claimedAt: string;
@@ -377,6 +388,10 @@ export interface ClaimerEntry {
   orderRef?: string;
   /** How this claim was paid for. Absent on legacy entries. */
   via?: ClaimVia;
+  /** HMAC-SHA256 hash of a secondary email identifier. Set when a wallet user
+   *  paid by Stripe — the Stripe customer email is recorded alongside the
+   *  verified wallet so dedup works against both handles. */
+  secondaryEmailHash?: string;
 }
 
 /** Payment method used to obtain a ticket. */
