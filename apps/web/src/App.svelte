@@ -9,6 +9,7 @@
   import EventDetail from "./lib/components/events/EventDetail.svelte";
   import EventPage from "./lib/components/site/EventPage.svelte";
   import MyTickets from "./lib/components/passport/MyTickets.svelte";
+  import VerifyTicket from "./lib/components/passport/VerifyTicket.svelte";
   import EmbedSetup from "./lib/components/embed/EmbedSetup.svelte";
   import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
   import DashboardIndex from "./lib/components/dashboard/DashboardIndex.svelte";
@@ -75,6 +76,8 @@
       <Dashboard eventId={router.params.id} />
     {:else if router.route === "my-tickets"}
       <MyTickets />
+    {:else if router.route === "verify"}
+      <VerifyTicket />
     {:else if router.route === "embed-setup"}
       <EmbedSetup eventId={router.params.id} />
     {:else if router.route === "site-builder"}

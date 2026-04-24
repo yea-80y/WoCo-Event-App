@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { OrderField, SealedBox, ClaimMode, PaymentConfig, PaymentChainId, PaymentProof } from "@woco/shared";
+  import type { OrderField, SealedBox, ClaimMode, PaymentConfig, PaymentChainId, PaymentProof, ClaimedTicket } from "@woco/shared";
   import { sealJson, CHAIN_NAMES, USDC_ADDRESSES, PLATFORM_FEE_BP } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -29,9 +29,13 @@
     payment?: PaymentConfig;
     /** Event end date ISO string — used to set escrow release time (end + 48h) */
     eventEndDate?: string;
+    /** Number of tickets requested (default 1) */
+    quantity?: number;
+    /** Called when a claim succeeds — parent can show the TicketSuccess modal */
+    onclaim?: (data: { edition: number | null; claimedVia: "wallet" | "email" | null; ticket?: ClaimedTicket; claimerEmail?: string; editions?: Array<{ edition: number; ticket?: ClaimedTicket }> }) => void;
   }
 
-  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate }: Props = $props();
+  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate, quantity = 1, onclaim }: Props = $props();
 
   console.log(`[ClaimButton] seriesId=${seriesId} payment:`, payment ?? "FREE");
 
@@ -41,10 +45,13 @@
   const hasStripe = $derived(!!payment?.stripeEnabled);
   let stripeLoading = $state(false);
   let stripeEmail = $state("");
-  // True while we're polling after a Stripe-success redirect, waiting for the
-  // webhook to mint the ticket. Drives a dedicated processing card so the user
-  // doesn't see the "buy a ticket" button reappear during the 2–12s window.
-  let stripeReturning = $state(false);
+  /** Last successfully claimed ticket (available for wallet/email direct claims, not Stripe webhook) */
+  let lastClaimedTicket = $state<ClaimedTicket | undefined>(undefined);
+  /** Email the tickets were sent to — drives the optimistic success card shown
+   *  immediately on Stripe return. Null until we detect the return. */
+  let stripeSuccessEmail = $state<string | null>(null);
+  /** Count of tickets purchased in this Stripe session (for pluralisation). */
+  let stripeSuccessQty = $state<number>(1);
   /**
    * On-chain payment succeeded but the amount was short of what the server
    * requires (price moved beyond the slippage tolerance between quote and
@@ -67,6 +74,14 @@
   let ethPriceLoading = $state(false);
   /** User's chosen payment method — ETH or USDC */
   let selectedPayMethod = $state<"ETH" | "USDC">("ETH");
+  // Safety net: any time the selected chain has no USDC, force ETH. Covers the
+  // auto-select-single-chain path at line ~549 and any other setter that
+  // bypasses the onclick handler at the chain card.
+  $effect(() => {
+    if (selectedChain && !USDC_ADDRESSES[selectedChain] && selectedPayMethod === "USDC") {
+      selectedPayMethod = "ETH";
+    }
+  });
   /** Card-first users: passkey, local (no crypto wallet). Crypto-first: web3, para. */
   const isCardFirst = $derived(auth.kind === "passkey" || auth.kind === "local" || !auth.kind);
 
@@ -77,23 +92,30 @@
   /** Whether fees are passed to the buyer */
   const feePassedToCustomer = $derived(!!payment?.feePassedToCustomer);
 
-  /** Fee breakdown for buyer display */
+  /** Fee breakdown for buyer display — multiplied by quantity so multi-ticket
+   * totals match what Stripe actually charges. Platform fee scales linearly;
+   * Stripe's fixed fee is per charge (not per unit), so it's added once. */
   const buyerFees = $derived.by(() => {
     if (!payment || !feePassedToCustomer) return null;
-    const amount = parseFloat(payment.price);
-    if (!amount || amount <= 0) return null;
+    const unit = parseFloat(payment.price);
+    if (!unit || unit <= 0) return null;
+    const qty = Math.max(1, quantity);
+    const subtotal = unit * qty;
     const sym = CURRENCY_SYMBOLS[payment.currency] ?? "";
     const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
-    const platformFee = amount * PLATFORM_FEE_BP / 10_000;
+    const platformFee = subtotal * PLATFORM_FEE_BP / 10_000;
     const stripeFee = payment.stripeEnabled
-      ? amount * STRIPE_PERCENT + (STRIPE_FIXED[payment.currency] ?? 0.20)
+      ? subtotal * STRIPE_PERCENT + (STRIPE_FIXED[payment.currency] ?? 0.20)
       : 0;
     return {
-      base: fmt(amount),
+      qty,
+      baseLabel: qty > 1 ? `Tickets (×${qty})` : "Ticket",
+      base: fmt(subtotal),
+      unit: fmt(unit),
       platform: fmt(platformFee),
       stripe: payment.stripeEnabled ? `~${fmt(stripeFee)}` : null,
-      cardTotal: payment.stripeEnabled ? `~${fmt(amount + platformFee + stripeFee)}` : null,
-      cryptoTotal: payment.cryptoEnabled ? fmt(amount + platformFee) : null,
+      cardTotal: payment.stripeEnabled ? `~${fmt(subtotal + platformFee + stripeFee)}` : null,
+      cryptoTotal: payment.cryptoEnabled ? fmt(subtotal + platformFee) : null,
     };
   });
 
@@ -172,6 +194,14 @@
     !!orderFields?.some((f) => f.type === "email" || f.id === "__email")
   );
 
+  /** True while we refresh availability / Stripe status when the form opens. */
+  let prefetching = $state(false);
+  /** Pre-uploaded encrypted-order ref — set by the typing-debounce effect so
+   *  handleStripeCheckout can skip the server-side upload step on Pay click. */
+  let pendingOrderRef = $state<string | null>(null);
+  /** True while the pre-upload is mid-flight (drives the ambient shimmer on Pay). */
+  let orderRefUploading = $state(false);
+
   const formValid = $derived(() => {
     if (!orderFields?.length) return true;
     return orderFields.every((f) =>
@@ -234,17 +264,37 @@
       if (raw) paymentShortfall = JSON.parse(raw);
     } catch { /* ignore */ }
 
-    // Detect Stripe success redirect — save stashed order data + force-refresh
+    // Restore a persisted Stripe-success card if the user refreshed after paying.
+    // Session-scoped so it vanishes when the tab closes — by then the email
+    // has certainly arrived.
+    try {
+      const raw = sessionStorage.getItem(STRIPE_SUCCESS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { email?: string; qty?: number };
+        stripeSuccessEmail = parsed.email ?? null;
+        stripeSuccessQty = parsed.qty && Number.isInteger(parsed.qty) ? parsed.qty : 1;
+        claimed = true;
+        claimedVia = "email";
+      }
+    } catch { /* ignore */ }
+
+    // Detect Stripe success redirect — save stashed order data + show success card
     const hash = window.location.hash;
     const isStripeReturn = hash.includes("stripe=success");
     if (isStripeReturn) {
       if (sessionStorage.getItem(STRIPE_FORM_KEY)) {
         saveStashedOrderData();
       }
-      // Webhook claims the ticket asynchronously — invalidate caches and poll
-      // so the UI catches up to the fresh state as soon as the claim lands.
       handleStripeSuccessReturn();
       return;
+    }
+
+    // If a prior saveStashedOrderData() failed (server-side claim was still in
+    // flight), the key is kept in sessionStorage. Retry silently on every mount
+    // until it succeeds — the server will find the claimer entry once the
+    // background claim has finished writing to Swarm.
+    if (sessionStorage.getItem(STRIPE_FORM_KEY)) {
+      saveStashedOrderData();
     }
 
     // Permanent claimed from cache: no network call ever needed
@@ -283,87 +333,18 @@
   /**
    * Handle returning from a successful Stripe checkout.
    *
-   * The webhook claims the ticket asynchronously, so the claim may not be
-   * visible in feed reads for a few seconds after redirect. Strategy:
-   *  1. Invalidate any cached status (both addr-keyed and anon)
-   *  2. Show a "Finalising your ticket..." spinner state immediately
-   *  3. Poll getClaimStatus with backoff until availability decreases or
-   *     userEdition appears (max ~12s total)
-   *  4. Strip the stripe=success param so refreshes don't re-trigger this
+   * Optimistic: the Stripe webhook has fired (or is about to) and the
+   * confirmation email is queued server-side. Rather than block the UI on a
+   * 28-second poll loop, we show a success card immediately — the ticket
+   * arrives by email, which is the channel this flow is designed around.
+   *
+   *  1. Strip the stripe=success query so refreshes don't re-run this
+   *  2. Read the claimer email from sessionStorage (stashed pre-redirect)
+   *  3. Show the optimistic success card immediately (no spinner, no poll)
+   *  4. Fire ONE background status refresh so the stock counter catches up
    */
   async function handleStripeSuccessReturn() {
-    const addr = auth.parent?.toLowerCase();
-    // Force a fresh server read by clearing all caches that could mask the new claim
-    cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
-    cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
-    cacheDel(cacheKey.claimStatus(eventId, seriesId, undefined));
-
-    claiming = true;
-    stripeReturning = true;
-    step = "Finalising your ticket...";
-
-    // Capture the pre-payment availability so we can detect the decrement
-    const baselineAvailable = status?.available;
-
-    // Poll: 1s, 2s, 3s, 3s, 3s, 3s, 4s, 4s, 5s — total ~28s. Webhook usually
-    // fires within 2–3s but can be delayed under load or on first-deploy cold
-    // starts. Generous window keeps the processing card visible instead of
-    // flashing back to the claim button.
-    const delays = [1000, 2000, 3000, 3000, 3000, 3000, 4000, 4000, 5000];
-    let lastFresh: SeriesClaimStatus | null = null;
-
-    for (let i = 0; i < delays.length; i++) {
-      await new Promise((r) => setTimeout(r, delays[i]));
-      try {
-        const fresh = await getClaimStatus(eventId, seriesId, addr || undefined, undefined, apiUrl);
-        if (!fresh) continue;
-        lastFresh = fresh;
-
-        // Success conditions: server confirms our claim OR availability dropped
-        const claimVisible = fresh.userEdition != null;
-        const availabilityDropped =
-          baselineAvailable != null && fresh.available < baselineAvailable;
-
-        if (claimVisible || availabilityDropped) {
-          cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), fresh, TTL.CLAIM_STATUS);
-
-          if (claimVisible && addr) {
-            // Persist permanent claim cache for the wallet user
-            cacheSet(
-              cacheKey.claimed(eventId, seriesId, addr),
-              { edition: fresh.userEdition!, via: "wallet" },
-              TTL.PERMANENT,
-            );
-            claimed = true;
-            claimedEdition = fresh.userEdition!;
-            claimedVia = "wallet";
-          } else {
-            // Anonymous (email) claim — no userEdition will ever come back, but
-            // availability dropped, so show a generic confirmation
-            claimed = true;
-            claimedVia = "email";
-          }
-          applyStatus(fresh);
-          break;
-        }
-      } catch {
-        // Network blip — keep polling
-      }
-    }
-
-    // If we exhausted polls without confirmation, leave whatever state the
-    // server returned (availability may still be cached on the relay) and
-    // surface a hint so the user knows to refresh.
-    if (!claimed && lastFresh) {
-      applyStatus(lastFresh);
-      cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), lastFresh, TTL.CLAIM_STATUS);
-    }
-
-    claiming = false;
-    stripeReturning = false;
-    step = "";
-
-    // Strip the stripe=success query so a refresh doesn't re-run this flow
+    // Strip query string first so any early return still clears it.
     try {
       const url = new URL(window.location.href);
       const newHash = window.location.hash
@@ -371,6 +352,48 @@
         .replace(/[?&]session_id=[^&]*/, "");
       window.history.replaceState(null, "", url.pathname + url.search + newHash);
     } catch { /* ignore */ }
+
+    // Read stashed form context (email, quantity) from sessionStorage.
+    let stashedEmail: string | undefined;
+    let stashedQty = 1;
+    try {
+      const raw = sessionStorage.getItem(STRIPE_FORM_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { claimerEmail?: string; quantity?: number };
+        stashedEmail = parsed.claimerEmail;
+        if (parsed.quantity && Number.isInteger(parsed.quantity)) stashedQty = parsed.quantity;
+      }
+    } catch { /* ignore */ }
+    const email = stashedEmail || stripeEmail.trim() || undefined;
+
+    // Render the success card immediately — no polling, no artificial delay.
+    stripeSuccessEmail = email ?? null;
+    stripeSuccessQty = Math.max(1, stashedQty);
+    claimed = true;
+    claimedVia = "email";
+
+    // Persist so a page refresh within this session keeps the success card
+    // visible. Cleared when the tab closes.
+    try {
+      sessionStorage.setItem(
+        STRIPE_SUCCESS_KEY,
+        JSON.stringify({ email: stripeSuccessEmail, qty: stripeSuccessQty }),
+      );
+    } catch { /* ignore quota */ }
+
+    // Background: refresh availability once so the stock counter catches up.
+    // We don't block the UI on this; failures are silent.
+    const addr = auth.parent?.toLowerCase();
+    cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
+    cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
+    cacheDel(cacheKey.claimStatus(eventId, seriesId, undefined));
+    getClaimStatus(eventId, seriesId, addr || undefined, undefined, apiUrl)
+      .then((fresh) => {
+        if (!fresh) return;
+        cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), fresh, TTL.CLAIM_STATUS);
+        applyStatus(fresh);
+      })
+      .catch(() => { /* background — silently ignore */ });
   }
 
   // Re-fetch with address when auth restores asynchronously (page refresh scenario).
@@ -396,8 +419,89 @@
       .catch(() => {});
   });
 
+  /**
+   * Refresh availability the moment the order form opens.
+   *
+   * Rationale: the shown `status` may be minutes stale (cache TTL). By the time
+   * the user finishes typing and hits Pay, stock could have moved. Re-reading
+   * here gives the user live "Only N left" / sold-out feedback WHILE typing —
+   * cheaper than the alternative of paying, then seeing an auto-refund.
+   */
+  $effect(() => {
+    if (!showOrderForm) return;
+    if (claimed || _permanentClaimed) return;
+    prefetching = true;
+    const addr = auth.parent?.toLowerCase();
+    getClaimStatus(eventId, seriesId, addr || undefined, undefined, apiUrl)
+      .then((fresh) => {
+        if (!fresh) return;
+        cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), fresh, TTL.CLAIM_STATUS);
+        applyStatus(fresh);
+      })
+      .catch(() => { /* background fetch — silently ignore */ })
+      .finally(() => { prefetching = false; });
+  });
+
+  /**
+   * Pre-upload encrypted order to Swarm WHILE the user is filling the form.
+   *
+   * The Swarm upload is the slow link in the Pay click path (~3-10 s). By
+   * firing it in the background as soon as the form is valid, the resulting
+   * `orderRef` is already in hand when the user clicks Pay — making the
+   * redirect feel near-instant.
+   *
+   * Debounced so edits mid-typing don't spawn a flurry of uploads. Every
+   * debounced trigger produces a fresh upload; older orphan SealedBoxes are
+   * encrypted and unreachable (no ref stored anywhere), so they're harmless.
+   */
+  let _preUploadTimer: ReturnType<typeof setTimeout> | null = null;
+  let _preUploadSeq = 0;
+  $effect(() => {
+    // Capture reactive dependencies at the top so Svelte tracks them.
+    const open = showOrderForm;
+    const willStripe = stripeAfterForm;
+    const isValid = formValid();
+    const email = getEmailFromForm() ?? (stripeAfterForm ? stripeEmail.trim() : "");
+    const address = auth.parent?.toLowerCase();
+    // Referencing formData/quantity here makes the effect re-run on any change.
+    const _dataSnapshot = JSON.stringify(formData);
+    const _q = quantity;
+    void _dataSnapshot; void _q;
+
+    if (!open || !willStripe || !encryptionKey || !isValid) {
+      pendingOrderRef = null;
+      return;
+    }
+    if (!email && !address) return;
+
+    if (_preUploadTimer) clearTimeout(_preUploadTimer);
+    const mySeq = ++_preUploadSeq;
+    _preUploadTimer = setTimeout(async () => {
+      orderRefUploading = true;
+      try {
+        const sealed = await sealJson(encryptionKey, {
+          fields: formData,
+          seriesId,
+          ...(address ? { claimerAddress: address } : {}),
+          ...(email ? { claimerEmail: email } : {}),
+        });
+        const { prepareStripeOrder } = await import("../../api/stripe.js");
+        const ref = await prepareStripeOrder(sealed);
+        // A later trigger may have superseded us — drop stale result silently.
+        if (mySeq === _preUploadSeq) pendingOrderRef = ref;
+      } catch (err) {
+        console.warn("[ClaimButton] pre-upload failed, will fall back on Pay click:", err);
+        if (mySeq === _preUploadSeq) pendingOrderRef = null;
+      } finally {
+        if (mySeq === _preUploadSeq) orderRefUploading = false;
+      }
+    }, 700);
+  });
+
   /** sessionStorage key for stashing form data across Stripe redirect */
   const STRIPE_FORM_KEY = `woco:stripe-form:${eventId}:${seriesId}`;
+  /** sessionStorage key for persisting the optimistic success card across page refresh */
+  const STRIPE_SUCCESS_KEY = `woco:stripe-success:${eventId}:${seriesId}`;
 
   /** Detect "already claimed" responses and transition to claimed state instead of error */
   function handleAlreadyClaimed(msg: string): boolean {
@@ -452,6 +556,11 @@
     return h.length > 14 ? `${h.slice(0, 8)}…${h.slice(-6)}` : h;
   }
 
+  /** Notify parent that a claim succeeded and the TicketSuccess modal should open. */
+  function notifyClaimSuccess(via: "wallet" | "email" | null, edition: number | null, ticket?: ClaimedTicket, email?: string) {
+    onclaim?.({ edition, claimedVia: via, ticket, claimerEmail: email });
+  }
+
   async function handleStripeCheckout() {
     // If there's an order form and it hasn't been shown yet, show it first
     if (hasOrderForm && !showOrderForm) {
@@ -470,21 +579,53 @@
         return;
       }
 
-      // Stash form data in sessionStorage — will be encrypted and saved
-      // after Stripe redirects back on successful payment
-      if (Object.keys(formData).length > 0) {
-        sessionStorage.setItem(STRIPE_FORM_KEY, JSON.stringify({
-          fields: formData,
-          claimerEmail: email,
-          claimerAddress: address,
-        }));
+      // Pre-upload encrypted order to Swarm BEFORE the Stripe redirect. Fast
+      // path: the $effect above already did this while the user was typing and
+      // we have the ref in hand — skip the upload entirely. Slow path (user
+      // clicked Pay before the debounce fired, or the pre-upload failed): pass
+      // the raw encryptedOrder to /create-checkout, which uploads it in
+      // parallel with the Stripe session creation so latency is hidden behind
+      // the Stripe API call we'd be doing anyway.
+      let preparedOrderRef: string | undefined;
+      let inlineEncryptedOrder: SealedBox | undefined;
+      if (encryptionKey) {
+        if (pendingOrderRef) {
+          preparedOrderRef = pendingOrderRef;
+        } else {
+          try {
+            inlineEncryptedOrder = await sealJson(encryptionKey, {
+              fields: formData,
+              seriesId,
+              ...(address ? { claimerAddress: address } : {}),
+              ...(email ? { claimerEmail: email } : {}),
+            });
+          } catch (err) {
+            console.warn("[ClaimButton] seal failed, /create-checkout will run without order ref:", err);
+          }
+        }
       }
+
+      // Stash as a fallback — if pre-upload failed, save-order after return
+      // still gets a shot at attaching the form data.
+      sessionStorage.setItem(STRIPE_FORM_KEY, JSON.stringify({
+        fields: formData,
+        claimerEmail: email,
+        claimerAddress: address,
+        quantity,
+        // If pre-upload succeeded, record it so save-order can early-out
+        preparedOrderRef,
+      }));
 
       const { url } = await createCheckoutSession({
         eventId,
         seriesId,
         claimerEmail: email,
+        quantity: quantity > 1 ? quantity : undefined,
+        orderRef: preparedOrderRef,
+        encryptedOrder: !preparedOrderRef ? inlineEncryptedOrder : undefined,
       });
+      // Remember which series we were buying so EventPage can auto-select on return
+      try { sessionStorage.setItem(`woco:stripe-returning:${eventId}`, seriesId); } catch { /* ignore */ }
       window.location.href = url;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start checkout";
@@ -494,7 +635,15 @@
     }
   }
 
-  /** After Stripe redirect back, encrypt and save stashed form data */
+  /**
+   * Encrypt and push stashed Stripe form data to the server.
+   *
+   * The webhook processes the claim in the background and returns 200 to Stripe
+   * immediately, so the claimer entry may not be in the Swarm feed by the time
+   * we arrive here. The server retries for ~30 s; if it still fails we keep the
+   * sessionStorage key so a subsequent page visit can try again automatically
+   * (see onMount below). The key is only removed on success.
+   */
   async function saveStashedOrderData() {
     const raw = sessionStorage.getItem(STRIPE_FORM_KEY);
     if (!raw || !encryptionKey) return;
@@ -504,7 +653,18 @@
         fields: Record<string, string>;
         claimerEmail?: string;
         claimerAddress?: string;
+        quantity?: number;
+        preparedOrderRef?: string;
       };
+
+      // If we pre-uploaded the encrypted order before the Stripe redirect and
+      // the webhook attached it to every ticket, there's nothing for save-order
+      // to do. Drop the stash and return — avoids a redundant Swarm upload.
+      if (stashed.preparedOrderRef) {
+        sessionStorage.removeItem(STRIPE_FORM_KEY);
+        console.log("[ClaimButton] Pre-uploaded order was used by webhook — skipping save-order");
+        return;
+      }
 
       const sealed = await sealJson(encryptionKey, {
         fields: stashed.fields,
@@ -519,13 +679,18 @@
         encryptedOrder: sealed,
         claimerEmail: stashed.claimerEmail,
         claimerAddress: stashed.claimerAddress,
+        expectedEditions: stashed.quantity && stashed.quantity > 1 ? stashed.quantity : undefined,
       });
 
+      // Only remove on success — if the server-side save failed (claimer entry
+      // not yet written by background claim), keep the key so the next mount
+      // of this component retries automatically.
+      sessionStorage.removeItem(STRIPE_FORM_KEY);
       console.log("[ClaimButton] Order data saved after Stripe payment");
     } catch (err) {
-      console.error("[ClaimButton] Failed to save order data after Stripe payment:", err);
-    } finally {
-      sessionStorage.removeItem(STRIPE_FORM_KEY);
+      console.error("[ClaimButton] Failed to save order data (will retry on next visit):", err);
+      // Intentionally NOT removing the key — the next onMount will call
+      // saveStashedOrderData() again and try once more.
     }
   }
 
@@ -716,9 +881,11 @@
       claimed = true;
       claimedEdition = result.edition ?? null;
       claimedVia = "email";
+      lastClaimedTicket = result.ticket;
       showOrderForm = false;
       step = "";
       cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
+      notifyClaimSuccess("email", result.edition ?? null, result.ticket, email);
     } else {
       // Wallet — session ensured before payment in handlePaymentAndClaim
       if (!auth.hasSession) {
@@ -793,6 +960,7 @@
       claimed = true;
       claimedEdition = result.edition ?? null;
       claimedVia = "wallet";
+      lastClaimedTicket = result.ticket;
       showOrderForm = false;
       step = "";
 
@@ -801,6 +969,7 @@
         cacheSet(cacheKey.claimed(eventId, seriesId, addr), { edition: claimedEdition, via: "wallet" }, TTL.PERMANENT);
         cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
       }
+      notifyClaimSuccess("wallet", result.edition ?? null, result.ticket);
     }
   }
 
@@ -874,11 +1043,13 @@
         claimed = true;
         claimedEdition = result.edition ?? null;
         claimedVia = "email";
+        lastClaimedTicket = result.ticket;
         showOrderForm = false;
         step = "";
         // Email claims: no address to key permanent cache on, but invalidate
         // status cache so availability count refreshes next visit
         cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
+        notifyClaimSuccess("email", result.edition ?? null, result.ticket, getEmailFromForm() || undefined);
       } else {
         // Wallet claim
         if (!auth.isConnected) {
@@ -931,6 +1102,7 @@
         claimed = true;
         claimedEdition = result.edition ?? null;
         claimedVia = "wallet";
+        lastClaimedTicket = result.ticket;
         showOrderForm = false;
         step = "";
 
@@ -945,6 +1117,7 @@
           // Invalidate stale status cache so availability count reflects change
           cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
         }
+        notifyClaimSuccess("wallet", result.edition ?? null, result.ticket);
 
         // Refresh status in background to update availability count
         const userAddr = auth.parent || undefined;
@@ -1051,12 +1224,29 @@
         </p>
       </footer>
     </div>
-  {:else if stripeReturning && !claimed}
-    <div class="stripe-processing">
-      <span class="stripe-processing-spinner"></span>
-      <div class="stripe-processing-body">
-        <strong class="stripe-processing-title">Processing your payment</strong>
-        <span class="stripe-processing-sub">{step || "Finalising your ticket..."}</span>
+  {:else if stripeSuccessEmail !== null}
+    <!-- Optimistic success card: shown immediately on Stripe return.
+         Email is the delivery channel; no polling, no QR, no edition. -->
+    <div class="stripe-success" role="status" aria-live="polite">
+      <div class="stripe-success-check" aria-hidden="true">
+        <span class="stripe-success-ring"></span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      </div>
+      <div class="stripe-success-body">
+        <strong class="stripe-success-title">Payment confirmed</strong>
+        {#if stripeSuccessEmail}
+          <span class="stripe-success-sub">
+            Your {stripeSuccessQty > 1 ? `${stripeSuccessQty} tickets are` : "ticket is"} on its way to
+            <span class="stripe-success-email">{stripeSuccessEmail}</span>
+          </span>
+        {:else}
+          <span class="stripe-success-sub">
+            Your {stripeSuccessQty > 1 ? `${stripeSuccessQty} tickets are` : "ticket is"} being sent by email
+          </span>
+        {/if}
+        <span class="stripe-success-note">Check your inbox in the next few minutes — peek at spam if it's late.</span>
       </div>
     </div>
   {:else if approvalPending}
@@ -1078,6 +1268,24 @@
     {/if}
   {:else if showOrderForm}
     <div class="order-form">
+      {#if status && status.available <= 0}
+        <div class="avail-banner avail-banner--sold-out" role="alert">
+          <span class="avail-banner-dot"></span>
+          <span class="avail-banner-text">Sold out — no tickets remain</span>
+        </div>
+      {:else if status && status.available < quantity}
+        <div class="avail-banner avail-banner--shortfall" role="alert">
+          <span class="avail-banner-dot"></span>
+          <span class="avail-banner-text">
+            Only {status.available} ticket{status.available === 1 ? "" : "s"} left — reduce quantity to continue
+          </span>
+        </div>
+      {:else if status && status.available > 0 && status.available <= 5}
+        <div class="avail-pill" aria-live="polite">
+          <span class="avail-pill-dot"></span>
+          Only {status.available} left
+        </div>
+      {/if}
       {#if orderFields}
         {#each orderFields as field}
           <label class="form-field">
@@ -1145,10 +1353,15 @@
         {#if stripeAfterForm}
           <!-- Order form was shown before Stripe checkout -->
           {#if stripeLoading}
-            <button class="stripe-btn stripe-btn--primary" disabled>Redirecting to Stripe...</button>
+            <button class="stripe-btn stripe-btn--primary" disabled>Redirecting to Stripe…</button>
+          {:else if status && status.available <= 0}
+            <button class="stripe-btn stripe-btn--primary" disabled>Sold out</button>
+          {:else if status && status.available < quantity}
+            <button class="stripe-btn stripe-btn--primary" disabled>Not enough tickets</button>
           {:else}
             <button
               class="stripe-btn stripe-btn--primary"
+              class:preparing={orderRefUploading && !pendingOrderRef}
               onclick={handleStripeCheckout}
               disabled={!formValid()}
             >
@@ -1213,7 +1426,7 @@
       <!-- Fee receipt (when buyer pays fees) -->
       {#if buyerFees}
         <div class="pay-receipt">
-          <div class="pay-receipt-row"><span>Ticket</span><span>{buyerFees.base}</span></div>
+          <div class="pay-receipt-row"><span>{buyerFees.baseLabel}</span><span>{buyerFees.base}</span></div>
           <div class="pay-receipt-row pay-receipt-fee"><span>Platform fee (1.5%)</span><span>{buyerFees.platform}</span></div>
         </div>
       {/if}
@@ -1324,7 +1537,7 @@
             Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
           {/if}
         </button>
-        {#if !auth.isConnected}
+        {#if !auth.isConnected && !hasEmailField}
           <input
             class="stripe-email-input"
             type="email"
@@ -1339,7 +1552,7 @@
     <div class="pay-sheet">
       {#if buyerFees}
         <div class="pay-receipt">
-          <div class="pay-receipt-row"><span>Ticket</span><span>{buyerFees.base}</span></div>
+          <div class="pay-receipt-row"><span>{buyerFees.baseLabel}</span><span>{buyerFees.base}</span></div>
           {#if buyerFees.stripe}
             <div class="pay-receipt-row pay-receipt-fee"><span>Processing</span><span>{buyerFees.stripe}</span></div>
           {/if}
@@ -1361,7 +1574,7 @@
           Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
         {/if}
       </button>
-      {#if !auth.isConnected}
+      {#if !auth.isConnected && !hasEmailField}
         <input
           class="stripe-email-input"
           type="email"
@@ -1389,7 +1602,7 @@
     <div class="pay-sheet">
       {#if buyerFees}
         <div class="pay-receipt">
-          <div class="pay-receipt-row"><span>Ticket</span><span>{buyerFees.base}</span></div>
+          <div class="pay-receipt-row"><span>{buyerFees.baseLabel}</span><span>{buyerFees.base}</span></div>
           {#if buyerFees.stripe}
             <div class="pay-receipt-row pay-receipt-fee"><span>Processing</span><span>{buyerFees.stripe}</span></div>
           {/if}
@@ -1411,7 +1624,7 @@
           Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
         {/if}
       </button>
-      {#if !auth.isConnected}
+      {#if !auth.isConnected && !hasEmailField}
         <input
           class="stripe-email-input"
           type="email"
@@ -1433,6 +1646,8 @@
         Sold out
       {:else if approvalRequired}
         Request to attend
+      {:else if isPaid && hasCrypto && hasStripe}
+        Pay with crypto {buyerFees?.cryptoTotal ? `— ${buyerFees.cryptoTotal}` : `— ${priceLabel}`}
       {:else if isPaid}
         <span class="claim-btn-price">{priceLabel}</span>
         <span class="claim-btn-sep"></span>
@@ -1443,6 +1658,19 @@
         Claim ticket
       {/if}
     </button>
+    {#if isPaid && hasCrypto && hasStripe && !claiming && status?.available !== 0}
+      <button
+        class="stripe-btn"
+        disabled={stripeLoading}
+        onclick={handleStripeCheckout}
+      >
+        {#if stripeLoading}
+          Redirecting to Stripe...
+        {:else}
+          Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
+        {/if}
+      </button>
+    {/if}
   {/if}
 
   {#if status && !claimed && !showOrderForm}
@@ -1562,6 +1790,94 @@
   .stripe-processing-sub {
     font-size: 0.75rem;
     color: var(--text-muted);
+  }
+
+  /* ══════════════════════════════════════════════════
+   * STRIPE SUCCESS CARD — optimistic, email-first.
+   *
+   * Quiet conviction: one decisive checkmark, email treated as the hero
+   * fact, a single ring emission pulse that plays ONCE on mount (not
+   * looping). Designed to match the TicketSuccess modal's visual language
+   * (color-mix status tints, monospace numerical detail, hairline borders)
+   * without reusing its full modal chrome.
+   * ══════════════════════════════════════════════ */
+  .stripe-success {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem;
+    background: color-mix(in srgb, var(--success) 7%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--success) 22%, var(--border));
+    border-radius: var(--radius-md);
+    max-width: 420px;
+    animation: stripe-success-rise 420ms cubic-bezier(0.34, 1.36, 0.64, 1);
+  }
+  @keyframes stripe-success-rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .stripe-success-check {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--success) 18%, transparent);
+    color: var(--success);
+    border: 1px solid color-mix(in srgb, var(--success) 34%, transparent);
+    flex-shrink: 0;
+  }
+  /* One-shot ring emission — plays once on mount, then vanishes. */
+  .stripe-success-ring {
+    position: absolute;
+    inset: -2px;
+    border-radius: 50%;
+    border: 1.5px solid var(--success);
+    opacity: 0;
+    animation: stripe-success-pulse 1.2s cubic-bezier(0.16, 1, 0.3, 1) 220ms 1 forwards;
+    pointer-events: none;
+  }
+  @keyframes stripe-success-pulse {
+    0%   { transform: scale(1);   opacity: 0.7; }
+    100% { transform: scale(1.6); opacity: 0;   }
+  }
+
+  .stripe-success-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+  .stripe-success-title {
+    font-size: 0.9375rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+  .stripe-success-sub {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+  .stripe-success-email {
+    display: inline;
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+    font-size: 0.8125rem;
+    color: var(--accent-text);
+    word-break: break-all;
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    padding-bottom: 1px;
+  }
+  .stripe-success-note {
+    margin-top: 0.375rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid color-mix(in srgb, var(--success) 14%, var(--border));
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    letter-spacing: 0.01em;
   }
 
   .pending-badge {
@@ -2077,6 +2393,106 @@
   .stripe-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  /* ══════════════════════════════════════════════════
+   * AVAILABILITY FLAGS — amber pill / red banner
+   * ══════════════════════════════════════════════ */
+
+  /* Ambient pill: "Only 3 left" — sits inside the form header area */
+  .avail-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    align-self: flex-start;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+    letter-spacing: 0.01em;
+    color: #fbbf24;
+    background: color-mix(in srgb, #f59e0b 13%, transparent);
+    border: 1px solid color-mix(in srgb, #f59e0b 24%, transparent);
+    border-radius: 4px;
+    margin-bottom: 0.125rem;
+  }
+  .avail-pill-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #f59e0b;
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+  }
+
+  /* Banner: full-width, for hard blocks (sold out / shortfall) */
+  .avail-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    animation: avail-banner-in 180ms ease-out;
+    margin-bottom: 0.25rem;
+  }
+  .avail-banner-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .avail-banner--sold-out {
+    color: #fca5a5;
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--error) 28%, transparent);
+  }
+  .avail-banner--sold-out .avail-banner-dot {
+    background: var(--error);
+    box-shadow: 0 0 8px rgba(244, 63, 94, 0.6);
+  }
+  .avail-banner--shortfall {
+    color: #fcd34d;
+    background: color-mix(in srgb, #f59e0b 12%, transparent);
+    border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
+  }
+  .avail-banner--shortfall .avail-banner-dot {
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
+  }
+  @keyframes avail-banner-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ══════════════════════════════════════════════════
+   * PAY BUTTON — ambient "preparing" shimmer
+   * Non-blocking: the button stays fully clickable. The shimmer is a
+   * quiet reassurance that something is happening in the background.
+   * ══════════════════════════════════════════════ */
+  .stripe-btn--primary.preparing {
+    position: relative;
+    overflow: hidden;
+  }
+  .stripe-btn--primary.preparing::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 2px;
+    width: 35%;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.85) 50%,
+      transparent 100%
+    );
+    animation: prepare-sweep 1.6s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes prepare-sweep {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(340%); }
   }
 
   .pay-crypto-link {

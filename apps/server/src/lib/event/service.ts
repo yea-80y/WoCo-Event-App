@@ -51,7 +51,6 @@ export async function createEvent(opts: {
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
-    paymentRedirectUrl?: string;
     payment?: import("@woco/shared").PaymentConfig;
   }>;
   /** signedTickets[seriesId] = array of serialized signed tickets */
@@ -198,7 +197,6 @@ export async function createEvent(opts: {
       ...(s.wave ? { wave: s.wave } : {}),
       ...(s.saleStart ? { saleStart: s.saleStart } : {}),
       ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
-      ...(s.paymentRedirectUrl ? { paymentRedirectUrl: s.paymentRedirectUrl } : {}),
       ...(s.payment ? { payment: s.payment } : {}),
     } as SeriesSummary;
   });
@@ -234,6 +232,7 @@ export async function createEvent(opts: {
   const eventFeedJson = JSON.stringify(eventFeed);
   console.log(`[event] Writing event feed (${eventFeedJson.length} bytes)...`);
   await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed));
+  invalidateEventCache(eventId);
 
   // Skip verification — writeFeedPage succeeded, data is on the local Bee node.
   // Saves ~300-600ms. If we ever move to multi-node, add background verification.
@@ -259,16 +258,34 @@ export async function createEvent(opts: {
 // Read events
 // ---------------------------------------------------------------------------
 
+// 2-minute TTL cache — avoids repeat Swarm reads when multiple attendees
+// hit create-checkout for the same event in a short window. Cache is
+// explicitly invalidated on publish/update (see invalidateEventCache), so a
+// longer TTL is safe and significantly reduces Swarm read pressure under
+// bursty buy traffic.
+const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number }>();
+const EVENT_CACHE_TTL_MS = 120_000;
+
 export async function getEvent(eventId: string): Promise<EventFeed | null> {
+  const now = Date.now();
+  const cached = _eventCache.get(eventId);
+  if (cached && cached.expiresAt > now) return cached.feed;
+
   const page = await readFeedPageWithRetry(topicEvent(eventId));
   if (!page) return null;
   const feed = decodeJsonFeed<EventFeed>(page);
   if (feed) {
+    _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
     for (const s of feed.series) {
       console.log(`[event] Read series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
     }
   }
   return feed;
+}
+
+/** Invalidate the event cache after a publish/update so the next read is fresh. */
+export function invalidateEventCache(eventId: string): void {
+  _eventCache.delete(eventId);
 }
 
 interface EventDirectory {

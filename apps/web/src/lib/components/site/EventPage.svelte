@@ -7,6 +7,8 @@
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
   import ClaimButton from "../events/ClaimButton.svelte";
+  import TicketSuccess from "../events/TicketSuccess.svelte";
+  import type { ClaimedTicket } from "@woco/shared";
 
   interface Props {
     eventId: string;
@@ -53,8 +55,6 @@
         if (!fresh) return;
         cacheSet(sk, fresh, TTL.CLAIM_STATUS);
         seriesStatus = { ...seriesStatus, [s.seriesId]: fresh };
-        // If server says user already has pending/claimed for the selected series,
-        // restore that state (handles page refresh recovery).
         if (selectedSeries?.seriesId === s.seriesId) {
           if (fresh.userPendingId && !approvalPending && !claimed) {
             approvalPending = true;
@@ -79,15 +79,40 @@
   let claimedEdition = $state<number | null>(null);
   let claimedVia = $state<"wallet" | "email" | null>(null);
   let approvalPending = $state(false);
+  let ticketQty = $state<Record<string, number>>({});
+  let claimOpen = $state(false);
+
+  // ── Ticket success modal ──────────────────────────────────────────────────
+  let showSuccessModal = $state(false);
+  let successEdition = $state<number | null>(null);
+  let successEditions = $state<Array<{ edition: number; ticket?: ClaimedTicket }>>([]);
+  let successVia = $state<"wallet" | "email" | null>(null);
+  let successTicket = $state<ClaimedTicket | undefined>(undefined);
+  let successEmail = $state<string | undefined>(undefined);
+  /** seriesId to auto-select after Stripe return — resolved once event loads */
+  let stripeReturnSeriesId = $state<string | null>(null);
+
+  function handleClaimSuccess(data: { edition: number | null; claimedVia: "wallet" | "email" | null; ticket?: ClaimedTicket; claimerEmail?: string; editions?: Array<{ edition: number; ticket?: ClaimedTicket }> }) {
+    successEdition = data.edition;
+    successEditions = data.editions ?? (data.edition != null ? [{ edition: data.edition, ticket: data.ticket }] : []);
+    successVia = data.claimedVia;
+    successTicket = data.ticket;
+    successEmail = data.claimerEmail;
+    showSuccessModal = true;
+    if (!claimed) {
+      claimed = true;
+      claimedEdition = data.edition;
+      claimedVia = data.claimedVia;
+    }
+  }
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const claimMode = $derived(event?.claimMode ?? "wallet");
-
   const hasOrderForm = $derived(!!event?.orderFields?.length && !!event?.encryptionKey);
-
   const hasEmailField = $derived(
     !!event?.orderFields?.some((f) => f.type === "email" || f.id === "__email")
   );
+  const anySelected = $derived(Object.values(ticketQty).some((v) => v > 0));
 
   const formValid = $derived(() => {
     if (!event?.orderFields?.length) return true;
@@ -96,8 +121,6 @@
     );
   });
 
-  // Wallet claims should not be blocked by the __email field — email is only
-  // the claim identity for email-only mode. Wallet users can skip it.
   const walletFormValid = $derived(() => {
     if (!event?.orderFields?.length) return true;
     return event.orderFields.every(
@@ -124,13 +147,66 @@
 
   function formatDate(iso: string): string {
     return new Date(iso).toLocaleDateString(undefined, {
-      weekday: "short",
-      month: "short",
+      weekday: "long",
+      month: "long",
       day: "numeric",
       year: "numeric",
+    });
+  }
+
+  function formatTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString(undefined, {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  function currencySymbol(c: string): string {
+    if (c === "GBP") return "£";
+    if (c === "USD") return "$";
+    if (c === "EUR") return "€";
+    return c + " ";
+  }
+
+  function priceRange(series: SeriesSummary[]): string {
+    const prices = series
+      .filter((s) => s.payment && parseFloat(s.payment.price) > 0)
+      .map((s) => parseFloat(s.payment!.price));
+    if (!prices.length) return "Free";
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const sym = currencySymbol(series.find((s) => s.payment)?.payment?.currency ?? "");
+    return min === max ? `${sym}${min.toFixed(2)}` : `${sym}${min.toFixed(2)} – ${sym}${max.toFixed(2)}`;
+  }
+
+  function mapsUrl(location: string): string {
+    return `https://maps.google.com/?q=${encodeURIComponent(location)}`;
+  }
+
+  function shortAddress(addr: string): string {
+    return addr.slice(0, 6) + "…" + addr.slice(-4);
+  }
+
+  // ── Ticket quantity + Get Tickets ─────────────────────────────────────────
+  function handleQtyChange(s: SeriesSummary, qty: number) {
+    const next: Record<string, number> = {};
+    for (const k of Object.keys(ticketQty)) next[k] = 0;
+    next[s.seriesId] = qty;
+    ticketQty = next;
+    claimOpen = false;
+
+    if (qty > 0) {
+      selectSeries(s);
+    } else {
+      selectedSeries = null;
+    }
+  }
+
+  function handleGetTickets() {
+    claimOpen = true;
+    setTimeout(() => {
+      document.getElementById("claim-section")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 50);
   }
 
   // ── Ticket selection ──────────────────────────────────────────────────────
@@ -138,7 +214,6 @@
     if (saleStatus(s) !== "active") return;
     const ss = getSeriesStatus(s);
     if (ss != null && ss.available === 0) return;
-    // Reset claim state when switching series
     if (selectedSeries?.seriesId !== s.seriesId) {
       claimed = false;
       claimedEdition = null;
@@ -150,13 +225,6 @@
       chosenMethod = null;
     }
     selectedSeries = s;
-    // Scroll claim section into view
-    setTimeout(() => {
-      document.getElementById("claim-section")?.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-      });
-    }, 0);
   }
 
   // ── Claim logic ───────────────────────────────────────────────────────────
@@ -231,8 +299,8 @@
         claimed = true;
         claimedEdition = result.edition ?? null;
         claimedVia = "email";
+        handleClaimSuccess({ edition: result.edition ?? null, claimedVia: "email", ticket: result.ticket, claimerEmail: getEmail() || undefined });
       } else {
-        // Wallet claim
         if (!auth.isConnected) {
           claimStep = "Waiting for sign-in…";
           const ok = await loginRequest.request();
@@ -277,7 +345,6 @@
 
         if (result.approvalPending) {
           approvalPending = true;
-          // Cache so page refresh restores pending state immediately
           if (auth.parent && selectedSeries) {
             const addr = auth.parent.toLowerCase();
             const sk = cacheKey.claimStatus(eventId, selectedSeries.seriesId, addr);
@@ -291,7 +358,7 @@
         claimed = true;
         claimedEdition = result.edition ?? null;
         claimedVia = "wallet";
-        // Invalidate status cache so availability count refreshes
+        handleClaimSuccess({ edition: result.edition ?? null, claimedVia: "wallet", ticket: result.ticket });
         if (auth.parent && selectedSeries) {
           cacheDel(cacheKey.claimStatus(eventId, selectedSeries.seriesId, auth.parent.toLowerCase()));
         }
@@ -304,34 +371,21 @@
     }
   }
 
-  // ── Payment return handler ─────────────────────────────────────────────────
-  function handlePaymentReturn() {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("claimed") === "1") {
-      claimed = true;
-      claimedEdition = Number(params.get("edition")) || null;
-      claimedVia = "wallet";
-      // Clean up URL without triggering a navigation
-      const cleanUrl = window.location.pathname + (window.location.hash || "");
-      history.replaceState(null, "", cleanUrl);
-    }
-  }
-
-  function handlePayment() {
-    if (!selectedSeries?.paymentRedirectUrl) return;
-    const email = getEmail() || "";
-    const params = new URLSearchParams();
-    if (email) params.set("email", email);
-    if (auth.parent) params.set("walletAddress", auth.parent);
-    params.set("returnUrl", window.location.href);
-    const qs = params.toString();
-    window.location.href = `${selectedSeries.paymentRedirectUrl}${qs ? "?" + qs : ""}`;
-  }
-
   onMount(() => {
-    handlePaymentReturn();
     const addr = auth.parent?.toLowerCase();
     if (addr) _fetchedStatusWithAddr = true;
+
+    const hash = window.location.hash;
+    if (hash.includes("stripe=success")) {
+      const returningId = sessionStorage.getItem(`woco:stripe-returning:${eventId}`);
+      if (returningId) {
+        stripeReturnSeriesId = returningId;
+        if (event) {
+          const match = event.series.find(s => s.seriesId === returningId);
+          if (match) { selectedSeries = match; stripeReturnSeriesId = null; claimOpen = true; }
+        }
+      }
+    }
 
     getEvent(eventId, apiUrl)
       .then((fresh) => {
@@ -344,7 +398,10 @@
         event = fresh;
         loading = false;
         error = null;
-        // Fetch claim status for all series (availability + user state)
+        if (stripeReturnSeriesId) {
+          const match = fresh.series.find(s => s.seriesId === stripeReturnSeriesId);
+          if (match) { selectedSeries = match; stripeReturnSeriesId = null; claimOpen = true; }
+        }
         for (const s of fresh.series) {
           fetchSeriesStatus(s, addr || undefined);
         }
@@ -356,7 +413,6 @@
         }
       });
 
-    // Also fetch status for cached event series so availability shows immediately
     if (_cached) {
       for (const s of _cached.series) {
         fetchSeriesStatus(s, addr || undefined);
@@ -364,7 +420,6 @@
     }
   });
 
-  // Re-fetch status with address when auth restores asynchronously (page refresh)
   $effect(() => {
     const addr = auth.parent?.toLowerCase();
     if (!addr || _fetchedStatusWithAddr || !event) return;
@@ -377,8 +432,14 @@
 
 <div class="event-page">
   {#if onback}
-    <button class="back-link" onclick={onback}>&larr; Back to events</button>
+    <button class="back-link" onclick={onback}>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Back
+    </button>
   {/if}
+
   {#if loading}
     <div class="state-wrap">
       <div class="loader"></div>
@@ -390,140 +451,193 @@
     </div>
   {:else if event}
 
-    <!-- Banner image -->
+    <!-- Hero image — full bleed, no border radius -->
     {#if event.imageHash}
-      <div class="banner-wrap">
+      <div class="hero-wrap">
         <img
           src="{BEE_GATEWAY}/bytes/{event.imageHash}"
           alt={event.title}
-          class="banner-img"
+          class="hero-img"
         />
-        <div class="banner-fade"></div>
+        <div class="hero-fade"></div>
       </div>
     {/if}
 
-    <!-- Event header -->
+    <!-- Organizer creator bar -->
+    {#if auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
+      <div class="creator-bar">
+        <span class="creator-bar-label">You are the organizer</span>
+        <button class="creator-bar-btn" onclick={ondashboard}>Dashboard →</button>
+      </div>
+    {/if}
+
+    <!-- Event title + meta -->
     <div class="event-header">
       <h1 class="event-title">{event.title}</h1>
 
-      <div class="meta-row">
-        <span class="meta-item">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-            <path d="M5 1v3M11 1v3M2 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          {formatDate(event.startDate)}
-          {#if event.endDate && event.endDate !== event.startDate}
-            <span class="meta-sep">–</span>
-            {formatDate(event.endDate)}
-          {/if}
-        </span>
-
-        {#if event.location}
-          <span class="meta-item">
-            <svg width="13" height="14" viewBox="0 0 14 16" fill="none" aria-hidden="true">
-              <path d="M7 1C4.239 1 2 3.239 2 6c0 3.75 5 9 5 9s5-5.25 5-9c0-2.761-2.239-5-5-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-              <circle cx="7" cy="6" r="1.5" stroke="currentColor" stroke-width="1.3"/>
+      <div class="meta-stack">
+        <!-- Date/time -->
+        <div class="meta-item">
+          <span class="meta-icon">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M5 1v3M11 1v3M2 7h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
             </svg>
-            {event.location}
           </span>
+          <span class="meta-text">
+            {formatDate(event.startDate)} · {formatTime(event.startDate)}
+            {#if event.endDate && event.endDate !== event.startDate}
+              <span class="meta-dim"> – {formatTime(event.endDate)}</span>
+            {/if}
+          </span>
+        </div>
+
+        <!-- Location -->
+        {#if event.location}
+          <div class="meta-item">
+            <span class="meta-icon">
+              <svg width="13" height="15" viewBox="0 0 14 16" fill="none" aria-hidden="true">
+                <path d="M7 1C4.239 1 2 3.239 2 6c0 3.75 5 9 5 9s5-5.25 5-9c0-2.761-2.239-5-5-5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                <circle cx="7" cy="6" r="1.5" stroke="currentColor" stroke-width="1.2"/>
+              </svg>
+            </span>
+            <span class="meta-text">{event.location}</span>
+          </div>
+        {/if}
+
+        <!-- Price range -->
+        {#if event.series.length}
+          <div class="meta-item">
+            <span class="meta-icon">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M8 4.5v1M8 10.5v1M6 7.5c0-.828.672-1.5 2-1.5s2 .672 2 1.5S9.328 9 8 9s-2 .672-2 1.5S7 12 8 12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span class="meta-text">{priceRange(event.series)}</span>
+          </div>
         {/if}
       </div>
 
-      {#if event.description}
-        <p class="event-desc">{event.description}</p>
-      {/if}
+      <!-- Organizer chip -->
+      <div class="organizer-chip">
+        <div class="organizer-avatar">
+          {event.creatorAddress.slice(2, 4).toUpperCase()}
+        </div>
+        <span class="organizer-addr">{shortAddress(event.creatorAddress)}</span>
+      </div>
     </div>
 
-    <!-- Organizer bar (only visible to the creator) -->
-    {#if auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
-      <div class="organizer-bar">
-        <div class="organizer-bar-inner">
-          <span class="organizer-label">You are the organizer</span>
-          <button class="organizer-btn" onclick={ondashboard}>
-            Dashboard →
-          </button>
-        </div>
-      </div>
-    {/if}
-
-    <!-- Tickets -->
-    <div class="tickets-section">
+    <!-- ── Tickets card ──────────────────────────────────────────────────── -->
+    <div class="tickets-card">
       <h2 class="tickets-heading">Tickets</h2>
-      <div class="series-list">
-        {#each event.series as s}
+
+      <div class="ticket-rows">
+        {#each event.series as s, i}
           {@const sale = saleStatus(s)}
           {@const ss = getSeriesStatus(s)}
           {@const soldOut = ss != null && ss.available === 0}
           {@const isUnavailable = sale !== "active" || soldOut}
-          {@const isSelected = selectedSeries?.seriesId === s.seriesId}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_interactive_supports_focus -->
-          <div
-            class="series-card"
-            class:is-selected={isSelected}
-            class:is-unavailable={isUnavailable}
-            role={!isUnavailable ? "button" : "listitem"}
-            onclick={() => selectSeries(s)}
-          >
-            <div class="series-info">
-              <div class="series-name-row">
-                <h3 class="series-name">{s.name}</h3>
-                {#if s.wave}
-                  <span class="wave-pill">{s.wave}</span>
-                {/if}
-                {#if s.payment && parseFloat(s.payment.price) > 0}
-                  <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
-                {:else if !s.paymentRedirectUrl}
-                  <span class="series-price series-price--free">Free</span>
-                {/if}
-              </div>
-              {#if s.description}
-                <p class="series-desc">{s.description}</p>
+          {@const isPaid = s.payment && parseFloat(s.payment.price) > 0}
+          {@const qty = ticketQty[s.seriesId] ?? 0}
+          {@const maxQty = (sale !== "active" || soldOut) ? 0 : Math.min(ss?.available ?? 10, 10)}
+
+          {#if i > 0}
+            <div class="ticket-divider"></div>
+          {/if}
+
+          <div class="ticket-row" class:ticket-row--dim={isUnavailable}>
+            <!-- Left: name -->
+            <div class="ticket-row-left">
+              <span class="ticket-name">{s.name}</span>
+              {#if s.wave}
+                <span class="wave-badge">{s.wave}</span>
               {/if}
-              <div class="series-meta-row">
-                {#if sale === "future"}
-                  <span class="sale-tag sale-tag--future">
-                    Opens {formatShortDate(s.saleStart!)}
-                  </span>
-                {:else if sale === "past"}
-                  <span class="sale-tag sale-tag--past">Sales closed</span>
-                {:else if soldOut}
-                  <span class="sale-tag sale-tag--past">Sold out</span>
-                {:else}
-                  <span class="series-supply">
-                    {ss != null ? `${ss.available} / ${ss.totalSupply}` : s.totalSupply} tickets
-                  </span>
-                  {#if s.saleEnd}
-                    <span class="sale-tag sale-tag--active">Until {formatShortDate(s.saleEnd)}</span>
-                  {/if}
-                {/if}
-              </div>
+              {#if s.description}
+                <span class="ticket-subdesc">{s.description}</span>
+              {/if}
             </div>
 
-            <div class="series-action">
+            <!-- Middle: status + price -->
+            <div class="ticket-row-mid">
               {#if sale === "future"}
-                <span class="select-btn select-btn--disabled">Coming soon</span>
+                <span class="ticket-status">Opens {formatShortDate(s.saleStart!)}</span>
               {:else if sale === "past"}
-                <span class="select-btn select-btn--disabled">Closed</span>
+                <span class="ticket-status">Sales closed</span>
               {:else if soldOut}
-                <span class="select-btn select-btn--disabled">Sold out</span>
-              {:else if isSelected}
-                <span class="select-btn select-btn--selected">✓ Selected</span>
-              {:else}
-                <span class="select-btn">Select</span>
+                <span class="ticket-status">Sold Out</span>
               {/if}
+
+              {#if isPaid}
+                <span class="ticket-price" class:ticket-price--dim={isUnavailable}>
+                  {currencySymbol(s.payment!.currency)}{parseFloat(s.payment!.price).toFixed(2)}
+                </span>
+              {:else}
+                <span class="ticket-price ticket-price--free" class:ticket-price--dim={isUnavailable}>
+                  Free
+                </span>
+              {/if}
+
+              {#if !isUnavailable && ss != null}
+                <span class="ticket-avail">{ss.available} left</span>
+              {/if}
+            </div>
+
+            <!-- Right: qty selector -->
+            <div class="ticket-row-right">
+              <div class="qty-box" class:qty-box--dim={isUnavailable}>
+                <select
+                  disabled={isUnavailable}
+                  value={qty}
+                  onchange={(e) => handleQtyChange(s, parseInt((e.target as HTMLSelectElement).value))}
+                >
+                  <option value={0}>0</option>
+                  {#if !isUnavailable}
+                    {#each Array.from({ length: maxQty }, (_, i) => i + 1) as n}
+                      <option value={n}>{n}</option>
+                    {/each}
+                  {/if}
+                </select>
+              </div>
             </div>
           </div>
         {/each}
       </div>
+
+      <!-- Get Tickets footer -->
+      <div class="tickets-footer">
+        <button
+          class="get-tickets-btn"
+          class:get-tickets-btn--active={anySelected}
+          disabled={!anySelected}
+          onclick={handleGetTickets}
+        >
+          Get Tickets
+        </button>
+        {#if !anySelected}
+          <p class="nothing-selected">Nothing selected yet</p>
+        {/if}
+      </div>
     </div>
 
-    <!-- Claim section — shown when a series is selected -->
-    {#if selectedSeries}
-      <div class="claim-section" id="claim-section">
+    <!-- ── Claim / checkout panel ────────────────────────────────────────── -->
+    {#if selectedSeries && claimOpen}
+      <div class="claim-panel" id="claim-section">
+        <div class="claim-panel-header">
+          <h3 class="claim-panel-title">
+            {selectedSeries.name}
+            {#if selectedSeries.wave}
+              <span class="wave-badge">{selectedSeries.wave}</span>
+            {/if}
+          </h3>
+          <button class="claim-panel-close" onclick={() => { claimOpen = false; }}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+
         {#if selectedSeries.payment && parseFloat(selectedSeries.payment.price) > 0}
-          <!-- Crypto paid ticket — ClaimButton handles chain selector + payment + claim -->
           <ClaimButton
             eventId={eventId}
             seriesId={selectedSeries.seriesId}
@@ -535,10 +649,17 @@
             apiUrl={apiUrl}
             payment={selectedSeries.payment}
             eventEndDate={event.endDate}
+            quantity={ticketQty[selectedSeries.seriesId] ?? 1}
+            onclaim={handleClaimSuccess}
           />
+
         {:else if claimed}
           <div class="claim-success">
-            <span class="success-icon">✓</span>
+            <div class="success-check">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M4 10l5 5 7-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
             <div class="success-body">
               <p class="success-title">
                 {claimedVia === "email" ? "Registration submitted!" : "Ticket claimed!"}
@@ -546,17 +667,15 @@
               {#if claimedEdition != null}
                 <p class="success-detail">Ticket #{claimedEdition} · {selectedSeries.name}</p>
               {/if}
-              {#if claimedVia === "email"}
-                <p class="success-note">Your ticket will be sent to you by the organizer.</p>
-              {:else if claimedVia === "wallet"}
-                <p class="success-note">Your ticket has been saved to your passport.</p>
-              {/if}
+              <button class="success-view-btn" onclick={() => { successEdition = claimedEdition; successVia = claimedVia; showSuccessModal = true; }}>
+                View ticket &amp; QR
+              </button>
             </div>
           </div>
 
         {:else if approvalPending}
           <div class="claim-pending">
-            <span class="pending-dot">●</span>
+            <div class="pending-dot"></div>
             <div>
               <p class="pending-title">Request submitted — pending approval</p>
               <p class="pending-note">You'll receive your ticket once the organizer approves it.</p>
@@ -564,17 +683,7 @@
           </div>
 
         {:else}
-          <div class="claim-header">
-            <h3 class="claim-title">
-              Register for:
-              <span class="claim-series-name">{selectedSeries.name}</span>
-              {#if selectedSeries.wave}
-                <span class="wave-pill">{selectedSeries.wave}</span>
-              {/if}
-            </h3>
-          </div>
-
-          <!-- Order form fields (shared for all ticket types) -->
+          <!-- Order form -->
           {#if hasOrderForm && event.orderFields}
             <div class="form-fields">
               {#each event.orderFields as field}
@@ -603,9 +712,7 @@
                         type="checkbox"
                         checked={formData[field.id] === "yes"}
                         onchange={(e) =>
-                          (formData[field.id] = (e.target as HTMLInputElement).checked
-                            ? "yes"
-                            : "")}
+                          (formData[field.id] = (e.target as HTMLInputElement).checked ? "yes" : "")}
                       />
                       <span>{field.placeholder || field.label}</span>
                     </label>
@@ -622,12 +729,10 @@
             </div>
           {/if}
 
-          <!-- Inline email input (when claimMode=both and no email field in form) -->
           {#if claimMode === "both" && !hasEmailField}
             <label class="form-field">
               <span class="form-label">
-                Email
-                <span class="form-label-optional">(for email claim)</span>
+                Email <span class="form-label-optional">(for email claim)</span>
               </span>
               <input type="email" bind:value={inlineEmail} placeholder="your@email.com" />
             </label>
@@ -637,18 +742,9 @@
             <p class="claim-error">{claimError}</p>
           {/if}
 
-          <!-- Claim actions -->
           <div class="claim-actions">
             {#if claiming}
               <button class="claim-btn" disabled>{claimStep || "Processing…"}</button>
-            {:else if selectedSeries.paymentRedirectUrl}
-              <button
-                class="claim-btn claim-btn--pay"
-                onclick={handlePayment}
-                disabled={!formValid()}
-              >
-                Register &amp; Pay
-              </button>
             {:else if claimMode === "both"}
               <button
                 class="claim-btn"
@@ -684,39 +780,89 @@
           </div>
 
           {#if hasOrderForm}
-            <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
+            <p class="encrypt-note">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="display:inline;vertical-align:middle;margin-right:3px">
+                <rect x="2" y="5" width="8" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                <path d="M4 5V4a2 2 0 1 1 4 0v1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              </svg>
+              Your info is encrypted — only the organizer can read it.
+            </p>
           {/if}
 
           {#if getSeriesStatus(selectedSeries) && !claimed}
             {@const ss = getSeriesStatus(selectedSeries)!}
-            <p class="availability-note">{ss.available} / {ss.totalSupply} tickets available</p>
+            <p class="availability-note">{ss.available} / {ss.totalSupply} tickets remaining</p>
           {/if}
         {/if}
+      </div>
+    {/if}
+
+    <!-- ── About section ─────────────────────────────────────────────────── -->
+    {#if event.description}
+      <div class="about-section">
+        <h2 class="section-heading">About</h2>
+        <p class="about-text">{event.description}</p>
+      </div>
+    {/if}
+
+    <!-- ── Venue section ──────────────────────────────────────────────────── -->
+    {#if event.location}
+      <div class="venue-section">
+        <h2 class="section-heading">Venue</h2>
+        <div class="venue-card">
+          <div class="venue-info">
+            <p class="venue-name">{event.location}</p>
+          </div>
+          <a
+            class="maps-btn"
+            href={mapsUrl(event.location)}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open in Maps
+          </a>
+        </div>
       </div>
     {/if}
 
   {/if}
 </div>
 
-<style>
-  .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    font-size: 0.875rem;
-    cursor: pointer;
-    padding: 0.5rem 0;
-    margin-bottom: 0.5rem;
-  }
-  .back-link:hover { color: var(--text); }
+{#if showSuccessModal && event && selectedSeries}
+  <TicketSuccess
+    event={event}
+    series={selectedSeries}
+    edition={successEdition}
+    editions={successEditions}
+    claimedVia={successVia}
+    claimerEmail={successEmail}
+    ticket={successTicket}
+    onclose={() => { showSuccessModal = false; }}
+  />
+{/if}
 
+<style>
+  /* ── Page shell ───────────────────────────────────────────────────────────── */
   .event-page {
     max-width: 640px;
     margin: 0 auto;
+    padding-bottom: 4rem;
   }
+
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    cursor: pointer;
+    padding: 0.75rem 0;
+    margin-bottom: 0;
+    transition: color var(--transition);
+  }
+  .back-link:hover { color: var(--text); }
 
   /* ── State ────────────────────────────────────────────────────────────────── */
   .state-wrap {
@@ -727,7 +873,6 @@
     padding: 5rem 0;
     gap: 1rem;
   }
-
   .loader {
     width: 1.25rem;
     height: 1.25rem;
@@ -736,314 +881,405 @@
     border-radius: 50%;
     animation: spin 0.75s linear infinite;
   }
-
   @keyframes spin { to { transform: rotate(360deg); } }
-
   .state-text { color: var(--text-muted); font-size: 0.9375rem; }
   .state-error { color: var(--error); font-size: 0.9375rem; text-align: center; }
 
-  /* ── Banner ───────────────────────────────────────────────────────────────── */
-  .banner-wrap {
+  /* ── Hero image — full bleed ──────────────────────────────────────────────── */
+  .hero-wrap {
     position: relative;
     width: 100%;
-    height: 220px;
-    border-radius: var(--radius-md);
+    aspect-ratio: 16 / 9;
     overflow: hidden;
-    margin-bottom: 1.75rem;
+    margin-bottom: 0;
+    /* negative margin to break out of any parent padding */
+    margin-left: -1px;
+    margin-right: -1px;
+    width: calc(100% + 2px);
   }
-
-  .banner-img {
+  .hero-img {
     width: 100%;
     height: 100%;
     object-fit: cover;
     object-position: center;
     display: block;
   }
-
-  .banner-fade {
+  .hero-fade {
     position: absolute;
     inset: auto 0 0 0;
-    height: 40%;
+    height: 50%;
     background: linear-gradient(to bottom, transparent, var(--bg));
     pointer-events: none;
   }
 
-  /* ── Event header ─────────────────────────────────────────────────────────── */
-  .event-header { margin-bottom: 1.75rem; }
-
-  .event-title {
-    font-size: 1.75rem;
-    font-weight: 700;
-    letter-spacing: -0.025em;
-    color: var(--text);
-    margin: 0 0 0.75rem;
-    line-height: 1.2;
-  }
-
-  .meta-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem 1.25rem;
-    margin-bottom: 1rem;
-  }
-
-  .meta-item {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-  }
-
-  .meta-item svg { flex-shrink: 0; opacity: 0.6; }
-  .meta-sep { color: var(--text-muted); margin: 0 0.1rem; }
-
-  .event-desc {
-    font-size: 0.9375rem;
-    line-height: 1.7;
-    color: var(--text-secondary);
-    margin: 0;
-    white-space: pre-wrap;
-  }
-
-  /* ── Organizer bar ────────────────────────────────────────────────────────── */
-  .organizer-bar {
-    margin-bottom: 1.75rem;
-    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent) 6%, transparent);
-    padding: 0.75rem 1rem;
-  }
-
-  .organizer-bar-inner {
+  /* ── Creator bar ──────────────────────────────────────────────────────────── */
+  .creator-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+    padding: 0.625rem 1rem;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+    margin-bottom: 1.5rem;
   }
-
-  .organizer-label {
-    font-size: 0.8125rem;
+  .creator-bar-label {
+    font-size: 0.8rem;
     font-weight: 500;
     color: var(--accent-text);
   }
-
-  .organizer-btn {
-    font-size: 0.8125rem;
+  .creator-bar-btn {
+    font-size: 0.8rem;
     font-weight: 600;
     color: var(--accent-text);
-    padding: 0.375rem 0.75rem;
-    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    padding: 0.3rem 0.7rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
     border-radius: var(--radius-sm);
     transition: all var(--transition);
     white-space: nowrap;
   }
-
-  .organizer-btn:hover {
+  .creator-bar-btn:hover {
     background: var(--accent);
     border-color: var(--accent);
     color: #fff;
   }
 
-  /* ── Tickets section ──────────────────────────────────────────────────────── */
-  .tickets-section { margin-bottom: 2rem; }
-
-  .tickets-heading {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--text-muted);
-    margin: 0 0 0.625rem;
+  /* ── Event header ─────────────────────────────────────────────────────────── */
+  .event-header {
+    padding: 1.5rem 0 0;
+    margin-bottom: 1.75rem;
   }
 
-  .series-list {
+  .event-title {
+    font-size: 2rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--text);
+    margin: 0 0 1.25rem;
+    line-height: 1.15;
+  }
+
+  /* Meta — stacked list, each item its own row */
+  .meta-stack {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.6rem;
+    margin-bottom: 1.25rem;
   }
 
-  .series-card {
+  .meta-item {
     display: flex;
-    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.625rem;
+  }
+
+  .meta-icon {
+    display: flex;
     align-items: center;
-    gap: 1rem;
-    padding: 1rem 1.125rem;
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--text-muted);
+    opacity: 0.75;
+  }
+
+  .meta-text {
+    font-size: 0.9375rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  .meta-dim {
+    color: var(--text-muted);
+  }
+
+  /* Organizer chip */
+  .organizer-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.75rem 0.375rem 0.375rem;
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: 9999px;
     background: var(--bg-surface);
-    transition: border-color var(--transition), opacity var(--transition),
-      background var(--transition);
-    cursor: pointer;
-    text-align: left;
   }
 
-  .series-card:not(.is-unavailable):hover {
-    border-color: var(--border-hover);
-    background: var(--bg-elevated);
-  }
-
-  .series-card.is-selected {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface));
-  }
-
-  .series-card.is-unavailable {
-    opacity: 0.45;
-    cursor: default;
-  }
-
-  .series-info { min-width: 0; flex: 1; }
-
-  .series-name-row {
+  .organizer-avatar {
+    width: 1.625rem;
+    height: 1.625rem;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 20%, var(--bg-elevated));
+    color: var(--accent-text);
+    font-size: 0.625rem;
+    font-weight: 700;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.125rem;
+    justify-content: center;
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
   }
 
-  .series-name {
+  .organizer-addr {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    font-family: monospace;
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Tickets card ─────────────────────────────────────────────────────────── */
+  .tickets-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+  }
+
+  .tickets-heading {
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--text);
     margin: 0;
+    padding: 1.125rem 1.25rem 1rem;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: -0.01em;
+  }
+
+  .ticket-rows {
+    padding: 0.25rem 0;
+  }
+
+  .ticket-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 0;
+  }
+
+  .ticket-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem;
+    transition: background var(--transition);
+  }
+
+  .ticket-row--dim {
+    opacity: 0.45;
+  }
+
+  .ticket-row-left {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .ticket-name {
     font-size: 0.9375rem;
     font-weight: 600;
     color: var(--text);
     line-height: 1.3;
   }
 
-  .wave-pill {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 0.15rem 0.45rem;
-    border-radius: 9999px;
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--accent-text);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .series-price {
-    font-size: 0.75rem;
+  .wave-badge {
+    display: inline-block;
+    font-size: 0.625rem;
     font-weight: 700;
-    padding: 0.15rem 0.5rem;
-    border-radius: 9999px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
     background: color-mix(in srgb, var(--accent) 15%, transparent);
     color: var(--accent-text);
-    white-space: nowrap;
-    flex-shrink: 0;
+    width: fit-content;
   }
 
-  .series-price--free {
-    background: color-mix(in srgb, var(--success, #4ade80) 12%, transparent);
+  .ticket-subdesc {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+  }
+
+  .ticket-row-mid {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.1rem;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+
+  .ticket-status {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+  }
+
+  .ticket-price {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .ticket-price--free {
     color: var(--success, #4ade80);
   }
 
-  .series-desc {
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    margin: 0.125rem 0 0.25rem;
-    line-height: 1.4;
+  .ticket-price--dim {
+    color: var(--text-muted) !important;
   }
 
-  .series-meta-row {
-    display: flex;
-    align-items: center;
-    gap: 0.625rem;
-    flex-wrap: wrap;
-    margin-top: 0.25rem;
-  }
-
-  .series-supply {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
-
-  .sale-tag {
+  .ticket-avail {
     font-size: 0.6875rem;
-    font-weight: 500;
-    padding: 0.125rem 0.4rem;
-    border-radius: 9999px;
-  }
-
-  .sale-tag--future {
-    background: color-mix(in srgb, #a78bfa 12%, transparent);
-    color: #a78bfa;
-  }
-
-  .sale-tag--past {
-    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
     color: var(--text-muted);
-  }
-
-  .sale-tag--active {
-    background: color-mix(in srgb, var(--success) 12%, transparent);
-    color: var(--success);
-  }
-
-  .series-action { flex-shrink: 0; }
-
-  .select-btn {
-    display: inline-block;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    padding: 0.375rem 0.875rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--accent);
-    color: var(--accent-text);
     white-space: nowrap;
-    transition: all var(--transition);
   }
 
-  .series-card:not(.is-unavailable):not(.is-selected):hover .select-btn {
-    background: var(--accent);
-    color: #fff;
+  /* Qty selector */
+  .ticket-row-right {
+    flex-shrink: 0;
   }
 
-  .select-btn--selected {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
+  .qty-box {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    overflow: hidden;
+    transition: border-color var(--transition);
   }
 
-  .select-btn--disabled {
-    border-color: var(--border);
+  .qty-box:not(.qty-box--dim):hover {
+    border-color: var(--border-hover);
+  }
+
+  .qty-box select {
+    display: block;
+    padding: 0.4rem 0.5rem;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    outline: none;
+    min-width: 3.25rem;
+    cursor: pointer;
+    font-family: inherit;
+    appearance: auto;
+  }
+
+  .qty-box--dim {
+    opacity: 0.5;
+  }
+  .qty-box--dim select {
+    cursor: not-allowed;
+  }
+
+  /* Get Tickets footer */
+  .tickets-footer {
+    padding: 1rem 1.25rem 1.25rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .get-tickets-btn {
+    width: 100%;
+    padding: 0.875rem;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
     color: var(--text-muted);
-    opacity: 0.6;
+    cursor: not-allowed;
+    transition: all 0.18s ease;
   }
 
-  /* ── Claim section ────────────────────────────────────────────────────────── */
-  .claim-section {
+  .get-tickets-btn--active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+
+  .get-tickets-btn--active:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+
+  .nothing-selected {
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  /* ── Claim / checkout panel ───────────────────────────────────────────────── */
+  .claim-panel {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    padding: 1.5rem;
     background: var(--bg-surface);
-    margin-top: 0.25rem;
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+    animation: slideDown 0.22s ease;
   }
 
-  .claim-header { margin-bottom: 1.25rem; }
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
 
-  .claim-title {
-    font-size: 1rem;
-    font-weight: 600;
+  .claim-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--accent) 4%, var(--bg-surface));
+  }
+
+  .claim-panel-title {
+    font-size: 0.9375rem;
+    font-weight: 700;
     color: var(--text);
     margin: 0;
     display: flex;
     align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
-    line-height: 1.4;
   }
 
-  .claim-series-name { color: var(--accent-text); }
+  .claim-panel-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    flex-shrink: 0;
+    transition: all var(--transition);
+  }
+  .claim-panel-close:hover {
+    color: var(--text);
+    border-color: var(--border-hover);
+  }
 
-  /* ── Order form ───────────────────────────────────────────────────────────── */
+  /* ── Order form (inside claim panel) ──────────────────────────────────────── */
   .form-fields {
     display: flex;
     flex-direction: column;
-    gap: 0.875rem;
-    margin-bottom: 1rem;
+    gap: 1rem;
+    padding: 1.25rem 1.25rem 0;
   }
 
   .form-field {
@@ -1054,14 +1290,18 @@
 
   .form-label {
     font-size: 0.8125rem;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .form-label-optional {
     font-weight: 400;
     color: var(--text-muted);
     font-size: 0.75rem;
+    text-transform: none;
+    letter-spacing: 0;
   }
 
   .required { color: var(--error); margin-left: 0.125rem; }
@@ -1069,12 +1309,12 @@
   .form-field input,
   .form-field textarea,
   .form-field select {
-    padding: 0.5rem 0.75rem;
+    padding: 0.625rem 0.875rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text);
-    font-size: 0.875rem;
+    font-size: 0.9375rem;
     font-family: inherit;
     transition: border-color var(--transition);
     resize: vertical;
@@ -1085,6 +1325,7 @@
   .form-field select:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   .checkbox-row {
@@ -1099,56 +1340,56 @@
   /* ── Claim actions ────────────────────────────────────────────────────────── */
   .claim-actions {
     display: flex;
+    flex-direction: column;
     gap: 0.625rem;
-    flex-wrap: wrap;
-    margin-top: 1.25rem;
+    padding: 1.25rem 1.25rem 0;
   }
 
   .claim-btn {
-    padding: 0.5625rem 1.375rem;
-    font-size: 0.875rem;
-    font-weight: 600;
+    width: 100%;
+    padding: 0.75rem 1.375rem;
+    font-size: 0.9375rem;
+    font-weight: 700;
     border-radius: var(--radius-sm);
     background: var(--accent);
     color: #fff;
     white-space: nowrap;
     transition: background var(--transition);
+    letter-spacing: 0.01em;
   }
 
   .claim-btn:hover:not(:disabled) { background: var(--accent-hover); }
-
   .claim-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .claim-btn--outline {
     background: transparent;
-    border: 1px solid var(--accent);
-    color: var(--accent-text);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
   }
-
-  .claim-btn--outline:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-
-  .claim-btn--pay {
-    background: #059669;
+  .claim-btn--outline:hover:not(:disabled) {
+    background: var(--bg-elevated);
+    border-color: var(--border-hover);
   }
-
-  .claim-btn--pay:hover:not(:disabled) { background: #047857; }
 
   .claim-error {
     font-size: 0.8125rem;
     color: var(--error);
-    margin: 0.75rem 0 0;
+    margin: 0;
+    padding: 0 1.25rem;
   }
 
   .encrypt-note {
     font-size: 0.75rem;
     color: var(--text-muted);
-    margin: 0.75rem 0 0;
+    padding: 0.75rem 1.25rem 0;
+    margin: 0;
   }
 
   .availability-note {
     font-size: 0.75rem;
     color: var(--text-muted);
-    margin: 0.5rem 0 0;
+    padding: 0.375rem 1.25rem 1.25rem;
+    margin: 0;
   }
 
   /* ── Claim success ────────────────────────────────────────────────────────── */
@@ -1156,25 +1397,27 @@
     display: flex;
     align-items: flex-start;
     gap: 1rem;
+    padding: 1.25rem;
   }
 
-  .success-icon {
+  .success-check {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
+    width: 2.25rem;
+    height: 2.25rem;
     border-radius: 50%;
     background: color-mix(in srgb, var(--success) 15%, transparent);
     color: var(--success);
-    font-size: 1rem;
-    font-weight: 700;
     flex-shrink: 0;
+    border: 1.5px solid color-mix(in srgb, var(--success) 30%, transparent);
   }
+
+  .success-body { min-width: 0; }
 
   .success-title {
     font-size: 0.9375rem;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--text);
     margin: 0 0 0.25rem;
   }
@@ -1185,31 +1428,45 @@
     margin: 0 0 0.25rem;
   }
 
-  .success-note {
+  .success-view-btn {
+    margin-top: 0.625rem;
+    display: inline-flex;
+    padding: 0.45rem 0.875rem;
     font-size: 0.8125rem;
-    color: var(--text-muted);
-    margin: 0;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent-text);
+    cursor: pointer;
+    transition: background var(--transition);
+  }
+  .success-view-btn:hover {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
   }
 
   /* ── Claim pending ────────────────────────────────────────────────────────── */
   .claim-pending {
     display: flex;
     align-items: flex-start;
-    gap: 0.75rem;
+    gap: 0.875rem;
+    padding: 1.25rem;
   }
 
   .pending-dot {
-    color: #d97706;
-    font-size: 0.5rem;
-    margin-top: 0.3rem;
+    width: 0.625rem;
+    height: 0.625rem;
+    border-radius: 50%;
+    background: #d97706;
     flex-shrink: 0;
+    margin-top: 0.25rem;
   }
 
   .pending-title {
     font-size: 0.875rem;
-    font-weight: 600;
+    font-weight: 700;
     color: #d97706;
-    margin: 0 0 0.25rem;
+    margin: 0 0 0.3rem;
   }
 
   .pending-note {
@@ -1218,15 +1475,87 @@
     margin: 0;
   }
 
+  /* ── About section ────────────────────────────────────────────────────────── */
+  .about-section {
+    margin-bottom: 1.75rem;
+  }
+
+  .section-heading {
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 0.875rem;
+    letter-spacing: -0.01em;
+  }
+
+  .about-text {
+    font-size: 0.9375rem;
+    line-height: 1.75;
+    color: var(--text-secondary);
+    margin: 0;
+    white-space: pre-wrap;
+  }
+
+  /* ── Venue section ────────────────────────────────────────────────────────── */
+  .venue-section {
+    margin-bottom: 1.75rem;
+  }
+
+  .venue-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+  }
+
+  .venue-info { min-width: 0; flex: 1; }
+
+  .venue-name {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    line-height: 1.4;
+  }
+
+  .maps-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.45rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    text-decoration: none;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: all var(--transition);
+  }
+  .maps-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+    background: var(--bg-elevated);
+  }
+
   /* ── Responsive ───────────────────────────────────────────────────────────── */
   @media (max-width: 480px) {
-    .series-card { flex-wrap: wrap; }
-    .series-action { width: 100%; }
-    .select-btn { display: block; text-align: center; width: 100%; }
-    .banner-wrap { height: 160px; }
-    .event-title { font-size: 1.375rem; }
-    .claim-section { padding: 1.125rem; }
-    .claim-actions { flex-direction: column; }
-    .claim-btn { text-align: center; }
+    .event-title { font-size: 1.5rem; }
+    .ticket-row { padding: 0.875rem 1rem; }
+    .tickets-heading { padding: 1rem 1rem 0.875rem; }
+    .tickets-footer { padding: 0.875rem 1rem 1rem; }
+    .claim-panel-header { padding: 0.875rem 1rem; }
+    .form-fields { padding: 1rem 1rem 0; }
+    .claim-actions { padding: 1rem 1rem 0; }
+    .encrypt-note { padding: 0.625rem 1rem 0; }
+    .availability-note { padding: 0.375rem 1rem 1rem; }
+    .venue-card { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
+    .maps-btn { width: 100%; justify-content: center; }
   }
 </style>

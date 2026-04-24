@@ -19,6 +19,7 @@ import { profiles } from "./routes/profiles.js";
 import { broadcast } from "./routes/broadcast.js";
 import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
+import { tickets } from "./routes/tickets.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -315,6 +316,9 @@ app.route("/api/stripe", stripeRoutes);
 
 // Profile routes
 app.route("/api/profile", profiles);
+
+// Ticket actions (send email, etc.)
+app.route("/api/tickets", tickets);
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);

@@ -17,12 +17,15 @@ import {
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
-import { PLATFORM_FEE_BP } from "@woco/shared";
+import { queueSeriesClaim } from "./claims.js";
+import { PLATFORM_FEE_BP, sealJson } from "@woco/shared";
 import type { SealedBox } from "@woco/shared";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { readFeedPage, writeFeedPage, decodeJsonFeed, encodeJsonFeed } from "../lib/swarm/feeds.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
 import type { ClaimersFeed } from "@woco/shared";
+import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
+import { sendTicketEmail } from "./tickets.js";
 
 const stripe = new Hono<AppEnv>();
 
@@ -44,35 +47,56 @@ const stripe = new Hono<AppEnv>();
  * in ALLOWED_HOSTS exactly to prevent open-redirect attacks via spoofed
  * Referer/Origin.
  */
+/**
+ * Validate a client-supplied return URL and return it (minus query/hash/trailing
+ * slash) if its host is in ALLOWED_HOSTS. Preserves the path — required for
+ * Swarm-served frontends at /bzz/{hash}/ where the origin alone 404s.
+ */
+function validateReturnUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const allowed = process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean) ?? [];
+  try {
+    const u = new URL(raw);
+    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    if (!isLocal && !allowed.some((h) => u.host === h)) return null;
+    const path = u.pathname.replace(/\/$/, "");
+    return `${u.protocol}//${u.host}${path}`;
+  } catch {
+    return null;
+  }
+}
+
 function getFrontendUrl(c?: { req: { header: (name: string) => string | undefined } }): string {
   const allowed = process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean) ?? [];
-  /** Treat a candidate origin as trusted, returning the canonical origin string. */
-  const trust = (raw: string | undefined): string | null => {
+  /**
+   * Trust a candidate URL and return the base the frontend is served from.
+   * `keepPath` preserves the pathname (minus trailing slash) — required for
+   * Swarm-served frontends at `/bzz/{hash}/` where the origin alone is 404.
+   */
+  const trust = (raw: string | undefined, keepPath: boolean): string | null => {
     if (!raw) return null;
     try {
       const u = new URL(raw);
-      // Localhost in dev — any port
-      if (u.hostname === "localhost" || u.hostname === "127.0.0.1") {
-        return `${u.protocol}//${u.host}`;
-      }
-      // Otherwise must match ALLOWED_HOSTS exactly (host = hostname:port)
-      if (allowed.some((h) => u.host === h)) {
-        return `${u.protocol}//${u.host}`;
-      }
-      return null;
+      const host = u.hostname;
+      const isLocal = host === "localhost" || host === "127.0.0.1";
+      if (!isLocal && !allowed.some((h) => u.host === h)) return null;
+      if (!keepPath) return `${u.protocol}//${u.host}`;
+      // Drop trailing slash so callers can append `/#/...` without doubling up.
+      const path = u.pathname.replace(/\/$/, "");
+      return `${u.protocol}//${u.host}${path}`;
     } catch {
       return null;
     }
   };
 
-  // 1. Referer (full URL — extract the origin from it)
+  // 1. Referer — preserve path (Swarm sites live at /bzz/{hash}/)
   const referer = c?.req.header("referer");
-  const fromReferer = trust(referer);
+  const fromReferer = trust(referer, true);
   if (fromReferer) return fromReferer;
 
-  // 2. Origin
+  // 2. Origin — path-less, only trustworthy as a fallback
   const origin = c?.req.header("origin");
-  const fromOrigin = trust(origin);
+  const fromOrigin = trust(origin, false);
   if (fromOrigin) return fromOrigin;
 
   // 3. Explicit env var
@@ -249,6 +273,47 @@ stripe.get("/account-status", requireAuth, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// 1a. Pre-upload an encrypted order to Swarm and return its ref.
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/stripe/prepare-order
+ *
+ * Body: { encryptedOrder: SealedBox }
+ * Returns: { ok: true, orderRef: Hex64 }
+ *
+ * Called by the client immediately before /create-checkout. The returned
+ * orderRef is passed to /create-checkout, stored in the Stripe session
+ * metadata, and attached by the webhook to every ticket in the batch.
+ *
+ * This eliminates the post-return save-order race: by the time the webhook
+ * fires, the full form data is already on Swarm, so every claim in a multi-
+ * ticket batch gets the same orderRef with zero coordination.
+ */
+stripe.post("/prepare-order", async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "Invalid JSON" }, 400);
+  }
+
+  const encryptedOrder = body.encryptedOrder as SealedBox | undefined;
+  if (!encryptedOrder || typeof encryptedOrder !== "object") {
+    return c.json({ ok: false, error: "encryptedOrder is required" }, 400);
+  }
+
+  try {
+    const orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
+    return c.json({ ok: true, orderRef });
+  } catch (err) {
+    console.error("[stripe/prepare-order] Upload failed:", err);
+    const msg = err instanceof Error ? err.message : "Failed to upload order";
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 2. Attendee checkout — create a Stripe Checkout Session
 // ---------------------------------------------------------------------------
 
@@ -270,6 +335,12 @@ stripe.get("/account-status", requireAuth, async (c) => {
  * arbitrary address and bind a charge to a wallet they don't control.
  */
 stripe.post("/create-checkout", async (c) => {
+  // Phase A instrumentation — log span durations so we can see exactly where
+  // the 3-5s perceived latency sits (Swarm event read vs Stripe API roundtrip).
+  const t0 = performance.now();
+  const span = (label: string, since: number) =>
+    `${label}=${(performance.now() - since).toFixed(0)}ms`;
+
   // Read raw body once — we need the exact bytes for canonical sig verification.
   const rawBody = await c.req.text();
   let body: Record<string, unknown>;
@@ -279,15 +350,33 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, quantity: rawQty, orderRef, encryptedOrder } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
+    returnUrl?: string;
+    quantity?: number;
+    orderRef?: string;
+    encryptedOrder?: SealedBox;
   };
+  const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
 
   if (!eventId || !seriesId) {
     return c.json({ ok: false, error: "eventId and seriesId are required" }, 400);
   }
+
+  // Validate pre-uploaded order ref — must be a 64-char hex string (Swarm ref).
+  // Anything else is silently ignored; never echoed to Stripe metadata as-is.
+  const preUploadedRef =
+    typeof orderRef === "string" && /^[0-9a-f]{64}$/i.test(orderRef)
+      ? orderRef.toLowerCase()
+      : undefined;
+
+  // Inline encrypted order (fallback path when client didn't pre-upload).
+  // We'll upload in parallel with the event/status reads so Swarm latency
+  // hides behind the reads.
+  const shouldUploadInline =
+    !preUploadedRef && encryptedOrder && typeof encryptedOrder === "object";
 
   // Soft auth: if session headers are present, verify them. Malformed auth
   // headers are rejected — never silently fall through to anonymous path.
@@ -304,8 +393,33 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
   }
 
-  // Load event + series
-  const event = await getEvent(eventId);
+  // Load event + availability check + (optionally) upload encrypted order in parallel.
+  // Swarm upload is the slowest link (~3–10s cold); running it alongside event/status
+  // reads hides its latency behind reads we'd be doing anyway.
+  const userEmailHash = claimerEmail ? hashEmail(claimerEmail) : undefined;
+  const tSwarm = performance.now();
+  const [event, statusResult, inlineUploadedRef] = await Promise.all([
+    getEvent(eventId),
+    getClaimStatus(seriesId, verifiedAddress, userEmailHash).catch((err) => {
+      // Swarm read failure — non-fatal; webhook will re-check on claim.
+      console.warn("[stripe/create-checkout] Availability pre-check failed (continuing):", err);
+      return null;
+    }),
+    shouldUploadInline
+      ? uploadToBytes(JSON.stringify(encryptedOrder)).catch((err) => {
+          // Inline upload failure is non-fatal — webhook falls back to the
+          // minimal server-built seal so attendee still gets a ticket.
+          console.warn("[stripe/create-checkout] Inline order upload failed (continuing):", err);
+          return null as string | null;
+        })
+      : Promise.resolve(null as string | null),
+  ]);
+  const swarmMs = performance.now() - tSwarm;
+
+  // Final ref we'll stamp into Stripe session metadata. Prefer client pre-upload
+  // (fast path — client already did the work before clicking Pay).
+  const finalOrderRef = preUploadedRef ?? (inlineUploadedRef ?? undefined);
+
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);
@@ -320,30 +434,17 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid price" }, 400);
   }
 
-  // Pre-flight availability + duplicate check.
-  // Without this, a buyer could be charged successfully but the post-payment
-  // claim fails because tickets sold out (or they already own one) — leaving
-  // them out-of-pocket with no ticket. Note: this is best-effort — between
-  // this check and the webhook firing, supply could still drop to zero. The
-  // window is small (~5-30s) but a production system should also auto-refund
-  // when handleSuccessfulPayment fails to claim. (TODO in webhook handler.)
-  try {
-    const userEmailHash = claimerEmail ? hashEmail(claimerEmail) : undefined;
-    const status = await getClaimStatus(seriesId, verifiedAddress, userEmailHash);
-    if (status.available <= 0) {
+  // Pre-flight availability + duplicate check (best-effort — result from parallel fetch above).
+  if (statusResult) {
+    if (statusResult.available <= 0) {
       return c.json({ ok: false, error: "Sold out" }, 409);
     }
     // Paid Stripe series allow multi-purchase (each payment_intent is unique).
     // Only block a repeat if approval is required — that's a pending-request
     // spam gate, not a paid-ticket gate.
-    if (status.userEdition != null && series.approvalRequired) {
+    if (statusResult.userEdition != null && series.approvalRequired) {
       return c.json({ ok: false, error: "You already have a ticket for this series" }, 409);
     }
-  } catch (err) {
-    // Series not found / Swarm read fail — fall through. The series existence
-    // check above already passed, so a transient read failure shouldn't block
-    // the buyer; the webhook will re-check.
-    console.warn("[stripe/create-checkout] Availability pre-check failed (continuing):", err);
   }
 
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"
@@ -380,10 +481,13 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Event organiser has not completed Stripe onboarding" }, 400);
   }
 
-  const frontendUrl = getFrontendUrl(c);
+  // Prefer client-supplied returnUrl (preserves Swarm /bzz/{hash}/ path that
+  // browsers strip from the Referer cross-origin). Falls back to Referer/Origin.
+  const frontendUrl = validateReturnUrl(returnUrl) ?? getFrontendUrl(c);
 
   try {
     const s = getStripe();
+    const tStripe = performance.now();
     const session = await s.checkout.sessions.create({
       mode: "payment",
       line_items: [
@@ -396,11 +500,11 @@ stripe.post("/create-checkout", async (c) => {
             },
             unit_amount: chargeAmount,
           },
-          quantity: 1,
+          quantity,
         },
       ],
       payment_intent_data: {
-        application_fee_amount: applicationFee,
+        application_fee_amount: applicationFee * quantity,
         transfer_data: {
           destination: organiserRecord.stripeAccountId,
         },
@@ -412,11 +516,25 @@ stripe.post("/create-checkout", async (c) => {
         // Server-vouched: only set from a verified session, never from the body.
         // The webhook trusts this field because we wrote it.
         claimerAddress: verifiedAddress || "",
+        quantity: String(quantity),
+        // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
+        //  - client pre-uploaded during form typing and passed `orderRef`, or
+        //  - we just uploaded it inline (above) in parallel with the other reads.
+        // Either way, the webhook attaches this ref to every ticket in the batch,
+        // so multi-ticket orders never end up with empty attendee data.
+        ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
       },
       success_url: `${frontendUrl}/#/event/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/#/event/${eventId}?stripe=cancelled`,
       ...(claimerEmail ? { customer_email: claimerEmail } : {}),
     });
+    const stripeMs = performance.now() - tStripe;
+
+    console.log(
+      `[stripe/create-checkout] timings — swarm=${swarmMs.toFixed(0)}ms ` +
+      `stripe-api=${stripeMs.toFixed(0)}ms ${span("total", t0)} ` +
+      `(eventId=${eventId.slice(0, 8)} qty=${quantity})`,
+    );
 
     return c.json({ ok: true, url: session.url });
   } catch (err) {
@@ -459,7 +577,11 @@ stripe.post("/webhook", async (c) => {
       let lastErr: unknown = null;
       for (const secret of secrets) {
         try {
-          verified = s.webhooks.constructEvent(rawBody, sig, secret);
+          // Tolerance of 3600s (1 hour) allows Stripe's retry schedule to
+          // succeed even if our server was slow/down during the first delivery.
+          // The session registry (checkAndConsumeSession) prevents any
+          // already-processed event from being acted on a second time.
+          verified = s.webhooks.constructEvent(rawBody, sig, secret, 3600);
           break;
         } catch (err) {
           lastErr = err;
@@ -488,7 +610,23 @@ stripe.post("/webhook", async (c) => {
     case "checkout.session.completed": {
       const session = event.data.object;
       if (session.payment_status === "paid") {
-        await handleSuccessfulPayment(session);
+        // Deduplicate before doing any work. Both the platform and connected-accounts
+        // webhooks can deliver the same event; Stripe also retries on any non-2xx.
+        // Consuming the session ID here (synchronously, before returning 200) ensures
+        // we process each confirmed payment exactly once.
+        if (!checkAndConsumeSession(session.id)) {
+          console.log(`[stripe-webhook] Session ${session.id} already processed — skipping duplicate delivery`);
+          break;
+        }
+
+        // Return 200 to Stripe immediately — Stripe best practice.
+        // Stripe's delivery timeout is 30 s; our Swarm writes take 10–25 s.
+        // The payment is already confirmed (payment_status === "paid") — the
+        // Swarm writes are the result of that confirmation, not a prerequisite.
+        // Errors are logged; unrecoverable failures auto-refund inside the handler.
+        void handleSuccessfulPayment(session, event.created).catch((err) => {
+          console.error("[stripe-webhook] Background claim failed:", err);
+        });
       }
       break;
     }
@@ -510,23 +648,31 @@ stripe.post("/webhook", async (c) => {
 });
 
 /**
- * Handle a successful Checkout Session — claim the ticket for the attendee.
+ * Handle a successful Checkout Session — claim ticket(s) for the attendee.
+ *
+ * Uses the per-series queue (same as the /claim endpoint) to prevent two
+ * concurrent webhooks from racing to claim the same slot.
+ *
+ * @param webhookEventCreated - Stripe event.created Unix timestamp (seconds).
+ *   Used as claimedAt so the dashboard shows the actual payment time, not the
+ *   webhook-processing time.
  */
 async function handleSuccessfulPayment(
   session: import("stripe").Stripe.Checkout.Session,
+  webhookEventCreated: number,
 ): Promise<void> {
-  const { eventId, seriesId, claimerEmail, claimerAddress } = session.metadata ?? {};
+  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef } = session.metadata ?? {};
 
   if (!eventId || !seriesId) {
     console.error("[stripe-webhook] Missing eventId/seriesId in session metadata");
     return;
   }
 
+  const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
+  const claimedAt = new Date(webhookEventCreated * 1000).toISOString();
+
   let identifier: ClaimIdentifier;
   if (claimerAddress) {
-    // Dual-identity when Stripe also gave us an email: record both so dedup
-    // catches future wallet OR email claims, and the organiser dashboard can
-    // contact the attendee.
     identifier = {
       type: "wallet",
       address: claimerAddress.toLowerCase() as `0x${string}`,
@@ -545,57 +691,118 @@ async function handleSuccessfulPayment(
     return;
   }
 
+  // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
+  // via session metadata). Falls back to a minimal server-built seal for the
+  // edge case where the browser skipped pre-upload (e.g. offline at checkout).
+  const prefetchedOrderRef =
+    typeof metaOrderRef === "string" && /^[0-9a-f]{64}$/i.test(metaOrderRef)
+      ? metaOrderRef.toLowerCase()
+      : undefined;
+
+  let encryptedOrder: SealedBox | undefined;
+  let eventTitle = "";
+  let eventDate = "";
+  let eventLocation = "";
+  let seriesName = "";
+  let totalSupply = 0;
   try {
-    // Stripe only ever fires for paid tickets. Mark the claim as paid so
-    // claim-service skips the single-purchase-per-identifier rule and lets
-    // the same attendee buy multiple editions of the same series. Each
-    // Stripe checkout is its own payment_intent, so replay is impossible.
-    // (Approval-required paid series don't use the Stripe flow — payment is
-    // only taken after approval — so we don't need to gate by that here.)
-    const result = await claimTicket({
-      seriesId,
-      identifier,
-      via: "stripe",
-      paid: true,
-    });
-    console.log(`[stripe-webhook] Ticket claimed: series=${seriesId}, edition=${result.edition}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[stripe-webhook] Failed to claim ticket:", msg);
-
-    // Auto-refund for unrecoverable race conditions: the buyer paid, but the
-    // ticket can't be issued because someone else got the last one or this
-    // buyer somehow already has one. Without this they're charged and have
-    // nothing to show for it.
-    const isUnrecoverable =
-      msg.includes("Already claimed") ||
-      msg.includes("Already requested") ||
-      msg.includes("No tickets available") ||
-      msg.includes("Series not found") ||
-      msg.includes("Series has no metadata");
-
-    if (isUnrecoverable && session.payment_intent) {
-      try {
-        const s = getStripe();
-        const piId = typeof session.payment_intent === "string"
-          ? session.payment_intent
-          : session.payment_intent.id;
-        const refund = await s.refunds.create({
-          payment_intent: piId,
-          reason: "requested_by_customer",
-          metadata: {
-            reason: "ticket-claim-failed",
-            failureMessage: msg.slice(0, 200),
-            seriesId,
-            eventId,
-          },
+    const ev = await getEvent(eventId);
+    if (ev) {
+      eventTitle = ev.title;
+      eventDate = ev.startDate;
+      eventLocation = ev.location ?? "";
+      const ser = ev.series.find((s) => s.seriesId === seriesId);
+      if (ser) { seriesName = ser.name; totalSupply = ser.totalSupply; }
+      if (!prefetchedOrderRef && ev.encryptionKey) {
+        // Fallback minimal seal — only when no pre-uploaded ref is available.
+        encryptedOrder = await sealJson(ev.encryptionKey, {
+          seriesId,
+          ...(claimerEmail ? { claimerEmail } : {}),
+          ...(claimerAddress ? { claimerAddress: claimerAddress.toLowerCase() } : {}),
         });
-        console.log(`[stripe-webhook] Auto-refunded ${piId} (refund=${refund.id}) — ${msg}`);
-      } catch (refundErr) {
-        console.error("[stripe-webhook] Auto-refund FAILED — manual intervention required:", refundErr);
       }
     }
-    // TODO: for transient errors (Swarm down etc), queue for retry
+  } catch (err) {
+    console.warn("[stripe-webhook] Could not build encrypted order (non-fatal):", err);
+  }
+
+  const claimedResults: Array<{ edition: number; qrContent: string }> = [];
+
+  for (let i = 0; i < quantity; i++) {
+    const ticketNum = quantity > 1 ? ` (${i + 1}/${quantity})` : "";
+    try {
+      const result = await queueSeriesClaim(seriesId, () =>
+        claimTicket({
+          seriesId,
+          identifier,
+          via: "stripe",
+          paid: true,
+          claimedAt,
+          // Pre-uploaded full-form ref (from client) wins. Otherwise fall back
+          // to the minimal seal built above. Every ticket in the batch ends up
+          // with the same orderRef so dashboard rows are never blank.
+          ...(prefetchedOrderRef
+            ? { orderRef: prefetchedOrderRef }
+            : { encryptedOrder }),
+        }),
+      );
+      console.log(`[stripe-webhook] Ticket claimed${ticketNum}: series=${seriesId}, edition=${result.edition}`);
+      if (result.originalSignature) {
+        claimedResults.push({
+          edition: result.edition,
+          qrContent: `woco://t/${eventId}/${seriesId}/${result.edition}/${result.originalSignature}`,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[stripe-webhook] Failed to claim ticket${ticketNum}:`, msg);
+
+      const isUnrecoverable =
+        msg.includes("Already claimed") ||
+        msg.includes("Already requested") ||
+        msg.includes("No tickets available") ||
+        msg.includes("Series not found") ||
+        msg.includes("Series has no metadata");
+
+      if (isUnrecoverable && session.payment_intent) {
+        try {
+          const s = getStripe();
+          const piId = typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent.id;
+          const refund = await s.refunds.create({
+            payment_intent: piId,
+            reason: "requested_by_customer",
+            metadata: {
+              reason: "ticket-claim-failed",
+              failureMessage: msg.slice(0, 200),
+              seriesId,
+              eventId,
+            },
+          });
+          console.log(`[stripe-webhook] Auto-refunded ${piId} (refund=${refund.id}) — ${msg}`);
+        } catch (refundErr) {
+          console.error("[stripe-webhook] Auto-refund FAILED — manual intervention required:", refundErr);
+        }
+      }
+      // Stop claiming further tickets in the batch if we hit an unrecoverable error
+      if (isUnrecoverable) break;
+    }
+  }
+
+  // Auto-send confirmation email with all claimed tickets if we have an email address
+  if (claimerEmail && claimedResults.length > 0 && eventTitle) {
+    sendTicketEmail({
+      to: claimerEmail,
+      eventTitle,
+      eventDate,
+      eventLocation,
+      seriesName,
+      totalSupply,
+      tickets: claimedResults,
+    }).catch((err) => {
+      console.error("[stripe-webhook] Auto-email failed (non-fatal):", err);
+    });
   }
 }
 
@@ -620,11 +827,12 @@ stripe.post("/save-order", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { seriesId, encryptedOrder, claimerEmail, claimerAddress } = body as {
+  const { seriesId, encryptedOrder, claimerEmail, claimerAddress, expectedEditions } = body as {
     seriesId: string;
     encryptedOrder: SealedBox;
     claimerEmail?: string;
     claimerAddress?: string;
+    expectedEditions?: number;
   };
 
   if (!seriesId || !encryptedOrder) {
@@ -634,40 +842,79 @@ stripe.post("/save-order", async (c) => {
     return c.json({ ok: false, error: "claimerEmail or claimerAddress is required" }, 400);
   }
 
+  // Expected number of entries we must see in the claimers feed before writing
+  // — must match the quantity Stripe charged for. Defaults to 1 for legacy
+  // single-ticket calls that don't send the field.
+  const expected = Math.max(
+    1,
+    Math.min(10, Number.isInteger(expectedEditions) ? expectedEditions as number : 1),
+  );
+
   // Determine the claimer key (must match what claim-service wrote)
   const claimerKey = claimerAddress
     ? claimerAddress.toLowerCase()
     : `email:${hashEmail(claimerEmail!)}`;
 
   try {
-    // Upload encrypted order to Swarm
+    // Upload encrypted order to Swarm first (outside the queue — no feed access needed)
     const orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
-    console.log(`[stripe/save-order] Encrypted order uploaded: ${orderRef}`);
+    console.log(`[stripe/save-order] Encrypted order uploaded: ${orderRef} (expected=${expected})`);
 
-    // Read claimers feed and find the matching entry
-    const page = await readFeedPage(topicClaimers(seriesId));
-    if (!page) {
-      return c.json({ ok: false, error: "Claimers feed not found — ticket may not have been claimed yet" }, 404);
+    // Poll for expected entries OUTSIDE the queue so we don't block the very
+    // webhook claim writes we're waiting on. Previously this loop ran INSIDE
+    // queueSeriesClaim, which starved the queued claims and guaranteed a 30s
+    // timeout whenever save-order fired before the webhook finished.
+    //
+    // Note: this path is now mostly a no-op for Stripe flows that pre-upload
+    // via /prepare-order — the webhook already attaches the full orderRef.
+    // Kept as a backward-compat fallback (old clients) and for wallet-mode
+    // edge cases where the encrypted order wasn't prepared pre-redirect.
+    let observed = 0;
+    const retryDelays = [1000, 2000, 3000, 5000, 8000, 11000];
+    for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, retryDelays[attempt - 1]));
+      }
+      const page = await readFeedPage(topicClaimers(seriesId));
+      if (!page) continue;
+      const feed = decodeJsonFeed<ClaimersFeed>(page);
+      if (!feed) continue;
+      observed = feed.claimers.filter(
+        (e) => e.claimerAddress.toLowerCase() === claimerKey.toLowerCase(),
+      ).length;
+      if (observed >= expected) break;
     }
 
-    const feed = decodeJsonFeed<ClaimersFeed>(page);
-    if (!feed) {
-      return c.json({ ok: false, error: "Failed to decode claimers feed" }, 500);
+    if (observed === 0) {
+      throw new Error("Claimer entry not found — ticket may not have been claimed yet");
+    }
+    if (observed < expected) {
+      console.warn(
+        `[stripe/save-order] Only ${observed}/${expected} entries visible after retries — ` +
+        `attaching orderRef to what we have`,
+      );
     }
 
-    const entry = feed.claimers.find(
-      (e) => e.claimerAddress.toLowerCase() === claimerKey.toLowerCase(),
-    );
-    if (!entry) {
-      return c.json({ ok: false, error: "Claimer entry not found — ticket may not have been claimed yet" }, 404);
-    }
+    // Now enter the queue for a quick read-modify-write. Claims 2..N that were
+    // queued before or after us will each read/write the feed; our write is
+    // atomic relative to theirs.
+    let matchCount = 0;
+    await queueSeriesClaim(seriesId, async () => {
+      const page = await readFeedPage(topicClaimers(seriesId));
+      const feed = page ? decodeJsonFeed<ClaimersFeed>(page) : null;
+      if (!feed) throw new Error("Claimers feed not found");
 
-    // Attach order data
-    entry.orderRef = orderRef;
-    feed.updatedAt = new Date().toISOString();
-    await writeFeedPage(topicClaimers(seriesId), encodeJsonFeed(feed));
+      for (const e of feed.claimers) {
+        if (e.claimerAddress.toLowerCase() === claimerKey.toLowerCase()) {
+          e.orderRef = orderRef;
+          matchCount++;
+        }
+      }
+      feed.updatedAt = new Date().toISOString();
+      await writeFeedPage(topicClaimers(seriesId), encodeJsonFeed(feed));
+    });
 
-    console.log(`[stripe/save-order] Order data attached to claimer ${claimerKey}, series ${seriesId}`);
+    console.log(`[stripe/save-order] Order data attached to ${matchCount} claimer entries for ${claimerKey}, series ${seriesId}`);
     return c.json({ ok: true });
   } catch (err) {
     console.error("[stripe/save-order] Failed:", err);

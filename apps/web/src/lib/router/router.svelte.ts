@@ -11,13 +11,16 @@ function parseHash(): string {
   return hash.replace(/^#/, "") || "/";
 }
 
-function matchRoute(path: string): { route: string; params: Record<string, string> } {
+function matchRoute(pathWithQuery: string): { route: string; params: Record<string, string> } {
+  const qIdx = pathWithQuery.indexOf("?");
+  const path = qIdx === -1 ? pathWithQuery : pathWithQuery.slice(0, qIdx);
   if (path === "/" || path === "") return { route: "home", params: {} };
   if (path === "/create") return { route: "create", params: {} };
   if (path === "/my-tickets") return { route: "my-tickets", params: {} };
   if (path === "/dashboard") return { route: "dashboard-index", params: {} };
   if (path === "/site-builder") return { route: "site-builder", params: {} };
   if (path === "/profile") return { route: "profile", params: {} };
+  if (path === "/verify") return { route: "verify", params: {} };
   if (path === "/stripe/return") return { route: "stripe-return", params: {} };
   if (path === "/stripe/refresh") return { route: "stripe-refresh", params: {} };
 

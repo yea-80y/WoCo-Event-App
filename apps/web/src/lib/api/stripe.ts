@@ -47,6 +47,26 @@ export async function getStripeAccountStatus(): Promise<StripeAccountStatus> {
 }
 
 /**
+ * Pre-upload the encrypted order payload to Swarm and return the ref.
+ *
+ * Called BEFORE createCheckoutSession — the returned ref is passed in the
+ * checkout body, stored in Stripe session metadata, and attached by the
+ * webhook to every ticket in the batch. This eliminates the post-return
+ * save-order race that was leaving multi-ticket purchases without attendee
+ * data on the dashboard.
+ */
+export async function prepareStripeOrder(encryptedOrder: SealedBox): Promise<string> {
+  const resp = await fetch(`${apiBase}/api/stripe/prepare-order`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ encryptedOrder }),
+  });
+  const data = await resp.json() as { ok: boolean; orderRef?: string; error?: string };
+  if (!data.ok || !data.orderRef) throw new Error(data.error || "Failed to prepare order");
+  return data.orderRef;
+}
+
+/**
  * Create a Stripe Checkout Session for an attendee to pay for a ticket.
  *
  * When the user is logged in (any auth kind), the request is signed so the
@@ -60,11 +80,28 @@ export async function createCheckoutSession(params: {
   eventId: string;
   seriesId: string;
   claimerEmail?: string;
+  quantity?: number;
+  orderRef?: string;
+  /** Raw encrypted order — server uploads in parallel with Stripe session
+   *  creation when no pre-uploaded ref is available. */
+  encryptedOrder?: SealedBox;
 }): Promise<{ url: string }> {
+  // Browsers strip the Referer path cross-origin (strict-origin-when-cross-origin),
+  // so the server can't derive our full base. Pass it explicitly; server validates
+  // the host against ALLOWED_HOSTS before using it as the redirect base.
+  const returnUrl =
+    typeof window !== "undefined"
+      ? window.location.href.split("#")[0].split("?")[0]
+      : undefined;
+
   const body = {
     eventId: params.eventId,
     seriesId: params.seriesId,
     ...(params.claimerEmail ? { claimerEmail: params.claimerEmail } : {}),
+    ...(params.quantity && params.quantity > 1 ? { quantity: params.quantity } : {}),
+    ...(params.orderRef ? { orderRef: params.orderRef } : {}),
+    ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
+    ...(returnUrl ? { returnUrl } : {}),
   };
 
   if (auth.isConnected) {
@@ -84,12 +121,19 @@ export async function createCheckoutSession(params: {
   return { url: data.url };
 }
 
-/** Save encrypted order data after successful Stripe payment */
+/** Save encrypted order data after successful Stripe payment.
+ *
+ * `expectedEditions` is the number of tickets the user paid for. The server
+ * uses it to wait until ALL claims for this batch have been written to the
+ * claimers feed before attaching the orderRef — otherwise the post-Stripe
+ * webhook may still be mid-way through a multi-ticket claim and save-order
+ * would attach orderRef only to the already-written entries. */
 export async function saveStripeOrder(params: {
   seriesId: string;
   encryptedOrder: SealedBox;
   claimerEmail?: string;
   claimerAddress?: string;
+  expectedEditions?: number;
 }): Promise<void> {
   const resp = await fetch(`${apiBase}/api/stripe/save-order`, {
     method: "POST",

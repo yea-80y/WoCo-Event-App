@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { Resend } from "resend";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent } from "../lib/event/service.js";
+import { getResend, getFromAddress } from "../lib/email/client.js";
 
 const broadcast = new Hono<AppEnv>();
 
@@ -21,12 +21,11 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
 
   try {
     // 1. Check Resend is configured
-    const apiKey = process.env.RESEND_API_KEY;
-    if (!apiKey) {
+    let resend: ReturnType<typeof getResend>;
+    try { resend = getResend(); } catch {
       return c.json({ ok: false, error: "Email not configured (RESEND_API_KEY missing)" }, 500);
     }
-
-    const fromAddress = process.env.RESEND_FROM || "events@woco-net.com";
+    const fromAddress = getFromAddress();
 
     // 2. Load event and verify organiser ownership
     const event = await getEvent(eventId);
@@ -76,7 +75,6 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
     }
 
     // 5. Send via Resend
-    const resend = new Resend(apiKey);
     let sentCount = 0;
     let failedCount = 0;
     const errors: string[] = [];

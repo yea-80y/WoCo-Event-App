@@ -1,13 +1,10 @@
 <script lang="ts">
-  import type { ClaimMode, OrderFieldType, SignedTicket, PaymentConfig, PaymentChainId, Hex0x } from "@woco/shared";
-  import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
+  import type { ClaimMode, OrderField, PaymentConfig } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { createEventStreaming, type PublishProgress } from "../../api/events.js";
   import { authPost } from "../../api/client.js";
-  import { createSeriesTickets } from "../../pod/signing.js";
-  import { restorePodSeed } from "../../auth/pod-identity.js";
-  import ImageUpload from "../events/ImageUpload.svelte";
+  import EventEditor from "../events/EventEditor.svelte";
+  import PublishButton from "../events/PublishButton.svelte";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../../api/domains.js";
   import { onMount } from "svelte";
 
@@ -25,6 +22,7 @@
     beeVersion: string | null;
     beePeers: number | null;
     beeError: string | null;
+    emailHashSecretSet: boolean;
   }
 
   // ── Wizard step ───────────────────────────────────────────────────────────────
@@ -40,90 +38,32 @@
   let checkResult = $state<SetupCheckResult | null>(null);
   let checkError = $state<string | null>(null);
 
-  // Step 3 — event creation
-  interface WaveItem {
-    id: string;
-    label: string;
-    totalSupply: number;
-    saleStart: string;
-    saleEnd: string;
-    showSaleWindow: boolean;
-  }
-
-  interface TierGroup {
-    id: string;
-    tierName: string;
+  // Step 3 — event creation (shared <EventEditor /> owns the inputs; <PublishButton /> handles the publish pipeline)
+  type SeriesDraft = {
+    seriesId: string;
+    name: string;
     description: string;
-    approvalRequired: boolean;
-    /** "none" = free, "redirect" = external URL, "crypto" = on-chain payment */
-    paymentMode: "none" | "redirect" | "crypto";
-    paymentRedirectUrl: string;
-    isPaid: boolean;
-    price: string;
-    currency: "USD" | "ETH" | "USDC";
-    acceptedChains: PaymentChainId[];
-    waves: WaveItem[];
-  }
-
-  interface FieldItem {
-    id: string;
-    type: OrderFieldType;
-    label: string;
-    required: boolean;
-    placeholder: string;
-    options: string[];
-    newOption: string;
-  }
+    totalSupply: number;
+    approvalRequired?: boolean;
+    wave?: string;
+    saleStart?: string;
+    saleEnd?: string;
+    payment?: PaymentConfig;
+  };
 
   let eventTitle = $state("");
   let eventDescription = $state("");
   let eventStartDate = $state("");
   let eventEndDate = $state("");
   let eventLocation = $state("");
-  let tierGroups = $state<TierGroup[]>([{
-    id: crypto.randomUUID(),
-    tierName: "General Admission",
-    description: "",
-    approvalRequired: false,
-    paymentMode: "none",
-    paymentRedirectUrl: "",
-    isPaid: false,
-    price: "",
-    currency: "USD",
-    acceptedChains: [8453] as PaymentChainId[],
-    waves: [{
-      id: crypto.randomUUID(),
-      label: "",
-      totalSupply: 100,
-      saleStart: "",
-      saleEnd: "",
-      showSaleWindow: false,
-    }],
-  }]);
-  let fieldItems = $state<FieldItem[]>([]);
-  let claimMode = $state<ClaimMode>("both");
   let eventImageDataUrl = $state<string | null>(null);
-  let creatingEvent = $state(false);
-  let createProgress = $state("");
-  let createError = $state<string | null>(null);
+  let eventSeries = $state<SeriesDraft[]>([]);
+  let eventOrderFields = $state<OrderField[]>([]);
+  let claimMode = $state<ClaimMode>("both");
+  let collectEmail = $state(false);
+  let collectInfo = $state(false);
+  let cryptoRecipientMissing = $state(false);
   let createdEventId = $state<string | null>(null);
-
-  // Step 3 — stored results (used by step 5 WoCo listing)
-  interface StoredSeries {
-    seriesId: string;
-    name: string;
-    description: string;
-    totalSupply: number;
-    approvalRequired: boolean;
-    wave?: string;
-    saleStart?: string;
-    saleEnd?: string;
-    paymentRedirectUrl?: string;
-    payment?: PaymentConfig;
-  }
-  let storedSeries = $state<StoredSeries[]>([]);
-  let storedSignedTickets = $state<Record<string, SignedTicket[]>>({});
-  let storedEncryptionKey = $state<string | undefined>(undefined);
 
   // Step 4 — site config
   let gatewayUrl = $state("https://gateway.woco-net.com");
@@ -209,6 +149,11 @@ BEE_URL=http://localhost:1633
 # and the gateway domain so attendees can claim from your live site.
 ALLOWED_HOSTS=${allowedHosts}
 
+# Required — generate with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+EMAIL_HASH_SECRET=<random-32-byte-hex>
+PAYMENT_QUOTE_SECRET=<random-32-byte-hex>
+
 # Optional
 PORT=3001`);
 
@@ -288,237 +233,14 @@ PORT=3001`);
   }
 
   // ── Step 3 helpers ───────────────────────────────────────────────────────────
-  function addTier() {
-    tierGroups.push({
-      id: crypto.randomUUID(),
-      tierName: "",
-      description: "",
-      approvalRequired: false,
-      paymentMode: "none",
-      paymentRedirectUrl: "",
-      isPaid: false,
-      price: "",
-      currency: "USD",
-      acceptedChains: [8453] as PaymentChainId[],
-      waves: [{
-        id: crypto.randomUUID(),
-        label: "",
-        totalSupply: 100,
-        saleStart: "",
-        saleEnd: "",
-        showSaleWindow: false,
-      }],
-    });
-  }
-
-  function removeTier(id: string) {
-    const idx = tierGroups.findIndex(t => t.id === id);
-    if (idx !== -1) tierGroups.splice(idx, 1);
-  }
-
-  function addWave(tierId: string) {
-    const tier = tierGroups.find(t => t.id === tierId);
-    if (tier) {
-      tier.waves.push({
-        id: crypto.randomUUID(),
-        label: "",
-        totalSupply: 100,
-        saleStart: "",
-        saleEnd: "",
-        showSaleWindow: false,
-      });
-    }
-  }
-
-  function removeWave(tierId: string, waveId: string) {
-    const tier = tierGroups.find(t => t.id === tierId);
-    if (tier) {
-      const idx = tier.waves.findIndex(w => w.id === waveId);
-      if (idx !== -1) tier.waves.splice(idx, 1);
-    }
-  }
-
-  function addField() {
-    fieldItems.push({
-      id: crypto.randomUUID(),
-      type: "text" as OrderFieldType,
-      label: "",
-      required: false,
-      placeholder: "",
-      options: [],
-      newOption: "",
-    });
-  }
-
-  function removeField(id: string) {
-    const idx = fieldItems.findIndex(f => f.id === id);
-    if (idx !== -1) fieldItems.splice(idx, 1);
-  }
-
-  function addOption(fieldId: string) {
-    const f = fieldItems.find(f => f.id === fieldId);
-    if (f && f.newOption.trim()) {
-      f.options.push(f.newOption.trim());
-      f.newOption = "";
-    }
-  }
-
-  function removeOption(fieldId: string, optIdx: number) {
-    const f = fieldItems.find(f => f.id === fieldId);
-    if (f) f.options.splice(optIdx, 1);
-  }
-
   // ── Step 3: event creation ────────────────────────────────────────────────────
-  async function createEvent() {
-    createError = null;
-
-    if (!auth.isConnected) {
-      const ok = await loginRequest.request();
-      if (!ok) return;
-    }
-
-    const sessionOk = await auth.ensureSession();
-    if (!sessionOk) { createError = "Session setup failed or was cancelled."; return; }
-
-    const podOk = await auth.ensurePodIdentity();
-    if (!podOk) { createError = "Identity setup failed or was cancelled."; return; }
-
-    creatingEvent = true;
-    createProgress = "Preparing tickets…";
-    try {
-      // Sign tickets for each series (same flow as PublishButton)
-      const keypair = await auth.getPodKeypair();
-      if (!keypair) { createError = "Could not get signing key"; creatingEvent = false; return; }
-
-      const signedTickets: Record<string, SignedTicket[]> = {};
-
-      // Flatten tier groups → individual series
-      const allSeries = tierGroups.flatMap(tier =>
-        tier.waves.map(wave => ({
-          seriesId: wave.id,
-          name: tier.waves.length > 1 && wave.label.trim()
-            ? `${tier.tierName.trim()} — ${wave.label.trim()}`
-            : tier.tierName.trim(),
-          description: tier.description.trim(),
-          totalSupply: wave.totalSupply,
-          approvalRequired: tier.approvalRequired,
-          ...(tier.waves.length > 1 && wave.label.trim() ? { wave: wave.label.trim() } : {}),
-          ...(wave.saleStart ? { saleStart: wave.saleStart } : {}),
-          ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
-          ...(tier.paymentMode === "redirect" && tier.paymentRedirectUrl.trim()
-            ? { paymentRedirectUrl: tier.paymentRedirectUrl.trim() }
-            : {}),
-          ...(tier.paymentMode === "crypto" && tier.isPaid && tier.price && parseFloat(tier.price) > 0
-            ? {
-                payment: {
-                  price: tier.price,
-                  currency: tier.currency,
-                  recipientAddress: (auth.parent?.toLowerCase() ?? "0x0") as Hex0x,
-                  acceptedChains: tier.acceptedChains,
-                  escrow: false,
-                } satisfies PaymentConfig,
-              }
-            : {}),
-        }))
-      );
-
-      const totalTickets = allSeries.reduce((sum, s) => sum + s.totalSupply, 0);
-      let signed = 0;
-
-      for (const s of allSeries) {
-        signedTickets[s.seriesId] = await createSeriesTickets({
-          eventId: "",
-          seriesId: s.seriesId,
-          seriesName: s.name,
-          totalSupply: s.totalSupply,
-          imageHash: "",
-          creatorPrivateKey: keypair.privateKey,
-          creatorPublicKeyHex: keypair.publicKeyHex,
-        });
-        signed += s.totalSupply;
-        createProgress = `Signing tickets (${signed}/${totalTickets})…`;
-      }
-
-      // Derive encryption keypair from POD seed (no extra prompts)
-      let encryptionKey: string | undefined;
-      const podSeed = await restorePodSeed();
-      if (podSeed) {
-        const encKeypair = deriveEncryptionKeypairFromPodSeed(podSeed);
-        encryptionKey = encKeypair.publicKeyHex;
-      }
-
-      createProgress = "Publishing to Swarm…";
-
-      const result = await createEventStreaming(
-        {
-          event: {
-            title: eventTitle.trim(),
-            description: eventDescription.trim(),
-            startDate: eventStartDate,
-            endDate: eventEndDate,
-            location: eventLocation.trim(),
-          },
-          series: allSeries,
-          signedTickets: Object.fromEntries(
-            allSeries.map(s => [s.seriesId, signedTickets[s.seriesId]])
-          ),
-          image: eventImageDataUrl!,
-          creatorAddress: auth.parent as `0x${string}`,
-          creatorPodKey: auth.podPublicKeyHex!,
-          encryptionKey,
-          claimMode,
-          skipAutoList: true,
-          orderFields: [
-            ...(claimMode !== "wallet" ? [
-              { id: "__email", type: "email" as const, label: "Email", required: claimMode === "email", placeholder: "your@email.com" },
-            ] : []),
-            ...fieldItems.map(f => ({
-              id: f.id,
-              type: f.type,
-              label: f.label.trim(),
-              required: f.required,
-              ...(f.placeholder.trim() ? { placeholder: f.placeholder.trim() } : {}),
-              ...(f.options.length > 0 ? { options: f.options } : {}),
-            })),
-          ],
-        },
-        (p: PublishProgress) => { createProgress = p.message; },
-        apiUrl,
-      );
-
-      if (result.ok && result.eventId) {
-        createdEventId = result.eventId;
-        // Store data for optional WoCo listing in step 5
-        storedSeries = allSeries;
-        storedSignedTickets = Object.fromEntries(
-          allSeries.map(s => [s.seriesId, signedTickets[s.seriesId]])
-        );
-        storedEncryptionKey = encryptionKey;
-        step = 4;
-      } else {
-        createError = result.error || "Event creation failed";
-      }
-    } catch (e) {
-      createError = e instanceof Error ? e.message : "Event creation failed";
-    } finally {
-      creatingEvent = false;
-      createProgress = "";
-    }
+  // Handled entirely by <EventEditor /> + <PublishButton />. Publish target is the
+  // organiser's own backend via `apiUrl`; skipAutoList=true keeps it off the WoCo
+  // directory until they opt in on step 5.
+  function onEventPublished(eventId: string) {
+    createdEventId = eventId;
+    step = 4;
   }
-
-  const step3Valid = $derived(
-    !!eventTitle.trim() &&
-    !!eventStartDate &&
-    !!eventEndDate &&
-    eventStartDate <= eventEndDate &&
-    !!eventImageDataUrl &&
-    tierGroups.length > 0 &&
-    tierGroups.every(t =>
-      !!t.tierName.trim() &&
-      t.waves.length > 0 &&
-      t.waves.every(w => w.totalSupply >= 1)
-    )
-  );
 
   // ── Step 5: deploy ────────────────────────────────────────────────────────────
 
@@ -859,9 +581,22 @@ cp apps/server/.env.example apps/server/.env
               {/if}
             </div>
           </div>
+
+          <!-- EMAIL_HASH_SECRET -->
+          <div class="check-row" class:ok={checkResult.emailHashSecretSet} class:error={!checkResult.emailHashSecretSet}>
+            <span class="check-icon">{checkResult.emailHashSecretSet ? "✓" : "✗"}</span>
+            <div class="check-body">
+              <strong>EMAIL_HASH_SECRET</strong>
+              {#if checkResult.emailHashSecretSet}
+                <span>Set — email addresses will be HMAC-hashed before storage</span>
+              {:else}
+                <span>Not set — server will refuse to start. Generate and add to .env, then restart</span>
+              {/if}
+            </div>
+          </div>
         </div>
 
-        {#if !checkResult.signerConfigured || !checkResult.beeConnected}
+        {#if !checkResult.signerConfigured || !checkResult.beeConnected || !checkResult.emailHashSecretSet}
           <div class="check-note">
             Fix the errors above, then run the checks again. After updating .env, restart your server:
             <pre class="code">docker compose restart</pre>
@@ -886,8 +621,9 @@ cp apps/server/.env.example apps/server/.env
     <div class="step-content">
       <h2>Step 3 — Create your event</h2>
       <p class="step-intro">
-        Enter your event details. These will be signed with your identity and
-        stored on Swarm via your backend at <code class="inline-code">{apiUrl}</code>.
+        Event details are signed with your identity and stored on Swarm via your
+        backend at <code class="inline-code">{apiUrl}</code>. The event stays off
+        the WoCo directory until you opt in on step 5.
       </p>
 
       {#if !auth.isConnected}
@@ -897,351 +633,43 @@ cp apps/server/.env.example apps/server/.env
         </div>
       {:else}
         <div class="event-form">
+          <EventEditor
+            bind:title={eventTitle}
+            bind:description={eventDescription}
+            bind:startDate={eventStartDate}
+            bind:endDate={eventEndDate}
+            bind:location={eventLocation}
+            bind:imageDataUrl={eventImageDataUrl}
+            bind:series={eventSeries}
+            bind:orderFields={eventOrderFields}
+            bind:claimMode
+            bind:collectEmail
+            bind:collectInfo
+            bind:cryptoRecipientMissing
+          />
 
-          <!-- Event details -->
-          <div class="field-group">
-            <label class="field-label" for="ev-title">Event title <span class="required">*</span></label>
-            <input id="ev-title" class="input" type="text" bind:value={eventTitle} placeholder="Devcon Side Event" />
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="ev-desc">Description</label>
-            <textarea id="ev-desc" class="input textarea" bind:value={eventDescription} rows="3" placeholder="Tell attendees what to expect…"></textarea>
-          </div>
-
-          <div class="row-2">
-            <div class="field-group">
-              <label class="field-label" for="ev-start">Start date &amp; time <span class="required">*</span></label>
-              <input id="ev-start" class="input" type="datetime-local" bind:value={eventStartDate} />
-            </div>
-            <div class="field-group">
-              <label class="field-label" for="ev-end">End date &amp; time <span class="required">*</span></label>
-              <input id="ev-end" class="input" type="datetime-local" bind:value={eventEndDate} />
-            </div>
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="ev-location">Location</label>
-            <input id="ev-location" class="input" type="text" bind:value={eventLocation} placeholder="Bangkok, Thailand" />
-          </div>
-
-          <div class="field-group">
-            <label class="field-label">Event image <span class="required">*</span></label>
-            <p class="field-hint" style="margin-top: 0;">Displayed as a banner at the top of your event page. Use a landscape image for best results.</p>
-            <ImageUpload
-              imageDataUrl={eventImageDataUrl}
-              onchange={(url) => { eventImageDataUrl = url; }}
-            />
-          </div>
-
-          <!-- Ticket tiers -->
-          <div class="section-divider">Ticket tiers</div>
-
-          {#each tierGroups as tier, i (tier.id)}
-            <div class="tier-card">
-              <div class="tier-card-header">
-                <span class="tier-card-title">
-                  Tier {i + 1}
-                  {#if tier.tierName.trim()}
-                    <span class="tier-name-preview">— {tier.tierName.trim()}</span>
-                  {/if}
-                </span>
-                {#if tierGroups.length > 1}
-                  <button class="tier-remove-btn" onclick={() => removeTier(tier.id)} type="button" aria-label="Remove tier">✕</button>
-                {/if}
-              </div>
-              <div class="tier-card-body">
-                <div class="row-2">
-                  <div class="field-group">
-                    <label class="field-label">Tier name <span class="required">*</span></label>
-                    <input class="input" type="text" bind:value={tier.tierName} placeholder="General Admission" />
-                  </div>
-                  <div class="field-group">
-                    <label class="field-label">Description <span class="optional">optional</span></label>
-                    <input class="input" type="text" bind:value={tier.description} placeholder="What's included" />
-                  </div>
-                </div>
-
-                <label class="checkbox-option">
-                  <input type="checkbox" bind:checked={tier.approvalRequired} />
-                  <span><strong>Require approval</strong> — you manually approve each claim from the dashboard</span>
-                </label>
-
-                <!-- Payment options -->
-                <div class="field-group" style="margin-top:0.75rem">
-                  <label class="field-label">Payment <span class="optional">optional</span></label>
-                  <div class="payment-mode-selector">
-                    <label class="payment-mode-option">
-                      <input type="radio" bind:group={tier.paymentMode} value="none" onchange={() => { tier.isPaid = false; }} />
-                      <span>Free</span>
-                    </label>
-                    <label class="payment-mode-option">
-                      <input type="radio" bind:group={tier.paymentMode} value="redirect" onchange={() => { tier.isPaid = false; }} />
-                      <span>Payment URL</span>
-                      <span class="payment-mode-hint">Worldpay, Stripe, etc.</span>
-                    </label>
-                    <label class="payment-mode-option">
-                      <input type="radio" bind:group={tier.paymentMode} value="crypto" onchange={() => { tier.isPaid = true; }} />
-                      <span>Crypto</span>
-                      <span class="payment-mode-hint">ETH / USDC on-chain</span>
-                    </label>
-                  </div>
-                </div>
-
-                {#if tier.paymentMode === "redirect"}
-                  <div class="field-group">
-                    <input
-                      class="input"
-                      type="url"
-                      bind:value={tier.paymentRedirectUrl}
-                      placeholder="https://your-payment-processor.com/pay"
-                    />
-                    <p class="field-hint">Claim button becomes "Register &amp; Pay" and redirects here. After payment, redirect back with <code>?claimed=1&amp;edition=N</code> or use a webhook to mint the ticket.</p>
-                  </div>
-                {/if}
-
-                {#if tier.paymentMode === "crypto"}
-                  <div class="payment-config">
-                    <div class="payment-row">
-                      <div class="field-group payment-price-field">
-                        <label class="field-label">Price</label>
-                        <input class="input" type="text" bind:value={tier.price} placeholder="e.g. 5.00" inputmode="decimal" />
-                      </div>
-                      <div class="field-group payment-currency-field">
-                        <label class="field-label">Currency</label>
-                        <select class="input" bind:value={tier.currency}>
-                          <option value="USD">USD</option>
-                          <option value="ETH">ETH</option>
-                          <option value="USDC">USDC</option>
-                        </select>
-                      </div>
-                    </div>
-                    <div class="field-group">
-                      <label class="field-label">Accepted networks</label>
-                      <div class="chain-checkboxes">
-                        {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, chainName]}
-                          <label class="chain-check">
-                            <input
-                              type="checkbox"
-                              checked={tier.acceptedChains.includes(chainId as PaymentChainId)}
-                              onchange={(e) => {
-                                const cid = chainId as PaymentChainId;
-                                if ((e.target as HTMLInputElement).checked) {
-                                  if (!tier.acceptedChains.includes(cid)) tier.acceptedChains = [...tier.acceptedChains, cid];
-                                } else {
-                                  tier.acceptedChains = tier.acceptedChains.filter(c => c !== cid);
-                                }
-                              }}
-                            />
-                            <span>{chainName}</span>
-                          </label>
-                        {/each}
-                      </div>
-                    </div>
-                    <p class="field-hint">Payment goes directly to your connected wallet address. Attendees pay with their wallet before receiving the ticket.</p>
-                  </div>
-                {/if}
-
-                <!-- Waves -->
-                <div class="waves-header">
-                  <span class="waves-label-text">Sale waves</span>
-                  {#if tier.waves.length === 1}
-                    <span class="waves-hint">Add more waves to split capacity by sale period (e.g. Early Bird → Standard)</span>
-                  {/if}
-                </div>
-
-                <div class="waves-col-labels" class:has-label={tier.waves.length > 1}>
-                  {#if tier.waves.length > 1}<span>Label</span>{/if}
-                  <span>Capacity</span>
-                  <span>Sale window</span>
-                </div>
-
-                {#each tier.waves as wave, wi (wave.id)}
-                  <div class="wave-row">
-                    <div class="wave-row-fields" class:has-label={tier.waves.length > 1}>
-                      {#if tier.waves.length > 1}
-                        <input
-                          class="input wave-label-input"
-                          type="text"
-                          bind:value={wave.label}
-                          placeholder={wi === 0 ? "Early Bird" : wi === 1 ? "Standard" : "Last Chance"}
-                        />
-                      {/if}
-                      <input
-                        class="input wave-supply-input"
-                        type="number"
-                        bind:value={wave.totalSupply}
-                        min="1"
-                        max="100000"
-                        title="Capacity"
-                      />
-                      <button
-                        class="btn-ghost wave-window-btn"
-                        class:active={wave.showSaleWindow}
-                        type="button"
-                        onclick={() => { wave.showSaleWindow = !wave.showSaleWindow; }}
-                        title="Set sale window"
-                      >
-                        {#if wave.saleStart || wave.saleEnd}
-                          <span class="wave-date-summary">
-                            {wave.saleStart ? wave.saleStart.slice(0, 10) : "…"}
-                            {#if wave.saleEnd} → {wave.saleEnd.slice(0, 10)}{/if}
-                          </span>
-                        {:else}
-                          Any time
-                        {/if}
-                        <span class="wave-window-chevron">{wave.showSaleWindow ? "▲" : "▼"}</span>
-                      </button>
-                      {#if tier.waves.length > 1}
-                        <button class="tier-remove-btn" onclick={() => removeWave(tier.id, wave.id)} type="button" aria-label="Remove wave">✕</button>
-                      {/if}
-                    </div>
-                    {#if wave.showSaleWindow}
-                      <div class="row-2 sale-window-row">
-                        <div class="field-group">
-                          <label class="field-label">Opens</label>
-                          <input class="input" type="datetime-local" bind:value={wave.saleStart} />
-                        </div>
-                        <div class="field-group">
-                          <label class="field-label">Closes</label>
-                          <input class="input" type="datetime-local" bind:value={wave.saleEnd} />
-                        </div>
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-
-                <button class="btn-add wave-add-btn" type="button" onclick={() => addWave(tier.id)}>+ Add wave</button>
-              </div>
-            </div>
-          {/each}
-
-          <button class="btn-add" type="button" onclick={addTier}>+ Add tier</button>
-
-          <!-- Attendee questions -->
-          <div class="section-divider">
-            Attendee questions <span class="optional">optional</span>
-          </div>
-          <p class="section-hint">Collect information from attendees at claim time. Add text fields, dropdowns, or checkboxes — email is always collected automatically for email claims.</p>
-
-          {#each fieldItems as field, fi (field.id)}
-            <div class="field-card">
-              <div class="tier-card-header">
-                <span class="tier-card-title">
-                  Question {fi + 1}
-                  {#if field.label.trim()}
-                    <span class="tier-name-preview">— {field.label.trim()}</span>
-                  {/if}
-                </span>
-                <button class="tier-remove-btn" onclick={() => removeField(field.id)} type="button" aria-label="Remove question">✕</button>
-              </div>
-              <div class="tier-card-body">
-                <div class="row-2">
-                  <div class="field-group">
-                    <label class="field-label">Type</label>
-                    <select class="input" bind:value={field.type}>
-                      <option value="text">Short text</option>
-                      <option value="textarea">Long text</option>
-                      <option value="email">Email</option>
-                      <option value="tel">Phone</option>
-                      <option value="select">Select / Radio</option>
-                      <option value="checkbox">Checkbox</option>
-                    </select>
-                  </div>
-                  <div class="field-group">
-                    <label class="field-label">Label <span class="required">*</span></label>
-                    <input class="input" type="text" bind:value={field.label} placeholder="e.g. Dietary requirements" />
-                  </div>
-                </div>
-
-                {#if field.type !== "checkbox" && field.type !== "select"}
-                  <div class="field-group">
-                    <label class="field-label">Placeholder <span class="optional">optional</span></label>
-                    <input class="input" type="text" bind:value={field.placeholder} placeholder="Hint shown inside the input" />
-                  </div>
-                {/if}
-
-                {#if field.type === "select"}
-                  <div class="field-group">
-                    <label class="field-label">Options</label>
-                    {#if field.options.length > 0}
-                      <div class="option-list">
-                        {#each field.options as opt, oi}
-                          <span class="option-chip">
-                            {opt}
-                            <button class="option-remove" onclick={() => removeOption(field.id, oi)} type="button" aria-label="Remove option">✕</button>
-                          </span>
-                        {/each}
-                      </div>
-                    {/if}
-                    <div class="add-option-row">
-                      <input
-                        class="input"
-                        type="text"
-                        bind:value={field.newOption}
-                        placeholder="Add option…"
-                        onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addOption(field.id); } }}
-                      />
-                      <button class="btn-ghost" type="button" onclick={() => addOption(field.id)}>Add</button>
-                    </div>
-                  </div>
-                {/if}
-
-                <label class="checkbox-option">
-                  <input type="checkbox" bind:checked={field.required} />
-                  <span><strong>Required</strong></span>
-                </label>
-              </div>
-            </div>
-          {/each}
-
-          <button class="btn-add" type="button" onclick={addField}>+ Add question</button>
-
-          <!-- Claiming -->
-          <div class="section-divider">Claiming</div>
-
-          <div class="field-group">
-            <label class="field-label">How can people claim?</label>
-            <div class="radio-group">
-              <label class="radio-option">
-                <input type="radio" bind:group={claimMode} value="wallet" />
-                <span><strong>Wallet only</strong> — sign in with MetaMask or Para</span>
-              </label>
-              <label class="radio-option">
-                <input type="radio" bind:group={claimMode} value="email" />
-                <span><strong>Email only</strong> — rate-limited, no wallet needed</span>
-              </label>
-              <label class="radio-option">
-                <input type="radio" bind:group={claimMode} value="both" />
-                <span><strong>Wallet or email</strong> — maximum accessibility</span>
-              </label>
-            </div>
-          </div>
-
-          {#if createError}
-            <div class="create-error">{createError}</div>
-          {/if}
-
-          {#if creatingEvent}
-            <div class="progress-status">
-              <div class="spinner"></div>
-              <span>{createProgress || "Creating event on your server…"}</span>
-            </div>
-          {/if}
+          <PublishButton
+            title={eventTitle}
+            description={eventDescription}
+            startDate={eventStartDate}
+            endDate={eventEndDate}
+            location={eventLocation}
+            imageDataUrl={eventImageDataUrl}
+            series={eventSeries}
+            orderFields={collectInfo ? eventOrderFields : undefined}
+            {claimMode}
+            {apiUrl}
+            skipAutoList
+            label="Create event →"
+            disabled={cryptoRecipientMissing}
+            disabledReason={cryptoRecipientMissing ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers." : undefined}
+            onpublished={onEventPublished}
+          />
         </div>
       {/if}
 
       <div class="nav-row">
         <button class="btn-ghost" onclick={() => step = 2}>&larr; Back</button>
-        {#if auth.isConnected}
-          <button
-            class="btn-primary"
-            disabled={!step3Valid || creatingEvent}
-            onclick={createEvent}
-          >
-            {creatingEvent ? "Creating…" : "Create event →"}
-          </button>
-        {/if}
       </div>
     </div>
 
@@ -2100,84 +1528,6 @@ cp apps/server/.env.example apps/server/.env
     gap: 1.125rem;
   }
 
-  .row-2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.875rem;
-  }
-
-  @media (max-width: 480px) {
-    .row-2 { grid-template-columns: 1fr; }
-  }
-
-  .section-divider {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-    padding-top: 0.5rem;
-    border-top: 1px solid var(--border);
-  }
-
-  .radio-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .radio-option, .checkbox-option {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.625rem;
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-    cursor: pointer;
-    line-height: 1.5;
-  }
-
-  .radio-option input, .checkbox-option input {
-    margin-top: 0.2rem;
-    flex-shrink: 0;
-    accent-color: var(--accent);
-  }
-
-  .radio-option strong, .checkbox-option strong {
-    color: var(--text);
-  }
-
-  .create-error {
-    padding: 0.75rem 1rem;
-    border: 1px solid var(--error);
-    border-radius: var(--radius-sm);
-    color: var(--error);
-    font-size: 0.875rem;
-    background: color-mix(in srgb, var(--error) 8%, transparent);
-  }
-
-  .progress-status {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-    font-size: 0.875rem;
-  }
-
-  .spinner {
-    width: 1rem;
-    height: 1rem;
-    border: 2px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-    flex-shrink: 0;
-  }
-
-  @keyframes spin { to { transform: rotate(360deg); } }
-
   /* ── Step 4: info box ────────────────────────────────────────────────────── */
   .info-box {
     padding: 1rem 1.125rem;
@@ -2436,9 +1786,6 @@ cp apps/server/.env.example apps/server/.env
     gap: 0.375rem;
   }
 
-  .required { color: var(--error); font-size: 0.8rem; }
-  .optional { font-weight: 400; color: var(--text-muted); font-size: 0.8125rem; }
-
   .input {
     width: 100%;
     padding: 0.625rem 0.875rem;
@@ -2455,8 +1802,6 @@ cp apps/server/.env.example apps/server/.env
     outline: none;
     border-color: var(--accent);
   }
-
-  .textarea { resize: vertical; min-height: 80px; }
 
   .field-hint {
     font-size: 0.8125rem;
@@ -2534,325 +1879,6 @@ cp apps/server/.env.example apps/server/.env
   .btn-ghost:hover {
     border-color: var(--accent);
     color: var(--accent-text);
-  }
-
-  /* ── Ticket tiers + question cards ──────────────────────────────────────── */
-  .tier-card, .field-card {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-  }
-
-  .tier-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.625rem 0.875rem;
-    background: var(--bg-elevated);
-    border-bottom: 1px solid var(--border);
-    gap: 0.5rem;
-  }
-
-  .tier-card-title {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text);
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    flex-wrap: wrap;
-  }
-
-  .tier-name-preview {
-    font-weight: 400;
-    color: var(--text-muted);
-  }
-
-  /* ── Waves ────────────────────────────────────────────────────────────────── */
-  .waves-header {
-    display: flex;
-    align-items: baseline;
-    gap: 0.625rem;
-    margin-top: 0.25rem;
-  }
-
-  .waves-label-text {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .waves-hint {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
-
-  .waves-col-labels {
-    display: grid;
-    grid-template-columns: 5rem 1fr;
-    gap: 0.5rem;
-    padding: 0 0.125rem;
-  }
-
-  .waves-col-labels.has-label {
-    grid-template-columns: 1fr 5rem 1fr;
-  }
-
-  .waves-col-labels span {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .wave-row {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .wave-row-fields {
-    display: grid;
-    grid-template-columns: 5rem 1fr;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .wave-row-fields.has-label {
-    grid-template-columns: 1fr 5rem 1fr auto;
-  }
-
-  .wave-supply-input {
-    text-align: right;
-    min-width: 0;
-  }
-
-  .wave-label-input {
-    min-width: 0;
-  }
-
-  .wave-window-btn {
-    font-size: 0.8125rem;
-    white-space: nowrap;
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    padding: 0.375rem 0.625rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
-  }
-
-  .wave-window-btn.active {
-    border-color: var(--accent);
-    color: var(--accent-text);
-    background: color-mix(in srgb, var(--accent) 6%, transparent);
-  }
-
-  .wave-date-summary {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-  }
-
-  .wave-window-chevron {
-    font-size: 0.625rem;
-    opacity: 0.6;
-  }
-
-  .wave-add-btn {
-    margin-top: 0.25rem;
-    font-size: 0.8125rem;
-    padding: 0.375rem;
-  }
-
-  .tier-remove-btn {
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    padding: 0.2rem 0.4rem;
-    border-radius: var(--radius-sm);
-    transition: all var(--transition);
-    flex-shrink: 0;
-    line-height: 1;
-  }
-
-  .tier-remove-btn:hover {
-    color: var(--error);
-    background: color-mix(in srgb, var(--error) 10%, transparent);
-  }
-
-  .tier-card-body {
-    padding: 0.875rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.875rem;
-  }
-
-  .sale-window-row {
-    padding-top: 0.25rem;
-  }
-
-  /* ── Payment mode ─────────────────────────────────────────────────────────── */
-  .payment-mode-selector {
-    display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    margin-top: 0.375rem;
-  }
-
-  .payment-mode-option {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    padding: 0.375rem 0.625rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 0.8125rem;
-    background: var(--bg-input);
-    transition: border-color var(--transition);
-  }
-
-  .payment-mode-option:has(input:checked) {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-  }
-
-  .payment-mode-option input[type="radio"] {
-    accent-color: var(--accent);
-  }
-
-  .payment-mode-hint {
-    font-size: 0.7rem;
-    color: var(--text-muted);
-  }
-
-  .payment-config {
-    display: flex;
-    flex-direction: column;
-    gap: 0.625rem;
-    padding: 0.75rem;
-    background: color-mix(in srgb, var(--accent) 5%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
-    border-radius: var(--radius-sm);
-  }
-
-  .payment-row {
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  .payment-price-field {
-    flex: 1;
-  }
-
-  .payment-currency-field {
-    width: 6rem;
-  }
-
-  .chain-checkboxes {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.375rem;
-    margin-top: 0.25rem;
-  }
-
-  .chain-check {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.8rem;
-    cursor: pointer;
-    padding: 0.25rem 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-input);
-  }
-
-  .chain-check:has(input:checked) {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-  }
-
-  .chain-check input[type="checkbox"] {
-    accent-color: var(--accent);
-  }
-
-  /* ── Add tier / add question button ─────────────────────────────────────── */
-  .btn-add {
-    width: 100%;
-    padding: 0.5rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--accent-text);
-    border: 1px dashed var(--accent);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent) 4%, transparent);
-    transition: all var(--transition);
-    text-align: center;
-  }
-
-  .btn-add:hover {
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-  }
-
-  /* ── Section hint ────────────────────────────────────────────────────────── */
-  .section-hint {
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    margin: -0.5rem 0 0;
-    line-height: 1.5;
-  }
-
-  /* ── Select options (field type dropdown) ───────────────────────────────── */
-  select.input {
-    cursor: pointer;
-  }
-
-  /* ── Option chips (select/radio field builder) ───────────────────────────── */
-  .option-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.375rem;
-    margin-bottom: 0.375rem;
-  }
-
-  .option-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.2rem 0.5rem 0.2rem 0.625rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 9999px;
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-  }
-
-  .option-remove {
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-    line-height: 1;
-    padding: 0.1rem;
-    border-radius: 50%;
-    transition: all var(--transition);
-  }
-
-  .option-remove:hover {
-    color: var(--error);
-    background: color-mix(in srgb, var(--error) 12%, transparent);
-  }
-
-  .add-option-row {
-    display: flex;
-    gap: 0.5rem;
-    align-items: center;
-  }
-
-  .add-option-row .input {
-    flex: 1;
   }
 
   /* ── Custom domain ──────────────────────────────────────────────────────── */

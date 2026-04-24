@@ -443,8 +443,18 @@ async function signRequest(
     bodyHash,
   ].join("\n");
 
-  const result = await signWithSession(challenge);
-  if (!result) return null;
+  // `hasSession` can be true (derived from in-memory _sessionAddress) while the
+  // underlying IndexedDB blob is gone (expired, host changed, or storage was
+  // cleared). `signWithSession` silently returns null in that case, which the
+  // caller would see as a missing auth header. Detect and re-establish.
+  let result = await signWithSession(challenge);
+  if (!result) {
+    _sessionAddress = null;
+    const ok = await ensureSession();
+    if (!ok) return null;
+    result = await signWithSession(challenge);
+    if (!result) return null;
+  }
 
   const delegation = await getSessionDelegation();
   if (!delegation) return null;

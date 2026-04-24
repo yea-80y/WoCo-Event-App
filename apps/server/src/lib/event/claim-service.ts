@@ -81,6 +81,14 @@ export async function claimTicket(opts: {
   seriesId: string;
   identifier: ClaimIdentifier;
   encryptedOrder?: SealedBox;
+  /**
+   * Pre-uploaded order Swarm ref. When present, skips the upload step and
+   * uses this ref directly — used by the Stripe flow, which pre-uploads the
+   * encrypted order before redirecting to Checkout so every ticket in a
+   * multi-purchase batch gets the full form data without relying on a
+   * post-return save-order call from the browser.
+   */
+  orderRef?: string;
   /** Payment method, if known. Stored on the claim entry for dashboard display. */
   via?: import("@woco/shared").ClaimVia;
   /**
@@ -93,8 +101,10 @@ export async function claimTicket(opts: {
    * rule (spam prevention).
    */
   paid?: boolean;
+  /** Override the claim timestamp (ISO string). Defaults to now. Used by Stripe webhook to record payment time. */
+  claimedAt?: string;
 }): Promise<ClaimResult> {
-  const { seriesId, identifier, encryptedOrder, via, paid } = opts;
+  const { seriesId, identifier, encryptedOrder, orderRef: prefetchedOrderRef, via, paid, claimedAt: claimedAtOverride } = opts;
 
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
@@ -250,7 +260,7 @@ export async function claimTicket(opts: {
       identifier.type === "email"
         ? identifier.emailHash
         : identifier.secondaryEmailHash,
-    claimedAt: new Date().toISOString(),
+    claimedAt: claimedAtOverride ?? new Date().toISOString(),
     originalPodHash: ticketRef,
     originalSignature: originalTicket.signature,
     ...(approvalRequired ? { approvalStatus: "pending" as const } : {}),
@@ -271,14 +281,16 @@ export async function claimTicket(opts: {
   // 8. Approval gate or instant completion
   const claimerAddress = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash}`;
 
-  let orderRef: string | undefined;
-  if (encryptedOrder) {
+  let orderRef: string | undefined = prefetchedOrderRef;
+  if (!orderRef && encryptedOrder) {
     try {
       orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
       console.log(`[claim] Encrypted order stored: ${orderRef}`);
     } catch (err) {
       console.error("[claim] Failed to store encrypted order:", err);
     }
+  } else if (orderRef) {
+    console.log(`[claim] Using pre-uploaded order ref: ${orderRef}`);
   }
 
   if (approvalRequired) {
@@ -351,7 +363,7 @@ export async function getClaimStatus(
 
   const pageCount = meta.pageCount || 1;
   let claimed = 0;
-  let userEdition: number | undefined;
+  const userEditions: number[] = [];
 
   for (let p = 0; p < pageCount; p++) {
     const claimsPage = await readFeedPage(topicClaims(seriesId, p));
@@ -365,16 +377,16 @@ export async function getClaimStatus(
         claimed++;
 
         // Check if this approved claim belongs to the requesting user (skip pending)
-        if ((userAddress || userEmailHash) && !userEdition) {
+        // Collect ALL matching editions — a user can hold multiple via multi-purchase.
+        if (userAddress || userEmailHash) {
           try {
             const claimedJson = await downloadFromBytes(claims[s]);
             const ct = JSON.parse(claimedJson) as ClaimedTicket;
-            // Only count as userEdition if the ticket is approved (or legacy, no status)
             if (ct.approvalStatus === "pending") continue;
             if (userAddress && ct.ownerAddress?.toLowerCase() === userAddress.toLowerCase()) {
-              userEdition = ct.edition;
+              userEditions.push(ct.edition);
             } else if (userEmailHash && ct.ownerEmailHash === userEmailHash) {
-              userEdition = ct.edition;
+              userEditions.push(ct.edition);
             }
           } catch {
             // Skip unreadable claims
@@ -397,12 +409,15 @@ export async function getClaimStatus(
     if (entry) userPendingId = entry.pendingId;
   }
 
+  userEditions.sort((a, b) => a - b);
+  const userEdition = userEditions[0];
+
   return {
     seriesId,
     totalSupply: meta.totalSupply,
     claimed,
     available: meta.totalSupply - claimed,
-    ...(userEdition != null ? { userEdition } : {}),
+    ...(userEditions.length > 0 ? { userEdition, userEditions } : {}),
     ...(userPendingId ? { userPendingId } : {}),
   };
 }

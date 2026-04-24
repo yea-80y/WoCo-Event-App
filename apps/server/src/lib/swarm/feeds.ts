@@ -111,6 +111,13 @@ export async function readFeedPageWithRetry(
   return null;
 }
 
+// TODO(swarm-id): writeFeedPage is the single choke point for all feed writes.
+// Today every feed is signed by the platform signer (FEED_PRIVATE_KEY). When
+// Swarm ID lands, the organiser's per-event signer (derived via BIP-44 from a
+// dedicated account — NEVER the parent wallet that holds funds) will be passed
+// in here. Accept an optional `signer` argument and default to the platform
+// signer for back-compat. All callers above (events, claims, profile, etc.)
+// need to thread the signer through from the auth layer.
 export async function writeFeedPage(topic: Topic, page: Uint8Array): Promise<void> {
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {

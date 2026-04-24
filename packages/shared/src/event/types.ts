@@ -185,8 +185,6 @@ export interface SeriesSummary {
   saleStart?: string;
   /** ISO datetime when this series closes for claims (server-enforced) */
   saleEnd?: string;
-  /** If set, claim button becomes "Register & Pay" and redirects here */
-  paymentRedirectUrl?: string;
   /** Crypto payment config — absent means free event */
   payment?: PaymentConfig;
 }
@@ -246,7 +244,6 @@ export interface CreateEventRequest {
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
-    paymentRedirectUrl?: string;
     /** Crypto payment config — absent means free event */
     payment?: PaymentConfig;
   }>;
@@ -367,8 +364,10 @@ export interface SeriesClaimStatus {
   totalSupply: number;
   claimed: number;
   available: number;
-  /** If the requesting user has an approved claim, their edition number */
+  /** If the requesting user has an approved claim, their lowest edition number */
   userEdition?: number;
+  /** All edition numbers owned by the requesting user (multi-purchase support) */
+  userEditions?: number[];
   /** If the requesting user has a pending approval request, the pendingId */
   userPendingId?: string;
 }

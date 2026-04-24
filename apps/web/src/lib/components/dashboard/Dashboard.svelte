@@ -7,6 +7,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
+  import StripeConnect from "./StripeConnect.svelte";
 
   interface Props {
     eventId: string;
@@ -24,7 +25,7 @@
   let decryptError = $state<string | null>(null);
 
   // Approval tab state
-  let activeTab = $state<"orders" | "approvals" | "broadcast">("orders");
+  let activeTab = $state<"orders" | "approvals" | "broadcast" | "payments">("orders");
   let pendingEntries = $state<PendingClaimEntry[]>([]);
   let decryptedPending = $state<Map<string, DecryptedOrder>>(new Map()); // keyed by pendingId
   let approvingId = $state<string | null>(null);
@@ -541,9 +542,21 @@
       >
         Broadcast
       </button>
+      <button
+        class="tab-btn"
+        class:active={activeTab === "payments"}
+        onclick={() => (activeTab = "payments")}
+      >
+        Payments
+      </button>
     </div>
 
-    {#if activeTab === "broadcast"}
+    {#if activeTab === "payments"}
+      <!-- Payments tab — Stripe Connect onboarding + status -->
+      <div class="payments-section">
+        <StripeConnect />
+      </div>
+    {:else if activeTab === "broadcast"}
       <!-- Broadcast tab -->
       {@const emailRecipients = getEmailRecipients(broadcastSeriesFilter)}
       <div class="broadcast-section">

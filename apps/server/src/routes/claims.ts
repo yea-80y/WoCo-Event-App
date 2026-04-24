@@ -38,7 +38,7 @@ const claimInFlight = new Set<string>();
 // from *different* users can read the same unclaimed slot and both succeed.
 const seriesQueues = new Map<string, Promise<void>>();
 
-function queueSeriesClaim<T>(seriesId: string, fn: () => Promise<T>): Promise<T> {
+export function queueSeriesClaim<T>(seriesId: string, fn: () => Promise<T>): Promise<T> {
   const prev = (seriesQueues.get(seriesId) ?? Promise.resolve()) as Promise<void>;
   const current = prev.then(() => fn());
   // Store an error-swallowing tail so the chain never permanently breaks

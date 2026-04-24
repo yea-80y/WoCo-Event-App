@@ -8,6 +8,8 @@ import {
   BEE_URL,
 } from "../config/swarm.js";
 
+const EMAIL_HASH_SECRET = process.env.EMAIL_HASH_SECRET || "";
+
 const admin = new Hono<AppEnv>();
 
 export interface SetupCheckResult {
@@ -23,6 +25,7 @@ export interface SetupCheckResult {
   beeVersion: string | null;
   beePeers: number | null;
   beeError: string | null;
+  emailHashSecretSet: boolean;
 }
 
 /**
@@ -48,6 +51,7 @@ admin.get("/setup-check", async (c) => {
     beeVersion: null,
     beePeers: null,
     beeError: null,
+    emailHashSecretSet: !!EMAIL_HASH_SECRET,
   };
 
   // ── Feed signer ─────────────────────────────────────────────────────────────

@@ -35,13 +35,21 @@
     disabled?: boolean;
     /** Hint shown when externally disabled */
     disabledReason?: string;
+    /** Target a different API server (e.g. organiser's self-hosted backend) */
+    apiUrl?: string;
+    /** Skip listing the event in the public directory — site-builder publishes privately */
+    skipAutoList?: boolean;
+    /** Override the button label (e.g. "Create & deploy") */
+    label?: string;
     onpublished?: (eventId: string) => void;
   }
 
   let {
     title, description, startDate, endDate, location,
     imageDataUrl, series, orderFields, claimMode,
-    disabled = false, disabledReason, onpublished,
+    disabled = false, disabledReason,
+    apiUrl, skipAutoList = false, label,
+    onpublished,
   }: Props = $props();
 
   let publishing = $state(false);
@@ -156,8 +164,10 @@
           encryptionKey,
           orderFields: orderFields?.length ? orderFields : undefined,
           claimMode: claimMode && claimMode !== "wallet" ? claimMode : undefined,
+          ...(skipAutoList ? { skipAutoList: true } : {}),
         },
         handleProgress,
+        apiUrl,
       );
 
       if (!result.ok) {
@@ -186,7 +196,7 @@
     {#if publishing}
       {step}
     {:else}
-      Publish Event
+      {label ?? "Publish Event"}
     {/if}
   </button>
 
