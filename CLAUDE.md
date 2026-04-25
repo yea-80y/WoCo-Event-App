@@ -218,43 +218,24 @@ STRIPE UX — PHASE 2 (2026-04-24, latency pass for email-only claims):
   delivery channel, so the UI matches that mental model.
 
 STRIPE UX — PHASE 3 (2026-04-25, slot reservations + composite ticket card):
-- **Slot reservation** (server-side, no Swarm): on order-form open we POST
-  `/api/reservations/reserve` to lock N slots for ~10 minutes; on Pay we
-  pass `reservationId` through `/create-checkout`; webhook claim consumes
-  the reservation. File: `apps/server/src/lib/event/reservation-store.ts`
-  (file-backed `.data/reservations.json`, in-memory map, per-series mutex
-  for atomicity). Frontend countdown pill shows remaining time. Quantity
-  changes release-and-reissue. `pagehide` fires `navigator.sendBeacon` to
-  release on tab close. No Swarm writes — pure in-memory + JSON file.
-- **Pre-upload window widened**: 250ms → 1500ms idle debounce, with hover
-  accelerator on the Pay button (`onpointerenter` / `onfocus` /
-  `ontouchstart` each force-immediately-pre-upload). Avoids orphan refs on
-  field edits while keeping the redirect near-instant for committed users.
-- **Composite ticket card** replaces the basic QR PNG attachment AND the
-  slow `woco.eth.limo/#/verify?t=…` link. Two new endpoints (no `/api`
-  prefix — these are user-facing URLs in emails):
-    GET /t/{eventId}/{seriesId}/{edition}/{sig}      → server-rendered HTML
-    GET /t/{eventId}/{seriesId}/{edition}/{sig}.png  → composite PNG
-  Optional `?n=` (buyer name) + `?e=` (buyer email) for display only —
-  cryptographic guarantee comes from the ed25519 sig in the URL path.
-  Hono regex-constraint route `:sig{.+\\.png}` is declared BEFORE the HTML
-  catch-all so PNG takes precedence.
-- **Renderer**: `apps/server/src/lib/ticket/render-card.ts` builds an SVG
-  with title / date / location / edition pill / inline QR (rendered from
-  `qrcode`'s module matrix as crisp `<rect>` shapes, NOT image-href) /
-  ISSUED-TO buyer block / footer; `@resvg/resvg-js` rasterises to 800×1100
-  PNG. Pure WASM — no Cairo/native deps. Fonts: `loadSystemFonts: true`
-  with DejaVu Sans default + monospace fallback (installed on both Arch
-  laptop and Ubuntu server). `font-family` list in SVG includes DejaVu /
-  Liberation / Helvetica / Arial so it works on any common server distro.
-- **Email** attaches the composite PNG via `cid:woco-card-N` (Gmail / Apple
-  Mail / Outlook all render CIDs reliably without image-proxy stripping)
-  and links the standalone HTML page (fast first-paint, single-shot SSR
-  with inline SVG QR — no SPA, no Swarm round-trip on the client).
-- **`PUBLIC_API_BASE`** env required (e.g. `https://events-api.woco-net.com`)
-  to build absolute ticket URLs in outbound email.
-- Stripe webhook now passes `session.customer_details?.name` as `buyerName`
-  through to `sendTicketEmail` so the card shows ISSUED TO {name}.
+- Slot reservation: order-form open POSTs `/api/reservations/reserve`
+  (~10min TTL); Pay passes `reservationId` to `/create-checkout`; webhook
+  consumes it. File-backed `.data/reservations.json`, per-series mutex.
+  Frontend countdown pill, quantity-change re-issues, `pagehide` fires
+  `navigator.sendBeacon` for release. No Swarm writes.
+- Pre-upload widened: 250ms → 1500ms idle, with Pay-button hover/focus
+  accelerator (`onpointerenter`/`onfocus`/`ontouchstart` → upload now).
+- Composite ticket card replaces basic QR PNG + slow eth.limo verify link.
+  Two new user-facing routes (no `/api` prefix):
+    GET /t/{eventId}/{seriesId}/{edition}/{sig}[.png]
+  PNG route uses Hono regex `:sig{.+\\.png}` BEFORE the HTML catch-all.
+  `?n=` / `?e=` are display-only; cryptographic guarantee is the path sig.
+- Renderer: `lib/ticket/render-card.ts` builds SVG → 800×1100 PNG via
+  `@resvg/resvg-js` (pure WASM). QR drawn as `<rect>` matrix (no image-href).
+  `loadSystemFonts: true` + DejaVu Sans (installed on Arch + Ubuntu).
+- Email attaches PNG via `cid:woco-card-N` and links the HTML page.
+  Stripe webhook passes `session.customer_details?.name` as `buyerName`.
+- `PUBLIC_API_BASE` env required for absolute email URLs.
 
 ============================================================================
 CONVENTIONS
