@@ -47,11 +47,64 @@
   let stripeEmail = $state("");
   /** Last successfully claimed ticket (available for wallet/email direct claims, not Stripe webhook) */
   let lastClaimedTicket = $state<ClaimedTicket | undefined>(undefined);
-  /** Email the tickets were sent to — drives the optimistic success card shown
+  /**
+   * Synchronously compute the initial Stripe-success state at script-init time
+   * (BEFORE the first render). Without this, the first render would briefly
+   * show the order form / pay button, then onMount sets `stripeSuccessEmail`
+   * and re-renders — producing a visible flash of the form on every Stripe
+   * return. By initialising state from the URL hash + sessionStorage up front,
+   * the success modal is the FIRST thing the user sees.
+   */
+  function _initialStripeSuccess(): { email: string | null; qty: number; visible: boolean } {
+    if (typeof window === "undefined") return { email: null, qty: 1, visible: false };
+    const successKey = `woco:stripe-success:${eventId}:${seriesId}`;
+    const formKey = `woco:stripe-form:${eventId}:${seriesId}`;
+    const dismissedKey = `woco:stripe-success-dismissed:${eventId}:${seriesId}`;
+    const dismissed = sessionStorage.getItem(dismissedKey) === "1";
+
+    // Persisted card from prior visit in this tab.
+    try {
+      const raw = sessionStorage.getItem(successKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { email?: string; qty?: number };
+        return {
+          email: parsed.email ?? null,
+          qty: parsed.qty && Number.isInteger(parsed.qty) ? parsed.qty : 1,
+          visible: !dismissed,
+        };
+      }
+    } catch { /* ignore */ }
+
+    // Fresh return — read from URL hash + form stash.
+    const hash = window.location.hash;
+    if (hash.includes("stripe=success")) {
+      let email: string | null = null;
+      let qty = 1;
+      try {
+        const raw = sessionStorage.getItem(formKey);
+        if (raw) {
+          const parsed = JSON.parse(raw) as { claimerEmail?: string; quantity?: number };
+          email = parsed.claimerEmail ?? null;
+          if (parsed.quantity && Number.isInteger(parsed.quantity)) qty = parsed.quantity;
+        }
+      } catch { /* ignore */ }
+      // Persist immediately so a refresh keeps the card.
+      try {
+        sessionStorage.setItem(successKey, JSON.stringify({ email, qty }));
+      } catch { /* ignore */ }
+      return { email, qty, visible: true };
+    }
+
+    return { email: null, qty: 1, visible: false };
+  }
+  const _initialSuccess = _initialStripeSuccess();
+  /** Email the tickets were sent to — drives the success modal shown
    *  immediately on Stripe return. Null until we detect the return. */
-  let stripeSuccessEmail = $state<string | null>(null);
+  let stripeSuccessEmail = $state<string | null>(_initialSuccess.email);
   /** Count of tickets purchased in this Stripe session (for pluralisation). */
-  let stripeSuccessQty = $state<number>(1);
+  let stripeSuccessQty = $state<number>(_initialSuccess.qty);
+  /** Whether the success modal is visible (false after user dismisses). */
+  let stripeSuccessVisible = $state<boolean>(_initialSuccess.visible);
   /**
    * On-chain payment succeeded but the amount was short of what the server
    * requires (price moved beyond the slippage tolerance between quote and
@@ -264,28 +317,46 @@
       if (raw) paymentShortfall = JSON.parse(raw);
     } catch { /* ignore */ }
 
-    // Restore a persisted Stripe-success card if the user refreshed after paying.
-    // Session-scoped so it vanishes when the tab closes — by then the email
-    // has certainly arrived.
-    try {
-      const raw = sessionStorage.getItem(STRIPE_SUCCESS_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { email?: string; qty?: number };
-        stripeSuccessEmail = parsed.email ?? null;
-        stripeSuccessQty = parsed.qty && Number.isInteger(parsed.qty) ? parsed.qty : 1;
-        claimed = true;
-        claimedVia = "email";
-      }
-    } catch { /* ignore */ }
+    // The success modal state was already initialised SYNCHRONOUSLY at script
+    // init (see _initialStripeSuccess). Here we just handle the side effects:
+    // strip the URL hash + kick off background work + mark "claimed" so the
+    // existing claim-state logic doesn't try to render the order form.
+    if (stripeSuccessEmail !== null) {
+      claimed = true;
+      claimedVia = "email";
+    }
 
-    // Detect Stripe success redirect — save stashed order data + show success card
     const hash = window.location.hash;
     const isStripeReturn = hash.includes("stripe=success");
     if (isStripeReturn) {
+      // Strip the query so refresh doesn't re-fire detection. The synchronous
+      // initialiser already persisted the success card to sessionStorage so
+      // refreshes still show the confirmation.
+      try {
+        const url = new URL(window.location.href);
+        const newHash = window.location.hash
+          .replace(/[?&]stripe=success/, "")
+          .replace(/[?&]session_id=[^&]*/, "");
+        window.history.replaceState(null, "", url.pathname + url.search + newHash);
+      } catch { /* ignore */ }
+
+      // Save stashed encrypted order to Swarm if the webhook hadn't already
+      // grabbed the pre-uploaded ref. Background — no UI block.
       if (sessionStorage.getItem(STRIPE_FORM_KEY)) {
         saveStashedOrderData();
       }
-      handleStripeSuccessReturn();
+
+      // Single status refresh so the stock counter eventually catches up.
+      // No polling — the email is the channel, not the UI.
+      const addrForStatus = auth.parent?.toLowerCase();
+      getClaimStatus(eventId, seriesId, addrForStatus || undefined, undefined, apiUrl)
+        .then((fresh) => {
+          if (fresh) {
+            cacheSet(cacheKey.claimStatus(eventId, seriesId, addrForStatus), fresh, TTL.CLAIM_STATUS);
+            applyStatus(fresh);
+          }
+        })
+        .catch(() => { /* non-fatal */ });
       return;
     }
 
@@ -330,70 +401,13 @@
       });
   });
 
-  /**
-   * Handle returning from a successful Stripe checkout.
-   *
-   * Optimistic: the Stripe webhook has fired (or is about to) and the
-   * confirmation email is queued server-side. Rather than block the UI on a
-   * 28-second poll loop, we show a success card immediately — the ticket
-   * arrives by email, which is the channel this flow is designed around.
-   *
-   *  1. Strip the stripe=success query so refreshes don't re-run this
-   *  2. Read the claimer email from sessionStorage (stashed pre-redirect)
-   *  3. Show the optimistic success card immediately (no spinner, no poll)
-   *  4. Fire ONE background status refresh so the stock counter catches up
-   */
-  async function handleStripeSuccessReturn() {
-    // Strip query string first so any early return still clears it.
+  /** Dismiss the Stripe success modal — keeps the email-claimed state but
+   *  hides the modal so the user can browse the event page underneath. */
+  function dismissStripeSuccess() {
+    stripeSuccessVisible = false;
     try {
-      const url = new URL(window.location.href);
-      const newHash = window.location.hash
-        .replace(/[?&]stripe=success/, "")
-        .replace(/[?&]session_id=[^&]*/, "");
-      window.history.replaceState(null, "", url.pathname + url.search + newHash);
+      sessionStorage.setItem(`woco:stripe-success-dismissed:${eventId}:${seriesId}`, "1");
     } catch { /* ignore */ }
-
-    // Read stashed form context (email, quantity) from sessionStorage.
-    let stashedEmail: string | undefined;
-    let stashedQty = 1;
-    try {
-      const raw = sessionStorage.getItem(STRIPE_FORM_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { claimerEmail?: string; quantity?: number };
-        stashedEmail = parsed.claimerEmail;
-        if (parsed.quantity && Number.isInteger(parsed.quantity)) stashedQty = parsed.quantity;
-      }
-    } catch { /* ignore */ }
-    const email = stashedEmail || stripeEmail.trim() || undefined;
-
-    // Render the success card immediately — no polling, no artificial delay.
-    stripeSuccessEmail = email ?? null;
-    stripeSuccessQty = Math.max(1, stashedQty);
-    claimed = true;
-    claimedVia = "email";
-
-    // Persist so a page refresh within this session keeps the success card
-    // visible. Cleared when the tab closes.
-    try {
-      sessionStorage.setItem(
-        STRIPE_SUCCESS_KEY,
-        JSON.stringify({ email: stripeSuccessEmail, qty: stripeSuccessQty }),
-      );
-    } catch { /* ignore quota */ }
-
-    // Background: refresh availability once so the stock counter catches up.
-    // We don't block the UI on this; failures are silent.
-    const addr = auth.parent?.toLowerCase();
-    cacheDel(cacheKey.claimStatus(eventId, seriesId, addr));
-    cacheDel(cacheKey.claimStatus(eventId, seriesId, "anon"));
-    cacheDel(cacheKey.claimStatus(eventId, seriesId, undefined));
-    getClaimStatus(eventId, seriesId, addr || undefined, undefined, apiUrl)
-      .then((fresh) => {
-        if (!fresh) return;
-        cacheSet(cacheKey.claimStatus(eventId, seriesId, addr), fresh, TTL.CLAIM_STATUS);
-        applyStatus(fresh);
-      })
-      .catch(() => { /* background — silently ignore */ });
   }
 
   // Re-fetch with address when auth restores asynchronously (page refresh scenario).
@@ -495,7 +509,7 @@
       } finally {
         if (mySeq === _preUploadSeq) orderRefUploading = false;
       }
-    }, 700);
+    }, 250);
   });
 
   /** sessionStorage key for stashing form data across Stripe redirect */
@@ -1224,31 +1238,26 @@
         </p>
       </footer>
     </div>
-  {:else if stripeSuccessEmail !== null}
-    <!-- Optimistic success card: shown immediately on Stripe return.
-         Email is the delivery channel; no polling, no QR, no edition. -->
-    <div class="stripe-success" role="status" aria-live="polite">
-      <div class="stripe-success-check" aria-hidden="true">
-        <span class="stripe-success-ring"></span>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+  {:else if stripeSuccessEmail !== null && !stripeSuccessVisible}
+    <!-- After dismissal: a quiet inline confirmation strip stays visible so
+         the user always knows their tickets are on the way, even after
+         closing the celebratory modal. Click to re-open. -->
+    <button
+      type="button"
+      class="ses-strip"
+      onclick={() => { stripeSuccessVisible = true; try { sessionStorage.removeItem(`woco:stripe-success-dismissed:${eventId}:${seriesId}`); } catch { /* ignore */ } }}
+      aria-label="Show payment confirmation again"
+    >
+      <span class="ses-strip-check" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="20 6 9 17 4 12"/>
         </svg>
-      </div>
-      <div class="stripe-success-body">
-        <strong class="stripe-success-title">Payment confirmed</strong>
-        {#if stripeSuccessEmail}
-          <span class="stripe-success-sub">
-            Your {stripeSuccessQty > 1 ? `${stripeSuccessQty} tickets are` : "ticket is"} on its way to
-            <span class="stripe-success-email">{stripeSuccessEmail}</span>
-          </span>
-        {:else}
-          <span class="stripe-success-sub">
-            Your {stripeSuccessQty > 1 ? `${stripeSuccessQty} tickets are` : "ticket is"} being sent by email
-          </span>
-        {/if}
-        <span class="stripe-success-note">Check your inbox in the next few minutes — peek at spam if it's late.</span>
-      </div>
-    </div>
+      </span>
+      <span class="ses-strip-text">
+        Tickets sent {#if stripeSuccessEmail}to <strong>{stripeSuccessEmail}</strong>{/if}
+      </span>
+      <span class="ses-strip-arrow" aria-hidden="true">View</span>
+    </button>
   {:else if approvalPending}
     <div class="pending-badge">
       <span class="pending-icon">&#9679;</span>
@@ -1695,6 +1704,86 @@
   />
 {/if}
 
+<!--
+  Stripe email-success modal — shown immediately on return from Stripe.
+  Mirrors the TicketSuccess overlay/modal pattern so it feels like a real
+  celebratory moment, not a banner buried below the fold. Email is the hero;
+  no QR, no edition (we don't have those at this point — the webhook is still
+  writing to Swarm). Dismissal collapses to a quiet strip the user can click
+  again later.
+-->
+{#if stripeSuccessEmail !== null && stripeSuccessVisible}
+  <div
+    class="ses-overlay"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="ses-title"
+    onclick={(e) => { if ((e.target as HTMLElement).classList.contains("ses-overlay")) dismissStripeSuccess(); }}
+    onkeydown={(e) => { if (e.key === "Escape") dismissStripeSuccess(); }}
+  >
+    <div class="ses-modal" role="document">
+      <button class="ses-close" onclick={dismissStripeSuccess} aria-label="Close">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/>
+        </svg>
+      </button>
+
+      <div class="ses-glow" aria-hidden="true"></div>
+
+      <div class="ses-check-wrap" aria-hidden="true">
+        <span class="ses-ring ses-ring--1"></span>
+        <span class="ses-ring ses-ring--2"></span>
+        <span class="ses-check">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </span>
+      </div>
+
+      <h2 id="ses-title" class="ses-title">Payment confirmed</h2>
+      <p class="ses-lede">
+        {stripeSuccessQty > 1 ? `Your ${stripeSuccessQty} tickets are` : "Your ticket is"} on the way.
+      </p>
+
+      <div class="ses-email-card">
+        <span class="ses-email-label">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+            <polyline points="22,6 12,13 2,6"/>
+          </svg>
+          Sent to
+        </span>
+        {#if stripeSuccessEmail}
+          <span class="ses-email-addr">{stripeSuccessEmail}</span>
+        {:else}
+          <span class="ses-email-addr ses-email-addr--unknown">your email</span>
+        {/if}
+      </div>
+
+      <ul class="ses-steps">
+        <li>
+          <span class="ses-step-num">1</span>
+          <span>Check your inbox in the next few minutes.</span>
+        </li>
+        <li>
+          <span class="ses-step-num">2</span>
+          <span>If you don't see it, peek at your spam folder — sometimes confirmations land there.</span>
+        </li>
+        <li>
+          <span class="ses-step-num">3</span>
+          <span>Show the QR code from the email at the door on the day.</span>
+        </li>
+      </ul>
+
+      <button class="ses-done" onclick={dismissStripeSuccess}>Done</button>
+
+      <p class="ses-foot">
+        A receipt has been sent by Stripe. Need help? Contact the organiser.
+      </p>
+    </div>
+  </div>
+{/if}
+
 <style>
   .claim-area {
     display: flex;
@@ -1793,91 +1882,286 @@
   }
 
   /* ══════════════════════════════════════════════════
-   * STRIPE SUCCESS CARD — optimistic, email-first.
+   * STRIPE EMAIL-SUCCESS MODAL  (.ses-*)
    *
-   * Quiet conviction: one decisive checkmark, email treated as the hero
-   * fact, a single ring emission pulse that plays ONCE on mount (not
-   * looping). Designed to match the TicketSuccess modal's visual language
-   * (color-mix status tints, monospace numerical detail, hairline borders)
-   * without reusing its full modal chrome.
+   * Full-screen overlay shown immediately on Stripe return. Dark backdrop +
+   * elevated card. Email is the hero fact, surrounded by a clear three-step
+   * "what happens next" so the user never feels left in the dark waiting
+   * for the email. After dismissal, .ses-strip is the quiet inline echo
+   * the user can click to bring the modal back.
    * ══════════════════════════════════════════════ */
-  .stripe-success {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.75rem;
-    padding: 0.875rem 1rem;
-    background: color-mix(in srgb, var(--success) 7%, var(--bg-surface));
-    border: 1px solid color-mix(in srgb, var(--success) 22%, var(--border));
-    border-radius: var(--radius-md);
-    max-width: 420px;
-    animation: stripe-success-rise 420ms cubic-bezier(0.34, 1.36, 0.64, 1);
-  }
-  @keyframes stripe-success-rise {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
-  .stripe-success-check {
-    position: relative;
+  .ses-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.74);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--success) 18%, transparent);
-    color: var(--success);
-    border: 1px solid color-mix(in srgb, var(--success) 34%, transparent);
-    flex-shrink: 0;
+    padding: 1.25rem;
+    animation: ses-fade 220ms ease;
+    overflow-y: auto;
   }
-  /* One-shot ring emission — plays once on mount, then vanishes. */
-  .stripe-success-ring {
-    position: absolute;
-    inset: -2px;
-    border-radius: 50%;
-    border: 1.5px solid var(--success);
-    opacity: 0;
-    animation: stripe-success-pulse 1.2s cubic-bezier(0.16, 1, 0.3, 1) 220ms 1 forwards;
-    pointer-events: none;
-  }
-  @keyframes stripe-success-pulse {
-    0%   { transform: scale(1);   opacity: 0.7; }
-    100% { transform: scale(1.6); opacity: 0;   }
+  @keyframes ses-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
   }
 
-  .stripe-success-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    min-width: 0;
+  .ses-modal {
+    position: relative;
+    width: 100%;
+    max-width: 460px;
+    background:
+      radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--success) 14%, transparent) 0%, transparent 60%),
+      var(--bg-surface);
+    border: 1px solid color-mix(in srgb, var(--success) 18%, var(--border));
+    border-radius: var(--radius-lg, 16px);
+    padding: 2.25rem 1.5rem 1.5rem;
+    text-align: center;
+    box-shadow:
+      0 20px 60px -20px rgba(0, 0, 0, 0.7),
+      0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    animation: ses-rise 460ms cubic-bezier(0.34, 1.36, 0.64, 1);
+    overflow: hidden;
   }
-  .stripe-success-title {
-    font-size: 0.9375rem;
+  @keyframes ses-rise {
+    from { opacity: 0; transform: translateY(28px) scale(0.96); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* Soft top-edge glow so the eye lands at the checkmark */
+  .ses-glow {
+    position: absolute;
+    top: -50%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 160%;
+    aspect-ratio: 1 / 1;
+    background: radial-gradient(circle, color-mix(in srgb, var(--success) 18%, transparent) 0%, transparent 50%);
+    pointer-events: none;
+    opacity: 0.6;
+  }
+
+  .ses-close {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    width: 1.875rem;
+    height: 1.875rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.5);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    z-index: 1;
+  }
+  .ses-close:hover { background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.9); }
+
+  /* Hero checkmark with double ring emission (one-shot, no looping) */
+  .ses-check-wrap {
+    position: relative;
+    width: 4.5rem;
+    height: 4.5rem;
+    margin: 0 auto 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ses-check {
+    position: relative;
+    width: 4.5rem;
+    height: 4.5rem;
+    border-radius: 50%;
+    background: var(--success);
+    color: #0a1410;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 20px -6px color-mix(in srgb, var(--success) 60%, transparent);
+    animation: ses-check-pop 520ms cubic-bezier(0.34, 1.56, 0.64, 1) 100ms backwards;
+  }
+  @keyframes ses-check-pop {
+    0%   { transform: scale(0.4); opacity: 0; }
+    60%  { transform: scale(1.08); opacity: 1; }
+    100% { transform: scale(1);    opacity: 1; }
+  }
+  .ses-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid var(--success);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .ses-ring--1 { animation: ses-ring 1.4s cubic-bezier(0.16, 1, 0.3, 1) 320ms 1 forwards; }
+  .ses-ring--2 { animation: ses-ring 1.4s cubic-bezier(0.16, 1, 0.3, 1) 540ms 1 forwards; }
+  @keyframes ses-ring {
+    0%   { transform: scale(1);    opacity: 0.6; }
+    100% { transform: scale(1.85); opacity: 0;   }
+  }
+
+  .ses-title {
+    font-size: 1.5rem;
     font-weight: 700;
     color: var(--text);
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.375rem;
   }
-  .stripe-success-sub {
+  .ses-lede {
+    font-size: 0.9375rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0 0 1.25rem;
+  }
+
+  /* The email card — the single fact the user is here to see */
+  .ses-email-card {
+    background: color-mix(in srgb, var(--success) 8%, var(--bg-base));
+    border: 1px solid color-mix(in srgb, var(--success) 24%, var(--border));
+    border-radius: var(--radius-md);
+    padding: 0.875rem 1rem;
+    margin: 0 0 1.125rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.375rem;
+  }
+  .ses-email-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--success) 60%, var(--text-muted));
+  }
+  .ses-email-addr {
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-all;
+    line-height: 1.3;
+  }
+  .ses-email-addr--unknown { font-style: italic; color: var(--text-muted); font-weight: 500; }
+
+  .ses-steps {
+    list-style: none;
+    margin: 0 0 1.25rem;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    text-align: left;
+  }
+  .ses-steps li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
     font-size: 0.8125rem;
     color: var(--text-secondary);
-    line-height: 1.45;
+    line-height: 1.5;
   }
-  .stripe-success-email {
-    display: inline;
-    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
-    font-size: 0.8125rem;
-    color: var(--accent-text);
-    word-break: break-all;
-    border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-    padding-bottom: 1px;
+  .ses-step-num {
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 0.0625rem;
   }
-  .stripe-success-note {
-    margin-top: 0.375rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid color-mix(in srgb, var(--success) 14%, var(--border));
+
+  .ses-done {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.9375rem;
+    border-radius: var(--radius-md);
+    transition: background 0.15s, transform 0.1s;
+    cursor: pointer;
+  }
+  .ses-done:hover { background: var(--accent-hover); }
+  .ses-done:active { transform: scale(0.99); }
+
+  .ses-foot {
+    margin: 0.875rem 0 0;
     font-size: 0.6875rem;
     color: var(--text-muted);
+    line-height: 1.5;
     letter-spacing: 0.01em;
+  }
+
+  /* ── Inline echo strip (after dismiss) ── */
+  .ses-strip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4375rem 0.625rem 0.4375rem 0.5rem;
+    background: color-mix(in srgb, var(--success) 9%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--success) 24%, var(--border));
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s;
+    text-align: left;
+    max-width: 100%;
+  }
+  .ses-strip:hover { background: color-mix(in srgb, var(--success) 14%, var(--bg-surface)); }
+  .ses-strip-check {
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 50%;
+    background: var(--success);
+    color: #0a1410;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ses-strip-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .ses-strip-text strong {
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+    font-weight: 600;
+    color: var(--accent-text);
+  }
+  .ses-strip-arrow {
+    flex-shrink: 0;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding-left: 0.5rem;
+    border-left: 1px solid color-mix(in srgb, var(--success) 16%, var(--border));
+  }
+
+  @media (max-width: 480px) {
+    .ses-modal { padding: 2rem 1.25rem 1.25rem; max-width: 100%; }
+    .ses-title { font-size: 1.3125rem; }
+    .ses-check-wrap, .ses-check { width: 4rem; height: 4rem; }
   }
 
   .pending-badge {
