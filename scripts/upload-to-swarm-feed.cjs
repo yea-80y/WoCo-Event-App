@@ -155,17 +155,28 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     const writer = bee.makeFeedWriter(topic, signer);
     await writer.uploadReference(POSTAGE_BATCH_ID, new Reference(siteRef));
 
-    // Wait for propagation
-    await new Promise(r => setTimeout(r, 3000));
-
-    // Verify — bee-js v11 returns { payload, feedIndex, feedIndexNext }
+    // Verify — poll until proxy serves the new index (bee-proxy read-cache lag
+    // can run 5–8s on a busy node; the old fixed 3s wait was unreliable).
     const reader = bee.makeFeedReader(topic, ownerObj);
-    try {
-      const feed = await reader.download();
-      const index = Number(BigInt('0x' + Buffer.from(feed.feedIndex.bytes).toString('hex')));
-      console.log(`Feed updated successfully! Index: ${index}`);
-    } catch (e) {
-      console.log(`Could not verify feed update: ${e.message}`);
+    let verifiedIndex = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await new Promise(r => setTimeout(r, 1500));
+      try {
+        const feed = await reader.download();
+        verifiedIndex = Number(BigInt('0x' + Buffer.from(feed.feedIndex.bytes).toString('hex')));
+        // Stop polling once the latest etag matches our siteRef — confirms
+        // the proxy is serving our new write, not a stale prior index.
+        const probe = await axios.get(
+          `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
+          { maxRedirects: 0, validateStatus: () => true },
+        );
+        if (probe.headers.etag?.replace(/"/g, '') === siteRef) break;
+      } catch { /* keep polling */ }
+    }
+    if (verifiedIndex != null) {
+      console.log(`Feed updated successfully! Index: ${verifiedIndex}`);
+    } else {
+      console.log('Could not verify feed update (proxy still cold) — check manually with curl /feeds/{owner}/{topic}');
     }
 
     // 5) Save state
