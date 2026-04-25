@@ -34,6 +34,7 @@ import {
   PAGE_0_CAPACITY,
   PAGE_N_CAPACITY,
 } from "../swarm/topics.js";
+import { heldFor } from "./reservation-store.js";
 
 /** Internal result type — `_pendingId` is stripped before returning to clients */
 export type ClaimResult = ClaimedTicket & { _pendingId?: string };
@@ -412,11 +413,19 @@ export async function getClaimStatus(
   userEditions.sort((a, b) => a - b);
   const userEdition = userEditions[0];
 
+  // Subtract active reservations so other concurrent buyers see real
+  // availability. Reservations are server-only state (no Swarm), so this
+  // read is cheap (in-memory map lookup).
+  const held = heldFor(seriesId);
+  const rawAvailable = meta.totalSupply - claimed;
+  const available = Math.max(0, rawAvailable - held);
+
   return {
     seriesId,
     totalSupply: meta.totalSupply,
     claimed,
-    available: meta.totalSupply - claimed,
+    available,
+    held,
     ...(userEditions.length > 0 ? { userEdition, userEditions } : {}),
     ...(userPendingId ? { userPendingId } : {}),
   };

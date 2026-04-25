@@ -11,6 +11,7 @@
   "dependencies": {
     "@ethersphere/bee-js": "^11.0.0",
     "@hono/node-server": "^1.14.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@woco/shared": "*",
     "@x402/core": "^2.7.0",
     "@x402/hono": "^2.7.0",

@@ -20,6 +20,8 @@ import { broadcast } from "./routes/broadcast.js";
 import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
 import { tickets } from "./routes/tickets.js";
+import { reservations } from "./routes/reservations.js";
+import { ticketPage } from "./routes/ticket-page.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -300,6 +302,7 @@ app.route("/api/events", claims);
 app.route("/api/events", orders);
 app.route("/api/events", approvals);
 app.route("/api/events", broadcast);
+app.route("/api/events", reservations);
 
 // Collection routes (authenticated)
 app.route("/api/collection", collection);
@@ -319,6 +322,11 @@ app.route("/api/profile", profiles);
 
 // Ticket actions (send email, etc.)
 app.route("/api/tickets", tickets);
+
+// Public ticket page + composite PNG — replaces the slow woco.eth.limo/#/verify
+// link in confirmation emails. Mounted at /t (not /api/t) since these are
+// user-facing URLs that ship in emails.
+app.route("/t", ticketPage);
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);

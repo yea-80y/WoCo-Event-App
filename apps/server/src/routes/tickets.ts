@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import QRCode from "qrcode";
 import type { AppEnv } from "../types.js";
 import { getResend, getFromAddress } from "../lib/email/client.js";
+import { renderTicketCardPng } from "../lib/ticket/render-card.js";
 
 const tickets = new Hono<AppEnv>();
 
@@ -9,6 +9,11 @@ const tickets = new Hono<AppEnv>();
 const emailRateMap = new Map<string, number[]>();
 const RATE_LIMIT = 3;
 const RATE_WINDOW = 300_000; // 5 min
+
+/** Public base URL the server is reachable on (e.g. https://events-api.woco-net.com).
+ *  Required for ticket links + composite PNG OG image URLs. Falls back to a
+ *  relative path so dev/test still works without the env. */
+const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE || "").replace(/\/$/, "");
 
 export interface TicketEmailOpts {
   to: string;
@@ -19,6 +24,32 @@ export interface TicketEmailOpts {
   /** All tickets in the order. Single ticket = array of one element. */
   tickets: Array<{ edition: number | null; qrContent: string }>;
   totalSupply?: number;
+  /** Optional buyer name (from Stripe customer details). Baked into the
+   *  composite PNG and shown on the standalone ticket page. */
+  buyerName?: string;
+}
+
+/** Parse `woco://t/{eventId}/{seriesId}/{edition}/{sig}` → its parts.
+ *  Returns null on malformed input — caller should fall back gracefully. */
+function parseQrContent(qr: string): { eventId: string; seriesId: string; edition: number; sig: string } | null {
+  const m = qr.match(/^woco:\/\/t\/([^/]+)\/([^/]+)\/(\d+)\/(.+)$/);
+  if (!m) return null;
+  const edition = Number(m[3]);
+  if (!Number.isInteger(edition) || edition < 1) return null;
+  return { eventId: m[1], seriesId: m[2], edition, sig: m[4] };
+}
+
+/** Build the public URL for a ticket — both the HTML page and the composite
+ *  PNG share the same base; the .png suffix toggles between them. */
+function ticketUrl(qrContent: string, buyerEmail?: string, buyerName?: string, png = false): string | null {
+  const p = parseQrContent(qrContent);
+  if (!p) return null;
+  const params = new URLSearchParams();
+  if (buyerName) params.set("n", buyerName);
+  if (buyerEmail) params.set("e", buyerEmail);
+  const q = params.toString();
+  const path = `/t/${p.eventId}/${p.seriesId}/${p.edition}/${p.sig}${png ? ".png" : ""}`;
+  return `${PUBLIC_API_BASE}${path}${q ? `?${q}` : ""}`;
 }
 
 function escHtml(s: string): string {
@@ -26,7 +57,7 @@ function escHtml(s: string): string {
 }
 
 function buildTicketHtml(opts: TicketEmailOpts): string {
-  const { eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply } = opts;
+  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, buyerName } = opts;
   const dateStr = eventDate
     ? new Date(eventDate).toLocaleDateString(undefined, {
         weekday: "long", year: "numeric", month: "long", day: "numeric",
@@ -35,14 +66,14 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
 
   const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
     const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
-    const verifyUrl = `https://woco.eth.limo/#/verify?t=${encodeURIComponent(qrContent)}`;
-    const cid = `woco-qr-${i}`;
+    // Standalone HTML page: fast server-rendered, no SPA load.
+    const pageUrl = ticketUrl(qrContent, to, buyerName, false);
+    const cid = `woco-card-${i}`;
     return `
       <div class="qr-section">
         ${editionStr ? `<div class="qr-label">Ticket #${editionStr}</div>` : `<div class="qr-label">Show at the door</div>`}
-        <img src="cid:${cid}" alt="Ticket QR code" class="qr-image" width="220" height="220" />
-        <a href="${escHtml(verifyUrl)}" class="qr-link">Open &amp; Verify Ticket${editionStr ? ` #${editionStr}` : ""} →</a>
-        <div class="ticket-id">${escHtml(qrContent)}</div>
+        <img src="cid:${cid}" alt="Ticket — show at the door" class="qr-image" width="320" height="440" />
+        ${pageUrl ? `<a href="${escHtml(pageUrl)}" class="qr-link">Open ticket page${editionStr ? ` #${editionStr}` : ""} →</a>` : ""}
       </div>`;
   }).join("\n");
 
@@ -67,11 +98,10 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
     .meta { margin-top: 12px; display: flex; flex-direction: column; gap: 5px; }
     .meta-row { font-size: 12px; color: rgba(245,240,234,0.4); }
     .body { padding: 28px 32px; }
-    .qr-section { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 24px; text-align: center; margin-bottom: 16px; }
+    .qr-section { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 24px 16px; text-align: center; margin-bottom: 16px; }
     .qr-label { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: rgba(255,255,255,0.22); margin-bottom: 14px; }
-    .qr-image { display: block; margin: 0 auto 16px; width: 220px; height: 220px; background: #fff; border-radius: 10px; padding: 12px; }
-    .qr-link { display: inline-block; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.25); color: #f59e0b; font-size: 12px; font-weight: 600; text-decoration: none; padding: 10px 20px; border-radius: 8px; }
-    .ticket-id { margin-top: 14px; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 10px; color: rgba(255,255,255,0.18); word-break: break-all; }
+    .qr-image { display: block; margin: 0 auto 16px; max-width: 100%; height: auto; border-radius: 10px; }
+    .qr-link { display: inline-block; background: rgba(124,108,240,0.14); border: 1px solid rgba(124,108,240,0.28); color: #a298f5; font-size: 12px; font-weight: 600; text-decoration: none; padding: 10px 20px; border-radius: 8px; }
     .instructions { font-size: 13px; color: rgba(245,240,234,0.45); line-height: 1.65; margin-top: 8px; }
     .footer { border-top: 1px solid rgba(255,255,255,0.05); padding: 20px 32px; font-size: 11px; color: rgba(255,255,255,0.18); }
   </style>
@@ -106,35 +136,38 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
 
 /** Send ticket confirmation email(s). Exported for use by the Stripe webhook handler.
  *
- * QR codes are generated as inline PNG attachments referenced in the HTML via
- * `cid:` URIs — this is the most reliable way to embed images that works
- * across Gmail, Apple Mail, Outlook and other major clients without being
- * stripped by image proxies. The PNG encodes the full POD ticket URI
- * (`woco://t/{eventId}/{seriesId}/{edition}/{originalSignature}`) so a QR
- * scanner at the door reads the same verifiable payload as the in-app
- * passport QR.
+ * Each ticket is shipped as a composite PNG (event metadata + buyer email
+ * + QR all baked into one image) referenced inline via `cid:` URIs. CIDs
+ * are the most reliable cross-client way to embed images — Gmail, Apple
+ * Mail, Outlook all render them without going through image proxies that
+ * strip QRs. The QR payload inside the PNG is the same
+ * `woco://t/{eventId}/{seriesId}/{edition}/{sig}` URI as the in-app
+ * passport QR, so any WoCo scanner at the door reads the same ticket.
  */
 export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
   const resend = getResend();
   const fromAddress = getFromAddress();
-  const { to, eventTitle, tickets: tix } = opts;
+  const { to, eventTitle, eventDate, eventLocation, tickets: tix, buyerName } = opts;
   const subjectEdition = tix.length === 1 && tix[0].edition != null
     ? ` #${String(tix[0].edition).padStart(3, "0")}`
     : tix.length > 1 ? ` (×${tix.length})` : "";
 
   const attachments = await Promise.all(
     tix.map(async ({ edition, qrContent }, i) => {
-      const png = await QRCode.toBuffer(qrContent, {
-        errorCorrectionLevel: "M",
-        margin: 2,
-        width: 512,
-        color: { dark: "#000000", light: "#ffffff" },
+      const png = await renderTicketCardPng({
+        eventTitle,
+        eventDate,
+        eventLocation,
+        edition,
+        buyerEmail: to,
+        buyerName,
+        qrContent,
       });
       const editionStr = edition != null ? String(edition).padStart(3, "0") : String(i + 1);
       return {
         filename: `ticket-${editionStr}.png`,
         content: png,
-        contentId: `woco-qr-${i}`,
+        contentId: `woco-card-${i}`,
         contentType: "image/png",
       };
     }),
@@ -159,6 +192,7 @@ tickets.post("/send-email", async (c) => {
     edition?: number | null;
     totalSupply?: number;
     qrContent?: string;
+    buyerName?: string;
     /** Multi-ticket: overrides single edition+qrContent when present */
     tickets?: Array<{ edition: number | null; qrContent: string }>;
   } | null;
@@ -191,6 +225,7 @@ tickets.post("/send-email", async (c) => {
       seriesName: body.seriesName,
       totalSupply: body.totalSupply,
       tickets: ticketsList,
+      buyerName: body.buyerName,
     });
     return c.json({ ok: true });
   } catch (err) {

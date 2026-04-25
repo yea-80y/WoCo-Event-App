@@ -363,7 +363,15 @@ export interface SeriesClaimStatus {
   seriesId: string;
   totalSupply: number;
   claimed: number;
+  /**
+   * Seats remaining for purchase. This is `totalSupply - claimed - held`,
+   * where `held` is the count of active (non-expired, non-consumed) slot
+   * reservations from concurrent buyers. Subtracting `held` here means
+   * every other UI in the app sees real-time availability automatically.
+   */
   available: number;
+  /** Seats currently held by active reservations (informational). */
+  held?: number;
   /** If the requesting user has an approved claim, their lowest edition number */
   userEdition?: number;
   /** All edition numbers owned by the requesting user (multi-purchase support) */

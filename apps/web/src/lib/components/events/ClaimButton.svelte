@@ -5,6 +5,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
   import { createCheckoutSession } from "../../api/stripe.js";
+  import { reserveSlots, releaseSlots, secondsUntil, formatCountdown, type ReservationData } from "../../api/reservations.js";
   import { CHAIN_INFO } from "../../payment/chains.js";
   import type { SeriesClaimStatus } from "@woco/shared";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
@@ -254,6 +255,15 @@
   let pendingOrderRef = $state<string | null>(null);
   /** True while the pre-upload is mid-flight (drives the ambient shimmer on Pay). */
   let orderRefUploading = $state(false);
+  /** Active server-side seat hold for this Stripe purchase. Cleared on form
+   *  close, quantity change, route change, or successful checkout redirect. */
+  let reservation = $state<ReservationData | null>(null);
+  /** Live countdown to reservation.expiresAt; null when no reservation. */
+  let reservationSecsLeft = $state<number | null>(null);
+  /** Set when /reserve fails (e.g. insufficient seats) — displayed inline. */
+  let reservationError = $state<string | null>(null);
+  /** Bumped by hover/focus/touchstart on Pay to fire pre-upload immediately. */
+  let payHoverTick = $state(0);
 
   const formValid = $derived(() => {
     if (!orderFields?.length) return true;
@@ -340,12 +350,6 @@
         window.history.replaceState(null, "", url.pathname + url.search + newHash);
       } catch { /* ignore */ }
 
-      // Save stashed encrypted order to Swarm if the webhook hadn't already
-      // grabbed the pre-uploaded ref. Background — no UI block.
-      if (sessionStorage.getItem(STRIPE_FORM_KEY)) {
-        saveStashedOrderData();
-      }
-
       // Single status refresh so the stock counter eventually catches up.
       // No polling — the email is the channel, not the UI.
       const addrForStatus = auth.parent?.toLowerCase();
@@ -358,14 +362,6 @@
         })
         .catch(() => { /* non-fatal */ });
       return;
-    }
-
-    // If a prior saveStashedOrderData() failed (server-side claim was still in
-    // flight), the key is kept in sessionStorage. Retry silently on every mount
-    // until it succeeds — the server will find the claimer entry once the
-    // background claim has finished writing to Swarm.
-    if (sessionStorage.getItem(STRIPE_FORM_KEY)) {
-      saveStashedOrderData();
     }
 
     // Permanent claimed from cache: no network call ever needed
@@ -477,9 +473,10 @@
     const isValid = formValid();
     const email = getEmailFromForm() ?? (stripeAfterForm ? stripeEmail.trim() : "");
     const address = auth.parent?.toLowerCase();
-    // Referencing formData/quantity here makes the effect re-run on any change.
+    // Referencing formData/quantity/hover here makes the effect re-run on change.
     const _dataSnapshot = JSON.stringify(formData);
     const _q = quantity;
+    const accelerated = payHoverTick > 0;
     void _dataSnapshot; void _q;
 
     if (!open || !willStripe || !encryptionKey || !isValid) {
@@ -487,9 +484,14 @@
       return;
     }
     if (!email && !address) return;
+    // Already have a fresh ref for this form snapshot — avoid a redundant write.
+    if (pendingOrderRef && !accelerated) return;
 
     if (_preUploadTimer) clearTimeout(_preUploadTimer);
     const mySeq = ++_preUploadSeq;
+    // 1500ms idle to minimise orphan SealedBoxes during typing; 0ms when the
+    // user signals intent to pay (hover/focus/touchstart on Pay button).
+    const delay = accelerated ? 0 : 1500;
     _preUploadTimer = setTimeout(async () => {
       orderRefUploading = true;
       try {
@@ -509,7 +511,79 @@
       } finally {
         if (mySeq === _preUploadSeq) orderRefUploading = false;
       }
-    }, 250);
+    }, delay);
+  });
+
+  /**
+   * Server-side seat hold for the Stripe path.
+   *
+   * Triggered when the order form opens with stripeAfterForm=true (the Pay-by-
+   * card branch). We hold seats with a TTL so concurrent buyers can't race us
+   * to the last tickets while the user fills out the form. Re-runs on quantity
+   * change. The release path uses sendBeacon so navigation away still releases.
+   */
+  let _reservationSeq = 0;
+  $effect(() => {
+    const open = showOrderForm;
+    const willStripe = stripeAfterForm;
+    const q = quantity;
+    if (!open || !willStripe) {
+      // Form closed (or switched out of Stripe) — release any active hold.
+      if (reservation) {
+        releaseSlots(eventId, seriesId, reservation.reservationId);
+        reservation = null;
+        reservationSecsLeft = null;
+        reservationError = null;
+      }
+      return;
+    }
+    // Quantity changed — release the old hold before requesting a new one.
+    if (reservation && reservation.quantity !== q) {
+      releaseSlots(eventId, seriesId, reservation.reservationId);
+      reservation = null;
+      reservationSecsLeft = null;
+    }
+    if (reservation) return; // already holding for this quantity
+    const mySeq = ++_reservationSeq;
+    reservationError = null;
+    reserveSlots(eventId, seriesId, q).then((res) => {
+      if (mySeq !== _reservationSeq) return;
+      if (res.ok) {
+        reservation = res.data;
+        reservationSecsLeft = secondsUntil(res.data.expiresAt);
+      } else {
+        reservation = null;
+        reservationSecsLeft = null;
+        reservationError = typeof res.available === "number"
+          ? `Only ${res.available} ticket${res.available === 1 ? "" : "s"} left`
+          : res.error;
+      }
+    }).catch(() => {
+      // Network error — let the user click Pay anyway; server will reject if
+      // truly out of stock. Keep UI quiet rather than block on a transient.
+    });
+  });
+
+  /** Tick the reservation countdown once per second. */
+  $effect(() => {
+    if (!reservation) return;
+    const id = setInterval(() => {
+      reservationSecsLeft = secondsUntil(reservation!.expiresAt);
+      if (reservationSecsLeft === 0) {
+        reservation = null;
+        reservationSecsLeft = null;
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
+  /** Release on tab close / navigation away. */
+  $effect(() => {
+    if (!reservation) return;
+    const r = reservation;
+    const onUnload = () => releaseSlots(eventId, seriesId, r.reservationId);
+    window.addEventListener("pagehide", onUnload);
+    return () => window.removeEventListener("pagehide", onUnload);
   });
 
   /** sessionStorage key for stashing form data across Stripe redirect */
@@ -619,15 +693,14 @@
         }
       }
 
-      // Stash as a fallback — if pre-upload failed, save-order after return
-      // still gets a shot at attaching the form data.
+      // Persist email + quantity so the success card can render after the
+      // Stripe redirect even before the webhook has confirmed the claim.
+      // No form data — the webhook attaches the orderRef directly to every
+      // ticket via session.metadata, so there's nothing for the client to
+      // do on return beyond showing the confirmation.
       sessionStorage.setItem(STRIPE_FORM_KEY, JSON.stringify({
-        fields: formData,
         claimerEmail: email,
-        claimerAddress: address,
         quantity,
-        // If pre-upload succeeded, record it so save-order can early-out
-        preparedOrderRef,
       }));
 
       const { url } = await createCheckoutSession({
@@ -637,7 +710,12 @@
         quantity: quantity > 1 ? quantity : undefined,
         orderRef: preparedOrderRef,
         encryptedOrder: !preparedOrderRef ? inlineEncryptedOrder : undefined,
+        reservationId: reservation?.reservationId,
       });
+      // Server has stamped reservationId into Stripe metadata; webhook
+      // consumes it. Clear local state so back-nav doesn't double-release.
+      reservation = null;
+      reservationSecsLeft = null;
       // Remember which series we were buying so EventPage can auto-select on return
       try { sessionStorage.setItem(`woco:stripe-returning:${eventId}`, seriesId); } catch { /* ignore */ }
       window.location.href = url;
@@ -646,65 +724,6 @@
       if (!handleAlreadyClaimed(msg)) error = msg;
     } finally {
       stripeLoading = false;
-    }
-  }
-
-  /**
-   * Encrypt and push stashed Stripe form data to the server.
-   *
-   * The webhook processes the claim in the background and returns 200 to Stripe
-   * immediately, so the claimer entry may not be in the Swarm feed by the time
-   * we arrive here. The server retries for ~30 s; if it still fails we keep the
-   * sessionStorage key so a subsequent page visit can try again automatically
-   * (see onMount below). The key is only removed on success.
-   */
-  async function saveStashedOrderData() {
-    const raw = sessionStorage.getItem(STRIPE_FORM_KEY);
-    if (!raw || !encryptionKey) return;
-
-    try {
-      const stashed = JSON.parse(raw) as {
-        fields: Record<string, string>;
-        claimerEmail?: string;
-        claimerAddress?: string;
-        quantity?: number;
-        preparedOrderRef?: string;
-      };
-
-      // If we pre-uploaded the encrypted order before the Stripe redirect and
-      // the webhook attached it to every ticket, there's nothing for save-order
-      // to do. Drop the stash and return — avoids a redundant Swarm upload.
-      if (stashed.preparedOrderRef) {
-        sessionStorage.removeItem(STRIPE_FORM_KEY);
-        console.log("[ClaimButton] Pre-uploaded order was used by webhook — skipping save-order");
-        return;
-      }
-
-      const sealed = await sealJson(encryptionKey, {
-        fields: stashed.fields,
-        seriesId,
-        ...(stashed.claimerAddress ? { claimerAddress: stashed.claimerAddress } : {}),
-        ...(stashed.claimerEmail ? { claimerEmail: stashed.claimerEmail } : {}),
-      });
-
-      const { saveStripeOrder } = await import("../../api/stripe.js");
-      await saveStripeOrder({
-        seriesId,
-        encryptedOrder: sealed,
-        claimerEmail: stashed.claimerEmail,
-        claimerAddress: stashed.claimerAddress,
-        expectedEditions: stashed.quantity && stashed.quantity > 1 ? stashed.quantity : undefined,
-      });
-
-      // Only remove on success — if the server-side save failed (claimer entry
-      // not yet written by background claim), keep the key so the next mount
-      // of this component retries automatically.
-      sessionStorage.removeItem(STRIPE_FORM_KEY);
-      console.log("[ClaimButton] Order data saved after Stripe payment");
-    } catch (err) {
-      console.error("[ClaimButton] Failed to save order data (will retry on next visit):", err);
-      // Intentionally NOT removing the key — the next onMount will call
-      // saveStashedOrderData() again and try once more.
     }
   }
 
@@ -1295,6 +1314,17 @@
           Only {status.available} left
         </div>
       {/if}
+      {#if stripeAfterForm && reservation && reservationSecsLeft !== null}
+        <div class="avail-pill avail-pill--reserved" aria-live="polite">
+          <span class="avail-pill-dot"></span>
+          {reservation.quantity} ticket{reservation.quantity === 1 ? "" : "s"} reserved · {formatCountdown(reservationSecsLeft)} to checkout
+        </div>
+      {:else if stripeAfterForm && reservationError}
+        <div class="avail-banner avail-banner--shortfall" role="alert">
+          <span class="avail-banner-dot"></span>
+          <span class="avail-banner-text">{reservationError}</span>
+        </div>
+      {/if}
       {#if orderFields}
         {#each orderFields as field}
           <label class="form-field">
@@ -1372,6 +1402,9 @@
               class="stripe-btn stripe-btn--primary"
               class:preparing={orderRefUploading && !pendingOrderRef}
               onclick={handleStripeCheckout}
+              onpointerenter={() => { payHoverTick++; }}
+              onfocus={() => { payHoverTick++; }}
+              ontouchstart={() => { payHoverTick++; }}
               disabled={!formValid()}
             >
               Continue to payment {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
@@ -1723,36 +1756,24 @@
   >
     <div class="ses-modal" role="document">
       <button class="ses-close" onclick={dismissStripeSuccess} aria-label="Close">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/>
         </svg>
       </button>
 
-      <div class="ses-glow" aria-hidden="true"></div>
-
-      <div class="ses-check-wrap" aria-hidden="true">
-        <span class="ses-ring ses-ring--1"></span>
-        <span class="ses-ring ses-ring--2"></span>
-        <span class="ses-check">
-          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="20 6 9 17 4 12"/>
-          </svg>
-        </span>
+      <div class="ses-check" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
       </div>
 
       <h2 id="ses-title" class="ses-title">Payment confirmed</h2>
       <p class="ses-lede">
-        {stripeSuccessQty > 1 ? `Your ${stripeSuccessQty} tickets are` : "Your ticket is"} on the way.
+        {stripeSuccessQty > 1 ? `Your ${stripeSuccessQty} tickets are` : "Your ticket is"} on the way to your inbox.
       </p>
 
       <div class="ses-email-card">
-        <span class="ses-email-label">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-            <polyline points="22,6 12,13 2,6"/>
-          </svg>
-          Sent to
-        </span>
+        <span class="ses-email-label">Sent to</span>
         {#if stripeSuccessEmail}
           <span class="ses-email-addr">{stripeSuccessEmail}</span>
         {:else}
@@ -1761,18 +1782,9 @@
       </div>
 
       <ul class="ses-steps">
-        <li>
-          <span class="ses-step-num">1</span>
-          <span>Check your inbox in the next few minutes.</span>
-        </li>
-        <li>
-          <span class="ses-step-num">2</span>
-          <span>If you don't see it, peek at your spam folder — sometimes confirmations land there.</span>
-        </li>
-        <li>
-          <span class="ses-step-num">3</span>
-          <span>Show the QR code from the email at the door on the day.</span>
-        </li>
+        <li><span class="ses-step-bullet"></span>Check your inbox in the next few minutes.</li>
+        <li><span class="ses-step-bullet"></span>If you don't see it, check your spam folder.</li>
+        <li><span class="ses-step-bullet"></span>Show the QR code in the email at the door.</li>
       </ul>
 
       <button class="ses-done" onclick={dismissStripeSuccess}>Done</button>
@@ -1884,24 +1896,25 @@
   /* ══════════════════════════════════════════════════
    * STRIPE EMAIL-SUCCESS MODAL  (.ses-*)
    *
-   * Full-screen overlay shown immediately on Stripe return. Dark backdrop +
-   * elevated card. Email is the hero fact, surrounded by a clear three-step
-   * "what happens next" so the user never feels left in the dark waiting
-   * for the email. After dismissal, .ses-strip is the quiet inline echo
-   * the user can click to bring the modal back.
+   * Restrained confirmation modal — neutral surface, single small accent on
+   * the check, typography hierarchy doing the work. Inspired by Luma /
+   * Eventbrite confirmations: the user already paid, this just reassures.
+   *
+   * Mobile fix: overlay uses `flex-start` + `margin: auto` on the modal so
+   * tall content scrolls from the top instead of being clipped above the fold.
    * ══════════════════════════════════════════════ */
   .ses-overlay {
     position: fixed;
     inset: 0;
     z-index: 1000;
-    background: rgba(0, 0, 0, 0.74);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    background: rgba(8, 8, 14, 0.78);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: 1.25rem;
-    animation: ses-fade 220ms ease;
+    padding: max(1.5rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom));
+    animation: ses-fade 200ms ease;
     overflow-y: auto;
   }
   @keyframes ses-fade {
@@ -1912,105 +1925,62 @@
   .ses-modal {
     position: relative;
     width: 100%;
-    max-width: 460px;
-    background:
-      radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--success) 14%, transparent) 0%, transparent 60%),
-      var(--bg-surface);
-    border: 1px solid color-mix(in srgb, var(--success) 18%, var(--border));
-    border-radius: var(--radius-lg, 16px);
-    padding: 2.25rem 1.5rem 1.5rem;
+    max-width: 420px;
+    margin: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg, 14px);
+    padding: 2rem 1.5rem 1.5rem;
     text-align: center;
-    box-shadow:
-      0 20px 60px -20px rgba(0, 0, 0, 0.7),
-      0 0 0 1px rgba(255, 255, 255, 0.04) inset;
-    animation: ses-rise 460ms cubic-bezier(0.34, 1.36, 0.64, 1);
-    overflow: hidden;
+    box-shadow: 0 24px 48px -16px rgba(0, 0, 0, 0.55);
+    animation: ses-rise 320ms cubic-bezier(0.2, 0.9, 0.3, 1);
   }
   @keyframes ses-rise {
-    from { opacity: 0; transform: translateY(28px) scale(0.96); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
-  }
-
-  /* Soft top-edge glow so the eye lands at the checkmark */
-  .ses-glow {
-    position: absolute;
-    top: -50%;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 160%;
-    aspect-ratio: 1 / 1;
-    background: radial-gradient(circle, color-mix(in srgb, var(--success) 18%, transparent) 0%, transparent 50%);
-    pointer-events: none;
-    opacity: 0.6;
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 
   .ses-close {
     position: absolute;
-    top: 0.75rem;
-    right: 0.75rem;
-    width: 1.875rem;
-    height: 1.875rem;
+    top: 0.625rem;
+    right: 0.625rem;
+    width: 1.75rem;
+    height: 1.75rem;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    color: rgba(255, 255, 255, 0.5);
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
     cursor: pointer;
     transition: background 0.15s, color 0.15s;
-    z-index: 1;
   }
-  .ses-close:hover { background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.9); }
+  .ses-close:hover { background: var(--bg-surface-hover); color: var(--text); }
 
-  /* Hero checkmark with double ring emission (one-shot, no looping) */
-  .ses-check-wrap {
-    position: relative;
-    width: 4.5rem;
-    height: 4.5rem;
-    margin: 0 auto 1rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
+  /* Single small accent — no rings, no glow, no hero size. */
   .ses-check {
-    position: relative;
-    width: 4.5rem;
-    height: 4.5rem;
+    width: 2.5rem;
+    height: 2.5rem;
+    margin: 0 auto 1rem;
     border-radius: 50%;
-    background: var(--success);
-    color: #0a1410;
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    color: var(--success);
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 6px 20px -6px color-mix(in srgb, var(--success) 60%, transparent);
-    animation: ses-check-pop 520ms cubic-bezier(0.34, 1.56, 0.64, 1) 100ms backwards;
+    animation: ses-check-pop 360ms cubic-bezier(0.2, 0.9, 0.3, 1) 80ms backwards;
   }
   @keyframes ses-check-pop {
-    0%   { transform: scale(0.4); opacity: 0; }
-    60%  { transform: scale(1.08); opacity: 1; }
-    100% { transform: scale(1);    opacity: 1; }
-  }
-  .ses-ring {
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    border: 2px solid var(--success);
-    opacity: 0;
-    pointer-events: none;
-  }
-  .ses-ring--1 { animation: ses-ring 1.4s cubic-bezier(0.16, 1, 0.3, 1) 320ms 1 forwards; }
-  .ses-ring--2 { animation: ses-ring 1.4s cubic-bezier(0.16, 1, 0.3, 1) 540ms 1 forwards; }
-  @keyframes ses-ring {
-    0%   { transform: scale(1);    opacity: 0.6; }
-    100% { transform: scale(1.85); opacity: 0;   }
+    from { opacity: 0; transform: scale(0.8); }
+    to   { opacity: 1; transform: scale(1); }
   }
 
   .ses-title {
-    font-size: 1.5rem;
-    font-weight: 700;
+    font-size: 1.375rem;
+    font-weight: 600;
     color: var(--text);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.015em;
     margin: 0 0 0.375rem;
   }
   .ses-lede {
@@ -2020,70 +1990,59 @@
     margin: 0 0 1.25rem;
   }
 
-  /* The email card — the single fact the user is here to see */
+  /* Email surface: neutral elevated input-style block, no color tint. */
   .ses-email-card {
-    background: color-mix(in srgb, var(--success) 8%, var(--bg-base));
-    border: 1px solid color-mix(in srgb, var(--success) 24%, var(--border));
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    padding: 0.875rem 1rem;
-    margin: 0 0 1.125rem;
+    padding: 0.75rem 1rem;
+    margin: 0 0 1.25rem;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.375rem;
+    gap: 0.25rem;
   }
   .ses-email-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
     font-size: 0.6875rem;
     font-weight: 600;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--success) 60%, var(--text-muted));
+    color: var(--text-muted);
   }
   .ses-email-addr {
     font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
     font-size: 0.9375rem;
-    font-weight: 600;
+    font-weight: 500;
     color: var(--text);
     word-break: break-all;
     line-height: 1.3;
   }
-  .ses-email-addr--unknown { font-style: italic; color: var(--text-muted); font-weight: 500; }
+  .ses-email-addr--unknown { font-style: italic; color: var(--text-muted); font-weight: 400; }
 
   .ses-steps {
     list-style: none;
-    margin: 0 0 1.25rem;
+    margin: 0 0 1.5rem;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.625rem;
+    gap: 0.5rem;
     text-align: left;
   }
   .ses-steps li {
     display: flex;
-    align-items: flex-start;
+    align-items: baseline;
     gap: 0.625rem;
     font-size: 0.8125rem;
     color: var(--text-secondary);
     line-height: 1.5;
   }
-  .ses-step-num {
+  .ses-step-bullet {
     flex-shrink: 0;
-    width: 1.25rem;
-    height: 1.25rem;
+    width: 4px;
+    height: 4px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    color: var(--text);
-    font-size: 0.6875rem;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-top: 0.0625rem;
+    background: var(--text-muted);
+    transform: translateY(-3px);
   }
 
   .ses-done {
@@ -2093,19 +2052,18 @@
     color: #fff;
     font-weight: 600;
     font-size: 0.9375rem;
+    border: none;
     border-radius: var(--radius-md);
-    transition: background 0.15s, transform 0.1s;
+    transition: background 0.15s;
     cursor: pointer;
   }
   .ses-done:hover { background: var(--accent-hover); }
-  .ses-done:active { transform: scale(0.99); }
 
   .ses-foot {
-    margin: 0.875rem 0 0;
+    margin: 1rem 0 0;
     font-size: 0.6875rem;
     color: var(--text-muted);
     line-height: 1.5;
-    letter-spacing: 0.01em;
   }
 
   /* ── Inline echo strip (after dismiss) ── */
@@ -2114,24 +2072,24 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.4375rem 0.625rem 0.4375rem 0.5rem;
-    background: color-mix(in srgb, var(--success) 9%, var(--bg-surface));
-    border: 1px solid color-mix(in srgb, var(--success) 24%, var(--border));
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     font-size: 0.8125rem;
-    color: var(--text);
+    color: var(--text-secondary);
     cursor: pointer;
-    transition: background 0.15s;
+    transition: background 0.15s, border-color 0.15s;
     text-align: left;
     max-width: 100%;
   }
-  .ses-strip:hover { background: color-mix(in srgb, var(--success) 14%, var(--bg-surface)); }
+  .ses-strip:hover { background: var(--bg-surface-hover); border-color: var(--border-hover); }
   .ses-strip-check {
     flex-shrink: 0;
-    width: 1.25rem;
-    height: 1.25rem;
+    width: 1.125rem;
+    height: 1.125rem;
     border-radius: 50%;
-    background: var(--success);
-    color: #0a1410;
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    color: var(--success);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2144,8 +2102,8 @@
   }
   .ses-strip-text strong {
     font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
-    font-weight: 600;
-    color: var(--accent-text);
+    font-weight: 500;
+    color: var(--text);
   }
   .ses-strip-arrow {
     flex-shrink: 0;
@@ -2155,13 +2113,12 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     padding-left: 0.5rem;
-    border-left: 1px solid color-mix(in srgb, var(--success) 16%, var(--border));
+    border-left: 1px solid var(--border);
   }
 
   @media (max-width: 480px) {
-    .ses-modal { padding: 2rem 1.25rem 1.25rem; max-width: 100%; }
-    .ses-title { font-size: 1.3125rem; }
-    .ses-check-wrap, .ses-check { width: 4rem; height: 4rem; }
+    .ses-modal { padding: 1.75rem 1.125rem 1.125rem; }
+    .ses-title { font-size: 1.25rem; }
   }
 
   .pending-badge {
@@ -2706,6 +2663,23 @@
     border-radius: 50%;
     background: #f59e0b;
     box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+  }
+
+  /* Reserved variant: same shape, neutral palette + steady pulse on the dot
+     so the user reads it as a live timer rather than a warning. */
+  .avail-pill--reserved {
+    color: var(--text-secondary, #c9c9d1);
+    background: color-mix(in srgb, var(--text-secondary, #c9c9d1) 8%, transparent);
+    border-color: color-mix(in srgb, var(--text-secondary, #c9c9d1) 18%, transparent);
+  }
+  .avail-pill--reserved .avail-pill-dot {
+    background: #10b981;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.55);
+    animation: avail-pill-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes avail-pill-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
   }
 
   /* Banner: full-width, for hard blocks (sold out / shortfall) */

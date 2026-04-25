@@ -26,6 +26,7 @@ import { topicClaimers } from "../lib/swarm/topics.js";
 import type { ClaimersFeed } from "@woco/shared";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { sendTicketEmail } from "./tickets.js";
+import { getReservation, consume as consumeReservation } from "../lib/event/reservation-store.js";
 
 const stripe = new Hono<AppEnv>();
 
@@ -350,7 +351,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, quantity: rawQty, orderRef, encryptedOrder } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -358,8 +359,34 @@ stripe.post("/create-checkout", async (c) => {
     quantity?: number;
     orderRef?: string;
     encryptedOrder?: SealedBox;
+    reservationId?: string;
   };
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
+
+  // Validate reservation if one was supplied. The reservation is expected to
+  // match this series + quantity; mismatches mean a stale/wrong client state
+  // and we'd rather fail loudly than silently let the user pay against the
+  // wrong hold.
+  let reservationId: string | undefined;
+  if (typeof rawReservationId === "string" && rawReservationId) {
+    const r = getReservation(rawReservationId);
+    if (!r) {
+      return c.json({ ok: false, error: "Reservation not found or expired" }, 410);
+    }
+    if (r.seriesId !== seriesId) {
+      return c.json({ ok: false, error: "Reservation series mismatch" }, 400);
+    }
+    if (r.quantity !== quantity) {
+      return c.json({ ok: false, error: "Reservation quantity mismatch" }, 400);
+    }
+    if (r.consumedAt) {
+      return c.json({ ok: false, error: "Reservation already consumed" }, 410);
+    }
+    if (new Date(r.expiresAt).getTime() < Date.now()) {
+      return c.json({ ok: false, error: "Reservation expired" }, 410);
+    }
+    reservationId = r.id;
+  }
 
   if (!eventId || !seriesId) {
     return c.json({ ok: false, error: "eventId and seriesId are required" }, 400);
@@ -523,6 +550,10 @@ stripe.post("/create-checkout", async (c) => {
         // Either way, the webhook attaches this ref to every ticket in the batch,
         // so multi-ticket orders never end up with empty attendee data.
         ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
+        // Slot reservation id, consumed by the webhook on successful claim.
+        // Optional: legacy / expired-reservation flows fall back to the
+        // existing availability check at claim time.
+        ...(reservationId ? { reservationId } : {}),
       },
       success_url: `${frontendUrl}/#/event/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/#/event/${eventId}?stripe=cancelled`,
@@ -661,7 +692,7 @@ async function handleSuccessfulPayment(
   session: import("stripe").Stripe.Checkout.Session,
   webhookEventCreated: number,
 ): Promise<void> {
-  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef } = session.metadata ?? {};
+  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId } = session.metadata ?? {};
 
   if (!eventId || !seriesId) {
     console.error("[stripe-webhook] Missing eventId/seriesId in session metadata");
@@ -670,6 +701,26 @@ async function handleSuccessfulPayment(
 
   const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
   const claimedAt = new Date(webhookEventCreated * 1000).toISOString();
+
+  // Consume the slot reservation if one was attached to the checkout session.
+  // Lenient: a failed consume (expired / unknown) does NOT block the claim —
+  // payment already landed, so we issue the ticket if seats are still
+  // available. The /create-checkout pre-flight makes a hard expiry rare;
+  // claimTicket() itself throws "No tickets available" if oversubscribed,
+  // and the existing auto-refund logic handles that case.
+  if (metaReservationId) {
+    const consumed = consumeReservation(metaReservationId);
+    if (consumed) {
+      console.log(
+        `[stripe-webhook] Consumed reservation ${metaReservationId} (qty=${consumed.quantity})`,
+      );
+    } else {
+      console.warn(
+        `[stripe-webhook] Reservation ${metaReservationId} could not be consumed — ` +
+        `may be expired or already consumed. Falling back to availability check at claim time.`,
+      );
+    }
+  }
 
   let identifier: ClaimIdentifier;
   if (claimerAddress) {
@@ -790,8 +841,12 @@ async function handleSuccessfulPayment(
     }
   }
 
-  // Auto-send confirmation email with all claimed tickets if we have an email address
+  // Auto-send confirmation email with all claimed tickets if we have an email address.
+  // Stripe gives us the buyer's name from `customer_details` (filled by the user
+  // at checkout when card billing is collected). Pass it through so it can be
+  // baked into the composite ticket-card PNG and shown on the standalone page.
   if (claimerEmail && claimedResults.length > 0 && eventTitle) {
+    const buyerName = session.customer_details?.name?.trim() || undefined;
     sendTicketEmail({
       to: claimerEmail,
       eventTitle,
@@ -800,6 +855,7 @@ async function handleSuccessfulPayment(
       seriesName,
       totalSupply,
       tickets: claimedResults,
+      buyerName,
     }).catch((err) => {
       console.error("[stripe-webhook] Auto-email failed (non-fatal):", err);
     });
@@ -898,18 +954,28 @@ stripe.post("/save-order", async (c) => {
     // Now enter the queue for a quick read-modify-write. Claims 2..N that were
     // queued before or after us will each read/write the feed; our write is
     // atomic relative to theirs.
+    //
+    // IMPORTANT: only attach to entries that don't already have an orderRef.
+    // The webhook is the canonical writer and attaches a per-purchase orderRef
+    // when each ticket is claimed. Without this guard, a repeat buyer's later
+    // /save-order call would overwrite the orderRef on every past entry that
+    // shares their email, collapsing all historical orders onto the latest
+    // form data in the dashboard.
     let matchCount = 0;
     await queueSeriesClaim(seriesId, async () => {
       const page = await readFeedPage(topicClaimers(seriesId));
       const feed = page ? decodeJsonFeed<ClaimersFeed>(page) : null;
       if (!feed) throw new Error("Claimers feed not found");
 
+      let dirty = false;
       for (const e of feed.claimers) {
-        if (e.claimerAddress.toLowerCase() === claimerKey.toLowerCase()) {
-          e.orderRef = orderRef;
-          matchCount++;
-        }
+        if (e.claimerAddress.toLowerCase() !== claimerKey.toLowerCase()) continue;
+        if (e.orderRef) continue;
+        e.orderRef = orderRef;
+        matchCount++;
+        dirty = true;
       }
+      if (!dirty) return;
       feed.updatedAt = new Date().toISOString();
       await writeFeedPage(topicClaimers(seriesId), encodeJsonFeed(feed));
     });

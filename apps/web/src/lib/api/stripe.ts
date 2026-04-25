@@ -85,6 +85,9 @@ export async function createCheckoutSession(params: {
   /** Raw encrypted order — server uploads in parallel with Stripe session
    *  creation when no pre-uploaded ref is available. */
   encryptedOrder?: SealedBox;
+  /** Slot reservation id from POST /reserve. Server validates + stamps into
+   *  Stripe session metadata; webhook consumes on successful claim. */
+  reservationId?: string;
 }): Promise<{ url: string }> {
   // Browsers strip the Referer path cross-origin (strict-origin-when-cross-origin),
   // so the server can't derive our full base. Pass it explicitly; server validates
@@ -101,6 +104,7 @@ export async function createCheckoutSession(params: {
     ...(params.quantity && params.quantity > 1 ? { quantity: params.quantity } : {}),
     ...(params.orderRef ? { orderRef: params.orderRef } : {}),
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
+    ...(params.reservationId ? { reservationId: params.reservationId } : {}),
     ...(returnUrl ? { returnUrl } : {}),
   };
 
