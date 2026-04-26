@@ -1330,12 +1330,12 @@
     {/if}
   {:else if showOrderForm}
     <div class="order-form">
-      {#if status && (status.available + (reservation?.quantity ?? 0)) <= 0}
+      {#if status && status.available <= 0}
         <div class="avail-banner avail-banner--sold-out" role="alert">
           <span class="avail-banner-dot"></span>
           <span class="avail-banner-text">Sold out — no tickets remain</span>
         </div>
-      {:else if status && (status.available + (reservation?.quantity ?? 0)) < quantity}
+      {:else if status && status.available < quantity}
         <div class="avail-banner avail-banner--shortfall" role="alert">
           <span class="avail-banner-dot"></span>
           <span class="avail-banner-text">
@@ -1422,9 +1422,9 @@
           <!-- Order form was shown before Stripe checkout -->
           {#if stripeLoading}
             <button class="stripe-btn stripe-btn--primary" disabled>Redirecting to Stripe…</button>
-          {:else if status && (status.available + (reservation?.quantity ?? 0)) <= 0}
+          {:else if status && status.available <= 0}
             <button class="stripe-btn stripe-btn--primary" disabled>Sold out</button>
-          {:else if status && (status.available + (reservation?.quantity ?? 0)) < quantity}
+          {:else if status && status.available < quantity}
             <button class="stripe-btn stripe-btn--primary" disabled>Not enough tickets</button>
           {:else}
             <button

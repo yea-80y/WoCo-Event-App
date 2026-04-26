@@ -364,10 +364,10 @@ export interface SeriesClaimStatus {
   totalSupply: number;
   claimed: number;
   /**
-   * Seats remaining for purchase. This is `totalSupply - claimed - held`,
-   * where `held` is the count of active (non-expired, non-consumed) slot
-   * reservations from concurrent buyers. Subtracting `held` here means
-   * every other UI in the app sees real-time availability automatically.
+   * Physical seats remaining (`totalSupply - claimed`). Active reservations
+   * are NOT subtracted here — concurrency is enforced inside `/reserve`,
+   * which validates against `available - heldFor()` at attempt time and
+   * returns the precise remaining count if the request can't be satisfied.
    */
   available: number;
   /** Seats currently held by active reservations (informational). */

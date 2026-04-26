@@ -14,8 +14,12 @@
  * claim queue pattern in routes/claims.ts), so concurrent /reserve calls
  * for the same series can't both grab the last seat.
  *
- * Authority: getClaimStatus subtracts `heldFor(seriesId)` from `available`
- * so other concurrent buyers see real availability.
+ * Authority: `available` reported by getClaimStatus is the physical remaining
+ * (totalSupply - claimed). Active reservations are NOT subtracted there —
+ * doing so would self-double-count the buyer's own hold and break the
+ * dropdown / shortfall UX. Concurrency is enforced inside `reserve()`, which
+ * subtracts heldFor() before validating, and returns the precise remaining
+ * count if the requested quantity can't be satisfied.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -119,8 +123,8 @@ function isActive(r: Reservation, now: number): boolean {
 
 /**
  * Total seats currently held by active reservations for a given series.
- * Used by getClaimStatus to subtract from `available` so other buyers see
- * the real number of purchasable seats.
+ * Used inside `reserve()` to enforce concurrency at reservation time, and
+ * exposed informationally on SeriesClaimStatus.held.
  */
 export function heldFor(seriesId: string): number {
   ensureLoaded();

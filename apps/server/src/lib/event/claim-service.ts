@@ -442,9 +442,15 @@ export async function getClaimStatus(
   userEditions.sort((a, b) => a - b);
   const userEdition = userEditions[0];
 
+  // `available` is the physical remaining count — totalSupply minus confirmed
+  // claims. Active reservations are NOT subtracted here: doing so contaminates
+  // the shared cache (a user's own reservation reduces THEIR own visible
+  // availability) and produces false "Not enough tickets" UI for the buyer
+  // who placed the hold. Concurrency is enforced at /reserve time, where the
+  // server checks held+requested against true availability and returns the
+  // precise remaining count if oversubscribed.
+  const available = Math.max(0, meta.totalSupply - claimed);
   const held = heldFor(seriesId);
-  const rawAvailable = meta.totalSupply - claimed;
-  const available = Math.max(0, rawAvailable - held);
 
   return {
     seriesId,
