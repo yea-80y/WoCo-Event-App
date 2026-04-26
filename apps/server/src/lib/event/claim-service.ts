@@ -343,67 +343,96 @@ export async function claimTicket(opts: {
 // Get claim status
 // ---------------------------------------------------------------------------
 
+/** Module-level cache of immutable series metadata. The meta page is written
+ *  ONCE at series creation (totalSupply, pageCount) and never mutated, so it
+ *  can be cached for the life of the process. Eliminates 2 Swarm round-trips
+ *  per status read after the first hit — the dominant cost for the
+ *  reservation path. */
+const seriesMetaCache = new Map<string, { totalSupply: number; pageCount: number }>();
+
+async function loadSeriesMeta(seriesId: string): Promise<{ totalSupply: number; pageCount: number }> {
+  const cached = seriesMetaCache.get(seriesId);
+  if (cached) return cached;
+
+  const editionsPage0 = await readFeedPage(topicEditions(seriesId, 0));
+  if (!editionsPage0) throw new Error("Series not found");
+  const refs = decode4096(editionsPage0);
+  if (refs.length === 0) throw new Error("Series has no metadata");
+
+  const metaJson = await downloadFromBytes(refs[0]);
+  const parsed = JSON.parse(metaJson) as { totalSupply: number; pageCount: number };
+  const meta = { totalSupply: parsed.totalSupply, pageCount: parsed.pageCount || 1 };
+  seriesMetaCache.set(seriesId, meta);
+  return meta;
+}
+
 export async function getClaimStatus(
   seriesId: string,
   userAddress?: string,
   userEmailHash?: string,
 ): Promise<SeriesClaimStatus> {
-  const editionsPage0 = await readFeedPage(topicEditions(seriesId, 0));
-  if (!editionsPage0) {
-    throw new Error("Series not found");
-  }
+  const meta = await loadSeriesMeta(seriesId);
+  const pageCount = meta.pageCount;
 
-  const refs = decode4096(editionsPage0);
-  if (refs.length === 0) throw new Error("Series has no metadata");
+  // Fan out reads: all claim pages + (when needed) pending-claims feed in
+  // parallel. Per-page Swarm reads are independent; serialising them was the
+  // largest avoidable latency for events with multiple pages.
+  const wantUserLookup = !!(userAddress || userEmailHash);
+  const claimPagesPromise = Promise.all(
+    Array.from({ length: pageCount }, (_, p) => readFeedPage(topicClaims(seriesId, p))),
+  );
+  const pendingPromise: Promise<PendingClaimsFeed | null> = wantUserLookup
+    ? getPendingClaimsFeed(seriesId)
+    : Promise.resolve(null);
 
-  const metaJson = await downloadFromBytes(refs[0]);
-  const meta = JSON.parse(metaJson) as {
-    totalSupply: number;
-    pageCount: number;
-  };
+  const [claimPages, pendingFeed] = await Promise.all([claimPagesPromise, pendingPromise]);
 
-  const pageCount = meta.pageCount || 1;
+  // Walk the slot table to count claimed editions. Per-slot ticket-body reads
+  // are only required when we need to identify the requesting user's
+  // editions; the reservation path passes no user and skips them entirely.
   let claimed = 0;
-  const userEditions: number[] = [];
+  const ticketReads: Array<Promise<{ ref: string } & Partial<ClaimedTicket>>> = [];
 
   for (let p = 0; p < pageCount; p++) {
-    const claimsPage = await readFeedPage(topicClaims(seriesId, p));
+    const claimsPage = claimPages[p];
     if (!claimsPage) continue;
 
     const claims = decode4096Claims(claimsPage);
     const startSlot = p === 0 ? 1 : 0;
 
     for (let s = startSlot; s < 128; s++) {
-      if (claims[s] !== "") {
-        claimed++;
+      const ref = claims[s];
+      if (ref === "") continue;
+      claimed++;
 
-        // Check if this approved claim belongs to the requesting user (skip pending)
-        // Collect ALL matching editions — a user can hold multiple via multi-purchase.
-        if (userAddress || userEmailHash) {
-          try {
-            const claimedJson = await downloadFromBytes(claims[s]);
-            const ct = JSON.parse(claimedJson) as ClaimedTicket;
-            if (ct.approvalStatus === "pending") continue;
-            if (userAddress && ct.ownerAddress?.toLowerCase() === userAddress.toLowerCase()) {
-              userEditions.push(ct.edition);
-            } else if (userEmailHash && ct.ownerEmailHash === userEmailHash) {
-              userEditions.push(ct.edition);
-            }
-          } catch {
-            // Skip unreadable claims
-          }
-        }
+      if (wantUserLookup) {
+        ticketReads.push(
+          downloadFromBytes(ref)
+            .then((json) => ({ ref, ...(JSON.parse(json) as ClaimedTicket) }))
+            .catch(() => ({ ref })),
+        );
       }
     }
   }
 
-  // Check pending-claims feed for userPendingId
+  const userEditions: number[] = [];
+  if (wantUserLookup && ticketReads.length > 0) {
+    const tickets = await Promise.all(ticketReads);
+    for (const ct of tickets) {
+      if (ct.approvalStatus === "pending") continue;
+      if (userAddress && ct.ownerAddress?.toLowerCase() === userAddress.toLowerCase()) {
+        if (typeof ct.edition === "number") userEditions.push(ct.edition);
+      } else if (userEmailHash && ct.ownerEmailHash === userEmailHash) {
+        if (typeof ct.edition === "number") userEditions.push(ct.edition);
+      }
+    }
+  }
+
   let userPendingId: string | undefined;
-  if (userAddress || userEmailHash) {
+  if (wantUserLookup) {
     const claimerKey = userAddress
       ? userAddress.toLowerCase()
       : `email:${userEmailHash}`;
-    const pendingFeed = await getPendingClaimsFeed(seriesId);
     const entry = pendingFeed?.pending.find(
       (e) => e.claimerKey === claimerKey && e.status === "pending",
     );
@@ -413,9 +442,6 @@ export async function getClaimStatus(
   userEditions.sort((a, b) => a - b);
   const userEdition = userEditions[0];
 
-  // Subtract active reservations so other concurrent buyers see real
-  // availability. Reservations are server-only state (no Swarm), so this
-  // read is cheap (in-memory map lookup).
   const held = heldFor(seriesId);
   const rawAvailable = meta.totalSupply - claimed;
   const available = Math.max(0, rawAvailable - held);

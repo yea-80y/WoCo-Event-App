@@ -50,53 +50,28 @@
   let lastClaimedTicket = $state<ClaimedTicket | undefined>(undefined);
   /**
    * Synchronously compute the initial Stripe-success state at script-init time
-   * (BEFORE the first render). Without this, the first render would briefly
-   * show the order form / pay button, then onMount sets `stripeSuccessEmail`
-   * and re-renders — producing a visible flash of the form on every Stripe
-   * return. By initialising state from the URL hash + sessionStorage up front,
-   * the success modal is the FIRST thing the user sees.
+   * (BEFORE the first render). The URL hash is the canonical signal of a
+   * fresh return; once onMount strips it, a refresh will not re-trigger the
+   * modal — the user gets a clean buy UI again. Email + qty are read from
+   * the form stash that was written when Pay was clicked.
    */
   function _initialStripeSuccess(): { email: string | null; qty: number; visible: boolean } {
     if (typeof window === "undefined") return { email: null, qty: 1, visible: false };
-    const successKey = `woco:stripe-success:${eventId}:${seriesId}`;
-    const formKey = `woco:stripe-form:${eventId}:${seriesId}`;
-    const dismissedKey = `woco:stripe-success-dismissed:${eventId}:${seriesId}`;
-    const dismissed = sessionStorage.getItem(dismissedKey) === "1";
+    const hash = window.location.hash;
+    if (!hash.includes("stripe=success")) return { email: null, qty: 1, visible: false };
 
-    // Persisted card from prior visit in this tab.
+    const formKey = `woco:stripe-form:${eventId}:${seriesId}`;
+    let email: string | null = null;
+    let qty = 1;
     try {
-      const raw = sessionStorage.getItem(successKey);
+      const raw = sessionStorage.getItem(formKey);
       if (raw) {
-        const parsed = JSON.parse(raw) as { email?: string; qty?: number };
-        return {
-          email: parsed.email ?? null,
-          qty: parsed.qty && Number.isInteger(parsed.qty) ? parsed.qty : 1,
-          visible: !dismissed,
-        };
+        const parsed = JSON.parse(raw) as { claimerEmail?: string; quantity?: number };
+        email = parsed.claimerEmail ?? null;
+        if (parsed.quantity && Number.isInteger(parsed.quantity)) qty = parsed.quantity;
       }
     } catch { /* ignore */ }
-
-    // Fresh return — read from URL hash + form stash.
-    const hash = window.location.hash;
-    if (hash.includes("stripe=success")) {
-      let email: string | null = null;
-      let qty = 1;
-      try {
-        const raw = sessionStorage.getItem(formKey);
-        if (raw) {
-          const parsed = JSON.parse(raw) as { claimerEmail?: string; quantity?: number };
-          email = parsed.claimerEmail ?? null;
-          if (parsed.quantity && Number.isInteger(parsed.quantity)) qty = parsed.quantity;
-        }
-      } catch { /* ignore */ }
-      // Persist immediately so a refresh keeps the card.
-      try {
-        sessionStorage.setItem(successKey, JSON.stringify({ email, qty }));
-      } catch { /* ignore */ }
-      return { email, qty, visible: true };
-    }
-
-    return { email: null, qty: 1, visible: false };
+    return { email, qty, visible: true };
   }
   const _initialSuccess = _initialStripeSuccess();
   /** Email the tickets were sent to — drives the success modal shown
@@ -253,6 +228,10 @@
   /** Pre-uploaded encrypted-order ref — set by the typing-debounce effect so
    *  handleStripeCheckout can skip the server-side upload step on Pay click. */
   let pendingOrderRef = $state<string | null>(null);
+  /** Snapshot of the form payload that produced `pendingOrderRef`. Pay-click
+   *  rejects the ref if the current snapshot diverges (user kept typing after
+   *  the upload completed) so Stripe metadata never gets stale form data. */
+  let pendingOrderRefSnapshot: string | null = null;
   /** True while the pre-upload is mid-flight (drives the ambient shimmer on Pay). */
   let orderRefUploading = $state(false);
   /** Active server-side seat hold for this Stripe purchase. Cleared on form
@@ -397,13 +376,14 @@
       });
   });
 
-  /** Dismiss the Stripe success modal — keeps the email-claimed state but
-   *  hides the modal so the user can browse the event page underneath. */
+  /** Dismiss the Stripe success modal. Clears the local success state
+   *  entirely so the buy UI is restored — the persistent banner above the
+   *  tickets card (rendered by the parent page) keeps the receipt visible. */
   function dismissStripeSuccess() {
     stripeSuccessVisible = false;
-    try {
-      sessionStorage.setItem(`woco:stripe-success-dismissed:${eventId}:${seriesId}`, "1");
-    } catch { /* ignore */ }
+    stripeSuccessEmail = null;
+    claimed = false;
+    claimedVia = null;
   }
 
   // Re-fetch with address when auth restores asynchronously (page refresh scenario).
@@ -464,53 +444,107 @@
    * debounced trigger produces a fresh upload; older orphan SealedBoxes are
    * encrypted and unreachable (no ref stored anywhere), so they're harmless.
    */
+  /**
+   * Build the snapshot string identifying the encrypted-order payload. The
+   * pre-uploaded ref is only reused when the current snapshot still matches
+   * the snapshot the ref was built from — keeps Stripe metadata in sync
+   * with what the user actually typed.
+   */
+  function buildOrderSnapshot(): string {
+    const email = getEmailFromForm() ?? (stripeAfterForm ? stripeEmail.trim() : "");
+    const address = auth.parent?.toLowerCase() ?? "";
+    return JSON.stringify({ formData, email, address });
+  }
+
   let _preUploadTimer: ReturnType<typeof setTimeout> | null = null;
   let _preUploadSeq = 0;
+  /** Resolves with the final ref+snapshot for the most-recent pre-upload, so
+   *  handleStripeCheckout can await an in-flight upload instead of starting a
+   *  duplicate inline upload. Always set to a Promise once the timer fires;
+   *  cleared back to null when the form closes. */
+  let _preUploadInflight: Promise<{ ref: string | null; snapshot: string | null }> | null = null;
+  /** First-fire flag: the very first time formValid → true we skip the 1500ms
+   *  debounce so the cold path (user fills + clicks fast) gets the upload
+   *  started immediately. Subsequent edits keep the 1500ms idle to avoid
+   *  orphan SealedBoxes during typing. Reset when the form closes. */
+  let _firstUploadFired = false;
   $effect(() => {
     // Capture reactive dependencies at the top so Svelte tracks them.
     const open = showOrderForm;
     const willStripe = stripeAfterForm;
     const isValid = formValid();
-    const email = getEmailFromForm() ?? (stripeAfterForm ? stripeEmail.trim() : "");
-    const address = auth.parent?.toLowerCase();
-    // Referencing formData/quantity/hover here makes the effect re-run on change.
-    const _dataSnapshot = JSON.stringify(formData);
-    const _q = quantity;
     const accelerated = payHoverTick > 0;
-    void _dataSnapshot; void _q;
+    // Referencing formData/email/address/quantity inside buildOrderSnapshot
+    // ensures Svelte re-runs this effect on any change.
+    const snapshot = buildOrderSnapshot();
+    const _q = quantity;
+    void _q;
 
     if (!open || !willStripe || !encryptionKey || !isValid) {
       pendingOrderRef = null;
+      pendingOrderRefSnapshot = null;
+      _preUploadInflight = null;
+      // Reset first-fire so the next time the form opens (or becomes valid)
+      // we eager-fire again.
+      if (!open) _firstUploadFired = false;
       return;
     }
+
+    const email = getEmailFromForm() ?? (stripeAfterForm ? stripeEmail.trim() : "");
+    const address = auth.parent?.toLowerCase();
     if (!email && !address) return;
-    // Already have a fresh ref for this form snapshot — avoid a redundant write.
-    if (pendingOrderRef && !accelerated) return;
+
+    // Fresh ref for this exact snapshot — skip redundant upload.
+    if (pendingOrderRef && pendingOrderRefSnapshot === snapshot && !accelerated) return;
+
+    // Snapshot diverged → existing ref is stale. Drop it so a Pay-click
+    // mid-typing falls back to the inline upload (which uses live formData)
+    // rather than shipping the outdated ref to Stripe.
+    if (pendingOrderRefSnapshot !== snapshot) {
+      pendingOrderRef = null;
+      pendingOrderRefSnapshot = null;
+    }
 
     if (_preUploadTimer) clearTimeout(_preUploadTimer);
     const mySeq = ++_preUploadSeq;
-    // 1500ms idle to minimise orphan SealedBoxes during typing; 0ms when the
-    // user signals intent to pay (hover/focus/touchstart on Pay button).
-    const delay = accelerated ? 0 : 1500;
-    _preUploadTimer = setTimeout(async () => {
+    const capturedSnapshot = snapshot;
+    // 0ms on first fire (form just became valid) and on Pay accelerator;
+    // otherwise 1500ms idle so typing doesn't spam orphan SealedBoxes.
+    const delay = accelerated || !_firstUploadFired ? 0 : 1500;
+    _firstUploadFired = true;
+    _preUploadTimer = setTimeout(() => {
       orderRefUploading = true;
-      try {
-        const sealed = await sealJson(encryptionKey, {
-          fields: formData,
-          seriesId,
-          ...(address ? { claimerAddress: address } : {}),
-          ...(email ? { claimerEmail: email } : {}),
-        });
-        const { prepareStripeOrder } = await import("../../api/stripe.js");
-        const ref = await prepareStripeOrder(sealed);
-        // A later trigger may have superseded us — drop stale result silently.
-        if (mySeq === _preUploadSeq) pendingOrderRef = ref;
-      } catch (err) {
-        console.warn("[ClaimButton] pre-upload failed, will fall back on Pay click:", err);
-        if (mySeq === _preUploadSeq) pendingOrderRef = null;
-      } finally {
-        if (mySeq === _preUploadSeq) orderRefUploading = false;
-      }
+      const work = (async (): Promise<{ ref: string | null; snapshot: string | null }> => {
+        try {
+          const sealed = await sealJson(encryptionKey, {
+            fields: formData,
+            seriesId,
+            ...(address ? { claimerAddress: address } : {}),
+            ...(email ? { claimerEmail: email } : {}),
+          });
+          const { prepareStripeOrder } = await import("../../api/stripe.js");
+          const ref = await prepareStripeOrder(sealed);
+          // A later trigger may have superseded us — drop stale result silently.
+          if (mySeq === _preUploadSeq) {
+            pendingOrderRef = ref;
+            pendingOrderRefSnapshot = capturedSnapshot;
+          }
+          return { ref, snapshot: capturedSnapshot };
+        } catch (err) {
+          console.warn("[ClaimButton] pre-upload failed, will fall back on Pay click:", err);
+          if (mySeq === _preUploadSeq) {
+            pendingOrderRef = null;
+            pendingOrderRefSnapshot = null;
+          }
+          return { ref: null, snapshot: null };
+        } finally {
+          if (mySeq === _preUploadSeq) {
+            orderRefUploading = false;
+            _preUploadInflight = null;
+          }
+        }
+      })();
+      _preUploadInflight = work;
     }, delay);
   });
 
@@ -555,7 +589,7 @@
         reservation = null;
         reservationSecsLeft = null;
         reservationError = typeof res.available === "number"
-          ? `Only ${res.available} ticket${res.available === 1 ? "" : "s"} left`
+          ? "Not enough tickets available — please reduce quantity"
           : res.error;
       }
     }).catch(() => {
@@ -677,9 +711,32 @@
       let preparedOrderRef: string | undefined;
       let inlineEncryptedOrder: SealedBox | undefined;
       if (encryptionKey) {
-        if (pendingOrderRef) {
+        // Only reuse the pre-uploaded ref if it still matches the live form
+        // snapshot. Otherwise the user kept typing after the upload finished
+        // and the ref now points at a stale SealedBox — fall back to inline
+        // upload, which seals the current formData.
+        const liveSnapshot = buildOrderSnapshot();
+        if (pendingOrderRef && pendingOrderRefSnapshot === liveSnapshot) {
           preparedOrderRef = pendingOrderRef;
-        } else {
+        } else if (_preUploadInflight) {
+          // A pre-upload is in flight — await it instead of starting a duplicate
+          // inline upload. Bound the wait so a stuck Swarm upload can't hang
+          // the Pay click indefinitely; on timeout we fall through to inline.
+          try {
+            const result = await Promise.race([
+              _preUploadInflight,
+              new Promise<{ ref: null; snapshot: null }>((resolve) =>
+                setTimeout(() => resolve({ ref: null, snapshot: null }), 2000)
+              ),
+            ]);
+            if (result.ref && result.snapshot === liveSnapshot) {
+              preparedOrderRef = result.ref;
+            }
+          } catch {
+            // Awaiting the pre-upload threw — drop through to inline upload below.
+          }
+        }
+        if (!preparedOrderRef) {
           try {
             inlineEncryptedOrder = await sealJson(encryptionKey, {
               fields: formData,
@@ -1257,26 +1314,6 @@
         </p>
       </footer>
     </div>
-  {:else if stripeSuccessEmail !== null && !stripeSuccessVisible}
-    <!-- After dismissal: a quiet inline confirmation strip stays visible so
-         the user always knows their tickets are on the way, even after
-         closing the celebratory modal. Click to re-open. -->
-    <button
-      type="button"
-      class="ses-strip"
-      onclick={() => { stripeSuccessVisible = true; try { sessionStorage.removeItem(`woco:stripe-success-dismissed:${eventId}:${seriesId}`); } catch { /* ignore */ } }}
-      aria-label="Show payment confirmation again"
-    >
-      <span class="ses-strip-check" aria-hidden="true">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12"/>
-        </svg>
-      </span>
-      <span class="ses-strip-text">
-        Tickets sent {#if stripeSuccessEmail}to <strong>{stripeSuccessEmail}</strong>{/if}
-      </span>
-      <span class="ses-strip-arrow" aria-hidden="true">View</span>
-    </button>
   {:else if approvalPending}
     <div class="pending-badge">
       <span class="pending-icon">&#9679;</span>
@@ -1305,13 +1342,8 @@
         <div class="avail-banner avail-banner--shortfall" role="alert">
           <span class="avail-banner-dot"></span>
           <span class="avail-banner-text">
-            Only {status.available} ticket{status.available === 1 ? "" : "s"} left — reduce quantity to continue
+            Not enough tickets available — please reduce quantity to continue
           </span>
-        </div>
-      {:else if status && status.available > 0 && status.available <= 5}
-        <div class="avail-pill" aria-live="polite">
-          <span class="avail-pill-dot"></span>
-          Only {status.available} left
         </div>
       {/if}
       {#if stripeAfterForm && reservation && reservationSecsLeft !== null}
@@ -1403,6 +1435,8 @@
               class:preparing={orderRefUploading && !pendingOrderRef}
               onclick={handleStripeCheckout}
               onpointerenter={() => { payHoverTick++; }}
+              onpointerdown={() => { payHoverTick++; }}
+              onmousedown={() => { payHoverTick++; }}
               onfocus={() => { payHoverTick++; }}
               ontouchstart={() => { payHoverTick++; }}
               disabled={!formValid()}
@@ -1715,11 +1749,6 @@
     {/if}
   {/if}
 
-  {#if status && !claimed && !showOrderForm}
-    <span class="availability">
-      {status.available} / {status.totalSupply} available
-    </span>
-  {/if}
 
   {#if error}
     <p class="error">{error}</p>
@@ -2196,11 +2225,6 @@
   .own-chip-hint {
     color: var(--text-muted);
     font-weight: 400;
-  }
-
-  .availability {
-    font-size: 0.75rem;
-    color: var(--text-muted);
   }
 
   .error {

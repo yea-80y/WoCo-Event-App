@@ -420,18 +420,27 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
   }
 
-  // Load event + availability check + (optionally) upload encrypted order in parallel.
-  // Swarm upload is the slowest link (~3–10s cold); running it alongside event/status
-  // reads hides its latency behind reads we'd be doing anyway.
+  // Load event + (when no reservation) availability check + (optionally) upload
+  // encrypted order in parallel. Swarm upload is the slowest link (~3–10s cold);
+  // running it alongside the event read hides its latency behind work we'd be
+  // doing anyway.
+  //
+  // When a valid reservation is already held, the seat is locked and the
+  // duplicate-claim re-check happens in the webhook anyway — skip the
+  // expensive availability read entirely. This is the dominant pre-Pay
+  // latency for the reservation path.
   const userEmailHash = claimerEmail ? hashEmail(claimerEmail) : undefined;
   const tSwarm = performance.now();
+  const skipAvailability = !!reservationId;
   const [event, statusResult, inlineUploadedRef] = await Promise.all([
     getEvent(eventId),
-    getClaimStatus(seriesId, verifiedAddress, userEmailHash).catch((err) => {
-      // Swarm read failure — non-fatal; webhook will re-check on claim.
-      console.warn("[stripe/create-checkout] Availability pre-check failed (continuing):", err);
-      return null;
-    }),
+    skipAvailability
+      ? Promise.resolve(null)
+      : getClaimStatus(seriesId, verifiedAddress, userEmailHash).catch((err) => {
+          // Swarm read failure — non-fatal; webhook will re-check on claim.
+          console.warn("[stripe/create-checkout] Availability pre-check failed (continuing):", err);
+          return null;
+        }),
     shouldUploadInline
       ? uploadToBytes(JSON.stringify(encryptedOrder)).catch((err) => {
           // Inline upload failure is non-fatal — webhook falls back to the

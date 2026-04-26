@@ -92,6 +92,11 @@
   /** seriesId to auto-select after Stripe return — resolved once event loads */
   let stripeReturnSeriesId = $state<string | null>(null);
 
+  /** Persistent Stripe-success banner shown ABOVE the tickets card on return.
+   *  Local-only: dismissal clears it for this view, refresh strips the URL
+   *  hash so it does not reappear. */
+  let stripeBanner = $state<{ email: string | null; qty: number } | null>(null);
+
   function handleClaimSuccess(data: { edition: number | null; claimedVia: "wallet" | "email" | null; ticket?: ClaimedTicket; claimerEmail?: string; editions?: Array<{ edition: number; ticket?: ClaimedTicket }> }) {
     successEdition = data.edition;
     successEditions = data.editions ?? (data.edition != null ? [{ edition: data.edition, ticket: data.ticket }] : []);
@@ -384,6 +389,20 @@
           const match = event.series.find(s => s.seriesId === returningId);
           if (match) { selectedSeries = match; stripeReturnSeriesId = null; claimOpen = true; }
         }
+        // Read the form stash so we can show the persistent banner above
+        // the tickets card. ClaimButton mounts AFTER our onMount and strips
+        // the hash itself — no need to strip here.
+        try {
+          const formRaw = sessionStorage.getItem(`woco:stripe-form:${eventId}:${returningId}`);
+          let email: string | null = null;
+          let qty = 1;
+          if (formRaw) {
+            const parsed = JSON.parse(formRaw) as { claimerEmail?: string; quantity?: number };
+            email = parsed.claimerEmail ?? null;
+            if (parsed.quantity && Number.isInteger(parsed.quantity)) qty = parsed.quantity;
+          }
+          stripeBanner = { email, qty };
+        } catch { stripeBanner = { email: null, qty: 1 }; }
       }
     }
 
@@ -528,6 +547,34 @@
       </div>
     </div>
 
+    <!-- ── Stripe success banner — sits above the tickets card so it's the
+         first thing the user sees on return, even after dismissing the modal.
+         Refresh strips the URL hash, so this won't re-appear on reload. ─── -->
+    {#if stripeBanner}
+      <div class="stripe-banner" role="status">
+        <span class="stripe-banner-check" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </span>
+        <span class="stripe-banner-text">
+          Payment confirmed —
+          {stripeBanner.qty > 1 ? `${stripeBanner.qty} tickets are` : "your ticket is"} on the way
+          {#if stripeBanner.email} to <strong>{stripeBanner.email}</strong>{/if}.
+        </span>
+        <button
+          type="button"
+          class="stripe-banner-close"
+          onclick={() => { stripeBanner = null; }}
+          aria-label="Dismiss confirmation"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/>
+          </svg>
+        </button>
+      </div>
+    {/if}
+
     <!-- ── Tickets card ──────────────────────────────────────────────────── -->
     <div class="tickets-card">
       <h2 class="tickets-heading">Tickets</h2>
@@ -578,9 +625,6 @@
                 </span>
               {/if}
 
-              {#if !isUnavailable && ss != null}
-                <span class="ticket-avail">{ss.available} left</span>
-              {/if}
             </div>
 
             <!-- Right: qty selector -->
@@ -789,10 +833,6 @@
             </p>
           {/if}
 
-          {#if getSeriesStatus(selectedSeries) && !claimed}
-            {@const ss = getSeriesStatus(selectedSeries)!}
-            <p class="availability-note">{ss.available} / {ss.totalSupply} tickets remaining</p>
-          {/if}
         {/if}
       </div>
     {/if}
@@ -1025,6 +1065,52 @@
     letter-spacing: 0.02em;
   }
 
+  /* ── Stripe success banner ─────────────────────────────────────────────────── */
+  .stripe-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    border: 1px solid color-mix(in srgb, var(--accent, #3ddb8a) 35%, transparent);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--accent, #3ddb8a) 10%, transparent);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
+  .stripe-banner-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--accent, #3ddb8a);
+    color: var(--bg-base, #0a0a0a);
+  }
+  .stripe-banner-text { flex: 1 1 auto; }
+  .stripe-banner-text strong { color: var(--text-primary); font-weight: 600; }
+  .stripe-banner-close {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .stripe-banner-close:hover {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    color: var(--text-primary);
+  }
+
   /* ── Tickets card ─────────────────────────────────────────────────────────── */
   .tickets-card {
     border: 1px solid var(--border);
@@ -1131,12 +1217,6 @@
 
   .ticket-price--dim {
     color: var(--text-muted) !important;
-  }
-
-  .ticket-avail {
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-    white-space: nowrap;
   }
 
   /* Qty selector */
@@ -1385,13 +1465,6 @@
     margin: 0;
   }
 
-  .availability-note {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    padding: 0.375rem 1.25rem 1.25rem;
-    margin: 0;
-  }
-
   /* ── Claim success ────────────────────────────────────────────────────────── */
   .claim-success {
     display: flex;
@@ -1554,7 +1627,6 @@
     .form-fields { padding: 1rem 1rem 0; }
     .claim-actions { padding: 1rem 1rem 0; }
     .encrypt-note { padding: 0.625rem 1rem 0; }
-    .availability-note { padding: 0.375rem 1rem 1rem; }
     .venue-card { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
     .maps-btn { width: 100%; justify-content: center; }
   }

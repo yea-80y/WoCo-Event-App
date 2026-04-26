@@ -823,6 +823,56 @@
       {/if}
     </div>
 
+    <!-- ── Sales overview (organiser-only) ────────────────────────────────────
+         Replaces the customer-facing "X / Y available" line on the event
+         page. Shows every series with sold / total / remaining so the
+         organiser sees real-time stock at a glance, including series that
+         haven't sold yet. ─────────────────────────────────────────────── -->
+    {@const _grouped = groupBySeries(ordersResponse.orders)}
+    {@const _totalSold = ordersResponse.orders.length}
+    {@const _totalSupply = event.series.reduce((acc, s) => acc + s.totalSupply, 0)}
+    <div class="sales-panel">
+      <div class="sales-summary">
+        <div class="sales-stat">
+          <span class="sales-stat-label">Sold</span>
+          <span class="sales-stat-value">{_totalSold}</span>
+        </div>
+        <div class="sales-stat">
+          <span class="sales-stat-label">Remaining</span>
+          <span class="sales-stat-value">{Math.max(0, _totalSupply - _totalSold)}</span>
+        </div>
+        <div class="sales-stat">
+          <span class="sales-stat-label">Total</span>
+          <span class="sales-stat-value">{_totalSupply}</span>
+        </div>
+      </div>
+      <table class="sales-table">
+        <thead>
+          <tr>
+            <th>Ticket</th>
+            <th class="num">Sold</th>
+            <th class="num">Remaining</th>
+            <th class="num">Total</th>
+            <th class="num">% sold</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each event.series as series}
+            {@const sold = (_grouped.get(series.seriesId) ?? []).length}
+            {@const remaining = Math.max(0, series.totalSupply - sold)}
+            {@const pct = series.totalSupply > 0 ? Math.round((sold / series.totalSupply) * 100) : 0}
+            <tr>
+              <td>{series.name}</td>
+              <td class="num">{sold}</td>
+              <td class="num">{remaining}</td>
+              <td class="num">{series.totalSupply}</td>
+              <td class="num">{pct}%</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+
     {#if ordersResponse.orders.length === 0}
       <div class="empty-state">
         <p>No orders yet. Orders will appear here when attendees claim tickets with order data.</p>
@@ -840,10 +890,13 @@
       {#each event.series as series}
         {@const seriesOrders = grouped.get(series.seriesId) ?? []}
         {#if seriesOrders.length > 0}
+          {@const remaining = Math.max(0, series.totalSupply - seriesOrders.length)}
           <div class="series-section">
             <div class="series-header">
               <h2>{series.name}</h2>
-              <span class="order-count">{seriesOrders.length} order{seriesOrders.length !== 1 ? "s" : ""}</span>
+              <span class="order-count">
+                {seriesOrders.length} / {series.totalSupply} sold · {remaining} remaining
+              </span>
               {#if event.orderFields && decryptedOrders.size > 0}
                 <button
                   class="csv-btn"
@@ -1102,6 +1155,60 @@
   .btn-remove:hover {
     border-color: var(--error);
     color: var(--error);
+  }
+
+  /* Sales overview */
+  .sales-panel {
+    margin-bottom: 2rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-card, transparent);
+  }
+  .sales-summary {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    padding-bottom: 0.875rem;
+    margin-bottom: 0.875rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .sales-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+  .sales-stat-label {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .sales-stat-value {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .sales-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+  }
+  .sales-table th,
+  .sales-table td {
+    padding: 0.5rem 0.625rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .sales-table th {
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.75rem;
+  }
+  .sales-table tr:last-child td { border-bottom: 0; }
+  .sales-table .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   /* Series sections */
