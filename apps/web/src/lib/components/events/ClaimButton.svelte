@@ -118,33 +118,30 @@
   const STRIPE_PERCENT = 0.029;
   const STRIPE_FIXED: Record<string, number> = { GBP: 0.20, USD: 0.30, EUR: 0.25 };
 
-  /** Whether fees are passed to the buyer */
-  const feePassedToCustomer = $derived(!!payment?.feePassedToCustomer);
+  /** Flat buyer fee policy — buyer always sees ticket × 1.10 on card payments.
+   * Crypto path keeps the escrow contract's existing 1.5% fee until redeploy. */
+  const FLAT_BUYER_FEE_RATE = 0.10;
 
-  /** Fee breakdown for buyer display — multiplied by quantity so multi-ticket
-   * totals match what Stripe actually charges. Platform fee scales linearly;
-   * Stripe's fixed fee is per charge (not per unit), so it's added once. */
+  /** Fee breakdown for buyer display. Card path uses the flat 10% policy;
+   * crypto path uses the escrow contract's 1.5% (unchanged). */
   const buyerFees = $derived.by(() => {
-    if (!payment || !feePassedToCustomer) return null;
+    if (!payment) return null;
     const unit = parseFloat(payment.price);
     if (!unit || unit <= 0) return null;
     const qty = Math.max(1, quantity);
     const subtotal = unit * qty;
     const sym = CURRENCY_SYMBOLS[payment.currency] ?? "";
     const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
-    const platformFee = subtotal * PLATFORM_FEE_BP / 10_000;
-    const stripeFee = payment.stripeEnabled
-      ? subtotal * STRIPE_PERCENT + (STRIPE_FIXED[payment.currency] ?? 0.20)
-      : 0;
+    const cardFee = subtotal * FLAT_BUYER_FEE_RATE;
+    const cryptoPlatformFee = subtotal * PLATFORM_FEE_BP / 10_000;
     return {
       qty,
       baseLabel: qty > 1 ? `Tickets (×${qty})` : "Ticket",
       base: fmt(subtotal),
       unit: fmt(unit),
-      platform: fmt(platformFee),
-      stripe: payment.stripeEnabled ? `~${fmt(stripeFee)}` : null,
-      cardTotal: payment.stripeEnabled ? `~${fmt(subtotal + platformFee + stripeFee)}` : null,
-      cryptoTotal: payment.cryptoEnabled ? fmt(subtotal + platformFee) : null,
+      fee: fmt(cardFee),
+      cardTotal: payment.stripeEnabled ? fmt(subtotal + cardFee) : null,
+      cryptoTotal: payment.cryptoEnabled ? fmt(subtotal + cryptoPlatformFee) : null,
     };
   });
 
@@ -1333,28 +1330,28 @@
     {/if}
   {:else if showOrderForm}
     <div class="order-form">
-      {#if status && status.available <= 0}
+      {#if status && (status.available + (reservation?.quantity ?? 0)) <= 0}
         <div class="avail-banner avail-banner--sold-out" role="alert">
           <span class="avail-banner-dot"></span>
           <span class="avail-banner-text">Sold out — no tickets remain</span>
         </div>
-      {:else if status && status.available < quantity}
+      {:else if status && (status.available + (reservation?.quantity ?? 0)) < quantity}
         <div class="avail-banner avail-banner--shortfall" role="alert">
           <span class="avail-banner-dot"></span>
           <span class="avail-banner-text">
             Not enough tickets available — please reduce quantity to continue
           </span>
         </div>
+      {:else if stripeAfterForm && reservationError && !reservation}
+        <div class="avail-banner avail-banner--shortfall" role="alert">
+          <span class="avail-banner-dot"></span>
+          <span class="avail-banner-text">{reservationError}</span>
+        </div>
       {/if}
       {#if stripeAfterForm && reservation && reservationSecsLeft !== null}
         <div class="avail-pill avail-pill--reserved" aria-live="polite">
           <span class="avail-pill-dot"></span>
           {reservation.quantity} ticket{reservation.quantity === 1 ? "" : "s"} reserved · {formatCountdown(reservationSecsLeft)} to checkout
-        </div>
-      {:else if stripeAfterForm && reservationError}
-        <div class="avail-banner avail-banner--shortfall" role="alert">
-          <span class="avail-banner-dot"></span>
-          <span class="avail-banner-text">{reservationError}</span>
         </div>
       {/if}
       {#if orderFields}
@@ -1425,9 +1422,9 @@
           <!-- Order form was shown before Stripe checkout -->
           {#if stripeLoading}
             <button class="stripe-btn stripe-btn--primary" disabled>Redirecting to Stripe…</button>
-          {:else if status && status.available <= 0}
+          {:else if status && (status.available + (reservation?.quantity ?? 0)) <= 0}
             <button class="stripe-btn stripe-btn--primary" disabled>Sold out</button>
-          {:else if status && status.available < quantity}
+          {:else if status && (status.available + (reservation?.quantity ?? 0)) < quantity}
             <button class="stripe-btn stripe-btn--primary" disabled>Not enough tickets</button>
           {:else}
             <button
@@ -1629,10 +1626,7 @@
       {#if buyerFees}
         <div class="pay-receipt">
           <div class="pay-receipt-row"><span>{buyerFees.baseLabel}</span><span>{buyerFees.base}</span></div>
-          {#if buyerFees.stripe}
-            <div class="pay-receipt-row pay-receipt-fee"><span>Processing</span><span>{buyerFees.stripe}</span></div>
-          {/if}
-          <div class="pay-receipt-row pay-receipt-fee"><span>Platform fee (1.5%)</span><span>{buyerFees.platform}</span></div>
+          <div class="pay-receipt-row pay-receipt-fee"><span>Service fee (10%)</span><span>{buyerFees.fee}</span></div>
           <div class="pay-receipt-row pay-receipt-total"><span>Total</span><span>{buyerFees.cardTotal ?? priceLabel}</span></div>
         </div>
       {/if}
@@ -1679,10 +1673,7 @@
       {#if buyerFees}
         <div class="pay-receipt">
           <div class="pay-receipt-row"><span>{buyerFees.baseLabel}</span><span>{buyerFees.base}</span></div>
-          {#if buyerFees.stripe}
-            <div class="pay-receipt-row pay-receipt-fee"><span>Processing</span><span>{buyerFees.stripe}</span></div>
-          {/if}
-          <div class="pay-receipt-row pay-receipt-fee"><span>Platform fee (1.5%)</span><span>{buyerFees.platform}</span></div>
+          <div class="pay-receipt-row pay-receipt-fee"><span>Service fee (10%)</span><span>{buyerFees.fee}</span></div>
           <div class="pay-receipt-row pay-receipt-total"><span>Total</span><span>{buyerFees.cardTotal ?? priceLabel}</span></div>
         </div>
       {/if}

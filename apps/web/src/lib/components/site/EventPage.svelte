@@ -929,7 +929,6 @@
   .hero-wrap {
     position: relative;
     width: 100%;
-    aspect-ratio: 16 / 9;
     overflow: hidden;
     margin-bottom: 0;
     /* negative margin to break out of any parent padding */
@@ -939,15 +938,14 @@
   }
   .hero-img {
     width: 100%;
-    height: 100%;
-    object-fit: cover;
-    object-position: center;
+    height: auto;
     display: block;
   }
   .hero-fade {
     position: absolute;
     inset: auto 0 0 0;
-    height: 50%;
+    height: 30%;
+    max-height: 200px;
     background: linear-gradient(to bottom, transparent, var(--bg));
     pointer-events: none;
   }

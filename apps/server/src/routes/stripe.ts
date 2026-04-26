@@ -18,7 +18,7 @@ import {
 import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { queueSeriesClaim } from "./claims.js";
-import { PLATFORM_FEE_BP, sealJson } from "@woco/shared";
+import { sealJson } from "@woco/shared";
 import type { SealedBox } from "@woco/shared";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { readFeedPage, writeFeedPage, decodeJsonFeed, encodeJsonFeed } from "../lib/swarm/feeds.js";
@@ -484,32 +484,26 @@ stripe.post("/create-checkout", async (c) => {
   }
 
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"
-  const passFeesToBuyer = !!series.payment.feePassedToCustomer;
 
-  // Stripe processing fee estimates (used when passing fees to buyer)
+  // Flat 10% buyer-fee policy: buyer always pays ticket × 1.10.
+  // application_fee equals the estimated Stripe processing cost so the
+  // platform breaks even, organiser receives the remainder (~7% above ticket
+  // price after Stripe takes its ~3%). This overrides series.feePassedToCustomer
+  // and PLATFORM_FEE_BP for the card path; crypto/escrow path is unchanged.
   const STRIPE_PERCENT = 0.029;
   const STRIPE_FIXED: Record<string, number> = { gbp: 0.20, usd: 0.30, eur: 0.25 };
+  const FLAT_BUYER_FEE_BP = 1000; // 10%
 
-  // Base price in smallest currency unit (pence/cents)
   const baseAmount = Math.round(priceFloat * 100);
-  const platformFee = Math.round(baseAmount * PLATFORM_FEE_BP / 10_000);
-
-  let chargeAmount: number;
-  let applicationFee: number;
-
-  if (passFeesToBuyer) {
-    // Buyer pays: base + platform fee + Stripe processing
-    // Stripe fee is on the total charge, so we solve: charge = base + platformFee + stripe(charge)
-    // charge = (base + platformFee + fixedFee) / (1 - stripePercent)
-    const fixedFee = Math.round((STRIPE_FIXED[stripeCurrency] ?? 0.20) * 100);
-    chargeAmount = Math.round((baseAmount + platformFee + fixedFee) / (1 - STRIPE_PERCENT));
-    // WoCo gets the platform fee; organiser gets the base price
-    applicationFee = platformFee;
-  } else {
-    // Organiser absorbs: buyer pays the ticket price, fees come from organiser's cut
-    chargeAmount = baseAmount;
-    applicationFee = platformFee;
-  }
+  const buyerFeeAmount = Math.round(baseAmount * FLAT_BUYER_FEE_BP / 10_000);
+  const chargeAmount = baseAmount + buyerFeeAmount; // per unit
+  const totalCharge = chargeAmount * quantity;
+  const stripeFixedCents = Math.round((STRIPE_FIXED[stripeCurrency] ?? 0.20) * 100);
+  // Stripe's fixed component is per CHARGE (not per unit), so apply once per session.
+  const totalStripeEstimate = Math.round(totalCharge * STRIPE_PERCENT) + stripeFixedCents;
+  const totalBuyerFee = buyerFeeAmount * quantity;
+  // Capped at total buyer fee so organiser is never net-negative on this policy.
+  const totalApplicationFee = Math.min(totalStripeEstimate, totalBuyerFee);
 
   // Find the organiser's connected account
   const organiserRecord = getStripeAccount(event.creatorAddress.toLowerCase());
@@ -540,7 +534,7 @@ stripe.post("/create-checkout", async (c) => {
         },
       ],
       payment_intent_data: {
-        application_fee_amount: applicationFee * quantity,
+        application_fee_amount: totalApplicationFee,
         transfer_data: {
           destination: organiserRecord.stripeAccountId,
         },
