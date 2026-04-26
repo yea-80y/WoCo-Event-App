@@ -70,6 +70,14 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     return c.json({ ok: false, error: "Invalid quantity" }, 400);
   }
 
+  // Optional: release this prior reservation atomically inside the per-series
+  // mutex before allocating a new one. Lets a buyer change quantity without
+  // racing themselves out of the last seats. Unknown / stale IDs are ignored.
+  const replaceReservationId =
+    typeof body.replaceReservationId === "string" && body.replaceReservationId
+      ? body.replaceReservationId
+      : undefined;
+
   // Validate the event/series exist before touching the store.
   const event = await getEvent(eventId).catch(() => null);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
@@ -84,7 +92,13 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     return Math.max(0, status.available);
   };
 
-  const result = await reserve(eventId, seriesId, quantity, availableSupplier);
+  const result = await reserve(
+    eventId,
+    seriesId,
+    quantity,
+    availableSupplier,
+    replaceReservationId,
+  );
 
   if (!result.ok) {
     if (result.error === "InsufficientSeats") {

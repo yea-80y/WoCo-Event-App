@@ -9,7 +9,7 @@
   import { CHAIN_INFO } from "../../payment/chains.js";
   import type { SeriesClaimStatus } from "@woco/shared";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import ConnectWalletModal from "../profile/ConnectWalletModal.svelte";
 
   interface Props {
@@ -231,13 +231,50 @@
   let pendingOrderRefSnapshot: string | null = null;
   /** True while the pre-upload is mid-flight (drives the ambient shimmer on Pay). */
   let orderRefUploading = $state(false);
+  /**
+   * sessionStorage key for the active reservation. Persists across component
+   * unmounts (e.g. EventPage collapsing the dropdown), so a remount can pass
+   * the prior reservationId as `replaceReservationId` and atomically release
+   * it server-side instead of orphaning seats. Cleared on form close,
+   * expiry, or successful checkout redirect.
+   */
+  const RESERVATION_KEY = `woco:reservation:${eventId}:${seriesId}`;
+
+  /** Hydrate any persisted reservation from sessionStorage at script init.
+   *  Drops it if already expired so we don't tick a dead countdown. */
+  function _initialReservation(): ReservationData | null {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = sessionStorage.getItem(RESERVATION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as ReservationData;
+      if (secondsUntil(parsed.expiresAt) <= 0) {
+        sessionStorage.removeItem(RESERVATION_KEY);
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  const _initialRes = _initialReservation();
+
   /** Active server-side seat hold for this Stripe purchase. Cleared on form
    *  close, quantity change, route change, or successful checkout redirect. */
-  let reservation = $state<ReservationData | null>(null);
+  let reservation = $state<ReservationData | null>(_initialRes);
   /** Live countdown to reservation.expiresAt; null when no reservation. */
-  let reservationSecsLeft = $state<number | null>(null);
+  let reservationSecsLeft = $state<number | null>(
+    _initialRes ? secondsUntil(_initialRes.expiresAt) : null,
+  );
   /** Set when /reserve fails (e.g. insufficient seats) — displayed inline. */
   let reservationError = $state<string | null>(null);
+
+  function persistReservation(r: ReservationData | null): void {
+    try {
+      if (r) sessionStorage.setItem(RESERVATION_KEY, JSON.stringify(r));
+      else sessionStorage.removeItem(RESERVATION_KEY);
+    } catch { /* ignore */ }
+  }
   /** Bumped by hover/focus/touchstart on Pay to fire pre-upload immediately. */
   let payHoverTick = $state(0);
 
@@ -565,26 +602,32 @@
         reservation = null;
         reservationSecsLeft = null;
         reservationError = null;
+        persistReservation(null);
       }
       return;
     }
-    // Quantity changed — release the old hold before requesting a new one.
-    if (reservation && reservation.quantity !== q) {
-      releaseSlots(eventId, seriesId, reservation.reservationId);
-      reservation = null;
-      reservationSecsLeft = null;
-    }
-    if (reservation) return; // already holding for this quantity
+    // Already holding the right quantity — nothing to do.
+    if (reservation && reservation.quantity === q) return;
+
+    // New reservation OR quantity change. Pass the prior id (if any) as
+    // replaceReservationId so the server releases it atomically inside the
+    // per-series mutex, eliminating the self-race where our own old hold
+    // would block the new request.
+    const replaceId = reservation?.reservationId;
     const mySeq = ++_reservationSeq;
     reservationError = null;
-    reserveSlots(eventId, seriesId, q).then((res) => {
+    reserveSlots(eventId, seriesId, q, replaceId).then((res) => {
       if (mySeq !== _reservationSeq) return;
       if (res.ok) {
         reservation = res.data;
         reservationSecsLeft = secondsUntil(res.data.expiresAt);
+        persistReservation(res.data);
       } else {
+        // Server already released the prior hold (if replaceId was passed)
+        // before failing the new allocation. Mirror that locally.
         reservation = null;
         reservationSecsLeft = null;
+        persistReservation(null);
         reservationError = typeof res.available === "number"
           ? "Not enough tickets available — please reduce quantity"
           : res.error;
@@ -603,6 +646,7 @@
       if (reservationSecsLeft === 0) {
         reservation = null;
         reservationSecsLeft = null;
+        persistReservation(null);
       }
     }, 1000);
     return () => clearInterval(id);
@@ -612,9 +656,28 @@
   $effect(() => {
     if (!reservation) return;
     const r = reservation;
-    const onUnload = () => releaseSlots(eventId, seriesId, r.reservationId);
+    const onUnload = () => {
+      releaseSlots(eventId, seriesId, r.reservationId);
+      persistReservation(null);
+    };
     window.addEventListener("pagehide", onUnload);
     return () => window.removeEventListener("pagehide", onUnload);
+  });
+
+  /**
+   * Belt-and-braces release on component unmount. EventPage collapses the
+   * dropdown by toggling `claimOpen=false`, which unmounts ClaimButton even
+   * though the page itself stays put — pagehide doesn't fire in that case.
+   * sessionStorage persistence (RESERVATION_KEY) covers the next mount via
+   * `replaceReservationId`; this onDestroy handles "user navigated away
+   * within the SPA and never came back" by trying to release immediately.
+   */
+  onDestroy(() => {
+    if (typeof window === "undefined") return;
+    if (reservation) {
+      releaseSlots(eventId, seriesId, reservation.reservationId);
+      persistReservation(null);
+    }
   });
 
   /** sessionStorage key for stashing form data across Stripe redirect */
@@ -767,9 +830,12 @@
         reservationId: reservation?.reservationId,
       });
       // Server has stamped reservationId into Stripe metadata; webhook
-      // consumes it. Clear local state so back-nav doesn't double-release.
+      // consumes it. Clear local state (incl. sessionStorage) so back-nav
+      // and pagehide/onDestroy handlers don't double-release a hold that's
+      // about to be consumed by Stripe.
       reservation = null;
       reservationSecsLeft = null;
+      persistReservation(null);
       // Remember which series we were buying so EventPage can auto-select on return
       try { sessionStorage.setItem(`woco:stripe-returning:${eventId}`, seriesId); } catch { /* ignore */ }
       window.location.href = url;

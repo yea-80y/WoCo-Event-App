@@ -24,13 +24,22 @@ export async function reserveSlots(
   eventId: string,
   seriesId: string,
   quantity: number,
+  /**
+   * Existing reservation ID to release atomically (server-side, inside the
+   * per-series mutex) before allocating the new one. Pass when the buyer is
+   * changing quantity — eliminates the self-race where their old hold
+   * appears in `heldFor()` while the new request is being validated.
+   */
+  replaceReservationId?: string,
 ): Promise<{ ok: true; data: ReservationData } | { ok: false; error: string; available?: number }> {
   const resp = await fetch(
     `${apiBase}/api/events/${eventId}/series/${seriesId}/reserve`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ quantity }),
+      body: JSON.stringify(
+        replaceReservationId ? { quantity, replaceReservationId } : { quantity },
+      ),
     },
   );
   const json = await resp.json() as

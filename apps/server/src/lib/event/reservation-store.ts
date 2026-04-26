@@ -154,12 +154,19 @@ export interface ReserveError {
  *   `available` count from the canonical Swarm-backed source. The reservation
  *   store can't compute this itself (it doesn't read the editions feed); the
  *   route caller passes a closure over getClaimStatus.
+ * @param replaceReservationId — optional ID of a prior reservation to release
+ *   atomically before allocating the new one. Lets clients change quantity
+ *   without racing themselves: the released seats are visible to the
+ *   `heldFor()` calculation below (within the same mutex turn), so the buyer
+ *   never blocks themselves out. Passing an unknown / already-released ID is
+ *   a no-op.
  */
 export async function reserve(
   eventId: string,
   seriesId: string,
   quantity: number,
   availableSupplier: () => Promise<number>,
+  replaceReservationId?: string,
 ): Promise<ReserveResult | ReserveError> {
   ensureLoaded();
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > RESERVATION_MAX_QTY) {
@@ -167,6 +174,12 @@ export async function reserve(
   }
 
   return withSeriesLock(seriesId, async () => {
+    if (replaceReservationId) {
+      const prior = reservations.get(replaceReservationId);
+      if (prior && prior.seriesId === seriesId && !prior.consumedAt) {
+        prior.expiresAt = new Date().toISOString();
+      }
+    }
     const canonicalAvailable = await availableSupplier();
     const currentlyHeld = heldFor(seriesId);
     const realAvailable = Math.max(0, canonicalAvailable - currentlyHeld);
