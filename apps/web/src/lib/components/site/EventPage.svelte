@@ -188,10 +188,6 @@
     return `https://maps.google.com/?q=${encodeURIComponent(location)}`;
   }
 
-  function shortAddress(addr: string): string {
-    return addr.slice(0, 6) + "…" + addr.slice(-4);
-  }
-
   // ── Ticket quantity + Get Tickets ─────────────────────────────────────────
   function handleQtyChange(s: SeriesSummary, qty: number) {
     const next: Record<string, number> = {};
@@ -538,13 +534,7 @@
         {/if}
       </div>
 
-      <!-- Organizer chip -->
-      <div class="organizer-chip">
-        <div class="organizer-avatar">
-          {event.creatorAddress.slice(2, 4).toUpperCase()}
-        </div>
-        <span class="organizer-addr">{shortAddress(event.creatorAddress)}</span>
-      </div>
+      <!-- Organizer chip — hidden until we display nickname / ENS / sub-ENS instead of raw address. -->
     </div>
 
     <!-- ── Stripe success banner — sits above the tickets card so it's the

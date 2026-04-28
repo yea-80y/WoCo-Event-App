@@ -143,40 +143,94 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     }
 
     // 4) Update feed to point at new site
-    // IMPORTANT: bee-js v11 has THREE upload methods on FeedWriter:
-    //   - upload()          — DOES NOT correctly write a reference; writes 768-byte
-    //                         garbage that the manifest cannot resolve. Avoid.
-    //   - uploadPayload()   — writes raw bytes as a v2-format feed entry; the
-    //                         old createFeedManifest()-style manifests can't resolve v2.
-    //   - uploadReference() — writes a Reference as a v1-format feed entry; this is
-    //                         what createFeedManifest() expects. USE THIS.
-    // If you switch to v2 feeds you'll need to recreate the manifest as well.
+    //
+    // Pass an explicit `index` to uploadReference(). bee-js v11's auto-increment
+    // path (`findNextIndex` in node_modules/@ethersphere/bee-js/dist/cjs/feed/index.js)
+    // catches BeeResponseError from its internal GET /feeds/{owner}/{topic} and
+    // SILENTLY falls back to `FeedIndex.fromBigInt(0n)`. On any transient bee
+    // error that fallback overwrites the SOC for index 0 while sequence lookup
+    // keeps returning the highest existing index — feed appears frozen, no
+    // exception surfaces. Reading `swarm-feed-index-next` directly is the
+    // documented Swarm way (https://docs.ethswarm.org/api#tag/Feed) and avoids
+    // the silent fallback entirely.
+    //
+    // bee-js v11 has three writer methods; uploadReference() is the only one
+    // compatible with the v1 manifest produced by createFeedManifest():
+    //   - upload(stamp, ref) — wrong v1 payload format
+    //   - uploadPayload()    — writes v2-format, v1 manifests can't resolve
+    //   - uploadReference()  — writes v1 timestamp+ref, USE THIS
+    console.log('Reading next feed index from bee...');
+    let nextIdx;
+    const idxProbe = await axios.get(
+      `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
+      {
+        maxRedirects: 0,
+        validateStatus: () => true,
+        responseType: 'arraybuffer',
+        timeout: 15000,
+      },
+    );
+    if (idxProbe.status === 200) {
+      const nextHex = idxProbe.headers['swarm-feed-index-next'];
+      if (!nextHex || !/^[0-9a-fA-F]+$/.test(nextHex)) {
+        throw new Error(`bee returned 200 but no valid swarm-feed-index-next header: ${nextHex}`);
+      }
+      nextIdx = Number(BigInt('0x' + nextHex));
+    } else if (idxProbe.status === 404) {
+      // Fresh feed (manifest exists but no updates yet)
+      nextIdx = 0;
+    } else {
+      throw new Error(`bee returned status ${idxProbe.status} when probing feed for next index`);
+    }
+    console.log(`Next index: ${nextIdx}`);
+
     console.log('Updating feed (uploadReference / v1)...');
     const writer = bee.makeFeedWriter(topic, signer);
-    await writer.uploadReference(POSTAGE_BATCH_ID, new Reference(siteRef));
+    await writer.uploadReference(
+      POSTAGE_BATCH_ID,
+      new Reference(siteRef),
+      { index: nextIdx },
+    );
 
-    // Verify — poll until proxy serves the new index (bee-proxy read-cache lag
-    // can run 5–8s on a busy node; the old fixed 3s wait was unreliable).
-    const reader = bee.makeFeedReader(topic, ownerObj);
+    // Verify — poll up to 5s for bee to resolve the feed to our siteRef. The
+    // SOC POST already returned 201 above (chunk durably written); this just
+    // confirms sequence lookup has caught up. Exit early on the first match
+    // so happy-path uploads complete in ~1s of verify time.
     let verifiedIndex = null;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      await new Promise(r => setTimeout(r, 1500));
+    let verified = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise(r => setTimeout(r, 1000));
       try {
-        const feed = await reader.download();
-        verifiedIndex = Number(BigInt('0x' + Buffer.from(feed.feedIndex.bytes).toString('hex')));
-        // Stop polling once the latest etag matches our siteRef — confirms
-        // the proxy is serving our new write, not a stale prior index.
         const probe = await axios.get(
           `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
-          { maxRedirects: 0, validateStatus: () => true },
+          {
+            maxRedirects: 0,
+            validateStatus: () => true,
+            responseType: 'arraybuffer',
+            timeout: 10000,
+          },
         );
-        if (probe.headers.etag?.replace(/"/g, '') === siteRef) break;
+        if (probe.status !== 200) continue;
+        const idxHex = probe.headers['swarm-feed-index'];
+        const etag = probe.headers.etag?.replace(/"/g, '');
+        if (idxHex) verifiedIndex = Number(BigInt('0x' + idxHex));
+        if (verifiedIndex != null && verifiedIndex >= nextIdx && etag === siteRef) {
+          verified = true;
+          break;
+        }
       } catch { /* keep polling */ }
     }
-    if (verifiedIndex != null) {
+
+    if (verified) {
       console.log(`Feed updated successfully! Index: ${verifiedIndex}`);
     } else {
-      console.log('Could not verify feed update (proxy still cold) — check manually with curl /feeds/{owner}/{topic}');
+      // SOC chunk was accepted (POST returned 201); sequence lookup just
+      // hasn't caught up yet. The deploy is durable — surface a hint, don't
+      // fail the run.
+      console.log(
+        `Wrote index ${nextIdx} (verify still cold after 5s — SOC chunk is durable; ` +
+        `confirm: curl -I ${BEE_URL}/feeds/${ownerHex}/${topic.toString()})`,
+      );
     }
 
     // 5) Save state
