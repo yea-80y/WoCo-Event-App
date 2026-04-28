@@ -57,7 +57,10 @@ export async function reserveSlots(
    * appears in `heldFor()` while the new request is being validated.
    */
   replaceReservationId?: string,
-): Promise<{ ok: true; data: ReservationData } | { ok: false; error: string; available?: number }> {
+): Promise<
+  | { ok: true; data: ReservationData }
+  | { ok: false; error: string; available?: number; physicalAvailable?: number }
+> {
   const clientKey = getClientKey();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (clientKey) headers["X-Client-Key"] = clientKey;
@@ -73,7 +76,7 @@ export async function reserveSlots(
   );
   const json = await resp.json() as
     | { ok: true; data: ReservationData }
-    | { ok: false; error: string; available?: number };
+    | { ok: false; error: string; available?: number; physicalAvailable?: number };
   return json;
 }
 

@@ -237,6 +237,47 @@ STRIPE UX — PHASE 3 (2026-04-25, slot reservations + composite ticket card):
   Stripe webhook passes `session.customer_details?.name` as `buyerName`.
 - `PUBLIC_API_BASE` env required for absolute email URLs.
 
+STRIPE UX — PHASE 3 HARDENING (2026-04-28, reservation hardening + earlier trigger):
+- Per-browser dedup: `X-Client-Key` header (UUID from localStorage); on every
+  /reserve, the store atomically releases this browser's other active holds on
+  the same series before allocating. Closes the stale-hold window after tab
+  close / sessionStorage loss. Header CORS-allowed in `apps/server/src/index.ts`.
+- Per-IP cap: `RESERVATION_MAX_SEATS_PER_IP=30` across all series; route-level
+  rate limit 30/min/IP. Bounds floods that clientKey rotation could otherwise
+  bypass.
+- Late-consume in webhook: `consumeReservation()` runs AFTER all per-batch
+  claims commit, not at webhook entry. Reason: claiming N tickets is sequential
+  through the per-series mutex, each claim is a slow Swarm write; consuming
+  up front would drop heldFor() to 0 mid-batch and let concurrent buyers
+  reserve the same physical slots. Hold persists for the full webhook duration.
+- Partial refund: if some tickets in a batch claimed but the rest hit an
+  unrecoverable error, refund only the unfilled portion pro-rata against
+  `amount_total`. Zero-claimed batches still refund the full intent. Prevents
+  clawing back tickets the buyer already received.
+- Earlier trigger for email-only events: `claimMode === "email"` (site-builder /
+  standalone-ENS path) fires the reservation on ClaimButton mount — i.e. when
+  the buyer clicks "Get tickets" and the fees box renders, before the order
+  form opens. `claimMode === "both"` keeps the deferred trigger (form-open
+  with `stripeAfterForm=true`) so wallet-path buyers don't hold a Stripe seat.
+  Pill + error banner moved above the if/else cascade in ClaimButton so the
+  hold is visible in both pre-form fees view and the open form.
+- Same-clientKey return-existing: re-issuing /reserve from the same browser
+  with the same quantity (no `replaceReservationId`) returns the EXISTING hold
+  unchanged — TTL preserved. Closing + reopening the tab no longer restarts
+  the 10-min countdown, so a buyer can't extend a lock indefinitely.
+- Sold-out vs held-by-other UX: server returns both `available` (effective,
+  may be 0 when others hold all remaining) AND `physicalAvailable` (totalSupply
+  - claimed). Frontend distinguishes "Sold out" from "All remaining held by
+  other buyers — try again in a few minutes" from "Only N available".
+- No release on tab close / unmount: pagehide listener and onDestroy release
+  removed from ClaimButton. Reservation TTL is the buyer's window; closing
+  and reopening should resume the same hold (clientKey lookup), not restart
+  it. Releases still fire on qty→0 and form-close in claimMode==="both".
+- EventPage qty dropdown shows `max(0, available - held)` so other buyers
+  see the hold reflected immediately. Note: subtracts buyer's own held qty
+  too — minor cap on the same buyer increasing their own qty without refresh,
+  acceptable trade-off for clearer cross-buyer UX.
+
 ============================================================================
 CONVENTIONS
 ============================================================================

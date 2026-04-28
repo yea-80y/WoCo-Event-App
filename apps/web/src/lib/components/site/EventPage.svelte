@@ -573,11 +573,14 @@
         {#each event.series as s, i}
           {@const sale = saleStatus(s)}
           {@const ss = getSeriesStatus(s)}
+          {@const physRemaining = ss?.available ?? 10}
+          {@const heldByOthers = ss?.held ?? 0}
+          {@const effectiveRemaining = Math.max(0, physRemaining - heldByOthers)}
           {@const soldOut = ss != null && ss.available === 0}
           {@const isUnavailable = sale !== "active" || soldOut}
           {@const isPaid = s.payment && parseFloat(s.payment.price) > 0}
           {@const qty = ticketQty[s.seriesId] ?? 0}
-          {@const maxQty = (sale !== "active" || soldOut) ? 0 : Math.min(ss?.available ?? 10, 10)}
+          {@const maxQty = (sale !== "active" || soldOut) ? 0 : Math.min(effectiveRemaining, 10)}
 
           {#if i > 0}
             <div class="ticket-divider"></div>

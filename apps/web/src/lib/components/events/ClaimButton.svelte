@@ -9,7 +9,7 @@
   import { CHAIN_INFO } from "../../payment/chains.js";
   import type { SeriesClaimStatus } from "@woco/shared";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import ConnectWalletModal from "../profile/ConnectWalletModal.svelte";
 
   interface Props {
@@ -642,9 +642,23 @@
         reservation = null;
         reservationSecsLeft = null;
         persistReservation(null);
-        reservationError = typeof res.available === "number"
-          ? "Not enough tickets available — please reduce quantity"
-          : res.error;
+        // Distinguish "sold out" from "held by another buyer". When
+        // physicalAvailable > 0 but available === 0, all remaining seats
+        // are inside someone else's reservation window — telling the buyer
+        // to reduce quantity is misleading (qty might already be 1).
+        if (typeof res.available === "number") {
+          const phys = typeof res.physicalAvailable === "number" ? res.physicalAvailable : -1;
+          if (res.available === 0 && phys > 0) {
+            reservationError =
+              "All remaining tickets are currently held by other buyers — try again in a few minutes.";
+          } else if (res.available === 0) {
+            reservationError = "Sold out.";
+          } else {
+            reservationError = `Only ${res.available} ticket${res.available === 1 ? "" : "s"} available — please reduce quantity.`;
+          }
+        } else {
+          reservationError = res.error;
+        }
       }
     }).catch(() => {
       // Network error — let the user click Pay anyway; server will reject if
@@ -666,33 +680,14 @@
     return () => clearInterval(id);
   });
 
-  /** Release on tab close / navigation away. */
-  $effect(() => {
-    if (!reservation) return;
-    const r = reservation;
-    const onUnload = () => {
-      releaseSlots(eventId, seriesId, r.reservationId);
-      persistReservation(null);
-    };
-    window.addEventListener("pagehide", onUnload);
-    return () => window.removeEventListener("pagehide", onUnload);
-  });
-
-  /**
-   * Belt-and-braces release on component unmount. EventPage collapses the
-   * dropdown by toggling `claimOpen=false`, which unmounts ClaimButton even
-   * though the page itself stays put — pagehide doesn't fire in that case.
-   * sessionStorage persistence (RESERVATION_KEY) covers the next mount via
-   * `replaceReservationId`; this onDestroy handles "user navigated away
-   * within the SPA and never came back" by trying to release immediately.
-   */
-  onDestroy(() => {
-    if (typeof window === "undefined") return;
-    if (reservation) {
-      releaseSlots(eventId, seriesId, reservation.reservationId);
-      persistReservation(null);
-    }
-  });
+  // Note: we deliberately do NOT release the reservation on pagehide or
+  // component unmount. The 10-min TTL is the buyer's window; closing the
+  // tab and reopening should resume the SAME hold with the SAME deadline
+  // (server-side clientKey lookup returns the existing reservation
+  // unchanged when qty matches). Releasing on unload would let a buyer
+  // extend their lock indefinitely by closing+reopening the page.
+  // Explicit releases still happen for: quantity decrement to 0 / form
+  // closed (the $effect above), and successful checkout consumption.
 
   /** sessionStorage key for stashing form data across Stripe redirect */
   const STRIPE_FORM_KEY = `woco:stripe-form:${eventId}:${seriesId}`;
@@ -845,8 +840,8 @@
       });
       // Server has stamped reservationId into Stripe metadata; webhook
       // consumes it. Clear local state (incl. sessionStorage) so back-nav
-      // and pagehide/onDestroy handlers don't double-release a hold that's
-      // about to be consumed by Stripe.
+      // doesn't show a phantom countdown for a hold that's about to be
+      // consumed by Stripe.
       reservation = null;
       reservationSecsLeft = null;
       persistReservation(null);

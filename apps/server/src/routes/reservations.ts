@@ -125,7 +125,12 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   if (!result.ok) {
     if (result.error === "InsufficientSeats") {
       return c.json(
-        { ok: false, error: "Insufficient seats", available: result.available ?? 0 },
+        {
+          ok: false,
+          error: "Insufficient seats",
+          available: result.available ?? 0,
+          physicalAvailable: result.physicalAvailable ?? 0,
+        },
         409,
       );
     }

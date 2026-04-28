@@ -183,11 +183,19 @@ export function heldSeatsByIp(ip: string): number {
 export interface ReserveResult {
   ok: true;
   reservation: Reservation;
+  /** True when an existing same-clientKey + same-qty hold was returned as-is
+   *  (TTL preserved, no fresh allocation). */
+  reused?: boolean;
 }
 export interface ReserveError {
   ok: false;
   error: "InsufficientSeats" | "InvalidQuantity" | "IpCapExceeded";
+  /** Effective remaining = canonical - heldByOthers. May be 0 even when
+   *  `physicalAvailable` > 0 (held by other browsers). */
   available?: number;
+  /** Physical remaining ignoring all holds (totalSupply - claimed). Lets
+   *  the frontend distinguish "sold out" from "held by another buyer". */
+  physicalAvailable?: number;
 }
 
 /**
@@ -226,6 +234,33 @@ export async function reserve(
         prior.expiresAt = new Date().toISOString();
       }
     }
+    // Return-existing path: when the caller is the same browser (clientKey
+    // match) AND wants the same quantity AND `replaceReservationId` was NOT
+    // passed, return the existing hold UNCHANGED. This preserves the TTL
+    // across tab close/reopen and refresh — the timer keeps decreasing
+    // instead of restarting at 10 min, so a buyer can't extend a lock by
+    // closing and reopening the page. Active hold = not consumed and not
+    // yet expired.
+    if (clientKey && !replaceReservationId) {
+      const now = Date.now();
+      let existing: Reservation | undefined;
+      for (const r of reservations.values()) {
+        if (
+          r.seriesId === seriesId &&
+          r.clientKey === clientKey &&
+          !r.consumedAt &&
+          new Date(r.expiresAt).getTime() > now &&
+          r.quantity === quantity
+        ) {
+          if (!existing || new Date(r.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+            existing = r;
+          }
+        }
+      }
+      if (existing) {
+        return { ok: true, reservation: existing, reused: true };
+      }
+    }
     // ClientKey dedup: the canonical guard against a single buyer holding
     // multiple seats across tab close/reopen, refresh, or sessionStorage
     // loss. `replaceReservationId` only catches same-tab continuations;
@@ -249,7 +284,12 @@ export async function reserve(
     const currentlyHeld = heldFor(seriesId);
     const realAvailable = Math.max(0, canonicalAvailable - currentlyHeld);
     if (quantity > realAvailable) {
-      return { ok: false, error: "InsufficientSeats", available: realAvailable };
+      return {
+        ok: false,
+        error: "InsufficientSeats",
+        available: realAvailable,
+        physicalAvailable: canonicalAvailable,
+      };
     }
     // Per-IP cap — checked AFTER the replace/clientKey-dedup loops above,
     // so a buyer changing quantity isn't double-counted (their prior hold
