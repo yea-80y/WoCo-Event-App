@@ -14,6 +14,14 @@
  * claim queue pattern in routes/claims.ts), so concurrent /reserve calls
  * for the same series can't both grab the last seat.
  *
+ * Per-buyer cap: when a `clientKey` (UUID from the buyer's localStorage)
+ * is supplied, `reserve()` releases all other active reservations on the
+ * same series with the same clientKey before allocating a new one. This
+ * prevents a single buyer from accumulating stale held seats across tab
+ * close, refresh, or sessionStorage loss — those would otherwise linger
+ * for the full TTL and surface as a false "Not enough tickets" UI when
+ * the same buyer tries to reserve again.
+ *
  * Authority: `available` reported by getClaimStatus is the physical remaining
  * (totalSupply - claimed). Active reservations are NOT subtracted there —
  * doing so would self-double-count the buyer's own hold and break the
@@ -41,6 +49,16 @@ const RESERVATION_KEEP_AFTER_MS = 60 * 60 * 1000; // 1 hour
 /** Max quantity that can be reserved in one entry (matches Stripe checkout cap). */
 export const RESERVATION_MAX_QTY = 10;
 
+/**
+ * Hard ceiling on simultaneous held seats from a single IP across all
+ * series. Defends against single-IP floods that clientKey rotation could
+ * otherwise bypass (each rotated clientKey can hold its own qty-N
+ * reservation). 30 is generous enough for a small office or family LAN
+ * (~30 concurrent buyers × 1 ticket each), tight enough to block one
+ * actor from locking out an entire small event.
+ */
+export const RESERVATION_MAX_SEATS_PER_IP = 30;
+
 export interface Reservation {
   id: string;
   eventId: string;
@@ -52,6 +70,21 @@ export interface Reservation {
   expiresAt: string;
   /** Set when the reservation has been consumed by a successful claim */
   consumedAt?: string;
+  /**
+   * Stable per-browser identifier (UUID from localStorage). When present,
+   * `reserve()` atomically releases any other active reservation on the
+   * same series with the same clientKey before allocating a new one.
+   * This prevents a single buyer from accumulating multiple held seats
+   * across tab close/reopen, refresh, or sessionStorage loss.
+   */
+  clientKey?: string;
+  /**
+   * Source IP recorded for the per-IP held-seats cap (see
+   * RESERVATION_MAX_SEATS_PER_IP). Read from x-forwarded-for /
+   * cf-connecting-ip at the route layer; never trusted for identity,
+   * only as a flood-control hint.
+   */
+  ip?: string;
 }
 
 const reservations = new Map<string, Reservation>();
@@ -136,13 +169,24 @@ export function heldFor(seriesId: string): number {
   return total;
 }
 
+/** Sum of qty across all active reservations from a given IP, all series. */
+export function heldSeatsByIp(ip: string): number {
+  ensureLoaded();
+  const now = Date.now();
+  let total = 0;
+  for (const r of reservations.values()) {
+    if (r.ip === ip && isActive(r, now)) total += r.quantity;
+  }
+  return total;
+}
+
 export interface ReserveResult {
   ok: true;
   reservation: Reservation;
 }
 export interface ReserveError {
   ok: false;
-  error: "InsufficientSeats" | "InvalidQuantity";
+  error: "InsufficientSeats" | "InvalidQuantity" | "IpCapExceeded";
   available?: number;
 }
 
@@ -167,6 +211,8 @@ export async function reserve(
   quantity: number,
   availableSupplier: () => Promise<number>,
   replaceReservationId?: string,
+  clientKey?: string,
+  ip?: string,
 ): Promise<ReserveResult | ReserveError> {
   ensureLoaded();
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > RESERVATION_MAX_QTY) {
@@ -180,11 +226,37 @@ export async function reserve(
         prior.expiresAt = new Date().toISOString();
       }
     }
+    // ClientKey dedup: the canonical guard against a single buyer holding
+    // multiple seats across tab close/reopen, refresh, or sessionStorage
+    // loss. `replaceReservationId` only catches same-tab continuations;
+    // when the client lost track of the prior id (different tab, cleared
+    // sessionStorage), this loop releases all of their stale holds before
+    // we allocate the new one. Inside the per-series mutex, so atomic.
+    if (clientKey) {
+      const nowIso = new Date().toISOString();
+      for (const r of reservations.values()) {
+        if (
+          r.seriesId === seriesId &&
+          r.clientKey === clientKey &&
+          !r.consumedAt &&
+          new Date(r.expiresAt).getTime() > Date.now()
+        ) {
+          r.expiresAt = nowIso;
+        }
+      }
+    }
     const canonicalAvailable = await availableSupplier();
     const currentlyHeld = heldFor(seriesId);
     const realAvailable = Math.max(0, canonicalAvailable - currentlyHeld);
     if (quantity > realAvailable) {
       return { ok: false, error: "InsufficientSeats", available: realAvailable };
+    }
+    // Per-IP cap — checked AFTER the replace/clientKey-dedup loops above,
+    // so a buyer changing quantity isn't double-counted (their prior hold
+    // is already marked expired). Counts across all series so an attacker
+    // can't spread a flood across many series of the same event.
+    if (ip && heldSeatsByIp(ip) + quantity > RESERVATION_MAX_SEATS_PER_IP) {
+      return { ok: false, error: "IpCapExceeded" };
     }
     const now = new Date();
     const expires = new Date(now.getTime() + RESERVATION_TTL_MS);
@@ -195,6 +267,8 @@ export async function reserve(
       quantity,
       createdAt: now.toISOString(),
       expiresAt: expires.toISOString(),
+      ...(clientKey ? { clientKey } : {}),
+      ...(ip ? { ip } : {}),
     };
     reservations.set(r.id, r);
     persistToDisk();

@@ -705,25 +705,13 @@ async function handleSuccessfulPayment(
   const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
   const claimedAt = new Date(webhookEventCreated * 1000).toISOString();
 
-  // Consume the slot reservation if one was attached to the checkout session.
-  // Lenient: a failed consume (expired / unknown) does NOT block the claim —
-  // payment already landed, so we issue the ticket if seats are still
-  // available. The /create-checkout pre-flight makes a hard expiry rare;
-  // claimTicket() itself throws "No tickets available" if oversubscribed,
-  // and the existing auto-refund logic handles that case.
-  if (metaReservationId) {
-    const consumed = consumeReservation(metaReservationId);
-    if (consumed) {
-      console.log(
-        `[stripe-webhook] Consumed reservation ${metaReservationId} (qty=${consumed.quantity})`,
-      );
-    } else {
-      console.warn(
-        `[stripe-webhook] Reservation ${metaReservationId} could not be consumed — ` +
-        `may be expired or already consumed. Falling back to availability check at claim time.`,
-      );
-    }
-  }
+  // The reservation is consumed AFTER all claims commit (see end of function),
+  // not at webhook entry. Reason: claiming N tickets is sequential through the
+  // per-series mutex and each claim is a Swarm write (~3–8s). Consuming up
+  // front would drop heldFor() to 0 immediately, letting concurrent buyers
+  // race in and reserve the same physical slots while this webhook is still
+  // mid-claim. Holding the reservation for the duration keeps `available`
+  // honest from the perspective of any /reserve call that lands in parallel.
 
   let identifier: ClaimIdentifier;
   if (claimerAddress) {
@@ -781,6 +769,7 @@ async function handleSuccessfulPayment(
   }
 
   const claimedResults: Array<{ edition: number; qrContent: string }> = [];
+  let stoppedReason: string | null = null;
 
   for (let i = 0; i < quantity; i++) {
     const ticketNum = quantity > 1 ? ` (${i + 1}/${quantity})` : "";
@@ -818,29 +807,72 @@ async function handleSuccessfulPayment(
         msg.includes("Series not found") ||
         msg.includes("Series has no metadata");
 
-      if (isUnrecoverable && session.payment_intent) {
-        try {
-          const s = getStripe();
-          const piId = typeof session.payment_intent === "string"
-            ? session.payment_intent
-            : session.payment_intent.id;
-          const refund = await s.refunds.create({
-            payment_intent: piId,
-            reason: "requested_by_customer",
-            metadata: {
-              reason: "ticket-claim-failed",
-              failureMessage: msg.slice(0, 200),
-              seriesId,
-              eventId,
-            },
-          });
-          console.log(`[stripe-webhook] Auto-refunded ${piId} (refund=${refund.id}) — ${msg}`);
-        } catch (refundErr) {
-          console.error("[stripe-webhook] Auto-refund FAILED — manual intervention required:", refundErr);
-        }
+      if (isUnrecoverable) {
+        stoppedReason = msg;
+        // Stop claiming further tickets in the batch if we hit an unrecoverable error
+        break;
       }
-      // Stop claiming further tickets in the batch if we hit an unrecoverable error
-      if (isUnrecoverable) break;
+      // Transient failure: continue to next ticket — Swarm hiccups shouldn't
+      // poison the rest of the order. The for-loop will keep claiming until
+      // it either fills the order or hits an unrecoverable error.
+    }
+  }
+
+  // Now release the seat hold — all claims that were going to land have
+  // landed. Doing this here (vs. at webhook entry) means concurrent /reserve
+  // calls saw the correct held count throughout the slow Swarm-write phase.
+  if (metaReservationId) {
+    const consumed = consumeReservation(metaReservationId);
+    if (consumed) {
+      console.log(
+        `[stripe-webhook] Consumed reservation ${metaReservationId} (qty=${consumed.quantity}, claimed=${claimedResults.length})`,
+      );
+    }
+  }
+
+  // Partial-refund logic: if some tickets claimed but the batch couldn't
+  // finish (oversold mid-flight, etc.), refund only the unfilled portion
+  // pro-rata against amount_total. Refunding the whole intent here would
+  // claw back £176 from a buyer who already received 7 of 8 emailed tickets.
+  // If ZERO tickets claimed, refund the whole intent as before.
+  const unfilled = quantity - claimedResults.length;
+  if (stoppedReason && unfilled > 0 && session.payment_intent) {
+    const piId = typeof session.payment_intent === "string"
+      ? session.payment_intent
+      : session.payment_intent.id;
+    try {
+      const s = getStripe();
+      const amountTotal = session.amount_total ?? 0;
+      // Pro-rata the total (which already includes any buyer-paid fee) by
+      // unit. Round so we never refund more than was paid.
+      const refundAmount =
+        amountTotal > 0 && quantity > 0
+          ? Math.min(amountTotal, Math.round((amountTotal / quantity) * unfilled))
+          : 0;
+      const refundParams: import("stripe").Stripe.RefundCreateParams = {
+        payment_intent: piId,
+        reason: "requested_by_customer",
+        metadata: {
+          reason: "ticket-claim-failed",
+          failureMessage: stoppedReason.slice(0, 200),
+          seriesId,
+          eventId,
+          quantityPaid: String(quantity),
+          quantityClaimed: String(claimedResults.length),
+          quantityUnfilled: String(unfilled),
+        },
+      };
+      // Only set `amount` for partial refunds. When claimedResults.length === 0
+      // we omit it so Stripe refunds the full intent — same as the old behaviour.
+      if (claimedResults.length > 0 && refundAmount > 0) {
+        refundParams.amount = refundAmount;
+      }
+      const refund = await s.refunds.create(refundParams);
+      console.log(
+        `[stripe-webhook] Auto-refunded ${piId} (refund=${refund.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
+      );
+    } catch (refundErr) {
+      console.error("[stripe-webhook] Auto-refund FAILED — manual intervention required:", refundErr);
     }
   }
 

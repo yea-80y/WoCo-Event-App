@@ -233,10 +233,12 @@
   let orderRefUploading = $state(false);
   /**
    * sessionStorage key for the active reservation. Persists across component
-   * unmounts (e.g. EventPage collapsing the dropdown), so a remount can pass
-   * the prior reservationId as `replaceReservationId` and atomically release
-   * it server-side instead of orphaning seats. Cleared on form close,
-   * expiry, or successful checkout redirect.
+   * unmounts within the same tab (e.g. EventPage collapsing the dropdown),
+   * so a remount can pass the prior reservationId as `replaceReservationId`
+   * and atomically release it server-side. Cleared on form close, expiry,
+   * or successful checkout redirect. Cross-tab orphan reservations are
+   * cleaned up by the server's clientKey dedup (every /reserve atomically
+   * releases other active reservations from the same browser).
    */
   const RESERVATION_KEY = `woco:reservation:${eventId}:${seriesId}`;
 
@@ -583,20 +585,32 @@
   });
 
   /**
-   * Server-side seat hold for the Stripe path.
+   * Server-side seat hold for the Stripe path. Two trigger modes:
    *
-   * Triggered when the order form opens with stripeAfterForm=true (the Pay-by-
-   * card branch). We hold seats with a TTL so concurrent buyers can't race us
-   * to the last tickets while the user fills out the form. Re-runs on quantity
-   * change. The release path uses sendBeacon so navigation away still releases.
+   * 1. claimMode === "email" + hasStripe — Stripe is the only buy path, so
+   *    we hold seats as soon as ClaimButton mounts (i.e. the moment the
+   *    buyer clicks "Get tickets" and the fees box appears, before they
+   *    open the email-entry form). Trades a higher rate of "browsing"
+   *    reservations for earlier UX feedback ("N seats reserved · 10:00
+   *    to checkout"). Used by site-builder / standalone-ENS events.
+   *
+   * 2. claimMode === "both" + hasStripe — wallet OR card. Defer the hold
+   *    until the user actually clicks "Pay with card" (the order form
+   *    opens with stripeAfterForm=true), so wallet-path buyers don't
+   *    hold a Stripe-side seat they'll never use.
+   *
+   * Abuse is bounded by clientKey dedup (one hold per browser per series),
+   * per-IP cap, 10-min TTL, and aggressive release on form close, qty→0,
+   * ClaimButton unmount, and pagehide.
    */
   let _reservationSeq = 0;
   $effect(() => {
-    const open = showOrderForm;
-    const willStripe = stripeAfterForm;
     const q = quantity;
-    if (!open || !willStripe) {
-      // Form closed (or switched out of Stripe) — release any active hold.
+    const stripeOnlyMount = hasStripe && claimMode === "email";
+    const stripeFormOpen = hasStripe && showOrderForm && stripeAfterForm;
+    const shouldHold = (stripeOnlyMount || stripeFormOpen) && q >= 1;
+    if (!shouldHold) {
+      // No active Stripe path — release any hold.
       if (reservation) {
         releaseSlots(eventId, seriesId, reservation.reservationId);
         reservation = null;
@@ -1293,6 +1307,20 @@
 </script>
 
 <div class="claim-area">
+  <!-- Reservation status — shown above every buy-state so the buyer sees
+       their hold both in the pre-form fees view (after Get-tickets click on
+       email/Stripe-only events) and once the order form is open. -->
+  {#if reservation && reservationSecsLeft !== null}
+    <div class="avail-pill avail-pill--reserved" aria-live="polite">
+      <span class="avail-pill-dot"></span>
+      {reservation.quantity} ticket{reservation.quantity === 1 ? "" : "s"} reserved · {formatCountdown(reservationSecsLeft)} to checkout
+    </div>
+  {:else if reservationError}
+    <div class="avail-banner avail-banner--shortfall" role="alert">
+      <span class="avail-banner-dot"></span>
+      <span class="avail-banner-text">{reservationError}</span>
+    </div>
+  {/if}
   {#if claimed && isPaid}
     <!--
       Paid tickets support multi-purchase. Keep the buy UI available and
@@ -1407,17 +1435,6 @@
           <span class="avail-banner-text">
             Not enough tickets available — please reduce quantity to continue
           </span>
-        </div>
-      {:else if stripeAfterForm && reservationError && !reservation}
-        <div class="avail-banner avail-banner--shortfall" role="alert">
-          <span class="avail-banner-dot"></span>
-          <span class="avail-banner-text">{reservationError}</span>
-        </div>
-      {/if}
-      {#if stripeAfterForm && reservation && reservationSecsLeft !== null}
-        <div class="avail-pill avail-pill--reserved" aria-live="polite">
-          <span class="avail-pill-dot"></span>
-          {reservation.quantity} ticket{reservation.quantity === 1 ? "" : "s"} reserved · {formatCountdown(reservationSecsLeft)} to checkout
         </div>
       {/if}
       {#if orderFields}

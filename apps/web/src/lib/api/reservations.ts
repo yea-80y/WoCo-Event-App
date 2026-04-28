@@ -20,6 +20,32 @@ export interface ReservationData {
   quantity: number;
 }
 
+/**
+ * Stable per-browser identifier sent with every /reserve call. Server uses
+ * it to atomically release this buyer's other active reservations on the
+ * same series before allocating a new one — the canonical guard against
+ * one buyer accumulating multiple held seats across tab close/reopen,
+ * refresh, or sessionStorage loss. Persisted in localStorage so it
+ * survives across tabs and sessions on the same browser profile.
+ */
+const CLIENT_KEY_STORAGE = "woco:client-id";
+
+function getClientKey(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    let key = window.localStorage.getItem(CLIENT_KEY_STORAGE);
+    if (!key || key.length < 8) {
+      key = (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36);
+      window.localStorage.setItem(CLIENT_KEY_STORAGE, key);
+    }
+    return key;
+  } catch {
+    return null;
+  }
+}
+
 export async function reserveSlots(
   eventId: string,
   seriesId: string,
@@ -32,11 +58,14 @@ export async function reserveSlots(
    */
   replaceReservationId?: string,
 ): Promise<{ ok: true; data: ReservationData } | { ok: false; error: string; available?: number }> {
+  const clientKey = getClientKey();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (clientKey) headers["X-Client-Key"] = clientKey;
   const resp = await fetch(
     `${apiBase}/api/events/${eventId}/series/${seriesId}/reserve`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(
         replaceReservationId ? { quantity, replaceReservationId } : { quantity },
       ),

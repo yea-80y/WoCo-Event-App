@@ -17,6 +17,11 @@ const reservations = new Hono<AppEnv>();
  * routes/claims.ts. Reservations are unauthenticated by design (email-only
  * standalone-ENS users have no session at form-open time), so we cap by IP
  * to prevent abuse (someone hammering /reserve to lock out other buyers).
+ *
+ * 12/min is the burst guard — typical legit flow is form-open + a few
+ * quantity changes (≤5/min). Sustained abuse is bounded structurally by
+ * RESERVATION_MAX_SEATS_PER_IP (held-seats cap inside the store), so the
+ * rate limit doesn't have to do all the work.
  */
 const reserveRateMap = new Map<string, number[]>();
 const RESERVE_RATE_LIMIT = 30; // max calls
@@ -78,6 +83,21 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
       ? body.replaceReservationId
       : undefined;
 
+  // Stable per-browser identifier (UUID from localStorage). Used by the
+  // store to atomically release this buyer's other active reservations on
+  // the same series before allocating a new one — closes the stale-hold
+  // window when sessionStorage was cleared (closed tab, new tab, refresh
+  // edge cases). Header preferred over body so it's set once at the API
+  // client level. Length-bounded to prevent abuse.
+  const headerClientKey = c.req.header("x-client-key");
+  const clientKey =
+    typeof headerClientKey === "string" &&
+    headerClientKey.length >= 8 &&
+    headerClientKey.length <= 64 &&
+    /^[A-Za-z0-9_-]+$/.test(headerClientKey)
+      ? headerClientKey
+      : undefined;
+
   // Validate the event/series exist before touching the store.
   const event = await getEvent(eventId).catch(() => null);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
@@ -98,6 +118,8 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     quantity,
     availableSupplier,
     replaceReservationId,
+    clientKey,
+    ip,
   );
 
   if (!result.ok) {
@@ -105,6 +127,12 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
       return c.json(
         { ok: false, error: "Insufficient seats", available: result.available ?? 0 },
         409,
+      );
+    }
+    if (result.error === "IpCapExceeded") {
+      return c.json(
+        { ok: false, error: "Too many active reservations from your network — try again shortly" },
+        429,
       );
     }
     return c.json({ ok: false, error: "Invalid request" }, 400);

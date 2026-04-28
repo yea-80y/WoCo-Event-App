@@ -76,6 +76,7 @@ app.use(
       "X-Session-Nonce",
       "X-Session-Timestamp",
       "X-PAYMENT",
+      "X-Client-Key",
     ],
     exposeHeaders: [
       "PAYMENT-REQUIRED",
