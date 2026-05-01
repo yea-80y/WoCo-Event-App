@@ -1,0 +1,49 @@
+:root {
+  --bg: #0f0f0f;
+  --text: #f5f5f5;
+  --muted: #a0a0a0;
+  --accent: #d4af37;
+  --accent-hover: #b8962b;
+  --border: #2a2a2a;
+  --card-bg: #1a1a1a;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --transition: 0.15s ease;
+  --font-family: system-ui, -apple-system, sans-serif;
+
+  font-family: var(--font-family);
+  line-height: 1.6;
+  color: var(--text);
+  background-color: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { background-color: var(--bg); }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover { text-decoration: underline; }
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+}
+
+img { max-width: 100%; height: auto; display: block; }
+
+#app { width: 100%; }

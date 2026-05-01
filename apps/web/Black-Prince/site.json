@@ -1,0 +1,131 @@
+{
+  "siteId": "01JTEST0000BLACK0PRINCE000001",
+  "ownerAddress": "0x0000000000000000000000000000000000000001",
+  "templateId": "pub-venue-v1",
+  "schemaVersion": 1,
+  "theme": {
+    "brandName": "The Black Prince",
+    "palette": {
+      "bg": "#0d0a06",
+      "text": "#f2ede4",
+      "muted": "#9a8f7c",
+      "accent": "#c8860a",
+      "accentHover": "#a96e06",
+      "border": "#2e2318",
+      "cardBg": "#1a1208"
+    },
+    "fontFamily": "serif",
+    "radius": "sm"
+  },
+  "nav": [
+    { "label": "Home",       "pageSlug": "/"          },
+    { "label": "What's On",  "pageSlug": "/whats-on"  },
+    { "label": "Visit",      "pageSlug": "/visit"     },
+    { "label": "Contact",    "pageSlug": "/contact"   }
+  ],
+  "pages": [
+    {
+      "slug": "/",
+      "title": "The Black Prince",
+      "metaDescription": "Historic Kennington local — live music, good beer, great company.",
+      "sections": [
+        {
+          "id": "bp-hero-home",
+          "type": "hero",
+          "heading": "The Black Prince",
+          "subheading": "A historic Kennington local. Live music, good beer, and great company since 1857.",
+          "ctaLabel": "What's On",
+          "ctaHref": "#/whats-on"
+        },
+        {
+          "id": "bp-about",
+          "type": "richText",
+          "markdown": "## About the pub\n\nThe Black Prince has been the heart of Kennington since the Victorian era. Whether you're after a quiet pint, a live jazz night, or a Sunday roast with the family, you'll always find a warm welcome here.\n\nWe host regular ticketed events — from weekly quiz nights to headline acoustic sessions. Grab your spot through WoCo so you never miss out."
+        },
+        {
+          "id": "bp-events-home",
+          "type": "eventsGrid",
+          "mode": "upcoming",
+          "max": 3
+        }
+      ]
+    },
+    {
+      "slug": "/whats-on",
+      "title": "What's On — The Black Prince",
+      "metaDescription": "Upcoming events at The Black Prince, Kennington.",
+      "sections": [
+        {
+          "id": "bp-hero-whatson",
+          "type": "hero",
+          "heading": "What's On",
+          "subheading": "Live music, quiz nights, supper clubs, and more."
+        },
+        {
+          "id": "bp-events-all",
+          "type": "eventsGrid",
+          "mode": "all"
+        }
+      ]
+    },
+    {
+      "slug": "/visit",
+      "title": "Visit Us — The Black Prince",
+      "metaDescription": "Opening hours and directions for The Black Prince, Kennington, London.",
+      "sections": [
+        {
+          "id": "bp-hero-visit",
+          "type": "hero",
+          "heading": "Find Us"
+        },
+        {
+          "id": "bp-hours",
+          "type": "openingHours",
+          "rows": [
+            { "day": "Mon – Thu", "hours": "12:00 – 23:00" },
+            { "day": "Fri – Sat", "hours": "12:00 – 00:00" },
+            { "day": "Sunday",    "hours": "12:00 – 22:30" },
+            { "day": "Bank Holidays", "hours": "12:00 – 22:30" }
+          ]
+        },
+        {
+          "id": "bp-map",
+          "type": "map",
+          "lat": 51.4955,
+          "lng": -0.1131,
+          "zoom": 16,
+          "label": "The Black Prince, Kennington"
+        }
+      ]
+    },
+    {
+      "slug": "/contact",
+      "title": "Contact — The Black Prince",
+      "sections": [
+        {
+          "id": "bp-hero-contact",
+          "type": "hero",
+          "heading": "Get in Touch"
+        },
+        {
+          "id": "bp-contact-form",
+          "type": "contactForm",
+          "emailTo": "hello@theblackprince.co.uk"
+        }
+      ]
+    }
+  ],
+  "contact": {
+    "email": "hello@theblackprince.co.uk",
+    "address": "Black Prince Road\nLondon SE1",
+    "lat": 51.4955,
+    "lng": -0.1131,
+    "mapUrl": "https://www.openstreetmap.org/?mlat=51.4955&mlon=-0.1131#map=17/51.4955/-0.1131"
+  },
+  "socials": {
+    "instagram": "theblackprince_ken"
+  },
+  "eventsIndexTopic": "woco/site/01JTEST0000BLACK0PRINCE000001/events",
+  "createdAt": 1746057600000,
+  "updatedAt": 1746057600000
+}

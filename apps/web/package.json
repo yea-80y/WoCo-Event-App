@@ -8,6 +8,8 @@
     "build": "vite build",
     "dev:site": "vite --config vite.site.config.ts --mode site",
     "build:site": "vite build --config vite.site.config.ts --mode site",
+    "dev:multisite": "vite --config vite.multisite.config.ts",
+    "build:multisite": "vite build --config vite.multisite.config.ts",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
   },
