@@ -608,7 +608,11 @@
     const q = quantity;
     const stripeOnlyMount = hasStripe && claimMode === "email";
     const stripeFormOpen = hasStripe && showOrderForm && stripeAfterForm;
-    const shouldHold = (stripeOnlyMount || stripeFormOpen) && q >= 1;
+    // Skip when the buyer has already claimed (or just returned from a
+    // successful Stripe checkout) — otherwise the email-mount trigger
+    // re-allocates a hold immediately on the success page.
+    const alreadyDone = claimed || _permanentClaimed !== null || approvalPending || stripeSuccessVisible;
+    const shouldHold = (stripeOnlyMount || stripeFormOpen) && q >= 1 && !alreadyDone;
     if (!shouldHold) {
       // No active Stripe path — release any hold.
       if (reservation) {

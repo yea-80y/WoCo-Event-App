@@ -80,6 +80,12 @@ export async function createEvent(opts: {
 
   console.log(`[event] Creating event ${eventId}: "${title}"`);
 
+  // Phase timings — surface where Swarm latency lands during publish.
+  const tStart = Date.now();
+  let tPhase = tStart;
+  const lap = (): number => { const d = Date.now() - tPhase; tPhase = Date.now(); return d; };
+  const timings: Record<string, number> = {};
+
   const createdAt = new Date().toISOString();
   const BATCH_SIZE = 40; // Higher throughput — Bee handles concurrent uploads well
 
@@ -136,6 +142,7 @@ export async function createEvent(opts: {
   const imageHash = await imagePromise;
   emit("image", 1, 1, "Image uploaded");
   console.log(`[event] Image + ${ticketsUploaded} tickets uploaded`);
+  timings.imageAndTickets = lap();
 
   // ── Phase 2: Build & write feeds for ALL series in parallel ───────────
   emit("feeds", 0, series.length, "Writing feeds...");
@@ -176,11 +183,13 @@ export async function createEvent(opts: {
       editionPages.push(pack4096(pageRefs));
     }
 
-    // Write all edition + claims feeds in parallel
+    // Write all edition + claims feeds in parallel. seriesId is freshly
+    // generated, so every editions/claims topic is brand-new — `fresh: true`
+    // skips the findNextIndex round-trip on each write.
     const feedWrites: Promise<void>[] = [];
     for (let p = 0; p < pages; p++) {
-      feedWrites.push(writeFeedPage(topicEditions(s.seriesId, p), editionPages[p]));
-      feedWrites.push(writeFeedPage(topicClaims(s.seriesId, p), new Uint8Array(4096)));
+      feedWrites.push(writeFeedPage(topicEditions(s.seriesId, p), editionPages[p], { fresh: true }));
+      feedWrites.push(writeFeedPage(topicClaims(s.seriesId, p), new Uint8Array(4096), { fresh: true }));
     }
     await Promise.all(feedWrites);
 
@@ -204,6 +213,7 @@ export async function createEvent(opts: {
   const results = await Promise.all(seriesFeedWork);
   seriesSummaries.push(...results);
   emit("feeds", series.length, series.length, "All feeds written");
+  timings.seriesFeeds = lap();
 
   // 4. Build and write event feed
   const eventFeed: EventFeed = {
@@ -231,8 +241,10 @@ export async function createEvent(opts: {
   }
   const eventFeedJson = JSON.stringify(eventFeed);
   console.log(`[event] Writing event feed (${eventFeedJson.length} bytes)...`);
-  await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed));
+  // eventId is a fresh UUID, so this topic has never been written.
+  await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed), { fresh: true });
   invalidateEventCache(eventId);
+  timings.eventFeed = lap();
 
   // Skip verification — writeFeedPage succeeded, data is on the local Bee node.
   // Saves ~300-600ms. If we ever move to multi-node, add background verification.
@@ -250,6 +262,8 @@ export async function createEvent(opts: {
     .catch((err) => console.error("[event] Failed to update directory (non-critical):", err));
 
   emit("finalize", 1, 1, "Event published!");
+  const summary = Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(" ");
+  console.log(`[event] timings — ${summary} total=${Date.now() - tStart}ms (eventId=${eventId} series=${series.length} tickets=${totalTickets})`);
   console.log(`[event] Event ${eventId} created successfully`);
   return eventFeed;
 }

@@ -377,7 +377,9 @@
     if (addr) _fetchedStatusWithAddr = true;
 
     const hash = window.location.hash;
-    if (hash.includes("stripe=success")) {
+    // Check both hash (woco.eth.limo hash-router) and search (standalone ENS sites).
+    const stripeParams = hash + window.location.search;
+    if (stripeParams.includes("stripe=success")) {
       const returningId = sessionStorage.getItem(`woco:stripe-returning:${eventId}`);
       if (returningId) {
         stripeReturnSeriesId = returningId;
@@ -399,6 +401,37 @@
           }
           stripeBanner = { email, qty };
         } catch { stripeBanner = { email: null, qty: 1 }; }
+      }
+    }
+
+    if (stripeParams.includes("stripe=cancelled")) {
+      const returningId = sessionStorage.getItem(`woco:stripe-returning:${eventId}`);
+      if (returningId) {
+        // Restore the quantity the buyer had selected so ClaimButton's
+        // reservation $effect sees a match instead of defaulting to 1 and
+        // atomically replacing the server-side hold with a qty-1 reservation.
+        try {
+          const formRaw = sessionStorage.getItem(`woco:stripe-form:${eventId}:${returningId}`);
+          if (formRaw) {
+            const parsed = JSON.parse(formRaw) as { quantity?: number };
+            if (parsed.quantity && parsed.quantity > 1) {
+              ticketQty = { [returningId]: parsed.quantity };
+            }
+          }
+        } catch { /* ignore */ }
+        // Auto-select the series and reopen the claim panel.
+        stripeReturnSeriesId = returningId;
+        if (event) {
+          const match = event.series.find(s => s.seriesId === returningId);
+          if (match) { selectedSeries = match; stripeReturnSeriesId = null; claimOpen = true; }
+        }
+        // Strip the marker so refresh doesn't re-trigger (handles both
+        // hash-routed woco app and standalone ENS sites with search params).
+        try {
+          const newHash = window.location.hash.replace(/[?&]stripe=cancelled/, "");
+          const newSearch = window.location.search.replace(/[?&]stripe=cancelled/, "").replace(/^\?$/, "");
+          window.history.replaceState(null, "", window.location.pathname + newSearch + newHash);
+        } catch { /* ignore */ }
       }
     }
 

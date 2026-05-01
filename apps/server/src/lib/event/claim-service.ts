@@ -110,6 +110,12 @@ export async function claimTicket(opts: {
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
 
+  // Phase timings — surface where Swarm latency lands per claim.
+  const tStart = Date.now();
+  let tPhase = tStart;
+  const lap = (): number => { const d = Date.now() - tPhase; tPhase = Date.now(); return d; };
+  const timings: Record<string, number> = {};
+
   // 0. Reject duplicate approved claims — check claimers feed before any expensive work.
   //    This runs inside the per-series queue so the read is always up-to-date.
   const claimerKey = identifier.type === "wallet"
@@ -147,31 +153,22 @@ export async function claimTicket(opts: {
         throw new Error("Already claimed");
       }
     }
+    timings.dedup = lap();
+  } else {
+    tPhase = Date.now();
   }
 
-  // 1. Read series metadata from editions page 0, slot 0
-  const editionsPage0 = await readFeedPageWithRetry(topicEditions(seriesId, 0));
-  if (!editionsPage0) {
-    throw new Error("Series not found");
-  }
+  // 1. Load series metadata via process-level cache. Editions feed + meta
+  //    JSON are both immutable (written once at publish, never updated), so
+  //    a process-lifetime cache is safe and saves 2 Swarm round-trips per
+  //    claim after the first one — these dominated the measured per-claim
+  //    latency.
+  const cachedMeta = await loadSeriesMeta(seriesId);
+  timings.metaRead = lap();
 
-  const refs = decode4096(editionsPage0);
-  if (refs.length === 0) {
-    throw new Error("Series has no metadata");
-  }
-
-  const metaJson = await downloadFromBytes(refs[0]);
-  const meta = JSON.parse(metaJson) as {
-    totalSupply: number;
-    pageCount: number;
-    eventId: string;
-    seriesId: string;
-    name: string;
-    approvalRequired?: boolean;
-  };
-
-  const pageCount = meta.pageCount || 1;
-  const approvalRequired = !!meta.approvalRequired;
+  const editionsPage0 = cachedMeta.editionsPage0;
+  const pageCount = cachedMeta.pageCount;
+  const approvalRequired = cachedMeta.approvalRequired;
 
   // 1b. For approval-required series: reject duplicate pending requests
   if (approvalRequired) {
@@ -181,6 +178,7 @@ export async function claimTicket(opts: {
     )) {
       throw new Error("Already requested");
     }
+    timings.pendingCheck = lap();
   }
 
   // 2. Find next unclaimed slot — fetch all pages in parallel, then scan
@@ -224,6 +222,7 @@ export async function claimTicket(opts: {
   if (foundPage < 0 || !ticketRef) {
     throw new Error("No tickets available");
   }
+  timings.findSlot = lap();
 
   // 3. Calculate edition number from page + slot
   let editionNumber: number;
@@ -238,6 +237,7 @@ export async function claimTicket(opts: {
   // 4. Download and verify original signed ticket
   const originalJson = await downloadFromBytes(ticketRef);
   const originalTicket = JSON.parse(originalJson) as SignedTicket;
+  timings.ticketDl = lap();
 
   // Verify ed25519 signature — defence-in-depth against feed tampering
   if (!verifyTicketSignature(originalTicket)) {
@@ -270,6 +270,7 @@ export async function claimTicket(opts: {
   // 6. Upload claimed ticket to /bytes
   const claimedRef = await uploadToBytes(JSON.stringify(claimedTicket));
   console.log(`[claim] Uploaded claimed ticket: ${claimedRef}`);
+  timings.ticketUp = lap();
 
   // 7. Write claim hash to claims feed at the found slot — reserves the slot
   const claimsData = cachedClaimsPageData ? new Uint8Array(cachedClaimsPageData) : new Uint8Array(4096);
@@ -278,6 +279,7 @@ export async function claimTicket(opts: {
 
   await writeFeedPage(topicClaims(seriesId, foundPage), claimsData);
   console.log(`[claim] Updated claims feed page ${foundPage}, slot ${foundSlot}`);
+  timings.claimsFeedWrite = lap();
 
   // 8. Approval gate or instant completion
   const claimerAddress = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash}`;
@@ -290,8 +292,10 @@ export async function claimTicket(opts: {
     } catch (err) {
       console.error("[claim] Failed to store encrypted order:", err);
     }
+    timings.orderUp = lap();
   } else if (orderRef) {
     console.log(`[claim] Using pre-uploaded order ref: ${orderRef}`);
+    tPhase = Date.now();
   }
 
   if (approvalRequired) {
@@ -309,32 +313,41 @@ export async function claimTicket(opts: {
     return { ...claimedTicket, _pendingId: pendingId };
   }
 
-  // Normal path: update claimers feed + user collection
-  try {
-    await updateClaimersFeed(seriesId, {
-      edition: editionNumber,
-      claimerAddress,
-      claimedRef,
-      claimedAt: claimedTicket.claimedAt,
-      orderRef,
-      ...(via ? { via } : {}),
-      ...(secondaryEmailHash ? { secondaryEmailHash } : {}),
-    });
-  } catch (err) {
-    console.error("[claim] Failed to update claimers feed:", err);
-  }
+  // Normal path: claimers feed write goes to a per-series background queue
+  // (see `enqueueClaimersUpdate` for the ordering rationale). The buyer's
+  // claim is already durable in the claims feed at this point — claimers is
+  // a derived index used by the dashboard and the optional /save-order
+  // attachment, both of which tolerate eventual consistency.
+  const tClaimersEnqueue = Date.now();
+  enqueueClaimersUpdate(seriesId, {
+    edition: editionNumber,
+    claimerAddress,
+    claimedRef,
+    claimedAt: claimedTicket.claimedAt,
+    orderRef,
+    ...(via ? { via } : {}),
+    ...(secondaryEmailHash ? { secondaryEmailHash } : {}),
+  })
+    .then(() => console.log(`[claim] claimers bg=${Date.now() - tClaimersEnqueue}ms (edition=${editionNumber})`))
+    .catch((err) => console.error("[claim] Failed to update claimers feed (bg):", err));
+  timings.claimersFeed = lap(); // expected ≈ 0 — measures enqueue, not write
 
   // Update user collection in background (non-critical, wallet only)
   if (identifier.type === "wallet") {
+    const tCol = Date.now();
     addToUserCollection(identifier.address, {
       seriesId,
       eventId: originalTicket.data.eventId,
       edition: editionNumber,
       claimedRef,
       claimedAt: claimedTicket.claimedAt,
-    }).catch((err) => console.error("[claim] Failed to update user collection (non-critical):", err));
+    })
+      .then(() => console.log(`[claim] collection bg=${Date.now() - tCol}ms (edition=${editionNumber})`))
+      .catch((err) => console.error("[claim] Failed to update user collection (non-critical):", err));
   }
 
+  const summary = Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(" ");
+  console.log(`[claim] timings — ${summary} total=${Date.now() - tStart}ms (edition=${editionNumber} pages=${pageCount})`);
   console.log(`[claim] Ticket claimed successfully: edition ${editionNumber}`);
   return claimedTicket;
 }
@@ -343,25 +356,51 @@ export async function claimTicket(opts: {
 // Get claim status
 // ---------------------------------------------------------------------------
 
-/** Module-level cache of immutable series metadata. The meta page is written
- *  ONCE at series creation (totalSupply, pageCount) and never mutated, so it
- *  can be cached for the life of the process. Eliminates 2 Swarm round-trips
- *  per status read after the first hit — the dominant cost for the
- *  reservation path. */
-const seriesMetaCache = new Map<string, { totalSupply: number; pageCount: number }>();
+/** Module-level cache of immutable series state. Editions page 0 + the
+ *  metadata JSON it points to are written ONCE at series creation
+ *  (`service.ts` writes `topicEditions(seriesId, p)` exactly once per page
+ *  and never re-writes them — only `topicClaims` mutates as tickets get
+ *  claimed). Caching for the life of the process is therefore safe; entries
+ *  cannot become stale. Server restart simply repopulates on first claim.
+ *
+ *  Storing the raw `editionsPage0` bytes lets the claim path skip BOTH the
+ *  feed read and the metadata download — these were the dominant cost in
+ *  the per-claim timing trace. */
+type CachedSeriesMeta = {
+  totalSupply: number;
+  pageCount: number;
+  approvalRequired: boolean;
+  /** Raw 4096-byte editions feed page 0 — contains [metaRef, ticketRef0..N].
+   *  Treat as read-only; callers should `new Uint8Array(...)` if mutating. */
+  editionsPage0: Uint8Array;
+};
 
-async function loadSeriesMeta(seriesId: string): Promise<{ totalSupply: number; pageCount: number }> {
+const seriesMetaCache = new Map<string, CachedSeriesMeta>();
+
+async function loadSeriesMeta(seriesId: string): Promise<CachedSeriesMeta> {
   const cached = seriesMetaCache.get(seriesId);
   if (cached) return cached;
 
-  const editionsPage0 = await readFeedPage(topicEditions(seriesId, 0));
+  // Use the retry variant — first-time load may race with feed propagation
+  // right after series creation. Subsequent calls hit the cache so retry
+  // cost is paid at most once.
+  const editionsPage0 = await readFeedPageWithRetry(topicEditions(seriesId, 0));
   if (!editionsPage0) throw new Error("Series not found");
   const refs = decode4096(editionsPage0);
   if (refs.length === 0) throw new Error("Series has no metadata");
 
   const metaJson = await downloadFromBytes(refs[0]);
-  const parsed = JSON.parse(metaJson) as { totalSupply: number; pageCount: number };
-  const meta = { totalSupply: parsed.totalSupply, pageCount: parsed.pageCount || 1 };
+  const parsed = JSON.parse(metaJson) as {
+    totalSupply: number;
+    pageCount?: number;
+    approvalRequired?: boolean;
+  };
+  const meta: CachedSeriesMeta = {
+    totalSupply: parsed.totalSupply,
+    pageCount: parsed.pageCount || 1,
+    approvalRequired: !!parsed.approvalRequired,
+    editionsPage0,
+  };
   seriesMetaCache.set(seriesId, meta);
   return meta;
 }
@@ -567,9 +606,12 @@ export async function approvePendingClaim(
   claimsData.set(hexToBytes32(newClaimedRef), claimSlot * 32);
   await writeFeedPage(topicClaims(seriesId, claimPage), claimsData);
 
-  // 5. Update claimers feed (official claim record)
+  // 5. Update claimers feed via the per-series queue. Awaited here (unlike
+  //    the normal claim path) because approval is admin-triggered and rare —
+  //    waiting a few seconds for the admin's dashboard to be consistent on
+  //    return is preferable to a race window with concurrent approvals.
   const claimerAddress = entry.claimerKey; // already lowercase or "email:hash"
-  await updateClaimersFeed(seriesId, {
+  await enqueueClaimersUpdate(seriesId, {
     edition: editionNumber,
     claimerAddress,
     claimedRef: newClaimedRef,
@@ -662,6 +704,32 @@ function editionToPageSlot(edition: number): { page: number; slot: number } {
   const page = 1 + Math.floor(rem / PAGE_N_CAPACITY);
   const slot = rem % PAGE_N_CAPACITY;
   return { page, slot };
+}
+
+/**
+ * Per-series serialisation for claimers feed writes. Separate from the slot-
+ * allocation queue in `routes/claims.ts` (`seriesQueues`) so the buyer-facing
+ * path doesn't wait on the claimers read-modify-write — but two consecutive
+ * claims still write claimers entries in order (preventing the read-stale,
+ * overwrite-newer race that a naïve fire-and-forget would introduce).
+ *
+ * Trade-off: an entry whose write is still queued when the process crashes
+ * is lost. The CLAIM itself remains durable (claims feed is the source of
+ * truth — written synchronously inside the slot-allocation queue), and
+ * dashboard data can be reconstructed from each `claimedRef`. Order data
+ * attachment via `/api/stripe/save-order` already polls with backoff for
+ * the entry to appear, so eventual consistency is the existing contract.
+ */
+const claimersTail = new Map<string, Promise<void>>();
+
+function enqueueClaimersUpdate(seriesId: string, entry: ClaimerEntry): Promise<void> {
+  const prev = claimersTail.get(seriesId) ?? Promise.resolve();
+  const next = prev
+    .catch(() => undefined) // never let one failure poison the chain
+    .then(() => updateClaimersFeed(seriesId, entry));
+  // Tail keeps the chain alive but absorbs errors so subsequent .then()s run
+  claimersTail.set(seriesId, next.catch(() => undefined));
+  return next;
 }
 
 async function updateClaimersFeed(seriesId: string, entry: ClaimerEntry): Promise<void> {

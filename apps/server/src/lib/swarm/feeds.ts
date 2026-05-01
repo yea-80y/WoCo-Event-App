@@ -1,5 +1,6 @@
-import type { Topic } from "@ethersphere/bee-js";
+import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from "../../config/swarm.js";
+import { ensureEthernaToken } from "../etherna/auth.js";
 
 // ---------------------------------------------------------------------------
 // Binary packing (128 slots x 32 bytes = 4096 bytes)
@@ -84,10 +85,46 @@ function toBytes(res: unknown): Uint8Array | null {
 // Feed read / write
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Feed index cache — eliminates findNextIndex round-trip on every write
+// ---------------------------------------------------------------------------
+//
+// Every `writeFeedPage` call without a hint forces bee-js to call
+// `findNextIndex`, which does `GET /feeds/{owner}/{topic}` against Bee. That
+// lookup is the dominant cost of a write (1.5–4.5s observed in production
+// logs — same path that surfaces "lookup at failed" warnings in bee-node).
+//
+// All feeds are written by the single platform signer, so we control all
+// index increments. We cache the next-write index per topic and pass it
+// explicitly to `uploadPayload({ index })`, skipping the lookup entirely.
+//
+// Cache is primed for free by `readFeedPage` (every read returns the current
+// index in headers). Per-topic mutex serialises concurrent writes so the
+// cached value never races with itself. Server restart loses the cache; the
+// next read or first write rebuilds it. If multiple writers ever sign the
+// same feed (Swarm ID), this cache must be revisited per-signer.
+const feedNextIndex = new Map<string, bigint>();
+const feedTopicLock = new Map<string, Promise<unknown>>();
+
+function topicKey(topic: Topic): string {
+  return topic.toHex();
+}
+
+function rememberNextIndex(topic: Topic, next: FeedIndex | bigint | undefined): void {
+  if (next === undefined) return;
+  const value = typeof next === "bigint" ? next : next.toBigInt();
+  feedNextIndex.set(topicKey(topic), value);
+}
+
 export async function readFeedPage(topic: Topic): Promise<Uint8Array | null> {
   try {
+    await ensureEthernaToken();
     const reader = getBee().makeFeedReader(topic, getPlatformOwner());
     const result = await reader.downloadPayload();
+    // Prime the write-index cache from the read response so subsequent writes
+    // skip findNextIndex.
+    const next = (result as { feedIndexNext?: FeedIndex })?.feedIndexNext;
+    if (next) rememberNextIndex(topic, next);
     return toBytes(result);
   } catch {
     return null;
@@ -118,31 +155,104 @@ export async function readFeedPageWithRetry(
 // in here. Accept an optional `signer` argument and default to the platform
 // signer for back-compat. All callers above (events, claims, profile, etc.)
 // need to thread the signer through from the auth layer.
-export async function writeFeedPage(topic: Topic, page: Uint8Array): Promise<void> {
+function isTransientFeedError(err: unknown): boolean {
+  const e = err as any;
+  const status: number | undefined = e?.status ?? e?.response?.status;
+  if (status === 429) return true;
+  if (status && status >= 500) return true;
+  if (status === undefined) {
+    const msg = String(e?.message ?? "").toLowerCase();
+    const code = String(e?.code ?? "").toUpperCase();
+    if (msg.includes("socket hang up") || msg.includes("network") || msg.includes("timeout")) return true;
+    if (["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNABORTED", "ECONNREFUSED", "EPIPE"].includes(code)) return true;
+  }
+  return false;
+}
+
+export interface WriteFeedPageOptions {
+  /** Caller knows this topic has never been written to. Skips findNextIndex
+   *  and writes directly at index 0 — saves the lookup-then-404 round-trip
+   *  on every fresh-feed write (event creation, new editions pages). */
+  fresh?: boolean;
+}
+
+export async function writeFeedPage(
+  topic: Topic,
+  page: Uint8Array,
+  options: WriteFeedPageOptions = {},
+): Promise<void> {
+  // Serialise per-topic so the cached next-index never races. Errors are
+  // absorbed in the chain so one failure doesn't poison the next caller.
+  const key = topicKey(topic);
+  const prev = feedTopicLock.get(key) ?? Promise.resolve();
+  const task = prev
+    .catch(() => undefined)
+    .then(() => doWriteFeedPage(topic, key, page, options));
+  feedTopicLock.set(key, task.catch(() => undefined));
+  return task;
+}
+
+async function doWriteFeedPage(
+  topic: Topic,
+  key: string,
+  page: Uint8Array,
+  options: WriteFeedPageOptions,
+): Promise<void> {
+  await ensureEthernaToken();
+  // Resolve the next index without paying for findNextIndex when avoidable.
+  let nextIndex: bigint | undefined;
+  if (options.fresh) {
+    // Application asserts this is a brand-new topic. Skip the round-trip.
+    nextIndex = 0n;
+  } else {
+    nextIndex = feedNextIndex.get(key);
+    // Cache miss: fall through to bee-js's internal findNextIndex on first
+    // call (uploadPayload without an index). Subsequent writes will hit the
+    // cache because we record the index post-upload.
+  }
+
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const writer = getBee().makeFeedWriter(topic, getPlatformSigner());
-      await writer.uploadPayload(requirePostageBatch(), page);
+      const uploadOpts: { index?: FeedIndex; deferred?: boolean } = {
+        // `swarm-deferred-upload: true` — Bee buffers locally and pushes to
+        // the network in the background. Without this, the upload blocks
+        // until the chunk has been pushed to neighbourhood peers, which
+        // turns every feed write into a wait for network sync.
+        deferred: true,
+      };
+      if (nextIndex !== undefined) {
+        uploadOpts.index = FeedIndex.fromBigInt(nextIndex);
+      }
+      await writer.uploadPayload(requirePostageBatch(), page, uploadOpts);
+      // Record the next index to write — successor of what we just wrote.
+      const used = nextIndex ?? 0n; // if cache miss + fresh-feed, bee-js wrote at 0
+      feedNextIndex.set(key, used + 1n);
       return;
     } catch (err: unknown) {
       const status = (err as any)?.status ?? (err as any)?.response?.status;
-      if (status === 429 && attempt < 4) {
-        console.log(`[swarm] Feed write rate limited, retrying in ${delay}ms...`);
+      if (isTransientFeedError(err) && attempt < 4) {
+        const reason = (err as any)?.message ?? (err as any)?.code ?? status;
+        console.log(`[swarm] Feed write transient error (${reason}), retrying in ${delay}ms (attempt ${attempt + 1}/5)...`);
         await new Promise((r) => setTimeout(r, delay));
         delay = Math.min(delay * 2, 5000);
         continue;
       }
-      // If the feed's current chunk is missing (404), try writing at index 0 (fresh)
+      // 404 from the feed chunk lookup (rare) — drop the cache and retry at
+      // index 0. Stops a stale cached index from permanently breaking writes.
       if (status === 404 && attempt === 0) {
         console.warn(`[swarm] Feed chunk missing (404), resetting feed at index 0...`);
-        try {
-          const writer2 = getBee().makeFeedWriter(topic, getPlatformSigner());
-          await writer2.uploadPayload(requirePostageBatch(), page, { index: 0 });
-          return;
-        } catch (resetErr) {
-          console.error(`[swarm] Feed reset also failed:`, resetErr instanceof Error ? resetErr.message : resetErr);
-        }
+        feedNextIndex.delete(key);
+        nextIndex = 0n;
+        continue;
+      }
+      // Conflict (409 = chunk already exists at this index) — cache went
+      // stale (e.g. first write since restart used a wrong cached value).
+      // Clear cache so the next call re-discovers via findNextIndex.
+      if (status === 409) {
+        console.warn(`[swarm] Feed write 409 conflict — clearing cached index for ${key.slice(0, 16)}...`);
+        feedNextIndex.delete(key);
       }
       throw err;
     }

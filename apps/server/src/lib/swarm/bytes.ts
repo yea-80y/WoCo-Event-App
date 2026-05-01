@@ -1,25 +1,52 @@
 import { getBee, requirePostageBatch } from "../../config/swarm.js";
+import { ensureEthernaToken } from "../etherna/auth.js";
 import type { Hex64 } from "@woco/shared";
 
 /** Delay helper */
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Upload data to Swarm /bytes with retry on 429. */
+/**
+ * Classify a thrown error as a transient network/Bee fault that's worth
+ * retrying. Bee's chain-RPC backpressure (free-tier dRPC throttling, brief
+ * peer churn) shows up as TCP-level resets — `socket hang up`, `ECONNRESET`,
+ * `ETIMEDOUT` — surfaced by axios with no HTTP `status`. Treat 5xx the same
+ * way; only 4xx other than 429 are real client errors.
+ */
+function isTransientSwarmError(err: unknown): boolean {
+  const e = err as any;
+  const status: number | undefined = e?.status ?? e?.response?.status;
+  if (status === 429) return true;
+  if (status && status >= 500) return true;
+  if (status === undefined) {
+    const msg = String(e?.message ?? "").toLowerCase();
+    const code = String(e?.code ?? "").toUpperCase();
+    if (msg.includes("socket hang up") || msg.includes("network") || msg.includes("timeout")) return true;
+    if (["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNABORTED", "ECONNREFUSED", "EPIPE"].includes(code)) return true;
+  }
+  return false;
+}
+
+/** Upload data to Swarm /bytes with retry on transient errors (429, 5xx, socket hang up). */
 export async function uploadToBytes(data: string | Uint8Array): Promise<Hex64> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  await ensureEthernaToken();
 
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const result = await getBee().uploadData(requirePostageBatch(), bytes);
+      // `deferred: true` — Bee buffers the chunk locally and pushes to the
+      // network in the background. Without it, /bytes blocks until the
+      // chunk has propagated to neighbourhood peers, turning every upload
+      // into a wait for network sync.
+      const result = await getBee().uploadData(requirePostageBatch(), bytes, { deferred: true });
       const ref = typeof result.reference === "string"
         ? result.reference
         : result.reference.toString();
       return ref.toLowerCase().replace(/^0x/, "") as Hex64;
     } catch (err: unknown) {
-      const status = (err as any)?.status ?? (err as any)?.response?.status;
-      if (status === 429 && attempt < 4) {
-        console.log(`[swarm] Upload rate limited, retrying in ${delay}ms...`);
+      if (isTransientSwarmError(err) && attempt < 4) {
+        const reason = (err as any)?.message ?? (err as any)?.code ?? (err as any)?.status;
+        console.log(`[swarm] Upload transient error (${reason}), retrying in ${delay}ms (attempt ${attempt + 1}/5)...`);
         await wait(delay);
         delay = Math.min(delay * 2, 5000);
         continue;
@@ -31,8 +58,9 @@ export async function uploadToBytes(data: string | Uint8Array): Promise<Hex64> {
   throw new Error("Upload failed after retries");
 }
 
-/** Download data from Swarm /bytes as string, with retry on 429. */
+/** Download data from Swarm /bytes as string, with retry on transient errors. */
 export async function downloadFromBytes(ref: string): Promise<string> {
+  await ensureEthernaToken();
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
@@ -66,9 +94,9 @@ export async function downloadFromBytes(ref: string): Promise<string> {
 
       throw new Error(`Unexpected downloadData type: ${typeof result}`);
     } catch (err: unknown) {
-      const status = (err as any)?.status ?? (err as any)?.response?.status;
-      if (status === 429 && attempt < 4) {
-        console.log(`[swarm] Download rate limited, retrying in ${delay}ms...`);
+      if (isTransientSwarmError(err) && attempt < 4) {
+        const reason = (err as any)?.message ?? (err as any)?.code ?? (err as any)?.status;
+        console.log(`[swarm] Download transient error (${reason}), retrying in ${delay}ms (attempt ${attempt + 1}/5)...`);
         await wait(delay);
         delay = Math.min(delay * 2, 5000);
         continue;

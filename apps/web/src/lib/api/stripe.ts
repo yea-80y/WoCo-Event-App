@@ -96,6 +96,10 @@ export async function createCheckoutSession(params: {
     typeof window !== "undefined"
       ? window.location.href.split("#")[0].split("?")[0]
       : undefined;
+  // Full current URL (including hash) so Stripe's cancel button returns the
+  // buyer to exactly this page — including standalone ENS event sites.
+  const cancelUrl =
+    typeof window !== "undefined" ? window.location.href : undefined;
 
   const body = {
     eventId: params.eventId,
@@ -106,6 +110,7 @@ export async function createCheckoutSession(params: {
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
     ...(params.reservationId ? { reservationId: params.reservationId } : {}),
     ...(returnUrl ? { returnUrl } : {}),
+    ...(cancelUrl ? { cancelUrl } : {}),
   };
 
   if (auth.isConnected) {

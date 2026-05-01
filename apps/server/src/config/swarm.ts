@@ -1,6 +1,12 @@
 import { Bee, PrivateKey } from "@ethersphere/bee-js";
+import { getCachedEthernaToken } from "../lib/etherna/auth.js";
 
-export const BEE_URL = process.env.BEE_URL || "http://localhost:3323";
+export const ETHERNA_ENABLED = process.env.ETHERNA_ENABLED === "true";
+const ETHERNA_GATEWAY_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+
+export const BEE_URL = ETHERNA_ENABLED
+  ? ETHERNA_GATEWAY_URL
+  : (process.env.BEE_URL || "http://localhost:3323");
 export const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || "";
 export const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || "";
 
@@ -16,7 +22,18 @@ let _bee: Bee | null = null;
 let _signer: PrivateKey | null = null;
 
 export function getBee(): Bee {
-  if (!_bee) _bee = new Bee(BEE_URL);
+  if (!_bee) {
+    _bee = ETHERNA_ENABLED
+      ? new Bee(BEE_URL, {
+          onRequest: (req) => {
+            const token = getCachedEthernaToken();
+            if (token) {
+              req.headers = { ...(req.headers ?? {}), Authorization: `Bearer ${token}` };
+            }
+          },
+        })
+      : new Bee(BEE_URL);
+  }
   return _bee;
 }
 

@@ -351,11 +351,15 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
     returnUrl?: string;
+    /** Full current-page URL (including hash) for the Stripe cancel redirect.
+     *  Accepted as-is (any HTTPS URL) — it's just a back-navigation, not a
+     *  security gate. Separate from returnUrl so success and cancel can differ. */
+    cancelUrl?: string;
     quantity?: number;
     orderRef?: string;
     encryptedOrder?: SealedBox;
@@ -515,53 +519,77 @@ stripe.post("/create-checkout", async (c) => {
   // browsers strip from the Referer cross-origin). Falls back to Referer/Origin.
   const frontendUrl = validateReturnUrl(returnUrl) ?? getFrontendUrl(c);
 
+  // Cancel URL: use the client-supplied full page URL (including hash fragment)
+  // so the buyer is returned to exactly where they came from, even on standalone
+  // ENS event sites whose host isn't in ALLOWED_HOSTS. Validated only as a
+  // well-formed HTTPS URL — no host restriction needed for a back-navigation.
+  function buildCancelUrl(): string {
+    if (cancelUrl) {
+      try {
+        const u = new URL(cancelUrl);
+        if (u.protocol === "https:" || u.hostname === "localhost") {
+          const sep = cancelUrl.includes("?") ? "&" : "?";
+          return `${cancelUrl}${sep}stripe=cancelled`;
+        }
+      } catch { /* fall through */ }
+    }
+    return `${frontendUrl}/#/event/${eventId}?stripe=cancelled`;
+  }
+  const stripeCancelUrl = buildCancelUrl();
+
   try {
     const s = getStripe();
     const tStripe = performance.now();
-    const session = await s.checkout.sessions.create({
-      mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency: stripeCurrency,
-            product_data: {
-              name: `${series.name} — ${event.title}`,
-              description: series.description || undefined,
+    // Direct charge on the connected account: Stripe Checkout shows the
+    // organiser's business name (set during Express onboarding) rather than
+    // the platform name. The platform still collects application_fee_amount.
+    const session = await s.checkout.sessions.create(
+      {
+        mode: "payment",
+        line_items: [
+          {
+            price_data: {
+              currency: stripeCurrency,
+              product_data: {
+                name: `${series.name} — ${event.title}`,
+                description: series.description || undefined,
+              },
+              unit_amount: chargeAmount,
             },
-            unit_amount: chargeAmount,
+            quantity,
           },
-          quantity,
+        ],
+        payment_intent_data: {
+          application_fee_amount: totalApplicationFee,
+          // No transfer_data — direct charge settles on the connected account.
         },
-      ],
-      payment_intent_data: {
-        application_fee_amount: totalApplicationFee,
-        transfer_data: {
-          destination: organiserRecord.stripeAccountId,
+        metadata: {
+          eventId,
+          seriesId,
+          claimerEmail: claimerEmail || "",
+          // Server-vouched: only set from a verified session, never from the body.
+          // The webhook trusts this field because we wrote it.
+          claimerAddress: verifiedAddress || "",
+          quantity: String(quantity),
+          // Stored so the webhook can issue refunds through the connected account.
+          connectedAccountId: organiserRecord.stripeAccountId,
+          // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
+          //  - client pre-uploaded during form typing and passed `orderRef`, or
+          //  - we just uploaded it inline (above) in parallel with the other reads.
+          // Either way, the webhook attaches this ref to every ticket in the batch,
+          // so multi-ticket orders never end up with empty attendee data.
+          ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
+          // Slot reservation id, consumed by the webhook on successful claim.
+          // Optional: legacy / expired-reservation flows fall back to the
+          // existing availability check at claim time.
+          ...(reservationId ? { reservationId } : {}),
         },
+        success_url: `${frontendUrl}/#/event/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: stripeCancelUrl,
+        ...(claimerEmail ? { customer_email: claimerEmail } : {}),
       },
-      metadata: {
-        eventId,
-        seriesId,
-        claimerEmail: claimerEmail || "",
-        // Server-vouched: only set from a verified session, never from the body.
-        // The webhook trusts this field because we wrote it.
-        claimerAddress: verifiedAddress || "",
-        quantity: String(quantity),
-        // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
-        //  - client pre-uploaded during form typing and passed `orderRef`, or
-        //  - we just uploaded it inline (above) in parallel with the other reads.
-        // Either way, the webhook attaches this ref to every ticket in the batch,
-        // so multi-ticket orders never end up with empty attendee data.
-        ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
-        // Slot reservation id, consumed by the webhook on successful claim.
-        // Optional: legacy / expired-reservation flows fall back to the
-        // existing availability check at claim time.
-        ...(reservationId ? { reservationId } : {}),
-      },
-      success_url: `${frontendUrl}/#/event/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontendUrl}/#/event/${eventId}?stripe=cancelled`,
-      ...(claimerEmail ? { customer_email: claimerEmail } : {}),
-    });
+      { stripeAccount: organiserRecord.stripeAccountId },
+    );
     const stripeMs = performance.now() - tStripe;
 
     console.log(
@@ -596,11 +624,10 @@ stripe.post("/webhook", async (c) => {
 
   try {
     const s = getStripe();
-    // Two endpoints exist: one on "Your account" (delivers
-    // checkout.session.completed — platform-account events fired by our
-    // destination-charge Checkout Sessions) and one on "Connected accounts"
-    // (delivers account.updated for organiser onboarding). Each endpoint has
-    // its own signing secret. Try both before rejecting.
+    // Two endpoints exist: "Connected accounts" (delivers checkout.session.completed
+    // from direct-charge sessions + account.updated for onboarding) and "Your account"
+    // (platform-level events; kept for any legacy destination-charge sessions still
+    // in flight). Each has its own signing secret — try both before rejecting.
     const secrets = [
       process.env.STRIPE_WEBHOOK_SECRET_PLATFORM,
       process.env.STRIPE_WEBHOOK_SECRET,
@@ -842,6 +869,9 @@ async function handleSuccessfulPayment(
       : session.payment_intent.id;
     try {
       const s = getStripe();
+      // Direct-charge sessions: refund must go through the connected account.
+      // connectedAccountId is stamped into metadata at checkout-session creation.
+      const connectedAccountId = session.metadata?.connectedAccountId || undefined;
       const amountTotal = session.amount_total ?? 0;
       // Pro-rata the total (which already includes any buyer-paid fee) by
       // unit. Round so we never refund more than was paid.
@@ -867,7 +897,10 @@ async function handleSuccessfulPayment(
       if (claimedResults.length > 0 && refundAmount > 0) {
         refundParams.amount = refundAmount;
       }
-      const refund = await s.refunds.create(refundParams);
+      const refund = await s.refunds.create(
+        refundParams,
+        connectedAccountId ? { stripeAccount: connectedAccountId } : undefined,
+      );
       console.log(
         `[stripe-webhook] Auto-refunded ${piId} (refund=${refund.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
       );
