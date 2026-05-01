@@ -1,19 +1,6 @@
 import type { ApiResponse, SessionDelegation } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
 
-// Runtime config injected by the site-builder deploy endpoint (takes priority over build-time env vars).
-// Absent in the main WoCo app build — only present in standalone event sites deployed via the wizard.
-declare global {
-  interface Window {
-    SITE_CONFIG?: {
-      apiUrl?: string;
-      gatewayUrl?: string;
-      eventId?: string;
-      paraApiKey?: string;
-    };
-  }
-}
-
 /** API base URL — runtime config wins, then build-time env var, then empty (dev proxy) */
 const BASE =
   (typeof window !== "undefined" && window.SITE_CONFIG?.apiUrl) ||

@@ -17,6 +17,7 @@
   import SiteBuilder from "./lib/components/site/SiteBuilder.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
   import UserAvatar from "./lib/components/profile/UserAvatar.svelte";
+  import MultiSiteBuilder from "./lib/components/builder/MultiSiteBuilder.svelte";
   import { getExternalEventApi } from "./lib/api/event-api-registry.js";
   import { onMount } from "svelte";
 
@@ -82,6 +83,8 @@
       <EmbedSetup eventId={router.params.id} />
     {:else if router.route === "site-builder"}
       <SiteBuilder />
+    {:else if router.route === "build"}
+      <MultiSiteBuilder />
     {:else if router.route === "profile"}
       <ProfilePage address={router.params.address} />
     {:else if router.route === "stripe-return"}
@@ -128,6 +131,14 @@
     >
       <span class="nav-icon">&#43;</span>
       <span class="nav-label">Create</span>
+    </button>
+    <button
+      class="bottom-nav-item"
+      class:active={router.route === "build"}
+      onclick={() => navigate("/build")}
+    >
+      <span class="nav-icon">&#127760;</span>
+      <span class="nav-label">Site</span>
     </button>
     {#if auth.isConnected}
       <button

@@ -10,8 +10,17 @@
     apiUrl: import.meta.env.VITE_API_URL ?? 'http://localhost:3001',
   };
 
-  const rawConfig = typeof window !== 'undefined' ? window.SITE_CONFIG : undefined;
-  const config: SiteRuntimeConfig = rawConfig?.site ? rawConfig : DEV_FALLBACK;
+  function getConfig(): SiteRuntimeConfig {
+    if (typeof window !== 'undefined') {
+      if (window.SITE_CONFIG?.site) return window.SITE_CONFIG as SiteRuntimeConfig;
+      const preview = localStorage.getItem('woco:site-preview');
+      if (preview) {
+        try { return JSON.parse(preview) as SiteRuntimeConfig; } catch {}
+      }
+    }
+    return DEV_FALLBACK;
+  }
+  const config = getConfig();
   const site = config.site as Site;
   const gatewayUrl = config.gatewayUrl;
   const apiUrl = config.apiUrl ?? 'http://localhost:3001';

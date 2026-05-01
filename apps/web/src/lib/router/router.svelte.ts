@@ -23,6 +23,7 @@ function matchRoute(pathWithQuery: string): { route: string; params: Record<stri
   if (path === "/verify") return { route: "verify", params: {} };
   if (path === "/stripe/return") return { route: "stripe-return", params: {} };
   if (path === "/stripe/refresh") return { route: "stripe-refresh", params: {} };
+  if (path === "/build") return { route: "build", params: {} };
 
   const profileMatch = path.match(/^\/profile\/(0x[a-fA-F0-9]{40})$/);
   if (profileMatch) return { route: "profile", params: { address: profileMatch[1] } };

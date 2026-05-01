@@ -266,6 +266,8 @@ export interface SiteRuntimeConfig {
   gatewayUrl: string;
   /** API base URL for contactForm POSTs and event reads. */
   apiUrl?: string;
+  /** Para wallet API key — injected by single-event site builder. */
+  paraApiKey?: string;
 }
 
 declare global {
