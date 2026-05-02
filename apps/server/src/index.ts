@@ -19,6 +19,7 @@ import { profiles } from "./routes/profiles.js";
 import { broadcast } from "./routes/broadcast.js";
 import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
+import { sitesRouter } from "./routes/sites.js";
 import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
@@ -311,6 +312,9 @@ app.route("/api/collection", collection);
 // Admin / setup routes (unauthenticated — no private data exposed)
 app.route("/api/admin", admin);
 app.route("/api/site", siteRoute);
+
+// Multi-page site builder: config + events index CRUD
+app.route("/api/sites", sitesRouter);
 
 // Custom domain routes
 app.route("/api/domains", domains);

@@ -76,6 +76,18 @@ export async function authGet<T>(path: string, baseUrl?: string): Promise<ApiRes
   return json;
 }
 
+/** Authenticated DELETE request. */
+export async function authDelete<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
+  const authHeaders = await buildAuthHeaders("DELETE", path, "");
+
+  const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
+    method: "DELETE",
+    headers: authHeaders,
+  });
+
+  return resp.json();
+}
+
 /** Exported so callers that need to build a custom fetch (streaming, etc.) can reuse the same auth flow. */
 export { buildAuthHeaders };
 
