@@ -292,56 +292,55 @@ SCHEMA (packages/shared/src/site/types.ts):
 - `Section` — discriminated union: hero | richText | gallery | eventsGrid | featuredEvent |
   openingHours | map | contactForm | embed
 - `SiteEventsIndex` — {siteId, events: SiteEventEntry[], updatedAt}
+- `SiteDirectoryEntry` — compact entry in creator's site directory feed
+- `SiteDirectory` — paged on-feed envelope (mirrors EventDirectory pattern)
 - `SiteRuntimeConfig` — injected as window.SITE_CONFIG at deploy time
 
 FEEDS:
-- woco/site/config/{siteId}     → Site JSON (config + theme + pages)
-- woco/site/{siteId}/events     → SiteEventsIndex (event IDs + featured flags)
-- woco-multisite-{siteId}       → per-site feed pointing at latest BZZ content hash (for ENS)
+- woco/site/config/{siteId}           → Site JSON (config + theme + pages)
+- woco/site/{siteId}/events           → SiteEventsIndex (event IDs + featured flags)
+- woco/site/creator/{ethAddress}[/pN] → Creator's site directory (SiteDirectory, paged)
+- woco-multisite-{siteId}             → per-site feed → latest BZZ content hash (for ENS)
+
+AUTH: all write endpoints (publish, deploy, events, contact) require auth via the same
+EIP-712 session delegation used by events. Owner is stamped server-side from the verified
+parentAddress — creator's crypto account is the authoritative identity.
 
 PUBLISH FLOW (two-step):
-1. POST /api/sites → writes Site + SiteEventsIndex feeds atomically
-2. POST /api/sites/:id/deploy → injects SITE_CONFIG + SEO/PWA meta into HTML template,
-   tars dist-multisite/, uploads BZZ collection, writes content hash to per-site feed.
+1. POST /api/sites → writes Site + SiteEventsIndex feeds atomically; upserts SiteDirectoryEntry
+   into creator's directory feed (woco/site/creator/{ethAddress})
+2. POST /api/sites/:id/deploy → injects SITE_CONFIG + SEO/PWA meta, tars dist-multisite/,
+   uploads BZZ collection, writes content hash to per-site feed, auto-whitelists hashes on
+   gateway, re-upserts directory entry with feedHash + deployedUrl.
    Returns { contentHash, feedManifestHash, siteUrl }
 
+MY SITES DASHBOARD:
+- GET /api/sites/mine — auth-gated, reads creator's Swarm directory, returns SiteDirectoryEntry[]
+- Builder opens on "Your websites" landing screen (MySitesScreen.svelte) showing site cards
+- Cards seeded from localStorage (instant) then merged with API results (authoritative)
+- LocalStorage key woco:my-sites is a write-through cache; API is source of truth
+- "← My Sites" back button in builder header; "Load from another device" advanced toggle
+  for cross-device recovery via Site ID
+
 EVENT LOADING (deployed site):
-- GET /api/sites/:id/events-full — bundled endpoint: reads index + fans out N getEvent()
-  calls server-side (local Bee), returns {index, events} in one HTTP round trip.
-  Replaces the old N+1 pattern (1 index fetch + N individual event fetches).
-- EventsGridSection caches result under woco:v1:site-events:{siteId} (TTL 2h).
-  Cache is always served immediately; background revalidation runs on every mount.
-- FeaturedEventSection caches under woco:v1:event:{eventId} (TTL 7d, same as EventPage).
-- Preview mode (window.SITE_CONFIG.previewEvents set): skips cache and events-full,
-  fetches events individually using the injected previewEvents list as the index.
+- GET /api/sites/:id/events-full — bundled endpoint, 5-min server-side cache + Cache-Control
+  headers for Cloudflare edge caching. Client uses 2h stale-while-revalidate localStorage cache.
+- Preview mode (window.SITE_CONFIG.previewEvents set): skips cache, fetches individually.
 
 SEO:
-- siteDescription (ThemeTokens) → injected at deploy time into <head>:
-  <meta name=description>, og:title/description/image, twitter:card tags.
-- ogImage uses logo Swarm ref (gateway /bzz/{ref}) if set.
-- MultiSiteApp updates <meta name=description> at runtime per-page so Googlebot
-  picks up page.metaDescription or falls back to site.theme.siteDescription.
-
-LOAD TAB:
-- Parallel fetch of /api/sites/:id + /api/sites/:id/events on "Load"
-- Restores both site config AND events list into builder state + localStorage
-
-BUILDER DEPLOY BANNER:
-- Shows live URL + "Site ID" (siteId) as separate copyable fields.
-- siteId is the stable identifier to paste into Load tab on future sessions.
+- siteDescription (ThemeTokens) injected at deploy time: <meta name=description>,
+  og:title/description/image, twitter:card. ogImage = logo Swarm ref.
+- MultiSiteApp updates <meta name=description> per-page at runtime.
 
 TEMPLATE PRESET: pub-venue-v1 (only one so far). newSiteFromTemplate() in shared.
 
 KNOWN GOTCHAS (site builder):
-- dist-multisite/ must exist on server before deploy — run `npm run build:site` +
-  rsync `apps/web/dist-multisite/` before the first deploy of a site.
-- build:multisite (`npm run build:multisite`) produces dist-multisite/ (separate
-  Vite entry from the main app build).
-- Server /api/sites/:id/events-full imports getEvent from event service — if that
-  function is slow (Swarm propagation delay), the bundled response will be slow too.
-  This is expected on first load; subsequent loads hit the client cache.
-- Featured filtering requires the events index (SiteEventEntry.featured) — the bundled
-  response carries the full index so this is available without a second fetch.
+- build:multisite → dist-multisite/ (NOT build:site → dist-site/). Server deploy endpoint
+  reads DIST_MULTISITE_PATH; must rsync apps/web/dist-multisite/ before first deploy.
+- GET /api/sites/mine must be registered BEFORE /:id in Hono or "mine" matches as a siteId.
+- Creator directory upsert is fire-and-forget on both publish and deploy — non-fatal.
+- events-full has 5-min server-side Map cache per siteId; invalidated on server restart.
+  Featured filtering uses the bundled index so no second fetch is needed.
 
 ============================================================================
 CONVENTIONS
@@ -411,7 +410,9 @@ FRONTEND COMPONENTS:
 
 MULTI-PAGE SITE BUILDER:
   apps/web/src/MultiSiteApp.svelte                              # deployed site runtime shell (hash router, theme)
-  apps/web/src/lib/components/builder/MultiSiteBuilder.svelte   # builder UI (tabs, publish, load, deploy banner)
+  apps/web/src/lib/components/builder/MultiSiteBuilder.svelte   # builder UI — My Sites screen + editor tabs
+  apps/web/src/lib/components/builder/MySitesScreen.svelte      # "Your websites" landing screen (site cards)
+  apps/web/src/lib/components/builder/types.ts                  # MySiteRecord = SiteDirectoryEntry alias
   apps/web/src/lib/components/builder/tabs/BrandTab.svelte      # brand name, siteDescription, logo, palette
   apps/web/src/lib/components/builder/tabs/PagesTab.svelte      # page CRUD + metaDescription
   apps/web/src/lib/components/builder/tabs/NavTab.svelte        # nav item ordering
@@ -421,11 +422,12 @@ MULTI-PAGE SITE BUILDER:
   apps/web/src/lib/components/site/sections/EventsGridSection.svelte  # grid renderer (cached, bundled fetch)
   apps/web/src/lib/components/site/sections/FeaturedEventSection.svelte # single featured event (cached)
   apps/web/src/lib/components/site/sections/SectionRenderer.svelte  # dispatches to correct renderer
-  apps/web/src/lib/api/sites.ts                                 # publishSite, deploySite, loadSite, getSiteEventsFull
-  apps/server/src/routes/sites.ts                               # /api/sites/* — publish, deploy, events-full, contact
-  packages/shared/src/site/types.ts                             # Site, Page, Section union, ThemeTokens, SiteEventsIndex
+  apps/web/src/lib/api/sites.ts                                 # publishSite, deploySite, loadSite, getCreatorSites, getSiteEventsFull
+  apps/server/src/routes/sites.ts                               # /api/sites/* — mine, publish, deploy, events-full, contact
+  apps/server/src/lib/site/service.ts                           # getCreatorSites / upsertCreatorSite (Swarm directory)
+  packages/shared/src/site/types.ts                             # Site, SiteDirectoryEntry, SiteDirectory, SiteEventsIndex
   packages/shared/src/site/templates.ts                         # newSiteFromTemplate (pub-venue-v1)
-  packages/shared/src/site/topics.ts                            # siteConfigTopic / siteEventsIndexTopic helpers
+  packages/shared/src/site/topics.ts                            # siteConfigTopic / siteCreatorDirectoryTopic helpers
   apps/web/src/lib/cache/cache.ts                               # stale-while-revalidate localStorage cache (+ TTL.SITE_EVENTS)
 
 PAYMENTS (frontend):
