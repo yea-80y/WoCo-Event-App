@@ -2,7 +2,7 @@
   import type { EventsGridSection as EventsGridSectionType, Site, EventFeed, SiteEventEntry } from '@woco/shared';
   import type { SiteEventsFull } from '../../../api/sites.js';
   import { onMount } from 'svelte';
-  import { cacheGet, cacheSet, cacheKey, TTL } from '../../cache/cache.js';
+  import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
 
   interface Props {
     section: EventsGridSectionType;

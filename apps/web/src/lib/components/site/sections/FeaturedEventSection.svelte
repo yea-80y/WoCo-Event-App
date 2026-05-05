@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { FeaturedEventSection as FeaturedEventSectionType, EventFeed } from '@woco/shared';
   import { onMount } from 'svelte';
-  import { cacheGet, cacheSet, cacheKey, TTL } from '../../cache/cache.js';
+  import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
 
   interface Props {
     section: FeaturedEventSectionType;
