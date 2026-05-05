@@ -494,6 +494,15 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const writer = bee.makeFeedWriter(topic, signer);
     await writer.upload(batchId, new Reference(contentHash));
 
+    // Whitelist both hashes on the gateway so they're publicly accessible.
+    // Fire-and-forget — whitelist failure must not block the deploy response.
+    const hashesToWhitelist = [contentHash, feedManifestHash].filter(Boolean);
+    fetch(`${BEE_URL}/admin/whitelist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hashes: hashesToWhitelist }),
+    }).catch((e) => console.warn("[sites/deploy] whitelist call failed:", e));
+
     return c.json({
       ok: true,
       data: {

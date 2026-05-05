@@ -279,6 +279,71 @@ STRIPE UX — PHASE 3 HARDENING (2026-04-28, reservation hardening + earlier tri
   acceptable trade-off for clearer cross-buyer UX.
 
 ============================================================================
+MULTI-PAGE SITE BUILDER
+============================================================================
+
+Builder UI lives at `#/build` inside the main WoCo app (App.svelte routes to it).
+Deployed sites are standalone BZZ collections on Swarm — no server at runtime.
+
+SCHEMA (packages/shared/src/site/types.ts):
+- `Site` — top-level config: theme, pages, nav, contact, socials, siteId (ULID)
+- `ThemeTokens` — brandName, logoSwarmRef, siteDescription (SEO), palette, font, radius
+- `Page` — slug, title, metaDescription, sections[]
+- `Section` — discriminated union: hero | richText | gallery | eventsGrid | featuredEvent |
+  openingHours | map | contactForm | embed
+- `SiteEventsIndex` — {siteId, events: SiteEventEntry[], updatedAt}
+- `SiteRuntimeConfig` — injected as window.SITE_CONFIG at deploy time
+
+FEEDS:
+- woco/site/config/{siteId}     → Site JSON (config + theme + pages)
+- woco/site/{siteId}/events     → SiteEventsIndex (event IDs + featured flags)
+- woco-multisite-{siteId}       → per-site feed pointing at latest BZZ content hash (for ENS)
+
+PUBLISH FLOW (two-step):
+1. POST /api/sites → writes Site + SiteEventsIndex feeds atomically
+2. POST /api/sites/:id/deploy → injects SITE_CONFIG + SEO/PWA meta into HTML template,
+   tars dist-multisite/, uploads BZZ collection, writes content hash to per-site feed.
+   Returns { contentHash, feedManifestHash, siteUrl }
+
+EVENT LOADING (deployed site):
+- GET /api/sites/:id/events-full — bundled endpoint: reads index + fans out N getEvent()
+  calls server-side (local Bee), returns {index, events} in one HTTP round trip.
+  Replaces the old N+1 pattern (1 index fetch + N individual event fetches).
+- EventsGridSection caches result under woco:v1:site-events:{siteId} (TTL 2h).
+  Cache is always served immediately; background revalidation runs on every mount.
+- FeaturedEventSection caches under woco:v1:event:{eventId} (TTL 7d, same as EventPage).
+- Preview mode (window.SITE_CONFIG.previewEvents set): skips cache and events-full,
+  fetches events individually using the injected previewEvents list as the index.
+
+SEO:
+- siteDescription (ThemeTokens) → injected at deploy time into <head>:
+  <meta name=description>, og:title/description/image, twitter:card tags.
+- ogImage uses logo Swarm ref (gateway /bzz/{ref}) if set.
+- MultiSiteApp updates <meta name=description> at runtime per-page so Googlebot
+  picks up page.metaDescription or falls back to site.theme.siteDescription.
+
+LOAD TAB:
+- Parallel fetch of /api/sites/:id + /api/sites/:id/events on "Load"
+- Restores both site config AND events list into builder state + localStorage
+
+BUILDER DEPLOY BANNER:
+- Shows live URL + "Site ID" (siteId) as separate copyable fields.
+- siteId is the stable identifier to paste into Load tab on future sessions.
+
+TEMPLATE PRESET: pub-venue-v1 (only one so far). newSiteFromTemplate() in shared.
+
+KNOWN GOTCHAS (site builder):
+- dist-multisite/ must exist on server before deploy — run `npm run build:site` +
+  rsync `apps/web/dist-multisite/` before the first deploy of a site.
+- build:multisite (`npm run build:multisite`) produces dist-multisite/ (separate
+  Vite entry from the main app build).
+- Server /api/sites/:id/events-full imports getEvent from event service — if that
+  function is slow (Swarm propagation delay), the bundled response will be slow too.
+  This is expected on first load; subsequent loads hit the client cache.
+- Featured filtering requires the events index (SiteEventEntry.featured) — the bundled
+  response carries the full index so this is available without a second fetch.
+
+============================================================================
 CONVENTIONS
 ============================================================================
 
@@ -343,6 +408,25 @@ FRONTEND COMPONENTS:
   apps/web/src/lib/components/dashboard/StripeConnectModal.svelte # modal for event creation
   apps/web/src/lib/components/embed/EmbedSetup.svelte
   apps/web/src/lib/components/profile/{ProfilePage,UserAvatar,CreatorChip,WalletTab,ConnectWalletModal}.svelte
+
+MULTI-PAGE SITE BUILDER:
+  apps/web/src/MultiSiteApp.svelte                              # deployed site runtime shell (hash router, theme)
+  apps/web/src/lib/components/builder/MultiSiteBuilder.svelte   # builder UI (tabs, publish, load, deploy banner)
+  apps/web/src/lib/components/builder/tabs/BrandTab.svelte      # brand name, siteDescription, logo, palette
+  apps/web/src/lib/components/builder/tabs/PagesTab.svelte      # page CRUD + metaDescription
+  apps/web/src/lib/components/builder/tabs/NavTab.svelte        # nav item ordering
+  apps/web/src/lib/components/builder/tabs/EventsTab.svelte     # pick organiser events for site
+  apps/web/src/lib/components/builder/tabs/TemplateTab.svelte   # preset templates
+  apps/web/src/lib/components/builder/SectionEditor.svelte      # per-section inline editor
+  apps/web/src/lib/components/site/sections/EventsGridSection.svelte  # grid renderer (cached, bundled fetch)
+  apps/web/src/lib/components/site/sections/FeaturedEventSection.svelte # single featured event (cached)
+  apps/web/src/lib/components/site/sections/SectionRenderer.svelte  # dispatches to correct renderer
+  apps/web/src/lib/api/sites.ts                                 # publishSite, deploySite, loadSite, getSiteEventsFull
+  apps/server/src/routes/sites.ts                               # /api/sites/* — publish, deploy, events-full, contact
+  packages/shared/src/site/types.ts                             # Site, Page, Section union, ThemeTokens, SiteEventsIndex
+  packages/shared/src/site/templates.ts                         # newSiteFromTemplate (pub-venue-v1)
+  packages/shared/src/site/topics.ts                            # siteConfigTopic / siteEventsIndexTopic helpers
+  apps/web/src/lib/cache/cache.ts                               # stale-while-revalidate localStorage cache (+ TTL.SITE_EVENTS)
 
 PAYMENTS (frontend):
   apps/web/src/lib/api/stripe.ts                      # Stripe API client (connect, onboarding, checkout)
