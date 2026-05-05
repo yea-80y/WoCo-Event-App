@@ -3,6 +3,8 @@
   import { newSiteFromTemplate } from "@woco/shared";
   import { onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, getCreatorSites } from "../../api/sites.js";
+  import { auth } from "../../auth/auth-store.svelte.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
   import type { MySiteRecord } from './types.js';
   import MySitesScreen from './MySitesScreen.svelte';
   import TemplateTab from "./tabs/TemplateTab.svelte";
@@ -108,19 +110,33 @@
     }
   });
 
-  // On mount: fetch creator's sites from Swarm and merge with localStorage cache.
-  // localStorage shows instantly; API results are authoritative and update the list.
-  onMount(() => {
-    getCreatorSites().then((res) => {
-      if (!res.ok || !res.data) return;
-      const apiSites = res.data;
-      if (!apiSites.length) return;
-      // Merge: API wins, localStorage-only entries (not yet on Swarm) are appended.
-      const apiIds = new Set(apiSites.map((s) => s.siteId));
-      const localOnly = mySites.filter((s) => !apiIds.has(s.siteId));
-      mySites = [...apiSites, ...localOnly];
-      saveMySites(mySites);
-    }).catch(() => { /* auth not ready or offline — localStorage stands */ });
+  // React to auth state changes.
+  // - On login: fetch creator's sites from Swarm and merge with localStorage cache.
+  // - On logout: wipe the local cache so another user on this device can't see their sites.
+  let _prevConnected = $state<boolean | null>(null);
+  $effect(() => {
+    const connected = auth.isConnected;
+    if (connected === _prevConnected) return;
+    _prevConnected = connected;
+
+    if (connected) {
+      // Re-fetch on every login so the list is always up-to-date.
+      getCreatorSites().then((res) => {
+        if (!res.ok || !res.data) return;
+        const apiSites = res.data;
+        const apiIds = new Set(apiSites.map((s) => s.siteId));
+        const localOnly = mySites.filter((s) => !apiIds.has(s.siteId));
+        mySites = [...apiSites, ...localOnly];
+        saveMySites(mySites);
+      }).catch(() => { /* offline or session not yet ready — localStorage stands */ });
+    } else {
+      // Logged out: clear everything so no data leaks to the next user.
+      mySites = [];
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(MY_SITES_KEY);
+      }
+      screen = 'my-sites';
+    }
   });
 
   // ── Actions ───────────────────────────────────────────────────────────────────
@@ -293,7 +309,30 @@
 </script>
 
 <div class="builder">
-  {#if screen === 'my-sites'}
+  {#if !auth.ready}
+    <!-- Auth restoring from IndexedDB — avoid flashing the sign-in screen -->
+    <div class="auth-loading" aria-label="Loading…"></div>
+
+  {:else if !auth.isConnected}
+    <!-- Not logged in — show a clear prompt, same pattern as other protected builder areas -->
+    <div class="auth-wall">
+      <div class="auth-wall-inner">
+        <div class="auth-wall-icon" aria-hidden="true">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+            <rect x="8" y="18" width="24" height="16" rx="3" stroke="currentColor" stroke-width="2" fill="none" opacity=".4"/>
+            <path d="M13 18v-5a7 7 0 0 1 14 0v5" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+            <circle cx="20" cy="26" r="2" fill="currentColor" opacity=".6"/>
+          </svg>
+        </div>
+        <h2 class="auth-wall-title">Sign in to manage your websites</h2>
+        <p class="auth-wall-desc">Your websites are linked to your WoCo account. Sign in to access them.</p>
+        <button class="auth-wall-btn" onclick={() => loginRequest.request()}>
+          Sign in
+        </button>
+      </div>
+    </div>
+
+  {:else if screen === 'my-sites'}
     <MySitesScreen
       sites={mySites}
       gatewayUrl={GATEWAY_URL}
@@ -407,6 +446,65 @@
     min-height: calc(100vh - 10rem);
     display: flex;
     flex-direction: column;
+  }
+
+  /* ── Auth loading ── */
+  .auth-loading {
+    flex: 1;
+    min-height: 12rem;
+  }
+
+  /* ── Auth wall ── */
+  .auth-wall {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1.5rem;
+  }
+
+  .auth-wall-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 0.75rem;
+    max-width: 340px;
+  }
+
+  .auth-wall-icon {
+    color: var(--muted);
+    opacity: 0.5;
+    margin-bottom: 0.25rem;
+  }
+
+  .auth-wall-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .auth-wall-desc {
+    font-size: 0.9375rem;
+    color: var(--muted);
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .auth-wall-btn {
+    margin-top: 0.5rem;
+    padding: 0.625rem 1.5rem;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-md);
+    font-size: 0.9375rem;
+    font-weight: 700;
+    transition: background 150ms ease;
+  }
+
+  .auth-wall-btn:hover {
+    background: var(--accent-hover);
   }
 
   /* Tab bar */
