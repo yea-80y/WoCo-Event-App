@@ -252,6 +252,29 @@ export interface SiteEventsIndex {
 }
 
 // ---------------------------------------------------------------------------
+// Creator site directory — per-owner index stored on Swarm
+// ---------------------------------------------------------------------------
+
+/** Compact entry stored in the creator's site directory feed. */
+export interface SiteDirectoryEntry {
+  siteId: string;
+  brandName: string;
+  logoSwarmRef?: string;
+  accentColor: string;
+  feedHash?: string;
+  deployedUrl?: string;
+  publishedAt: number;
+}
+
+/** On-feed envelope (mirrors EventDirectory pattern). */
+export interface SiteDirectory {
+  v: 1;
+  entries: SiteDirectoryEntry[];
+  updatedAt: string;
+  pages?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime config (injected into deployed bundle)
 // ---------------------------------------------------------------------------
 

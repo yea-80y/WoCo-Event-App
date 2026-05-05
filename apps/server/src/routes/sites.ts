@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent } from "../lib/event/service.js";
+import { getCreatorSites, upsertCreatorSite } from "../lib/site/service.js";
 import {
   readFeedPage,
   writeFeedPage,
@@ -25,7 +26,7 @@ import {
   siteEventsIndexTopic,
   SITE_SCHEMA_VERSION,
 } from "@woco/shared";
-import type { Site, SiteEventsIndex, SiteEventEntry, ContactFormSection, EventFeed } from "@woco/shared";
+import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 
@@ -152,6 +153,17 @@ sitesRouter.post("/", requireAuth, async (c) => {
       writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
     ]);
 
+    // Upsert into creator's site directory (fire-and-forget — non-fatal).
+    upsertCreatorSite(parentAddress, {
+      siteId: site.siteId,
+      brandName: site.theme?.brandName || 'Untitled site',
+      logoSwarmRef: site.theme?.logoSwarmRef,
+      accentColor: site.theme?.palette?.accent ?? '#6366f1',
+      publishedAt: now,
+    } satisfies SiteDirectoryEntry).catch((e) =>
+      console.warn("[sites/publish] creator directory upsert failed:", e)
+    );
+
     return c.json({ ok: true, data: { siteId: site.siteId } });
   } catch (err) {
     console.error("[sites/publish]", err);
@@ -159,6 +171,22 @@ sitesRouter.post("/", requireAuth, async (c) => {
       ok: false,
       error: err instanceof Error ? err.message : "Publish failed",
     }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/sites/mine — list creator's sites from Swarm directory (auth)
+// Must be registered before /:id to avoid "mine" being treated as a siteId.
+// ---------------------------------------------------------------------------
+
+sitesRouter.get("/mine", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  try {
+    const sites = await getCreatorSites(parentAddress);
+    c.header("Cache-Control", "private, no-cache");
+    return c.json({ ok: true, data: sites });
+  } catch {
+    return c.json({ ok: false, error: "Failed to read site directory" }, 500);
   }
 });
 
@@ -518,12 +546,27 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       body: JSON.stringify({ hashes: hashesToWhitelist }),
     }).catch((e) => console.warn("[sites/deploy] whitelist call failed:", e));
 
+    const siteUrl = `${gatewayUrl}/bzz/${contentHash}/`;
+
+    // Update creator directory with feedHash + deployedUrl (fire-and-forget).
+    upsertCreatorSite(parentAddress, {
+      siteId,
+      brandName: site.theme?.brandName || 'Untitled site',
+      logoSwarmRef: site.theme?.logoSwarmRef,
+      accentColor: site.theme?.palette?.accent ?? '#6366f1',
+      feedHash: feedManifestHash || undefined,
+      deployedUrl: siteUrl,
+      publishedAt: Date.now(),
+    } satisfies SiteDirectoryEntry).catch((e) =>
+      console.warn("[sites/deploy] creator directory upsert failed:", e)
+    );
+
     return c.json({
       ok: true,
       data: {
         contentHash,
         feedManifestHash,
-        siteUrl: `${gatewayUrl}/bzz/${contentHash}/`,
+        siteUrl,
       },
     });
 

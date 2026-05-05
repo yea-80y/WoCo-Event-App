@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Site, SiteEventEntry, TemplateId } from "@woco/shared";
   import { newSiteFromTemplate } from "@woco/shared";
-  import { publishSite, deploySite, loadSite, getSiteEvents } from "../../api/sites.js";
+  import { onMount } from 'svelte';
+  import { publishSite, deploySite, loadSite, getSiteEvents, getCreatorSites } from "../../api/sites.js";
   import type { MySiteRecord } from './types.js';
   import MySitesScreen from './MySitesScreen.svelte';
   import TemplateTab from "./tabs/TemplateTab.svelte";
@@ -105,6 +106,21 @@
     if (typeof window !== 'undefined') {
       localStorage.setItem(EVENTS_KEY, JSON.stringify($state.snapshot(siteEvents)));
     }
+  });
+
+  // On mount: fetch creator's sites from Swarm and merge with localStorage cache.
+  // localStorage shows instantly; API results are authoritative and update the list.
+  onMount(() => {
+    getCreatorSites().then((res) => {
+      if (!res.ok || !res.data) return;
+      const apiSites = res.data;
+      if (!apiSites.length) return;
+      // Merge: API wins, localStorage-only entries (not yet on Swarm) are appended.
+      const apiIds = new Set(apiSites.map((s) => s.siteId));
+      const localOnly = mySites.filter((s) => !apiIds.has(s.siteId));
+      mySites = [...apiSites, ...localOnly];
+      saveMySites(mySites);
+    }).catch(() => { /* auth not ready or offline — localStorage stands */ });
   });
 
   // ── Actions ───────────────────────────────────────────────────────────────────

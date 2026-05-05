@@ -15,3 +15,9 @@ export function siteConfigTopic(siteId: string): string {
 export function siteEventsIndexTopic(siteId: string): string {
   return `woco/site/${siteId}/events`;
 }
+
+/** Feed topic for a creator's site directory (all sites they've published). */
+export function siteCreatorDirectoryTopic(ethAddress: string, page = 0): string {
+  const base = `woco/site/creator/${ethAddress.toLowerCase()}`;
+  return page === 0 ? base : `${base}/p${page}`;
+}

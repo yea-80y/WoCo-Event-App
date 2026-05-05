@@ -1,5 +1,5 @@
-import type { Site, SiteEventsIndex, SiteEventEntry, EventFeed } from "@woco/shared";
-import { authPost, authDelete, get } from "./client.js";
+import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed } from "@woco/shared";
+import { authPost, authDelete, authGet, get } from "./client.js";
 
 export interface SiteEventsFull {
   index: SiteEventsIndex;
@@ -35,4 +35,8 @@ export async function getSiteEventsFull(siteId: string, apiUrl?: string) {
 
 export async function removeSiteEvent(siteId: string, eventId: string) {
   return authDelete<SiteEventsIndex>(`/api/sites/${siteId}/events/${eventId}`);
+}
+
+export async function getCreatorSites() {
+  return authGet<SiteDirectoryEntry[]>("/api/sites/mine");
 }
