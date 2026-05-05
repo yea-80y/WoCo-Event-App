@@ -14,27 +14,42 @@
   type LoadState = "loading" | "ready" | "unauth" | "error";
 
   let state = $state<LoadState>("loading");
+  let stateError = $state("");
   let myEvents = $state<EventDirectoryEntry[]>([]);
 
   // Derive which eventIds are currently in the site
   let inSite = $derived(new Set(siteEvents.map((e) => e.eventId)));
   let featured = $derived(new Set(siteEvents.filter((e) => e.featured).map((e) => e.eventId)));
 
-  onMount(async () => {
+  async function loadEvents() {
+    state = "loading";
+    stateError = "";
     try {
       const res = await authGet<EventDirectoryEntry[]>("/api/events/mine");
       if (!res.ok) {
-        state = "unauth";
+        const msg = res.error ?? "Server error";
+        console.error("[EventsTab] /api/events/mine failed:", msg);
+        // 401/403-style errors → prompt sign-in; server errors → show error
+        state = msg.toLowerCase().includes("auth") || msg.toLowerCase().includes("session")
+          ? "unauth"
+          : "error";
+        stateError = msg;
         return;
       }
-      myEvents = (res.data ?? []).sort(
-        (a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime()
-      );
+      const seen = new Set<string>();
+      myEvents = (res.data ?? [])
+        .filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; })
+        .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
       state = "ready";
-    } catch {
-      state = "unauth";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[EventsTab] authGet threw:", msg);
+      state = msg === "Not authenticated" ? "unauth" : "error";
+      stateError = msg;
     }
-  });
+  }
+
+  onMount(loadEvents);
 
   function toggleEvent(eventId: string) {
     if (inSite.has(eventId)) {
@@ -96,6 +111,13 @@
     <div class="state-box warn">
       <span class="state-icon">🔒</span>
       <p>Sign in to see your events and manage this site's event list.</p>
+    </div>
+
+  {:else if state === "error"}
+    <div class="state-box warn">
+      <span class="state-icon">⚠</span>
+      <p>Failed to load events: {stateError}</p>
+      <button class="retry-btn" onclick={loadEvents}>Retry</button>
     </div>
 
   {:else if myEvents.length === 0}
@@ -255,6 +277,19 @@
   }
 
   .state-box.warn { border-color: #f59e0b33; }
+
+  .retry-btn {
+    margin-top: 0.5rem;
+    padding: 0.375rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .retry-btn:hover { border-color: var(--accent); color: var(--accent); }
 
   .state-icon {
     font-size: 2rem;

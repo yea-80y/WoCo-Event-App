@@ -50,6 +50,8 @@ export interface ThemeTokens {
   brandName: string;
   /** Swarm reference for uploaded logo image. Site fetches from gateway at runtime. */
   logoSwarmRef?: Hex64;
+  /** Short site description for SEO meta tags and social sharing cards (120–160 chars). */
+  siteDescription?: string;
   palette: SitePalette;
   fontFamily: FontFamilyId;
   radius: RadiusScale;
@@ -268,6 +270,12 @@ export interface SiteRuntimeConfig {
   apiUrl?: string;
   /** Para wallet API key — injected by single-event site builder. */
   paraApiKey?: string;
+  /** Builder preview only — event entries injected from builder state so events
+   *  grid renders without requiring the feed to be published first. */
+  previewEvents?: SiteEventEntry[];
+  /** URL of the WoCo app used for ticket purchasing links (e.g. https://woco.eth.limo).
+   *  Injected at deploy time; defaults to https://woco.eth.limo if absent. */
+  wocoAppUrl?: string;
 }
 
 declare global {

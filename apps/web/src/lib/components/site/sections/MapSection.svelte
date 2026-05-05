@@ -7,8 +7,9 @@
 
   let { section }: Props = $props();
 
-  const d = 0.008;
   const zoom = $derived(section.zoom ?? 15);
+  // d scales with zoom: ±0.008° at zoom 15, doubles per step down
+  const d = $derived(0.008 * Math.pow(2, 15 - zoom));
   const bbox = $derived(`${section.lng - d},${section.lat - d},${section.lng + d},${section.lat + d}`);
   const embedUrl = $derived(`https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${section.lat},${section.lng}`);
   const externalUrl = $derived(`https://www.openstreetmap.org/?mlat=${section.lat}&mlon=${section.lng}#map=${zoom}/${section.lat}/${section.lng}`);

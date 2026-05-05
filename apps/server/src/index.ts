@@ -333,6 +333,20 @@ app.route("/api/tickets", tickets);
 // user-facing URLs that ship in emails.
 app.route("/t", ticketPage);
 
+// Serve embed bundle so venue site previews can load it directly from the API
+// instead of requiring a deployed BZZ collection.
+app.get("/woco-embed.js", (c) => {
+  try {
+    const embedPath = resolve(__dirname, "../../../packages/embed/dist/woco-embed.js");
+    const js = readFileSync(embedPath);
+    c.header("Content-Type", "application/javascript");
+    c.header("Cache-Control", "public, max-age=3600");
+    return c.body(js);
+  } catch {
+    return c.text("// embed not built", 404);
+  }
+});
+
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });

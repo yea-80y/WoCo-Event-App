@@ -77,6 +77,8 @@ export const TTL = {
   CLAIM_STATUS: 7 * 24 * 60 * 60,
   /** User's ticket collection. */
   COLLECTION: 7 * 24 * 60 * 60,
+  /** Full event list for a deployed site — evict after 2 hours; grid always revalidates in background. */
+  SITE_EVENTS: 2 * 60 * 60,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -96,4 +98,6 @@ export const cacheKey = {
   collection: (address: string) => `collection:${address.toLowerCase()}`,
   /** Individual ticket POD — immutable. */
   ticket: (ref: string) => `ticket:${ref}`,
+  /** Full event list for a deployed site (bundled fetch). */
+  siteEvents: (siteId: string) => `site-events:${siteId}`,
 };

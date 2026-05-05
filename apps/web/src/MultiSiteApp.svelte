@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import type { Site, SiteRuntimeConfig } from '@woco/shared';
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
+  import EventPage from './lib/components/site/EventPage.svelte';
   import blackPrinceSite from '../Black-Prince/site.json';
 
   const DEV_FALLBACK: SiteRuntimeConfig = {
@@ -21,21 +22,35 @@
     return DEV_FALLBACK;
   }
   const config = getConfig();
+  // Make config globally readable so section components (EventsGrid, etc.) can
+  // access previewEvents and gatewayUrl without prop-drilling.
+  if (typeof window !== 'undefined') window.SITE_CONFIG = config;
   const site = config.site as Site;
   const gatewayUrl = config.gatewayUrl;
   const apiUrl = config.apiUrl ?? 'http://localhost:3001';
 
-  let currentSlug = $state(parseHash());
-  let menuOpen = $state(false);
-
-  function parseHash(): string {
-    const h = window.location.hash.replace(/^#/, '') || '/';
-    const [slug] = h.split('/events');
-    return slug || '/';
+  function logoUrl(): string | null {
+    const ref = site.theme.logoSwarmRef;
+    if (!ref || /^0+$/.test(ref)) return null;
+    return `${gatewayUrl}/bzz/${ref}`;
   }
 
-  function currentPage() {
-    return site.pages.find(p => p.slug === currentSlug) ?? site.pages.find(p => p.slug === '/');
+  type Route =
+    | { type: 'page'; slug: string }
+    | { type: 'event'; eventId: string };
+
+  let route = $state<Route>(parseHash());
+  let menuOpen = $state(false);
+
+  function parseHash(): Route {
+    const h = window.location.hash.replace(/^#/, '') || '/';
+    const m = h.match(/^\/events\/([^/]+)$/);
+    if (m) return { type: 'event', eventId: m[1] };
+    return { type: 'page', slug: h || '/' };
+  }
+
+  function currentPage(slug: string) {
+    return site.pages.find(p => p.slug === slug) ?? site.pages.find(p => p.slug === '/');
   }
 
   function applyTheme() {
@@ -48,6 +63,19 @@
     root.style.setProperty('--accent-hover', palette.accentHover);
     root.style.setProperty('--border', palette.border);
     root.style.setProperty('--card-bg', palette.cardBg);
+
+    // Aliases expected by EventPage and other shared components
+    root.style.setProperty('--bg-base', palette.bg);
+    root.style.setProperty('--bg-surface', palette.cardBg);
+    root.style.setProperty('--bg-elevated', palette.cardBg);
+    root.style.setProperty('--text-primary', palette.text);
+    root.style.setProperty('--text-secondary', palette.muted);
+    root.style.setProperty('--text-muted', palette.muted);
+    root.style.setProperty('--border-hover', palette.accent);
+    root.style.setProperty('--accent-text', palette.accent);
+    root.style.setProperty('--success', '#4ade80');
+    root.style.setProperty('--error', '#ef4444');
+    root.style.setProperty('--transition', '0.15s ease');
 
     const fontMap: Record<string, string> = {
       system: "system-ui, -apple-system, sans-serif",
@@ -68,22 +96,40 @@
   onMount(() => {
     applyTheme();
     window.addEventListener('hashchange', () => {
-      currentSlug = parseHash();
+      route = parseHash();
       menuOpen = false;
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   });
 
   $effect(() => {
-    const page = currentPage();
-    if (page) document.title = page.title ?? site.theme.brandName;
+    if (route.type === 'page') {
+      const page = currentPage(route.slug);
+      if (page) {
+        document.title = page.title ?? site.theme.brandName;
+        const desc = page.metaDescription || site.theme.siteDescription || '';
+        let metaDesc = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+        if (!metaDesc) {
+          metaDesc = document.createElement('meta');
+          metaDesc.name = 'description';
+          document.head.appendChild(metaDesc);
+        }
+        metaDesc.content = desc;
+      }
+    }
   });
 </script>
 
 <div class="site">
   <nav class="site-nav">
     <div class="nav-inner">
-      <a class="brand" href="#/">{site.theme.brandName}</a>
+      <a class="brand" href="#/">
+        {#if logoUrl()}
+          <img class="brand-logo" src={logoUrl()!} alt={site.theme.brandName} />
+        {:else}
+          {site.theme.brandName}
+        {/if}
+      </a>
 
       <button class="hamburger" aria-label="Menu" onclick={() => (menuOpen = !menuOpen)}>
         <span></span><span></span><span></span>
@@ -94,7 +140,7 @@
           <li>
             <a
               href={'#' + item.pageSlug}
-              class:active={currentSlug === item.pageSlug}
+              class:active={route.type === 'page' && route.slug === item.pageSlug}
             >{item.label}</a>
           </li>
         {/each}
@@ -102,21 +148,27 @@
     </div>
   </nav>
 
-  {#key currentSlug}
-    {@const page = currentPage()}
-    {#if page}
-      <main>
-        {#each page.sections as section (section.id)}
-          <SectionRenderer {section} {site} {gatewayUrl} {apiUrl} />
-        {/each}
-      </main>
-    {:else}
-      <main class="not-found">
-        <h1>Page not found</h1>
-        <a href="#/">← Home</a>
-      </main>
-    {/if}
-  {/key}
+  {#if route.type === 'event'}
+    <main>
+      <EventPage eventId={route.eventId} {apiUrl} onback={() => history.back()} />
+    </main>
+  {:else}
+    {#key route.slug}
+      {@const page = currentPage(route.slug)}
+      {#if page}
+        <main>
+          {#each page.sections as section (section.id)}
+            <SectionRenderer {section} {site} {gatewayUrl} {apiUrl} />
+          {/each}
+        </main>
+      {:else}
+        <main class="not-found">
+          <h1>Page not found</h1>
+          <a href="#/">← Home</a>
+        </main>
+      {/if}
+    {/key}
+  {/if}
 
   <footer class="site-footer">
     <div class="footer-inner">
@@ -167,6 +219,14 @@
     text-decoration: none;
   }
   .brand:hover { text-decoration: none; color: var(--accent); }
+
+  .brand-logo {
+    height: 36px;
+    width: auto;
+    max-width: 180px;
+    object-fit: contain;
+    display: block;
+  }
 
   .nav-links {
     display: flex;

@@ -32,8 +32,9 @@ events.get("/mine", requireAuth, async (c) => {
 
     // Merge: creator index is the primary source (never affected by unlist).
     // Global directory fills in old events that predate the creator index.
-    const seen = new Set(creatorEntries.map((e) => e.eventId));
-    const merged = [...creatorEntries];
+    // Deduplicate creatorEntries first (feed can have the same slot written twice).
+    const seen = new Set<string>();
+    const merged = creatorEntries.filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; });
     for (const e of allEntries) {
       if (e.creatorAddress.toLowerCase() === parentAddress && !seen.has(e.eventId)) {
         merged.push(e);

@@ -135,6 +135,9 @@
 
   {:else if section.type === 'map'}
     {@const s = section as MapSection}
+    <p class="hint">
+      Find your coordinates at <a href="https://www.openstreetmap.org" target="_blank" rel="noopener">openstreetmap.org</a> — right-click your venue → "Show address" and copy the lat/lng from the URL.
+    </p>
     <div class="field-grid-2">
       <label class="field-row">
         <span class="field-label">Latitude</span>
@@ -150,8 +153,8 @@
     <div class="field-grid-2">
       <label class="field-row">
         <span class="field-label">Zoom (1–20)</span>
-        <input class="input" type="number" min="1" max="20" value={s.zoom ?? 14}
-          oninput={(e) => onpatch({ zoom: parseInt((e.currentTarget as HTMLInputElement).value, 10) || 14 })} />
+        <input class="input" type="number" min="1" max="20" value={s.zoom ?? 15}
+          oninput={(e) => onpatch({ zoom: parseInt((e.currentTarget as HTMLInputElement).value, 10) || 15 })} />
       </label>
       <label class="field-row">
         <span class="field-label">Pin label</span>

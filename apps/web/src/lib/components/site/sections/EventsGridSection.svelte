@@ -1,6 +1,8 @@
 <script lang="ts">
-  import type { EventsGridSection as EventsGridSectionType, Site, SiteEventsIndex, EventFeed } from '@woco/shared';
+  import type { EventsGridSection as EventsGridSectionType, Site, EventFeed, SiteEventEntry } from '@woco/shared';
+  import type { SiteEventsFull } from '../../../api/sites.js';
   import { onMount } from 'svelte';
+  import { cacheGet, cacheSet, cacheKey, TTL } from '../../cache/cache.js';
 
   interface Props {
     section: EventsGridSectionType;
@@ -15,51 +17,87 @@
   let loadState = $state<LoadState>('loading');
   let events = $state<EventFeed[]>([]);
 
-  onMount(async () => {
-    try {
-      // 1. Fetch the site events index
-      const idxResp = await fetch(`${apiUrl}/api/sites/${site.siteId}/events`);
-      const idxJson = await idxResp.json() as { ok: boolean; data?: SiteEventsIndex };
+  function applyFilters(data: SiteEventsFull): EventFeed[] {
+    const now = Date.now();
+    const featuredSet = new Set(data.index.events.filter((e) => e.featured).map((e) => e.eventId));
+    const orderedIds = data.index.events.map((e) => e.eventId);
 
-      if (!idxJson.ok || !idxJson.data || idxJson.data.events.length === 0) {
-        loadState = 'empty';
-        return;
-      }
+    let out = [...data.events];
 
-      const index = idxJson.data;
+    if (section.mode === 'featured') {
+      out = out.filter((ev) => featuredSet.has(ev.eventId));
+    }
 
-      // 2. Filter entries by section mode
-      const now = Date.now();
-      let entries = index.events;
-      if (section.mode === 'featured') {
-        entries = entries.filter((e) => e.featured);
-      }
+    if (section.mode === 'upcoming') {
+      out = out.filter((ev) => new Date(ev.startDate).getTime() > now);
+      out.sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
+    } else {
+      out.sort((a, b) => orderedIds.indexOf(a.eventId) - orderedIds.indexOf(b.eventId));
+    }
 
-      // 3. Cap by max
-      if (section.max && section.max > 0) {
-        entries = entries.slice(0, section.max);
-      }
+    if (section.max && section.max > 0) {
+      out = out.slice(0, section.max);
+    }
 
-      // 4. Fetch event details in parallel
+    return out;
+  }
+
+  async function fetchFull(): Promise<SiteEventsFull | null> {
+    // Builder preview: events index not yet on Swarm — fetch each event individually
+    // using the injected previewEvents list as the index.
+    if (window.SITE_CONFIG?.previewEvents) {
+      const entries: SiteEventEntry[] = window.SITE_CONFIG.previewEvents;
       const results = await Promise.allSettled(
         entries.map((e) =>
-          fetch(`${apiUrl}/api/events/${e.eventId}`).then((r) => r.json()) as Promise<{ ok: boolean; data?: EventFeed }>
+          fetch(`${apiUrl}/api/events/${e.eventId}`)
+            .then((r) => r.json()) as Promise<{ ok: boolean; data?: EventFeed }>
         )
       );
-
-      let loaded: EventFeed[] = results
+      const evs: EventFeed[] = results
         .filter((r): r is PromiseFulfilledResult<{ ok: boolean; data?: EventFeed }> =>
-          r.status === 'fulfilled' && r.value.ok && !!r.value.data
-        )
+          r.status === 'fulfilled' && r.value.ok && !!r.value.data)
         .map((r) => r.value.data!);
+      return {
+        index: { siteId: site.siteId, events: entries, updatedAt: 0, schemaVersion: 1 },
+        events: evs,
+      };
+    }
 
-      // 5. Filter upcoming events when mode is 'upcoming'
-      if (section.mode === 'upcoming') {
-        loaded = loaded.filter((ev) => new Date(ev.startDate).getTime() > now);
-        loaded.sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
+    // Deployed mode: single bundled request (N+1 → 1).
+    const resp = await fetch(`${apiUrl}/api/sites/${site.siteId}/events-full`);
+    const json = await resp.json() as { ok: boolean; data?: SiteEventsFull };
+    if (!json.ok || !json.data) return null;
+    return json.data;
+  }
+
+  onMount(async () => {
+    const isPreview = !!window.SITE_CONFIG?.previewEvents;
+    const ck = cacheKey.siteEvents(site.siteId);
+
+    // Skip cache in preview mode — builder state changes frequently.
+    if (!isPreview) {
+      const cached = cacheGet<SiteEventsFull>(ck);
+      if (cached && cached.events.length >= 0) {
+        events = applyFilters(cached);
+        loadState = events.length === 0 ? 'empty' : 'ready';
+
+        // Always revalidate silently in background.
+        fetchFull().then((fresh) => {
+          if (!fresh) return;
+          cacheSet(ck, fresh, TTL.SITE_EVENTS);
+          events = applyFilters(fresh);
+          if (loadState !== 'error') loadState = events.length === 0 ? 'empty' : 'ready';
+        }).catch(() => {});
+        return;
       }
+    }
 
-      events = loaded;
+    // No cache or preview — blocking fetch.
+    try {
+      const data = await fetchFull();
+      if (!data) { loadState = 'empty'; return; }
+      if (!isPreview) cacheSet(ck, data, TTL.SITE_EVENTS);
+      events = applyFilters(data);
       loadState = events.length === 0 ? 'empty' : 'ready';
     } catch {
       loadState = 'error';
@@ -102,9 +140,9 @@
 
   function gatewayImageUrl(imageHash: string | undefined): string | undefined {
     if (!imageHash || /^0+$/.test(imageHash)) return undefined;
-    // Gateway URL comes from site runtime; fall back to known public gateway
+    // Event images are raw bytes uploads — use /bytes/, not /bzz/ (which is for manifests)
     const gw = (typeof window !== 'undefined' && window.SITE_CONFIG?.gatewayUrl) || 'https://gateway.ethswarm.org';
-    return `${gw}/bzz/${imageHash}`;
+    return `${gw}/bytes/${imageHash}`;
   }
 </script>
 

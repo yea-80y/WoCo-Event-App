@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { FeaturedEventSection as FeaturedEventSectionType, EventFeed } from '@woco/shared';
   import { onMount } from 'svelte';
+  import { cacheGet, cacheSet, cacheKey, TTL } from '../../cache/cache.js';
 
   interface Props {
     section: FeaturedEventSectionType;
@@ -15,13 +16,25 @@
   let event = $state<EventFeed | null>(null);
 
   onMount(async () => {
+    const ck = cacheKey.event(section.eventId);
+    const cached = cacheGet<EventFeed>(ck);
+
+    if (cached) {
+      event = cached;
+      loadState = 'ready';
+      // Revalidate silently in background.
+      fetch(`${apiUrl}/api/events/${section.eventId}`)
+        .then((r) => r.json() as Promise<{ ok: boolean; data?: EventFeed }>)
+        .then((json) => { if (json.ok && json.data) { cacheSet(ck, json.data, TTL.EVENT); event = json.data; } })
+        .catch(() => {});
+      return;
+    }
+
     try {
       const resp = await fetch(`${apiUrl}/api/events/${section.eventId}`);
       const json = await resp.json() as { ok: boolean; data?: EventFeed };
-      if (!json.ok || !json.data) {
-        loadState = 'notfound';
-        return;
-      }
+      if (!json.ok || !json.data) { loadState = 'notfound'; return; }
+      cacheSet(ck, json.data, TTL.EVENT);
       event = json.data;
       loadState = 'ready';
     } catch {
