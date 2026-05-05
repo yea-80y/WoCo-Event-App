@@ -17,6 +17,7 @@
   const EVENTS_KEY = 'woco:site-events-draft';
   const PREVIEW_KEY = 'woco:site-preview';
   const LAST_SITE_KEY = 'woco:last-site-id';
+  const FEED_HASH_KEY = 'woco:site-feed-hash';
 
   const API_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? 'http://localhost:3001';
   const GATEWAY_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
@@ -53,6 +54,9 @@
   let publishState = $state<PublishState>('idle');
   let publishError = $state('');
   let deployedUrl = $state('');
+  // feedHash is the stable Swarm feed manifest hash — same on every deploy of this site.
+  // Persisted in localStorage so it survives page refresh.
+  let feedHash = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
   let showLoadPanel = $state(false);
   let loadIdInput = $state(typeof window !== 'undefined' ? (localStorage.getItem(LAST_SITE_KEY) ?? '') : '');
@@ -103,6 +107,10 @@
       const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl: GATEWAY_URL, wocoAppUrl: WOCO_APP_URL });
       if (deployRes.ok && deployRes.data) {
         deployedUrl = deployRes.data.siteUrl;
+        if (deployRes.data.feedManifestHash) {
+          feedHash = deployRes.data.feedManifestHash;
+          localStorage.setItem(FEED_HASH_KEY, feedHash);
+        }
         localStorage.setItem(LAST_SITE_KEY, site.siteId);
       }
       // Deploy failure is non-fatal: feed is written, user can retry deploy
@@ -150,6 +158,9 @@
     if (!confirm('Replace current draft with template defaults?')) return;
     site = newSiteFromTemplate({ siteId: uid(), ownerAddress: '0x0', templateId, idGen: uid });
     siteEvents = [];
+    deployedUrl = '';
+    feedHash = '';
+    localStorage.removeItem(FEED_HASH_KEY);
     tab = 'brand';
   }
 
@@ -233,19 +244,27 @@
     </div>
   {/if}
 
-  {#if deployedUrl}
+  {#if feedHash || deployedUrl}
     <div class="deploy-banner">
-      <span class="deploy-label">Live at</span>
-      <a href={deployedUrl} target="_blank" rel="noopener" class="deploy-url">{deployedUrl}</a>
-      <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(deployedUrl)} title="Copy URL">
-        Copy URL
-      </button>
-      <span class="deploy-sep">·</span>
-      <span class="deploy-label">Site ID</span>
-      <span class="deploy-siteid">{site.siteId}</span>
-      <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(site.siteId)} title="Copy site ID">
-        Copy ID
-      </button>
+      {#if feedHash}
+        <div class="deploy-row deploy-row--primary">
+          <span class="deploy-label feed-label">Feed hash</span>
+          <span class="deploy-siteid">{feedHash}</span>
+          <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">
+            Copy
+          </button>
+          <span class="feed-hint">← stable · use this for ENS</span>
+        </div>
+      {/if}
+      {#if deployedUrl}
+        <div class="deploy-row">
+          <span class="deploy-label">Preview</span>
+          <a href={deployedUrl} target="_blank" rel="noopener" class="deploy-url">{deployedUrl}</a>
+          <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(deployedUrl)} title="Copy URL">
+            Copy
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -414,21 +433,46 @@
     color: #ef4444;
   }
 
-  /* ── Deploy URL banner ── */
+  /* ── Deploy banner ── */
   .deploy-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: color-mix(in srgb, #22c55e 8%, var(--bg));
+    border-bottom: 1px solid color-mix(in srgb, #22c55e 25%, transparent);
+  }
+
+  .deploy-row {
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    padding: 0.5rem 1.5rem;
-    background: color-mix(in srgb, #22c55e 8%, var(--bg));
-    border-bottom: 1px solid color-mix(in srgb, #22c55e 25%, transparent);
+    padding: 0.375rem 1.5rem;
     flex-wrap: wrap;
+  }
+
+  .deploy-row--primary {
+    padding-top: 0.5rem;
+    border-bottom: 1px solid color-mix(in srgb, #22c55e 12%, transparent);
+  }
+
+  .deploy-row:last-child {
+    padding-bottom: 0.5rem;
   }
 
   .deploy-label {
     font-size: 0.8125rem;
     color: #22c55e;
     font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .feed-label {
+    font-size: 0.8125rem;
+  }
+
+  .feed-hint {
+    font-size: 0.75rem;
+    color: color-mix(in srgb, #22c55e 70%, var(--text-muted));
     white-space: nowrap;
   }
 
@@ -440,19 +484,15 @@
     flex: 1;
   }
 
-  .deploy-sep {
-    color: color-mix(in srgb, #22c55e 40%, transparent);
-    font-size: 0.8125rem;
-  }
-
   .deploy-siteid {
     font-size: 0.75rem;
     font-family: monospace;
-    color: var(--text-muted);
-    max-width: 12rem;
+    color: var(--text);
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
   }
 
   .deploy-copy {
