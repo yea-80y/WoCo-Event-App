@@ -204,6 +204,11 @@ sitesRouter.get("/:id/events", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Server-side cache for events-full — avoids hitting Swarm on every visitor request.
+// TTL 5 min: fast for repeat visitors, stale-within-acceptable-window for organiser updates.
+const _siteEventsFull = new Map<string, { data: { index: SiteEventsIndex; events: EventFeed[] }; expiresAt: number }>();
+const SITE_EVENTS_FULL_TTL_MS = 5 * 60_000;
+
 // GET /api/sites/:id/events-full — events index + full event details in one call (public)
 // Reduces N+1 client round trips to a single request. Server fans out to Swarm in parallel.
 // ---------------------------------------------------------------------------
@@ -211,6 +216,13 @@ sitesRouter.get("/:id/events", async (c) => {
 sitesRouter.get("/:id/events-full", async (c) => {
   const siteId = c.req.param("id");
   try {
+    const now = Date.now();
+    const cached = _siteEventsFull.get(siteId);
+    if (cached && cached.expiresAt > now) {
+      c.header("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
+      return c.json({ ok: true, data: cached.data });
+    }
+
     const topic = Topic.fromString(siteEventsIndexTopic(siteId));
     const page = await readFeedPage(topic);
 
@@ -231,7 +243,10 @@ sitesRouter.get("/:id/events-full", async (c) => {
       .filter((r): r is PromiseFulfilledResult<EventFeed | null> => r.status === "fulfilled" && r.value !== null)
       .map((r) => r.value!);
 
-    return c.json({ ok: true, data: { index, events } });
+    const data = { index, events };
+    _siteEventsFull.set(siteId, { data, expiresAt: now + SITE_EVENTS_FULL_TTL_MS });
+    c.header("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
+    return c.json({ ok: true, data });
   } catch {
     return c.json({ ok: false, error: "Failed to read site events" }, 500);
   }

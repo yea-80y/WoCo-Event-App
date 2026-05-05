@@ -278,7 +278,7 @@ export async function createEvent(opts: {
 // longer TTL is safe and significantly reduces Swarm read pressure under
 // bursty buy traffic.
 const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number }>();
-const EVENT_CACHE_TTL_MS = 120_000;
+const EVENT_CACHE_TTL_MS = 10 * 60_000;
 
 export async function getEvent(eventId: string): Promise<EventFeed | null> {
   const now = Date.now();
