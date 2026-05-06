@@ -432,6 +432,27 @@
           const newSearch = window.location.search.replace(/[?&]stripe=cancelled/, "").replace(/^\?$/, "");
           window.history.replaceState(null, "", window.location.pathname + newSearch + newHash);
         } catch { /* ignore */ }
+
+        // Stripe Checkout's cancel-back redirects via location.href, which
+        // leaves a dead Stripe entry in the history stack behind us. Without
+        // intervention, the buyer's first browser-back lands them back on
+        // Stripe (cross-origin, expired). Push a sentinel state so the next
+        // back press fires popstate (still same-origin), then redirect to
+        // the site home (#/) — replacing the current entry so forward nav
+        // doesn't loop them back here.
+        try {
+          const cleanUrl = window.location.pathname + window.location.search + window.location.hash;
+          history.pushState({ wocoCancelGuard: true }, "", cleanUrl);
+          const onPop = (ev: PopStateEvent) => {
+            // Ignore pops that land back ON the guard (user went forward
+            // somewhere then came back). Only intercept pops that land
+            // BEHIND the guard — i.e. the buyer's first back from this page.
+            if ((ev.state as { wocoCancelGuard?: boolean } | null)?.wocoCancelGuard) return;
+            window.removeEventListener("popstate", onPop);
+            window.location.replace("#/");
+          };
+          window.addEventListener("popstate", onPop);
+        } catch { /* ignore */ }
       }
     }
 

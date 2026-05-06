@@ -2722,7 +2722,7 @@
     font-size: 0.8125rem;
     font-weight: 600;
     border-radius: var(--radius-sm);
-    background: #635bff;
+    background: var(--accent);
     color: #fff;
     white-space: nowrap;
     transition: background 0.2s ease, opacity 0.2s ease;
@@ -2732,17 +2732,17 @@
     padding: 0.75rem 1rem;
     font-size: 0.875rem;
     border-radius: var(--radius-md);
-    background: linear-gradient(135deg, #635bff 0%, #7c6cf0 100%);
-    box-shadow: 0 2px 12px -2px rgba(99, 91, 255, 0.3);
+    background: var(--accent);
+    box-shadow: 0 2px 12px -2px color-mix(in srgb, var(--accent) 30%, transparent);
   }
 
   .stripe-btn--primary:hover:not(:disabled) {
-    background: linear-gradient(135deg, #5147e5 0%, #6b5ad8 100%);
-    box-shadow: 0 4px 16px -2px rgba(99, 91, 255, 0.4);
+    background: var(--accent-hover);
+    box-shadow: 0 4px 16px -2px color-mix(in srgb, var(--accent) 40%, transparent);
   }
 
   .stripe-btn:hover:not(:disabled) {
-    background: #5147e5;
+    background: var(--accent-hover);
   }
 
   .stripe-btn:disabled {
