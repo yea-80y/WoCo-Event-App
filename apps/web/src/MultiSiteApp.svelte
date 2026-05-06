@@ -44,7 +44,12 @@
   let logoLoadFailed = $state(false);
 
   function parseHash(): Route {
-    const h = window.location.hash.replace(/^#/, '') || '/';
+    const raw = window.location.hash.replace(/^#/, '') || '/';
+    // Strip query (e.g. `?stripe=cancelled`) before matching — Stripe's
+    // cancel/success redirects append search params to the hash, and the
+    // greedy regex would otherwise capture them into eventId, breaking
+    // every downstream API call.
+    const h = raw.split('?')[0];
     const m = h.match(/^\/events\/([^/]+)$/);
     if (m) return { type: 'event', eventId: m[1] };
     return { type: 'page', slug: h || '/' };
