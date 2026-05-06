@@ -4,6 +4,7 @@
     HeroSection,
     RichTextSection,
     GallerySection,
+    ImageSection,
     EventsGridSection,
     FeaturedEventSection,
     OpeningHoursSection,
@@ -11,6 +12,8 @@
     ContactFormSection,
     EmbedSection,
   } from "@woco/shared";
+  import { uploadSiteImage } from "../../api/sites.js";
+  import { fileToBase64 } from "../../utils.js";
 
   interface Props {
     section: Section;
@@ -18,6 +21,81 @@
   }
 
   let { section, onpatch }: Props = $props();
+
+  const GATEWAY_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+
+  // ── Gallery upload state ──────────────────────────────────────────────────
+  let galleryUploadState = $state<'idle' | 'uploading' | 'error'>('idle');
+  let galleryUploadError = $state('');
+
+  async function handleGalleryFile(e: Event) {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file) return;
+    (e.currentTarget as HTMLInputElement).value = '';
+    if (!file.type.startsWith('image/')) {
+      galleryUploadError = 'Please select an image file';
+      galleryUploadState = 'error';
+      return;
+    }
+    galleryUploadState = 'uploading';
+    galleryUploadError = '';
+    try {
+      const base64 = await fileToBase64(file);
+      const res = await uploadSiteImage(base64);
+      if (res.ok && res.data) {
+        const s = section as GallerySection;
+        onpatch({ images: [...s.images, { ref: res.data.imageRef, alt: '' }] });
+        galleryUploadState = 'idle';
+      } else {
+        galleryUploadError = res.error ?? 'Upload failed';
+        galleryUploadState = 'error';
+      }
+    } catch {
+      galleryUploadError = 'Upload failed — check connection';
+      galleryUploadState = 'error';
+    }
+  }
+
+  function removeGalleryImage(i: number) {
+    const s = section as GallerySection;
+    onpatch({ images: s.images.filter((_, k) => k !== i) });
+  }
+
+  function patchGalleryAlt(i: number, alt: string) {
+    const s = section as GallerySection;
+    onpatch({ images: s.images.map((img, k) => k === i ? { ...img, alt } : img) });
+  }
+
+  // ── Single-image upload state ─────────────────────────────────────────────
+  let imageUploadState = $state<'idle' | 'uploading' | 'error'>('idle');
+  let imageUploadError = $state('');
+
+  async function handleImageFile(e: Event) {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file) return;
+    (e.currentTarget as HTMLInputElement).value = '';
+    if (!file.type.startsWith('image/')) {
+      imageUploadError = 'Please select an image file';
+      imageUploadState = 'error';
+      return;
+    }
+    imageUploadState = 'uploading';
+    imageUploadError = '';
+    try {
+      const base64 = await fileToBase64(file);
+      const res = await uploadSiteImage(base64);
+      if (res.ok && res.data) {
+        onpatch({ ref: res.data.imageRef });
+        imageUploadState = 'idle';
+      } else {
+        imageUploadError = res.error ?? 'Upload failed';
+        imageUploadState = 'error';
+      }
+    } catch {
+      imageUploadError = 'Upload failed — check connection';
+      imageUploadState = 'error';
+    }
+  }
 
   function addHoursRow() {
     const rows = [...(section as OpeningHoursSection).rows, { day: '', hours: '' }];
@@ -73,19 +151,104 @@
 
   {:else if section.type === 'gallery'}
     {@const s = section as GallerySection}
-    <p class="hint">Image upload via Swarm will be wired up in Phase 2.</p>
-    {#if s.images.length > 0}
-      <div class="gallery-list">
-        {#each s.images as img}
-          <div class="gallery-item">
-            <code class="mono">{img.ref.slice(0, 16)}…</code>
-            <span class="gallery-alt">{img.alt || '(no alt)'}</span>
-          </div>
-        {/each}
+    <div class="gallery-editor">
+      {#each s.images as img, i}
+        <div class="gallery-item">
+          <img class="gallery-thumb" src="{GATEWAY_URL}/bytes/{img.ref}" alt={img.alt || ''} loading="lazy" />
+          <input
+            class="input gallery-alt-input"
+            type="text"
+            value={img.alt}
+            placeholder="Image description (alt text)"
+            oninput={(e) => patchGalleryAlt(i, (e.currentTarget as HTMLInputElement).value)}
+          />
+          <button class="btn-icon danger" onclick={() => removeGalleryImage(i)} title="Remove image">&#10005;</button>
+        </div>
+      {/each}
+
+      <div class="gallery-upload-row">
+        <label class="btn-ghost gallery-upload-label" for="gallery-file-input">
+          {#if galleryUploadState === 'uploading'}
+            <span class="gallery-spinner" aria-hidden="true"></span>Uploading…
+          {:else}
+            + Add image
+          {/if}
+        </label>
+        <input
+          id="gallery-file-input"
+          type="file"
+          accept="image/*"
+          class="visually-hidden"
+          disabled={galleryUploadState === 'uploading'}
+          onchange={handleGalleryFile}
+        />
       </div>
-    {:else}
-      <p class="hint muted">No images yet.</p>
-    {/if}
+      {#if galleryUploadState === 'error'}
+        <p class="hint error">{galleryUploadError}</p>
+      {/if}
+    </div>
+
+  {:else if section.type === 'image'}
+    {@const s = section as ImageSection}
+    <div class="image-editor">
+      {#if s.ref}
+        <div class="image-preview-wrap">
+          <img class="image-preview" src="{GATEWAY_URL}/bytes/{s.ref}" alt={s.alt || ''} loading="lazy" />
+          <button class="image-replace-btn btn-ghost" onclick={() => { onpatch({ ref: '' }); imageUploadState = 'idle'; }}>
+            Replace image
+          </button>
+        </div>
+      {:else}
+        <div class="image-upload-row">
+          <label class="btn-ghost image-upload-label" for="image-file-input">
+            {#if imageUploadState === 'uploading'}
+              <span class="gallery-spinner" aria-hidden="true"></span>Uploading…
+            {:else}
+              + Upload image
+            {/if}
+          </label>
+          <input
+            id="image-file-input"
+            type="file"
+            accept="image/*"
+            class="visually-hidden"
+            disabled={imageUploadState === 'uploading'}
+            onchange={handleImageFile}
+          />
+        </div>
+        {#if imageUploadState === 'error'}
+          <p class="hint error">{imageUploadError}</p>
+        {/if}
+      {/if}
+
+      {#if s.ref}
+        <label class="field-row">
+          <span class="field-label">Alt text <span class="optional">(accessibility)</span></span>
+          <input class="input" type="text" value={s.alt} placeholder="Describe the image for screen readers"
+            oninput={(e) => onpatch({ alt: (e.currentTarget as HTMLInputElement).value })} />
+        </label>
+        <label class="field-row">
+          <span class="field-label">Caption <span class="optional">(optional)</span></span>
+          <input class="input" type="text" value={s.caption ?? ''} placeholder="Appears below the image"
+            oninput={(e) => onpatch({ caption: (e.currentTarget as HTMLInputElement).value || undefined })} />
+        </label>
+        <div class="field-row">
+          <span class="field-label">Layout</span>
+          <div class="layout-toggle">
+            <button
+              class="layout-btn"
+              class:active={s.layout === 'full'}
+              onclick={() => onpatch({ layout: 'full' })}
+            >Full width</button>
+            <button
+              class="layout-btn"
+              class:active={s.layout === 'contained'}
+              onclick={() => onpatch({ layout: 'contained' })}
+            >Contained</button>
+          </div>
+        </div>
+      {/if}
+    </div>
 
   {:else if section.type === 'eventsGrid'}
     {@const s = section as EventsGridSection}
@@ -264,27 +427,115 @@
   }
 
   .hint.warn { color: #f59e0b; }
-  .hint.muted { font-style: italic; }
 
-  .mono {
-    font-family: monospace;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-  }
-
-  .gallery-list { display: flex; flex-direction: column; gap: 0.25rem; }
+  .gallery-editor { display: flex; flex-direction: column; gap: 0.5rem; }
 
   .gallery-item {
     display: flex;
     gap: 0.5rem;
     align-items: center;
-    font-size: 0.8125rem;
     padding: 0.375rem 0.5rem;
     background: var(--bg-surface);
     border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
   }
 
-  .gallery-alt { color: var(--text-muted); font-style: italic; }
+  .gallery-thumb {
+    width: 3rem;
+    height: 2.25rem;
+    object-fit: cover;
+    border-radius: 2px;
+    flex-shrink: 0;
+    background: var(--bg);
+  }
+
+  .gallery-alt-input {
+    flex: 1;
+    font-size: 0.8125rem;
+    padding: 0.3125rem 0.5rem;
+  }
+
+  .gallery-upload-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.125rem; }
+
+  .gallery-upload-label { display: inline-flex; align-items: center; gap: 0.375rem; cursor: pointer; }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+  }
+
+  .gallery-spinner {
+    display: inline-block;
+    width: 0.75rem;
+    height: 0.75rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .hint.error { color: #ef4444; }
+
+  /* ── Single image editor ── */
+  .image-editor { display: flex; flex-direction: column; gap: 0.75rem; }
+
+  .image-preview-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .image-preview {
+    width: 100%;
+    max-height: 220px;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    display: block;
+  }
+
+  .image-replace-btn {
+    align-self: flex-start;
+    font-size: 0.8125rem;
+  }
+
+  .image-upload-row { display: flex; align-items: center; gap: 0.5rem; }
+  .image-upload-label { display: inline-flex; align-items: center; gap: 0.375rem; cursor: pointer; }
+
+  .layout-toggle {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    align-self: flex-start;
+  }
+
+  .layout-btn {
+    padding: 0.375rem 0.875rem;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    transition: all var(--transition);
+    border-right: 1px solid var(--border);
+  }
+
+  .layout-btn:last-child { border-right: none; }
+
+  .layout-btn.active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .layout-btn:not(.active):hover {
+    background: var(--bg-elevated);
+    color: var(--text);
+  }
 
   .hours-table { display: flex; flex-direction: column; gap: 0.375rem; }
 

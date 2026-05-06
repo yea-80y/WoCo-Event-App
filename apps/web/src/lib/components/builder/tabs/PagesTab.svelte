@@ -31,7 +31,12 @@
   function addPage() {
     if (!addPageTitle.trim()) return;
     const slug = slugify(addPageTitle.trim());
-    site.pages.push({ slug, title: addPageTitle.trim(), sections: [] });
+    const title = addPageTitle.trim();
+    site.pages.push({ slug, title, sections: [] });
+    // Only auto-add nav item if the page isn't already in the nav
+    if (!site.nav.some(n => n.pageSlug === slug)) {
+      site.nav.push({ label: title, pageSlug: slug });
+    }
     selectedPageIdx = site.pages.length - 1;
     addPageTitle = '';
     addPageOpen = false;
@@ -60,6 +65,7 @@
       case 'hero':         return { id, type, heading: 'New section' };
       case 'richText':     return { id, type, markdown: '' };
       case 'gallery':      return { id, type, images: [] };
+      case 'image':        return { id, type, ref: '', alt: '', layout: 'contained' };
       case 'eventsGrid':   return { id, type, mode: 'upcoming' };
       case 'featuredEvent':return { id, type, eventId: '' };
       case 'openingHours': return { id, type, rows: [{ day: 'Mon–Sun', hours: '12:00 – 23:00' }] };
@@ -117,7 +123,8 @@
   const SECTION_TYPES: SectionTypeMeta[] = [
     { type: 'hero',          icon: '&#127752;', label: 'Hero banner',    desc: 'Full-width intro with heading + CTA',   color: '#7c6cf0' },
     { type: 'richText',      icon: '&#128196;', label: 'Rich text',      desc: 'Markdown content block',               color: '#5c9e46' },
-    { type: 'gallery',       icon: '&#128247;', label: 'Image gallery',  desc: 'Grid of images from Swarm',            color: '#2090c0' },
+    { type: 'image',          icon: '&#128444;', label: 'Single image',   desc: 'One photo — full width or contained',  color: '#2090c0' },
+    { type: 'gallery',       icon: '&#128247;', label: 'Image gallery',  desc: 'Grid of images from Swarm',            color: '#5c7a9e' },
     { type: 'eventsGrid',    icon: '&#128197;', label: 'Events grid',    desc: 'Grid of upcoming / all events',        color: '#c8860a' },
     { type: 'featuredEvent', icon: '&#11088;',  label: 'Featured event', desc: 'Single highlighted event card',        color: '#d04060' },
     { type: 'openingHours',  icon: '&#128337;', label: 'Opening hours',  desc: 'Weekly schedule table',                color: '#20b896' },
@@ -134,6 +141,7 @@
     switch (sec.type) {
       case 'hero':         return sec.heading?.slice(0, 40) ?? '';
       case 'richText':     return sec.markdown?.slice(0, 40) ?? '';
+      case 'image':        return sec.ref ? `${sec.layout} · ${sec.alt || '(no alt)'}` : '(no image yet)';
       case 'gallery':      return `${sec.images.length} image${sec.images.length !== 1 ? 's' : ''}`;
       case 'eventsGrid':   return `Mode: ${sec.mode}${sec.max ? `, max ${sec.max}` : ''}`;
       case 'featuredEvent':return sec.eventId ? `Event: ${sec.eventId.slice(0, 20)}` : '(no event set)';

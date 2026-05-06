@@ -14,6 +14,14 @@ export default defineConfig(({ mode }) => {
       nodePolyfills({ globals: { Buffer: true, process: true } }),
       svelte(),
     ],
+    build: {
+      rollupOptions: {
+        input: {
+          main: 'index.html',
+          multisite: 'multi-site.html',
+        },
+      },
+    },
     server: {
       proxy: {
         '/api': {

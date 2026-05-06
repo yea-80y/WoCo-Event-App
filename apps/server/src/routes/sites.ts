@@ -23,10 +23,11 @@ import {
 } from "../config/swarm.js";
 import {
   siteConfigTopic,
+  sitePagesTopicFn,
   siteEventsIndexTopic,
   SITE_SCHEMA_VERSION,
 } from "@woco/shared";
-import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed } from "@woco/shared";
+import type { Site, Page, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 
@@ -40,10 +41,21 @@ const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multis
 // ---------------------------------------------------------------------------
 
 async function readSiteConfig(siteId: string): Promise<Site | null> {
-  const topic = Topic.fromString(siteConfigTopic(siteId));
-  const page = await readFeedPage(topic);
-  if (!page) return null;
-  return decodeJsonFeed<Site>(page);
+  const configTopic = Topic.fromString(siteConfigTopic(siteId));
+  const pagesTopic = Topic.fromString(sitePagesTopicFn(siteId));
+  const [configPage, pagesPage] = await Promise.all([
+    readFeedPage(configTopic),
+    readFeedPage(pagesTopic),
+  ]);
+  if (!configPage) return null;
+  const site = decodeJsonFeed<Site>(configPage);
+  if (!site) return null;
+  // Pages may be in their own feed (split to stay under 4096 bytes)
+  if (pagesPage) {
+    const pagesData = decodeJsonFeed<{ pages: Page[] }>(pagesPage);
+    if (pagesData?.pages) site.pages = pagesData.pages;
+  }
+  return site;
 }
 
 function spawnPromise(cmd: string, args: string[]): Promise<void> {
@@ -137,9 +149,14 @@ sitesRouter.post("/", requireAuth, async (c) => {
       updatedAt: now,
     };
 
-    // Write both feeds concurrently
+    // Write config (without pages) + pages + events to separate feeds concurrently.
+    // Pages are split into woco/site/pages/{siteId} so the config feed stays under
+    // the 4096-byte Swarm chunk limit even for content-rich sites.
     const configTopic = Topic.fromString(siteConfigTopic(site.siteId));
+    const pagesTopic  = Topic.fromString(sitePagesTopicFn(site.siteId));
     const eventsTopic = Topic.fromString(siteEventsIndexTopic(site.siteId));
+
+    const { pages, ...siteShell } = siteToWrite;
 
     const eventsIndex: SiteEventsIndex = {
       siteId: site.siteId,
@@ -149,7 +166,8 @@ sitesRouter.post("/", requireAuth, async (c) => {
     };
 
     await Promise.all([
-      writeFeedPage(configTopic, encodeJsonFeed(siteToWrite)),
+      writeFeedPage(configTopic, encodeJsonFeed(siteShell)),
+      writeFeedPage(pagesTopic,  encodeJsonFeed({ pages })),
       writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
     ]);
 
@@ -421,11 +439,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
   let tarPath: string | null = null;
 
   try {
-    const site = await readSiteConfig(siteId);
-    if (!site) return c.json({ ok: false, error: "Site not found — publish first" }, 404);
-    if (site.ownerAddress.toLowerCase() !== parentAddress) {
-      return c.json({ ok: false, error: "Not the site owner" }, 403);
-    }
+    const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site };
+    const { apiUrl, gatewayUrl = "https://gateway.woco-net.com", wocoAppUrl = "https://woco.eth.limo" } = body;
+    if (!apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
 
     if (!existsSync(DIST_MULTISITE_PATH)) {
       return c.json({
@@ -434,9 +450,20 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       }, 503);
     }
 
-    const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string };
-    const { apiUrl, gatewayUrl = "https://gateway.woco-net.com", wocoAppUrl = "https://woco.eth.limo" } = body;
-    if (!apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
+    // Prefer the site config sent by the client — avoids a Swarm re-read immediately
+    // after publishSite (deferred writes can have a brief propagation window).
+    // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
+    let site: Site;
+    if (body.site && body.site.siteId === siteId) {
+      site = { ...body.site, ownerAddress: parentAddress };
+    } else {
+      const fromSwarm = await readSiteConfig(siteId);
+      if (!fromSwarm) return c.json({ ok: false, error: "Site not found — publish first" }, 404);
+      if (fromSwarm.ownerAddress.toLowerCase() !== parentAddress) {
+        return c.json({ ok: false, error: "Not the site owner" }, 403);
+      }
+      site = fromSwarm;
+    }
 
     const batchId = requirePostageBatch();
     const signer = getPlatformSigner();
@@ -473,7 +500,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const brandNameEsc = escHtml(site.theme.brandName?.trim() || 'WoCo Site');
     const descEsc = escHtml(desc);
     const logoRef = site.theme.logoSwarmRef;
-    const ogImage = logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bzz/${logoRef}` : '';
+    const ogImage = logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : '';
 
     const headLines = [
       `  <link rel="manifest" href="./manifest.json">`,
@@ -537,9 +564,24 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const writer = bee.makeFeedWriter(topic, signer);
     await writer.upload(batchId, new Reference(contentHash));
 
-    // Whitelist both hashes on the gateway so they're publicly accessible.
+    // Collect all image refs from the site so they're accessible via the gateway.
+    const imageRefs: string[] = [];
+    if (site.theme.logoSwarmRef && !/^0+$/.test(site.theme.logoSwarmRef)) imageRefs.push(site.theme.logoSwarmRef);
+    for (const page of site.pages ?? []) {
+      for (const sec of page.sections ?? []) {
+        if (sec.type === 'hero' && sec.bgImageRef && !/^0+$/.test(sec.bgImageRef)) imageRefs.push(sec.bgImageRef);
+        if (sec.type === 'gallery') {
+          for (const img of sec.images ?? []) {
+            if (img.ref && !/^0+$/.test(img.ref)) imageRefs.push(img.ref);
+          }
+        }
+        if (sec.type === 'image' && sec.ref && !/^0+$/.test(sec.ref)) imageRefs.push(sec.ref);
+      }
+    }
+
+    // Whitelist BZZ hash, feed manifest, and all image refs on the gateway.
     // Fire-and-forget — whitelist failure must not block the deploy response.
-    const hashesToWhitelist = [contentHash, feedManifestHash].filter(Boolean);
+    const hashesToWhitelist = [contentHash, feedManifestHash, ...imageRefs].filter(Boolean);
     fetch(`${BEE_URL}/admin/whitelist`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

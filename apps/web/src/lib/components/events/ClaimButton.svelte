@@ -334,6 +334,20 @@
     }
   }
 
+  // Reset transient checkout state if the page is restored from bfcache after
+  // the buyer navigates back from Stripe. Without this, stripeLoading sticks
+  // at true and the Pay button renders "Processing…" indefinitely.
+  onMount(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) {
+        stripeLoading = false;
+        error = null;
+      }
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  });
+
   onMount(() => {
     // Restore a persisted payment-shortfall receipt if present (session-scoped
     // so it doesn't linger forever — user sees it until they dismiss or close tab).
@@ -851,7 +865,10 @@
       persistReservation(null);
       // Remember which series we were buying so EventPage can auto-select on return
       try { sessionStorage.setItem(`woco:stripe-returning:${eventId}`, seriesId); } catch { /* ignore */ }
-      window.location.href = url;
+      // replace() so the dead Stripe checkout URL doesn't sit in the back-button
+      // history. After Stripe's cancel redirect lands the buyer back on the
+      // event page, Back goes to the events list, not into a stale Stripe session.
+      window.location.replace(url);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start checkout";
       if (!handleAlreadyClaimed(msg)) error = msg;

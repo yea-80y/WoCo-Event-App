@@ -165,7 +165,7 @@
         return;
       }
 
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl: GATEWAY_URL, wocoAppUrl: WOCO_APP_URL });
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl: GATEWAY_URL, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) });
       if (deployRes.ok && deployRes.data) {
         deployedUrl = deployRes.data.siteUrl;
         if (deployRes.data.feedManifestHash) {
@@ -195,16 +195,8 @@
     }
   }
 
-  /** Open a site from the My Sites registry. Uses localStorage draft if siteId matches, else fetches from Swarm. */
+  /** Open a site from the My Sites registry. Always fetches latest from Swarm. */
   async function handleOpenSite(rec: MySiteRecord) {
-    // If this site is already the current draft, just enter the builder.
-    if (site.siteId === rec.siteId) {
-      feedHash = rec.feedHash ?? localStorage.getItem(FEED_HASH_KEY) ?? '';
-      deployedUrl = rec.deployedUrl ?? '';
-      screen = 'builder';
-      return;
-    }
-
     openingId = rec.siteId;
     try {
       const [siteRes, eventsRes] = await Promise.all([

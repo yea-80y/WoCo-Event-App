@@ -9,6 +9,7 @@
   import MapSection from './MapSection.svelte';
   import ContactFormSection from './ContactFormSection.svelte';
   import EmbedSection from './EmbedSection.svelte';
+  import ImageSection from './ImageSection.svelte';
 
   interface Props {
     section: Section;
@@ -26,6 +27,8 @@
   <RichTextSection {section} />
 {:else if section.type === 'gallery'}
   <GallerySection {section} {gatewayUrl} />
+{:else if section.type === 'image'}
+  <ImageSection {section} {gatewayUrl} />
 {:else if section.type === 'eventsGrid'}
   <EventsGridSection {section} {site} {apiUrl} />
 {:else if section.type === 'featuredEvent'}

@@ -14,7 +14,7 @@ export async function uploadSiteImage(imageBase64: string) {
   return authPost<{ imageRef: string }>("/api/sites/upload-image", { image: imageBase64 });
 }
 
-export async function deploySite(siteId: string, opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string }) {
+export async function deploySite(siteId: string, opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site }) {
   return authPost<{ contentHash: string; feedManifestHash: string; siteUrl: string }>(
     `/api/sites/${siteId}/deploy`,
     opts,

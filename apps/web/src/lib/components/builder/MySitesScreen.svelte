@@ -19,7 +19,7 @@
 
   function logoUrl(rec: MySiteRecord): string | undefined {
     if (!rec.logoSwarmRef || /^0+$/.test(rec.logoSwarmRef)) return undefined;
-    return `${gatewayUrl}/bzz/${rec.logoSwarmRef}`;
+    return `${gatewayUrl}/bytes/${rec.logoSwarmRef}`;
   }
 
   function timeAgo(ts: number): string {

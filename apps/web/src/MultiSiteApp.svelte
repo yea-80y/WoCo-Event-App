@@ -32,7 +32,7 @@
   function logoUrl(): string | null {
     const ref = site.theme.logoSwarmRef;
     if (!ref || /^0+$/.test(ref)) return null;
-    return `${gatewayUrl}/bzz/${ref}`;
+    return `${gatewayUrl}/bytes/${ref}`;
   }
 
   type Route =
@@ -41,6 +41,7 @@
 
   let route = $state<Route>(parseHash());
   let menuOpen = $state(false);
+  let logoLoadFailed = $state(false);
 
   function parseHash(): Route {
     const h = window.location.hash.replace(/^#/, '') || '/';
@@ -124,8 +125,13 @@
   <nav class="site-nav">
     <div class="nav-inner">
       <a class="brand" href="#/">
-        {#if logoUrl()}
-          <img class="brand-logo" src={logoUrl()!} alt={site.theme.brandName} />
+        {#if logoUrl() && !logoLoadFailed}
+          <img
+            class="brand-logo"
+            src={logoUrl()!}
+            alt={site.theme.brandName}
+            onerror={() => { logoLoadFailed = true; }}
+          />
         {:else}
           {site.theme.brandName}
         {/if}

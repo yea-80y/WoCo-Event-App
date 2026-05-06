@@ -11,6 +11,11 @@ export function siteConfigTopic(siteId: string): string {
   return `woco/site/config/${siteId}`;
 }
 
+/** Feed topic holding the Site pages array (split from config to stay under 4096 bytes). */
+export function sitePagesTopicFn(siteId: string): string {
+  return `woco/site/pages/${siteId}`;
+}
+
 /** Feed topic holding the `SiteEventsIndex` for a given site. */
 export function siteEventsIndexTopic(siteId: string): string {
   return `woco/site/${siteId}/events`;

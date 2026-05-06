@@ -1,4 +1,5 @@
 import { FeedIndex, type Topic } from "@ethersphere/bee-js";
+import zlib from "node:zlib";
 import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from "../../config/swarm.js";
 import { ensureEthernaToken } from "../etherna/auth.js";
 
@@ -267,19 +268,48 @@ async function doWriteFeedPage(
  * Encode JSON data into a 4096-byte feed page.
  * MUST stay at exactly 4096 bytes — bee-js uses a broken upload→download
  * path for data > 4096 that fails on some Bee node configurations.
+ *
+ * Format:
+ *  - First byte 0x7b ('{') or 0x5b ('[') → uncompressed JSON, null-padded (legacy).
+ *  - First byte 0x01 → gzipped JSON. Bytes 1-2: BE uint16 payload length.
+ *    Bytes 3..3+len: gzip stream. Used only when raw JSON exceeds 4096 bytes,
+ *    so existing small feeds remain plain-text inspectable on the gateway.
  */
+const COMPRESSED_MAGIC = 0x01;
+
 export function encodeJsonFeed(data: unknown): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(data));
-  if (json.length > 4096) {
-    throw new RangeError(`JSON feed data exceeds 4096 bytes (${json.length}). Reduce entries before encoding.`);
-  }
   const page = new Uint8Array(4096);
-  page.set(json);
+
+  if (json.length <= 4096) {
+    page.set(json);
+    return page;
+  }
+
+  const compressed = zlib.gzipSync(Buffer.from(json), { level: 9 });
+  const maxPayload = 4096 - 3;
+  if (compressed.length > maxPayload) {
+    throw new RangeError(
+      `JSON feed data still exceeds 4096 bytes after gzip (raw=${json.length}, gzipped=${compressed.length}). Reduce entries before encoding.`,
+    );
+  }
+  page[0] = COMPRESSED_MAGIC;
+  page[1] = (compressed.length >> 8) & 0xff;
+  page[2] = compressed.length & 0xff;
+  page.set(compressed, 3);
   return page;
 }
 
 export function decodeJsonFeed<T>(page: Uint8Array): T | null {
   try {
+    if (page.length === 0) return null;
+    if (page[0] === COMPRESSED_MAGIC) {
+      const len = (page[1] << 8) | page[2];
+      if (len <= 0 || len > page.length - 3) return null;
+      const compressed = page.subarray(3, 3 + len);
+      const json = zlib.gunzipSync(Buffer.from(compressed), { maxOutputLength: 1 << 20 });
+      return JSON.parse(json.toString("utf8"));
+    }
     let end = page.length;
     for (let i = 0; i < page.length; i++) {
       if (page[i] === 0) { end = i; break; }

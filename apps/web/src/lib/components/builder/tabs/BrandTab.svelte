@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Site, FontFamilyId, RadiusScale, SitePalette } from "@woco/shared";
   import { uploadSiteImage } from "../../../api/sites.js";
+  import { fileToBase64 } from "../../../utils.js";
 
   interface Props {
     site: Site;
@@ -19,7 +20,7 @@
   function existingLogoUrl(): string | null {
     const ref = site.theme.logoSwarmRef;
     if (!ref || /^0+$/.test(ref)) return null;
-    return `${GATEWAY_URL}/bzz/${ref}`;
+    return `${GATEWAY_URL}/bytes/${ref}`;
   }
 
   async function handleLogoFile(e: Event) {
@@ -61,15 +62,6 @@
     logoUploadState = 'idle';
     logoUploadError = '';
     if (fileInput) fileInput.value = '';
-  }
-
-  function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
   }
 
   const displayLogoUrl = $derived(logoPreviewUrl ?? existingLogoUrl());

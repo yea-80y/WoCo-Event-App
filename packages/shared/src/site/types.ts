@@ -152,10 +152,21 @@ export interface EmbedSection extends SectionBase {
   html: string;
 }
 
+export interface ImageSection extends SectionBase {
+  type: "image";
+  /** Swarm bytes ref (64-char hex). Empty string = no image yet. */
+  ref: Hex64 | "";
+  alt: string;
+  caption?: string;
+  /** full = edge-to-edge within section; contained = centred with max-width. */
+  layout: "full" | "contained";
+}
+
 export type Section =
   | HeroSection
   | RichTextSection
   | GallerySection
+  | ImageSection
   | EventsGridSection
   | FeaturedEventSection
   | OpeningHoursSection
