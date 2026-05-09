@@ -10,13 +10,17 @@
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/pod/*.test.ts"
   },
   "devDependencies": {
+    "tsx": "^4.19.0",
     "typescript": "~5.9.3"
   },
   "dependencies": {
+    "@ipld/dag-cbor": "^9.2.6",
     "@noble/curves": "^1.2.0",
-    "@noble/hashes": "^1.8.0"
+    "@noble/hashes": "^1.8.0",
+    "@openzeppelin/merkle-tree": "^1.0.8"
   }
 }
