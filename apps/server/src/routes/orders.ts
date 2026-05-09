@@ -6,6 +6,26 @@ import { getEvent } from "../lib/event/service.js";
 import { readFeedPage, decodeJsonFeed } from "../lib/swarm/feeds.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
+import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+
+/** Maximum concurrent Swarm downloads when fetching v2 order blobs */
+const V2_DOWNLOAD_CONCURRENCY = 8;
+
+/**
+ * Validate and convert a bytes32 on-chain orderRef to a Swarm Hex64 ref.
+ * The contract stores "0x" + 64 hex chars. Returns null for zero refs or
+ * anything that doesn't match the expected format.
+ */
+function orderRefToSwarmHex(bytes32: string): string | null {
+  if (!bytes32 || typeof bytes32 !== "string") return null;
+  // Strip 0x prefix
+  const hex = bytes32.startsWith("0x") ? bytes32.slice(2) : bytes32;
+  // Must be exactly 64 hex chars
+  if (!/^[0-9a-f]{64}$/i.test(hex)) return null;
+  // Reject zero ref (bytes32(0)) — slot has no order data
+  if (/^0+$/.test(hex)) return null;
+  return hex.toLowerCase();
+}
 
 const orders = new Hono<AppEnv>();
 
@@ -25,37 +45,102 @@ orders.get("/:id/orders", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Only the event organizer can view orders" }, 403);
     }
 
-    // 2. Collect encrypted orders from claimers feeds
+    // 2. Collect encrypted orders — v2 series read from chain, v1 from Swarm claimers feed
     const orderEntries: OrderEntry[] = [];
+    const chainId = getActiveChainId();
 
     for (const series of event.series) {
-      const page = await readFeedPage(topicClaimers(series.seriesId));
-      if (!page) continue;
+      if (series.swarmManifestRef && series.onChainEventId) {
+        // ── v2: source of truth is the on-chain slot registry ──────────────
+        const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
+        if (!onChainData || onChainData.nextSlot === 0n) continue;
 
-      const feed = decodeJsonFeed<ClaimersFeed>(page);
-      if (!feed?.claimers) continue;
+        const slotCount = Number(onChainData.nextSlot);
 
-      for (const claimer of feed.claimers) {
-        let encryptedOrder: SealedBox | undefined;
+        // Read all slot data in parallel — these are public view calls
+        const slotResults = await Promise.all(
+          Array.from({ length: slotCount }, (_, slot) =>
+            getSlotData(series.onChainEventId!, slot, chainId).catch((err) => {
+              console.warn(`[orders/v2] getSlotData failed for slot ${slot}:`, err);
+              return null;
+            }),
+          ),
+        );
 
-        if (claimer.orderRef) {
-          try {
-            const json = await downloadFromBytes(claimer.orderRef);
-            encryptedOrder = JSON.parse(json) as SealedBox;
-          } catch (err) {
-            console.error(`[orders] Failed to download order ref ${claimer.orderRef}:`, err);
+        // Download encrypted order blobs from Swarm with bounded concurrency.
+        // Each blob is a NaCl SealedBox — only the organiser can decrypt it.
+        // We fetch the ciphertext server-side and return it; decryption happens
+        // exclusively in the client where the X25519 private key lives.
+        const downloadSlot = async (slot: number): Promise<OrderEntry | null> => {
+          const slotData = slotResults[slot];
+          if (!slotData) return null;
+
+          const swarmHex = orderRefToSwarmHex(slotData.orderRef);
+          let encryptedOrder: SealedBox | undefined;
+
+          if (swarmHex) {
+            try {
+              const json = await downloadFromBytes(swarmHex);
+              encryptedOrder = JSON.parse(json) as SealedBox;
+            } catch (err) {
+              console.warn(`[orders/v2] Failed to download orderRef for slot ${slot}:`, err);
+            }
+          }
+
+          return {
+            seriesId: series.seriesId,
+            seriesName: series.name,
+            edition: slot + 1,
+            // Burner address — unique per ticket, proves on-chain slot ownership.
+            // The actual claimer identity is inside the encrypted order blob.
+            claimerAddress: slotData.owner,
+            claimedAt: "",   // not stored on-chain in v1; available inside encryptedOrder
+            via: "stripe" as const,
+            ...(encryptedOrder ? { encryptedOrder } : {}),
+          };
+        };
+
+        // Batch downloads: V2_DOWNLOAD_CONCURRENCY at a time to avoid flooding the Bee node
+        for (let i = 0; i < slotCount; i += V2_DOWNLOAD_CONCURRENCY) {
+          const batch = Array.from(
+            { length: Math.min(V2_DOWNLOAD_CONCURRENCY, slotCount - i) },
+            (_, j) => downloadSlot(i + j),
+          );
+          const results = await Promise.all(batch);
+          for (const entry of results) {
+            if (entry) orderEntries.push(entry);
           }
         }
+      } else {
+        // ── v1: Swarm claimers feed ──────────────────────────────────────────
+        const page = await readFeedPage(topicClaimers(series.seriesId));
+        if (!page) continue;
 
-        orderEntries.push({
-          seriesId: series.seriesId,
-          seriesName: series.name,
-          edition: claimer.edition,
-          claimerAddress: claimer.claimerAddress,
-          claimedAt: claimer.claimedAt,
-          ...(encryptedOrder ? { encryptedOrder } : {}),
-          ...(claimer.via ? { via: claimer.via } : {}),
-        });
+        const feed = decodeJsonFeed<ClaimersFeed>(page);
+        if (!feed?.claimers) continue;
+
+        for (const claimer of feed.claimers) {
+          let encryptedOrder: SealedBox | undefined;
+
+          if (claimer.orderRef) {
+            try {
+              const json = await downloadFromBytes(claimer.orderRef);
+              encryptedOrder = JSON.parse(json) as SealedBox;
+            } catch (err) {
+              console.error(`[orders] Failed to download order ref ${claimer.orderRef}:`, err);
+            }
+          }
+
+          orderEntries.push({
+            seriesId: series.seriesId,
+            seriesName: series.name,
+            edition: claimer.edition,
+            claimerAddress: claimer.claimerAddress,
+            claimedAt: claimer.claimedAt,
+            ...(encryptedOrder ? { encryptedOrder } : {}),
+            ...(claimer.via ? { via: claimer.via } : {}),
+          });
+        }
       }
     }
 

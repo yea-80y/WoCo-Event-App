@@ -141,7 +141,7 @@
         order.claimerAddress.startsWith("email:") ? "" : order.claimerAddress,
         dec?.claimerEmail ?? "",
         order.via ?? "",
-        new Date(order.claimedAt).toLocaleString(),
+        order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "",
         ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
     });
@@ -951,6 +951,8 @@
                           {:else}
                             <span class="claim-type">Email claim</span>
                           {/if}
+                        {:else if dec?.claimerEmail}
+                          <span class="claim-email">{dec.claimerEmail}</span>
                         {:else}
                           {order.claimerAddress.slice(0, 6)}...{order.claimerAddress.slice(-4)}
                         {/if}
@@ -966,7 +968,7 @@
                           <span class="via-badge via-badge--unknown">—</span>
                         {/if}
                       </td>
-                      <td>{new Date(order.claimedAt).toLocaleString()}</td>
+                      <td>{order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "—"}</td>
                       {#if event.orderFields}
                         {#each event.orderFields as field}
                           <td>{dec?.fields?.[field.id] ?? (decrypting ? "..." : "-")}</td>
