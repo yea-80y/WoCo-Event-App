@@ -5,11 +5,12 @@ import { getRpcUrl } from "../payment/constants.js";
 const ABI = [
   "function organiserNonce(address) view returns (uint256)",
   "function events(bytes32) view returns (uint256 totalSupply, uint256 nextSlot, address organiser, bytes32 manifestRef)",
+  "function getSlotData(bytes32 eventId, uint256 slot) view returns (address owner, bytes32 orderRef)",
 ];
 
 /** Deployed WoCoEvent addresses by chainId. Override via WOCO_EVENT_ADDRESS_{chainId} env. */
 const DEPLOYED: Record<number, string> = {
-  84532: "0xC56f73d100c40be5780b81B211c6e216F805D598", // Base Sepolia
+  84532: "0x4bf8aa0FDaF5045EFEd675e019F81316063c94b4", // Base Sepolia (redeployed 2026-05-09 — adds slotOrderRef storage + getSlotData)
 };
 
 /** Chain the server currently uses for event registration. Override via WOCO_EVENT_CHAIN_ID. */
@@ -48,6 +49,23 @@ export interface OnChainEvent {
   nextSlot: bigint;
   organiser: string; // lowercased
   manifestRef: string; // 0x-prefixed bytes32
+}
+
+export interface SlotData {
+  owner: string;    // address (lowercased)
+  orderRef: string; // 0x-prefixed bytes32
+}
+
+export async function getSlotData(
+  onChainEventId: string,
+  slot: number,
+  chainId: number,
+): Promise<SlotData> {
+  const result = await getContract(chainId).getSlotData(onChainEventId, slot);
+  return {
+    owner: (result.owner as string).toLowerCase(),
+    orderRef: result.orderRef as string,
+  };
 }
 
 export async function getOnChainEvent(
