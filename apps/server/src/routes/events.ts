@@ -1,9 +1,13 @@
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
-import type { Hex0x, CreateEventRequest, EventDirectoryEntry } from "@woco/shared";
+import type { Hex0x, CreateEventV2Request, EventDirectoryEntry } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEvent, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
+import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
+import { downloadFromBytes } from "../lib/swarm/bytes.js";
+import type { SeriesManifestBlob } from "@woco/shared";
+import { manifestDigest, bytesToHex0x } from "@woco/shared";
 const events = new Hono<AppEnv>();
 
 // GET /api/events - public listing (served from in-memory cache, backed by Swarm directory)
@@ -14,6 +18,28 @@ events.get("/", async (c) => {
   } catch (err) {
     console.error("[api] listEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
+  }
+});
+
+// GET /api/events/organiser-nonce/:address — active chain nonce for the given address
+// Must be registered before /:id to avoid "organiser-nonce" matching as an eventId.
+events.get("/organiser-nonce/:address", async (c) => {
+  const address = c.req.param("address").toLowerCase();
+  const chainId = getActiveChainId();
+  try {
+    const nonce = await getOrganiserNonce(address, chainId);
+    return c.json({
+      ok: true,
+      data: {
+        address,
+        nonce: nonce.toString(),
+        chainId,
+        contractAddress: getWoCoEventAddress(chainId),
+      },
+    });
+  } catch (err) {
+    console.error("[api] getOrganiserNonce error:", err);
+    return c.json({ ok: false, error: "Failed to read organiser nonce" }, 500);
   }
 });
 
@@ -61,32 +87,29 @@ events.get("/:id", async (c) => {
   }
 });
 
-// POST /api/events - authenticated, creates event + tickets on Swarm
-// Streams NDJSON progress events, final line is the result
+// POST /api/events — authenticated, creates event + manifests on Swarm (v2)
+// Streams NDJSON progress events; final line is the result.
 events.post("/", requireAuth, async (c) => {
-  const body = c.get("body") as unknown as CreateEventRequest & {
-    session: string;
-    delegation: unknown;
-  };
-
+  const body = c.get("body") as unknown as CreateEventV2Request;
   const parentAddress = c.get("parentAddress") as string;
 
-  // Validate required fields
-  const { event: ev, series, signedTickets, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList } = body;
+  const { event: ev, series, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList } = body;
+
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
   }
   if (!series?.length) {
     return c.json({ ok: false, error: "At least one ticket series required" }, 400);
   }
-  if (!signedTickets || !creatorPodKey) {
-    return c.json({ ok: false, error: "Missing signed tickets or creator key" }, 400);
+  if (!creatorPodKey || !image) {
+    return c.json({ ok: false, error: "Missing creatorPodKey or image" }, 400);
   }
-  if (!image) {
-    return c.json({ ok: false, error: "Missing event image" }, 400);
+  for (const s of series) {
+    if (!s.signedManifest || !s.podBodies?.length) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or podBodies` }, 400);
+    }
   }
 
-  // Decode base64 image
   let imageData: Uint8Array;
   try {
     const raw = image.includes(",") ? image.split(",")[1] : image;
@@ -95,39 +118,22 @@ events.post("/", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Invalid image data" }, 400);
   }
 
-  // Flatten signedTickets to serialized strings
-  const serializedTickets: Record<string, string[]> = {};
-  for (const [seriesId, tickets] of Object.entries(signedTickets)) {
-    serializedTickets[seriesId] = tickets.map((t) => JSON.stringify(t));
-  }
-
   const eventId = crypto.randomUUID();
 
-  // Debug: log incoming series payment data
-  for (const s of series) {
-    const pay = (s as { payment?: unknown }).payment;
-    console.log(`[api] Incoming series "${s.name}" payment:`, pay ? JSON.stringify(pay) : "none");
-  }
-
-  // Escrow enforcement: new organisers (no completed events yet) must use escrow
-  // for all paid series. "Completed" = endDate or startDate + 24h is in the past.
-  const hasPaidSeries = series.some((s) => (s as { payment?: unknown }).payment);
+  // Escrow enforcement: untrusted organisers must use escrow for paid series.
+  const hasPaidSeries = series.some((s) => s.payment);
   if (hasPaidSeries) {
     const trusted = await isOrganiserTrusted(parentAddress);
     if (!trusted) {
-      console.log(`[api] Organiser ${parentAddress} not yet trusted — forcing escrow on paid series`);
       for (const s of series) {
-        const pay = (s as { payment?: import("@woco/shared").PaymentConfig }).payment;
-        if (pay) {
-          pay.escrow = true;
-        }
+        if (s.payment) s.payment.escrow = true;
       }
     }
   }
 
   return streamText(c, async (stream) => {
     try {
-      const result = await createEvent({
+      const result = await createEventV2({
         eventId,
         title: ev.title,
         description: ev.description || "",
@@ -137,34 +143,17 @@ events.post("/", requireAuth, async (c) => {
         creatorAddress: parentAddress.toLowerCase() as Hex0x,
         creatorPodKey,
         imageData,
-        series: series.map((s) => ({
-          seriesId: s.seriesId,
-          name: s.name,
-          description: s.description || "",
-          totalSupply: s.totalSupply,
-          approvalRequired: !!(s as { approvalRequired?: boolean }).approvalRequired,
-          ...((s as { wave?: string }).wave ? { wave: (s as { wave?: string }).wave } : {}),
-          ...((s as { saleStart?: string }).saleStart ? { saleStart: (s as { saleStart?: string }).saleStart } : {}),
-          ...((s as { saleEnd?: string }).saleEnd ? { saleEnd: (s as { saleEnd?: string }).saleEnd } : {}),
-          ...((s as { payment?: import("@woco/shared").PaymentConfig }).payment ? { payment: (s as { payment?: import("@woco/shared").PaymentConfig }).payment } : {}),
-        })),
-        signedTickets: serializedTickets,
-        encryptionKey: encryptionKey as string | undefined,
-        orderFields: orderFields as import("@woco/shared").OrderField[] | undefined,
-        claimMode: claimMode as import("@woco/shared").ClaimMode | undefined,
-        skipAutoList: !!(skipAutoList as boolean | undefined),
-        onProgress: (p) => {
-          stream.writeln(JSON.stringify(p));
-        },
+        series,
+        encryptionKey,
+        orderFields,
+        claimMode,
+        skipAutoList: !!skipAutoList,
+        onProgress: (p) => stream.writeln(JSON.stringify(p)),
       });
 
-      stream.writeln(JSON.stringify({
-        type: "done",
-        ok: true,
-        data: { eventId: result.eventId },
-      }));
+      stream.writeln(JSON.stringify({ type: "done", ok: true, data: { eventId: result.eventId } }));
     } catch (err) {
-      console.error("[api] createEvent error:", err);
+      console.error("[api] createEventV2 error:", err);
       const message = err instanceof Error ? err.message : "Failed to create event";
       stream.writeln(JSON.stringify({ type: "error", ok: false, error: message }));
     }
@@ -318,6 +307,69 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   }
 
   return c.json({ ok: true, eventId });
+});
+
+// POST /api/events/:id/confirm-chain — verify on-chain registration and update event feed
+// Called by the organiser after their registerEvent tx is confirmed.
+events.post("/:id/confirm-chain", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = c.get("body") as { seriesId: string; onChainEventId: string; chainId: number };
+
+  const { seriesId, onChainEventId, chainId } = body;
+  if (!seriesId || !onChainEventId || !chainId) {
+    return c.json({ ok: false, error: "Missing seriesId, onChainEventId, or chainId" }, 400);
+  }
+
+  // Load event from Swarm
+  const feed = await getEvent(eventId);
+  if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
+
+  const seriesSummary = feed.series.find((s) => s.seriesId === seriesId);
+  if (!seriesSummary) return c.json({ ok: false, error: "Series not found" }, 404);
+  if (!seriesSummary.swarmManifestRef) {
+    return c.json({ ok: false, error: "Series has no manifest (not a v2 event)" }, 400);
+  }
+
+  // Fetch manifest blob from Swarm to get the manifest digest
+  let blob: SeriesManifestBlob;
+  try {
+    const raw = await downloadFromBytes(seriesSummary.swarmManifestRef);
+    blob = JSON.parse(raw) as SeriesManifestBlob;
+  } catch {
+    return c.json({ ok: false, error: "Failed to fetch manifest from Swarm" }, 500);
+  }
+
+  // Recompute digest from the manifest body we already validated at creation
+  const digestBytes = manifestDigest(blob.signedManifest.body);
+  const localDigest = bytesToHex0x(digestBytes).toLowerCase();
+
+  // Read on-chain state
+  let onChain: Awaited<ReturnType<typeof getOnChainEvent>>;
+  try {
+    onChain = await getOnChainEvent(onChainEventId, chainId);
+  } catch (err) {
+    console.error("[api] confirm-chain getOnChainEvent error:", err);
+    return c.json({ ok: false, error: "Failed to read on-chain state" }, 500);
+  }
+
+  if (!onChain) return c.json({ ok: false, error: "Event not found on chain" }, 404);
+  if (onChain.organiser !== parentAddress) {
+    return c.json({ ok: false, error: "On-chain organiser does not match caller" }, 403);
+  }
+  if (onChain.manifestRef.toLowerCase() !== localDigest) {
+    return c.json({ ok: false, error: "On-chain manifestRef does not match local manifest" }, 400);
+  }
+
+  // Update event feed with on-chain eventId
+  try {
+    await confirmSeriesOnChain(eventId, seriesId, onChainEventId);
+  } catch (err) {
+    console.error("[api] confirm-chain update error:", err);
+    return c.json({ ok: false, error: "Failed to update event feed" }, 500);
+  }
+
+  return c.json({ ok: true, eventId, seriesId, onChainEventId });
 });
 
 export { events };

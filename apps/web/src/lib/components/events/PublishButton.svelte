@@ -1,11 +1,13 @@
 <script lang="ts">
-  import type { SignedTicket, OrderField, ClaimMode } from "@woco/shared";
+  import type { OrderField, ClaimMode } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
-  import { createSeriesTickets } from "../../pod/signing.js";
-  import { createEventStreaming, type PublishProgress } from "../../api/events.js";
+  import { buildEventManifests } from "../../pod/event-builder.js";
+  import { createEventStreaming, getOrganiserNonce, confirmChainRegistration, type PublishProgress } from "../../api/events.js";
+  import { callRegisterEvent } from "../../chain/woco-event.js";
+  import { isWalletAvailable } from "../../wallet/provider.js";
 
   interface SeriesDraft {
     seriesId: string;
@@ -27,19 +29,12 @@
     location: string;
     imageDataUrl: string | null;
     series: SeriesDraft[];
-    /** Order form fields — undefined means no info collection */
     orderFields?: OrderField[];
-    /** How attendees can claim tickets */
     claimMode?: ClaimMode;
-    /** External disable flag (e.g. crypto enabled but no payout wallet connected) */
     disabled?: boolean;
-    /** Hint shown when externally disabled */
     disabledReason?: string;
-    /** Target a different API server (e.g. organiser's self-hosted backend) */
     apiUrl?: string;
-    /** Skip listing the event in the public directory — site-builder publishes privately */
     skipAutoList?: boolean;
-    /** Override the button label (e.g. "Create & deploy") */
     label?: string;
     onpublished?: (eventId: string) => void;
   }
@@ -55,8 +50,8 @@
   let publishing = $state(false);
   let error = $state<string | null>(null);
   let step = $state("");
-  let progress = $state(0); // 0-100
-  let phase = $state<"auth" | "signing" | "uploading" | "done">("auth");
+  let progress = $state(0);
+  let phase = $state<"auth" | "building" | "uploading" | "chain" | "done">("auth");
 
   const canPublish = $derived(
     title.trim() &&
@@ -67,23 +62,19 @@
     series.every((s) => s.name.trim() && s.totalSupply > 0)
   );
 
-  const totalTickets = $derived(
-    series.reduce((sum, s) => sum + s.totalSupply, 0)
-  );
+  const hasPaidSeries = $derived(series.some((s) => s.payment));
 
   function handleProgress(p: PublishProgress) {
     step = p.message;
     phase = "uploading";
-    if (p.phase === "tickets" && p.total > 0) {
-      // Tickets are the bulk of the work (~80% of progress)
-      // Reserve 0-10% for auth/signing, 10-90% for tickets, 90-100% for feeds
-      progress = 10 + Math.round((p.current / p.total) * 80);
-    } else if (p.phase === "feeds") {
-      progress = 90 + Math.round((p.current / Math.max(p.total, 1)) * 8);
+    if (p.phase === "pods" && p.total > 0) {
+      progress = 20 + Math.round((p.current / p.total) * 55);
+    } else if (p.phase === "manifests") {
+      progress = 75 + Math.round((p.current / Math.max(p.total, 1)) * 10);
     } else if (p.phase === "finalize") {
-      progress = p.current > 0 ? 100 : 98;
+      progress = p.current > 0 ? 90 : 88;
     } else if (p.phase === "image") {
-      progress = 10;
+      progress = 20;
     }
   }
 
@@ -95,7 +86,7 @@
     phase = "auth";
 
     try {
-      // Step 1: Ensure user is connected (wallet or local account)
+      // ── Auth ──────────────────────────────────────────────────────────
       if (!auth.isConnected) {
         step = "Waiting for sign-in...";
         const ok = await loginRequest.request();
@@ -103,64 +94,99 @@
       }
       progress = 1;
 
-      // Step 2: Ensure session delegation (EIP-712 — deferred until now)
       if (!auth.hasSession) {
-        step = "Approve session delegation (1 of 2)...";
+        step = "Approve session (1 of 2)...";
         const ok = await auth.ensureSession();
         if (!ok) { error = "Session delegation cancelled"; return; }
       }
       progress = 2;
 
-      // Step 3: Ensure POD identity (EIP-712 — deferred until now)
       if (!auth.hasPodIdentity) {
-        step = "Approve identity derivation (2 of 2)...";
+        step = "Approve identity (2 of 2)...";
         const pk = await auth.ensurePodIdentity();
         if (!pk) { error = "Identity setup cancelled"; return; }
       }
       progress = 4;
 
-      // Derive encryption keypair from POD seed (zero extra popups)
+      // Check wallet availability for paid events (needed for registerEvent call)
+      if (hasPaidSeries && !isWalletAvailable()) {
+        error = "A browser wallet (MetaMask or WalletConnect) is required to register paid events on-chain";
+        return;
+      }
+
+      // Derive encryption keypair (no extra popup)
       let encryptionKey: string | undefined;
       const podSeed = await restorePodSeed();
       if (podSeed) {
-        const encKeypair = deriveEncryptionKeypairFromPodSeed(podSeed);
-        encryptionKey = encKeypair.publicKeyHex;
+        encryptionKey = deriveEncryptionKeypairFromPodSeed(podSeed).publicKeyHex;
       }
 
-      phase = "signing";
-      step = "Preparing tickets...";
       const keypair = await auth.getPodKeypair();
       if (!keypair) { error = "Could not get signing key"; return; }
 
-      const signedTickets: Record<string, SignedTicket[]> = {};
-      let signed = 0;
-      for (const s of series) {
-        signedTickets[s.seriesId] = await createSeriesTickets({
-          eventId: "",
-          seriesId: s.seriesId,
-          seriesName: s.name,
-          totalSupply: s.totalSupply,
-          imageHash: "",
-          creatorPrivateKey: keypair.privateKey,
-          creatorPublicKeyHex: keypair.publicKeyHex,
-        });
-        signed += s.totalSupply;
-        step = `Signing tickets (${signed}/${totalTickets})...`;
-        progress = 4 + Math.round((signed / totalTickets) * 6);
+      // ── Nonce fetch (paid events only — free events skip on-chain step) ──
+      let organiserNonce = 0n;
+      let chainId = 84532;
+      if (hasPaidSeries) {
+        step = "Fetching organiser nonce...";
+        progress = 5;
+        try {
+          const nonceData = await getOrganiserNonce(auth.parent as string);
+          organiserNonce = nonceData.nonce;
+          chainId = nonceData.chainId;
+        } catch (e) {
+          error = "Failed to fetch organiser nonce from chain";
+          return;
+        }
       }
+      progress = 8;
 
+      // ── Build manifests ───────────────────────────────────────────────
+      phase = "building";
+      step = "Building manifests...";
+
+      // Strip data: URL prefix to get raw base64, then upload image to get hash.
+      // The image hash is embedded in pod metadata so it matches the event feed.
+      // We pass an empty string if the image isn't available yet (rare edge case).
+      const manifests = buildEventManifests({
+        organiserAddress: (auth.parent as string).toLowerCase(),
+        organiserNonce,
+        creatorPodPrivateKey: keypair.privateKey,
+        creatorPodPublicKeyHex: keypair.publicKeyHex,
+        eventMeta: { startDate, endDate, location },
+        series: series.map((s) => ({
+          seriesId: s.seriesId,
+          name: s.name,
+          description: s.description,
+          totalSupply: s.totalSupply,
+        })),
+      });
+      progress = 15;
+
+      // ── Upload to server ──────────────────────────────────────────────
       phase = "uploading";
       step = "Publishing to Swarm...";
-      progress = 10;
+      progress = 20;
 
       const result = await createEventStreaming(
         {
           event: { title, description, startDate, endDate, location },
-          series,
-          signedTickets,
+          series: series.map((s, i) => ({
+            seriesId: s.seriesId,
+            name: s.name,
+            description: s.description || "",
+            totalSupply: s.totalSupply,
+            signedManifest: manifests[i]!.signedManifest,
+            podBodies: manifests[i]!.podBodies,
+            ...(s.approvalRequired ? { approvalRequired: true } : {}),
+            ...(s.wave ? { wave: s.wave } : {}),
+            ...(s.saleStart ? { saleStart: s.saleStart } : {}),
+            ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
+            ...(s.payment ? { payment: s.payment } : {}),
+          })),
           image: imageDataUrl!,
           creatorAddress: auth.parent as `0x${string}`,
-          creatorPodKey: auth.podPublicKeyHex!,
+          creatorPodKey: keypair.publicKeyHex,
           encryptionKey,
           orderFields: orderFields?.length ? orderFields : undefined,
           claimMode: claimMode && claimMode !== "wallet" ? claimMode : undefined,
@@ -175,10 +201,46 @@
         return;
       }
 
+      const eventId = result.eventId!;
+      progress = 90;
+
+      // ── On-chain registration (paid series only) ──────────────────────
+      if (hasPaidSeries) {
+        phase = "chain";
+        for (let i = 0; i < series.length; i++) {
+          const s = series[i]!;
+          if (!s.payment) continue; // skip free series
+
+          const m = manifests[i]!;
+          step = `Registering "${s.name}" on-chain...`;
+
+          let txHash: string;
+          let onChainEventId: string;
+          try {
+            ({ txHash, onChainEventId } = await callRegisterEvent(
+              chainId,
+              s.totalSupply,
+              m.manifestDigestHex,
+            ));
+          } catch (e) {
+            error = `Wallet tx failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
+            return;
+          }
+
+          step = `Confirming "${s.name}" registration...`;
+          try {
+            await confirmChainRegistration(eventId, s.seriesId, onChainEventId, chainId);
+          } catch (e) {
+            // Non-fatal: event is already on Swarm; confirmation can be retried
+            console.warn("[publish] confirm-chain failed (non-fatal):", e);
+          }
+        }
+      }
+
       phase = "done";
       progress = 100;
       step = "Published!";
-      onpublished?.(result.eventId!);
+      onpublished?.(eventId);
     } catch (e) {
       error = e instanceof Error ? e.message : "Unexpected error";
     } finally {
@@ -207,10 +269,12 @@
     <p class="progress-label">
       {#if phase === "auth"}
         Setting up auth...
-      {:else if phase === "signing"}
-        Signing tickets locally...
+      {:else if phase === "building"}
+        Building manifests...
       {:else if phase === "uploading"}
         Uploading to Swarm ({progress}%)
+      {:else if phase === "chain"}
+        Registering on-chain...
       {:else}
         Done!
       {/if}

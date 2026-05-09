@@ -1,8 +1,11 @@
-import type { Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary, OrderField, ClaimMode } from "@woco/shared";
-import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
+import type {
+  Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary,
+  OrderField, ClaimMode, SeriesManifestBlob,
+  SignedManifestV1, PodV2Body,
+} from "@woco/shared";
+import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from "@woco/shared";
+import { uploadToBytes } from "../swarm/bytes.js";
 import {
-  pack4096,
-  decode4096,
   readFeedPage,
   readFeedPageWithRetry,
   writeFeedPage,
@@ -13,15 +16,10 @@ import {
   topicEventDirectory,
   topicCreatorDirectory,
   topicEvent,
-  topicEditions,
-  topicClaims,
-  editionPageCount,
-  PAGE_0_CAPACITY,
-  PAGE_N_CAPACITY,
 } from "../swarm/topics.js";
 
 // ---------------------------------------------------------------------------
-// Create event
+// Create event (v2 — manifest-based, on-chain)
 // ---------------------------------------------------------------------------
 
 export interface CreateProgress {
@@ -32,7 +30,7 @@ export interface CreateProgress {
   message: string;
 }
 
-export async function createEvent(opts: {
+export async function createEventV2(opts: {
   eventId: string;
   title: string;
   description: string;
@@ -47,175 +45,108 @@ export async function createEvent(opts: {
     name: string;
     description: string;
     totalSupply: number;
+    signedManifest: SignedManifestV1;
+    podBodies: PodV2Body[];
     approvalRequired?: boolean;
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
   }>;
-  /** signedTickets[seriesId] = array of serialized signed tickets */
-  signedTickets: Record<string, string[]>;
-  /** Organizer's X25519 encryption public key (hex) */
   encryptionKey?: string;
-  /** Order form fields (if organizer wants attendee info) */
   orderFields?: OrderField[];
-  /** How attendees can claim tickets */
   claimMode?: ClaimMode;
-  /** If true, skip adding to the public event directory (site builder use case) */
   skipAutoList?: boolean;
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
     eventId, title, description, startDate, endDate, location,
-    creatorAddress, creatorPodKey, imageData, series, signedTickets,
+    creatorAddress, creatorPodKey, imageData, series,
     encryptionKey, orderFields, claimMode, skipAutoList, onProgress,
   } = opts;
 
-  const totalTickets = series.reduce((sum, s) => sum + s.totalSupply, 0);
-  let ticketsUploaded = 0;
-
-  const emit = (phase: string, current: number, total: number, message: string) => {
+  const emit = (phase: string, current: number, total: number, message: string) =>
     onProgress?.({ type: "progress", phase, current, total, message });
-  };
 
-  console.log(`[event] Creating event ${eventId}: "${title}"`);
-
-  // Phase timings — surface where Swarm latency lands during publish.
   const tStart = Date.now();
-  let tPhase = tStart;
-  const lap = (): number => { const d = Date.now() - tPhase; tPhase = Date.now(); return d; };
-  const timings: Record<string, number> = {};
-
   const createdAt = new Date().toISOString();
-  const BATCH_SIZE = 40; // Higher throughput — Bee handles concurrent uploads well
+  const totalPods = series.reduce((n, s) => n + s.totalSupply, 0);
 
-  // ── Phase 1: Upload image + all ticket blobs in parallel ──────────────
-  // Image and ticket uploads are independent — start them simultaneously.
+  // ── Validate all manifests before touching Swarm ─────────────────────
+  for (const s of series) {
+    if (s.podBodies.length !== s.totalSupply) {
+      throw new Error(`Series ${s.seriesId}: expected ${s.totalSupply} pod bodies, got ${s.podBodies.length}`);
+    }
+    if (!verifySignedManifest(s.signedManifest)) {
+      throw new Error(`Series ${s.seriesId}: manifest signature invalid`);
+    }
+    const { root } = buildPodTree(s.podBodies);
+    if (root.toLowerCase() !== s.signedManifest.body.metadataRoot.toLowerCase()) {
+      throw new Error(`Series ${s.seriesId}: Merkle root mismatch — pod bodies don't match manifest`);
+    }
+  }
+
+  // ── Phase 1: Upload image (start immediately) ─────────────────────────
   emit("image", 0, 1, "Uploading event image...");
-
   const imagePromise = uploadToBytes(imageData);
 
-  // Validate all series upfront before starting any uploads
+  // ── Phase 2: Upload pod bodies for all series ─────────────────────────
+  emit("pods", 0, totalPods, "Uploading pod bodies...");
+  let podsUploaded = 0;
+  const BATCH = 40;
+
+  const podRefsBySeries = new Map<string, Hex64[]>();
   for (const s of series) {
-    const tickets = signedTickets[s.seriesId];
-    if (!tickets || tickets.length !== s.totalSupply) {
-      throw new Error(
-        `Series ${s.seriesId}: expected ${s.totalSupply} tickets, got ${tickets?.length ?? 0}`,
-      );
+    const refs: Hex64[] = [];
+    for (let i = 0; i < s.podBodies.length; i += BATCH) {
+      const batch = s.podBodies.slice(i, i + BATCH);
+      const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p))));
+      refs.push(...batchRefs);
+      podsUploaded += batchRefs.length;
+      emit("pods", podsUploaded, totalPods, `Uploading pods: ${podsUploaded}/${totalPods}`);
     }
+    podRefsBySeries.set(s.seriesId, refs);
   }
 
-  // Upload all tickets across all series in interleaved batches
-  // This lets Bee pipeline uploads across series rather than waiting for each to finish.
-  type TicketBatch = { seriesId: string; name: string; startIdx: number; tickets: string[] };
-  const allBatches: TicketBatch[] = [];
-  for (const s of series) {
-    const tickets = signedTickets[s.seriesId];
-    for (let i = 0; i < tickets.length; i += BATCH_SIZE) {
-      allBatches.push({
-        seriesId: s.seriesId,
-        name: s.name,
-        startIdx: i,
-        tickets: tickets.slice(i, i + BATCH_SIZE),
-      });
-    }
-  }
-
-  // Run batches — each batch uploads its tickets in parallel, batches run sequentially
-  // to avoid overwhelming the Bee node, but progress spans all series.
-  const ticketHashesBySeries = new Map<string, string[]>();
-  for (const s of series) ticketHashesBySeries.set(s.seriesId, []);
-
-  for (const batch of allBatches) {
-    const results = await Promise.all(batch.tickets.map((t) => uploadToBytes(t)));
-    ticketHashesBySeries.get(batch.seriesId)!.push(...results);
-    ticketsUploaded += results.length;
-    emit(
-      "tickets",
-      ticketsUploaded,
-      totalTickets,
-      `Uploading tickets: ${ticketsUploaded}/${totalTickets}`,
-    );
-  }
-
-  // Await image (likely already done — it started before tickets)
   const imageHash = await imagePromise;
   emit("image", 1, 1, "Image uploaded");
-  console.log(`[event] Image + ${ticketsUploaded} tickets uploaded`);
-  timings.imageAndTickets = lap();
 
-  // ── Phase 2: Build & write feeds for ALL series in parallel ───────────
-  emit("feeds", 0, series.length, "Writing feeds...");
+  // ── Phase 3: Upload SeriesManifestBlob per series ─────────────────────
+  emit("manifests", 0, series.length, "Uploading manifests...");
 
-  const seriesSummaries: SeriesSummary[] = [];
+  const seriesSummaries: SeriesSummary[] = await Promise.all(
+    series.map(async (s, i) => {
+      const podRefs = podRefsBySeries.get(s.seriesId)!;
+      const digestBytes = manifestDigest(s.signedManifest.body);
+      const manifestDigestHex = bytesToHex0x(digestBytes);
 
-  const seriesFeedWork = series.map(async (s) => {
-    const ticketHashes = ticketHashesBySeries.get(s.seriesId)!;
-    const pages = editionPageCount(s.totalSupply);
+      const blob: SeriesManifestBlob = {
+        v: 2,
+        signedManifest: s.signedManifest,
+        podRefs,
+        manifestDigestHex,
+      };
+      const swarmManifestRef = await uploadToBytes(JSON.stringify(blob));
+      emit("manifests", i + 1, series.length, `Manifests: ${i + 1}/${series.length}`);
 
-    // Upload series metadata
-    const seriesMeta = {
-      v: 1,
-      seriesId: s.seriesId,
-      eventId,
-      name: s.name,
-      description: s.description,
-      imageHash,
-      creatorPodKey,
-      creatorAddress,
-      totalSupply: s.totalSupply,
-      pageCount: pages,
-      createdAt,
-      ...(s.approvalRequired ? { approvalRequired: true } : {}),
-    };
-    const metaRef = await uploadToBytes(JSON.stringify(seriesMeta));
+      return {
+        seriesId: s.seriesId,
+        name: s.name,
+        description: s.description,
+        totalSupply: s.totalSupply,
+        price: s.payment ? parseFloat(s.payment.price) : 0,
+        swarmManifestRef,
+        manifestRef: manifestDigestHex,
+        ...(s.approvalRequired ? { approvalRequired: true } : {}),
+        ...(s.wave ? { wave: s.wave } : {}),
+        ...(s.saleStart ? { saleStart: s.saleStart } : {}),
+        ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
+        ...(s.payment ? { payment: s.payment } : {}),
+      } as SeriesSummary;
+    }),
+  );
 
-    // Build page data
-    const editionPages: Uint8Array[] = [];
-    for (let p = 0; p < pages; p++) {
-      let pageRefs: string[];
-      if (p === 0) {
-        pageRefs = [metaRef, ...ticketHashes.slice(0, PAGE_0_CAPACITY)];
-      } else {
-        const start = PAGE_0_CAPACITY + (p - 1) * PAGE_N_CAPACITY;
-        pageRefs = ticketHashes.slice(start, start + PAGE_N_CAPACITY);
-      }
-      editionPages.push(pack4096(pageRefs));
-    }
-
-    // Write all edition + claims feeds in parallel. seriesId is freshly
-    // generated, so every editions/claims topic is brand-new — `fresh: true`
-    // skips the findNextIndex round-trip on each write.
-    const feedWrites: Promise<void>[] = [];
-    for (let p = 0; p < pages; p++) {
-      feedWrites.push(writeFeedPage(topicEditions(s.seriesId, p), editionPages[p], { fresh: true }));
-      feedWrites.push(writeFeedPage(topicClaims(s.seriesId, p), new Uint8Array(4096), { fresh: true }));
-    }
-    await Promise.all(feedWrites);
-
-    // Skip verification — writeFeedPage already confirmed success (single Bee node,
-    // data is local). Removing this saves ~300-600ms per series.
-
-    return {
-      seriesId: s.seriesId,
-      name: s.name,
-      description: s.description,
-      totalSupply: s.totalSupply,
-      price: s.payment ? parseFloat(s.payment.price) : 0,
-      ...(s.approvalRequired ? { approvalRequired: true } : {}),
-      ...(s.wave ? { wave: s.wave } : {}),
-      ...(s.saleStart ? { saleStart: s.saleStart } : {}),
-      ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
-      ...(s.payment ? { payment: s.payment } : {}),
-    } as SeriesSummary;
-  });
-
-  const results = await Promise.all(seriesFeedWork);
-  seriesSummaries.push(...results);
-  emit("feeds", series.length, series.length, "All feeds written");
-  timings.seriesFeeds = lap();
-
-  // 4. Build and write event feed
+  // ── Phase 4: Write event feed ─────────────────────────────────────────
   const eventFeed: EventFeed = {
     v: 1,
     eventId,
@@ -235,37 +166,43 @@ export async function createEvent(opts: {
   };
 
   emit("finalize", 0, 1, "Writing event feed...");
-  // Log payment data for debugging — confirm it reaches the feed write
-  for (const s of seriesSummaries) {
-    console.log(`[event] Series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
-  }
-  const eventFeedJson = JSON.stringify(eventFeed);
-  console.log(`[event] Writing event feed (${eventFeedJson.length} bytes)...`);
-  // eventId is a fresh UUID, so this topic has never been written.
   await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed), { fresh: true });
   invalidateEventCache(eventId);
-  timings.eventFeed = lap();
 
-  // Skip verification — writeFeedPage succeeded, data is on the local Bee node.
-  // Saves ~300-600ms. If we ever move to multi-node, add background verification.
-
-  // 5. Event is now fully on Swarm — update directories.
-  // Both are fire-and-forget: the event is complete and verifiable at this point,
-  // so any client that receives the Waku announcement can load the event page.
-  const dirEntry: EventDirectoryEntry = {
-    eventId, title, imageHash, startDate, endDate, location, creatorAddress,
-    seriesCount: series.length,
-    totalTickets,
-    createdAt,
-  };
-  addToEventDirectory(dirEntry, { skipPublicDirectory: !!skipAutoList })
-    .catch((err) => console.error("[event] Failed to update directory (non-critical):", err));
+  // ── Update directories (fire-and-forget) ─────────────────────────────
+  const totalTickets = series.reduce((n, s) => n + s.totalSupply, 0);
+  addToEventDirectory(
+    { eventId, title, imageHash, startDate, endDate, location, creatorAddress, seriesCount: series.length, totalTickets, createdAt },
+    { skipPublicDirectory: !!skipAutoList },
+  ).catch((err) => console.error("[event] Directory update failed (non-critical):", err));
 
   emit("finalize", 1, 1, "Event published!");
-  const summary = Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(" ");
-  console.log(`[event] timings — ${summary} total=${Date.now() - tStart}ms (eventId=${eventId} series=${series.length} tickets=${totalTickets})`);
-  console.log(`[event] Event ${eventId} created successfully`);
+  console.log(`[event] v2 event created — ${eventId} (${series.length} series, ${totalPods} pods, ${Date.now() - tStart}ms)`);
   return eventFeed;
+}
+
+// ---------------------------------------------------------------------------
+// Update on-chain registration for a series (called after registerEvent tx)
+// ---------------------------------------------------------------------------
+
+export async function confirmSeriesOnChain(
+  eventId: string,
+  seriesId: string,
+  onChainEventId: string,
+): Promise<EventFeed> {
+  const feed = await getEvent(eventId);
+  if (!feed) throw new Error("Event not found");
+
+  const updated: EventFeed = {
+    ...feed,
+    series: feed.series.map((s) =>
+      s.seriesId === seriesId ? { ...s, onChainEventId } : s,
+    ),
+  };
+
+  await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+  invalidateEventCache(eventId);
+  return updated;
 }
 
 // ---------------------------------------------------------------------------

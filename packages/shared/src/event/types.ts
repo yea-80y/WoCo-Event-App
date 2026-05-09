@@ -1,5 +1,6 @@
 import type { Hex64, Hex0x } from "../types.js";
 import type { OrderField, SealedBox } from "../crypto/types.js";
+import type { SignedManifestV1, PodV2Body } from "../pod/types.js";
 
 /** How attendees can claim tickets for an event */
 export type ClaimMode = "wallet" | "email" | "both";
@@ -187,6 +188,58 @@ export interface SeriesSummary {
   saleEnd?: string;
   /** Crypto payment config — absent means free event */
   payment?: PaymentConfig;
+  // v2 on-chain fields (added after registerEvent tx is confirmed)
+  /** On-chain eventId (0x-prefixed bytes32) from WoCoEvent.registerEvent */
+  onChainEventId?: string;
+  /** keccak256(dagCbor(manifestBody)) stored on-chain as manifestRef */
+  manifestRef?: string;
+  /** Swarm ref to SeriesManifestBlob (SignedManifestV1 + podRefs array) */
+  swarmManifestRef?: Hex64;
+}
+
+/**
+ * Swarm blob stored at SeriesSummary.swarmManifestRef.
+ * One fetch gives the door scanner (or server) everything needed for
+ * offline verification: the signed manifest + all pod body Swarm refs.
+ */
+export interface SeriesManifestBlob {
+  v: 2;
+  signedManifest: SignedManifestV1;
+  /** Swarm refs to individual pod body JSON blobs, indexed by edition-1 (0-based). */
+  podRefs: Hex64[];
+  /** keccak256(dagCbor(manifestBody)), 0x-prefixed bytes32 — matches on-chain manifestRef. */
+  manifestDigestHex: string;
+}
+
+/** Request body for POST /api/events (v2 — manifest-based) */
+export interface CreateEventV2Request {
+  event: {
+    title: string;
+    description: string;
+    startDate: string;
+    endDate: string;
+    location: string;
+  };
+  series: Array<{
+    seriesId: string;
+    name: string;
+    description: string;
+    totalSupply: number;
+    signedManifest: SignedManifestV1;
+    podBodies: PodV2Body[];
+    approvalRequired?: boolean;
+    wave?: string;
+    saleStart?: string;
+    saleEnd?: string;
+    payment?: PaymentConfig;
+  }>;
+  image: string;
+  creatorAddress: Hex0x;
+  creatorPodKey: string;
+  encryptionKey?: string;
+  orderFields?: OrderField[];
+  claimMode?: ClaimMode;
+  skipAutoList?: boolean;
 }
 
 /** Entry in the global event directory feed */
@@ -224,46 +277,6 @@ export interface SignedTicket {
   data: TicketData;
   signature: string;
   publicKey: string;
-}
-
-/** Request body for POST /api/events */
-export interface CreateEventRequest {
-  event: {
-    title: string;
-    description: string;
-    startDate: string;
-    endDate: string;
-    location: string;
-  };
-  series: Array<{
-    seriesId: string;
-    name: string;
-    description: string;
-    totalSupply: number;
-    approvalRequired?: boolean;
-    wave?: string;
-    saleStart?: string;
-    saleEnd?: string;
-    /** Crypto payment config — absent means free event */
-    payment?: PaymentConfig;
-  }>;
-  /** Signed tickets grouped by seriesId */
-  signedTickets: Record<string, SignedTicket[]>;
-  /** Base64-encoded event image */
-  image: string;
-  /** Creator's eth address */
-  creatorAddress: Hex0x;
-  /** Creator's ed25519 public key (hex) */
-  creatorPodKey: string;
-  /** Organizer's X25519 encryption public key (hex, derived from POD seed) */
-  encryptionKey?: string;
-  /** Order form fields (if organizer wants to collect attendee info) */
-  orderFields?: OrderField[];
-  /** How attendees can claim tickets (default: "wallet") */
-  claimMode?: "wallet" | "email" | "both";
-  /** If true, skip adding to the public event directory on creation.
-   *  Used by site builder — organiser lists explicitly with a siteUrl after deploying. */
-  skipAutoList?: boolean;
 }
 
 /** Response from POST /api/events */

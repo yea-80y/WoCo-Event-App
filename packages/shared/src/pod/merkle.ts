@@ -156,4 +156,4 @@ function bytesToHexNoPrefix(bytes: Uint8Array): string {
 }
 
 // Re-export so callers don't need to import from canonical.ts for common ops.
-export { canonicalEncodeManifest, manifestDigest, podLeafHash };
+export { canonicalEncodeManifest, manifestDigest, podLeafHash, bytesToHex0x, hex0xToBytes } from "./canonical.js";

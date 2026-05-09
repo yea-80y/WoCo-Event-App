@@ -5,6 +5,8 @@ export * from "./auth/eip712.js";
 export * from "./auth/eip712-digest.js";
 export * from "./event/types.js";
 export * from "./crypto/index.js";
+export * from "./pod/types.js";
+export * from "./pod/merkle.js";
 export * from "./pod/verify.js";
 export * from "./profile/types.js";
 export * from "./site/index.js";

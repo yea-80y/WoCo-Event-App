@@ -1,7 +1,7 @@
 import type {
   EventFeed,
   EventDirectoryEntry,
-  CreateEventRequest,
+  CreateEventV2Request,
   CreateEventResponse,
   ClaimTicketResponse,
   SeriesClaimStatus,
@@ -22,27 +22,17 @@ export interface PublishProgress {
 }
 
 /**
- * Create event with streaming progress.
+ * Create event with streaming progress (v2 — manifest-based).
  * Reads NDJSON from the server and calls onProgress for each update.
  *
  * @param baseUrlOverride  Target a different API server (e.g. organiser's self-hosted backend).
- *                         When omitted, uses the default VITE_API_URL.
  */
 export async function createEventStreaming(
-  req: Omit<CreateEventRequest, "session" | "delegation">,
+  req: CreateEventV2Request,
   onProgress?: (p: PublishProgress) => void,
   baseUrlOverride?: string,
 ): Promise<CreateEventResponse> {
   const base = baseUrlOverride ?? apiBase;
-
-  // Debug: log series payment data being sent to server
-  if (req.series) {
-    for (const s of req.series) {
-      console.log(`[createEventStreaming] series "${s.name}" payment:`, s.payment ?? "FREE");
-    }
-  }
-
-  // Sign the canonical challenge for this request — auth rides in headers, body is untouched
   const bodyText = JSON.stringify(req);
   const path = "/api/events";
   const authHeaders = await buildAuthHeaders("POST", path, bodyText);
@@ -58,7 +48,6 @@ export async function createEventStreaming(
     return { ok: false, error: json.error || "Request failed" };
   }
 
-  // Read NDJSON stream
   const reader = resp.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -68,49 +57,54 @@ export async function createEventStreaming(
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-
     const lines = buffer.split("\n");
-    buffer = lines.pop()!; // Keep incomplete line in buffer
-
+    buffer = lines.pop()!;
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const event = JSON.parse(line);
-        if (event.type === "progress") {
-          onProgress?.(event as PublishProgress);
-        } else if (event.type === "done") {
-          result = { ok: true, eventId: event.data?.eventId };
-        } else if (event.type === "error") {
-          result = { ok: false, error: event.error };
-        }
-      } catch {
-        // Skip unparseable lines
-      }
+        const ev = JSON.parse(line);
+        if (ev.type === "progress") onProgress?.(ev as PublishProgress);
+        else if (ev.type === "done") result = { ok: true, eventId: ev.data?.eventId };
+        else if (ev.type === "error") result = { ok: false, error: ev.error };
+      } catch { /* skip unparseable lines */ }
     }
   }
-
-  // Process any remaining buffer
   if (buffer.trim()) {
     try {
-      const event = JSON.parse(buffer);
-      if (event.type === "done") {
-        result = { ok: true, eventId: event.data?.eventId };
-      } else if (event.type === "error") {
-        result = { ok: false, error: event.error };
-      }
-    } catch {
-      // ignore
-    }
+      const ev = JSON.parse(buffer);
+      if (ev.type === "done") result = { ok: true, eventId: ev.data?.eventId };
+      else if (ev.type === "error") result = { ok: false, error: ev.error };
+    } catch { /* ignore */ }
   }
 
   return result;
 }
 
-/** @deprecated Use createEventStreaming for progress support */
-export async function createEvent(
-  req: Omit<CreateEventRequest, "session" | "delegation">,
-): Promise<CreateEventResponse> {
-  return createEventStreaming(req);
+/** Fetch the organiser's current nonce on the active chain (used to predict on-chain eventId). */
+export async function getOrganiserNonce(address: string): Promise<{
+  nonce: bigint;
+  chainId: number;
+  contractAddress: string;
+}> {
+  const resp = await get<{ address: string; nonce: string; chainId: number; contractAddress: string }>(
+    `/api/events/organiser-nonce/${address.toLowerCase()}`,
+  );
+  if (!resp.data) throw new Error("Failed to fetch organiser nonce");
+  return {
+    nonce: BigInt(resp.data.nonce),
+    chainId: resp.data.chainId,
+    contractAddress: resp.data.contractAddress,
+  };
+}
+
+/** Confirm on-chain registration for a series after the organiser's registerEvent tx. */
+export async function confirmChainRegistration(
+  eventId: string,
+  seriesId: string,
+  onChainEventId: string,
+  chainId: number,
+): Promise<{ ok: boolean; error?: string }> {
+  return authPost(`/api/events/${eventId}/confirm-chain`, { seriesId, onChainEventId, chainId });
 }
 
 export async function listEvents(): Promise<EventDirectoryEntry[]> {
