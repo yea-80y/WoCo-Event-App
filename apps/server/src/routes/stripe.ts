@@ -19,8 +19,9 @@ import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { queueSeriesClaim } from "./claims.js";
 import { sealJson } from "@woco/shared";
-import type { SealedBox } from "@woco/shared";
-import { uploadToBytes } from "../lib/swarm/bytes.js";
+import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
+import { claimForOnChain, generateBurnerAddress } from "../lib/chain/sponsor-wallet.js";
+import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
 import { readFeedPage, writeFeedPage, decodeJsonFeed, encodeJsonFeed } from "../lib/swarm/feeds.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
 import type { ClaimersFeed } from "@woco/shared";
@@ -774,6 +775,10 @@ async function handleSuccessfulPayment(
   let eventLocation = "";
   let seriesName = "";
   let totalSupply = 0;
+  let isV2 = false;
+  let v2OnChainEventId = "";
+  let v2SwarmManifestRef = "";
+
   try {
     const ev = await getEvent(eventId);
     if (ev) {
@@ -781,7 +786,15 @@ async function handleSuccessfulPayment(
       eventDate = ev.startDate;
       eventLocation = ev.location ?? "";
       const ser = ev.series.find((s) => s.seriesId === seriesId);
-      if (ser) { seriesName = ser.name; totalSupply = ser.totalSupply; }
+      if (ser) {
+        seriesName = ser.name;
+        totalSupply = ser.totalSupply;
+        if (ser.swarmManifestRef && ser.onChainEventId) {
+          isV2 = true;
+          v2OnChainEventId = ser.onChainEventId;
+          v2SwarmManifestRef = ser.swarmManifestRef;
+        }
+      }
       if (!prefetchedOrderRef && ev.encryptionKey) {
         // Fallback minimal seal — only when no pre-uploaded ref is available.
         encryptedOrder = await sealJson(ev.encryptionKey, {
@@ -798,50 +811,115 @@ async function handleSuccessfulPayment(
   const claimedResults: Array<{ edition: number; qrContent: string }> = [];
   let stoppedReason: string | null = null;
 
-  for (let i = 0; i < quantity; i++) {
-    const ticketNum = quantity > 1 ? ` (${i + 1}/${quantity})` : "";
+  if (isV2) {
+    // ── v2 on-chain path ────────────────────────────────────────────────────
+    // Resolve the orderRef once for the whole batch (all tickets share one
+    // encrypted order blob — same buyer, same form submission).
+    let batchOrderRef: string | undefined = prefetchedOrderRef;
+    if (!batchOrderRef && encryptedOrder) {
+      try {
+        batchOrderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
+        console.log(`[stripe-webhook/v2] Fallback order uploaded: ${batchOrderRef}`);
+      } catch (err) {
+        console.warn("[stripe-webhook/v2] Fallback order upload failed:", err);
+      }
+    }
+
+    // Fetch the manifest blob once; all slots for this series share it.
+    let manifestBlob: SeriesManifestBlob | null = null;
     try {
-      const result = await queueSeriesClaim(seriesId, () =>
-        claimTicket({
-          seriesId,
-          identifier,
-          via: "stripe",
-          paid: true,
-          claimedAt,
-          // Pre-uploaded full-form ref (from client) wins. Otherwise fall back
-          // to the minimal seal built above. Every ticket in the batch ends up
-          // with the same orderRef so dashboard rows are never blank.
-          ...(prefetchedOrderRef
-            ? { orderRef: prefetchedOrderRef }
-            : { encryptedOrder }),
-        }),
-      );
-      console.log(`[stripe-webhook] Ticket claimed${ticketNum}: series=${seriesId}, edition=${result.edition}`);
-      if (result.originalSignature) {
-        claimedResults.push({
-          edition: result.edition,
-          qrContent: `woco://t/${eventId}/${seriesId}/${result.edition}/${result.originalSignature}`,
-        });
-      }
+      const raw = await downloadFromBytes(v2SwarmManifestRef);
+      manifestBlob = JSON.parse(raw) as SeriesManifestBlob;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[stripe-webhook] Failed to claim ticket${ticketNum}:`, msg);
+      console.error("[stripe-webhook/v2] Failed to fetch manifest blob:", err);
+      stoppedReason = "Manifest not found";
+    }
 
-      const isUnrecoverable =
-        msg.includes("Already claimed") ||
-        msg.includes("Already requested") ||
-        msg.includes("No tickets available") ||
-        msg.includes("Series not found") ||
-        msg.includes("Series has no metadata");
+    for (let i = 0; i < quantity && !stoppedReason; i++) {
+      const ticketNum = quantity > 1 ? ` (${i + 1}/${quantity})` : "";
+      try {
+        if (!batchOrderRef) throw new Error("No orderRef available for on-chain claim");
+        if (!manifestBlob) throw new Error("Manifest not available");
 
-      if (isUnrecoverable) {
-        stoppedReason = msg;
-        // Stop claiming further tickets in the batch if we hit an unrecoverable error
-        break;
+        const burner = generateBurnerAddress();
+        const orderRefBytes32 = "0x" + batchOrderRef;
+        const slot = await claimForOnChain(v2OnChainEventId, burner, orderRefBytes32);
+        const edition = slot + 1;
+
+        console.log(`[stripe-webhook/v2] On-chain claim${ticketNum}: slot=${slot} edition=${edition}`);
+
+        // Fetch pod body for the QR — podRefs is 0-indexed by slot
+        let qrContent = `woco://v2/${eventId}/${seriesId}/${edition}`;
+        const podRef = manifestBlob.podRefs[slot];
+        if (podRef) {
+          try {
+            const podJson = await downloadFromBytes(podRef);
+            const pod = JSON.parse(podJson);
+            // Manifest signature authenticates all pods — use it as the verifier token
+            const manifestSig = manifestBlob.signedManifest.signature;
+            qrContent = `woco://t/${eventId}/${seriesId}/${edition}/${manifestSig}`;
+            console.log(`[stripe-webhook/v2] Pod body fetched for edition ${edition}`);
+            void pod; // pod body available for future use (e.g. metadata display)
+          } catch (err) {
+            console.warn(`[stripe-webhook/v2] Pod body fetch failed for slot ${slot} (non-fatal):`, err);
+          }
+        }
+
+        claimedResults.push({ edition, qrContent });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[stripe-webhook/v2] Failed to claim ticket${ticketNum}:`, msg);
+        const isUnrecoverable =
+          msg.includes("Sold out") ||
+          msg.includes("Event not found") ||
+          msg.includes("No orderRef") ||
+          msg.includes("Manifest not available");
+        if (isUnrecoverable) {
+          stoppedReason = msg;
+          break;
+        }
       }
-      // Transient failure: continue to next ticket — Swarm hiccups shouldn't
-      // poison the rest of the order. The for-loop will keep claiming until
-      // it either fills the order or hits an unrecoverable error.
+    }
+  } else {
+    // ── v1 Swarm-feed path (unchanged) ─────────────────────────────────────
+    for (let i = 0; i < quantity; i++) {
+      const ticketNum = quantity > 1 ? ` (${i + 1}/${quantity})` : "";
+      try {
+        const result = await queueSeriesClaim(seriesId, () =>
+          claimTicket({
+            seriesId,
+            identifier,
+            via: "stripe",
+            paid: true,
+            claimedAt,
+            ...(prefetchedOrderRef
+              ? { orderRef: prefetchedOrderRef }
+              : { encryptedOrder }),
+          }),
+        );
+        console.log(`[stripe-webhook] Ticket claimed${ticketNum}: series=${seriesId}, edition=${result.edition}`);
+        if (result.originalSignature) {
+          claimedResults.push({
+            edition: result.edition,
+            qrContent: `woco://t/${eventId}/${seriesId}/${result.edition}/${result.originalSignature}`,
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[stripe-webhook] Failed to claim ticket${ticketNum}:`, msg);
+
+        const isUnrecoverable =
+          msg.includes("Already claimed") ||
+          msg.includes("Already requested") ||
+          msg.includes("No tickets available") ||
+          msg.includes("Series not found") ||
+          msg.includes("Series has no metadata");
+
+        if (isUnrecoverable) {
+          stoppedReason = msg;
+          break;
+        }
+      }
     }
   }
 
