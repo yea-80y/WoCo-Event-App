@@ -200,6 +200,7 @@
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow-x: hidden;
   }
 
   /* ── Nav ─────────────────────────────────────────────────────────────────── */

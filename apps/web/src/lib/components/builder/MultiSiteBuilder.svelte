@@ -339,9 +339,12 @@
     <div class="tab-bar">
       <div class="tab-bar-left">
         <button class="back-btn" onclick={goToMySites} title="Back to My Sites">
-          ← My Sites
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="back-label">Sites</span>
         </button>
-        <nav class="tab-nav">
+
+        <!-- Desktop: horizontal tab pills -->
+        <nav class="tab-nav" aria-label="Builder sections">
           {#each TABS as t}
             <button
               class="tab-btn"
@@ -355,11 +358,24 @@
             </button>
           {/each}
         </nav>
+
+        <!-- Mobile: select dropdown -->
+        <select
+          class="tab-select-mobile"
+          value={tab}
+          onchange={(e) => { tab = (e.currentTarget as HTMLSelectElement).value as typeof tab; }}
+          aria-label="Current section"
+        >
+          {#each TABS as t}
+            <option value={t.id}>{t.label}{t.id === 'events' && siteEvents.length > 0 ? ` (${siteEvents.length})` : ''}</option>
+          {/each}
+        </select>
       </div>
 
       <div class="tab-bar-right">
-        <button class="preview-btn" onclick={openPreview}>
-          Preview ↗
+        <button class="preview-btn" onclick={openPreview} title="Open preview in new tab">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M6 2H2v10h10V8M9 2h3v3M8 6l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="preview-label">Preview</span>
         </button>
         <button
           class="publish-btn"
@@ -370,13 +386,13 @@
           disabled={publishState === 'publishing'}
         >
           {#if publishState === 'publishing'}
-            <span class="pub-spinner" aria-hidden="true"></span>Publishing…
+            <span class="pub-spinner" aria-hidden="true"></span><span class="pub-label">Publishing…</span>
           {:else if publishState === 'done'}
-            ✓ Published
+            ✓ <span class="pub-label">Published</span>
           {:else if publishState === 'error'}
-            ✗ Failed
+            ✗ <span class="pub-label">Failed</span>
           {:else}
-            Publish
+            <span class="pub-label">Publish</span>
           {/if}
         </button>
       </div>
@@ -525,7 +541,8 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    padding: 0.5rem 0.75rem;
+    gap: 0.3rem;
+    padding: 0.5rem 0.625rem 0.5rem 0.5rem;
     font-size: 0.8125rem;
     font-weight: 600;
     color: var(--muted);
@@ -535,15 +552,16 @@
     transition: color 150ms ease;
   }
 
-  .back-btn:hover {
-    color: var(--text);
-  }
+  .back-btn:hover { color: var(--text); }
 
   .tab-nav {
     display: flex;
     gap: 0;
     overflow-x: auto;
     scrollbar-width: none;
+    /* Fade hint on right edge to suggest scrollability */
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
+    mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
   }
 
   .tab-nav::-webkit-scrollbar { display: none; }
@@ -569,6 +587,29 @@
     font-weight: 600;
   }
 
+  /* Mobile tab select — hidden on desktop, shown on mobile */
+  .tab-select-mobile {
+    display: none; /* toggled to flex via media query */
+    padding: 0.4rem 2rem 0.4rem 0.625rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--bg-elevated);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3 3.5-3' stroke='%23888' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    -webkit-appearance: none;
+    appearance: none;
+    outline: none;
+    cursor: pointer;
+    color-scheme: dark;
+  }
+  .tab-select-mobile:focus {
+    border-color: var(--accent);
+  }
+
   .tab-badge {
     font-size: 0.6875rem;
     font-weight: 700;
@@ -587,7 +628,10 @@
   }
 
   .preview-btn {
-    padding: 0.4375rem 0.875rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4375rem 0.75rem;
     font-size: 0.8125rem;
     font-weight: 600;
     background: transparent;
@@ -725,6 +769,30 @@
     width: 100%;
     margin: 0 auto;
     box-sizing: border-box;
+  }
+
+  /* Mobile: swap tab nav for select, compress actions */
+  @media (max-width: 639px) {
+    .tab-nav { display: none; }
+    .tab-select-mobile { display: flex; flex: 1; min-width: 0; max-width: 180px; }
+    .preview-label { display: none; }
+    .preview-btn {
+      padding: 0.4375rem 0.5rem;
+      gap: 0;
+    }
+    .pub-label { display: none; }
+    .publish-btn {
+      padding: 0.4375rem 0.625rem;
+      min-width: 2.25rem;
+      justify-content: center;
+    }
+    .tab-bar { padding: 0 0.5rem; gap: 0.375rem; }
+    .tab-bar-right { gap: 0.375rem; }
+    .back-label { display: none; }
+    .back-btn {
+      padding: 0.5rem 0.625rem;
+      margin-right: 0;
+    }
   }
 
   @media (min-width: 640px) {

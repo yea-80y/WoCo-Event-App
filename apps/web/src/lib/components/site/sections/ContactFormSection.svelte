@@ -36,7 +36,7 @@
 
 <div class="contact-wrap">
   <div class="inner">
-    <h2>Send us a message</h2>
+    <h2>{section.title || 'Send us a message'}</h2>
     {#if status === 'sent'}
       <p class="success">Thanks! We'll be in touch soon.</p>
     {:else}
@@ -66,7 +66,7 @@
 
 <style>
   .contact-wrap {
-    padding: 3rem 1.5rem;
+    padding: var(--sec-pt, 2.5rem) 1.5rem var(--sec-pb, 1.5rem);
   }
 
   .inner {

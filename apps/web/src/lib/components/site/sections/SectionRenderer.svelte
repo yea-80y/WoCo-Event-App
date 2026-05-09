@@ -19,26 +19,42 @@
   }
 
   let { section, site, gatewayUrl, apiUrl }: Props = $props();
+
+  // CSS variables injected on the wrapper control vertical padding inside each
+  // section component via var(--sec-pt) / var(--sec-pb). Hero manages its own
+  // spacing (bg image, min-height) so is excluded.
+  const spacingStyle = $derived.by(() => {
+    if (section.type === 'hero') return '';
+    switch (section.spacing) {
+      case 'compact':  return '--sec-pt:1rem;--sec-pb:0.5rem';
+      case 'spacious': return '--sec-pt:4rem;--sec-pb:2.5rem';
+      default:         return '';
+    }
+  });
 </script>
 
 {#if section.type === 'hero'}
   <HeroSection {section} {gatewayUrl} />
-{:else if section.type === 'richText'}
-  <RichTextSection {section} />
-{:else if section.type === 'gallery'}
-  <GallerySection {section} {gatewayUrl} />
-{:else if section.type === 'image'}
-  <ImageSection {section} {gatewayUrl} />
-{:else if section.type === 'eventsGrid'}
-  <EventsGridSection {section} {site} {apiUrl} />
-{:else if section.type === 'featuredEvent'}
-  <FeaturedEventSection {section} {apiUrl} {gatewayUrl} />
-{:else if section.type === 'openingHours'}
-  <OpeningHoursSection {section} />
-{:else if section.type === 'map'}
-  <MapSection {section} />
-{:else if section.type === 'contactForm'}
-  <ContactFormSection {section} {site} {apiUrl} />
-{:else if section.type === 'embed'}
-  <EmbedSection {section} />
+{:else}
+  <div style={spacingStyle}>
+    {#if section.type === 'richText'}
+      <RichTextSection {section} />
+    {:else if section.type === 'gallery'}
+      <GallerySection {section} {gatewayUrl} />
+    {:else if section.type === 'image'}
+      <ImageSection {section} {gatewayUrl} />
+    {:else if section.type === 'eventsGrid'}
+      <EventsGridSection {section} {site} {apiUrl} />
+    {:else if section.type === 'featuredEvent'}
+      <FeaturedEventSection {section} {apiUrl} {gatewayUrl} />
+    {:else if section.type === 'openingHours'}
+      <OpeningHoursSection {section} />
+    {:else if section.type === 'map'}
+      <MapSection {section} />
+    {:else if section.type === 'contactForm'}
+      <ContactFormSection {section} {site} {apiUrl} />
+    {:else if section.type === 'embed'}
+      <EmbedSection {section} />
+    {/if}
+  </div>
 {/if}

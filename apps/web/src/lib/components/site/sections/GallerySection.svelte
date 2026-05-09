@@ -11,6 +11,9 @@
 
 {#if section.images.length > 0}
   <div class="gallery-wrap">
+    {#if section.title}
+      <h2 class="gallery-heading">{section.title}</h2>
+    {/if}
     <div class="grid">
       {#each section.images as img}
         <img
@@ -25,7 +28,7 @@
 
 <style>
   .gallery-wrap {
-    padding: 2.5rem 1.5rem;
+    padding: var(--sec-pt, 2rem) 1.5rem var(--sec-pb, 1rem);
     max-width: 1100px;
     margin: 0 auto;
   }
@@ -34,6 +37,13 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 0.625rem;
+  }
+
+  .gallery-heading {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 1.25rem;
   }
 
   img {

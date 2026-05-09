@@ -1,5 +1,6 @@
 import { getBee, requirePostageBatch } from "../../config/swarm.js";
 import { ensureEthernaToken } from "../etherna/auth.js";
+import { beeUploadSem } from "./upload-queue.js";
 import type { Hex64 } from "@woco/shared";
 
 /** Delay helper */
@@ -38,7 +39,13 @@ export async function uploadToBytes(data: string | Uint8Array): Promise<Hex64> {
       // network in the background. Without it, /bytes blocks until the
       // chunk has propagated to neighbourhood peers, turning every upload
       // into a wait for network sync.
-      const result = await getBee().uploadData(requirePostageBatch(), bytes, { deferred: true });
+      const release = await beeUploadSem.acquire();
+      let result;
+      try {
+        result = await getBee().uploadData(requirePostageBatch(), bytes, { deferred: true });
+      } finally {
+        release();
+      }
       const ref = typeof result.reference === "string"
         ? result.reference
         : result.reference.toString();

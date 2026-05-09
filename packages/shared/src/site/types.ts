@@ -86,9 +86,17 @@ export interface GalleryImage {
   alt: string;
 }
 
+/** Vertical breathing room above a section. Creator-controlled. */
+export type SectionSpacing = 'compact' | 'default' | 'spacious';
+
 interface SectionBase {
   /** Stable id (ulid) — survives reorders, used as Svelte `{#each}` key. */
   id: string;
+  /**
+   * Vertical spacing scale for this section. Controls padding-top/bottom via
+   * CSS variables injected by SectionRenderer. Defaults to 'default'.
+   */
+  spacing?: SectionSpacing;
 }
 
 export interface HeroSection extends SectionBase {
@@ -109,11 +117,15 @@ export interface RichTextSection extends SectionBase {
 
 export interface GallerySection extends SectionBase {
   type: "gallery";
+  /** Optional heading shown above the grid. */
+  title?: string;
   images: GalleryImage[];
 }
 
 export interface EventsGridSection extends SectionBase {
   type: "eventsGrid";
+  /** Optional heading shown above the grid, e.g. "What's On" or "Upcoming Events". */
+  title?: string;
   mode: EventsGridMode;
   /** Cap on cards rendered. Omit for unlimited. */
   max?: number;
@@ -121,33 +133,43 @@ export interface EventsGridSection extends SectionBase {
 
 export interface FeaturedEventSection extends SectionBase {
   type: "featuredEvent";
+  /** Optional heading shown above the featured card. */
+  title?: string;
   /** Event id from this site's `SiteEventsIndex`. */
   eventId: string;
 }
 
 export interface OpeningHoursSection extends SectionBase {
   type: "openingHours";
+  /** Section heading. Defaults to "Opening Hours" if omitted. */
+  title?: string;
   rows: OpeningHoursRow[];
 }
 
 export interface MapSection extends SectionBase {
   type: "map";
+  /** Optional section heading above the map, e.g. "Find Us". */
+  title?: string;
   lat: number;
   lng: number;
   /** Default zoom (1–20). */
   zoom?: number;
-  /** Pin label / venue name. */
+  /** Pin label / venue name shown on the map and as address text. */
   label?: string;
 }
 
 export interface ContactFormSection extends SectionBase {
   type: "contactForm";
+  /** Section heading. Defaults to "Send us a message" if omitted. */
+  title?: string;
   /** Where submissions are delivered. Server validates ownership before send. */
   emailTo: string;
 }
 
 export interface EmbedSection extends SectionBase {
   type: "embed";
+  /** Optional heading shown above the embed. */
+  title?: string;
   /** Sanitized at render time. Allowed: <iframe>, basic HTML, Instagram blockquote. */
   html: string;
 }

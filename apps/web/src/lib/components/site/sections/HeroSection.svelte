@@ -15,7 +15,12 @@
   );
 </script>
 
-<section class="hero" style={bgStyle} class:has-bg={!!section.bgImageRef}>
+<section
+  class="hero"
+  style={bgStyle}
+  class:has-bg={!!section.bgImageRef}
+  class:heading-only={!section.subheading && !(section.ctaLabel && section.ctaHref)}
+>
   <div class="inner">
     <h1>{section.heading}</h1>
     {#if section.subheading}
@@ -35,8 +40,21 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 5rem 1.5rem;
+    padding: 4rem 1.5rem 2.5rem;
     position: relative;
+  }
+
+  /* No bg image: let content height drive the section — no artificial min-height */
+  .hero:not(.has-bg) {
+    min-height: 0;
+  }
+
+  .hero.heading-only {
+    padding: 3.5rem 1.5rem 2rem;
+  }
+
+  .hero.heading-only h1 {
+    margin-bottom: 0;
   }
 
   .hero.has-bg {

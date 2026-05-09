@@ -2,6 +2,7 @@ import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import zlib from "node:zlib";
 import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from "../../config/swarm.js";
 import { ensureEthernaToken } from "../etherna/auth.js";
+import { beeUploadSem } from "./upload-queue.js";
 
 // ---------------------------------------------------------------------------
 // Binary packing (128 slots x 32 bytes = 4096 bytes)
@@ -226,7 +227,12 @@ async function doWriteFeedPage(
       if (nextIndex !== undefined) {
         uploadOpts.index = FeedIndex.fromBigInt(nextIndex);
       }
-      await writer.uploadPayload(requirePostageBatch(), page, uploadOpts);
+      const release = await beeUploadSem.acquire();
+      try {
+        await writer.uploadPayload(requirePostageBatch(), page, uploadOpts);
+      } finally {
+        release();
+      }
       // Record the next index to write — successor of what we just wrote.
       const used = nextIndex ?? 0n; // if cache miss + fresh-feed, bee-js wrote at 0
       feedNextIndex.set(key, used + 1n);

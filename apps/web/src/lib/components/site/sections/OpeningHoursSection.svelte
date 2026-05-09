@@ -10,7 +10,7 @@
 
 <div class="hours-wrap">
   <div class="inner">
-    <h2>Opening Hours</h2>
+    <h2>{section.title || 'Opening Hours'}</h2>
     <table>
       <tbody>
         {#each section.rows as row}
@@ -26,7 +26,7 @@
 
 <style>
   .hours-wrap {
-    padding: 3rem 1.5rem;
+    padding: var(--sec-pt, 2.5rem) 1.5rem var(--sec-pb, 1.5rem);
   }
 
   .inner {

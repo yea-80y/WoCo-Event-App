@@ -148,6 +148,9 @@
 
 <section class="events-grid-section">
   <div class="inner">
+    {#if section.title}
+      <h2 class="section-heading">{section.title}</h2>
+    {/if}
     {#if loadState === 'loading'}
       <div class="grid-placeholder">
         {#each Array(section.max ?? 3) as _, i}
@@ -201,12 +204,19 @@
 
 <style>
   .events-grid-section {
-    padding: 3rem 1.5rem;
+    padding: var(--sec-pt, 2.5rem) 1.5rem var(--sec-pb, 1.5rem);
   }
 
   .inner {
     max-width: 1060px;
     margin: 0 auto;
+  }
+
+  .section-heading {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 1.5rem;
   }
 
   /* ── Grid ──────────────────────────────────────────────────────────── */

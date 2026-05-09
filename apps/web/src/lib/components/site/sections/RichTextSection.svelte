@@ -30,7 +30,7 @@
 
 <style>
   .richtext {
-    padding: 3.5rem 1.5rem;
+    padding: var(--sec-pt, 2.5rem) 1.5rem var(--sec-pb, 1.5rem);
     max-width: 760px;
     margin: 0 auto;
   }
@@ -52,6 +52,8 @@
     margin: 0 0 1rem;
     line-height: 1.75;
     font-size: 1rem;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   .content :global(strong) { color: var(--text); font-weight: 600; }

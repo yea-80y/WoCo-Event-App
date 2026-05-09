@@ -79,6 +79,9 @@
 </script>
 
 <section class="featured-section">
+  {#if section.title}
+    <h2 class="section-heading">{section.title}</h2>
+  {/if}
   {#if loadState === 'loading'}
     <div class="skeleton">
       <div class="skeleton-img"></div>
@@ -140,7 +143,16 @@
 
 <style>
   .featured-section {
-    padding: 2.5rem 1.5rem;
+    padding: var(--sec-pt, 2rem) 1.5rem var(--sec-pb, 1rem);
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  .section-heading {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 1.25rem;
   }
 
   .inner {

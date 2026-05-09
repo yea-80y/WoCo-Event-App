@@ -261,6 +261,8 @@
     color: var(--text-secondary);
     line-height: 1.7;
     margin-bottom: 2rem;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   h2 {

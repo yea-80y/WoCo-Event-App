@@ -934,6 +934,7 @@
     max-width: 640px;
     margin: 0 auto;
     padding-bottom: 4rem;
+    overflow-x: hidden;
   }
 
   .back-link {
@@ -1071,6 +1072,8 @@
     font-size: 0.9375rem;
     color: var(--text-secondary);
     line-height: 1.4;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   .meta-dim {
@@ -1283,17 +1286,22 @@
 
   .qty-box select {
     display: block;
-    padding: 0.4rem 0.5rem;
+    padding: 0.4rem 1.75rem 0.4rem 0.6rem;
     font-size: 0.9375rem;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--text);
-    background: transparent;
+    background: var(--bg-elevated);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3 3.5-3' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.375rem center;
     border: none;
     outline: none;
-    min-width: 3.25rem;
+    min-width: 3.5rem;
     cursor: pointer;
     font-family: inherit;
-    appearance: auto;
+    -webkit-appearance: none;
+    appearance: none;
+    color-scheme: dark;
   }
 
   .qty-box--dim {
@@ -1612,6 +1620,8 @@
     color: var(--text-secondary);
     margin: 0;
     white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   /* ── Venue section ────────────────────────────────────────────────────────── */

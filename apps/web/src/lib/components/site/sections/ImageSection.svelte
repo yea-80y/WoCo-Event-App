@@ -35,11 +35,12 @@
 <style>
   .image-section {
     width: 100%;
-    padding: 0;
+    /* Full-bleed: flush horizontally, vertical rhythm via CSS vars */
+    padding: var(--sec-pt, 1.5rem) 0 var(--sec-pb, 0);
   }
 
   .image-section.contained {
-    padding: 0 1.5rem;
+    padding: var(--sec-pt, 2rem) 1.5rem var(--sec-pb, 1.5rem);
     max-width: 920px;
     margin: 0 auto;
     box-sizing: border-box;
@@ -69,6 +70,6 @@
     color: var(--muted, #a0a0a0);
     font-style: italic;
     line-height: 1.4;
-    padding: 0 0.5rem;
+    padding: 0.25rem 1rem 0;
   }
 </style>

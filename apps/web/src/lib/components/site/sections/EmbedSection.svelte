@@ -14,15 +14,25 @@
 
 <div class="embed-wrap">
   <div class="inner">
+    {#if section.title}
+      <h2 class="embed-heading">{section.title}</h2>
+    {/if}
     {@html sanitize(section.html)}
   </div>
 </div>
 
 <style>
   .embed-wrap {
-    padding: 2.5rem 1.5rem;
+    padding: var(--sec-pt, 2rem) 1.5rem var(--sec-pb, 1rem);
     max-width: 760px;
     margin: 0 auto;
+  }
+
+  .embed-heading {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 1.25rem;
   }
 
   .inner :global(iframe) {

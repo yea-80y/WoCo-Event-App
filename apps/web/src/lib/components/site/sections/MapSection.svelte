@@ -17,6 +17,9 @@
 
 <div class="map-wrap">
   <div class="inner">
+    {#if section.title}
+      <h2 class="map-heading">{section.title}</h2>
+    {/if}
     {#if section.label}
       <p class="label">{section.label}</p>
     {/if}
@@ -36,12 +39,19 @@
 
 <style>
   .map-wrap {
-    padding: 3rem 1.5rem;
+    padding: var(--sec-pt, 2.5rem) 1.5rem var(--sec-pb, 1.5rem);
   }
 
   .inner {
     max-width: 840px;
     margin: 0 auto;
+  }
+
+  .map-heading {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 1rem;
   }
 
   .label {

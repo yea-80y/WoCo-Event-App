@@ -116,6 +116,33 @@
 </script>
 
 <div class="section-editor">
+  {#if section.type !== 'hero'}
+    <div class="field-row spacing-row">
+      <span class="field-label">Spacing</span>
+      <div class="spacing-toggle">
+        <button
+          class="spacing-btn"
+          class:active={section.spacing === 'compact'}
+          onclick={() => onpatch({ spacing: 'compact' })}
+          title="Less space above and below this section"
+        >Compact</button>
+        <button
+          class="spacing-btn"
+          class:active={!section.spacing || section.spacing === 'default'}
+          onclick={() => onpatch({ spacing: 'default' })}
+          title="Standard spacing"
+        >Default</button>
+        <button
+          class="spacing-btn"
+          class:active={section.spacing === 'spacious'}
+          onclick={() => onpatch({ spacing: 'spacious' })}
+          title="Extra breathing room above and below"
+        >Spacious</button>
+      </div>
+    </div>
+    <hr class="editor-divider" />
+  {/if}
+
   {#if section.type === 'hero'}
     {@const s = section as HeroSection}
     <label class="field-row">
@@ -151,6 +178,11 @@
 
   {:else if section.type === 'gallery'}
     {@const s = section as GallerySection}
+    <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="e.g. Gallery, Photos"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
     <div class="gallery-editor">
       {#each s.images as img, i}
         <div class="gallery-item">
@@ -253,6 +285,11 @@
   {:else if section.type === 'eventsGrid'}
     {@const s = section as EventsGridSection}
     <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="e.g. What's On, Upcoming Events"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
+    <label class="field-row">
       <span class="field-label">Mode</span>
       <select class="input select" value={s.mode}
         onchange={(e) => onpatch({ mode: (e.currentTarget as HTMLSelectElement).value })}>
@@ -274,6 +311,11 @@
   {:else if section.type === 'featuredEvent'}
     {@const s = section as FeaturedEventSection}
     <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="e.g. Featured Event, Don't Miss"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
+    <label class="field-row">
       <span class="field-label">Event ID</span>
       <input class="input" type="text" value={s.eventId}
         placeholder="Paste event ID from your dashboard"
@@ -283,6 +325,11 @@
 
   {:else if section.type === 'openingHours'}
     {@const s = section as OpeningHoursSection}
+    <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="Opening Hours"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
     <div class="hours-table">
       {#each s.rows as row, i}
         <div class="hours-row">
@@ -298,6 +345,11 @@
 
   {:else if section.type === 'map'}
     {@const s = section as MapSection}
+    <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="e.g. Find Us, Location"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
     <p class="hint">
       Find your coordinates at <a href="https://www.openstreetmap.org" target="_blank" rel="noopener">openstreetmap.org</a> — right-click your venue → "Show address" and copy the lat/lng from the URL.
     </p>
@@ -329,6 +381,11 @@
   {:else if section.type === 'contactForm'}
     {@const s = section as ContactFormSection}
     <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="Send us a message"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
+    <label class="field-row">
       <span class="field-label">Deliver submissions to</span>
       <input class="input" type="email" value={s.emailTo} placeholder="hello@yourvenue.com"
         oninput={(e) => onpatch({ emailTo: (e.currentTarget as HTMLInputElement).value })} />
@@ -336,6 +393,11 @@
 
   {:else if section.type === 'embed'}
     {@const s = section as EmbedSection}
+    <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="e.g. Book a Table, Follow Us"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
     <label class="field-row">
       <span class="field-label">HTML embed</span>
       <textarea class="input textarea" rows="4" value={s.html}
@@ -586,4 +648,49 @@
   }
 
   .add-row-btn { margin-top: 0.25rem; }
+
+  /* ── Spacing control ── */
+  .spacing-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .spacing-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .spacing-btn {
+    flex: 1;
+    padding: 0.3125rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: all var(--transition);
+    border-right: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  .spacing-btn:last-child { border-right: none; }
+
+  .spacing-btn.active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .spacing-btn:not(.active):hover {
+    background: var(--bg-elevated);
+    color: var(--text);
+  }
+
+  .editor-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 0.125rem 0;
+  }
 </style>
