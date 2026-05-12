@@ -5,9 +5,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
-  import { createEventStreaming, getOrganiserNonce, confirmChainRegistration, type PublishProgress } from "../../api/events.js";
-  import { callRegisterEvent } from "../../chain/woco-event.js";
-  import { isWalletAvailable } from "../../wallet/provider.js";
+  import { createEventStreaming, registerSeriesOnChain, type PublishProgress } from "../../api/events.js";
 
   interface SeriesDraft {
     seriesId: string;
@@ -108,12 +106,6 @@
       }
       progress = 4;
 
-      // Check wallet availability for paid events (needed for registerEvent call)
-      if (hasPaidSeries && !isWalletAvailable()) {
-        error = "A browser wallet (MetaMask or WalletConnect) is required to register paid events on-chain";
-        return;
-      }
-
       // Derive encryption keypair (no extra popup)
       let encryptionKey: string | undefined;
       const podSeed = await restorePodSeed();
@@ -124,21 +116,7 @@
       const keypair = await auth.getPodKeypair();
       if (!keypair) { error = "Could not get signing key"; return; }
 
-      // ── Nonce fetch (paid events only — free events skip on-chain step) ──
-      let organiserNonce = 0n;
-      let chainId = 84532;
-      if (hasPaidSeries) {
-        step = "Fetching organiser nonce...";
-        progress = 5;
-        try {
-          const nonceData = await getOrganiserNonce(auth.parent as string);
-          organiserNonce = nonceData.nonce;
-          chainId = nonceData.chainId;
-        } catch (e) {
-          error = "Failed to fetch organiser nonce from chain";
-          return;
-        }
-      }
+      const organiserNonce = 0n;
       progress = 8;
 
       // ── Build manifests ───────────────────────────────────────────────
@@ -214,25 +192,11 @@
           const m = manifests[i]!;
           step = `Registering "${s.name}" on-chain...`;
 
-          let txHash: string;
-          let onChainEventId: string;
           try {
-            ({ txHash, onChainEventId } = await callRegisterEvent(
-              chainId,
-              s.totalSupply,
-              m.manifestDigestHex,
-            ));
+            await registerSeriesOnChain(eventId, s.seriesId);
           } catch (e) {
-            error = `Wallet tx failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
+            error = `On-chain registration failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
             return;
-          }
-
-          step = `Confirming "${s.name}" registration...`;
-          try {
-            await confirmChainRegistration(eventId, s.seriesId, onChainEventId, chainId);
-          } catch (e) {
-            // Non-fatal: event is already on Swarm; confirmation can be retried
-            console.warn("[publish] confirm-chain failed (non-fatal):", e);
           }
         }
       }

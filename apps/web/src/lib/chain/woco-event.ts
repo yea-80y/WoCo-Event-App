@@ -9,7 +9,7 @@ const IFACE = new Interface(ABI);
 
 /** Deployed WoCoEvent addresses by chainId. */
 const ADDRESSES: Record<number, string> = {
-  84532: "0xC56f73d100c40be5780b81B211c6e216F805D598", // Base Sepolia
+  84532: "0x4bf8aa0FDaF5045EFEd675e019F81316063c94b4", // Base Sepolia (redeployed 2026-05-09)
 };
 
 export function getWoCoEventAddress(chainId: number): string | undefined {
@@ -36,11 +36,41 @@ export async function callRegisterEvent(
   // Ensure the wallet is on the right chain
   const network = await provider.getNetwork();
   if (Number(network.chainId) !== chainId) {
-    // Request chain switch
-    await rawProvider.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: `0x${chainId.toString(16)}` }],
-    });
+    const chainIdHex = `0x${chainId.toString(16)}`;
+    try {
+      await rawProvider.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: chainIdHex }],
+      });
+    } catch (switchErr: unknown) {
+      // 4902 = chain not added to wallet yet
+      if ((switchErr as { code?: number }).code === 4902) {
+        const CHAIN_PARAMS: Record<number, object> = {
+          84532: {
+            chainId: chainIdHex,
+            chainName: "Base Sepolia",
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: ["https://sepolia.base.org"],
+            blockExplorerUrls: ["https://sepolia-explorer.base.org"],
+          },
+          8453: {
+            chainId: chainIdHex,
+            chainName: "Base",
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: ["https://mainnet.base.org"],
+            blockExplorerUrls: ["https://basescan.org"],
+          },
+        };
+        const params = CHAIN_PARAMS[chainId];
+        if (!params) throw new Error(`Chain ${chainId} not supported`);
+        await rawProvider.request({
+          method: "wallet_addEthereumChain",
+          params: [params],
+        });
+      } else {
+        throw switchErr;
+      }
+    }
   }
 
   const signer = await provider.getSigner();

@@ -5,6 +5,7 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEventV2, confirmSeriesOnChain, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
+import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
@@ -370,6 +371,66 @@ events.post("/:id/confirm-chain", requireAuth, async (c) => {
   }
 
   return c.json({ ok: true, eventId, seriesId, onChainEventId });
+});
+
+// POST /api/events/:id/register-on-chain — authenticated, organiser-only
+// Calls registerEvent via the sponsor wallet (no EOA needed for the organiser).
+// Verifies ownership, sends the tx, then writes onChainEventId back to the Swarm feed.
+events.post("/:id/register-on-chain", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = c.get("body") as { seriesId: string };
+  const { seriesId } = body;
+
+  if (!seriesId) {
+    return c.json({ ok: false, error: "Missing seriesId" }, 400);
+  }
+
+  const feed = await getEvent(eventId);
+  if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
+  if (feed.creatorAddress.toLowerCase() !== parentAddress) {
+    return c.json({ ok: false, error: "Only the event creator can register on-chain" }, 403);
+  }
+
+  const series = feed.series.find((s) => s.seriesId === seriesId);
+  if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+  if (!series.swarmManifestRef) {
+    return c.json({ ok: false, error: "Series has no manifest (not a v2 event)" }, 400);
+  }
+  if (series.onChainEventId) {
+    return c.json({ ok: true, onChainEventId: series.onChainEventId, alreadyRegistered: true });
+  }
+
+  let blob: SeriesManifestBlob;
+  try {
+    const raw = await downloadFromBytes(series.swarmManifestRef);
+    blob = JSON.parse(raw) as SeriesManifestBlob;
+  } catch {
+    return c.json({ ok: false, error: "Failed to fetch manifest from Swarm" }, 500);
+  }
+
+  const digestBytes = manifestDigest(blob.signedManifest.body);
+  const manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
+
+  let onChainEventId: string;
+  let txHash: string;
+  try {
+    ({ onChainEventId, txHash } = await registerEventOnChain(series.totalSupply, manifestRef));
+  } catch (err) {
+    console.error("[api] register-on-chain tx error:", err);
+    const message = err instanceof Error ? err.message : "registerEvent tx failed";
+    return c.json({ ok: false, error: message }, 500);
+  }
+
+  try {
+    await confirmSeriesOnChain(eventId, seriesId, onChainEventId);
+  } catch (err) {
+    console.error("[api] register-on-chain confirm error:", err);
+    // Feed update failed but tx is on-chain — return the eventId so client can retry confirm
+    return c.json({ ok: false, error: "Tx confirmed but feed update failed — retry", onChainEventId, txHash }, 500);
+  }
+
+  return c.json({ ok: true, onChainEventId, txHash });
 });
 
 export { events };

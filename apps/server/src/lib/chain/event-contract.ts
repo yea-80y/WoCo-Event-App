@@ -2,6 +2,19 @@ import { JsonRpcProvider, Contract } from "ethers";
 import type { PaymentChainId } from "@woco/shared";
 import { getRpcUrl } from "../payment/constants.js";
 
+/** RPC URLs for chains used by WoCoEvent but outside PaymentChainId (e.g. testnets). */
+const EXTRA_RPC_URLS: Record<number, string> = {
+  84532: "https://sepolia.base.org", // Base Sepolia
+};
+
+export function getChainRpcUrl(chainId: number): string {
+  return (
+    process.env[`RPC_URL_${chainId}`] ??
+    EXTRA_RPC_URLS[chainId] ??
+    getRpcUrl(chainId as PaymentChainId)
+  );
+}
+
 const ABI = [
   "function organiserNonce(address) view returns (uint256)",
   "function events(bytes32) view returns (uint256 totalSupply, uint256 nextSlot, address organiser, bytes32 manifestRef)",
@@ -10,7 +23,7 @@ const ABI = [
 
 /** Deployed WoCoEvent addresses by chainId. Override via WOCO_EVENT_ADDRESS_{chainId} env. */
 const DEPLOYED: Record<number, string> = {
-  84532: "0x4bf8aa0FDaF5045EFEd675e019F81316063c94b4", // Base Sepolia (redeployed 2026-05-09 — adds slotOrderRef storage + getSlotData)
+  84532: "0x00824e220571D09d1C3D9B68A8F4c5423D166780", // Base Sepolia (redeployed 2026-05-12 — adds batchClaimFor + per-batch orderRef storage)
 };
 
 /** Chain the server currently uses for event registration. Override via WOCO_EVENT_CHAIN_ID. */
@@ -27,7 +40,7 @@ const _providers = new Map<number, JsonRpcProvider>();
 function getProvider(chainId: number): JsonRpcProvider {
   let p = _providers.get(chainId);
   if (!p) {
-    const url = getRpcUrl(chainId as PaymentChainId);
+    const url = getChainRpcUrl(chainId);
     p = new JsonRpcProvider(url);
     _providers.set(chainId, p);
   }

@@ -97,6 +97,22 @@ export async function getOrganiserNonce(address: string): Promise<{
   };
 }
 
+/**
+ * Register a series on-chain via the server's sponsor wallet.
+ * No EOA or wallet connection needed — works for passkey/Para/email organisers.
+ */
+export async function registerSeriesOnChain(
+  eventId: string,
+  seriesId: string,
+): Promise<{ onChainEventId: string; txHash?: string }> {
+  const resp = await authPost<{ onChainEventId: string; txHash?: string }>(
+    `/api/events/${eventId}/register-on-chain`,
+    { seriesId },
+  );
+  if (!(resp as any).ok) throw new Error((resp as any).error || "register-on-chain failed");
+  return resp as { onChainEventId: string; txHash?: string };
+}
+
 /** Confirm on-chain registration for a series after the organiser's registerEvent tx. */
 export async function confirmChainRegistration(
   eventId: string,

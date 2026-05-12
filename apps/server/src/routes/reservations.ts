@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
 import { getClaimStatus } from "../lib/event/claim-service.js";
+import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import {
   reserve,
   release,
@@ -104,10 +105,15 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
 
-  // Closure that the reservation store uses to ask "what does the canonical
-  // (Swarm-backed) source say is available right now?" — a per-call read so
-  // we never use a stale cached value.
+  // Closure that the reservation store uses to ask "what is available right now?"
+  // v2 (on-chain) events read from the contract; v1 events read from Swarm feeds.
   const availableSupplier = async (): Promise<number> => {
+    if (series.onChainEventId) {
+      const chainId = getActiveChainId();
+      const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
+      if (!onChainData) return 0;
+      return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
+    }
     const status = await getClaimStatus(seriesId);
     return Math.max(0, status.available);
   };

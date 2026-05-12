@@ -29,6 +29,7 @@
   let loading = $state(_cached === null);
   let error = $state<string | null>(null);
   let creatorProfile = $state<UserProfile | null>(null);
+  let ticketQty = $state<Record<string, number>>({});
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
@@ -133,18 +134,34 @@
     <h2>Tickets</h2>
     <div class="series-list">
       {#each event.series as s}
-        <div class="series-card">
-          <div class="series-info">
-            <div class="series-header">
-              <h3>{s.name}</h3>
-              {#if s.payment && parseFloat(s.payment.price) > 0}
-                <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
-              {:else}
-                <span class="series-price series-price--free">Free</span>
+        {@const isPaid = !!(s.payment && parseFloat(s.payment.price) > 0)}
+        <div class="series-card" class:series-card--paid={isPaid}>
+          <div class="series-top">
+            <div class="series-info">
+              <div class="series-header">
+                <h3>{s.name}</h3>
+                {#if s.payment && parseFloat(s.payment.price) > 0}
+                  <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
+                {:else}
+                  <span class="series-price series-price--free">Free</span>
+                {/if}
+              </div>
+              {#if s.description}
+                <p class="series-desc">{s.description}</p>
               {/if}
             </div>
-            {#if s.description}
-              <p class="series-desc">{s.description}</p>
+            {#if isPaid}
+              <div class="series-qty">
+                <span class="qty-label">Qty</span>
+                <select
+                  value={ticketQty[s.seriesId] ?? 1}
+                  onchange={(e) => { ticketQty = { ...ticketQty, [s.seriesId]: parseInt((e.target as HTMLSelectElement).value) }; }}
+                >
+                  {#each Array.from({ length: 10 }, (_, i) => i + 1) as n}
+                    <option value={n}>{n}</option>
+                  {/each}
+                </select>
+              </div>
             {/if}
           </div>
           <ClaimButton
@@ -158,6 +175,7 @@
             apiUrl={externalApiUrl}
             payment={s.payment}
             eventEndDate={event.endDate}
+            quantity={ticketQty[s.seriesId] ?? 1}
           />
         </div>
       {/each}
@@ -286,6 +304,55 @@
     justify-content: space-between;
     align-items: center;
     transition: border-color var(--transition);
+  }
+
+  .series-card--paid {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.875rem;
+  }
+
+  .series-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .series-qty {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .qty-label {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .series-qty select {
+    padding: 0.35rem 1.75rem 0.35rem 0.6rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3 3.5-3' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.375rem center;
+    cursor: pointer;
+    font-family: inherit;
+    min-width: 3.5rem;
+  }
+
+  .series-qty select:focus {
+    outline: none;
+    border-color: var(--accent);
   }
 
   .series-card:hover {

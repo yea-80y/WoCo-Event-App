@@ -426,14 +426,15 @@
       });
   });
 
-  /** Dismiss the Stripe success modal. Clears the local success state
-   *  entirely so the buy UI is restored — the persistent banner above the
-   *  tickets card (rendered by the parent page) keeps the receipt visible. */
+  /** Dismiss the Stripe success modal. Keeps `claimed = true` so the
+   *  reservation $effect stays blocked (alreadyDone = true). For paid events
+   *  the pay-sheet renders alongside the "own-chip" even with claimed = true,
+   *  so the buy-again UI is still fully accessible. */
   function dismissStripeSuccess() {
     stripeSuccessVisible = false;
     stripeSuccessEmail = null;
-    claimed = false;
-    claimedVia = null;
+    // Do NOT reset claimed — doing so makes alreadyDone false and immediately
+    // triggers a phantom reservation for Stripe/card-first events.
   }
 
   // Re-fetch with address when auth restores asynchronously (page refresh scenario).
@@ -599,36 +600,75 @@
   });
 
   /**
-   * Server-side seat hold for the Stripe path. Two trigger modes:
+   * Server-side seat hold — fires whenever a paid-event buyer is actively in
+   * the checkout flow, regardless of payment method. This gives wallet and
+   * card payers equal standing: both get a hold the moment they engage with
+   * the purchase UI, and both see a countdown timer.
    *
-   * 1. claimMode === "email" + hasStripe — Stripe is the only buy path, so
-   *    we hold seats as soon as ClaimButton mounts (i.e. the moment the
-   *    buyer clicks "Get tickets" and the fees box appears, before they
-   *    open the email-entry form). Trades a higher rate of "browsing"
-   *    reservations for earlier UX feedback ("N seats reserved · 10:00
-   *    to checkout"). Used by site-builder / standalone-ENS events.
+   * Trigger conditions (any one sufficient):
+   * - Email-only or card-first events: reserve on mount (fee sheet visible)
+   * - Order form open: user has clicked to fill in their info
+   * - Crypto chain selector open: user is choosing network / about to pay
    *
-   * 2. claimMode === "both" + hasStripe — wallet OR card. Defer the hold
-   *    until the user actually clicks "Pay with card" (the order form
-   *    opens with stripeAfterForm=true), so wallet-path buyers don't
-   *    hold a Stripe-side seat they'll never use.
+   * Why wallet users need this too: the v2 crypto flow sends ETH in one tx
+   * then calls claimFor in a second tx. If the event sells out between those
+   * two steps the ETH is already on-chain and needs a manual refund. A seat
+   * hold prevents that race entirely.
    *
    * Abuse is bounded by clientKey dedup (one hold per browser per series),
-   * per-IP cap, 10-min TTL, and aggressive release on form close, qty→0,
-   * ClaimButton unmount, and pagehide.
+   * per-IP cap, 10-min TTL.
    */
   let _reservationSeq = 0;
+  // Plain booleans (not $state) — prevent circular reactivity.
+  // _reservationJustExpired: set by countdown before nulling `reservation` so
+  //   the main effect knows not to auto-re-reserve on that specific re-run.
+  // _expiredQty: holds the quantity that was reserved when it expired, so we
+  //   can detect when the buyer changes qty (= intentional retry).
+  let _reservationJustExpired = false;
+  let _expiredQty: number | null = null;
+  /** True after hold expires. Cleared by qty change or retry button click. */
+  let reservationExpired = $state(false);
+
   $effect(() => {
     const q = quantity;
-    const stripeOnlyMount = hasStripe && claimMode === "email";
-    const stripeFormOpen = hasStripe && showOrderForm && stripeAfterForm;
+
+    // The countdown interval sets this flag synchronously before nulling
+    // `reservation`. Catch it on the very first re-run to block auto-re-reserve.
+    if (_reservationJustExpired) {
+      _reservationJustExpired = false;
+      reservationExpired = true;
+      return;
+    }
+
+    // Hold expired and is waiting for buyer action.
+    if (reservationExpired) {
+      if (q !== _expiredQty) {
+        // Buyer changed quantity — treat as intentional retry. Clear flag and
+        // return; the next effect run (triggered by reservationExpired→false)
+        // will compute shouldHold and issue the new reserve call.
+        reservationExpired = false;
+        _expiredQty = null;
+      }
+      // Whether same or different qty, return here — the NEXT run does the work.
+      return;
+    }
+
     // Skip when the buyer has already claimed (or just returned from a
     // successful Stripe checkout) — otherwise the email-mount trigger
     // re-allocates a hold immediately on the success page.
     const alreadyDone = claimed || _permanentClaimed !== null || approvalPending || stripeSuccessVisible;
-    const shouldHold = (stripeOnlyMount || stripeFormOpen) && q >= 1 && !alreadyDone;
+    const shouldHold = isPaid && !alreadyDone && q >= 1 && (
+      // Email-only or card-first: fee sheet visible on mount — hold immediately
+      (hasStripe && claimMode === "email") ||
+      (hasStripe && (!hasCrypto || isCardFirst)) ||
+      // Order form open (any payment method)
+      showOrderForm ||
+      // Crypto payment sheet open (wallet user chose a network)
+      showChainSelector
+    );
+
     if (!shouldHold) {
-      // No active Stripe path — release any hold.
+      // Not in checkout flow — release any hold.
       if (reservation) {
         releaseSlots(eventId, seriesId, reservation.reservationId);
         reservation = null;
@@ -653,6 +693,7 @@
       if (res.ok) {
         reservation = res.data;
         reservationSecsLeft = secondsUntil(res.data.expiresAt);
+        reservationExpired = false;
         persistReservation(res.data);
       } else {
         // Server already released the prior hold (if replaceId was passed)
@@ -688,8 +729,12 @@
   $effect(() => {
     if (!reservation) return;
     const id = setInterval(() => {
-      reservationSecsLeft = secondsUntil(reservation!.expiresAt);
+      const r = reservation;
+      if (!r) return;
+      reservationSecsLeft = secondsUntil(r.expiresAt);
       if (reservationSecsLeft === 0) {
+        _expiredQty = r.quantity; // remember qty so effect can detect a qty change
+        _reservationJustExpired = true; // block main $effect from auto-re-reserving
         reservation = null;
         reservationSecsLeft = null;
         persistReservation(null);
@@ -1330,6 +1375,11 @@
     <div class="avail-pill avail-pill--reserved" aria-live="polite">
       <span class="avail-pill-dot"></span>
       {reservation.quantity} ticket{reservation.quantity === 1 ? "" : "s"} reserved · {formatCountdown(reservationSecsLeft)} to checkout
+    </div>
+  {:else if reservationExpired}
+    <div class="avail-banner avail-banner--expired" role="alert">
+      <span class="avail-banner-dot"></span>
+      <span class="avail-banner-text">Your hold has expired — change quantity or <button class="retry-link" onclick={() => { reservationExpired = false; _expiredQty = null; }}>try again</button>.</span>
     </div>
   {:else if reservationError}
     <div class="avail-banner avail-banner--shortfall" role="alert">
@@ -2831,6 +2881,24 @@
   .avail-banner--shortfall .avail-banner-dot {
     background: #f59e0b;
     box-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
+  }
+  .avail-banner--expired {
+    color: #fcd34d;
+    background: color-mix(in srgb, #f59e0b 12%, transparent);
+    border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
+  }
+  .avail-banner--expired .avail-banner-dot {
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
+  }
+  .retry-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
   }
   @keyframes avail-banner-in {
     from { opacity: 0; transform: translateY(-4px); }

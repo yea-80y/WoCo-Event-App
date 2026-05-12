@@ -18,9 +18,9 @@ import {
 import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { queueSeriesClaim } from "./claims.js";
-import { sealJson } from "@woco/shared";
+import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
 import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
-import { claimForOnChain, generateBurnerAddress } from "../lib/chain/sponsor-wallet.js";
+import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../lib/chain/sponsor-wallet.js";
 import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
 import { readFeedPage, writeFeedPage, decodeJsonFeed, encodeJsonFeed } from "../lib/swarm/feeds.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
@@ -835,50 +835,70 @@ async function handleSuccessfulPayment(
       stoppedReason = "Manifest not found";
     }
 
-    for (let i = 0; i < quantity && !stoppedReason; i++) {
-      const ticketNum = quantity > 1 ? ` (${i + 1}/${quantity})` : "";
-      try {
-        if (!batchOrderRef) throw new Error("No orderRef available for on-chain claim");
-        if (!manifestBlob) throw new Error("Manifest not available");
+    if (!batchOrderRef) {
+      stoppedReason = "No orderRef available for on-chain claim";
+    } else if (!manifestBlob) {
+      stoppedReason = "Manifest not available";
+    } else {
+      const orderRefBytes32 = "0x" + batchOrderRef;
 
-        const burner = generateBurnerAddress();
-        const orderRefBytes32 = "0x" + batchOrderRef;
-        const slot = await claimForOnChain(v2OnChainEventId, burner, orderRefBytes32);
-        const edition = slot + 1;
+      // Generate ALL burners up front. Keys live in memory only for as long
+      // as it takes to sign their canonical message; the array is discarded
+      // when this scope exits. Nothing about the burner is persisted apart
+      // from its address (recorded on-chain as slotOwner).
+      const burners = Array.from({ length: quantity }, () => generateBurner());
 
-        console.log(`[stripe-webhook/v2] On-chain claim${ticketNum}: slot=${slot} edition=${edition}`);
-
-        // Fetch pod body for the QR — podRefs is 0-indexed by slot
-        let qrContent = `woco://v2/${eventId}/${seriesId}/${edition}`;
-        const podRef = manifestBlob.podRefs[slot];
-        if (podRef) {
-          try {
-            const podJson = await downloadFromBytes(podRef);
-            const pod = JSON.parse(podJson);
-            // Manifest signature authenticates all pods — use it as the verifier token
-            const manifestSig = manifestBlob.signedManifest.signature;
-            qrContent = `woco://t/${eventId}/${seriesId}/${edition}/${manifestSig}`;
-            console.log(`[stripe-webhook/v2] Pod body fetched for edition ${edition}`);
-            void pod; // pod body available for future use (e.g. metadata display)
-          } catch (err) {
-            console.warn(`[stripe-webhook/v2] Pod body fetch failed for slot ${slot} (non-fatal):`, err);
-          }
-        }
-
-        claimedResults.push({ edition, qrContent });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[stripe-webhook/v2] Failed to claim ticket${ticketNum}:`, msg);
-        const isUnrecoverable =
-          msg.includes("Sold out") ||
-          msg.includes("Event not found") ||
-          msg.includes("No orderRef") ||
-          msg.includes("Manifest not available");
-        if (isUnrecoverable) {
+      // Chunk into on-chain batches of ON_CHAIN_BATCH_MAX (=100). For
+      // quantity ≤ 100 this is one tx. For an enterprise 200-ticket order:
+      // 2 sequential txs. Each chunk is all-or-nothing on-chain (the
+      // contract reverts if the batch would exceed supply); partial
+      // refund logic below handles cross-chunk partial failure (chunk 1
+      // succeeds, chunk 2 fails on supply exhaustion).
+      const slotsForBurners: number[] = [];
+      for (let chunkStart = 0; chunkStart < burners.length && !stoppedReason; chunkStart += ON_CHAIN_BATCH_MAX) {
+        const chunk = burners.slice(chunkStart, chunkStart + ON_CHAIN_BATCH_MAX);
+        const chunkAddresses = chunk.map((w) => w.address);
+        try {
+          const chunkSlots = await batchClaimForOnChain(
+            v2OnChainEventId,
+            chunkAddresses,
+            orderRefBytes32,
+          );
+          slotsForBurners.push(...chunkSlots);
+          console.log(
+            `[stripe-webhook/v2] batchClaimFor chunk ${chunkStart}..${chunkStart + chunk.length} ` +
+            `→ slots=${chunkSlots[0]}..${chunkSlots[chunkSlots.length - 1]}`,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[stripe-webhook/v2] batchClaimFor failed at chunk ${chunkStart}:`, msg);
+          // Insufficient supply / Sold out / Event not found are all unrecoverable.
+          // Any tx-level revert means this chunk's state changes were rolled back —
+          // we keep whatever slotsForBurners has from prior chunks and refund the rest.
           stoppedReason = msg;
-          break;
         }
       }
+
+      // Sign + build QR for every slot we actually got. Signing is purely
+      // local crypto; ~0.2ms per sig, no chain round-trip.
+      for (let i = 0; i < slotsForBurners.length; i++) {
+        const slot = slotsForBurners[i];
+        const edition = slot + 1;
+        const canonical = buildTicketCanonicalMessage({
+          onChainEventId: v2OnChainEventId,
+          seriesId,
+          edition,
+        });
+        const ticketSig = await burners[i].signMessage(canonical);
+
+        // QR carries the per-ticket signature. Door verifies by:
+        //   recovered = ecrecover(personalHash(canonical), ticketSig)
+        //   require(recovered == slotOwner[onChainEventId][edition - 1])
+        const qrContent = `woco://t/${eventId}/${seriesId}/${edition}/${ticketSig}`;
+        claimedResults.push({ edition, qrContent });
+      }
+      // burners[] goes out of scope here — private keys are unreferenced
+      // and eligible for garbage collection.
     }
   } else {
     // ── v1 Swarm-feed path (unchanged) ─────────────────────────────────────

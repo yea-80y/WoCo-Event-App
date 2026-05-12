@@ -13,6 +13,8 @@ import type { AppEnv } from "../types.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
+import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
+import { heldFor } from "../lib/event/reservation-store.js";
 import { verifyPayment } from "../lib/payment/verify.js";
 import { getEscrowAddress } from "../lib/payment/constants.js";
 import { fiatToETH, getETHPriceUSD } from "../lib/payment/eth-price.js";
@@ -472,11 +474,35 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
 
 // GET /api/events/:eventId/series/:seriesId/claim-status - check availability
 claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
+  const eventId = c.req.param("eventId");
   const seriesId = c.req.param("seriesId");
   const userAddress = c.req.query("address");
   const userEmailHash = c.req.query("emailHash");
 
   try {
+    // v2 on-chain events: read availability from contract, not Swarm feeds
+    const event = await getEvent(eventId).catch(() => null);
+    const series = event?.series.find((s) => s.seriesId === seriesId);
+    if (series?.onChainEventId) {
+      const chainId = getActiveChainId();
+      const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
+      const totalSupply = onChainData ? Number(onChainData.totalSupply) : series.totalSupply;
+      const claimed = onChainData ? Number(onChainData.nextSlot) : 0;
+      const physicalAvailable = Math.max(0, totalSupply - claimed);
+      const held = heldFor(seriesId);
+      return c.json({
+        ok: true,
+        data: {
+          seriesId,
+          totalSupply,
+          claimed,
+          available: Math.max(0, physicalAvailable - held),
+          held,
+        },
+      });
+    }
+
+    // v1 Swarm-backed events
     const status = await getClaimStatus(seriesId, userAddress || undefined, userEmailHash || undefined);
     return c.json({ ok: true, data: status });
   } catch (err) {
