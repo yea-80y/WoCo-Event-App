@@ -6,7 +6,7 @@
   import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
   import EventPage from "./lib/components/site/EventPage.svelte";
-  import Dashboard from "./lib/components/dashboard/Dashboard.svelte";
+  import Dashboard from "./lib/creator/dashboard/Dashboard.svelte";
 
   // Runtime config (injected by deploy endpoint) takes priority over build-time env vars
   const EVENT_ID =

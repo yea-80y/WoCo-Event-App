@@ -1,11 +1,11 @@
 <script lang="ts">
   import type { ClaimMode, OrderField, PaymentConfig } from "@woco/shared";
-  import { auth } from "../../auth/auth-store.svelte.js";
-  import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { authPost } from "../../api/client.js";
-  import EventEditor from "../events/EventEditor.svelte";
-  import PublishButton from "../events/PublishButton.svelte";
-  import { registerDomain, verifyDomainDns, type DomainEntry } from "../../api/domains.js";
+  import { auth } from "../auth/auth-store.svelte.js";
+  import { loginRequest } from "../auth/login-request.svelte.js";
+  import { authPost } from "../api/client.js";
+  import EventEditor from "./events/EventEditor.svelte";
+  import PublishButton from "./events/PublishButton.svelte";
+  import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
   import { onMount } from "svelte";
 
   // ── Types ────────────────────────────────────────────────────────────────────

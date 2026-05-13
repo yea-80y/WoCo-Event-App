@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { EventDirectoryEntry } from "@woco/shared";
-  import CreatorChip from "../profile/CreatorChip.svelte";
+  import CreatorChip from "../../components/profile/CreatorChip.svelte";
 
   interface Props {
     event: EventDirectoryEntry;

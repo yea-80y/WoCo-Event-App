@@ -7,7 +7,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import UserAvatar from "./UserAvatar.svelte";
   import WalletTab from "./WalletTab.svelte";
-  import EventCard from "../events/EventCard.svelte";
+  import EventCard from "../../attendee/events/EventCard.svelte";
   import { get } from "../../api/client.js";
   import { onMount } from "svelte";
 

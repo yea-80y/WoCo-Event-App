@@ -3,7 +3,7 @@
   import { CHAIN_NAMES, PLATFORM_FEE_BP } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
-  import ConnectWalletModal from "../profile/ConnectWalletModal.svelte";
+  import ConnectWalletModal from "../../components/profile/ConnectWalletModal.svelte";
   import { isWalletAvailable } from "../../wallet/provider.js";
   import { getConnectedAddress } from "../../wallet/connection.js";
   import { onMount } from "svelte";

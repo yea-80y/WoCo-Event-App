@@ -6,8 +6,8 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
-  import ClaimButton from "../events/ClaimButton.svelte";
-  import TicketSuccess from "../events/TicketSuccess.svelte";
+  import ClaimButton from "../../attendee/events/ClaimButton.svelte";
+  import TicketSuccess from "../../attendee/events/TicketSuccess.svelte";
   import type { ClaimedTicket } from "@woco/shared";
 
   interface Props {

@@ -8,7 +8,7 @@
   import { getExternalEventApi } from "../../api/event-api-registry.js";
   import { getProfile } from "../../api/profiles.js";
   import type { UserProfile } from "@woco/shared";
-  import UserAvatar from "../profile/UserAvatar.svelte";
+  import UserAvatar from "../../components/profile/UserAvatar.svelte";
   import { onMount } from "svelte";
 
   interface Props {
@@ -125,7 +125,7 @@
           <span class="organizer-label">You are the organizer</span>
           <span class="organizer-hint">View attendee order data and export to CSV</span>
         </div>
-        <button class="organizer-dashboard-btn" onclick={() => navigate(`/event/${event!.eventId}/dashboard`)}>
+        <button class="organizer-dashboard-btn" onclick={() => navigate(`/creator/events/${event!.eventId}`)}>
           Orders Dashboard
         </button>
       </div>
