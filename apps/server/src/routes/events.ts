@@ -449,9 +449,104 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   return c.json({ ok: true, onChainEventId, txHash });
 });
 
+// ── RA.co GraphQL bypass ─────────────────────────────────────────────────────
+// ra.co serves a DataDome captcha to non-browser clients, so the HTML route is
+// unreachable. The public GraphQL endpoint is unprotected and returns the same
+// event data. Called for hostnames matching ra.co/events/{id}.
+type ImportTier = { name: string; price?: string; currency?: string; saleStart?: string; saleEnd?: string; status?: string };
+type ImportPreview = {
+  name: string; tagline: string; description: string; imageUrl: string;
+  startDate: string; endDate: string; location: string;
+  price: string | null; currency: string; tiers: ImportTier[];
+  organiser: string; sourceUrl: string;
+};
+
+async function fetchRaEvent(eventId: string, sourceUrl: string): Promise<{ ok: true; preview: ImportPreview } | { ok: false; error: string }> {
+  const query = `query GET_EVENT_DETAIL($id: ID!) {
+    event(id: $id) {
+      id title startTime endTime contentUrl flyerFront date cost
+      venue { name address }
+      artists { name }
+      promoters { name }
+    }
+  }`;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch("https://ra.co/graphql", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://ra.co/",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify({ operationName: "GET_EVENT_DETAIL", variables: { id: eventId }, query }),
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) return { ok: false, error: `RA GraphQL failed: ${resp.status}` };
+    const body = (await resp.json()) as { data?: { event?: Record<string, unknown> | null } };
+    const ev = body?.data?.event;
+    if (!ev) return { ok: false, error: "RA event not found" };
+
+    const title = String(ev.title ?? "");
+    const start = String(ev.startTime ?? ev.date ?? "");
+    const end   = String(ev.endTime ?? "");
+    // RA returns "2026-06-11T21:00:00.000" (no zone, local wall-clock) — keep as-is.
+    const toLocal = (s: string) => {
+      const w = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(s);
+      return w ? `${w[1]}T${w[2]}` : (/^(\d{4}-\d{2}-\d{2})/.exec(s)?.[1] ?? "");
+    };
+
+    const venue = (ev.venue ?? null) as { name?: string; address?: string } | null;
+    const location = [venue?.name, venue?.address].filter(Boolean).join(", ");
+    const artistList = Array.isArray(ev.artists) ? (ev.artists as { name?: string }[]).map((a) => a.name).filter(Boolean) : [];
+    const promoters = Array.isArray(ev.promoters) ? (ev.promoters as { name?: string }[]).map((p) => p.name).filter(Boolean) : [];
+
+    // Cost like "£5" or "£10 - £15". Pull first numeric and currency symbol.
+    let price: string | null = null;
+    let currency = "";
+    const cost = typeof ev.cost === "string" ? ev.cost : "";
+    if (cost) {
+      const pm = /([£$€])\s*(\d+(?:\.\d+)?)/.exec(cost);
+      if (pm) {
+        price = pm[2];
+        currency = pm[1] === "£" ? "GBP" : pm[1] === "$" ? "USD" : "EUR";
+      }
+    }
+
+    const tiers: ImportTier[] = price
+      ? [{ name: "General Admission", price, currency }]
+      : [];
+
+    return {
+      ok: true,
+      preview: {
+        name: title.slice(0, 200),
+        tagline: artistList.length ? `Featuring ${artistList.slice(0, 5).join(", ")}` : "",
+        description: "",
+        imageUrl: String(ev.flyerFront ?? "").slice(0, 500),
+        startDate: toLocal(start),
+        endDate: toLocal(end),
+        location: location.slice(0, 300),
+        price,
+        currency,
+        tiers,
+        organiser: promoters[0] ?? "",
+        sourceUrl,
+      },
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `RA fetch failed: ${msg}` };
+  }
+}
+
 // ── POST /api/events/import-url ──────────────────────────────────────────────
-// Server-side fetch of a third-party event URL (Skiddle, Fatsoma, Eventbrite, etc.)
+// Server-side fetch of a third-party event URL (Skiddle, Fatsoma, Eventbrite, RA, etc.)
 // Parses OG meta tags and schema.org/Event structured data and returns structured fields.
+// ra.co is captcha-blocked so we route through its public GraphQL endpoint.
 // Auth required — creators only, not publicly accessible to prevent abuse.
 // Must be registered BEFORE /:id.
 events.post("/import-url", requireAuth, async (c) => {
@@ -476,13 +571,30 @@ events.post("/import-url", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Private addresses not allowed" }, 400);
   }
 
+  // ── ra.co special case: page is DataDome-protected, GraphQL is public ─────
+  // The HTML response is a captcha challenge; bypass by querying ra.co/graphql
+  // directly for the event ID encoded in the URL path.
+  const raMatch = h === "ra.co" || h === "www.ra.co"
+    ? /^\/events\/(\d+)/.exec(parsed.pathname)
+    : null;
+  if (raMatch) {
+    const data = await fetchRaEvent(raMatch[1], rawUrl);
+    if (data.ok) return c.json({ ok: true, data: data.preview });
+    return c.json({ ok: false, error: data.error }, 422);
+  }
+
   let html: string;
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
     const resp = await fetch(rawUrl, {
       signal: controller.signal,
-      headers: { "User-Agent": "WoCo-Event-Importer/1.0 (+https://woco.eth.limo)" },
+      // Browser-like UA — some hosts (Eventbrite, Fatsoma) gate JSON-LD on this.
+      headers: {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9",
+      },
     });
     clearTimeout(timeout);
     if (!resp.ok) return c.json({ ok: false, error: `Fetch failed: ${resp.status}` }, 422);
@@ -513,6 +625,22 @@ events.post("/import-url", requireAuth, async (c) => {
     return m ? decodeHtmlEntities(m[1].trim()) : "";
   }
 
+  // Schema.org Event subtypes — Eventbrite uses "Festival", music sites use
+  // "MusicEvent", etc. Match anything inheriting from Event.
+  const EVENT_TYPES = new Set([
+    "Event", "BusinessEvent", "ChildrensEvent", "ComedyEvent", "DanceEvent",
+    "DeliveryEvent", "EducationEvent", "EventSeries", "ExhibitionEvent",
+    "Festival", "FoodEvent", "Hackathon", "LiteraryEvent", "MusicEvent",
+    "PublicationEvent", "SaleEvent", "ScreeningEvent", "SocialEvent",
+    "SportsEvent", "TheaterEvent", "VisualArtsEvent",
+  ]);
+
+  function isEventType(t: unknown): boolean {
+    if (typeof t === "string") return EVENT_TYPES.has(t);
+    if (Array.isArray(t)) return t.some((x) => typeof x === "string" && EVENT_TYPES.has(x));
+    return false;
+  }
+
   function getSchemaEvent(): Record<string, unknown> | null {
     const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
     let m: RegExpExecArray | null;
@@ -528,7 +656,7 @@ events.post("/import-url", requireAuth, async (c) => {
           else candidates.push(raw);
         }
         for (const node of candidates) {
-          if (node && typeof node === "object" && (node as Record<string, unknown>)["@type"] === "Event") {
+          if (node && typeof node === "object" && isEventType((node as Record<string, unknown>)["@type"])) {
             return node as Record<string, unknown>;
           }
         }
@@ -605,7 +733,6 @@ events.post("/import-url", requireAuth, async (c) => {
   // ── Ticket tiers (offers[]) ──────────────────────────────────────────────
   // Skiddle / Eventbrite expose multiple tiers as `offers: Offer[]`.
   // We pass the full list through so the client can render a series-per-tier.
-  type ImportTier = { name: string; price?: string; currency?: string; saleStart?: string; saleEnd?: string; status?: string };
   function parseOffer(raw: unknown): ImportTier | null {
     if (!raw || typeof raw !== "object") return null;
     const o = raw as Record<string, unknown>;
@@ -615,8 +742,10 @@ events.post("/import-url", requireAuth, async (c) => {
         || (typeof o.category === "string" && o.category)
         || "Ticket",
     };
-    if (o.price !== undefined && o.price !== null) {
-      const p = String(o.price);
+    // Single Offer: `price`. AggregateOffer (Eventbrite): `lowPrice`/`highPrice`.
+    const rawPrice = o.price ?? o.lowPrice;
+    if (rawPrice !== undefined && rawPrice !== null) {
+      const p = String(rawPrice);
       if (p && !isNaN(parseFloat(p))) t.price = p;
     }
     if (typeof o.priceCurrency === "string") t.currency = o.priceCurrency;
