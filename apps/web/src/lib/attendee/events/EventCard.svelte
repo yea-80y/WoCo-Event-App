@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { EventDirectoryEntry } from "@woco/shared";
+  import { isPastEvent } from "../../utils/events.js";
   import CreatorChip from "../../components/profile/CreatorChip.svelte";
 
   interface Props {
@@ -12,6 +13,8 @@
   let { event, owned = false, onclick }: Props = $props();
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
+
+  const isPast = $derived(isPastEvent(event));
 
   function handleClick() {
     onclick?.();
@@ -26,7 +29,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="card" role="button" tabindex="0" onclick={handleClick} class:has-ext={!!event.apiUrl}>
+<div class="card" role="button" tabindex="0" onclick={handleClick} class:has-ext={!!event.apiUrl} class:is-past={isPast}>
   {#if event.imageHash}
     <img
       src="{BEE_GATEWAY}/bytes/{event.imageHash}"
@@ -40,15 +43,21 @@
     <div class="card-title-row">
       <span class="date">{formatDate(event.startDate)}</span>
       <div class="card-badges">
+        {#if isPast}
+          <span class="past-badge">Past</span>
+        {/if}
         {#if owned}
           <span class="owned-badge" title="You have a ticket">&#10003; Ticket</span>
         {/if}
         {#if event.apiUrl}
-          <span class="site-badge" title="Self-hosted event">&#9670;</span>
+          <span class="site-badge" title="Self-hosted event">ext</span>
         {/if}
       </div>
     </div>
     <h3>{event.title}</h3>
+    {#if event.tagline}
+      <p class="tagline">{event.tagline}</p>
+    {/if}
     {#if event.location}
       <p class="location">{event.location}</p>
     {/if}
@@ -70,8 +79,7 @@
   }
 
   .card:hover {
-    border-color: var(--border-hover);
-    transform: translateY(-2px);
+    border-color: var(--accent);
   }
 
   .card-image {
@@ -89,11 +97,12 @@
   }
 
   .date {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--accent-text);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.12em;
   }
 
   h3 {
@@ -102,6 +111,19 @@
     font-size: 1rem;
     font-weight: 600;
     line-height: 1.3;
+  }
+
+  .tagline {
+    margin: 0 0 0.25rem;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
   .location {
@@ -123,15 +145,46 @@
   }
 
   .owned-badge {
+    font-family: var(--font-mono);
     font-size: 0.625rem;
     font-weight: 600;
-    color: var(--accent-text, #22c55e);
-    background: color-mix(in srgb, var(--accent-text, #22c55e) 12%, transparent);
+    color: var(--accent-text);
+    background: var(--accent-subtle);
     padding: 0.125rem 0.4375rem;
-    border-radius: 9999px;
-    letter-spacing: 0.02em;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     white-space: nowrap;
   }
+
+  .site-badge {
+    font-family: var(--font-mono);
+    font-size: 0.5625rem;
+    font-weight: 500;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 0.0625rem 0.3125rem;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .past-badge {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--bg-surface-hover);
+    border: 1px solid var(--border);
+    padding: 0.125rem 0.4375rem;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .is-past { opacity: 0.6; }
+  .is-past:hover { opacity: 0.85; }
 
   .card-footer {
     display: flex;

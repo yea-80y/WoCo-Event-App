@@ -7,18 +7,12 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
 
-  // Pre-load cached tickets synchronously so returning users never see the
-  // loading state. The address may not be available yet (auth async), so we
-  // can only do this when auth.parent is already set (e.g. wallet was connected
-  // in a previous session and the store rehydrated synchronously).
-  const _addrInit = auth.parent?.toLowerCase();
-  const _cachedTickets = _addrInit
-    ? cacheGet<ClaimedTicket[]>(cacheKey.collection(_addrInit))
-    : null;
-
-  let loading = $state(_cachedTickets === null); // false if cache hit
+  // No pre-session cache display: we only show cached tickets after the session
+  // is verified. This prevents stale data flashing on screen while the EIP-712
+  // prompt is pending — which looks confusing and phishing-adjacent.
+  let loading = $state(true);
   let error = $state<string | null>(null);
-  let tickets = $state<ClaimedTicket[]>(_cachedTickets ?? []);
+  let tickets = $state<ClaimedTicket[]>([]);
   let authFailed = $state(false);
 
   onMount(() => {
@@ -114,6 +108,7 @@
 </script>
 
 <div class="passport">
+  <span class="kicker">Passport</span>
   <h1>My Tickets</h1>
 
   {#if authFailed}
@@ -150,7 +145,7 @@
   h1 {
     font-size: 1.5rem;
     font-weight: 700;
-    margin: 0 0 1.5rem;
+    margin: 0.375rem 0 1.5rem;
     color: var(--text);
   }
 
@@ -196,6 +191,6 @@
   .retry-btn:hover {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
   }
 </style>

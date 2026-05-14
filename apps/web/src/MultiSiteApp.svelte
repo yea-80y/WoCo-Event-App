@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Site, SiteRuntimeConfig } from '@woco/shared';
+  import type { Site, SiteRuntimeConfig, NavStyleId } from '@woco/shared';
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
   import EventPage from './lib/components/site/EventPage.svelte';
   import blackPrinceSite from '../Black-Prince/site.json';
@@ -22,12 +22,13 @@
     return DEV_FALLBACK;
   }
   const config = getConfig();
-  // Make config globally readable so section components (EventsGrid, etc.) can
-  // access previewEvents and gatewayUrl without prop-drilling.
   if (typeof window !== 'undefined') window.SITE_CONFIG = config;
   const site = config.site as Site;
   const gatewayUrl = config.gatewayUrl;
   const apiUrl = config.apiUrl ?? 'http://localhost:3001';
+
+  const navStyle: NavStyleId = site.theme.navStyle ?? 'topbar';
+  const wantsIntro = navStyle === 'center-logo' && site.theme.introAnimation !== false;
 
   function logoUrl(): string | null {
     const ref = site.theme.logoSwarmRef;
@@ -39,16 +40,13 @@
     | { type: 'page'; slug: string }
     | { type: 'event'; eventId: string };
 
-  let route = $state<Route>(parseHash());
-  let menuOpen = $state(false);
-  let logoLoadFailed = $state(false);
+  let route        = $state<Route>(parseHash());
+  let menuOpen     = $state(false);
+  let logoFailed   = $state(false);
+  let showIntro    = $state(wantsIntro);
 
   function parseHash(): Route {
     const raw = window.location.hash.replace(/^#/, '') || '/';
-    // Strip query (e.g. `?stripe=cancelled`) before matching — Stripe's
-    // cancel/success redirects append search params to the hash, and the
-    // greedy regex would otherwise capture them into eventId, breaking
-    // every downstream API call.
     const h = raw.split('?')[0];
     const m = h.match(/^\/events\/([^/]+)$/);
     if (m) return { type: 'event', eventId: m[1] };
@@ -69,8 +67,6 @@
     root.style.setProperty('--accent-hover', palette.accentHover);
     root.style.setProperty('--border', palette.border);
     root.style.setProperty('--card-bg', palette.cardBg);
-
-    // Aliases expected by EventPage and other shared components
     root.style.setProperty('--bg-base', palette.bg);
     root.style.setProperty('--bg-surface', palette.cardBg);
     root.style.setProperty('--bg-elevated', palette.cardBg);
@@ -85,7 +81,7 @@
 
     const fontMap: Record<string, string> = {
       system: "system-ui, -apple-system, sans-serif",
-      serif: "Georgia, 'Times New Roman', serif",
+      serif:  "Georgia, 'Times New Roman', serif",
       display: "'Playfair Display', Georgia, serif",
     };
     root.style.setProperty('--font-family', fontMap[fontFamily] ?? fontMap.system);
@@ -101,11 +97,24 @@
 
   onMount(() => {
     applyTheme();
+
+    if (showIntro) {
+      // Remove curtain from DOM after the CSS animation completes (1.2s delay + 0.8s slide = 2.1s)
+      setTimeout(() => { showIntro = false; }, 2400);
+    }
+
     window.addEventListener('hashchange', () => {
       route = parseHash();
       menuOpen = false;
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
+  });
+
+  // Lock body scroll when overlay/drawer menu is open
+  $effect(() => {
+    if (typeof document !== 'undefined') {
+      document.body.style.overflow = menuOpen ? 'hidden' : '';
+    }
   });
 
   $effect(() => {
@@ -126,39 +135,153 @@
   });
 </script>
 
-<div class="site">
-  <nav class="site-nav">
-    <div class="nav-inner">
-      <a class="brand" href="#/">
-        {#if logoUrl() && !logoLoadFailed}
+<!-- ── Logo-split intro curtain (center-logo nav only) ──────────────── -->
+{#if showIntro}
+  <div class="intro-curtain" aria-hidden="true">
+    <div class="intro-half intro-left">
+      <div class="intro-brand">
+        {#if logoUrl() && !logoFailed}
           <img
-            class="brand-logo"
+            class="intro-logo-img"
             src={logoUrl()!}
             alt={site.theme.brandName}
-            onerror={() => { logoLoadFailed = true; }}
+            onerror={() => { logoFailed = true; }}
           />
         {:else}
-          {site.theme.brandName}
+          <span class="intro-brand-text">{site.theme.brandName}</span>
         {/if}
-      </a>
-
-      <button class="hamburger" aria-label="Menu" onclick={() => (menuOpen = !menuOpen)}>
-        <span></span><span></span><span></span>
-      </button>
-
-      <ul class="nav-links" class:open={menuOpen}>
-        {#each site.nav as item}
-          <li>
-            <a
-              href={'#' + item.pageSlug}
-              class:active={route.type === 'page' && route.slug === item.pageSlug}
-            >{item.label}</a>
-          </li>
-        {/each}
-      </ul>
+      </div>
     </div>
-  </nav>
+    <div class="intro-half intro-right"></div>
+  </div>
+{/if}
 
+<div class="site">
+
+  <!-- ── Top-bar nav (default) ─────────────────────────────────────── -->
+  {#if navStyle === 'topbar'}
+    <nav class="site-nav nav-topbar">
+      <div class="nav-inner">
+        <a class="brand" href="#/">
+          {#if logoUrl() && !logoFailed}
+            <img class="brand-logo" src={logoUrl()!} alt={site.theme.brandName} onerror={() => { logoFailed = true; }} />
+          {:else}
+            {site.theme.brandName}
+          {/if}
+        </a>
+
+        <button class="hamburger" aria-label={menuOpen ? 'Close menu' : 'Open menu'} onclick={() => (menuOpen = !menuOpen)}>
+          <span class:bar-open={menuOpen}></span>
+          <span class:bar-open={menuOpen}></span>
+          <span class:bar-open={menuOpen}></span>
+        </button>
+
+        <ul class="nav-links" class:open={menuOpen}>
+          {#each site.nav as item}
+            <li>
+              <a
+                href={'#' + item.pageSlug}
+                class:active={route.type === 'page' && route.slug === item.pageSlug}
+                onclick={() => { menuOpen = false; }}
+              >{item.label}</a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    </nav>
+
+  <!-- ── Center-logo nav with fullscreen overlay ───────────────────── -->
+  {:else if navStyle === 'center-logo'}
+    <nav class="site-nav nav-center">
+      <div class="nav-inner-center">
+        <button
+          class="hamburger hamburger-center"
+          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          onclick={() => (menuOpen = !menuOpen)}
+        >
+          <span class:bar-open={menuOpen}></span>
+          <span class:bar-open={menuOpen}></span>
+          <span class:bar-open={menuOpen}></span>
+        </button>
+
+        <a class="brand brand-center" href="#/" onclick={() => { menuOpen = false; }}>
+          {#if logoUrl() && !logoFailed}
+            <img class="brand-logo" src={logoUrl()!} alt={site.theme.brandName} onerror={() => { logoFailed = true; }} />
+          {:else}
+            {site.theme.brandName}
+          {/if}
+        </a>
+
+        <div class="nav-spacer" aria-hidden="true"></div>
+      </div>
+
+      <!-- Fullscreen overlay menu (slides from left) -->
+      <div class="overlay-menu" class:overlay-open={menuOpen} aria-hidden={!menuOpen}>
+        <button class="overlay-close" aria-label="Close menu" onclick={() => (menuOpen = false)}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M4 4l12 12M16 4L4 16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <ul class="overlay-links">
+          {#each site.nav as item, i}
+            <li style="--i: {i}">
+              <a
+                href={'#' + item.pageSlug}
+                class:active={route.type === 'page' && route.slug === item.pageSlug}
+                onclick={() => { menuOpen = false; }}
+              >{item.label}</a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    </nav>
+
+  <!-- ── Overlay-drawer nav (hamburger only, consistent on all sizes) ─ -->
+  {:else}
+    <nav class="site-nav nav-drawer">
+      <div class="nav-inner-drawer">
+        <a class="brand" href="#/" onclick={() => { menuOpen = false; }}>
+          {#if logoUrl() && !logoFailed}
+            <img class="brand-logo" src={logoUrl()!} alt={site.theme.brandName} onerror={() => { logoFailed = true; }} />
+          {:else}
+            {site.theme.brandName}
+          {/if}
+        </a>
+
+        <button
+          class="hamburger hamburger-drawer"
+          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          onclick={() => (menuOpen = !menuOpen)}
+        >
+          <span class:bar-open={menuOpen}></span>
+          <span class:bar-open={menuOpen}></span>
+          <span class:bar-open={menuOpen}></span>
+        </button>
+      </div>
+
+      <!-- Full-screen drawer (slides from right) -->
+      <div class="drawer-menu" class:drawer-open={menuOpen} aria-hidden={!menuOpen}>
+        <button class="overlay-close" aria-label="Close menu" onclick={() => (menuOpen = false)}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M4 4l12 12M16 4L4 16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <ul class="drawer-links">
+          {#each site.nav as item, i}
+            <li style="--i: {i}">
+              <a
+                href={'#' + item.pageSlug}
+                class:active={route.type === 'page' && route.slug === item.pageSlug}
+                onclick={() => { menuOpen = false; }}
+              >{item.label}</a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    </nav>
+  {/if}
+
+  <!-- ── Page / event content ──────────────────────────────────────── -->
   {#if route.type === 'event'}
     <main>
       <EventPage eventId={route.eventId} {apiUrl} onback={() => history.back()} />
@@ -196,6 +319,70 @@
 </div>
 
 <style>
+  /* ── Logo-split intro curtain ──────────────────────────────────────── */
+  .intro-curtain {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    pointer-events: none;
+  }
+
+  .intro-half {
+    flex: 1;
+    background: var(--bg);
+    animation-duration: 0.85s;
+    animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+    animation-delay: 1.2s;
+    animation-fill-mode: forwards;
+  }
+
+  .intro-left  { animation-name: curtain-left; }
+  .intro-right { animation-name: curtain-right; }
+
+  .intro-brand {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    animation: intro-brand-show 0.5s ease 0.15s both, intro-brand-hide 0.3s ease 1s forwards;
+    white-space: nowrap;
+  }
+
+  .intro-brand-text {
+    font-size: clamp(1.5rem, 5vw, 3rem);
+    font-weight: 900;
+    color: var(--text);
+    letter-spacing: -0.03em;
+    font-family: var(--font-family);
+  }
+
+  .intro-logo-img {
+    height: clamp(48px, 10vw, 96px);
+    width: auto;
+    max-width: 280px;
+    object-fit: contain;
+    display: block;
+  }
+
+  @keyframes curtain-left {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-100%); }
+  }
+  @keyframes curtain-right {
+    from { transform: translateX(0); }
+    to   { transform: translateX(100%); }
+  }
+  @keyframes intro-brand-show {
+    from { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
+    to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  }
+  @keyframes intro-brand-hide {
+    from { opacity: 1; }
+    to   { opacity: 0; }
+  }
+
+  /* ── Shared site shell ─────────────────────────────────────────────── */
   .site {
     min-height: 100vh;
     display: flex;
@@ -203,12 +390,76 @@
     overflow-x: hidden;
   }
 
-  /* ── Nav ─────────────────────────────────────────────────────────────────── */
+  /* ── Shared nav chrome ─────────────────────────────────────────────── */
   .site-nav {
     position: sticky;
     top: 0;
     z-index: 100;
     background: var(--bg);
+  }
+
+  .brand {
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+    flex-shrink: 0;
+    text-decoration: none;
+  }
+  .brand:hover { color: var(--accent); }
+
+  .brand-logo {
+    height: 36px;
+    width: auto;
+    max-width: 180px;
+    object-fit: contain;
+    display: block;
+  }
+
+  /* Hamburger (shared across nav styles) */
+  .hamburger {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 0.5rem;
+    cursor: pointer;
+    flex-shrink: 0;
+    background: none;
+    border: none;
+  }
+
+  .hamburger span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: transform 0.25s ease, opacity 0.2s ease;
+    transform-origin: center;
+  }
+
+  /* Hamburger → X animation */
+  .hamburger span:nth-child(1).bar-open { transform: translateY(7px) rotate(45deg); }
+  .hamburger span:nth-child(2).bar-open { opacity: 0; transform: scaleX(0); }
+  .hamburger span:nth-child(3).bar-open { transform: translateY(-7px) rotate(-45deg); }
+
+  /* Close button inside overlay/drawer */
+  .overlay-close {
+    position: absolute;
+    top: 1.25rem;
+    right: 1.5rem;
+    padding: 0.5rem;
+    color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    transition: color 0.15s ease;
+    z-index: 10;
+  }
+  .overlay-close:hover { color: var(--text); }
+
+  /* ── TOP-BAR nav ───────────────────────────────────────────────────── */
+  .nav-topbar {
     border-bottom: 1px solid var(--border);
   }
 
@@ -222,31 +473,12 @@
     gap: 2rem;
   }
 
-  .brand {
-    font-size: 1.125rem;
-    font-weight: 700;
-    color: var(--text);
-    white-space: nowrap;
-    flex-shrink: 0;
-    text-decoration: none;
-  }
-  .brand:hover { text-decoration: none; color: var(--accent); }
-
-  .brand-logo {
-    height: 36px;
-    width: auto;
-    max-width: 180px;
-    object-fit: contain;
-    display: block;
-  }
-
   .nav-links {
     display: flex;
     gap: 0;
     list-style: none;
-    margin: 0;
+    margin: 0 0 0 auto;
     padding: 0;
-    margin-left: auto;
   }
 
   .nav-links a {
@@ -260,35 +492,15 @@
   }
 
   .nav-links a:hover,
-  .nav-links a.active {
-    color: var(--text);
-    text-decoration: none;
-  }
-
-  .nav-links a.active {
-    color: var(--accent);
-  }
+  .nav-links a.active { color: var(--text); }
+  .nav-links a.active  { color: var(--accent); }
 
   .hamburger {
     display: none;
-    flex-direction: column;
-    gap: 5px;
-    padding: 0.5rem;
-    margin-left: auto;
-    cursor: pointer;
-  }
-
-  .hamburger span {
-    display: block;
-    width: 22px;
-    height: 2px;
-    background: var(--text);
-    border-radius: 2px;
-    transition: opacity var(--transition);
   }
 
   @media (max-width: 640px) {
-    .hamburger { display: flex; }
+    .hamburger { display: flex; margin-left: auto; }
 
     .nav-links {
       display: none;
@@ -317,10 +529,184 @@
     .nav-links li:last-child a { border-bottom: none; }
   }
 
-  /* ── Main ────────────────────────────────────────────────────────────────── */
-  main {
-    flex: 1;
+  /* ── CENTER-LOGO nav ───────────────────────────────────────────────── */
+  .nav-center {
+    border-bottom: 1px solid var(--border);
   }
+
+  .nav-inner-center {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .hamburger-center {
+    display: flex;
+    z-index: 200;
+    position: relative;
+  }
+
+  .brand-center {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .nav-spacer {
+    width: 38px; /* mirrors hamburger width for centering */
+    flex-shrink: 0;
+  }
+
+  /* Fullscreen overlay from left */
+  .overlay-menu {
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 4rem 3rem;
+    transform: translateX(-100%);
+    transition: transform 0.55s cubic-bezier(0.76, 0, 0.24, 1),
+                visibility 0s linear 0.55s;
+    visibility: hidden;
+  }
+
+  .overlay-menu.overlay-open {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 0.55s cubic-bezier(0.76, 0, 0.24, 1),
+                visibility 0s;
+  }
+
+  .overlay-links {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .overlay-links li {
+    transform: translateX(-40px);
+    opacity: 0;
+    transition: transform 0.45s cubic-bezier(0.34, 1.36, 0.64, 1),
+                opacity 0.35s ease;
+    transition-delay: calc(var(--i) * 0.07s);
+  }
+
+  .overlay-menu.overlay-open .overlay-links li {
+    transform: translateX(0);
+    opacity: 1;
+    transition-delay: calc(var(--i) * 0.07s + 0.2s);
+  }
+
+  .overlay-links a {
+    display: block;
+    font-size: clamp(2rem, 6vw, 3.5rem);
+    font-weight: 900;
+    color: var(--text);
+    text-decoration: none;
+    letter-spacing: -0.04em;
+    line-height: 1.1;
+    transition: color 0.15s ease;
+    padding: 0.15em 0;
+  }
+  .overlay-links a:hover  { color: var(--accent); }
+  .overlay-links a.active { color: var(--accent); }
+
+  /* ── OVERLAY-DRAWER nav ────────────────────────────────────────────── */
+  .nav-drawer {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-inner-drawer {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: relative;
+    z-index: 200;
+  }
+
+  .hamburger-drawer {
+    display: flex;
+  }
+
+  /* Full-screen drawer from right */
+  .drawer-menu {
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transform: translateX(100%);
+    transition: transform 0.55s cubic-bezier(0.76, 0, 0.24, 1),
+                visibility 0s linear 0.55s;
+    visibility: hidden;
+  }
+
+  .drawer-menu.drawer-open {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 0.55s cubic-bezier(0.76, 0, 0.24, 1),
+                visibility 0s;
+  }
+
+  .drawer-links {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .drawer-links li {
+    transform: translateX(40px);
+    opacity: 0;
+    transition: transform 0.45s cubic-bezier(0.34, 1.36, 0.64, 1),
+                opacity 0.35s ease;
+    transition-delay: calc(var(--i) * 0.07s);
+  }
+
+  .drawer-menu.drawer-open .drawer-links li {
+    transform: translateX(0);
+    opacity: 1;
+    transition-delay: calc(var(--i) * 0.07s + 0.2s);
+  }
+
+  .drawer-links a {
+    display: block;
+    font-size: clamp(2rem, 6vw, 3.5rem);
+    font-weight: 900;
+    color: var(--text);
+    text-decoration: none;
+    letter-spacing: -0.04em;
+    line-height: 1.1;
+    transition: color 0.15s ease;
+    padding: 0.15em 0;
+    text-align: center;
+  }
+  .drawer-links a:hover  { color: var(--accent); }
+  .drawer-links a.active { color: var(--accent); }
+
+  /* ── Main ─────────────────────────────────────────────────────────── */
+  main { flex: 1; }
 
   .not-found {
     display: flex;
@@ -338,7 +724,7 @@
     margin: 0;
   }
 
-  /* ── Footer ──────────────────────────────────────────────────────────────── */
+  /* ── Footer ───────────────────────────────────────────────────────── */
   .site-footer {
     border-top: 1px solid var(--border);
     padding: 2rem 1.5rem;
@@ -361,20 +747,11 @@
     color: var(--text);
   }
 
-  .footer-address {
-    white-space: pre-line;
-  }
+  .footer-address { white-space: pre-line; }
 
-  .footer-link {
-    color: var(--muted);
-  }
+  .footer-link { color: var(--muted); }
   .footer-link:hover { color: var(--accent); }
 
-  .footer-powered {
-    margin-left: auto;
-  }
-
-  .footer-powered a {
-    color: var(--accent);
-  }
+  .footer-powered { margin-left: auto; }
+  .footer-powered a { color: var(--accent); }
 </style>

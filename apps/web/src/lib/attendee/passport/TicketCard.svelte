@@ -59,8 +59,7 @@
   }
 
   .ticket-card:hover {
-    border-color: var(--border-hover);
-    transform: translateY(-1px);
+    border-color: var(--accent);
   }
 
   .ticket-image {
@@ -94,6 +93,8 @@
 
   .edition {
     margin: 0.25rem 0 0;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     font-size: 0.8125rem;
     color: var(--accent-text);
     font-weight: 500;
@@ -101,6 +102,7 @@
 
   .claimed-date {
     margin: 0.25rem 0 0;
+    font-family: var(--font-mono);
     font-size: 0.75rem;
     color: var(--text-muted);
   }

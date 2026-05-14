@@ -222,7 +222,7 @@
     }
   }
 
-  /** Start a brand-new site from the default template. */
+  /** Start a brand-new site — open template picker so user chooses style first. */
   function handleNewSite() {
     site = newSiteFromTemplate({ siteId: uid(), ownerAddress: '0x0', templateId: 'pub-venue-v1', idGen: uid });
     siteEvents = [];
@@ -231,7 +231,7 @@
     publishState = 'idle';
     localStorage.removeItem(FEED_HASH_KEY);
     screen = 'builder';
-    tab = 'brand';
+    tab = 'template'; // show template picker first on new sites
   }
 
   /** Advanced: load a site by raw Site ID (for cross-device recovery). */

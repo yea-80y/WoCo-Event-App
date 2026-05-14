@@ -3,6 +3,7 @@
   import { router } from "./lib/router/router.svelte.js";
   import LoginModal from "./lib/components/auth/LoginModal.svelte";
   import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
+  import Splitter from "./lib/landing/Splitter.svelte";
   import AttendeeApp from "./AttendeeApp.svelte";
   import { onMount } from "svelte";
 
@@ -11,8 +12,6 @@
   });
 
   // Lazy-load the creator bundle — attendees never download builder/dashboard code.
-  // Vite splits CreatorApp + its imports (Dashboard, MultiSiteBuilder, EventForm, …) into a
-  // separate chunk fetched only when the user enters the creator surface.
   const creatorAppPromise = $derived(
     router.surface === "creator"
       ? import("./CreatorApp.svelte").then((m) => m.default)
@@ -20,7 +19,9 @@
   );
 </script>
 
-{#if router.surface === "creator"}
+{#if router.surface === "neutral"}
+  <Splitter />
+{:else if router.surface === "creator"}
   {#await creatorAppPromise}
     <div class="surface-loading">Loading creator portal…</div>
   {:then Comp}

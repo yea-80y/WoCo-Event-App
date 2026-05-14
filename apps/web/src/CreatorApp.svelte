@@ -5,13 +5,16 @@
   import EmbedSetup from "./lib/creator/embed/EmbedSetup.svelte";
   import Dashboard from "./lib/creator/dashboard/Dashboard.svelte";
   import DashboardIndex from "./lib/creator/dashboard/DashboardIndex.svelte";
+  import CreatorHome from "./lib/creator/home/CreatorHome.svelte";
   import SiteBuilder from "./lib/creator/SiteBuilder.svelte";
   import MultiSiteBuilder from "./lib/creator/builder/MultiSiteBuilder.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
 </script>
 
 <CreatorShell>
-  {#if router.route === "create"}
+  {#if router.route === "creator-home"}
+    <CreatorHome />
+  {:else if router.route === "create"}
     <EventForm onpublished={(id) => navigate(`/event/${id}`)} />
   {:else if router.route === "dashboard-index"}
     <DashboardIndex />
@@ -74,7 +77,7 @@
   .stripe-dashboard-link {
     padding: 0.5rem 1.25rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     font-size: 0.875rem;
     font-weight: 500;

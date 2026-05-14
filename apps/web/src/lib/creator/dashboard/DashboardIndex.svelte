@@ -3,11 +3,27 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { onMount } from "svelte";
+  import { isPastEvent } from "../../utils/events.js";
+  import { onMount, onDestroy } from "svelte";
   import StripeConnect from "./StripeConnect.svelte";
 
-  let events = $state<EventDirectoryEntry[]>([]);
+  type Tab = "upcoming" | "past";
+  let tab = $state<Tab>("upcoming");
+
+  // Single fetch — client-side split via reactive clock
+  let allEvents = $state<EventDirectoryEntry[]>([]);
   let loading = $state(true);
+  let now = $state(Date.now());
+  let clockTimer: ReturnType<typeof setInterval>;
+
+  const upcoming = $derived(
+    allEvents.filter(e => !isPastEvent(e, now))
+      .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
+  );
+  const past = $derived(
+    allEvents.filter(e => isPastEvent(e, now))
+      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime())
+  );
 
   // ── External server discovery ───────────────────────────────────────────────
   interface DiscoveredEvent extends EventDirectoryEntry {
@@ -19,7 +35,7 @@
   let discovering = $state(false);
   let discoverError = $state<string | null>(null);
   let discovered = $state<DiscoveredEvent[]>([]);
-  let listingId = $state<string | null>(null); // eventId being toggled
+  let listingId = $state<string | null>(null);
 
   async function handleDiscover() {
     const url = discoverApiUrl.trim();
@@ -28,15 +44,10 @@
     discoverError = null;
     discovered = [];
     try {
-      const json = await authPost<DiscoveredEvent[]>(
-        "/api/events/discover",
-        { sourceApiUrl: url }
-      );
+      const json = await authPost<DiscoveredEvent[]>("/api/events/discover", { sourceApiUrl: url });
       if (json.ok && json.data) {
         discovered = json.data;
-        if (discovered.length === 0) {
-          discoverError = "No events found for your address on that server.";
-        }
+        if (discovered.length === 0) discoverError = "No events found for your address on that server.";
       } else {
         discoverError = json.error || "Discovery failed";
       }
@@ -50,12 +61,8 @@
   async function handleList(ev: DiscoveredEvent) {
     listingId = ev.eventId;
     try {
-      const json = await authPost<{ eventId: string }>(
-        `/api/events/${ev.eventId}/list`,
-        { sourceApiUrl: ev.sourceApiUrl }
-      );
+      const json = await authPost<{ eventId: string }>(`/api/events/${ev.eventId}/list`, { sourceApiUrl: ev.sourceApiUrl });
       if (json.ok) {
-        // Update in place
         const idx = discovered.findIndex(d => d.eventId === ev.eventId);
         if (idx !== -1) discovered[idx] = { ...discovered[idx], listed: true };
       } else {
@@ -71,10 +78,7 @@
   async function handleUnlist(ev: DiscoveredEvent) {
     listingId = ev.eventId;
     try {
-      const json = await authPost<{ eventId: string }>(
-        `/api/events/${ev.eventId}/unlist`,
-        { sourceApiUrl: ev.sourceApiUrl }
-      );
+      const json = await authPost<{ eventId: string }>(`/api/events/${ev.eventId}/unlist`, { sourceApiUrl: ev.sourceApiUrl });
       if (json.ok) {
         const idx = discovered.findIndex(d => d.eventId === ev.eventId);
         if (idx !== -1) discovered[idx] = { ...discovered[idx], listed: false };
@@ -89,56 +93,98 @@
   }
 
   onMount(async () => {
+    clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
+    if (!auth.isConnected || !auth.parent) { loading = false; return; }
+
+    // Establish session before API call — triggers biometric + EIP-712 for passkey users.
+    // Done explicitly here so the user understands why they're being prompted.
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (!ok) { loading = false; return; }
+    }
+
     try {
-      if (!auth.isConnected || !auth.parent) {
-        loading = false;
-        return;
-      }
       const res = await authGet<EventDirectoryEntry[]>("/api/events/mine");
-      if (res.ok && res.data) events = res.data;
-    } catch {
-      // ignore
-    } finally {
+      if (res.ok && res.data) allEvents = res.data;
+    } catch { /* ignore */ } finally {
       loading = false;
     }
   });
+
+  onDestroy(() => clearInterval(clockTimer));
 </script>
 
 <div class="dash-index">
+  <span class="kicker">Creator Studio</span>
   <h1>My Events</h1>
 
-  {#if loading}
-    <p class="status">Loading...</p>
-  {:else if !auth.isConnected}
+  {#if !auth.isConnected}
     <p class="status">Sign in to view your events.</p>
-  {:else if events.length === 0}
-    <div class="empty">
-      <p>You haven't created any events yet.</p>
-      <button class="create-btn" onclick={() => navigate("/create")}>
-        Create your first event
+  {:else}
+    <div class="tabs">
+      <button class="tab" class:active={tab === "upcoming"} onclick={() => tab = "upcoming"}>
+        Upcoming
+        {#if !loading && upcoming.length > 0}
+          <span class="tab-count">{upcoming.length}</span>
+        {/if}
+      </button>
+      <button class="tab" class:active={tab === "past"} onclick={() => tab = "past"}>
+        Past
+        {#if !loading && past.length > 0}
+          <span class="tab-count">{past.length}</span>
+        {/if}
       </button>
     </div>
-  {:else}
-    <div class="event-list">
-      {#each events as ev}
-        <button
-          class="event-row"
-          onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}
-        >
-          <div class="event-info">
-            <span class="event-title">{ev.title}</span>
-            <span class="event-meta">
-              {new Date(ev.startDate).toLocaleDateString()} &middot;
-              {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
-            </span>
-          </div>
-          <span class="arrow">&rarr;</span>
-        </button>
-      {/each}
-    </div>
-  {/if}
 
-  {#if auth.isConnected}
+    {#if loading}
+      <p class="status">Loading...</p>
+    {:else if tab === "upcoming"}
+      {#if upcoming.length === 0}
+        <div class="empty">
+          <p>No upcoming events.</p>
+          <button class="create-btn" onclick={() => navigate("/creator/events/new")}>
+            Create an event
+          </button>
+        </div>
+      {:else}
+        <div class="event-list">
+          {#each upcoming as ev}
+            <button class="event-row" onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}>
+              <div class="event-info">
+                <span class="event-title">{ev.title}</span>
+                <span class="event-meta">
+                  {new Date(ev.startDate).toLocaleDateString()} &middot;
+                  {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <span class="arrow">&rarr;</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    {:else}
+      {#if past.length === 0}
+        <div class="empty">
+          <p>No past events.</p>
+        </div>
+      {:else}
+        <div class="event-list">
+          {#each past as ev}
+            <button class="event-row event-row--past" onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}>
+              <div class="event-info">
+                <span class="event-title">{ev.title}</span>
+                <span class="event-meta">
+                  {new Date(ev.startDate).toLocaleDateString()} &middot;
+                  {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <span class="arrow">&rarr;</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+
     <div class="stripe-section">
       <div class="section-divider"></div>
       <StripeConnect />
@@ -146,6 +192,7 @@
 
     <div class="discover-section">
       <div class="section-divider"></div>
+      <span class="kicker">External Server</span>
       <h2 class="section-heading">Events from my own server</h2>
       <p class="section-desc">
         Running your own self-hosted WoCo backend? Enter your API URL to see your events and
@@ -191,19 +238,11 @@
               <div class="discovered-actions">
                 {#if ev.listed}
                   <span class="listed-badge">Listed on WoCo</span>
-                  <button
-                    class="toggle-btn toggle-btn--unlist"
-                    onclick={() => handleUnlist(ev)}
-                    disabled={busy}
-                  >
+                  <button class="toggle-btn toggle-btn--unlist" onclick={() => handleUnlist(ev)} disabled={busy}>
                     {busy ? "…" : "Unlist"}
                   </button>
                 {:else}
-                  <button
-                    class="toggle-btn toggle-btn--list"
-                    onclick={() => handleList(ev)}
-                    disabled={busy}
-                  >
+                  <button class="toggle-btn toggle-btn--list" onclick={() => handleList(ev)} disabled={busy}>
                     {busy ? "…" : "List on WoCo"}
                   </button>
                 {/if}
@@ -228,7 +267,7 @@
 
   h1 {
     color: var(--text);
-    margin: 0 0 1.5rem;
+    margin: 0.375rem 0 1.25rem;
     font-size: 1.5rem;
     font-weight: 700;
   }
@@ -239,6 +278,45 @@
     padding: 3rem 0;
   }
 
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.25rem;
+  }
+
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all var(--transition);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .tab:hover { color: var(--text); }
+
+  .tab-count {
+    font-size: 0.625rem;
+    font-weight: 700;
+    padding: 0.0625rem 0.375rem;
+    border-radius: var(--radius-sm);
+    background: var(--accent-subtle);
+    color: var(--accent-text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tab.active {
+    color: var(--accent-text);
+    border-bottom-color: var(--accent);
+  }
+
   .empty {
     text-align: center;
     padding: 3rem 1rem;
@@ -247,23 +325,19 @@
     border-radius: var(--radius-md);
   }
 
-  .empty p {
-    margin: 0 0 1rem;
-  }
+  .empty p { margin: 0 0 1rem; }
 
   .create-btn {
     padding: 0.5rem 1.25rem;
     font-size: 0.875rem;
     font-weight: 500;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     transition: background var(--transition);
   }
 
-  .create-btn:hover {
-    background: var(--accent-hover);
-  }
+  .create-btn:hover { background: var(--accent-hover); }
 
   .event-list {
     display: flex;
@@ -283,9 +357,9 @@
     transition: border-color var(--transition);
   }
 
-  .event-row:hover {
-    border-color: var(--accent);
-  }
+  .event-row:hover { border-color: var(--accent); }
+  .event-row--past { opacity: 0.65; }
+  .event-row--past:hover { opacity: 0.9; }
 
   .event-info {
     display: flex;
@@ -300,19 +374,17 @@
   }
 
   .event-meta {
-    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
     color: var(--text-muted);
+    letter-spacing: 0.02em;
   }
 
-  .arrow {
-    color: var(--text-muted);
-    font-size: 1rem;
-  }
+  .arrow { color: var(--text-muted); font-size: 1rem; }
 
-  /* ── Discovery section ─────────────────────────────────────────────────── */
-  .discover-section {
-    margin-top: 2.5rem;
-  }
+  /* ── Stripe + Discovery sections ────────────────────────────────────────── */
+  .stripe-section,
+  .discover-section { margin-top: 2.5rem; }
 
   .section-divider {
     border-top: 1px solid var(--border);
@@ -320,7 +392,7 @@
   }
 
   .section-heading {
-    font-size: 1rem;
+    font-size: 0.875rem;
     font-weight: 600;
     color: var(--text);
     margin: 0 0 0.375rem;
@@ -352,10 +424,7 @@
     transition: border-color var(--transition);
   }
 
-  .discover-input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+  .discover-input:focus { outline: none; border-color: var(--accent); }
 
   .discover-btn {
     padding: 0.5rem 1rem;
@@ -369,23 +438,11 @@
     transition: all var(--transition);
   }
 
-  .discover-btn:hover:not(:disabled) {
-    background: var(--accent);
-    color: #fff;
-  }
+  .discover-btn:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); }
+  .discover-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .discover-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
+  .discover-error { font-size: 0.8125rem; color: var(--error); margin: 0; }
 
-  .discover-error {
-    font-size: 0.8125rem;
-    color: var(--error);
-    margin: 0;
-  }
-
-  /* ── Discovered events list ─────────────────────────────────────────────── */
   .discovered-list {
     display: flex;
     flex-direction: column;
@@ -422,9 +479,7 @@
     transition: none;
   }
 
-  .discovered-info--link:hover .discovered-title {
-    color: var(--accent);
-  }
+  .discovered-info--link:hover .discovered-title { color: var(--accent); }
 
   .discovered-title {
     font-size: 0.9375rem;
@@ -436,8 +491,10 @@
   }
 
   .discovered-meta {
-    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
     color: var(--text-muted);
+    letter-spacing: 0.02em;
   }
 
   .discovered-actions {
@@ -448,13 +505,16 @@
   }
 
   .listed-badge {
+    font-family: var(--font-mono);
     font-size: 0.6875rem;
     font-weight: 500;
-    padding: 0.2rem 0.5rem;
-    border-radius: 9999px;
-    background: color-mix(in srgb, var(--success) 12%, transparent);
-    color: var(--success);
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--accent-subtle);
+    color: var(--accent-text);
     white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
 
   .toggle-btn {
@@ -466,30 +526,11 @@
     transition: all var(--transition);
   }
 
-  .toggle-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .toggle-btn--list {
-    border: 1px solid var(--accent);
-    color: var(--accent-text);
-  }
-
-  .toggle-btn--list:hover:not(:disabled) {
-    background: var(--accent);
-    color: #fff;
-  }
-
-  .toggle-btn--unlist {
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-  }
-
-  .toggle-btn--unlist:hover:not(:disabled) {
-    border-color: var(--error);
-    color: var(--error);
-  }
+  .toggle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .toggle-btn--list { border: 1px solid var(--accent); color: var(--accent-text); }
+  .toggle-btn--list:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); }
+  .toggle-btn--unlist { border: 1px solid var(--border); color: var(--text-muted); }
+  .toggle-btn--unlist:hover:not(:disabled) { border-color: var(--error); color: var(--error); }
 
   @media (max-width: 480px) {
     .discover-row { flex-direction: column; }

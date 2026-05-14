@@ -92,8 +92,14 @@ export async function requestSessionDelegation(
 /**
  * Restore an existing session from IndexedDB.
  * Returns null if no session exists or it has expired.
+ *
+ * If `expectedParent` is provided, the delegation's `parent` field MUST
+ * match it (case-insensitive). A mismatch wipes the stale session and
+ * returns null. This guards against cross-identity leak when switching
+ * login methods — a delegation signed by one wallet must never be
+ * re-attached to a different active identity.
  */
-export async function restoreSession(): Promise<{
+export async function restoreSession(expectedParent?: string | null): Promise<{
   sessionWallet: Wallet;
   delegation: SessionDelegation;
 } | null> {
@@ -126,6 +132,16 @@ export async function restoreSession(): Promise<{
     return null;
   }
 
+  // Cross-identity guard: never serve a delegation that belongs to a
+  // different parent than the one currently logged in.
+  if (
+    expectedParent &&
+    delegation.message.parent.toLowerCase() !== expectedParent.toLowerCase()
+  ) {
+    await clearSession();
+    return null;
+  }
+
   const sessionWallet = new Wallet(privateKey);
   if (sessionWallet.address !== address) {
     await clearSession();
@@ -141,8 +157,9 @@ export async function restoreSession(): Promise<{
  */
 export async function signWithSession(
   payload: string | Uint8Array,
+  expectedParent?: string | null,
 ): Promise<{ signature: string; sessionAddress: string } | null> {
-  const session = await restoreSession();
+  const session = await restoreSession(expectedParent);
   if (!session) return null;
 
   const message =
@@ -153,13 +170,27 @@ export async function signWithSession(
 
 /**
  * Get the current session delegation bundle for API requests.
+ * When `expectedParent` is provided, a delegation belonging to a
+ * different parent is treated as stale: it is wiped and null returned.
  */
-export async function getSessionDelegation(): Promise<SessionDelegation | null> {
+export async function getSessionDelegation(
+  expectedParent?: string | null,
+): Promise<SessionDelegation | null> {
   const encDel = await getKV<EncryptedBlob>(StorageKeys.SESSION_DELEGATION);
   if (!encDel) return null;
 
   const deviceKey = await ensureDeviceKey();
-  return decrypt<SessionDelegation>(deviceKey, AAD.SESSION_DELEGATION, encDel);
+  const delegation = await decrypt<SessionDelegation>(deviceKey, AAD.SESSION_DELEGATION, encDel);
+
+  if (
+    expectedParent &&
+    delegation.message.parent.toLowerCase() !== expectedParent.toLowerCase()
+  ) {
+    await clearSession();
+    return null;
+  }
+
+  return delegation;
 }
 
 export async function clearSession(): Promise<void> {

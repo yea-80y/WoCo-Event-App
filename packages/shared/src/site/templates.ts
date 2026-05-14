@@ -128,8 +128,216 @@ function pubVenuePreset(idGen: IdGen): { theme: ThemeTokens; nav: NavItem[]; pag
   return { theme, nav, pages };
 }
 
+/** Nightlife / Club template — dark, dramatic, center-logo nav with optional intro animation. */
+function nightlifePreset(idGen: IdGen): ReturnType<typeof pubVenuePreset> {
+  const theme: ThemeTokens = {
+    brandName: "Your Club",
+    palette: {
+      bg: "#050505",
+      text: "#ffffff",
+      muted: "#888888",
+      accent: "#a855f7",
+      accentHover: "#9333ea",
+      border: "#1a1a1a",
+      cardBg: "#0d0d0d",
+    },
+    fontFamily: "display",
+    radius: "sm",
+    navStyle: "center-logo",
+    introAnimation: true,
+  };
+
+  const nav: NavItem[] = [
+    { label: "Home", pageSlug: "/" },
+    { label: "Events", pageSlug: "/events" },
+    { label: "About", pageSlug: "/about" },
+    { label: "Contact", pageSlug: "/contact" },
+  ];
+
+  const pages: Page[] = [
+    {
+      slug: "/",
+      title: "Home",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "Where the night begins",
+          subheading: "The city's premier destination for live music, DJs, and unforgettable nights.",
+          ctaLabel: "See what's on",
+          ctaHref: "#/events",
+        },
+        {
+          id: idGen(),
+          type: "eventsGrid",
+          mode: "upcoming",
+          max: 4,
+        },
+      ],
+    },
+    {
+      slug: "/events",
+      title: "Events",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "Upcoming Events",
+        },
+        {
+          id: idGen(),
+          type: "eventsGrid",
+          mode: "all",
+        },
+      ],
+    },
+    {
+      slug: "/about",
+      title: "About",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "Our Story",
+          subheading: "A great night starts here.",
+        },
+        {
+          id: idGen(),
+          type: "richText",
+          markdown: "## About us\n\nTell your story here — the vibe, the history, and what makes this place special.",
+        },
+      ],
+    },
+    {
+      slug: "/contact",
+      title: "Contact",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "Get in touch",
+        },
+        {
+          id: idGen(),
+          type: "contactForm",
+          emailTo: "",
+        },
+      ],
+    },
+  ];
+
+  return { theme, nav, pages };
+}
+
+/** Clean / Modern template — light, airy, versatile for arts, galleries, cultural orgs. */
+function cleanModernPreset(idGen: IdGen): ReturnType<typeof pubVenuePreset> {
+  const theme: ThemeTokens = {
+    brandName: "Your Organisation",
+    palette: {
+      bg: "#ffffff",
+      text: "#1a1a1a",
+      muted: "#6b7280",
+      accent: "#2563eb",
+      accentHover: "#1d4ed8",
+      border: "#e5e7eb",
+      cardBg: "#f9fafb",
+    },
+    fontFamily: "system",
+    radius: "md",
+    navStyle: "overlay-drawer",
+    introAnimation: false,
+  };
+
+  const nav: NavItem[] = [
+    { label: "Home", pageSlug: "/" },
+    { label: "What's On", pageSlug: "/whats-on" },
+    { label: "About", pageSlug: "/about" },
+    { label: "Contact", pageSlug: "/contact" },
+  ];
+
+  const pages: Page[] = [
+    {
+      slug: "/",
+      title: "Home",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "Welcome",
+          subheading: "A short, compelling line about what you do and why it matters.",
+          ctaLabel: "What's On",
+          ctaHref: "#/whats-on",
+        },
+        {
+          id: idGen(),
+          type: "richText",
+          markdown: "## About us\n\nA paragraph about your organisation, its mission, and what guests can expect.",
+        },
+        {
+          id: idGen(),
+          type: "eventsGrid",
+          mode: "upcoming",
+          max: 3,
+        },
+      ],
+    },
+    {
+      slug: "/whats-on",
+      title: "What's On",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "Upcoming Events",
+        },
+        {
+          id: idGen(),
+          type: "eventsGrid",
+          mode: "all",
+        },
+      ],
+    },
+    {
+      slug: "/about",
+      title: "About",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "About us",
+        },
+        {
+          id: idGen(),
+          type: "richText",
+          markdown: "## Our story\n\nTell your story here. Who you are, what you do, and what makes your events worth attending.",
+        },
+      ],
+    },
+    {
+      slug: "/contact",
+      title: "Contact",
+      sections: [
+        {
+          id: idGen(),
+          type: "hero",
+          heading: "Get in touch",
+        },
+        {
+          id: idGen(),
+          type: "contactForm",
+          emailTo: "",
+        },
+      ],
+    },
+  ];
+
+  return { theme, nav, pages };
+}
+
 const PRESETS: Record<TemplateId, (idGen: IdGen) => ReturnType<typeof pubVenuePreset>> = {
   "pub-venue-v1": pubVenuePreset,
+  "nightlife-v1": nightlifePreset,
+  "clean-modern-v1": cleanModernPreset,
 };
 
 /** Build a new `Site` from a template preset. Caller supplies ids + owner. */
@@ -172,8 +380,20 @@ export interface TemplateCatalogueEntry {
 export const TEMPLATE_CATALOGUE: TemplateCatalogueEntry[] = [
   {
     id: "pub-venue-v1",
-    name: "Pub / Venue",
-    description: "Multi-page hospitality site with home, events, visit, and contact pages. Designed for pubs, bars, restaurants, and small music venues.",
+    name: "Pub & Venue",
+    description: "Warm hospitality site with gold accents on dark tones. Multi-page: home, what's on, visit, contact. Classic top-bar navigation.",
     bestFor: ["Pubs", "Bars", "Restaurants", "Live music venues", "Hotels"],
+  },
+  {
+    id: "nightlife-v1",
+    name: "Nightlife & Club",
+    description: "High-impact dark design with dramatic logo-split intro animation and a full-screen overlay menu. Built for maximum impression.",
+    bestFor: ["Nightclubs", "DJs", "Promoters", "Festivals", "Entertainment"],
+  },
+  {
+    id: "clean-modern-v1",
+    name: "Clean & Modern",
+    description: "Light, airy design with generous whitespace and an understated overlay drawer menu. Versatile and professional.",
+    bestFor: ["Arts venues", "Galleries", "Cultural orgs", "Festivals", "Community events"],
   },
 ];

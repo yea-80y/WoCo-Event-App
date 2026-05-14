@@ -5,6 +5,7 @@
   import { authPost } from "../api/client.js";
   import EventEditor from "./events/EventEditor.svelte";
   import PublishButton from "./events/PublishButton.svelte";
+  import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./events/ImportUrlPanel.svelte";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
   import { onMount } from "svelte";
 
@@ -52,6 +53,7 @@
   };
 
   let eventTitle = $state("");
+  let eventTagline = $state("");
   let eventDescription = $state("");
   let eventStartDate = $state("");
   let eventEndDate = $state("");
@@ -64,6 +66,16 @@
   let collectInfo = $state(false);
   let cryptoRecipientMissing = $state(false);
   let createdEventId = $state<string | null>(null);
+  let importedTiers = $state<ImportTier[] | null>(null);
+
+  function applyImport(p: ImportPreview) {
+    if (p.name)        eventTitle       = p.name;
+    if (p.tagline)     eventTagline     = p.tagline;
+    if (p.description) eventDescription = p.description;
+    if (p.startDate)   eventStartDate   = p.startDate;
+    if (p.location)    eventLocation    = p.location;
+    if (p.tiers && p.tiers.length > 0) importedTiers = p.tiers;
+  }
 
   // Step 4 — site config
   let gatewayUrl = $state("https://gateway.woco-net.com");
@@ -633,8 +645,11 @@ cp apps/server/.env.example apps/server/.env
         </div>
       {:else}
         <div class="event-form">
+          <ImportUrlPanel onapply={applyImport} />
+
           <EventEditor
             bind:title={eventTitle}
+            bind:tagline={eventTagline}
             bind:description={eventDescription}
             bind:startDate={eventStartDate}
             bind:endDate={eventEndDate}
@@ -646,10 +661,12 @@ cp apps/server/.env.example apps/server/.env
             bind:collectEmail
             bind:collectInfo
             bind:cryptoRecipientMissing
+            bind:importedTiers
           />
 
           <PublishButton
             title={eventTitle}
+            tagline={eventTagline}
             description={eventDescription}
             startDate={eventStartDate}
             endDate={eventEndDate}

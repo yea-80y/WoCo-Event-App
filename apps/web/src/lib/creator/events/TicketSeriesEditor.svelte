@@ -7,6 +7,7 @@
   import { isWalletAvailable } from "../../wallet/provider.js";
   import { getConnectedAddress } from "../../wallet/connection.js";
   import { onMount } from "svelte";
+  import type { ImportTier } from "./ImportUrlPanel.svelte";
 
   interface WaveItem {
     id: string;
@@ -59,9 +60,19 @@
      * disabled until the organiser provides a recipient address.
      */
     cryptoRecipientMissing?: boolean;
+    /**
+     * One-shot trigger: when set to a non-empty array, replaces the current
+     * tier groups with imported tiers (Skiddle/Fatsoma/Eventbrite). The editor
+     * resets this back to `null` after applying, so re-import works.
+     */
+    importedTiers?: ImportTier[] | null;
   }
 
-  let { series = $bindable(), cryptoRecipientMissing = $bindable(false) }: Props = $props();
+  let {
+    series = $bindable(),
+    cryptoRecipientMissing = $bindable(false),
+    importedTiers = $bindable(null),
+  }: Props = $props();
 
   let stripeModalOpen = $state(false);
   let stripeModalTierId = $state<string | null>(null);
@@ -136,6 +147,43 @@
       showSaleWindow: false,
     }],
   }]);
+
+  // Apply imported tiers (Skiddle/Fatsoma/Eventbrite) exactly once per assignment.
+  $effect(() => {
+    const tiers = importedTiers;
+    if (!tiers || tiers.length === 0) return;
+    const VALID = ["GBP", "USD", "EUR"] as const;
+    tierGroups = tiers.map((t) => {
+      const priceStr = (t.price ?? "").trim();
+      const priceNum = parseFloat(priceStr);
+      const isPaid = !Number.isNaN(priceNum) && priceNum > 0;
+      const ccy = (t.currency ?? "GBP").toUpperCase();
+      const currency: "USD" | "GBP" | "EUR" =
+        (VALID as readonly string[]).includes(ccy) ? (ccy as "USD" | "GBP" | "EUR") : "GBP";
+      return {
+        id: crypto.randomUUID(),
+        tierName: t.name?.trim() || "General Admission",
+        description: "",
+        approvalRequired: false,
+        isPaid,
+        price: isPaid ? priceStr : "",
+        currency,
+        cryptoEnabled: isPaid,
+        acceptedChains: [8453] as PaymentChainId[],
+        stripeEnabled: false,
+        feePassedToCustomer: true,
+        waves: [{
+          id: crypto.randomUUID(),
+          label: "",
+          totalSupply: 50,
+          saleStart: t.saleStart ?? "",
+          saleEnd: t.saleEnd ?? "",
+          showSaleWindow: Boolean(t.saleStart || t.saleEnd),
+        }],
+      };
+    });
+    importedTiers = null; // consume the trigger so re-imports work
+  });
 
   /** True when at least one tier has crypto enabled — controls whether to show the recipient prompt */
   const anyCryptoEnabled = $derived(tierGroups.some((t) => t.isPaid && t.cryptoEnabled));

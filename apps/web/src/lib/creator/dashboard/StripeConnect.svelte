@@ -163,8 +163,8 @@
                     </svg>
                   {:else if cat.status === "pending"}
                     <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="spin-icon">
-                      <circle cx="9" cy="9" r="7.5" stroke="#f59e0b" stroke-width="1.5" fill="none" opacity="0.2"/>
-                      <path d="M9 1.5A7.5 7.5 0 0 1 16.5 9" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+                      <circle cx="9" cy="9" r="7.5" stroke="var(--warning)" stroke-width="1.5" fill="none" opacity="0.2"/>
+                      <path d="M9 1.5A7.5 7.5 0 0 1 16.5 9" stroke="var(--warning)" stroke-width="1.5" stroke-linecap="round" fill="none"/>
                     </svg>
                   {:else}
                     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -300,11 +300,13 @@
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
-    font-size: 0.6875rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
     font-weight: 500;
-    padding: 0.25rem 0.625rem;
-    border-radius: 9999px;
-    letter-spacing: 0.01em;
+    padding: 0.1875rem 0.5rem;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .stripe-status-pill--active {
@@ -313,8 +315,8 @@
   }
 
   .stripe-status-pill--incomplete {
-    background: color-mix(in srgb, #f59e0b 10%, transparent);
-    color: #f59e0b;
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
   }
 
   .status-dot {
@@ -329,8 +331,8 @@
   }
 
   .status-dot--incomplete {
-    background: #f59e0b;
-    box-shadow: 0 0 6px color-mix(in srgb, #f59e0b 50%, transparent);
+    background: var(--warning);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--warning) 50%, transparent);
   }
 
   /* Body */
@@ -509,7 +511,7 @@
   }
 
   .check-item--pending {
-    border-color: color-mix(in srgb, #f59e0b 25%, var(--border));
+    border-color: color-mix(in srgb, var(--warning) 25%, var(--border));
   }
 
   .check-icon {
@@ -535,7 +537,7 @@
   }
 
   .check-item--pending .check-status {
-    color: #f59e0b;
+    color: var(--warning);
   }
 
   .spin-icon {

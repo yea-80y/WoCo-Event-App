@@ -3,6 +3,7 @@
   import ImageUpload from "./ImageUpload.svelte";
   import TicketSeriesEditor from "./TicketSeriesEditor.svelte";
   import OrderFieldsEditor from "./OrderFieldsEditor.svelte";
+  import type { ImportTier } from "./ImportUrlPanel.svelte";
 
   type SeriesDraft = {
     seriesId: string;
@@ -18,6 +19,7 @@
 
   interface Props {
     title: string;
+    tagline: string;
     description: string;
     startDate: string;
     endDate: string;
@@ -29,10 +31,12 @@
     collectEmail: boolean;
     collectInfo: boolean;
     cryptoRecipientMissing: boolean;
+    importedTiers?: ImportTier[] | null;
   }
 
   let {
     title = $bindable(),
+    tagline = $bindable(),
     description = $bindable(),
     startDate = $bindable(),
     endDate = $bindable(),
@@ -44,6 +48,7 @@
     collectEmail = $bindable(),
     collectInfo = $bindable(),
     cryptoRecipientMissing = $bindable(),
+    importedTiers = $bindable(null),
   }: Props = $props();
 
   const EMAIL_FIELD_ID = "__email";
@@ -76,6 +81,11 @@
   </label>
 
   <label>
+    <span>Sub-heading <span class="hint">optional</span></span>
+    <input type="text" bind:value={tagline} placeholder="A one-line strapline shown below the title" maxlength="120" />
+  </label>
+
+  <label>
     <span>Description</span>
     <textarea bind:value={description} placeholder="Tell people about your event" rows="3"></textarea>
   </label>
@@ -97,7 +107,7 @@
   </label>
 </div>
 
-<TicketSeriesEditor bind:series bind:cryptoRecipientMissing />
+<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers />
 
 <fieldset class="claim-mode-section">
   <legend>Claim method</legend>
@@ -173,6 +183,15 @@
     color: var(--text-secondary);
     font-size: 0.8125rem;
     font-weight: 500;
+  }
+
+  .hint {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-left: 0.375rem;
   }
 
   input[type="datetime-local"] {

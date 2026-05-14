@@ -11,4 +11,3 @@ export * from "./pod/verify.js";
 export * from "./ticket/canonical.js";
 export * from "./profile/types.js";
 export * from "./site/index.js";
-export * from "./waku/index.js";

@@ -2,6 +2,8 @@
   import type { OrderField, ClaimMode, PaymentConfig } from "@woco/shared";
   import EventEditor from "./EventEditor.svelte";
   import PublishButton from "./PublishButton.svelte";
+  import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./ImportUrlPanel.svelte";
+  import { onMount } from "svelte";
 
   interface Props {
     onpublished?: (eventId: string) => void;
@@ -10,6 +12,7 @@
   let { onpublished }: Props = $props();
 
   let title = $state("");
+  let tagline = $state("");
   let description = $state("");
   let startDate = $state("");
   let endDate = $state("");
@@ -21,13 +24,37 @@
   let collectEmail = $state(false);
   let collectInfo = $state(false);
   let orderFields = $state<OrderField[]>([]);
+  let importedTiers = $state<ImportTier[] | null>(null);
+
+  function applyImport(p: ImportPreview) {
+    if (p.name)        title       = p.name;
+    if (p.tagline)     tagline     = p.tagline;
+    if (p.description) description = p.description;
+    if (p.startDate)   startDate   = p.startDate;
+    if (p.location)    location    = p.location;
+    if (p.tiers && p.tiers.length > 0) importedTiers = p.tiers;
+  }
+
+  // Auto-apply prefill if user came here via EventsTab "Create event from this →"
+  onMount(() => {
+    try {
+      const raw = sessionStorage.getItem("woco:import-prefill");
+      if (raw) {
+        sessionStorage.removeItem("woco:import-prefill");
+        applyImport(JSON.parse(raw) as ImportPreview);
+      }
+    } catch { /* ignore */ }
+  });
 </script>
 
 <div class="event-form">
   <h2>Create Event</h2>
 
+  <ImportUrlPanel onapply={applyImport} />
+
   <EventEditor
     bind:title
+    bind:tagline
     bind:description
     bind:startDate
     bind:endDate
@@ -39,10 +66,12 @@
     bind:collectEmail
     bind:collectInfo
     bind:cryptoRecipientMissing
+    bind:importedTiers
   />
 
   <PublishButton
     {title}
+    {tagline}
     {description}
     {startDate}
     {endDate}

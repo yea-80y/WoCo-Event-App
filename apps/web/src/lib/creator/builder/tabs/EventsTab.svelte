@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { SiteEventEntry, EventDirectoryEntry } from "@woco/shared";
   import { authGet } from "../../../api/client.js";
+  import { navigate } from "../../../router/router.svelte.js";
+  import ImportUrlPanel, { type ImportPreview } from "../../events/ImportUrlPanel.svelte";
   import { onMount } from "svelte";
 
   interface Props {
@@ -51,6 +53,12 @@
 
   onMount(loadEvents);
 
+  // ── URL import: stash to sessionStorage + navigate to the creator's new-event page ─
+  function createFromImport(preview: ImportPreview) {
+    try { sessionStorage.setItem("woco:import-prefill", JSON.stringify(preview)); } catch { /* ignore */ }
+    navigate("/creator/events/new");
+  }
+
   function toggleEvent(eventId: string) {
     if (inSite.has(eventId)) {
       onsiteeventschange(siteEvents.filter((e) => e.eventId !== eventId));
@@ -100,6 +108,9 @@
       {inSite.size} selected
     </div>
   </div>
+
+  <!-- URL import: stashes preview + navigates to /creator/events/new -->
+  <ImportUrlPanel applyLabel="Create event from this →" onapply={createFromImport} />
 
   {#if state === "loading"}
     <div class="state-box">

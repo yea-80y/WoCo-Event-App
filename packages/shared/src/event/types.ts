@@ -154,6 +154,8 @@ export interface EventFeed {
   v: 1;
   eventId: string;
   title: string;
+  /** Optional short sub-heading shown below the title (one-line tagline). */
+  tagline?: string;
   description: string;
   imageHash: Hex64;
   startDate: string;
@@ -215,6 +217,8 @@ export interface SeriesManifestBlob {
 export interface CreateEventV2Request {
   event: {
     title: string;
+    /** Optional short sub-heading shown below the title (one-line tagline). */
+    tagline?: string;
     description: string;
     startDate: string;
     endDate: string;
@@ -246,6 +250,8 @@ export interface CreateEventV2Request {
 export interface EventDirectoryEntry {
   eventId: string;
   title: string;
+  /** Optional short sub-heading shown below the title (one-line tagline). */
+  tagline?: string;
   imageHash: Hex64;
   startDate: string;
   endDate?: string;

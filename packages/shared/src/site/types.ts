@@ -23,7 +23,7 @@ export type SiteSchemaVersion = typeof SITE_SCHEMA_VERSION;
 // ---------------------------------------------------------------------------
 
 /** Registered template presets. Each preset seeds default theme/pages/nav. */
-export type TemplateId = "pub-venue-v1";
+export type TemplateId = "pub-venue-v1" | "nightlife-v1" | "clean-modern-v1";
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -31,6 +31,14 @@ export type TemplateId = "pub-venue-v1";
 
 /** Font family choice — limited allowlist so the deployed bundle stays small. */
 export type FontFamilyId = "system" | "serif" | "display";
+
+/**
+ * Navigation layout style for the deployed site.
+ * - topbar: logo left, links right, hamburger on mobile (classic)
+ * - center-logo: logo centered, hamburger opens a full-screen overlay menu; supports logo-split intro animation
+ * - overlay-drawer: hamburger-only header on all screen sizes, opens a full-screen menu
+ */
+export type NavStyleId = "topbar" | "center-logo" | "overlay-drawer";
 
 /** Border-radius scale used across cards/buttons. */
 export type RadiusScale = "sm" | "md" | "lg";
@@ -55,6 +63,13 @@ export interface ThemeTokens {
   palette: SitePalette;
   fontFamily: FontFamilyId;
   radius: RadiusScale;
+  /** Navigation layout. Defaults to "topbar" if absent (backwards compatible). */
+  navStyle?: NavStyleId;
+  /**
+   * Logo-split curtain intro animation. Only applies when navStyle === "center-logo".
+   * Defaults to true for nightlife-v1, false otherwise.
+   */
+  introAnimation?: boolean;
 }
 
 // ---------------------------------------------------------------------------

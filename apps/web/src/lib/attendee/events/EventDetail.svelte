@@ -9,7 +9,8 @@
   import { getProfile } from "../../api/profiles.js";
   import type { UserProfile } from "@woco/shared";
   import UserAvatar from "../../components/profile/UserAvatar.svelte";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
+  import { isPastEvent as checkPast } from "../../utils/events.js";
 
   interface Props {
     eventId: string;
@@ -30,8 +31,12 @@
   let error = $state<string | null>(null);
   let creatorProfile = $state<UserProfile | null>(null);
   let ticketQty = $state<Record<string, number>>({});
+  let now = $state(Date.now());
+  let clockTimer: ReturnType<typeof setInterval>;
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
+
+  const isPastEvent = $derived(!!event && checkPast(event, now));
 
   function formatDate(iso: string): string {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -45,6 +50,7 @@
   }
 
   onMount(() => {
+    clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
     // Always fetch fresh — silently patches title, dates, series etc. if changed
     getEvent(eventId, externalApiUrl)
       .then((fresh) => {
@@ -71,6 +77,8 @@
         }
       });
   });
+
+  onDestroy(() => clearInterval(clockTimer));
 </script>
 
 <div class="event-detail">
@@ -89,7 +97,20 @@
       />
     {/if}
 
-    <h1>{event.title}</h1>
+    <h1>
+      {event.title}
+      {#if isPastEvent}<span class="past-pill">Past event</span>{/if}
+    </h1>
+
+    {#if event.tagline}
+      <p class="tagline">{event.tagline}</p>
+    {/if}
+
+    {#if isPastEvent}
+      <div class="past-banner">
+        This event has ended. Tickets are no longer available — this page is here for reference.
+      </div>
+    {/if}
 
     <div class="meta">
       <p class="dates">{formatDate(event.startDate)} &mdash; {formatDate(event.endDate)}</p>
@@ -132,54 +153,72 @@
     {/if}
 
     <h2>Tickets</h2>
-    <div class="series-list">
-      {#each event.series as s}
-        {@const isPaid = !!(s.payment && parseFloat(s.payment.price) > 0)}
-        <div class="series-card" class:series-card--paid={isPaid}>
-          <div class="series-top">
-            <div class="series-info">
-              <div class="series-header">
-                <h3>{s.name}</h3>
-                {#if s.payment && parseFloat(s.payment.price) > 0}
-                  <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
-                {:else}
-                  <span class="series-price series-price--free">Free</span>
-                {/if}
-              </div>
-              {#if s.description}
-                <p class="series-desc">{s.description}</p>
+    {#if isPastEvent}
+      <div class="past-tickets-block">
+        <div class="past-tickets-list">
+          {#each event.series as s}
+            <div class="past-series-row">
+              <span class="past-series-name">{s.name}</span>
+              {#if s.payment && parseFloat(s.payment.price) > 0}
+                <span class="past-series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
+              {:else}
+                <span class="past-series-price past-series-price--free">Free</span>
               {/if}
             </div>
-            {#if isPaid}
-              <div class="series-qty">
-                <span class="qty-label">Qty</span>
-                <select
-                  value={ticketQty[s.seriesId] ?? 1}
-                  onchange={(e) => { ticketQty = { ...ticketQty, [s.seriesId]: parseInt((e.target as HTMLSelectElement).value) }; }}
-                >
-                  {#each Array.from({ length: 10 }, (_, i) => i + 1) as n}
-                    <option value={n}>{n}</option>
-                  {/each}
-                </select>
-              </div>
-            {/if}
-          </div>
-          <ClaimButton
-            eventId={event.eventId}
-            seriesId={s.seriesId}
-            totalSupply={s.totalSupply}
-            encryptionKey={event.encryptionKey}
-            orderFields={event.orderFields}
-            claimMode={event.claimMode ?? "wallet"}
-            approvalRequired={s.approvalRequired ?? false}
-            apiUrl={externalApiUrl}
-            payment={s.payment}
-            eventEndDate={event.endDate}
-            quantity={ticketQty[s.seriesId] ?? 1}
-          />
+          {/each}
         </div>
-      {/each}
-    </div>
+        <p class="past-tickets-note">Ticket sales have closed.</p>
+      </div>
+    {:else}
+      <div class="series-list">
+        {#each event.series as s}
+          {@const isPaid = !!(s.payment && parseFloat(s.payment.price) > 0)}
+          <div class="series-card" class:series-card--paid={isPaid}>
+            <div class="series-top">
+              <div class="series-info">
+                <div class="series-header">
+                  <h3>{s.name}</h3>
+                  {#if s.payment && parseFloat(s.payment.price) > 0}
+                    <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
+                  {:else}
+                    <span class="series-price series-price--free">Free</span>
+                  {/if}
+                </div>
+                {#if s.description}
+                  <p class="series-desc">{s.description}</p>
+                {/if}
+              </div>
+              {#if isPaid}
+                <div class="series-qty">
+                  <span class="qty-label">Qty</span>
+                  <select
+                    value={ticketQty[s.seriesId] ?? 1}
+                    onchange={(e) => { ticketQty = { ...ticketQty, [s.seriesId]: parseInt((e.target as HTMLSelectElement).value) }; }}
+                  >
+                    {#each Array.from({ length: 10 }, (_, i) => i + 1) as n}
+                      <option value={n}>{n}</option>
+                    {/each}
+                  </select>
+                </div>
+              {/if}
+            </div>
+            <ClaimButton
+              eventId={event.eventId}
+              seriesId={s.seriesId}
+              totalSupply={s.totalSupply}
+              encryptionKey={event.encryptionKey}
+              orderFields={event.orderFields}
+              claimMode={event.claimMode ?? "wallet"}
+              approvalRequired={s.approvalRequired ?? false}
+              apiUrl={externalApiUrl}
+              payment={s.payment}
+              eventEndDate={event.endDate}
+              quantity={ticketQty[s.seriesId] ?? 1}
+            />
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <div class="actions-cta">
       <button class="embed-btn" onclick={() => navigate(`/event/${event!.eventId}/embed`)}>
@@ -221,12 +260,51 @@
     font-size: 1.75rem;
     font-weight: 700;
     letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+  }
+
+  .tagline {
+    margin: 0 0 0.875rem;
+    color: var(--text-secondary);
+    font-size: 1.0625rem;
+    font-weight: 500;
+    line-height: 1.4;
+  }
+
+  .past-pill {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    color: var(--warning);
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .past-banner {
+    margin: 0 0 1.25rem;
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 25%, var(--border));
+    border-left: 3px solid var(--warning);
+    border-radius: var(--radius-sm);
+    line-height: 1.5;
   }
 
   .meta {
     color: var(--text-secondary);
     font-size: 0.875rem;
     margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
   }
 
   .meta p {
@@ -258,11 +336,12 @@
   }
 
   .creator-label {
+    font-family: var(--font-mono);
     font-size: 0.6875rem;
-    font-weight: 600;
+    font-weight: 500;
     color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.12em;
   }
 
   .creator-name {
@@ -288,6 +367,57 @@
     font-size: 1.125rem;
     font-weight: 600;
     margin: 0 0 0.75rem;
+  }
+
+  .past-tickets-block {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    opacity: 0.7;
+  }
+
+  .past-tickets-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .past-series-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    gap: 0.5rem;
+  }
+
+  .past-series-row:last-child { border-bottom: none; }
+
+  .past-series-name {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .past-series-price {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--bg-surface-hover);
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+
+  .past-series-price--free { background: transparent; }
+
+  .past-tickets-note {
+    margin: 0;
+    padding: 0.625rem 1rem;
+    font-size: 0.8125rem;
+    color: var(--text-dim);
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border);
+    font-style: italic;
   }
 
   .series-list {
@@ -428,7 +558,7 @@
     font-weight: 600;
     background: var(--accent);
     border-radius: var(--radius-sm);
-    color: #fff;
+    color: var(--accent-ink);
     white-space: nowrap;
     transition: opacity var(--transition);
   }

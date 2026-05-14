@@ -134,6 +134,10 @@
     color: var(--error);
   }
 
+  @media (max-width: 480px) {
+    .address, .kind-badge { display: none; }
+  }
+
   /* Export key modal */
   .export-backdrop {
     position: fixed;

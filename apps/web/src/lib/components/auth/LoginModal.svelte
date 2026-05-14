@@ -43,7 +43,10 @@
   <div class="backdrop" role="presentation" onclick={handleBackdrop}>
     <div class="modal" role="dialog" aria-modal="true" aria-label="Login">
       <header>
-        <h2>Sign in to WoCo</h2>
+        <div class="modal-heading">
+          <span class="kicker kicker--plain">WoCo</span>
+          <h2>Sign in</h2>
+        </div>
         <button class="close-btn" onclick={close} aria-label="Close">
           &times;
         </button>
@@ -83,32 +86,45 @@
   .modal {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 1.75rem;
-    min-width: 340px;
+    border-radius: var(--radius-md);
+    padding: 1.5rem;
+    min-width: 320px;
     max-width: 400px;
     width: 90vw;
+    max-height: 90svh;
+    overflow-y: auto;
   }
 
   header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
     margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .modal-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
   }
 
   h2 {
     margin: 0;
-    font-size: 1.125rem;
-    font-weight: 600;
+    font-size: 1.25rem;
+    font-weight: 700;
     color: var(--text);
+    letter-spacing: -0.025em;
   }
 
   .close-btn {
-    color: var(--text-muted);
-    font-size: 1.375rem;
+    color: var(--text-dim);
+    font-size: 1.25rem;
     line-height: 1;
     transition: color var(--transition);
+    flex-shrink: 0;
+    padding: 0.125rem;
   }
 
   .close-btn:hover {
@@ -118,15 +134,18 @@
   .options {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.875rem;
   }
 
   .divider {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    color: var(--text-muted);
-    font-size: 0.75rem;
+    gap: 0.625rem;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
   }
 
   .divider::before,

@@ -3,15 +3,18 @@
  *
  * Route map (canonical → component-route alias kept for back-compat):
  *
- *   ATTENDEE surface (default)
- *     /                            home
+ *   NEUTRAL surface
+ *     /                            splitter (landing — funnels to organiser vs attendee)
+ *
+ *   ATTENDEE surface
+ *     /discover                    discover (events feed — was at /)
  *     /event/:id                   event
  *     /tickets   (and /my-tickets) my-tickets
  *     /verify                      verify
  *     /profile, /profile/:addr     profile
  *
  *   CREATOR surface
- *     /creator                          creator-home   (currently → dashboard-index)
+ *     /creator                          creator-home  (studio dashboard)
  *     /creator/events                   dashboard-index
  *     /creator/events/new   (and /create) create
  *     /creator/events/:id               dashboard
@@ -25,11 +28,11 @@
  *     /stripe/return, /stripe/refresh   stripe-return / stripe-refresh
  */
 
-export type Surface = "attendee" | "creator";
+export type Surface = "neutral" | "attendee" | "creator";
 
-let _route = $state("home");
+let _route = $state("splitter");
 let _params = $state<Record<string, string>>({});
-let _surface = $state<Surface>("attendee");
+let _surface = $state<Surface>("neutral");
 
 function parseHash(): string {
   const hash = typeof window !== "undefined" ? window.location.hash : "";
@@ -46,8 +49,11 @@ function matchRoute(pathWithQuery: string): Match {
   const qIdx = pathWithQuery.indexOf("?");
   const path = qIdx === -1 ? pathWithQuery : pathWithQuery.slice(0, qIdx);
 
+  // ── Neutral splitter (root landing) ──────────────────────────────────────
+  if (path === "/" || path === "") return { route: "splitter", params: {}, surface: "neutral" };
+
   // ── Creator surface (explicit /creator/* prefix) ─────────────────────────
-  if (path === "/creator") return { route: "dashboard-index", params: {}, surface: "creator" };
+  if (path === "/creator") return { route: "creator-home", params: {}, surface: "creator" };
   if (path === "/creator/events") return { route: "dashboard-index", params: {}, surface: "creator" };
   if (path === "/creator/events/new") return { route: "create", params: {}, surface: "creator" };
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
@@ -63,7 +69,7 @@ function matchRoute(pathWithQuery: string): Match {
   if (creatorProfileMatch) return { route: "profile", params: { address: creatorProfileMatch[1] }, surface: "creator" };
 
   // ── Attendee surface ────────────────────────────────────────────────────
-  if (path === "/" || path === "") return { route: "home", params: {}, surface: "attendee" };
+  if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
   if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
@@ -89,7 +95,7 @@ function matchRoute(pathWithQuery: string): Match {
   const eventMatch = path.match(/^\/event\/(.+)$/);
   if (eventMatch) return { route: "event", params: { id: eventMatch[1] }, surface: "attendee" };
 
-  return { route: "home", params: {}, surface: "attendee" };
+  return { route: "splitter", params: {}, surface: "neutral" };
 }
 
 function update() {

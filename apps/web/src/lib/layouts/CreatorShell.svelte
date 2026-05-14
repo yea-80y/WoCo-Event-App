@@ -5,6 +5,12 @@
   import { router, navigate } from "../router/router.svelte.js";
   import SessionStatus from "../components/auth/SessionStatus.svelte";
   import UserAvatar from "../components/profile/UserAvatar.svelte";
+  import WocoWordmark from "../components/brand/WocoWordmark.svelte";
+  import LayoutDashboard from "lucide-svelte/icons/layout-dashboard";
+  import CalendarDays from "lucide-svelte/icons/calendar-days";
+  import Plus from "lucide-svelte/icons/plus";
+  import Monitor from "lucide-svelte/icons/monitor";
+  import ArrowLeft from "lucide-svelte/icons/arrow-left";
 
   interface Props {
     children: Snippet;
@@ -12,7 +18,7 @@
   let { children }: Props = $props();
 
   // Active-tab matchers — multiple legacy/canonical routes resolve to the same nav item.
-  const isHome = $derived(router.route === "dashboard-index" && !router.params.id);
+  const isHome = $derived(router.route === "creator-home");
   const isEvents = $derived(
     router.route === "dashboard-index" ||
     router.route === "dashboard" ||
@@ -25,19 +31,18 @@
 
 <main>
   <header class="top-bar">
-    <button class="logo" onclick={() => navigate("/creator")}>
-      <img src="./logo.png" alt="WoCo" class="logo-img" />
-      <span>WoCo</span>
-      <span class="surface-badge">Creator</span>
+    <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
+      <WocoWordmark height={20} variant="default" />
+      <span class="surface-badge">Studio</span>
     </button>
 
     <div class="top-right">
       {#if !auth.ready}
         <span class="loading">Loading...</span>
       {:else if auth.isConnected && auth.parent}
-        <button class="surface-toggle" onclick={() => navigate("/")} title="View attendee site">
-          <span class="surface-toggle-arrow">←</span>
-          <span class="surface-toggle-label">Attendee site</span>
+        <button class="surface-toggle" onclick={() => navigate("/")} title="Back to home">
+          <span class="surface-toggle-arrow"><ArrowLeft size={14} strokeWidth={2.5} /></span>
+          <span class="surface-toggle-label">Home</span>
         </button>
         <SessionStatus />
         <button class="top-avatar-btn" onclick={() => navigate(`/creator/profile/${auth.parent!.toLowerCase()}`)}>
@@ -52,24 +57,34 @@
   </header>
 
   <section class="content">
-    {@render children()}
+    {#if auth.ready}
+      {@render children()}
+    {/if}
   </section>
 
   <nav class="bottom-nav">
     <button
       class="bottom-nav-item"
-      class:active={isEvents}
-      onclick={() => navigate("/creator/events")}
+      class:active={isHome}
+      onclick={() => navigate("/creator")}
     >
-      <span class="nav-icon">&#127903;</span>
-      <span class="nav-label">My Events</span>
+      <span class="nav-icon"><LayoutDashboard size={20} strokeWidth={2.25} /></span>
+      <span class="nav-label">Studio</span>
     </button>
     <button
       class="bottom-nav-item"
+      class:active={isEvents}
+      onclick={() => navigate("/creator/events")}
+    >
+      <span class="nav-icon"><CalendarDays size={20} strokeWidth={2.25} /></span>
+      <span class="nav-label">Events</span>
+    </button>
+    <button
+      class="bottom-nav-item bottom-nav-item--accent"
       class:active={router.route === "create"}
       onclick={() => navigate("/creator/events/new")}
     >
-      <span class="nav-icon">&#43;</span>
+      <span class="nav-icon"><Plus size={20} strokeWidth={2.5} /></span>
       <span class="nav-label">Create</span>
     </button>
     <button
@@ -77,7 +92,7 @@
       class:active={isSites}
       onclick={() => navigate("/creator/sites")}
     >
-      <span class="nav-icon">&#127760;</span>
+      <span class="nav-icon"><Monitor size={20} strokeWidth={2.25} /></span>
       <span class="nav-label">Sites</span>
     </button>
     {#if auth.isConnected}
@@ -117,25 +132,25 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: var(--text);
-    letter-spacing: -0.02em;
     flex-shrink: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    transition: transform var(--transition-fast);
   }
-  .logo:hover { color: var(--accent-text); }
-  .logo-img { width: 26px; height: 26px; border-radius: 4px; }
+  .logo:hover { transform: translate(-1px, -1px); }
 
   .surface-badge {
     display: inline-block;
-    margin-left: 0.125rem;
     padding: 0.125rem 0.4375rem;
+    font-family: var(--font-mono);
     font-size: 0.625rem;
-    font-weight: 700;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--accent-text);
-    background: var(--accent-subtle);
+    letter-spacing: 0.1em;
+    color: var(--accent-ink);
+    background: var(--accent);
     border-radius: var(--radius-sm);
   }
 
@@ -184,7 +199,7 @@
     transition: all var(--transition);
     white-space: nowrap;
   }
-  .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
   .top-avatar-btn {
     margin-left: 0.375rem;
@@ -226,8 +241,19 @@
   .bottom-nav-item:hover { background: var(--accent-subtle); }
   .bottom-nav-item.active { color: var(--accent-text); }
   .bottom-nav-item:not(.active) { color: var(--text-muted); }
-  .nav-icon { font-size: 1.25rem; line-height: 1; }
-  .nav-label { font-size: 0.625rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .nav-icon { display: inline-flex; align-items: center; line-height: 0; }
+  .nav-label { font-size: 0.625rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; font-family: var(--font-mono); }
+  .bottom-nav-item--accent .nav-icon {
+    background: var(--accent);
+    color: var(--accent-ink);
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .bottom-nav-item--accent.active .nav-icon { background: var(--accent-hover); }
   .nav-avatar {
     display: flex;
     align-items: center;

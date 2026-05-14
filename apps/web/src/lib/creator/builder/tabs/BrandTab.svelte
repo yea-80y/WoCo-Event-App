@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Site, FontFamilyId, RadiusScale, SitePalette } from "@woco/shared";
+  import type { Site, FontFamilyId, RadiusScale, SitePalette, NavStyleId } from "@woco/shared";
   import { uploadSiteImage } from "../../../api/sites.js";
   import { fileToBase64 } from "../../../utils.js";
 
@@ -76,6 +76,12 @@
     { id: 'sm', label: 'Sharp', desc: '4px' },
     { id: 'md', label: 'Rounded', desc: '8px' },
     { id: 'lg', label: 'Pill', desc: '12px' },
+  ];
+
+  const NAV_OPTIONS: { id: NavStyleId; label: string; desc: string }[] = [
+    { id: 'topbar',        label: 'Top Bar',        desc: 'Logo left, links right. Classic and scannable.' },
+    { id: 'center-logo',   label: 'Center Logo',    desc: 'Brand centered, hamburger opens a fullscreen overlay. Optional logo-split intro animation.' },
+    { id: 'overlay-drawer', label: 'Overlay Drawer', desc: 'Minimal header, hamburger opens a fullscreen menu from the right on all devices.' },
   ];
 
   const FONT_SAMPLE_STYLE: Record<FontFamilyId, string> = {
@@ -215,6 +221,61 @@
         </button>
       {/each}
     </div>
+  </section>
+
+  <!-- Navigation style -->
+  <section class="section">
+    <h3 class="section-title">Navigation style</h3>
+    <p class="section-desc">How the menu is displayed on your published site. Can be changed at any time without affecting your pages.</p>
+    <div class="nav-style-cards">
+      {#each NAV_OPTIONS as opt}
+        <button
+          class="nav-style-card"
+          class:active={( site.theme.navStyle ?? 'topbar') === opt.id}
+          onclick={() => { site.theme.navStyle = opt.id; }}
+        >
+          <!-- Tiny visual thumbnail -->
+          <div class="nsv-thumb nsv-{opt.id.replace('-', '-')}">
+            {#if opt.id === 'topbar'}
+              <div class="nsv-bar nsv-bar-topbar">
+                <div class="nsv-dot"></div>
+                <div class="nsv-links"><div></div><div></div><div></div></div>
+              </div>
+            {:else if opt.id === 'center-logo'}
+              <div class="nsv-bar nsv-bar-center">
+                <div class="nsv-hb"><div></div><div></div></div>
+                <div class="nsv-dot nsv-dot-center"></div>
+                <div class="nsv-spacer"></div>
+              </div>
+            {:else}
+              <div class="nsv-bar nsv-bar-drawer">
+                <div class="nsv-dot"></div>
+                <div class="nsv-hb-right"><div></div><div></div></div>
+              </div>
+            {/if}
+            <div class="nsv-body">
+              <div class="nsv-h1"></div>
+              <div class="nsv-h2"></div>
+            </div>
+          </div>
+          <div class="ns-info">
+            <span class="ns-label">{opt.label}</span>
+            <span class="ns-desc">{opt.desc}</span>
+          </div>
+        </button>
+      {/each}
+    </div>
+
+    {#if (site.theme.navStyle ?? 'topbar') === 'center-logo'}
+      <label class="intro-toggle">
+        <input
+          type="checkbox"
+          checked={site.theme.introAnimation !== false}
+          onchange={(e) => { site.theme.introAnimation = (e.currentTarget as HTMLInputElement).checked; }}
+        />
+        <span>Show logo-split intro animation on page load</span>
+      </label>
+    {/if}
   </section>
 
   <!-- Colour palette -->
@@ -463,6 +524,166 @@
     height: 1.25rem;
     background: var(--accent);
     opacity: 0.7;
+  }
+
+  /* ── Nav style cards ── */
+  .nav-style-cards {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.625rem;
+  }
+
+  @media (min-width: 500px) {
+    .nav-style-cards {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  .nav-style-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    padding: 0.75rem;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    cursor: pointer;
+    text-align: left;
+    transition: all var(--transition);
+  }
+
+  .nav-style-card:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-elevated);
+  }
+
+  .nav-style-card.active {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
+  }
+
+  /* Thumbnail */
+  .nsv-thumb {
+    height: 48px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #111;
+    border: 1px solid rgba(255,255,255,0.06);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .nsv-bar {
+    display: flex;
+    align-items: center;
+    height: 14px;
+    padding: 0 5px;
+    gap: 3px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.02);
+    flex-shrink: 0;
+  }
+
+  .nsv-bar-topbar { justify-content: space-between; }
+  .nsv-bar-center { justify-content: space-between; }
+  .nsv-bar-drawer { justify-content: space-between; }
+
+  .nsv-dot {
+    width: 18px;
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  .nsv-dot-center {
+    margin: 0 auto;
+  }
+
+  .nsv-links {
+    display: flex;
+    gap: 2px;
+  }
+
+  .nsv-links div {
+    width: 8px;
+    height: 3px;
+    background: rgba(255,255,255,0.3);
+    border-radius: 1px;
+  }
+
+  .nsv-hb, .nsv-hb-right {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .nsv-hb div, .nsv-hb-right div {
+    width: 8px;
+    height: 1.5px;
+    background: rgba(255,255,255,0.5);
+    border-radius: 1px;
+  }
+
+  .nsv-spacer { width: 16px; }
+
+  .nsv-body {
+    flex: 1;
+    padding: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .nsv-h1 {
+    width: 70%;
+    height: 4px;
+    background: rgba(255,255,255,0.4);
+    border-radius: 2px;
+  }
+
+  .nsv-h2 {
+    width: 50%;
+    height: 3px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 2px;
+  }
+
+  .ns-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .ns-label {
+    font-size: 0.8125rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .ns-desc {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .intro-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0.625rem 0.875rem;
+    background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-radius: var(--radius-sm);
+  }
+
+  .intro-toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
   }
 
   /* ── Presets ── */

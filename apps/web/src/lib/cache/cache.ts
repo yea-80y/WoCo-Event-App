@@ -87,7 +87,7 @@ export const TTL = {
 
 export const cacheKey = {
   event: (eventId: string) => `event:${eventId}`,
-  directory: () => "events:directory",
+  directory: () => "events:directory:v2",
   /** address is the wallet address (lowercase) or "anon" for unauthenticated checks. */
   claimStatus: (eventId: string, seriesId: string, address = "anon") =>
     `claim-status:${eventId}:${seriesId}:${address}`,

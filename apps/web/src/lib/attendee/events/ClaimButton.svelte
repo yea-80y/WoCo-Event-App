@@ -161,6 +161,17 @@
   let prefetching = $state(false);
   /** Bumped by hover/focus/touchstart on Pay to fire pre-upload immediately. */
   let payHoverTick = $state(0);
+  /**
+   * Guards the "mount trigger" reservation conditions below. Must be flipped
+   * to true by an explicit user gesture (Pay / Claim button click) before the
+   * email-only / card-first fee-sheet conditions can arm a reservation.
+   *
+   * Without this gate, EVERY ClaimButton on the page would immediately reserve
+   * a slot on mount, creating phantom holds for series the buyer never touched.
+   * showOrderForm and showChainSelector are already gated on user interaction
+   * by definition; only the fee-sheet "early trigger" needs this extra guard.
+   */
+  let intentToCheckout = $state(false);
 
   // ──────────────────────────────────────────────────────────────
   // Validation + claim-input helpers
@@ -376,18 +387,18 @@
     seriesId,
     getQuantity: () => quantity,
     getShouldHold: () => {
-      // Skip when the buyer has already claimed (or just returned from a
-      // successful Stripe checkout) — otherwise the email-mount trigger
-      // re-allocates a hold immediately on the success page.
       const alreadyDone = claimed || _permanentClaimed !== null || approvalPending || stripeSuccess.visible;
       return isPaid && !alreadyDone && quantity >= 1 && (
-        // Email-only or card-first: fee sheet visible on mount — hold immediately
-        (hasStripe && claimMode === "email") ||
-        (hasStripe && (!hasCrypto || isCardFirst)) ||
-        // Order form open (any payment method)
+        // Order form open (any payment method) — explicit user action opened it
         showOrderForm ||
-        // Crypto payment sheet open (wallet user chose a network)
-        showChainSelector
+        // Crypto payment sheet open — explicit user action
+        showChainSelector ||
+        // Email-only / card-first fee sheet: only after the buyer has explicitly
+        // clicked a payment button. Without intentToCheckout, every ClaimButton
+        // on the page would create a hold on mount (phantom reservations for
+        // series the buyer never touched).
+        (intentToCheckout && hasStripe && claimMode === "email") ||
+        (intentToCheckout && hasStripe && (!hasCrypto || isCardFirst))
       );
     },
   });
@@ -441,6 +452,7 @@
   //   handleClaim             → free / non-crypto wallet+email claim
   // ──────────────────────────────────────────────────────────────
   async function handleStripeCheckout() {
+    intentToCheckout = true;
     // If there's an order form and it hasn't been shown yet, show it first
     if (hasOrderForm && !showOrderForm) {
       stripeAfterForm = true;
@@ -546,6 +558,7 @@
   }
 
   function handleClaimClick(method?: "wallet" | "email") {
+    intentToCheckout = true;
     if (method) chosenMethod = method;
 
     if (claimMode === "both" && !method && !showOrderForm) {
@@ -1020,7 +1033,7 @@
     />
   {:else if approvalPending}
     <div class="pending-badge">
-      <span class="pending-icon">&#9679;</span>
+      <span class="live-dot"></span>
       Pending Approval
     </div>
     <p class="pending-note">Your request has been submitted. You'll receive your ticket once the organiser approves it.</p>
@@ -1205,7 +1218,7 @@
     font-weight: 600;
     border-radius: var(--radius-sm);
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     white-space: nowrap;
     transition: background var(--transition);
   }
@@ -1281,22 +1294,22 @@
   /* STRIPE EMAIL-SUCCESS MODAL — moved to ./claim/StripeSuccessCard.svelte */
 
   .pending-badge {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 0.375rem;
-    padding: 0.5rem 1rem;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: #d97706;
-    border: 1px solid #d97706;
+    padding: 0.375rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent-text);
+    background: var(--accent-subtle);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     white-space: nowrap;
   }
 
-  .pending-icon {
-    font-size: 0.5rem;
-    opacity: 0.8;
-  }
 
   .pending-note {
     font-size: 0.6875rem;
@@ -1372,7 +1385,7 @@
     font-weight: 600;
     border-radius: var(--radius-sm);
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     white-space: nowrap;
     transition: background 0.2s ease, opacity 0.2s ease;
   }

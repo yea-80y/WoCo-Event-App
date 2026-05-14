@@ -5,6 +5,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
+  import { isPastEvent } from "../../utils/events.js";
   import { onMount } from "svelte";
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
   import TicketSuccess from "../../attendee/events/TicketSuccess.svelte";
@@ -187,6 +188,9 @@
   function mapsUrl(location: string): string {
     return `https://maps.google.com/?q=${encodeURIComponent(location)}`;
   }
+
+  // True once the event itself has ended — locks down qty selection + Get Tickets.
+  const eventIsPast = $derived(event ? isPastEvent(event) : false);
 
   // ── Ticket quantity + Get Tickets ─────────────────────────────────────────
   function handleQtyChange(s: SeriesSummary, qty: number) {
@@ -543,6 +547,9 @@
     <!-- Event title + meta -->
     <div class="event-header">
       <h1 class="event-title">{event.title}</h1>
+      {#if event.tagline}
+        <p class="event-tagline">{event.tagline}</p>
+      {/if}
 
       <div class="meta-stack">
         <!-- Date/time -->
@@ -631,10 +638,10 @@
           {@const heldByOthers = ss?.held ?? 0}
           {@const effectiveRemaining = Math.max(0, physRemaining - heldByOthers)}
           {@const soldOut = ss != null && ss.available === 0}
-          {@const isUnavailable = sale !== "active" || soldOut}
+          {@const isUnavailable = eventIsPast || sale !== "active" || soldOut}
           {@const isPaid = s.payment && parseFloat(s.payment.price) > 0}
           {@const qty = ticketQty[s.seriesId] ?? 0}
-          {@const maxQty = (sale !== "active" || soldOut) ? 0 : Math.min(effectiveRemaining, 10)}
+          {@const maxQty = isUnavailable ? 0 : Math.min(effectiveRemaining, 10)}
 
           {#if i > 0}
             <div class="ticket-divider"></div>
@@ -654,7 +661,9 @@
 
             <!-- Middle: status + price -->
             <div class="ticket-row-mid">
-              {#if sale === "future"}
+              {#if eventIsPast}
+                <span class="ticket-status">Event ended</span>
+              {:else if sale === "future"}
                 <span class="ticket-status">Opens {formatShortDate(s.saleStart!)}</span>
               {:else if sale === "past"}
                 <span class="ticket-status">Sales closed</span>
@@ -699,13 +708,15 @@
       <div class="tickets-footer">
         <button
           class="get-tickets-btn"
-          class:get-tickets-btn--active={anySelected}
-          disabled={!anySelected}
+          class:get-tickets-btn--active={anySelected && !eventIsPast}
+          disabled={!anySelected || eventIsPast}
           onclick={handleGetTickets}
         >
-          Get Tickets
+          {eventIsPast ? "Event ended" : "Get Tickets"}
         </button>
-        {#if !anySelected}
+        {#if eventIsPast}
+          <p class="nothing-selected">Ticket sales are closed for past events</p>
+        {:else if !anySelected}
           <p class="nothing-selected">Nothing selected yet</p>
         {/if}
       </div>
@@ -1041,8 +1052,16 @@
     font-weight: 800;
     letter-spacing: -0.03em;
     color: var(--text);
-    margin: 0 0 1.25rem;
+    margin: 0 0 0.5rem;
     line-height: 1.15;
+  }
+
+  .event-tagline {
+    font-size: 1.125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    margin: 0 0 1.25rem;
   }
 
   /* Meta — stacked list, each item its own row */

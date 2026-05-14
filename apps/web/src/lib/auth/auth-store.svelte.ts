@@ -88,9 +88,11 @@ function _getSigner(): EIP712Signer {
 
 /**
  * Restore cached session + POD from IndexedDB (shared by all login methods).
+ * Passes the current `_parent` as the expected parent so a stale delegation
+ * from a different identity can never be silently re-attached.
  */
 async function _restoreCachedAuth(): Promise<void> {
-  const session = await restoreSession();
+  const session = await restoreSession(_parent);
   if (session) {
     _sessionAddress = session.sessionWallet.address;
   }
@@ -99,6 +101,20 @@ async function _restoreCachedAuth(): Promise<void> {
   if (seed) {
     const kp = await getPodKeypair();
     _podPublicKeyHex = kp?.publicKeyHex ?? null;
+  }
+}
+
+/**
+ * If the prior `PARENT_ADDRESS` in storage differs from `address`, wipe the
+ * cached session + POD identity before adopting the new account. Without
+ * this, a session delegation signed by the previous wallet would be
+ * misattributed to the newly-logged-in identity (cross-identity leak).
+ */
+async function _clearStaleAuthForSwitch(address: string): Promise<void> {
+  const priorParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
+  if (priorParent && priorParent.toLowerCase() !== address.toLowerCase()) {
+    await clearSession();
+    await clearPodIdentity();
   }
 }
 
@@ -215,14 +231,7 @@ async function loginWeb3(): Promise<boolean> {
     const address = await connectWallet();
     if (!address) return false;
 
-    // If IndexedDB holds a session/POD for a different parent, wipe them
-    // before adopting the new address — otherwise the cached session (signed
-    // by the prior wallet) would be misattributed to the newly unlocked one.
-    const priorParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
-    if (priorParent && priorParent !== address) {
-      await clearSession();
-      await clearPodIdentity();
-    }
+    await _clearStaleAuthForSwitch(address);
 
     await putKV(StorageKeys.AUTH_KIND, "web3" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, address);
@@ -259,6 +268,8 @@ async function loginLocal(): Promise<boolean> {
       account = await createLocalAccount();
     }
 
+    await _clearStaleAuthForSwitch(account.address);
+
     await putKV(StorageKeys.AUTH_KIND, "local" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, account.address);
     _kind = "local";
@@ -290,6 +301,8 @@ async function loginPara(address: string): Promise<boolean> {
   _busy = true;
 
   try {
+    await _clearStaleAuthForSwitch(address);
+
     await putKV(StorageKeys.AUTH_KIND, "para" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, address);
     _kind = "para";
@@ -318,6 +331,8 @@ async function loginPasskey(): Promise<boolean> {
   try {
     // Always use discoverable get() → shows passkey picker → falls back to create
     const account = await authenticatePasskey();
+
+    await _clearStaleAuthForSwitch(account.address);
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, account.address);
@@ -444,19 +459,21 @@ async function signRequest(
   ].join("\n");
 
   // `hasSession` can be true (derived from in-memory _sessionAddress) while the
-  // underlying IndexedDB blob is gone (expired, host changed, or storage was
-  // cleared). `signWithSession` silently returns null in that case, which the
-  // caller would see as a missing auth header. Detect and re-establish.
-  let result = await signWithSession(challenge);
+  // underlying IndexedDB blob is gone (expired, host changed, parent-mismatch,
+  // or storage was cleared). `signWithSession` silently returns null in that
+  // case, which the caller would see as a missing auth header. Detect and
+  // re-establish — and bind to the active `_parent` so a stale delegation
+  // belonging to a previous identity can never be sent.
+  let result = await signWithSession(challenge, _parent);
   if (!result) {
     _sessionAddress = null;
     const ok = await ensureSession();
     if (!ok) return null;
-    result = await signWithSession(challenge);
+    result = await signWithSession(challenge, _parent);
     if (!result) return null;
   }
 
-  const delegation = await getSessionDelegation();
+  const delegation = await getSessionDelegation(_parent);
   if (!delegation) return null;
 
   return {

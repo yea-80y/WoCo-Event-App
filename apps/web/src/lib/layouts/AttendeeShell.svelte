@@ -5,6 +5,11 @@
   import { router, navigate } from "../router/router.svelte.js";
   import SessionStatus from "../components/auth/SessionStatus.svelte";
   import UserAvatar from "../components/profile/UserAvatar.svelte";
+  import WocoWordmark from "../components/brand/WocoWordmark.svelte";
+  import Compass from "lucide-svelte/icons/compass";
+  import Ticket from "lucide-svelte/icons/ticket";
+  import User from "lucide-svelte/icons/user";
+  import ArrowRight from "lucide-svelte/icons/arrow-right";
 
   interface Props {
     children: Snippet;
@@ -14,9 +19,8 @@
 
 <main>
   <header class="top-bar">
-    <button class="logo" onclick={() => navigate("/")}>
-      <img src="./logo.png" alt="WoCo" class="logo-img" />
-      <span>WoCo</span>
+    <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
+      <WocoWordmark height={20} variant="default" />
     </button>
 
     <div class="top-right">
@@ -25,7 +29,7 @@
       {:else if auth.isConnected && auth.parent}
         <button class="surface-toggle" onclick={() => navigate("/creator")} title="Go to creator portal">
           <span class="surface-toggle-label">Creator portal</span>
-          <span class="surface-toggle-arrow">→</span>
+          <span class="surface-toggle-arrow"><ArrowRight size={14} strokeWidth={2.5} /></span>
         </button>
         <SessionStatus />
         <button class="top-avatar-btn" onclick={() => navigate(`/profile/${auth.parent!.toLowerCase()}`)}>
@@ -40,38 +44,44 @@
   </header>
 
   <section class="content">
-    {@render children()}
+    {#if auth.ready}
+      {@render children()}
+    {/if}
   </section>
 
   <nav class="bottom-nav">
     <button
       class="bottom-nav-item"
-      class:active={router.route === "home"}
-      onclick={() => navigate("/")}
+      class:active={router.route === "home" || router.route === "discover"}
+      onclick={() => navigate("/discover")}
     >
-      <span class="nav-icon">&#127968;</span>
-      <span class="nav-label">Events</span>
+      <span class="nav-icon"><Compass size={20} strokeWidth={2.25} /></span>
+      <span class="nav-label">Discover</span>
     </button>
-    {#if auth.isConnected}
-      <button
-        class="bottom-nav-item"
-        class:active={router.route === "my-tickets"}
-        onclick={() => navigate("/tickets")}
-      >
-        <span class="nav-icon">&#127903;</span>
-        <span class="nav-label">Tickets</span>
-      </button>
-      <button
-        class="bottom-nav-item profile-nav-item"
-        class:active={router.route === "profile"}
-        onclick={() => navigate(auth.parent ? `/profile/${auth.parent.toLowerCase()}` : "/profile")}
-      >
+    <button
+      class="bottom-nav-item"
+      class:active={router.route === "my-tickets"}
+      onclick={() => auth.isConnected ? navigate("/tickets") : loginRequest.request()}
+    >
+      <span class="nav-icon"><Ticket size={20} strokeWidth={2.25} /></span>
+      <span class="nav-label">Tickets</span>
+    </button>
+    <button
+      class="bottom-nav-item profile-nav-item"
+      class:active={router.route === "profile"}
+      onclick={() => auth.isConnected
+        ? navigate(auth.parent ? `/profile/${auth.parent.toLowerCase()}` : "/profile")
+        : loginRequest.request()}
+    >
+      {#if auth.isConnected && auth.parent}
         <span class="nav-avatar">
-          <UserAvatar address={auth.parent!} size={24} />
+          <UserAvatar address={auth.parent} size={24} />
         </span>
-        <span class="nav-label">Profile</span>
-      </button>
-    {/if}
+      {:else}
+        <span class="nav-icon"><User size={20} strokeWidth={2.25} /></span>
+      {/if}
+      <span class="nav-label">Profile</span>
+    </button>
   </nav>
 </main>
 
@@ -96,15 +106,14 @@
   .logo {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: var(--text);
-    letter-spacing: -0.02em;
     flex-shrink: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    transition: transform var(--transition-fast);
   }
-  .logo:hover { color: var(--accent-text); }
-  .logo-img { width: 26px; height: 26px; border-radius: 4px; }
+  .logo:hover { transform: translate(-1px, -1px); }
 
   .top-right {
     display: flex;
@@ -150,7 +159,7 @@
     transition: all var(--transition);
     white-space: nowrap;
   }
-  .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
   .top-avatar-btn {
     margin-left: 0.375rem;
@@ -192,8 +201,8 @@
   .bottom-nav-item:hover { background: var(--accent-subtle); }
   .bottom-nav-item.active { color: var(--accent-text); }
   .bottom-nav-item:not(.active) { color: var(--text-muted); }
-  .nav-icon { font-size: 1.25rem; line-height: 1; }
-  .nav-label { font-size: 0.625rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .nav-icon { display: inline-flex; align-items: center; line-height: 0; }
+  .nav-label { font-size: 0.625rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; font-family: var(--font-mono); }
   .nav-avatar {
     display: flex;
     align-items: center;

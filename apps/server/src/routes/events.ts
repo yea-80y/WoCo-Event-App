@@ -11,11 +11,22 @@ import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
 const events = new Hono<AppEnv>();
 
+/** True when an event has definitively ended. Uses endDate if present and valid, falls back to startDate. */
+function isPastEntry(e: EventDirectoryEntry, now: number): boolean {
+  const raw = (e.endDate && e.endDate.length > 0) ? e.endDate : e.startDate;
+  const ts = new Date(raw).getTime();
+  return !isNaN(ts) && ts < now;
+}
+
 // GET /api/events - public listing (served from in-memory cache, backed by Swarm directory)
+// ?filter=upcoming (default) | past | all
 events.get("/", async (c) => {
   try {
-    const swarmEntries = await listEvents();
-    return c.json({ ok: true, data: swarmEntries });
+    const all = await listEvents();
+    const filter = c.req.query("filter") ?? "all";
+    const now = Date.now();
+    const data = filter === "all" ? all : all.filter((e) => isPastEntry(e, now) === (filter === "past"));
+    return c.json({ ok: true, data });
   } catch (err) {
     console.error("[api] listEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
@@ -68,7 +79,11 @@ events.get("/mine", requireAuth, async (c) => {
       }
     }
 
-    return c.json({ ok: true, data: merged });
+    const filter = c.req.query("filter") ?? "all";
+    const now = Date.now();
+    const data = filter === "all" ? merged : merged.filter((e) => isPastEntry(e, now) === (filter === "past"));
+
+    return c.json({ ok: true, data });
   } catch (err) {
     console.error("[api] getCreatorEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
@@ -137,6 +152,7 @@ events.post("/", requireAuth, async (c) => {
       const result = await createEventV2({
         eventId,
         title: ev.title,
+        ...(ev.tagline ? { tagline: ev.tagline } : {}),
         description: ev.description || "",
         startDate: ev.startDate,
         endDate: ev.endDate,
@@ -431,6 +447,229 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   }
 
   return c.json({ ok: true, onChainEventId, txHash });
+});
+
+// ── POST /api/events/import-url ──────────────────────────────────────────────
+// Server-side fetch of a third-party event URL (Skiddle, Fatsoma, Eventbrite, etc.)
+// Parses OG meta tags and schema.org/Event structured data and returns structured fields.
+// Auth required — creators only, not publicly accessible to prevent abuse.
+// Must be registered BEFORE /:id.
+events.post("/import-url", requireAuth, async (c) => {
+  let body: { url?: string };
+  try { body = await c.req.json(); } catch {
+    return c.json({ ok: false, error: "Invalid JSON" }, 400);
+  }
+
+  const rawUrl = body?.url?.trim() ?? "";
+  if (!rawUrl) return c.json({ ok: false, error: "url is required" }, 400);
+
+  // Basic SSRF protection — allow only public http/https URLs
+  let parsed: URL;
+  try { parsed = new URL(rawUrl); } catch {
+    return c.json({ ok: false, error: "Invalid URL" }, 400);
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return c.json({ ok: false, error: "Only http/https URLs allowed" }, 400);
+  }
+  const h = parsed.hostname.toLowerCase();
+  if (h === "localhost" || h === "127.0.0.1" || /^192\.168\./.test(h) || /^10\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || h.endsWith(".local") || h.endsWith(".internal")) {
+    return c.json({ ok: false, error: "Private addresses not allowed" }, 400);
+  }
+
+  let html: string;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch(rawUrl, {
+      signal: controller.signal,
+      headers: { "User-Agent": "WoCo-Event-Importer/1.0 (+https://woco.eth.limo)" },
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) return c.json({ ok: false, error: `Fetch failed: ${resp.status}` }, 422);
+    const ct = resp.headers.get("content-type") ?? "";
+    if (!ct.includes("text/html") && !ct.includes("text/plain")) {
+      return c.json({ ok: false, error: "URL does not appear to be an HTML page" }, 422);
+    }
+    // Limit to 512 KB to avoid huge pages
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength > 512 * 1024) {
+      html = new TextDecoder().decode(buf.slice(0, 512 * 1024));
+    } else {
+      html = new TextDecoder().decode(buf);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("abort") || msg.includes("Abort")) {
+      return c.json({ ok: false, error: "Request timed out — the page took too long to respond" }, 422);
+    }
+    return c.json({ ok: false, error: `Could not fetch URL: ${msg}` }, 422);
+  }
+
+  // ── Parse helpers ────────────────────────────────────────────────────────
+  function getMeta(name: string): string {
+    // <meta name="..."> or <meta property="...">
+    const re = new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]+content=["']([^"']+)["']`, "i");
+    const m = re.exec(html) ?? new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${name}["']`, "i").exec(html);
+    return m ? decodeHtmlEntities(m[1].trim()) : "";
+  }
+
+  function getSchemaEvent(): Record<string, unknown> | null {
+    const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = ldRe.exec(html)) !== null) {
+      try {
+        const raw: unknown = JSON.parse(m[1]);
+        const candidates: unknown[] = [];
+        if (Array.isArray(raw)) {
+          candidates.push(...raw);
+        } else if (raw && typeof raw === "object") {
+          const obj = raw as Record<string, unknown>;
+          if (obj["@graph"] && Array.isArray(obj["@graph"])) candidates.push(...(obj["@graph"] as unknown[]));
+          else candidates.push(raw);
+        }
+        for (const node of candidates) {
+          if (node && typeof node === "object" && (node as Record<string, unknown>)["@type"] === "Event") {
+            return node as Record<string, unknown>;
+          }
+        }
+      } catch { /* malformed JSON-LD — skip */ }
+    }
+    return null;
+  }
+
+  function decodeHtmlEntities(s: string): string {
+    return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+  }
+
+  // ── Extract fields ───────────────────────────────────────────────────────
+  const schema = getSchemaEvent();
+
+  const name =
+    getMeta("og:title") ||
+    getMeta("twitter:title") ||
+    (schema?.name as string | undefined) ||
+    (() => { const m = /<title[^>]*>([^<]+)<\/title>/i.exec(html); return m ? decodeHtmlEntities(m[1].trim()) : ""; })() ||
+    "";
+
+  // Split tagline (short subtitle) from description (long body).
+  // og:description is typically a one-line teaser; schema.description is the full body.
+  // If only one source is present, fall through so we don't lose information.
+  const ogDescription = getMeta("og:description") || getMeta("twitter:description") || getMeta("description") || "";
+  const schemaDescription = (schema?.description as string | undefined) ?? "";
+
+  let tagline = "";
+  let description = "";
+  if (ogDescription && schemaDescription && ogDescription.trim() !== schemaDescription.trim()) {
+    tagline = ogDescription;
+    description = schemaDescription;
+  } else if (schemaDescription) {
+    description = schemaDescription;
+  } else {
+    description = ogDescription;
+  }
+
+  const image =
+    getMeta("og:image") ||
+    getMeta("twitter:image") ||
+    (() => {
+      const img = (schema?.image as string | { url?: string } | undefined);
+      return typeof img === "string" ? img : (img?.url ?? "");
+    })() ||
+    "";
+
+  // Parse start/end date — return datetime-local format when a time is present, else date-only.
+  // Avoid `new Date(...).toISOString()` because it shifts to UTC and can roll the date back/forward.
+  function toLocalIso(val: unknown): string {
+    if (typeof val !== "string" || !val) return "";
+    const s = val.trim();
+    // Date-only: YYYY-MM-DD
+    const dateOnly = /^(\d{4}-\d{2}-\d{2})$/.exec(s);
+    if (dateOnly) return dateOnly[1];
+    // ISO with time (with or without zone): keep the wall-clock components.
+    const withTime = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(s);
+    if (withTime) return `${withTime[1]}T${withTime[2]}`;
+    return "";
+  }
+
+  const startDate = toLocalIso(schema?.startDate);
+  const endDate   = toLocalIso(schema?.endDate);
+
+  // Location
+  let location = "";
+  if (schema?.location) {
+    const loc = schema.location as Record<string, unknown>;
+    if (typeof loc === "string") location = loc;
+    else location = [loc.name, (loc.address as Record<string, unknown>)?.streetAddress, (loc.address as Record<string, unknown>)?.addressLocality].filter(Boolean).join(", ");
+  }
+
+  // ── Ticket tiers (offers[]) ──────────────────────────────────────────────
+  // Skiddle / Eventbrite expose multiple tiers as `offers: Offer[]`.
+  // We pass the full list through so the client can render a series-per-tier.
+  type ImportTier = { name: string; price?: string; currency?: string; saleStart?: string; saleEnd?: string; status?: string };
+  function parseOffer(raw: unknown): ImportTier | null {
+    if (!raw || typeof raw !== "object") return null;
+    const o = raw as Record<string, unknown>;
+    const t: ImportTier = {
+      name: (typeof o.name === "string" && o.name)
+        || (typeof o.description === "string" && o.description)
+        || (typeof o.category === "string" && o.category)
+        || "Ticket",
+    };
+    if (o.price !== undefined && o.price !== null) {
+      const p = String(o.price);
+      if (p && !isNaN(parseFloat(p))) t.price = p;
+    }
+    if (typeof o.priceCurrency === "string") t.currency = o.priceCurrency;
+    const start = toLocalIso(o.availabilityStarts ?? o.validFrom);
+    const end   = toLocalIso(o.availabilityEnds   ?? o.validThrough);
+    if (start) t.saleStart = start;
+    if (end)   t.saleEnd   = end;
+    if (typeof o.availability === "string") {
+      // schema.org enums: InStock, SoldOut, PreOrder, etc. Normalise to short tags.
+      const a = o.availability.toLowerCase();
+      if (a.includes("soldout"))  t.status = "soldout";
+      else if (a.includes("preorder")) t.status = "preorder";
+      else if (a.includes("instock"))  t.status = "available";
+    }
+    return t;
+  }
+
+  const tiers: ImportTier[] = [];
+  if (schema?.offers) {
+    const offerList = Array.isArray(schema.offers) ? schema.offers : [schema.offers];
+    for (const o of offerList) {
+      const tier = parseOffer(o);
+      if (tier) tiers.push(tier);
+    }
+  }
+
+  // Legacy single-price fields (kept for callers that read them)
+  const price = tiers.find(t => t.price)?.price ?? null;
+  const currency = tiers.find(t => t.currency)?.currency ?? "";
+
+  // Organiser
+  let organiser = "";
+  if (schema?.organizer) {
+    const org = schema.organizer as Record<string, unknown>;
+    organiser = typeof org === "string" ? org : (org.name as string) ?? "";
+  }
+
+  const data = {
+    name:        name.slice(0, 200),
+    tagline:     tagline.slice(0, 200),
+    description: description.slice(0, 2000),
+    imageUrl:    image.slice(0, 500),
+    startDate,
+    endDate,
+    location:    location.slice(0, 300),
+    price,
+    currency,
+    tiers,
+    organiser:   organiser.slice(0, 200),
+    sourceUrl:   rawUrl,
+  };
+
+  return c.json({ ok: true, data });
 });
 
 export { events };

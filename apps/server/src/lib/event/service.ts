@@ -33,6 +33,7 @@ export interface CreateProgress {
 export async function createEventV2(opts: {
   eventId: string;
   title: string;
+  tagline?: string;
   description: string;
   startDate: string;
   endDate: string;
@@ -60,7 +61,7 @@ export async function createEventV2(opts: {
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
-    eventId, title, description, startDate, endDate, location,
+    eventId, title, tagline, description, startDate, endDate, location,
     creatorAddress, creatorPodKey, imageData, series,
     encryptionKey, orderFields, claimMode, skipAutoList, onProgress,
   } = opts;
@@ -151,6 +152,7 @@ export async function createEventV2(opts: {
     v: 1,
     eventId,
     title,
+    ...(tagline ? { tagline } : {}),
     description,
     imageHash,
     startDate,
@@ -172,7 +174,7 @@ export async function createEventV2(opts: {
   // ── Update directories (fire-and-forget) ─────────────────────────────
   const totalTickets = series.reduce((n, s) => n + s.totalSupply, 0);
   addToEventDirectory(
-    { eventId, title, imageHash, startDate, endDate, location, creatorAddress, seriesCount: series.length, totalTickets, createdAt },
+    { eventId, title, ...(tagline ? { tagline } : {}), imageHash, startDate, endDate, location, creatorAddress, seriesCount: series.length, totalTickets, createdAt },
     { skipPublicDirectory: !!skipAutoList },
   ).catch((err) => console.error("[event] Directory update failed (non-critical):", err));
 
@@ -306,6 +308,7 @@ function compactEntry(e: EventDirectoryEntry): EventDirectoryEntry {
   if (e.endDate) compact.endDate = e.endDate;
   if (e.location) compact.location = e.location;
   if (e.apiUrl) compact.apiUrl = e.apiUrl;
+  if (e.tagline) compact.tagline = e.tagline;
   return compact as unknown as EventDirectoryEntry;
 }
 

@@ -11,7 +11,7 @@
 </script>
 
 <AttendeeShell>
-  {#if router.route === "home"}
+  {#if router.route === "home" || router.route === "discover"}
     <Home />
   {:else if router.route === "event"}
     {#if getExternalEventApi(router.params.id)}

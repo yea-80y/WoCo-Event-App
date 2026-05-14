@@ -1,41 +1,63 @@
-:root {
-  /* Backgrounds */
-  --bg: #09090f;
-  --bg-surface: #12121e;
-  --bg-surface-hover: #191930;
-  --bg-elevated: #1c1c30;
-  --bg-input: #0e0e1a;
+/* ─────────────────────────────────────────────────────────────────────────
+ * WoCo design tokens — "Concrete & Acid"
+ * Locked 2026-05-13 (palette v2). Spec: memory/project_ui_theming_direction.md
+ *
+ * One signal colour against monochrome restraint, RA-style discipline.
+ * Acid lime-chartreuse is the brand. Vermillion appears only on errors.
+ * ───────────────────────────────────────────────────────────────────────── */
 
-  /* Borders */
-  --border: #232340;
-  --border-hover: #363660;
+:root {
+  /* Backgrounds — near-black with a faint warmth so it doesn't read as plastic */
+  --bg: #0B0B09;
+  --bg-surface: #14140F;
+  --bg-surface-hover: #1B1A14;
+  --bg-elevated: #1D1C17;
+  --bg-input: #100F0C;
+
+  /* Borders — hairline, almost invisible until hovered */
+  --border: #2B2A23;
+  --border-hover: #4A483D;
   --border-focus: var(--accent);
 
-  /* Text */
-  --text: #eeeff5;
-  --text-secondary: #a0a0b8;
-  --text-muted: #6a6a80;
+  /* Text — warm bone, NEVER pure white */
+  --text: #F2EBE0;
+  --text-secondary: #B5AC9D;
+  --text-muted: #8A8478;
+  --text-dim: #55524A;
 
-  /* Accent — warm violet */
-  --accent: #7c6cf0;
-  --accent-hover: #6b5ad8;
-  --accent-subtle: rgba(124, 108, 240, 0.08);
-  --accent-text: #a298f5;
+  /* Accent — acid lime-chartreuse. The brand. */
+  --accent: #C7F23A;
+  --accent-hover: #D6FF45;
+  --accent-press: #B0DA28;
+  --accent-subtle: rgba(199, 242, 58, 0.10);
+  --accent-text: #DCF560;
+  /* Text-on-accent — DARK, never white. Lime + white = unreadable. */
+  --accent-ink: #0B0B09;
 
-  /* Status */
-  --error: #f43f5e;
-  --success: #10b981;
+  /* Status semantics */
+  --error: #FF5B2C;     /* vermillion — rare, destructive/error/danger only */
+  --error-subtle: rgba(255, 91, 44, 0.12);
+  --warning: #FFB020;
+  --success: var(--accent);
 
-  /* Radius */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  /* Radius — sharp editorial. NO pills, no soft corners. */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+
+  /* Type stacks */
+  --font-display: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --font-body: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Menlo", monospace;
+  /* Bungee retained for ultra-rare graffiti tag accents (NOT the wordmark — that's a custom SVG component) */
+  --font-tag: "Bungee", "Space Grotesk", sans-serif;
 
   /* Transitions */
-  --transition: 0.15s ease;
+  --transition: 0.12s cubic-bezier(0.2, 0.8, 0.2, 1);
+  --transition-fast: 0.08s ease-out;
 
   /* Base */
-  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  font-family: var(--font-body);
   line-height: 1.5;
   font-weight: 400;
   color: var(--text);
@@ -44,17 +66,12 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
+*, *::before, *::after { box-sizing: border-box; }
 
-html {
-  background-color: var(--bg);
-}
+html { background-color: var(--bg); }
 
 body {
   margin: 0;
@@ -64,20 +81,71 @@ body {
   color: var(--text);
 }
 
-#app {
-  width: 100%;
+#app { width: 100%; }
+
+/* ── Type primitives ─────────────────────────────────────────────────── */
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  margin: 0;
 }
+
+h1 { font-size: clamp(2.25rem, 5vw, 4rem); line-height: 1.02; letter-spacing: -0.035em; }
+h2 { font-size: clamp(1.5rem, 2.5vw, 2rem); line-height: 1.1; letter-spacing: -0.025em; }
+h3 { font-size: 1.125rem; line-height: 1.25; }
 
 a {
-  color: var(--accent-text);
+  color: var(--text);
   text-decoration: none;
+  border-bottom: 1px solid var(--border);
+  transition: border-color var(--transition), color var(--transition);
 }
-
 a:hover {
-  text-decoration: underline;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
-/* Reset default button styles globally */
+/* Mono kicker — UPPERCASE tracked. The retro-arcade voice. */
+.kicker {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+.kicker--hi {
+  color: var(--accent);
+}
+.kicker::before {
+  content: "";
+  display: inline-block;
+  width: 0.375rem;
+  height: 0.375rem;
+  background: var(--accent);
+  margin-right: 0.5rem;
+  vertical-align: 0.1em;
+}
+.kicker--plain::before { display: none; }
+
+/* Bungee tag — used ONLY for rare graffiti accents now, NOT the wordmark */
+.tag-display {
+  font-family: var(--font-tag);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* Mono stat — for big numbers, addresses, ticket IDs */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Button primitives ───────────────────────────────────────────────── */
+
 button {
   font-family: inherit;
   cursor: pointer;
@@ -88,27 +156,138 @@ button {
   font-size: inherit;
 }
 
-input,
-textarea,
-select {
-  font-family: inherit;
-  font-size: 0.875rem;
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  font-family: var(--font-display);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  transition: transform var(--transition-fast), background var(--transition), border-color var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.btn--primary:hover { background: var(--accent-hover); }
+.btn--primary:active { background: var(--accent-press); }
+
+.btn--ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn--ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn--lg {
+  padding: 1rem 1.5rem;
+  font-size: 1rem;
+}
+
+/* ── Form primitives ─────────────────────────────────────────────────── */
+
+input, textarea, select {
+  font-family: var(--font-body);
+  font-size: 0.9375rem;
   color: var(--text);
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.625rem 0.75rem;
+  padding: 0.75rem 0.875rem;
   transition: border-color var(--transition);
 }
 
-input:focus,
-textarea:focus,
-select:focus {
+input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
-textarea {
-  resize: vertical;
+textarea { resize: vertical; }
+
+/* ── Card primitive ──────────────────────────────────────────────────── */
+
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition);
+}
+.card:hover { border-color: var(--border-hover); }
+
+/* ── LIVE pulse — chartreuse dot for live indicators ─────────────────── */
+
+@keyframes woco-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.85); }
+}
+.live-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: woco-pulse 1.6s ease-in-out infinite;
+}
+
+/* ── Scanline overlay (use only on hero / featured surfaces) ─────────── */
+
+.scanlines {
+  position: relative;
+  isolation: isolate;
+}
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(255, 255, 255, 0) 0px,
+    rgba(255, 255, 255, 0) 2px,
+    rgba(255, 255, 255, 0.025) 3px,
+    rgba(255, 255, 255, 0) 4px
+  );
+  z-index: 1;
+  mix-blend-mode: overlay;
+}
+
+/* Subtle film grain (hero use only) */
+.grain {
+  position: relative;
+}
+.grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+  opacity: 0.05;
+  z-index: 0;
+}
+
+/* ── Selection — make highlights match the brand ─────────────────────── */
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Reduce-motion respect */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

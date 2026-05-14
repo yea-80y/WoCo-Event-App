@@ -342,7 +342,6 @@
     }
 
     try {
-      // Check auth — only need identity (isConnected), not session
       if (!auth.isConnected) {
         error = "Please sign in to view the dashboard";
         loading = false;
@@ -357,11 +356,22 @@
         return;
       }
 
-      // Verify organizer
+      // Verify organizer BEFORE prompting for session — user sees context for why they must sign
       if (auth.parent?.toLowerCase() !== ev.creatorAddress.toLowerCase()) {
-        error = "Only the event organizer can view this dashboard";
+        const me = auth.parent ?? "(not signed in)";
+        error = `Only the event organizer can view this dashboard.\nSigned in as: ${me}\nEvent owner:  ${ev.creatorAddress}`;
         loading = false;
         return;
+      }
+
+      // Session required to fetch orders (passkey: biometric + EIP-712 if not cached)
+      if (!auth.hasSession) {
+        const ok = await auth.ensureSession();
+        if (!ok) {
+          error = "Session authentication required to view order data.";
+          loading = false;
+          return;
+        }
       }
 
       // Load orders + pending claims in parallel
@@ -513,6 +523,7 @@
   {:else if error}
     <p class="error">{error}</p>
   {:else if event && ordersResponse}
+    <span class="kicker">Event Admin</span>
     <h1>Orders Dashboard</h1>
     <p class="subtitle">{event.title}</p>
 
@@ -1030,7 +1041,7 @@
 
   h1 {
     color: var(--text);
-    margin: 0 0 0.25rem;
+    margin: 0.375rem 0 0.25rem;
     font-size: 1.75rem;
     font-weight: 700;
     letter-spacing: -0.01em;
@@ -1109,7 +1120,7 @@
     padding: 0.5rem 0.625rem;
     font-size: 0.8125rem;
     color: var(--text);
-    background: var(--surface);
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
   }
@@ -1135,7 +1146,7 @@
     font-size: 0.8125rem;
     font-weight: 500;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     transition: opacity var(--transition);
   }
@@ -1181,12 +1192,15 @@
     gap: 0.125rem;
   }
   .sales-stat-label {
+    font-family: var(--font-mono);
     font-size: 0.6875rem;
     color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.1em;
   }
   .sales-stat-value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     font-size: 1.25rem;
     font-weight: 600;
     color: var(--text);
@@ -1274,7 +1288,7 @@
 
   .bulk-send-btn:hover:not(:disabled) {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
   }
 
   .bulk-send-btn:disabled {
@@ -1322,7 +1336,7 @@
   }
 
   .address {
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: 0.75rem;
   }
 
@@ -1344,50 +1358,58 @@
 
   .badge {
     display: inline-block;
-    padding: 0.2rem 0.5rem;
+    padding: 0.125rem 0.4375rem;
+    font-family: var(--font-mono);
     font-size: 0.6875rem;
     font-weight: 600;
-    border-radius: 9999px;
-    letter-spacing: 0.02em;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
   .via-badge {
     display: inline-block;
-    padding: 0.15rem 0.5rem;
-    font-size: 0.6875rem;
+    padding: 0.125rem 0.4375rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
     font-weight: 600;
-    border-radius: 9999px;
-    letter-spacing: 0.02em;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     border: 1px solid currentColor;
   }
+  /* Stripe brand purple — acceptable as third-party branding */
   .via-badge--stripe { color: #635bff; background: rgba(99, 91, 255, 0.1); }
-  .via-badge--crypto { color: #f59e0b; background: rgba(245, 158, 11, 0.1); }
-  .via-badge--free   { color: var(--text-muted); background: rgba(125, 125, 125, 0.1); }
+  .via-badge--crypto { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+  .via-badge--free   { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 8%, transparent); }
   .via-badge--unknown { color: var(--text-muted); border-color: transparent; }
 
   .badge-sent {
-    background: rgba(34, 197, 94, 0.15);
-    color: #22c55e;
+    background: color-mix(in srgb, var(--success) 15%, transparent);
+    color: var(--success);
   }
 
   .badge-sending {
-    background: rgba(124, 108, 240, 0.15);
+    background: var(--accent-subtle);
     color: var(--accent-text);
   }
 
   .badge-failed {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
     cursor: pointer;
     border: none;
+    font-family: var(--font-mono);
     font-size: 0.6875rem;
     font-weight: 600;
-    padding: 0.2rem 0.5rem;
-    border-radius: 9999px;
+    padding: 0.125rem 0.4375rem;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
 
   .badge-failed:hover {
-    background: rgba(239, 68, 68, 0.3);
+    background: color-mix(in srgb, var(--error) 25%, transparent);
   }
 
   .badge-none {
@@ -1407,7 +1429,7 @@
 
   .btn-send:hover {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
   }
 
   /* Tab bar */
@@ -1447,11 +1469,12 @@
     min-width: 1.25rem;
     height: 1.25rem;
     padding: 0 0.375rem;
-    font-size: 0.6875rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
     font-weight: 700;
-    background: #d97706;
-    color: #fff;
-    border-radius: 9999px;
+    background: var(--warning);
+    color: var(--accent-ink);
+    border-radius: var(--radius-sm);
   }
 
   /* Approval action buttons */
@@ -1465,14 +1488,14 @@
     padding: 0.25rem 0.625rem;
     font-size: 0.75rem;
     font-weight: 500;
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    color: var(--success);
     border-radius: var(--radius-sm);
     transition: background var(--transition);
   }
 
   .btn-approve:hover:not(:disabled) {
-    background: rgba(16, 185, 129, 0.3);
+    background: color-mix(in srgb, var(--success) 25%, transparent);
   }
 
   .btn-approve:disabled {
@@ -1484,14 +1507,14 @@
     padding: 0.25rem 0.625rem;
     font-size: 0.75rem;
     font-weight: 500;
-    background: rgba(239, 68, 68, 0.12);
-    color: #ef4444;
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+    color: var(--error);
     border-radius: var(--radius-sm);
     transition: background var(--transition);
   }
 
   .btn-reject:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.25);
+    background: color-mix(in srgb, var(--error) 22%, transparent);
   }
 
   .btn-reject:disabled {
@@ -1510,6 +1533,10 @@
     text-align: center;
     color: var(--error);
     padding: 3rem 0;
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
   }
 
   .warning {
@@ -1641,11 +1668,14 @@
   }
 
   .recipient-series {
-    font-size: 0.6875rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
     color: var(--text-muted);
-    padding: 0.125rem 0.5rem;
+    padding: 0.125rem 0.4375rem;
     background: var(--accent-subtle);
-    border-radius: 9999px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
 
   .broadcast-compose {
@@ -1730,7 +1760,7 @@
 
   .preview-body {
     padding: 0;
-    background: #1a1a2e;
+    background: var(--bg-elevated);
     border-radius: 0 0 var(--radius-md) var(--radius-md);
   }
 
@@ -1747,18 +1777,18 @@
 
   .broadcast-result {
     font-size: 0.875rem;
-    color: #22c55e;
+    color: var(--success);
     padding: 0.75rem 1rem;
-    background: rgba(34, 197, 94, 0.1);
-    border: 1px solid rgba(34, 197, 94, 0.2);
+    background: color-mix(in srgb, var(--success) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 20%, var(--border));
     border-radius: var(--radius-sm);
     margin-bottom: 1rem;
   }
 
   .broadcast-result.has-failures {
-    color: #d97706;
-    background: rgba(217, 119, 6, 0.1);
-    border-color: rgba(217, 119, 6, 0.2);
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 20%, var(--border));
   }
 
   .broadcast-actions {
@@ -1773,7 +1803,7 @@
     font-size: 0.875rem;
     font-weight: 600;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     transition: all var(--transition);
   }

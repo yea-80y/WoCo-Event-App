@@ -21,6 +21,7 @@
 
   interface Props {
     title: string;
+    tagline?: string;
     description: string;
     startDate: string;
     endDate: string;
@@ -38,7 +39,7 @@
   }
 
   let {
-    title, description, startDate, endDate, location,
+    title, tagline, description, startDate, endDate, location,
     imageDataUrl, series, orderFields, claimMode,
     disabled = false, disabledReason,
     apiUrl, skipAutoList = false, label,
@@ -148,7 +149,7 @@
 
       const result = await createEventStreaming(
         {
-          event: { title, description, startDate, endDate, location },
+          event: { title, ...(tagline ? { tagline } : {}), description, startDate, endDate, location },
           series: series.map((s, i) => ({
             seriesId: s.seriesId,
             name: s.name,
