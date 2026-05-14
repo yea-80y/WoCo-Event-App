@@ -752,6 +752,7 @@
             payment={selectedSeries.payment}
             eventEndDate={event.endDate}
             quantity={ticketQty[selectedSeries.seriesId] ?? 1}
+            eager
             onclaim={handleClaimSuccess}
           />
 

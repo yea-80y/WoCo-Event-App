@@ -47,11 +47,20 @@
     eventEndDate?: string;
     /** Number of tickets requested (default 1) */
     quantity?: number;
+    /**
+     * Pre-arm the reservation trigger on mount. Use this when the user has
+     * already committed to checkout before ClaimButton renders (e.g. tapped
+     * "Get tickets" on EventPage). Without `eager`, the reservation pill only
+     * appears once they click a payment button inside the claim panel — which
+     * is too late, because the seat hold is most valuable BEFORE they start
+     * filling out the form.
+     */
+    eager?: boolean;
     /** Called when a claim succeeds — parent can show the TicketSuccess modal */
     onclaim?: (data: { edition: number | null; claimedVia: "wallet" | "email" | null; ticket?: ClaimedTicket; claimerEmail?: string; editions?: Array<{ edition: number; ticket?: ClaimedTicket }> }) => void;
   }
 
-  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate, quantity = 1, onclaim }: Props = $props();
+  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate, quantity = 1, eager = false, onclaim }: Props = $props();
 
   console.log(`[ClaimButton] seriesId=${seriesId} payment:`, payment ?? "FREE");
 
@@ -170,8 +179,12 @@
    * a slot on mount, creating phantom holds for series the buyer never touched.
    * showOrderForm and showChainSelector are already gated on user interaction
    * by definition; only the fee-sheet "early trigger" needs this extra guard.
+   *
+   * Parent components can pre-arm this via the `eager` prop when the user has
+   * already committed to checkout before ClaimButton mounted (e.g. EventPage
+   * mounts us only after "Get tickets" is clicked).
    */
-  let intentToCheckout = $state(false);
+  let intentToCheckout = $state(eager);
 
   // ──────────────────────────────────────────────────────────────
   // Validation + claim-input helpers
