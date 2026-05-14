@@ -3,6 +3,7 @@
   import AttendeeShell from "./lib/layouts/AttendeeShell.svelte";
   import EventDetail from "./lib/attendee/events/EventDetail.svelte";
   import EventPage from "./lib/components/site/EventPage.svelte";
+  import EventPurchased from "./lib/attendee/events/EventPurchased.svelte";
   import Home from "./lib/attendee/home/Home.svelte";
   import MyTickets from "./lib/attendee/passport/MyTickets.svelte";
   import VerifyTicket from "./lib/attendee/passport/VerifyTicket.svelte";
@@ -27,6 +28,8 @@
         onback={() => navigate("/")}
       />
     {/if}
+  {:else if router.route === "event-purchased"}
+    <EventPurchased eventId={router.params.id} />
   {:else if router.route === "my-tickets"}
     <MyTickets />
   {:else if router.route === "verify"}

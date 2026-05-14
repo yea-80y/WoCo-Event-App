@@ -91,6 +91,9 @@ function matchRoute(pathWithQuery: string): Match {
   const legacyEmbedMatch = path.match(/^\/event\/(.+)\/embed$/);
   if (legacyEmbedMatch) return { route: "embed-setup", params: { id: legacyEmbedMatch[1] }, surface: "creator" };
 
+  const eventPurchasedMatch = path.match(/^\/event\/(.+)\/purchased$/);
+  if (eventPurchasedMatch) return { route: "event-purchased", params: { id: eventPurchasedMatch[1] }, surface: "attendee" };
+
   // Event detail page is attendee-facing (public) — even for creators viewing their own.
   const eventMatch = path.match(/^\/event\/(.+)$/);
   if (eventMatch) return { route: "event", params: { id: eventMatch[1] }, surface: "attendee" };

@@ -19,6 +19,17 @@
 
   let { eventId, onback }: Props = $props();
 
+  // Stripe post-purchase redirect — fires synchronously before children (ClaimButton)
+  // mount, so the legacy in-page success banner never appears. We send buyers to the
+  // dedicated /event/:id/purchased route which reads the same sessionStorage stash.
+  const _redirectingPurchased = (() => {
+    if (typeof window === "undefined") return false;
+    const hash = window.location.hash;
+    if (!hash.includes("stripe=success")) return false;
+    window.location.replace(`#/event/${eventId}/purchased`);
+    return true;
+  })();
+
   // External API URL — set by home page when navigating to an externally-listed event
   const externalApiUrl = getExternalEventApi(eventId);
 
@@ -82,6 +93,9 @@
 </script>
 
 <div class="event-detail">
+  {#if _redirectingPurchased}
+    <!-- About to swap to /event/:id/purchased; render nothing to avoid mounting ClaimButton. -->
+  {:else}
   <button class="back-link" onclick={onback}>&larr; Back to events</button>
 
   {#if loading}
@@ -225,6 +239,7 @@
         Embed on your site
       </button>
     </div>
+  {/if}
   {/if}
 </div>
 
