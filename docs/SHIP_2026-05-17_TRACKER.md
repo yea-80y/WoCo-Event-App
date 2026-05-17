@@ -23,14 +23,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## P3 — Creator Simplify
 
-- [ ] `VITE_ENABLE_INAPP_CREATOR` flag + redirect in `CreatorApp.svelte`
-- [ ] `SiteBuilder.svelte`: rip Step 1 (env template) markup + state
-- [ ] `SiteBuilder.svelte`: rip Step 2 (API verify) markup + state, hardcode `apiUrl` from env
-- [ ] Renumber wizard to 1–3
-- [ ] `GatewayPicker.svelte` + `GATEWAYS` registry (WoCo only, Etherna commented out)
-- [ ] `AdvancedSetup.svelte` wrapping removed UI
-- [ ] `?advanced=1` query param recognised in `router.svelte.ts`
-- [ ] Build check: `npm run build:web` + `npm run build:server`
+- [x] `VITE_ENABLE_INAPP_CREATOR` flag + redirect in `CreatorApp.svelte`
+- [x] `SiteBuilder.svelte`: rip Step 1 (env template) markup + state
+- [x] `SiteBuilder.svelte`: rip Step 2 (API verify) markup + state, hardcode `apiUrl` from env
+- [x] Renumber wizard to 1–3
+- [x] `GatewayPicker.svelte` + `GATEWAYS` registry (WoCo only, Etherna commented out)
+- [x] `AdvancedSetup.svelte` wrapping removed UI
+- [x] `?advanced=1` query param recognised in `router.svelte.ts`
+- [x] Build check: `npm run build:web` + `npm run build:server`
 - [ ] Manual click-through: fresh event creation end-to-end (Stripe + ETH + email-only)
 - [ ] Commit
 

@@ -9,6 +9,12 @@
   import SiteBuilder from "./lib/creator/SiteBuilder.svelte";
   import MultiSiteBuilder from "./lib/creator/builder/MultiSiteBuilder.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
+
+  $effect(() => {
+    if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
+      navigate("/site-builder");
+    }
+  });
 </script>
 
 <CreatorShell>

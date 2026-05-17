@@ -48,6 +48,7 @@ interface Match {
 function matchRoute(pathWithQuery: string): Match {
   const qIdx = pathWithQuery.indexOf("?");
   const path = qIdx === -1 ? pathWithQuery : pathWithQuery.slice(0, qIdx);
+  const query = qIdx === -1 ? "" : pathWithQuery.slice(qIdx + 1);
 
   // ── Neutral splitter (root landing) ──────────────────────────────────────
   if (path === "/" || path === "") return { route: "splitter", params: {}, surface: "neutral" };
@@ -83,7 +84,11 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/create") return { route: "create", params: {}, surface: "creator" };
   if (path === "/dashboard") return { route: "dashboard-index", params: {}, surface: "creator" };
   if (path === "/build") return { route: "build", params: {}, surface: "creator" };
-  if (path === "/site-builder") return { route: "site-builder", params: {}, surface: "creator" };
+  if (path === "/site-builder") {
+    const params: Record<string, string> = {};
+    if (query.split("&").includes("advanced=1")) params.advanced = "1";
+    return { route: "site-builder", params, surface: "creator" };
+  }
   if (path === "/stripe/return") return { route: "stripe-return", params: {}, surface: "creator" };
   if (path === "/stripe/refresh") return { route: "stripe-refresh", params: {}, surface: "creator" };
 
