@@ -10,6 +10,7 @@
   import Ticket from "lucide-svelte/icons/ticket";
   import User from "lucide-svelte/icons/user";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
+  import SoonPill from "../attendee/coming-soon/SoonPill.svelte";
 
   interface Props {
     children: Snippet;
@@ -36,7 +37,7 @@
           <UserAvatar address={auth.parent} size={28} />
         </button>
       {:else}
-        <button class="sign-in-btn" onclick={() => loginRequest.request()}>
+        <button class="sign-in-btn" onclick={() => loginRequest.request({ context: "attendee" })}>
           Sign in
         </button>
       {/if}
@@ -60,26 +61,30 @@
     </button>
     <button
       class="bottom-nav-item"
-      class:active={router.route === "my-tickets"}
-      onclick={() => auth.isConnected ? navigate("/tickets") : loginRequest.request()}
+      class:active={router.route === "soon" && router.params.feature === "tickets"}
+      onclick={() => navigate("/soon/tickets")}
     >
-      <span class="nav-icon"><Ticket size={20} strokeWidth={2.25} /></span>
+      <span class="nav-icon-wrap">
+        <span class="nav-icon"><Ticket size={20} strokeWidth={2.25} /></span>
+        <SoonPill />
+      </span>
       <span class="nav-label">Tickets</span>
     </button>
     <button
       class="bottom-nav-item profile-nav-item"
-      class:active={router.route === "profile"}
-      onclick={() => auth.isConnected
-        ? navigate(auth.parent ? `/profile/${auth.parent.toLowerCase()}` : "/profile")
-        : loginRequest.request()}
+      class:active={router.route === "soon" && router.params.feature === "profile"}
+      onclick={() => navigate("/soon/profile")}
     >
-      {#if auth.isConnected && auth.parent}
-        <span class="nav-avatar">
-          <UserAvatar address={auth.parent} size={24} />
-        </span>
-      {:else}
-        <span class="nav-icon"><User size={20} strokeWidth={2.25} /></span>
-      {/if}
+      <span class="nav-icon-wrap">
+        {#if auth.isConnected && auth.parent}
+          <span class="nav-avatar">
+            <UserAvatar address={auth.parent} size={24} />
+          </span>
+        {:else}
+          <span class="nav-icon"><User size={20} strokeWidth={2.25} /></span>
+        {/if}
+        <SoonPill />
+      </span>
       <span class="nav-label">Profile</span>
     </button>
   </nav>
@@ -150,16 +155,16 @@
   }
 
   .sign-in-btn {
-    padding: 0.4375rem 0.875rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text);
-    transition: all var(--transition);
+    padding: 0.3125rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 400;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    transition: color var(--transition);
     white-space: nowrap;
   }
-  .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .sign-in-btn:hover { color: var(--text); background: none; }
 
   .top-avatar-btn {
     margin-left: 0.375rem;
@@ -202,6 +207,7 @@
   .bottom-nav-item.active { color: var(--accent-text); }
   .bottom-nav-item:not(.active) { color: var(--text-muted); }
   .nav-icon { display: inline-flex; align-items: center; line-height: 0; }
+  .nav-icon-wrap { position: relative; display: inline-flex; align-items: center; }
   .nav-label { font-size: 0.625rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; font-family: var(--font-mono); }
   .nav-avatar {
     display: flex;

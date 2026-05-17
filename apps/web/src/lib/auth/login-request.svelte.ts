@@ -1,4 +1,5 @@
 let _pending = $state(false);
+let _context = $state<"attendee" | "creator" | undefined>(undefined);
 let _resolve: ((success: boolean) => void) | null = null;
 
 /**
@@ -8,18 +9,19 @@ let _resolve: ((success: boolean) => void) | null = null;
  */
 export const loginRequest = {
   get pending() { return _pending; },
+  get context() { return _context; },
 
   /**
    * Request the user to log in.
    * Returns a promise that resolves to true (logged in) or false (cancelled).
+   * Pass context: "attendee" to show the attendee-specific subtitle in the modal.
    */
-  request(): Promise<boolean> {
-    // If there's already a pending request, reject it
+  request(opts?: { context?: "attendee" | "creator" }): Promise<boolean> {
     if (_resolve) {
       _resolve(false);
     }
-
     _pending = true;
+    _context = opts?.context;
     return new Promise<boolean>((resolve) => {
       _resolve = resolve;
     });
@@ -34,5 +36,6 @@ export const loginRequest = {
       _resolve = null;
     }
     _pending = false;
+    _context = undefined;
   },
 };

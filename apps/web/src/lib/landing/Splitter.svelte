@@ -29,7 +29,7 @@
       <button class="link" onclick={() => navigate("/discover")}>Discover</button>
       <button class="link" onclick={() => navigate("/creator")}>Creator portal</button>
       {#if auth.isConnected}
-        <button class="btn btn--ghost btn-sm" onclick={() => navigate("/tickets")}>My tickets</button>
+        <button class="btn btn--ghost btn-sm" onclick={() => navigate("/soon/tickets")}>My tickets</button>
       {:else}
         <button class="btn btn--ghost btn-sm" onclick={() => loginRequest.request()}>Sign in</button>
       {/if}
@@ -210,7 +210,7 @@
           <span class="mono-kicker">Platform</span>
           <button class="link" onclick={() => navigate("/discover")}>Discover events</button>
           <button class="link" onclick={() => navigate("/creator")}>Creator portal</button>
-          <button class="link" onclick={() => navigate("/tickets")}>My tickets</button>
+          <button class="link" onclick={() => navigate("/soon/tickets")}>My tickets</button>
         </div>
       </div>
     </div>

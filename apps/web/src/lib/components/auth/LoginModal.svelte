@@ -46,6 +46,9 @@
         <div class="modal-heading">
           <span class="kicker kicker--plain">WoCo</span>
           <h2>Sign in</h2>
+          {#if loginRequest.context === "attendee"}
+            <p class="attendee-sub">WoCo accounts are for organisers right now — attendee accounts coming soon.</p>
+          {/if}
         </div>
         <button class="close-btn" onclick={close} aria-label="Close">
           &times;
@@ -116,6 +119,14 @@
     font-weight: 700;
     color: var(--text);
     letter-spacing: -0.025em;
+  }
+
+  .attendee-sub {
+    margin: 0.25rem 0 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    max-width: 28ch;
   }
 
   .close-btn {

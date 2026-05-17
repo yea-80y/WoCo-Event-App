@@ -9,6 +9,7 @@
   import VerifyTicket from "./lib/attendee/passport/VerifyTicket.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
   import { getExternalEventApi } from "./lib/api/event-api-registry.js";
+  import ComingSoon from "./lib/attendee/coming-soon/ComingSoon.svelte";
 </script>
 
 <AttendeeShell>
@@ -36,5 +37,7 @@
     <VerifyTicket />
   {:else if router.route === "profile"}
     <ProfilePage address={router.params.address} />
+  {:else if router.route === "soon"}
+    <ComingSoon feature={router.params.feature} />
   {/if}
 </AttendeeShell>
