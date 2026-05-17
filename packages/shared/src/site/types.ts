@@ -144,6 +144,8 @@ export interface EventsGridSection extends SectionBase {
   mode: EventsGridMode;
   /** Cap on cards rendered. Omit for unlimited. */
   max?: number;
+  /** "date" (default) sorts by startDate ASC; "manual" preserves index order. */
+  sortMode?: "date" | "manual";
 }
 
 export interface FeaturedEventSection extends SectionBase {

@@ -32,7 +32,12 @@
       out = out.filter((ev) => new Date(ev.startDate).getTime() > now);
       out.sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
     } else {
-      out.sort((a, b) => orderedIds.indexOf(a.eventId) - orderedIds.indexOf(b.eventId));
+      const sortMode = section.sortMode ?? "date";
+      if (section.mode === 'featured' || sortMode === "manual") {
+        out.sort((a, b) => orderedIds.indexOf(a.eventId) - orderedIds.indexOf(b.eventId));
+      } else {
+        out.sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
+      }
     }
 
     if (section.max && section.max > 0) {

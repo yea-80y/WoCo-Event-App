@@ -60,6 +60,9 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
   if (path === "/creator/profile") return { route: "profile", params: {}, surface: "creator" };
 
+  const creatorSiteEventsMatch = path.match(/^\/creator\/sites\/([^/]+)\/events$/);
+  if (creatorSiteEventsMatch) return { route: "site-events", params: { siteId: creatorSiteEventsMatch[1] }, surface: "creator" };
+
   const creatorEventEmbed = path.match(/^\/creator\/events\/(.+)\/embed$/);
   if (creatorEventEmbed) return { route: "embed-setup", params: { id: creatorEventEmbed[1] }, surface: "creator" };
 

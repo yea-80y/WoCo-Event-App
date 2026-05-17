@@ -9,6 +9,7 @@
   import SiteBuilder from "./lib/creator/SiteBuilder.svelte";
   import MultiSiteBuilder from "./lib/creator/builder/MultiSiteBuilder.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
+  import SiteEventsManager from "./lib/creator/sites/SiteEventsManager.svelte";
 
   $effect(() => {
     if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
@@ -28,6 +29,8 @@
     <Dashboard eventId={router.params.id} />
   {:else if router.route === "embed-setup"}
     <EmbedSetup eventId={router.params.id} />
+  {:else if router.route === "site-events"}
+    <SiteEventsManager siteId={router.params.siteId} />
   {:else if router.route === "site-builder"}
     <SiteBuilder />
   {:else if router.route === "build"}

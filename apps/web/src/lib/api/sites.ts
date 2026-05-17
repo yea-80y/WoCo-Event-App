@@ -37,6 +37,10 @@ export async function removeSiteEvent(siteId: string, eventId: string) {
   return authDelete<SiteEventsIndex>(`/api/sites/${siteId}/events/${eventId}`);
 }
 
+export async function addSiteEvent(siteId: string, eventId: string, featured = false) {
+  return authPost<SiteEventsIndex>(`/api/sites/${siteId}/events`, { eventId, featured });
+}
+
 export async function getCreatorSites() {
   return authGet<SiteDirectoryEntry[]>("/api/sites/mine");
 }

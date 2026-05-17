@@ -9,6 +9,8 @@
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./events/ImportUrlPanel.svelte";
   import GatewayPicker from "./builder/GatewayPicker.svelte";
   import AdvancedSetup from "./builder/AdvancedSetup.svelte";
+  import SiteSelector from "./builder/SiteSelector.svelte";
+  import { addSiteEvent } from "../api/sites.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
@@ -64,6 +66,8 @@
   let gatewayUrl = $state("https://gateway.woco-net.com");
   let paraApiKey = $state("");
   let listOnWoco = $state(false);
+  let selectedSiteIds = $state<string[]>([]);
+  let siteAddErrors = $state<Record<string, string>>({});
 
   // Step 3 — live + domain (deploy state)
   let deploying = $state(false);
@@ -179,7 +183,24 @@
   }
 
   async function handleDeploy() {
+    // Fire site-event additions concurrently with deploy — both are independent feed writes.
+    const siteAddPromise = createdEventId && selectedSiteIds.length > 0
+      ? Promise.allSettled(selectedSiteIds.map(id => addSiteEvent(id, createdEventId!)))
+      : Promise.resolve([] as PromiseSettledResult<unknown>[]);
+
     const ok = await deployToSwarm();
+
+    const siteResults = await siteAddPromise;
+    siteAddErrors = {};
+    siteResults.forEach((r, i) => {
+      if (r.status === "rejected") {
+        siteAddErrors[selectedSiteIds[i]] = (r.reason as Error)?.message ?? "Failed";
+      } else if (r.status === "fulfilled") {
+        const v = r.value as { ok?: boolean; error?: string };
+        if (!v?.ok) siteAddErrors[selectedSiteIds[i]] = v?.error ?? "Failed";
+      }
+    });
+
     if (ok) {
       if (listOnWoco && !wocoListed) await createWocoListing();
       step = 3;
@@ -297,6 +318,15 @@
             </p>
           </div>
         </label>
+      </div>
+
+      <div class="field-group">
+        <SiteSelector bind:selectedSiteIds />
+        {#if Object.keys(siteAddErrors).length > 0}
+          {#each Object.entries(siteAddErrors) as [siteId, err]}
+            <p class="site-add-error">Could not add to site <code>{siteId}</code>: {err}</p>
+          {/each}
+        {/if}
       </div>
 
       <details class="advanced-panel">
@@ -605,6 +635,9 @@
   .input:focus { outline: none; border-color: var(--accent); }
   .field-hint { font-size: 0.8125rem; color: var(--text-muted); margin: 0; line-height: 1.5; }
   .field-hint a { color: var(--accent-text); }
+
+  .site-add-error { margin: 0; font-size: 0.8125rem; color: var(--error); }
+  .site-add-error code { font-family: var(--font-mono); font-size: 0.75rem; }
 
   /* ── List on WoCo card ───────────────────────────────────────────────────── */
   .list-woco-card {

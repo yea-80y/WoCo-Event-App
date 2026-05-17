@@ -36,14 +36,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## P4 — Feed-only event-to-site
 
-- [ ] `addSiteEvent()` in `apps/web/src/lib/api/sites.ts`
-- [ ] `SiteSelector.svelte` (multi-checkbox over `getCreatorSites()`)
-- [ ] Wire into SiteBuilder Step 2 + post-publish `Promise.allSettled` call
-- [ ] `SiteEventsManager.svelte` (post-deploy management screen)
-- [ ] New route `/creator/sites/:siteId/events`
-- [ ] `EventsGridSection.svelte`: default to date-ascending sort; honour `sortMode: "manual"`
-- [ ] `packages/shared/src/site/types.ts`: add `sortMode?: "date" \| "manual"` to `EventsGridSection`
-- [ ] Build check: both build commands pass
+- [x] `addSiteEvent()` in `apps/web/src/lib/api/sites.ts`
+- [x] `SiteSelector.svelte` (multi-checkbox over `getCreatorSites()`)
+- [x] Wire into SiteBuilder Step 2 + post-publish `Promise.allSettled` call
+- [x] `SiteEventsManager.svelte` (post-deploy management screen)
+- [x] New route `/creator/sites/:siteId/events`
+- [x] `EventsGridSection.svelte`: default to date-ascending sort; honour `sortMode: "manual"`
+- [x] `packages/shared/src/site/types.ts`: add `sortMode?: "date" \| "manual"` to `EventsGridSection`
+- [x] Build check: both build commands pass
 - [ ] Manual: create event with two sites ticked → both deployed sites show it within 5min, no redeploy
 - [ ] Commit
 
