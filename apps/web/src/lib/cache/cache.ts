@@ -79,6 +79,14 @@ export const TTL = {
   COLLECTION: 7 * 24 * 60 * 60,
   /** Full event list for a deployed site — evict after 2 hours; grid always revalidates in background. */
   SITE_EVENTS: 2 * 60 * 60,
+  /** Creator's own events list — long TTL; background refresh patches UI on every load. */
+  CREATOR_EVENTS: 24 * 60 * 60,
+  /** Creator's own sites list — long TTL; background refresh patches UI on every load. */
+  CREATOR_SITES: 24 * 60 * 60,
+  /** Event admin order list — server is source of truth; this is just a fast paint cache. */
+  EVENT_ORDERS: 24 * 60 * 60,
+  /** Pending-approval queue for an event. */
+  PENDING_CLAIMS: 24 * 60 * 60,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -100,4 +108,48 @@ export const cacheKey = {
   ticket: (ref: string) => `ticket:${ref}`,
   /** Full event list for a deployed site (bundled fetch). */
   siteEvents: (siteId: string) => `site-events:${siteId}`,
+  /** Creator's own events list — keyed by creator address. */
+  creatorEvents: (address: string) => `creator-events:${address.toLowerCase()}`,
+  /** Creator's own sites list — keyed by creator address. */
+  creatorSites: (address: string) => `creator-sites:${address.toLowerCase()}`,
+  /** Event admin: order list for a given event. */
+  eventOrders: (eventId: string) => `event-orders:${eventId}`,
+  /** Event admin: pending-approval queue for a given event. */
+  pendingClaims: (eventId: string) => `pending-claims:${eventId}`,
 };
+
+// ---------------------------------------------------------------------------
+// Bulk eviction — user-scoped cache wipe on sign-out
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove all cache entries whose key starts with any of the given prefixes.
+ * Used on logout to prevent the next user on a shared device from seeing
+ * the previous user's creator lists, orders, or collection.
+ */
+export function cacheClearByPrefix(prefixes: string[]): void {
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k?.startsWith(PREFIX)) continue;
+      const inner = k.slice(PREFIX.length);
+      if (prefixes.some((p) => inner.startsWith(p))) toRemove.push(k);
+    }
+    toRemove.forEach((k) => localStorage.removeItem(k));
+  } catch {}
+}
+
+/**
+ * Prefixes that hold user-specific data and must be cleared on sign-out.
+ * Immutable per-event/per-ticket caches are intentionally retained.
+ */
+export const USER_SCOPED_PREFIXES = [
+  "creator-events:",
+  "creator-sites:",
+  "event-orders:",
+  "pending-claims:",
+  "collection:",
+  "claim-status:",
+  "claimed:",
+];

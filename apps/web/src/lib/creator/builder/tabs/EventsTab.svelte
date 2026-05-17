@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SiteEventEntry, EventDirectoryEntry } from "@woco/shared";
-  import { authGet } from "../../../api/client.js";
+  import { getMyEventsSWR } from "../../../api/creator-cache.js";
+  import { auth } from "../../../auth/auth-store.svelte.js";
   import { navigate } from "../../../router/router.svelte.js";
   import ImportUrlPanel, { type ImportPreview } from "../../events/ImportUrlPanel.svelte";
   import { onMount } from "svelte";
@@ -23,31 +24,41 @@
   let inSite = $derived(new Set(siteEvents.map((e) => e.eventId)));
   let featured = $derived(new Set(siteEvents.filter((e) => e.featured).map((e) => e.eventId)));
 
+  function applyEventList(list: EventDirectoryEntry[]) {
+    const seen = new Set<string>();
+    myEvents = list
+      .filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; })
+      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+  }
+
   async function loadEvents() {
-    state = "loading";
-    stateError = "";
-    try {
-      const res = await authGet<EventDirectoryEntry[]>("/api/events/mine");
-      if (!res.ok) {
-        const msg = res.error ?? "Server error";
-        console.error("[EventsTab] /api/events/mine failed:", msg);
-        // 401/403-style errors → prompt sign-in; server errors → show error
-        state = msg.toLowerCase().includes("auth") || msg.toLowerCase().includes("session")
-          ? "unauth"
-          : "error";
-        stateError = msg;
-        return;
-      }
-      const seen = new Set<string>();
-      myEvents = (res.data ?? [])
-        .filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; })
-        .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+    if (!auth.isConnected || !auth.parent) {
+      state = "unauth";
+      return;
+    }
+    const addr = auth.parent.toLowerCase();
+    const swr = getMyEventsSWR(addr);
+
+    // Paint from cache instantly if we have it.
+    if (swr.cached) {
+      applyEventList(swr.cached);
       state = "ready";
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[EventsTab] authGet threw:", msg);
-      state = msg === "Not authenticated" ? "unauth" : "error";
-      stateError = msg;
+    } else {
+      state = "loading";
+    }
+    stateError = "";
+
+    // Background refresh — patches the list in place. On error, keep cached.
+    // An empty response is treated like a soft-fail when we already have cached
+    // data, to avoid wiping the UI on a transient auth/identity mismatch.
+    const fresh = await swr.refresh();
+    if (fresh && (fresh.length > 0 || !swr.cached)) {
+      applyEventList(fresh);
+      state = "ready";
+    } else if (!swr.cached && !fresh) {
+      // No cache to fall back on AND refresh failed.
+      state = "error";
+      stateError = "Could not load events";
     }
   }
 

@@ -2,7 +2,9 @@
   import type { Site, SiteEventEntry, TemplateId } from "@woco/shared";
   import { newSiteFromTemplate } from "@woco/shared";
   import { onMount } from 'svelte';
-  import { publishSite, deploySite, loadSite, getSiteEvents, getCreatorSites } from "../../api/sites.js";
+  import { publishSite, deploySite, loadSite, getSiteEvents } from "../../api/sites.js";
+  import { getMySitesSWR } from "../../api/creator-cache.js";
+  import { cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import type { MySiteRecord } from './types.js';
@@ -59,8 +61,12 @@
   }
 
   function saveMySites(records: MySiteRecord[]) {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(MY_SITES_KEY, JSON.stringify(records));
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(MY_SITES_KEY, JSON.stringify(records));
+    // Mirror to the shared per-address SWR cache so other components
+    // (CreatorHome's "Your sites" panel) see new publishes instantly.
+    if (auth.parent) {
+      cacheSet(cacheKey.creatorSites(auth.parent.toLowerCase()), records, TTL.CREATOR_SITES);
     }
   }
 
@@ -119,16 +125,23 @@
     if (connected === _prevConnected) return;
     _prevConnected = connected;
 
-    if (connected) {
-      // Re-fetch on every login so the list is always up-to-date.
-      getCreatorSites().then((res) => {
-        if (!res.ok || !res.data) return;
-        const apiSites = res.data;
+    if (connected && auth.parent) {
+      const addr = auth.parent.toLowerCase();
+      // Seed from the shared SWR cache so a hop from CreatorHome paints
+      // the list instantly even if MY_SITES_KEY has been cleared.
+      const swr = getMySitesSWR(addr);
+      if (swr.cached && mySites.length === 0) {
+        mySites = [...swr.cached];
+        saveMySites(mySites);
+      }
+      // Refresh in the background. Failure keeps the localStorage view.
+      swr.refresh().then((apiSites) => {
+        if (!apiSites) return;
         const apiIds = new Set(apiSites.map((s) => s.siteId));
         const localOnly = mySites.filter((s) => !apiIds.has(s.siteId));
         mySites = [...apiSites, ...localOnly];
         saveMySites(mySites);
-      }).catch(() => { /* offline or session not yet ready — localStorage stands */ });
+      });
     } else {
       // Logged out: clear everything so no data leaks to the next user.
       mySites = [];

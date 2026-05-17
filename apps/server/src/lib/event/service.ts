@@ -7,6 +7,7 @@ import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from
 import { uploadToBytes } from "../swarm/bytes.js";
 import {
   readFeedPage,
+  readFeedPageStrict,
   readFeedPageWithRetry,
   writeFeedPage,
   encodeJsonFeed,
@@ -283,8 +284,14 @@ async function readDirectoryFromSwarm(): Promise<EventDirectoryEntry[]> {
 
 export async function listEvents(): Promise<EventDirectoryEntry[]> {
   if (_dirCache !== null) return _dirCache;
-  _dirCache = await readDirectoryFromSwarm();
-  return _dirCache;
+  const data = await readDirectoryFromSwarm();
+  // Only persist non-empty results into the long-lived cache. A transient
+  // Swarm read failure returns [] (readFeedPage swallows errors), and
+  // because _dirCache is only invalidated on publish/remove, caching that
+  // empty would serve "no events" to every visitor until the next write or
+  // server restart.
+  if (data.length > 0) _dirCache = data;
+  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,52 +381,150 @@ async function writeDirectoryPages(
   }
 }
 
-async function addToEventDirectory(
-  entry: EventDirectoryEntry,
-  opts: { skipPublicDirectory?: boolean } = {},
-): Promise<void> {
-  // Write to global public directory (skipped for site-builder events until explicitly listed)
-  if (!opts.skipPublicDirectory) {
-    const allEntries = await listEvents();
-    if (!allEntries.some((e) => e.eventId === entry.eventId)) {
-      allEntries.unshift(entry);
-      // Update cache immediately so GET /api/events returns the new event
-      _dirCache = [...allEntries];
-      const updatedAt = new Date().toISOString();
-      await writeDirectoryPages(allEntries, updatedAt, topicEventDirectory);
-      console.log(`[event] Directory updated: ${allEntries.length} events`);
-    }
+/**
+ * Strict directory read for the WRITE path. Returns the full prior contents
+ * of a paged directory feed, OR throws if any page read failed transiently.
+ * Bootstrap (status === "absent" on page 0) returns [] — safe to write the
+ * first entry of a brand-new directory.
+ *
+ * MUST be used in place of the cached / null-on-error readers when the result
+ * will be used as the basis for a directory rewrite. A transient Swarm read
+ * failure that returned [] would otherwise cause the rewrite to overwrite
+ * the directory with just the new entry, erasing every other organiser's
+ * data. Better to abort the upsert (fire-and-forget caller logs a warning)
+ * than to corrupt the directory irreversibly.
+ */
+async function readDirectoryStrict(
+  topicFn: (page: number) => import("@ethersphere/bee-js").Topic,
+): Promise<EventDirectoryEntry[]> {
+  const page0 = await readFeedPageStrict(topicFn(0));
+  if (page0.status === "error") {
+    throw new Error(`Directory read failed (page 0) — refusing to write: ${page0.error.message}`);
   }
+  if (page0.status === "absent") return [];
 
-  // Also write to per-creator index (never removed from — listing status doesn't affect organiser view)
-  const creatorEntries = await getCreatorEvents(entry.creatorAddress);
-  if (!creatorEntries.some((e) => e.eventId === entry.eventId)) {
-    creatorEntries.unshift(entry);
-    const updatedAt = new Date().toISOString();
-    await writeDirectoryPages(
-      creatorEntries,
-      updatedAt,
-      (p) => topicCreatorDirectory(entry.creatorAddress, p),
-    );
-    console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${creatorEntries.length} events`);
+  const dir = decodeJsonFeed<EventDirectory>(page0.data);
+  if (!dir) {
+    throw new Error("Directory page 0 decoded to null — refusing to write");
   }
-}
-
-export async function getCreatorEvents(ethAddress: string): Promise<EventDirectoryEntry[]> {
-  const page0 = await readFeedPage(topicCreatorDirectory(ethAddress));
-  if (!page0) return [];
-  const dir = decodeJsonFeed<EventDirectory>(page0);
-  if (!dir) return [];
 
   const all = [...dir.entries];
   const totalPages = dir.pages ?? 0;
   for (let p = 1; p <= totalPages; p++) {
-    const pageData = await readFeedPage(topicCreatorDirectory(ethAddress, p));
-    if (!pageData) break;
-    const overflow = decodeJsonFeed<EventDirectory>(pageData);
-    if (overflow?.entries) all.push(...overflow.entries);
+    const overflow = await readFeedPageStrict(topicFn(p));
+    if (overflow.status === "error") {
+      throw new Error(`Directory read failed (overflow page ${p}) — refusing to write: ${overflow.error.message}`);
+    }
+    if (overflow.status === "absent") break; // gap = end of pages, matches read-side behaviour
+    const decoded = decodeJsonFeed<EventDirectory>(overflow.data);
+    if (decoded?.entries) all.push(...decoded.entries);
   }
   return all;
+}
+
+async function addToEventDirectory(
+  entry: EventDirectoryEntry,
+  opts: { skipPublicDirectory?: boolean } = {},
+): Promise<void> {
+  // Write to global public directory (skipped for site-builder events until explicitly listed).
+  if (!opts.skipPublicDirectory) {
+    // Trust _dirCache only when populated (set from a confirmed read or our
+    // own writes). On cache miss, do a STRICT read — throw rather than
+    // overwrite the public directory with a partial view.
+    const allEntries = _dirCache !== null
+      ? _dirCache
+      : await readDirectoryStrict(topicEventDirectory);
+
+    if (!allEntries.some((e) => e.eventId === entry.eventId)) {
+      const updated = [entry, ...allEntries];
+      _dirCache = updated;
+      const updatedAt = new Date().toISOString();
+      await writeDirectoryPages(updated, updatedAt, topicEventDirectory);
+      console.log(`[event] Directory updated: ${updated.length} events`);
+    }
+  }
+
+  // Per-creator index (never removed from — listing status doesn't affect
+  // organiser view). Same strict-read protection.
+  const creatorEntries = await readDirectoryStrict(
+    (p) => topicCreatorDirectory(entry.creatorAddress, p),
+  );
+  if (!creatorEntries.some((e) => e.eventId === entry.eventId)) {
+    const updated = [entry, ...creatorEntries];
+    const updatedAt = new Date().toISOString();
+    await writeDirectoryPages(
+      updated,
+      updatedAt,
+      (p) => topicCreatorDirectory(entry.creatorAddress, p),
+    );
+    invalidateCreatorEventsCache(entry.creatorAddress);
+    console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${updated.length} events`);
+  }
+}
+
+// Short-lived in-memory memo for getCreatorEvents — collapses the burst of
+// reads when a dashboard mounts (CreatorHome + DashboardIndex + EventsTab all
+// fetch the same address in parallel). Write paths invalidate via
+// invalidateCreatorEventsCache to avoid stale upserts.
+const CREATOR_EVENTS_MEMO_TTL_MS = 5_000;
+const _creatorEventsMemo = new Map<string, { at: number; data: EventDirectoryEntry[] }>();
+const _creatorEventsInFlight = new Map<string, Promise<EventDirectoryEntry[]>>();
+
+export function invalidateCreatorEventsCache(ethAddress: string): void {
+  _creatorEventsMemo.delete(ethAddress.toLowerCase());
+}
+
+export async function getCreatorEvents(
+  ethAddress: string,
+  opts: { fresh?: boolean } = {},
+): Promise<EventDirectoryEntry[]> {
+  const key = ethAddress.toLowerCase();
+  if (!opts.fresh) {
+    const memo = _creatorEventsMemo.get(key);
+    if (memo && Date.now() - memo.at < CREATOR_EVENTS_MEMO_TTL_MS) {
+      return memo.data;
+    }
+    const inFlight = _creatorEventsInFlight.get(key);
+    if (inFlight) return inFlight;
+  }
+
+  const load = (async () => {
+    const page0 = await readFeedPage(topicCreatorDirectory(ethAddress));
+    if (!page0) return [];
+    const dir = decodeJsonFeed<EventDirectory>(page0);
+    if (!dir) return [];
+
+    const totalPages = dir.pages ?? 0;
+    if (totalPages === 0) return [...dir.entries];
+
+    // Read overflow pages in parallel — Swarm reads are the bottleneck here.
+    const overflow = await Promise.all(
+      Array.from({ length: totalPages }, (_, i) =>
+        readFeedPage(topicCreatorDirectory(ethAddress, i + 1)),
+      ),
+    );
+    const all = [...dir.entries];
+    for (const pageData of overflow) {
+      if (!pageData) break; // matches prior defensive behaviour
+      const decoded = decodeJsonFeed<EventDirectory>(pageData);
+      if (decoded?.entries) all.push(...decoded.entries);
+    }
+    return all;
+  })();
+
+  _creatorEventsInFlight.set(key, load);
+  try {
+    const data = await load;
+    // Only memoize populated results. readFeedPage() collapses transient
+    // Swarm errors into null (-> []) — caching that would pin an empty
+    // response for CREATOR_EVENTS_MEMO_TTL_MS across every request.
+    if (data.length > 0) {
+      _creatorEventsMemo.set(key, { at: Date.now(), data });
+    }
+    return data;
+  } finally {
+    _creatorEventsInFlight.delete(key);
+  }
 }
 
 export async function removeEventFromDirectory(eventId: string): Promise<void> {

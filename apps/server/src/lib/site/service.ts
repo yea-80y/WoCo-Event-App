@@ -1,27 +1,72 @@
 import { Topic } from "@ethersphere/bee-js";
 import { siteCreatorDirectoryTopic } from "@woco/shared";
 import type { SiteDirectoryEntry, SiteDirectory } from "@woco/shared";
-import { readFeedPage, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
+import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
 
 const DIR_PAGE_LIMIT = 4096;
 
 // ── Read ─────────────────────────────────────────────────────────────────────
 
-export async function getCreatorSites(ethAddress: string): Promise<SiteDirectoryEntry[]> {
-  const page0 = await readFeedPage(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
-  if (!page0) return [];
-  const dir = decodeJsonFeed<SiteDirectory>(page0);
-  if (!dir) return [];
+// Short-lived in-memory memo for getCreatorSites — collapses burst reads
+// when the creator portal mounts. Upsert paths bypass with { fresh: true }
+// and invalidate on write to avoid stale dedupe.
+const CREATOR_SITES_MEMO_TTL_MS = 5_000;
+const _creatorSitesMemo = new Map<string, { at: number; data: SiteDirectoryEntry[] }>();
+const _creatorSitesInFlight = new Map<string, Promise<SiteDirectoryEntry[]>>();
 
-  const all = [...dir.entries];
-  const totalPages = dir.pages ?? 0;
-  for (let p = 1; p <= totalPages; p++) {
-    const pageData = await readFeedPage(Topic.fromString(siteCreatorDirectoryTopic(ethAddress, p)));
-    if (!pageData) break;
-    const overflow = decodeJsonFeed<SiteDirectory>(pageData);
-    if (overflow?.entries) all.push(...overflow.entries);
+export function invalidateCreatorSitesCache(ethAddress: string): void {
+  _creatorSitesMemo.delete(ethAddress.toLowerCase());
+}
+
+export async function getCreatorSites(
+  ethAddress: string,
+  opts: { fresh?: boolean } = {},
+): Promise<SiteDirectoryEntry[]> {
+  const key = ethAddress.toLowerCase();
+  if (!opts.fresh) {
+    const memo = _creatorSitesMemo.get(key);
+    if (memo && Date.now() - memo.at < CREATOR_SITES_MEMO_TTL_MS) return memo.data;
+    const inFlight = _creatorSitesInFlight.get(key);
+    if (inFlight) return inFlight;
   }
-  return all;
+
+  const load = (async () => {
+    const page0 = await readFeedPage(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
+    if (!page0) return [];
+    const dir = decodeJsonFeed<SiteDirectory>(page0);
+    if (!dir) return [];
+
+    const totalPages = dir.pages ?? 0;
+    if (totalPages === 0) return [...dir.entries];
+
+    const overflow = await Promise.all(
+      Array.from({ length: totalPages }, (_, i) =>
+        readFeedPage(Topic.fromString(siteCreatorDirectoryTopic(ethAddress, i + 1))),
+      ),
+    );
+    const all = [...dir.entries];
+    for (const pageData of overflow) {
+      if (!pageData) break;
+      const decoded = decodeJsonFeed<SiteDirectory>(pageData);
+      if (decoded?.entries) all.push(...decoded.entries);
+    }
+    return all;
+  })();
+
+  _creatorSitesInFlight.set(key, load);
+  try {
+    const data = await load;
+    // Only memoize populated results. readFeedPage() swallows transient
+    // errors into null (returning []), which would otherwise pin an empty
+    // response for CREATOR_SITES_MEMO_TTL_MS — exactly the "navigate away,
+    // come back" symptom on first creator-portal load.
+    if (data.length > 0) {
+      _creatorSitesMemo.set(key, { at: Date.now(), data });
+    }
+    return data;
+  } finally {
+    _creatorSitesInFlight.delete(key);
+  }
 }
 
 // ── Write ────────────────────────────────────────────────────────────────────
@@ -57,13 +102,55 @@ async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: n
 }
 
 /**
+ * Strict read of the creator's site directory for the WRITE path. Returns
+ * the full prior contents or throws on any transient read error. Bootstrap
+ * (page 0 absent) returns [] — safe to write the first site.
+ *
+ * MUST be used in place of getCreatorSites() before any directory rewrite —
+ * a [] from a transient Swarm failure would otherwise cause upsert to
+ * overwrite the directory with just the new entry, wiping every other site
+ * the creator owns.
+ */
+async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectoryEntry[]> {
+  const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
+  if (page0.status === "error") {
+    throw new Error(`Site directory read failed (page 0) — refusing to write: ${page0.error.message}`);
+  }
+  if (page0.status === "absent") return [];
+
+  const dir = decodeJsonFeed<SiteDirectory>(page0.data);
+  if (!dir) {
+    throw new Error("Site directory page 0 decoded to null — refusing to write");
+  }
+
+  const all = [...dir.entries];
+  const totalPages = dir.pages ?? 0;
+  for (let p = 1; p <= totalPages; p++) {
+    const overflow = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress, p)));
+    if (overflow.status === "error") {
+      throw new Error(`Site directory read failed (overflow page ${p}) — refusing to write: ${overflow.error.message}`);
+    }
+    if (overflow.status === "absent") break;
+    const decoded = decodeJsonFeed<SiteDirectory>(overflow.data);
+    if (decoded?.entries) all.push(...decoded.entries);
+  }
+  return all;
+}
+
+/**
  * Upsert a site entry into the creator's directory feed.
  * Existing entry for the same siteId is replaced (updates feedHash, deployedUrl, etc).
+ *
+ * Throws if the prior directory state can't be read confidently — refuses
+ * to write rather than risk overwriting the directory with a partial view.
+ * Callers (publish / deploy) invoke this fire-and-forget so the throw
+ * surfaces as a logged warning; the published site itself is unaffected.
  */
 export async function upsertCreatorSite(ethAddress: string, entry: SiteDirectoryEntry): Promise<void> {
-  const existing = await getCreatorSites(ethAddress);
+  const existing = await readCreatorSitesStrict(ethAddress);
   const filtered = existing.filter((e) => e.siteId !== entry.siteId);
   const updated = [entry, ...filtered]; // most-recently-published first
   await writeDirectoryPages(updated, (p) => siteCreatorDirectoryTopic(ethAddress, p));
+  invalidateCreatorSitesCache(ethAddress);
   console.log(`[site] Creator directory updated for ${ethAddress}: ${updated.length} site(s)`);
 }

@@ -31,6 +31,7 @@ import {
 import { restoreParaSession, logoutPara } from "./para-account.js";
 import { createWeb3Signer, createLocalSigner, createPasskeySigner, createParaSigner } from "./signers/index.js";
 import { signingRequest } from "./signing-request.svelte.js";
+import { cacheClearByPrefix, USER_SCOPED_PREFIXES } from "../cache/cache.js";
 
 // ---------------------------------------------------------------------------
 // State (Svelte 5 runes)
@@ -521,6 +522,8 @@ async function clearAllAuth(): Promise<void> {
   // The key stays in IndexedDB; only the session state is wiped.
   await delKV(StorageKeys.AUTH_KIND);
   await delKV(StorageKeys.PARENT_ADDRESS);
+  // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
+  cacheClearByPrefix(USER_SCOPED_PREFIXES);
   _kind = "none";
   _parent = null;
   _sessionAddress = null;

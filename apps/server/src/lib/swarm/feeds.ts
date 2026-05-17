@@ -133,6 +133,51 @@ export async function readFeedPage(topic: Topic): Promise<Uint8Array | null> {
   }
 }
 
+/**
+ * Discriminated result for write-path reads.
+ *  - "ok":     payload returned, safe to use as the prior state of the feed.
+ *  - "absent": feed has never been written (Bee 404). Safe to bootstrap.
+ *  - "error":  anything else (transient network, 5xx, parse failure). The
+ *              caller MUST NOT proceed to a write that would overwrite the
+ *              feed's prior contents — doing so would clobber every entry
+ *              the read failed to retrieve. Throw, retry later, abort.
+ *
+ * `readFeedPage` (above) collapses all three into `null`, which is fine for
+ * read endpoints that fall through to "show nothing" UX. Write paths that
+ * read-modify-write a directory MUST use the strict variant.
+ */
+export type FeedReadStrictResult =
+  | { status: "ok"; data: Uint8Array }
+  | { status: "absent" }
+  | { status: "error"; error: Error };
+
+export async function readFeedPageStrict(topic: Topic): Promise<FeedReadStrictResult> {
+  try {
+    await ensureEthernaToken();
+    const reader = getBee().makeFeedReader(topic, getPlatformOwner());
+    const result = await reader.downloadPayload();
+    const next = (result as { feedIndexNext?: FeedIndex })?.feedIndexNext;
+    if (next) rememberNextIndex(topic, next);
+    const bytes = toBytes(result);
+    if (!bytes) {
+      return { status: "error", error: new Error("Feed payload empty or unparseable") };
+    }
+    return { status: "ok", data: bytes };
+  } catch (err) {
+    const status = (err as { status?: number; response?: { status?: number } })?.status
+      ?? (err as { status?: number; response?: { status?: number } })?.response?.status;
+    // Only 404 from the feed lookup means "feed has never been written".
+    // Anything else (5xx, network, parse) is indistinguishable from a
+    // transient failure — treating it as absent would let a hiccup wipe
+    // the directory on the next write.
+    if (status === 404) return { status: "absent" };
+    return {
+      status: "error",
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+}
+
 export async function readFeedPageWithRetry(
   topic: Topic,
   maxRetries = 5,

@@ -10,8 +10,7 @@
   import type { EventDirectoryEntry, SiteDirectoryEntry } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { authGet } from "../../api/client.js";
-  import { getCreatorSites } from "../../api/sites.js";
+  import { getMyEventsSWR, getMySitesSWR } from "../../api/creator-cache.js";
   import { getPendingClaims } from "../../api/events.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -52,18 +51,25 @@
 
   onMount(async () => {
     clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
-    if (!auth.isConnected) {
+    if (!auth.isConnected || !auth.parent) {
       loading = false;
       return;
     }
-    try {
-      const [evRes, siteRes] = await Promise.all([
-        authGet<EventDirectoryEntry[]>("/api/events/mine"),
-        getCreatorSites(),
-      ]);
-      if (evRes.ok && evRes.data) events = evRes.data;
-      if (siteRes.ok && siteRes.data) sites = siteRes.data;
-    } catch { /* keep empty */ }
+    const addr = auth.parent.toLowerCase();
+
+    // SWR: paint from cache instantly, then patch with fresh data.
+    const evSWR = getMyEventsSWR(addr);
+    const siteSWR = getMySitesSWR(addr);
+    if (evSWR.cached) events = evSWR.cached;
+    if (siteSWR.cached) sites = siteSWR.cached;
+    if (evSWR.cached || siteSWR.cached) loading = false;
+
+    const [freshEvents, freshSites] = await Promise.all([evSWR.refresh(), siteSWR.refresh()]);
+    // Only overwrite with fresh data when it has items OR we never had cached data.
+    // An unexpected empty response (auth/identity mismatch) shouldn't wipe what the
+    // user can see — keep the last-known-good cached view.
+    if (freshEvents && (freshEvents.length > 0 || !evSWR.cached)) events = freshEvents;
+    if (freshSites && (freshSites.length > 0 || !siteSWR.cached)) sites = freshSites;
     loading = false;
 
     // Pending approvals — only check upcoming events

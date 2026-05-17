@@ -2,7 +2,8 @@
   import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, openJson } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
-  import { getEventOrders, webhookRelay, getPendingClaims, approvePendingClaim, rejectPendingClaim, sendBroadcast, type EventOrdersResponse, type PendingClaimEntry, type BroadcastResponse } from "../../api/events.js";
+  import { getEventOrders, webhookRelay, approvePendingClaim, rejectPendingClaim, sendBroadcast, type EventOrdersResponse, type PendingClaimEntry, type BroadcastResponse } from "../../api/events.js";
+  import { getEventSWR, getEventOrdersSWR, getPendingClaimsSWR } from "../../api/creator-cache.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -331,6 +332,73 @@
   // Lifecycle
   // ---------------------------------------------------------------------------
 
+  /**
+   * Decrypt the currently-loaded orders + pending entries with the organiser's
+   * POD-derived key. Replaces the displayed maps wholesale. Safe to call
+   * multiple times (e.g. once for cached data, again when fresh arrives).
+   */
+  async function decryptCurrent(): Promise<void> {
+    if (!ordersResponse) return;
+    const hasEncryptedOrders = ordersResponse.orders.some((o) => !!o.encryptedOrder);
+    const hasEncryptedPending = pendingEntries.some((p) => !!p.encryptedOrder);
+    if (!hasEncryptedOrders && !hasEncryptedPending) return;
+
+    decrypting = true;
+
+    let podSeed = await restorePodSeed();
+    if (!podSeed) {
+      const pk = await auth.ensurePodIdentity();
+      if (!pk) {
+        decryptError = "POD identity derivation cancelled. Cannot decrypt orders.";
+        decrypting = false;
+        return;
+      }
+      podSeed = await restorePodSeed();
+    }
+    if (!podSeed) {
+      decryptError = "POD identity not found. Please re-derive your identity.";
+      decrypting = false;
+      return;
+    }
+
+    const { privateKey } = deriveEncryptionKeypairFromPodSeed(podSeed);
+
+    if (hasEncryptedOrders) {
+      const results = await Promise.allSettled(
+        ordersResponse.orders.map(async (order, idx) => {
+          if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
+          const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
+          return { idx, data: decrypted };
+        }),
+      );
+      const newMap = new Map<number, DecryptedOrder>();
+      let failCount = 0;
+      for (const result of results) {
+        if (result.status === "fulfilled") newMap.set(result.value.idx, result.value.data);
+        else failCount++;
+      }
+      decryptedOrders = newMap;
+      decryptError = failCount > 0 ? `Failed to decrypt ${failCount} order(s)` : null;
+    }
+
+    if (hasEncryptedPending) {
+      const pendingResults = await Promise.allSettled(
+        pendingEntries.map(async (entry) => {
+          if (!entry.encryptedOrder) return { pendingId: entry.pendingId, data: {} as DecryptedOrder };
+          const decrypted = await openJson<DecryptedOrder>(privateKey, entry.encryptedOrder);
+          return { pendingId: entry.pendingId, data: decrypted };
+        }),
+      );
+      const newPendingMap = new Map<string, DecryptedOrder>();
+      for (const result of pendingResults) {
+        if (result.status === "fulfilled") newPendingMap.set(result.value.pendingId, result.value.data);
+      }
+      decryptedPending = newPendingMap;
+    }
+
+    decrypting = false;
+  }
+
   onMount(async () => {
     // Load webhook config from localStorage
     webhookConfig = loadWebhookConfig();
@@ -341,25 +409,48 @@
       webhookFormAuthValue = webhookConfig.authHeaderValue ?? "";
     }
 
+    if (!auth.isConnected) {
+      error = "Please sign in to view the dashboard";
+      loading = false;
+      return;
+    }
+
+    // ── Step 1: Paint from cache if we have it ────────────────────────────
+    // Only if the cached event confirms the current user is the organiser —
+    // never reveal another organiser's cached orders.
+    const evSWR = getEventSWR(eventId);
+    const ordersSWR = getEventOrdersSWR(eventId);
+    const pendingSWR = getPendingClaimsSWR(eventId);
+
+    let cachedShown = false;
+    if (
+      evSWR.cached &&
+      ordersSWR.cached &&
+      auth.parent?.toLowerCase() === evSWR.cached.creatorAddress.toLowerCase()
+    ) {
+      event = evSWR.cached;
+      ordersResponse = ordersSWR.cached;
+      pendingEntries = pendingSWR.cached ?? [];
+      loading = false;
+      cachedShown = true;
+      // Decrypt the cached set in the background while fresh data is loading.
+      decryptCurrent();
+    }
+
+    // ── Step 2: Refresh from the server ───────────────────────────────────
     try {
-      if (!auth.isConnected) {
-        error = "Please sign in to view the dashboard";
-        loading = false;
-        return;
-      }
-
-      // Load event first (public, no auth needed)
-      const ev = await getEvent(eventId);
+      const ev = await evSWR.refresh();
       if (!ev) {
-        error = "Event not found";
-        loading = false;
+        if (!cachedShown) { error = "Event not found"; loading = false; }
         return;
       }
-
-      // Verify organizer BEFORE prompting for session — user sees context for why they must sign
       if (auth.parent?.toLowerCase() !== ev.creatorAddress.toLowerCase()) {
         const me = auth.parent ?? "(not signed in)";
         error = `Only the event organizer can view this dashboard.\nSigned in as: ${me}\nEvent owner:  ${ev.creatorAddress}`;
+        // If we showed cached data, clear it — user is not the organiser.
+        event = null;
+        ordersResponse = null;
+        pendingEntries = [];
         loading = false;
         return;
       }
@@ -368,100 +459,33 @@
       if (!auth.hasSession) {
         const ok = await auth.ensureSession();
         if (!ok) {
-          error = "Session authentication required to view order data.";
+          if (!cachedShown) error = "Session authentication required to view order data.";
           loading = false;
           return;
         }
       }
 
-      // Load orders + pending claims in parallel
-      const [ordersResp, pending] = await Promise.all([
-        getEventOrders(eventId),
-        getPendingClaims(eventId).catch(() => [] as PendingClaimEntry[]),
+      const [freshOrders, freshPending] = await Promise.all([
+        ordersSWR.refresh(),
+        pendingSWR.refresh(),
       ]);
 
       event = ev;
-      ordersResponse = ordersResp;
-      pendingEntries = pending;
+      if (freshOrders) ordersResponse = freshOrders;
+      if (freshPending) pendingEntries = freshPending;
       loading = false;
 
-      // Switch to approvals tab automatically if there are pending entries
-      if (pending.length > 0 && ordersResp.orders.length === 0) {
+      // Auto-switch to approvals tab only on first-ever load (no cache yet).
+      if (!cachedShown && freshPending && freshPending.length > 0 && (freshOrders?.orders.length ?? 0) === 0) {
         activeTab = "approvals";
       }
 
-      // Determine if we have any encrypted data to decrypt (orders or pending)
-      const hasEncryptedOrders = ordersResp.orders.some((o) => !!o.encryptedOrder);
-      const hasEncryptedPending = pending.some((p) => !!p.encryptedOrder);
-      if (!hasEncryptedOrders && !hasEncryptedPending) return;
-
-      decrypting = true;
-
-      // Ensure POD identity exists (will trigger EIP-712 if needed after forget/reconnect)
-      let podSeed = await restorePodSeed();
-      if (!podSeed) {
-        const pk = await auth.ensurePodIdentity();
-        if (!pk) {
-          decryptError = "POD identity derivation cancelled. Cannot decrypt orders.";
-          decrypting = false;
-          return;
-        }
-        podSeed = await restorePodSeed();
-      }
-      if (!podSeed) {
-        decryptError = "POD identity not found. Please re-derive your identity.";
-        decrypting = false;
-        return;
-      }
-
-      const { privateKey } = deriveEncryptionKeypairFromPodSeed(podSeed);
-
-      // Decrypt orders
-      if (hasEncryptedOrders) {
-        const results = await Promise.allSettled(
-          ordersResp.orders.map(async (order, idx) => {
-            if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
-            const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
-            return { idx, data: decrypted };
-          }),
-        );
-
-        const newMap = new Map<number, DecryptedOrder>();
-        let failCount = 0;
-        for (const result of results) {
-          if (result.status === "fulfilled") {
-            newMap.set(result.value.idx, result.value.data);
-          } else {
-            failCount++;
-          }
-        }
-        decryptedOrders = newMap;
-        if (failCount > 0) {
-          decryptError = `Failed to decrypt ${failCount} order(s)`;
-        }
-      }
-
-      // Decrypt pending claim orders
-      if (hasEncryptedPending) {
-        const pendingResults = await Promise.allSettled(
-          pending.map(async (entry) => {
-            if (!entry.encryptedOrder) return { pendingId: entry.pendingId, data: {} as DecryptedOrder };
-            const decrypted = await openJson<DecryptedOrder>(privateKey, entry.encryptedOrder);
-            return { pendingId: entry.pendingId, data: decrypted };
-          }),
-        );
-        const newPendingMap = new Map<string, DecryptedOrder>();
-        for (const result of pendingResults) {
-          if (result.status === "fulfilled") {
-            newPendingMap.set(result.value.pendingId, result.value.data);
-          }
-        }
-        decryptedPending = newPendingMap;
-      }
-
-      decrypting = false;
+      // Decrypt fresh data (replaces any prior decrypt run).
+      await decryptCurrent();
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load dashboard";
+      if (!cachedShown) {
+        error = e instanceof Error ? e.message : "Failed to load dashboard";
+      }
       loading = false;
       decrypting = false;
     }

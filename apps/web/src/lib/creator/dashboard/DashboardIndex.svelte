@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { EventDirectoryEntry } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { authPost, authGet } from "../../api/client.js";
+  import { authPost } from "../../api/client.js";
+  import { getMyEventsSWR } from "../../api/creator-cache.js";
   import { navigate } from "../../router/router.svelte.js";
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
@@ -95,20 +96,25 @@
   onMount(async () => {
     clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
     if (!auth.isConnected || !auth.parent) { loading = false; return; }
+    const addr = auth.parent.toLowerCase();
 
-    // Establish session before API call — triggers biometric + EIP-712 for passkey users.
-    // Done explicitly here so the user understands why they're being prompted.
+    // Paint from cache first so the list is on-screen before we touch auth.
+    const swr = getMyEventsSWR(addr);
+    if (swr.cached) {
+      allEvents = swr.cached;
+      loading = false;
+    }
+
+    // Background refresh — needs a session. If session derivation fails or is
+    // refused, keep the cached view; don't blank the page.
     if (!auth.hasSession) {
       const ok = await auth.ensureSession();
       if (!ok) { loading = false; return; }
     }
-
-    try {
-      const res = await authGet<EventDirectoryEntry[]>("/api/events/mine");
-      if (res.ok && res.data) allEvents = res.data;
-    } catch { /* ignore */ } finally {
-      loading = false;
-    }
+    const fresh = await swr.refresh();
+    // Don't overwrite a populated cached view with an unexpected empty response.
+    if (fresh && (fresh.length > 0 || !swr.cached)) allEvents = fresh;
+    loading = false;
   });
 
   onDestroy(() => clearInterval(clockTimer));
