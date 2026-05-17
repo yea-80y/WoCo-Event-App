@@ -55,28 +55,29 @@ events.get("/organiser-nonce/:address", async (c) => {
   }
 });
 
-// GET /api/events/mine — authenticated, returns caller's events from creator index
-// Also merges in any global-directory events not yet in the creator index (old events
-// predating the per-creator index). Unlisted events still appear because the creator
-// index is never trimmed by the unlist operation — only the global directory is.
+// GET /api/events/mine — authenticated, returns caller's events from creator index.
+// Falls back to filtering the global directory only when the creator index is
+// empty — covers legacy users whose events predate the per-creator index.
+// Unlisted events still appear because the creator index is never trimmed by
+// the unlist operation — only the global directory is.
 // Must be registered BEFORE /:id to prevent "mine" being treated as an eventId.
 events.get("/mine", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   try {
-    const [creatorEntries, allEntries] = await Promise.all([
-      getCreatorEvents(parentAddress),
-      listEvents(),
-    ]);
-
-    // Merge: creator index is the primary source (never affected by unlist).
-    // Global directory fills in old events that predate the creator index.
-    // Deduplicate creatorEntries first (feed can have the same slot written twice).
+    // Fast path: trust the creator index when it has entries. Skips reading
+    // the global platform-wide directory (a separate, often multi-page feed)
+    // which is otherwise loaded just to filter back down to this creator.
+    const creatorEntries = await getCreatorEvents(parentAddress);
+    // Deduplicate (feed can have the same slot written twice).
     const seen = new Set<string>();
-    const merged = creatorEntries.filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; });
-    for (const e of allEntries) {
-      if (e.creatorAddress.toLowerCase() === parentAddress && !seen.has(e.eventId)) {
-        merged.push(e);
-      }
+    let merged = creatorEntries.filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; });
+
+    // Legacy fallback: if the creator has nothing in their per-creator index,
+    // check the global directory for events that predate it. This is the only
+    // case worth the extra Swarm read.
+    if (merged.length === 0) {
+      const allEntries = await listEvents();
+      merged = allEntries.filter((e) => e.creatorAddress.toLowerCase() === parentAddress);
     }
 
     const filter = c.req.query("filter") ?? "all";
