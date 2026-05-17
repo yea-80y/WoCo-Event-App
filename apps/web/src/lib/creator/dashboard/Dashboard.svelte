@@ -345,7 +345,12 @@
 
     decrypting = true;
 
-    let podSeed = await restorePodSeed();
+    if (!auth.parent) {
+      decryptError = "Not logged in. Cannot decrypt orders.";
+      decrypting = false;
+      return;
+    }
+    let podSeed = await restorePodSeed(auth.parent);
     if (!podSeed) {
       const pk = await auth.ensurePodIdentity();
       if (!pk) {
@@ -353,7 +358,7 @@
         decrypting = false;
         return;
       }
-      podSeed = await restorePodSeed();
+      podSeed = await restorePodSeed(auth.parent);
     }
     if (!podSeed) {
       decryptError = "POD identity not found. Please re-derive your identity.";

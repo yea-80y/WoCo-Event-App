@@ -25,20 +25,37 @@ export async function ensureDeviceKey(): Promise<CryptoKey> {
 /**
  * Context strings used as AES-GCM Additional Authenticated Data (AAD).
  *
- * Binding each ciphertext to a distinct context prevents an attacker who
- * has IndexedDB write access from swapping blobs across slots — e.g.
- * decrypting a delegation blob as a raw local-account key and tricking
- * the wallet code into signing with the wrong material. The AAD is
- * authenticated but NOT encrypted; mismatched context → decrypt throws.
+ * Two layers of binding:
+ *   1. SLOT KIND — prevents cross-slot blob substitution (e.g. swap a
+ *      delegation blob into the local-account slot).
+ *   2. PARENT ADDRESS — for identity-scoped slots (POD seed, session key,
+ *      session delegation) the AAD also commits to the wallet address that
+ *      wrote the blob. Decryption fails cryptographically when the active
+ *      parent differs from the writer — so a stale blob left in IndexedDB
+ *      (e.g. by a bug in clear-on-logout / clear-on-switch) cannot be
+ *      silently re-used by a different identity on the same browser. AAD
+ *      is authenticated but NOT encrypted.
+ *
+ * LOCAL_ACCOUNT is the only slot kept as a constant — the plaintext IS
+ * the account address, so binding AAD to the address would be circular
+ * (we'd need the address to construct the AAD before decryption).
+ *
+ * Address is lowercased so casing variation cannot lock a user out.
  */
 export const AAD = {
   LOCAL_ACCOUNT: "woco/device/local-account/v1",
-  SESSION_KEY: "woco/device/session-key/v1",
-  SESSION_DELEGATION: "woco/device/session-delegation/v1",
-  POD_SEED: "woco/device/pod-seed/v1",
+  SESSION_KEY: (parent: string) =>
+    `woco/device/session-key/v1:${parent.toLowerCase()}`,
+  SESSION_DELEGATION: (parent: string) =>
+    `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
+  POD_SEED: (parent: string) =>
+    `woco/device/pod-seed/v1:${parent.toLowerCase()}`,
 } as const;
 
-export type EncryptionContext = typeof AAD[keyof typeof AAD];
+/** Any string is accepted at the encrypt/decrypt boundary; AAD constructors
+ *  above produce well-formed values. Loose typing keeps the encryption
+ *  primitive reusable. */
+export type EncryptionContext = string;
 
 export async function encrypt(
   deviceKey: CryptoKey,

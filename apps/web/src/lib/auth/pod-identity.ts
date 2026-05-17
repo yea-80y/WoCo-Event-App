@@ -48,9 +48,11 @@ export async function requestPodIdentity(
   // Derive keypair to get public key
   const keypair = await deriveKeypair(seed);
 
-  // Encrypt and store seed
+  // Encrypt and store seed — AAD binds the blob to the parent address so a
+  // stale POD seed left in IndexedDB cannot be decrypted by a different
+  // identity on the same browser. See encryption.ts for rationale.
   const deviceKey = await ensureDeviceKey();
-  const encSeed = await encrypt(deviceKey, AAD.POD_SEED, { seed });
+  const encSeed = await encrypt(deviceKey, AAD.POD_SEED(parentAddress), { seed });
   await putKV(StorageKeys.POD_SEED, encSeed);
 
   return { podPublicKeyHex: keypair.publicKeyHex, seed };
@@ -58,27 +60,45 @@ export async function requestPodIdentity(
 
 /**
  * Restore cached POD seed from IndexedDB.
- * Returns null if no seed is stored (user hasn't done POD derivation on this device).
+ * Returns null if no seed is stored, or if the stored seed was encrypted
+ * for a different parent address (cross-identity guard via AAD).
+ *
+ * On AAD mismatch the stale blob is deleted so the next `requestPodIdentity`
+ * cleanly re-derives it — same wallet always yields the same seed, so this
+ * is a UX-transparent one-time re-sign for users carrying pre-hardening
+ * blobs from before 2026-05-17.
  */
-export async function restorePodSeed(): Promise<string | null> {
+export async function restorePodSeed(parentAddress: string): Promise<string | null> {
   const encSeed = await getKV<EncryptedBlob>(StorageKeys.POD_SEED);
   if (!encSeed) return null;
 
   const deviceKey = await ensureDeviceKey();
-  const { seed } = await decrypt<{ seed: string }>(deviceKey, AAD.POD_SEED, encSeed);
-  return seed;
+  try {
+    const { seed } = await decrypt<{ seed: string }>(
+      deviceKey,
+      AAD.POD_SEED(parentAddress),
+      encSeed,
+    );
+    return seed;
+  } catch {
+    // AES-GCM auth tag failure (wrong AAD, tampered ciphertext, or legacy
+    // pre-hardening blob). Either way the blob is unusable for this
+    // identity — drop it so re-derivation isn't blocked.
+    await delKV(StorageKeys.POD_SEED);
+    return null;
+  }
 }
 
 /**
  * Get the POD keypair, deriving from stored seed.
  * Returns null if no seed is stored.
  */
-export async function getPodKeypair(): Promise<{
+export async function getPodKeypair(parentAddress: string): Promise<{
   privateKey: Uint8Array;
   publicKey: Uint8Array;
   publicKeyHex: string;
 } | null> {
-  const seed = await restorePodSeed();
+  const seed = await restorePodSeed(parentAddress);
   if (!seed) return null;
   return deriveKeypair(seed);
 }

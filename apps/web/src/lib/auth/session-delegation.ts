@@ -77,13 +77,17 @@ export async function requestSessionDelegation(
   // 5. Encrypt and store
   const deviceKey = await ensureDeviceKey();
 
-  const encSessionKey = await encrypt(deviceKey, AAD.SESSION_KEY, {
+  // AAD binds both blobs to the parent address. A stale session left in
+  // IndexedDB after an account switch cannot be decrypted by a different
+  // identity on the same browser even if clear-on-switch is missed — the
+  // AES-GCM auth tag fails. See encryption.ts.
+  const encSessionKey = await encrypt(deviceKey, AAD.SESSION_KEY(parentAddress), {
     privateKey: sessionWallet.privateKey,
     address: sessionAddress,
   });
   await putKV(StorageKeys.SESSION_KEY, encSessionKey);
 
-  const encDelegation = await encrypt(deviceKey, AAD.SESSION_DELEGATION, delegation);
+  const encDelegation = await encrypt(deviceKey, AAD.SESSION_DELEGATION(parentAddress), delegation);
   await putKV(StorageKeys.SESSION_DELEGATION, encDelegation);
 
   return { sessionAddress, delegation };
@@ -91,15 +95,15 @@ export async function requestSessionDelegation(
 
 /**
  * Restore an existing session from IndexedDB.
- * Returns null if no session exists or it has expired.
+ * Returns null if no session exists, has expired, or was encrypted for a
+ * different parent (AAD auth tag fails → blob is wiped).
  *
- * If `expectedParent` is provided, the delegation's `parent` field MUST
- * match it (case-insensitive). A mismatch wipes the stale session and
- * returns null. This guards against cross-identity leak when switching
- * login methods — a delegation signed by one wallet must never be
- * re-attached to a different active identity.
+ * `expectedParent` is REQUIRED — the AAD commits to it, so without it the
+ * blob cannot be decrypted. A delegation signed by one wallet can never be
+ * re-attached to a different active identity: the AES-GCM auth tag fails
+ * before the plaintext-level guard below ever runs (defence in depth).
  */
-export async function restoreSession(expectedParent?: string | null): Promise<{
+export async function restoreSession(expectedParent: string): Promise<{
   sessionWallet: Wallet;
   delegation: SessionDelegation;
 } | null> {
@@ -109,16 +113,27 @@ export async function restoreSession(expectedParent?: string | null): Promise<{
 
   const deviceKey = await ensureDeviceKey();
 
-  const { privateKey, address } = await decrypt<{
-    privateKey: string;
-    address: string;
-  }>(deviceKey, AAD.SESSION_KEY, encKey);
+  let privateKey: string;
+  let address: string;
+  let delegation: SessionDelegation;
+  try {
+    ({ privateKey, address } = await decrypt<{
+      privateKey: string;
+      address: string;
+    }>(deviceKey, AAD.SESSION_KEY(expectedParent), encKey));
 
-  const delegation = await decrypt<SessionDelegation>(
-    deviceKey,
-    AAD.SESSION_DELEGATION,
-    encDel,
-  );
+    delegation = await decrypt<SessionDelegation>(
+      deviceKey,
+      AAD.SESSION_DELEGATION(expectedParent),
+      encDel,
+    );
+  } catch {
+    // Wrong AAD (different parent / legacy pre-hardening blob), tampered
+    // ciphertext, or corrupt store. The blobs are unusable — wipe so the
+    // next ensureSession() cleanly re-derives.
+    await clearSession();
+    return null;
+  }
 
   // Check expiration
   if (new Date(delegation.message.expiresAt).getTime() < Date.now()) {
@@ -132,12 +147,8 @@ export async function restoreSession(expectedParent?: string | null): Promise<{
     return null;
   }
 
-  // Cross-identity guard: never serve a delegation that belongs to a
-  // different parent than the one currently logged in.
-  if (
-    expectedParent &&
-    delegation.message.parent.toLowerCase() !== expectedParent.toLowerCase()
-  ) {
+  // Plaintext cross-identity guard (defence in depth — AAD already enforced).
+  if (delegation.message.parent.toLowerCase() !== expectedParent.toLowerCase()) {
     await clearSession();
     return null;
   }
@@ -157,7 +168,7 @@ export async function restoreSession(expectedParent?: string | null): Promise<{
  */
 export async function signWithSession(
   payload: string | Uint8Array,
-  expectedParent?: string | null,
+  expectedParent: string,
 ): Promise<{ signature: string; sessionAddress: string } | null> {
   const session = await restoreSession(expectedParent);
   if (!session) return null;
@@ -170,22 +181,29 @@ export async function signWithSession(
 
 /**
  * Get the current session delegation bundle for API requests.
- * When `expectedParent` is provided, a delegation belonging to a
- * different parent is treated as stale: it is wiped and null returned.
+ * `expectedParent` is REQUIRED — AAD commits to it. A delegation belonging
+ * to a different parent fails the AES-GCM auth tag and is wiped.
  */
 export async function getSessionDelegation(
-  expectedParent?: string | null,
+  expectedParent: string,
 ): Promise<SessionDelegation | null> {
   const encDel = await getKV<EncryptedBlob>(StorageKeys.SESSION_DELEGATION);
   if (!encDel) return null;
 
   const deviceKey = await ensureDeviceKey();
-  const delegation = await decrypt<SessionDelegation>(deviceKey, AAD.SESSION_DELEGATION, encDel);
+  let delegation: SessionDelegation;
+  try {
+    delegation = await decrypt<SessionDelegation>(
+      deviceKey,
+      AAD.SESSION_DELEGATION(expectedParent),
+      encDel,
+    );
+  } catch {
+    await clearSession();
+    return null;
+  }
 
-  if (
-    expectedParent &&
-    delegation.message.parent.toLowerCase() !== expectedParent.toLowerCase()
-  ) {
+  if (delegation.message.parent.toLowerCase() !== expectedParent.toLowerCase()) {
     await clearSession();
     return null;
   }

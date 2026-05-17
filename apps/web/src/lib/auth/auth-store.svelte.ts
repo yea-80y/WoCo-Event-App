@@ -93,14 +93,15 @@ function _getSigner(): EIP712Signer {
  * from a different identity can never be silently re-attached.
  */
 async function _restoreCachedAuth(): Promise<void> {
+  if (!_parent) return;
   const session = await restoreSession(_parent);
   if (session) {
     _sessionAddress = session.sessionWallet.address;
   }
 
-  const seed = await restorePodSeed();
+  const seed = await restorePodSeed(_parent);
   if (seed) {
-    const kp = await getPodKeypair();
+    const kp = await getPodKeypair(_parent);
     _podPublicKeyHex = kp?.publicKeyHex ?? null;
   }
 }
@@ -446,6 +447,7 @@ async function signRequest(
     const ok = await ensureSession();
     if (!ok) return null;
   }
+  if (!_parent) return null;
 
   const nonce = crypto.randomUUID();
   const timestamp = Date.now().toString();
@@ -583,5 +585,7 @@ export const auth = {
   logout,
   ensurePodIdentity,
   signRequest,
-  getPodKeypair,
+  // Bind to the active parent so callers don't need to pass it (and can't
+  // pass the wrong one). Returns null when not logged in.
+  getPodKeypair: () => (_parent ? getPodKeypair(_parent) : Promise.resolve(null)),
 };
