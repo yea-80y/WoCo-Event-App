@@ -51,8 +51,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## Deploy
 
-- [ ] Frontend deploy via `npm run deploy` (user runs)
-- [ ] Server deploy via rsync sequence (see `~/.claude/CLAUDE.md` "WoCo-Event-App")
+- [x] Frontend deploy via `npm run deploy` (feed index 64)
+- [x] Server deploy via rsync sequence (PIDs 17032/17033 healthy)
 - [ ] Smoke test on live: Splitter → Discover → event purchase via Stripe → email arrives
 
 ## Notes / blockers
