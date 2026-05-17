@@ -32,7 +32,10 @@
   let sites = $state<SiteDirectoryEntry[]>([]);
   let pendingTotal = $state(0);
   let stripeReady = $state<boolean | null>(null);
-  let loading = $state(true);
+  // Per-panel loading so the events panel doesn't wait for the sites Swarm
+  // read (or vice versa) — each paints as soon as its own data resolves.
+  let loadingEvents = $state(true);
+  let loadingSites = $state(true);
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
 
@@ -52,7 +55,8 @@
   onMount(async () => {
     clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
     if (!auth.isConnected || !auth.parent) {
-      loading = false;
+      loadingEvents = false;
+      loadingSites = false;
       return;
     }
     const addr = auth.parent.toLowerCase();
@@ -60,26 +64,34 @@
     // SWR: paint from cache instantly, then patch with fresh data.
     const evSWR = getMyEventsSWR(addr);
     const siteSWR = getMySitesSWR(addr);
-    if (evSWR.cached) events = evSWR.cached;
-    if (siteSWR.cached) sites = siteSWR.cached;
-    if (evSWR.cached || siteSWR.cached) loading = false;
+    if (evSWR.cached) { events = evSWR.cached; loadingEvents = false; }
+    if (siteSWR.cached) { sites = siteSWR.cached; loadingSites = false; }
 
-    const [freshEvents, freshSites] = await Promise.all([evSWR.refresh(), siteSWR.refresh()]);
-    // Only overwrite with fresh data when it has items OR we never had cached data.
-    // An unexpected empty response (auth/identity mismatch) shouldn't wipe what the
-    // user can see — keep the last-known-good cached view.
-    if (freshEvents && (freshEvents.length > 0 || !evSWR.cached)) events = freshEvents;
-    if (freshSites && (freshSites.length > 0 || !siteSWR.cached)) sites = freshSites;
-    loading = false;
+    // Fire both refreshes in parallel but resolve them independently so the
+    // events panel doesn't block on the sites Swarm read (or vice versa).
+    // Only overwrite state with fresh data when it has items OR we never had
+    // cached data — an unexpected empty response (auth/identity mismatch)
+    // shouldn't wipe the last-known-good view.
+    const eventsPromise = evSWR.refresh().then((fresh) => {
+      if (fresh && (fresh.length > 0 || !evSWR.cached)) events = fresh;
+      loadingEvents = false;
+    });
+    siteSWR.refresh().then((fresh) => {
+      if (fresh && (fresh.length > 0 || !siteSWR.cached)) sites = fresh;
+      loadingSites = false;
+    });
 
-    // Pending approvals — only check upcoming events
-    if (upcomingEvents.length > 0) {
-      Promise.all(upcomingEvents.slice(0, 6).map(e =>
+    // Pending approvals — fire as soon as events arrive; don't wait on sites.
+    eventsPromise.then(() => {
+      const upcoming = events.filter(e => !isPastEvent(e, now));
+      if (upcoming.length === 0) return;
+      Promise.all(upcoming.slice(0, 6).map(e =>
         getPendingClaims(e.eventId).catch(() => [])
       )).then(results => {
         pendingTotal = results.reduce((sum, list) => sum + (list?.length || 0), 0);
       });
-    }
+    });
+
     getStripeAccountStatus().then(s => {
       stripeReady = !!s.onboardingComplete;
     }).catch(() => { stripeReady = false; });
@@ -148,11 +160,11 @@
       <div class="hero-stats" aria-label="Live stats">
         <div class="stat">
           <span class="stat-label mono">EVENTS LIVE</span>
-          <span class="stat-num mono" class:hot={eventsLive > 0}>{loading ? "—" : String(eventsLive).padStart(2, "0")}</span>
+          <span class="stat-num mono" class:hot={eventsLive > 0}>{loadingEvents ? "—" : String(eventsLive).padStart(2, "0")}</span>
         </div>
         <div class="stat">
           <span class="stat-label mono">YOUR SITES</span>
-          <span class="stat-num mono" class:hot={sites.length > 0}>{loading ? "—" : String(sites.length).padStart(2, "0")}</span>
+          <span class="stat-num mono" class:hot={sites.length > 0}>{loadingSites ? "—" : String(sites.length).padStart(2, "0")}</span>
         </div>
         <div class="stat">
           <span class="stat-label mono">PENDING</span>
@@ -243,7 +255,7 @@
             </button>
           </div>
 
-          {#if loading}
+          {#if loadingEvents}
             <div class="panel-empty">Loading…</div>
           {:else if latestEvents.length === 0}
             <div class="panel-empty">
@@ -283,7 +295,7 @@
             </button>
           </div>
 
-          {#if loading}
+          {#if loadingSites}
             <div class="panel-empty">Loading…</div>
           {:else if latestSites.length === 0}
             <div class="panel-empty">
