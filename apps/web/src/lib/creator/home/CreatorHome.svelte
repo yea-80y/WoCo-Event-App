@@ -123,7 +123,7 @@
       .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
       .slice(0, 3)
   );
-  const latestSites = $derived(sites.slice(0, 2));
+  const latestSites = $derived(sites.slice(0, 3));
 
   function fmtDate(d: string | number | undefined) {
     if (!d) return "—";
