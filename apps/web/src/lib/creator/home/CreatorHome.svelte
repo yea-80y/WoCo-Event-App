@@ -38,6 +38,10 @@
   let loadingSites = $state(true);
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
+  // Monotonic token to discard results from a prior sign-in / account switch.
+  // Without it, an in-flight refresh from the previous identity could land
+  // after sign-out (or after a new sign-in) and repopulate stale numbers.
+  let loadToken = 0;
 
   // Greeting — first name from address fallback
   const greeting = $derived.by(() => {
@@ -52,20 +56,26 @@
   const upcomingEvents = $derived(events.filter(e => !isPastEvent(e, now)));
   const eventsLive = $derived(upcomingEvents.length);
 
-  onMount(async () => {
-    clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
-    if (!auth.isConnected || !auth.parent) {
-      loadingEvents = false;
-      loadingSites = false;
-      return;
-    }
-    const addr = auth.parent.toLowerCase();
+  function resetState(): void {
+    loadToken++; // invalidate any in-flight fetches
+    events = [];
+    sites = [];
+    pendingTotal = 0;
+    stripeReady = null;
+    loadingEvents = false;
+    loadingSites = false;
+  }
+
+  function loadFor(addr: string): void {
+    const token = ++loadToken;
+    loadingEvents = true;
+    loadingSites = true;
 
     // SWR: paint from cache instantly, then patch with fresh data.
     const evSWR = getMyEventsSWR(addr);
     const siteSWR = getMySitesSWR(addr);
-    if (evSWR.cached) { events = evSWR.cached; loadingEvents = false; }
-    if (siteSWR.cached) { sites = siteSWR.cached; loadingSites = false; }
+    if (evSWR.cached && token === loadToken) { events = evSWR.cached; loadingEvents = false; }
+    if (siteSWR.cached && token === loadToken) { sites = siteSWR.cached; loadingSites = false; }
 
     // Fire both refreshes in parallel but resolve them independently so the
     // events panel doesn't block on the sites Swarm read (or vice versa).
@@ -73,31 +83,54 @@
     // cached data — an unexpected empty response (auth/identity mismatch)
     // shouldn't wipe the last-known-good view.
     const eventsPromise = evSWR.refresh().then((fresh) => {
+      if (token !== loadToken) return;
       if (fresh && (fresh.length > 0 || !evSWR.cached)) events = fresh;
       loadingEvents = false;
     });
     siteSWR.refresh().then((fresh) => {
+      if (token !== loadToken) return;
       if (fresh && (fresh.length > 0 || !siteSWR.cached)) sites = fresh;
       loadingSites = false;
     });
 
     // Pending approvals — fire as soon as events arrive; don't wait on sites.
     eventsPromise.then(() => {
+      if (token !== loadToken) return;
       const upcoming = events.filter(e => !isPastEvent(e, now));
       if (upcoming.length === 0) return;
       Promise.all(upcoming.slice(0, 6).map(e =>
         getPendingClaims(e.eventId).catch(() => [])
       )).then(results => {
+        if (token !== loadToken) return;
         pendingTotal = results.reduce((sum, list) => sum + (list?.length || 0), 0);
       });
     });
 
     getStripeAccountStatus().then(s => {
+      if (token !== loadToken) return;
       stripeReady = !!s.onboardingComplete;
-    }).catch(() => { stripeReady = false; });
+    }).catch(() => { if (token === loadToken) stripeReady = false; });
+  }
+
+  onMount(() => {
+    clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
   });
 
   onDestroy(() => clearInterval(clockTimer));
+
+  // Drive data loading off auth.parent so sign-in, sign-out and account
+  // switching all flow through the same path. Sign-out clears the stat
+  // counters that previously stayed populated until a hard refresh; a
+  // fresh sign-in from this screen kicks off the fetch (and the EIP-712
+  // prompt it implies) without needing to navigate away and back.
+  $effect(() => {
+    const addr = auth.parent;
+    if (!auth.isConnected || !addr) {
+      resetState();
+      return;
+    }
+    loadFor(addr.toLowerCase());
+  });
 
   // Quick suggestions — show only what's actionable
   const suggestions = $derived.by(() => {
