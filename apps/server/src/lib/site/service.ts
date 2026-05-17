@@ -7,10 +7,12 @@ const DIR_PAGE_LIMIT = 4096;
 
 // ── Read ─────────────────────────────────────────────────────────────────────
 
-// Short-lived in-memory memo for getCreatorSites — collapses burst reads
-// when the creator portal mounts. Upsert paths bypass with { fresh: true }
-// and invalidate on write to avoid stale dedupe.
-const CREATOR_SITES_MEMO_TTL_MS = 5_000;
+// In-memory memo for getCreatorSites — collapses burst reads when the
+// creator portal mounts AND repeat loads across tabs/refreshes. 5 minutes
+// matches CREATOR_EVENTS_MEMO_TTL_MS. Upsert paths bypass with
+// { fresh: true } and invalidate on write so a newly published / deployed
+// site appears immediately for its author.
+const CREATOR_SITES_MEMO_TTL_MS = 5 * 60_000;
 const _creatorSitesMemo = new Map<string, { at: number; data: SiteDirectoryEntry[] }>();
 const _creatorSitesInFlight = new Map<string, Promise<SiteDirectoryEntry[]>>();
 

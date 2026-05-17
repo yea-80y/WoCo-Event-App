@@ -462,11 +462,13 @@ async function addToEventDirectory(
   }
 }
 
-// Short-lived in-memory memo for getCreatorEvents — collapses the burst of
-// reads when a dashboard mounts (CreatorHome + DashboardIndex + EventsTab all
-// fetch the same address in parallel). Write paths invalidate via
-// invalidateCreatorEventsCache to avoid stale upserts.
-const CREATOR_EVENTS_MEMO_TTL_MS = 5_000;
+// In-memory memo for getCreatorEvents — collapses repeated reads across
+// page loads, tabs, and the burst when CreatorHome + DashboardIndex +
+// EventsTab all fetch the same address in parallel. 5 minutes matches the
+// SITE_EVENTS_FULL_TTL pattern used on the public bundled endpoint. Write
+// paths (createEvent → invalidateCreatorEventsCache) clear the entry so a
+// freshly published event appears immediately for its author.
+const CREATOR_EVENTS_MEMO_TTL_MS = 5 * 60_000;
 const _creatorEventsMemo = new Map<string, { at: number; data: EventDirectoryEntry[] }>();
 const _creatorEventsInFlight = new Map<string, Promise<EventDirectoryEntry[]>>();
 
