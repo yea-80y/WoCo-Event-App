@@ -34,6 +34,61 @@ import {
 /** Max clock skew between client and server (5 minutes). */
 const MAX_TIMESTAMP_SKEW_MS = 5 * 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// Per-request nonce replay protection
+// ---------------------------------------------------------------------------
+//
+// The canonical challenge sig binds a request to method+path+body+ts+nonce.
+// Without replay tracking, an attacker who captured a signed request (would
+// require breaking TLS — non-trivial but not impossible on hostile networks)
+// could replay it within MAX_TIMESTAMP_SKEW_MS and re-execute the same
+// operation. Application-level idempotency guards (tx-hash dedup, Stripe
+// session dedup, slot reservations) cover most mutating endpoints, but not
+// all — e.g. POST /api/sites would re-publish stale site config on replay.
+//
+// We keep an in-memory Set keyed by (sessionAddress, nonce) with a TTL equal
+// to the timestamp-skew window. The set is bounded — at high throughput it
+// holds ~one entry per request for 5 min, then is GC'd. A server restart
+// loses the set, giving an attacker a worst-case 5-min replay window after
+// any restart; acceptable trade-off vs. paying file I/O on the hot path.
+//
+// Key includes sessionAddress so two different sessions can independently
+// use the (astronomically unlikely) same nonce. Nonces are UUIDv4 — 122 bits
+// of entropy — so accidental collision is not a concern, only intentional
+// replay.
+
+interface SeenNonce {
+  timestamp: number; // ts the request was signed with (not when seen)
+}
+const _seenNonces = new Map<string, SeenNonce>();
+
+/** Strip expired entries. Called opportunistically — bounded sweep per request. */
+function gcSeenNonces(now: number): void {
+  const cutoff = now - MAX_TIMESTAMP_SKEW_MS;
+  // One-pass cleanup. Map iteration is insertion-ordered, but timestamps
+  // aren't strictly monotonic across clients, so we sweep the whole map
+  // when its size exceeds a threshold. Bounded work — even at 1k req/s
+  // the map stays under 300k entries before GC.
+  if (_seenNonces.size < 256) return;
+  for (const [key, entry] of _seenNonces) {
+    if (entry.timestamp < cutoff) _seenNonces.delete(key);
+  }
+}
+
+/** Returns true if (sessionAddress, nonce) was already seen within the window. */
+function markNonceOrReject(
+  sessionAddress: string,
+  nonce: string,
+  timestamp: number,
+): boolean {
+  const key = `${sessionAddress.toLowerCase()}:${nonce}`;
+  const existing = _seenNonces.get(key);
+  if (existing) return true; // replay
+  _seenNonces.set(key, { timestamp });
+  gcSeenNonces(Date.now());
+  return false;
+}
+
 export async function requireAuth(c: Context<AppEnv>, next: Next) {
   const method = c.req.method.toUpperCase();
   const path = new URL(c.req.url).pathname + new URL(c.req.url).search;
@@ -112,6 +167,13 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
     }
   } catch {
     return c.json({ ok: false, error: "Invalid session signature" }, 403);
+  }
+
+  // Replay protection: only mark the nonce as seen AFTER the signature has
+  // verified. Marking earlier would let an unauthenticated attacker grief
+  // the map by burning nonces a legitimate client might later present.
+  if (markNonceOrReject(result.sessionAddress!, sessionNonce, tsNum)) {
+    return c.json({ ok: false, error: "Nonce replay detected" }, 403);
   }
 
   // Make parent + session + parsed body available to downstream handlers
@@ -198,6 +260,10 @@ export function tryVerifyAuth(
     }
   } catch {
     return { ok: false, error: "Invalid session signature" };
+  }
+
+  if (markNonceOrReject(result.sessionAddress!, sessionNonce, tsNum)) {
+    return { ok: false, error: "Nonce replay detected" };
   }
 
   return {
