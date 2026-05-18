@@ -19,6 +19,7 @@ import {
   getPlatformSigner,
   getPlatformOwner,
   BEE_URL,
+  POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
@@ -654,13 +655,19 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         await writer.uploadReference(batchId, new Reference(contentHash));
       }
     } else {
-      feedManifestHash = await writeEthernaFeedUpdate({
-        topic,
-        contentHash,
-        batchId,
-        signer,
-        ownerHex: owner.toHex(),
-      });
+      // Feed written to WoCo Bee in standard timestamp+reference format.
+      // writeEthernaFeedUpdate uses a Beehive-specific inline-chunk SOC that
+      // gateway.ethswarm.org (used by .limo ENS resolution) cannot interpret.
+      // Content lives on Etherna; the ENS pointer lives on WoCo Bee.
+      const platformBee = getBee();
+      try {
+        const mRef = await platformBee.createFeedManifest(POSTAGE_BATCH_ID, topic, owner);
+        feedManifestHash = mRef.toString();
+      } catch {
+        // Non-fatal
+      }
+      const platformWriter = platformBee.makeFeedWriter(topic, signer);
+      await platformWriter.uploadReference(POSTAGE_BATCH_ID, new Reference(contentHash));
     }
 
     // Collect all image refs from the site so they're accessible via the gateway.
