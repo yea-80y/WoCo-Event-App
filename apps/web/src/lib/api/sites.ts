@@ -10,8 +10,11 @@ export async function publishSite(site: Site, events: SiteEventEntry[] = []) {
   return authPost<{ siteId: string }>("/api/sites", { site, events });
 }
 
-export async function uploadSiteImage(imageBase64: string) {
-  return authPost<{ imageRef: string }>("/api/sites/upload-image", { image: imageBase64 });
+export async function uploadSiteImage(imageBase64: string, gatewayUrl?: string) {
+  return authPost<{ imageRef: string }>("/api/sites/upload-image", {
+    image: imageBase64,
+    ...(gatewayUrl ? { gatewayUrl } : {}),
+  });
 }
 
 export async function deploySite(siteId: string, opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site }) {

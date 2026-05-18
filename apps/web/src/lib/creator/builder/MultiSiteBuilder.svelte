@@ -505,9 +505,9 @@
           onselect={resetWithTemplate}
         />
       {:else if tab === 'brand'}
-        <BrandTab bind:site />
+        <BrandTab bind:site {gatewayUrl} />
       {:else if tab === 'pages'}
-        <PagesTab bind:site />
+        <PagesTab bind:site {gatewayUrl} />
       {:else if tab === 'nav'}
         <NavTab bind:site />
       {:else if tab === 'events'}

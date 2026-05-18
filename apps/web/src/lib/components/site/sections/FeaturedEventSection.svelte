@@ -73,7 +73,7 @@
 
   function imageUrl(ev: EventFeed): string | undefined {
     if (!ev.imageHash || /^0+$/.test(ev.imageHash)) return undefined;
-    const gw = (typeof window !== 'undefined' && window.SITE_CONFIG?.gatewayUrl) || gatewayUrl || 'https://gateway.ethswarm.org';
+    const gw = (typeof window !== 'undefined' && (window.SITE_CONFIG?.contentGatewayUrl || window.SITE_CONFIG?.gatewayUrl)) || gatewayUrl || 'https://gateway.woco-net.com';
     return `${gw}/bzz/${ev.imageHash}`;
   }
 </script>

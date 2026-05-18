@@ -146,7 +146,9 @@
   function gatewayImageUrl(imageHash: string | undefined): string | undefined {
     if (!imageHash || /^0+$/.test(imageHash)) return undefined;
     // Event images are raw bytes uploads — use /bytes/, not /bzz/ (which is for manifests)
-    const gw = (typeof window !== 'undefined' && window.SITE_CONFIG?.gatewayUrl) || 'https://gateway.ethswarm.org';
+    // Event images are always on WoCo Bee (uploaded at event creation, not re-uploaded
+    // during site deploy). contentGatewayUrl is injected by the Etherna deploy path.
+    const gw = (typeof window !== 'undefined' && (window.SITE_CONFIG?.contentGatewayUrl || window.SITE_CONFIG?.gatewayUrl)) || 'https://gateway.woco-net.com';
     return `${gw}/bytes/${imageHash}`;
   }
 </script>

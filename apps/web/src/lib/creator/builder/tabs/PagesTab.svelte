@@ -4,9 +4,10 @@
 
   interface Props {
     site: Site;
+    gatewayUrl?: string;
   }
 
-  let { site = $bindable() }: Props = $props();
+  let { site = $bindable(), gatewayUrl }: Props = $props();
 
   // ── State ─────────────────────────────────────────────────────────────────────
   let selectedPageIdx = $state(0);
@@ -250,6 +251,7 @@
                 <SectionEditor
                   section={sec}
                   onpatch={(patch) => patchSection(i, patch)}
+                  {gatewayUrl}
                 />
               {/if}
             </div>

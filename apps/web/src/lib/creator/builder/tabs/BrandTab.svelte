@@ -5,9 +5,10 @@
 
   interface Props {
     site: Site;
+    gatewayUrl?: string;
   }
 
-  let { site = $bindable() }: Props = $props();
+  let { site = $bindable(), gatewayUrl }: Props = $props();
 
   // ── Logo upload ───────────────────────────────────────────────────────────
   let logoPreviewUrl = $state<string | null>(null);
@@ -15,12 +16,13 @@
   let logoUploadError = $state('');
   let fileInput: HTMLInputElement | undefined = $state();
 
-  const GATEWAY_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+  const WOCO_GATEWAY = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
 
   function existingLogoUrl(): string | null {
     const ref = site.theme.logoSwarmRef;
     if (!ref || /^0+$/.test(ref)) return null;
-    return `${GATEWAY_URL}/bytes/${ref}`;
+    // Use the selected deploy gateway so images uploaded to Etherna resolve correctly.
+    return `${gatewayUrl || WOCO_GATEWAY}/bytes/${ref}`;
   }
 
   async function handleLogoFile(e: Event) {
@@ -40,7 +42,7 @@
 
     try {
       const base64 = await fileToBase64(file);
-      const res = await uploadSiteImage(base64);
+      const res = await uploadSiteImage(base64, gatewayUrl);
       if (res.ok && res.data) {
         site.theme.logoSwarmRef = res.data.imageRef;
         logoUploadState = 'idle';

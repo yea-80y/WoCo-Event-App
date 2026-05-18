@@ -18,11 +18,14 @@
   interface Props {
     section: Section;
     onpatch: (patch: Record<string, unknown>) => void;
+    gatewayUrl?: string;
   }
 
-  let { section, onpatch }: Props = $props();
+  let { section, onpatch, gatewayUrl }: Props = $props();
 
-  const GATEWAY_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+  const WOCO_GATEWAY = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+  // Use selected deploy gateway so images uploaded to Etherna preview correctly.
+  const GATEWAY_URL = $derived(gatewayUrl || WOCO_GATEWAY);
 
   // ── Gallery upload state ──────────────────────────────────────────────────
   let galleryUploadState = $state<'idle' | 'uploading' | 'error'>('idle');
@@ -41,7 +44,7 @@
     galleryUploadError = '';
     try {
       const base64 = await fileToBase64(file);
-      const res = await uploadSiteImage(base64);
+      const res = await uploadSiteImage(base64, gatewayUrl);
       if (res.ok && res.data) {
         const s = section as GallerySection;
         onpatch({ images: [...s.images, { ref: res.data.imageRef, alt: '' }] });
@@ -83,7 +86,7 @@
     imageUploadError = '';
     try {
       const base64 = await fileToBase64(file);
-      const res = await uploadSiteImage(base64);
+      const res = await uploadSiteImage(base64, gatewayUrl);
       if (res.ok && res.data) {
         onpatch({ ref: res.data.imageRef });
         imageUploadState = 'idle';

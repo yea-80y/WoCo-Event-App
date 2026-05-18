@@ -22,6 +22,8 @@ import {
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
+import { ensureEthernaToken, getCachedEthernaToken } from "../lib/etherna/auth.js";
+import { getUserBatch } from "../lib/etherna/batches.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
@@ -35,6 +37,11 @@ import { uploadToBytes } from "../lib/swarm/bytes.js";
 const sitesRouter = new Hono();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+
+function isEthernaUrl(url: string): boolean {
+  try { return new URL(url).host.endsWith(new URL(ETHERNA_GW).host); } catch { return false; }
+}
 const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multisite");
 
 // ---------------------------------------------------------------------------
@@ -99,8 +106,9 @@ const CONTACT_RATE_WINDOW = 15 * 60_000;
 // ---------------------------------------------------------------------------
 
 sitesRouter.post("/upload-image", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   try {
-    const body = await c.req.json() as { image?: string };
+    const body = await c.req.json() as { image?: string; gatewayUrl?: string };
     if (!body.image || typeof body.image !== "string") {
       return c.json({ ok: false, error: "Missing image data" }, 400);
     }
@@ -110,6 +118,35 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
 
     if (bytes.length > 4 * 1024 * 1024) {
       return c.json({ ok: false, error: "Image too large (max 4MB)" }, 400);
+    }
+
+    if (isEthernaUrl(body.gatewayUrl ?? "")) {
+      const userBatch = getUserBatch(parentAddress);
+      if (!userBatch) {
+        return c.json({ ok: false, error: "No Etherna batch — purchase one first (click Publish)", code: "BATCH_PURCHASE_REQUIRED" }, 402);
+      }
+      await ensureEthernaToken();
+      const token = getCachedEthernaToken();
+      const mimeMatch = body.image.match(/^data:([^;,]+)[;,]/);
+      const contentType = mimeMatch?.[1] ?? "image/jpeg";
+      const resp = await fetch(`${ETHERNA_GW}/bytes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": contentType,
+          "Swarm-Postage-Batch-Id": userBatch.batchId,
+          Authorization: `Bearer ${token}`,
+        },
+        // @ts-ignore — Node 18 fetch duplex
+        duplex: "half",
+        body: bytes,
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
+      }
+      const { reference } = await resp.json() as { reference: string };
+      await registerEthernaOffer(reference);
+      return c.json({ ok: true, data: { imageRef: reference } });
     }
 
     const imageRef = await uploadToBytes(bytes);
@@ -487,7 +524,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Inject runtime config into the HTML template
     const htmlPath = join(DIST_MULTISITE_PATH, "multi-site.html");
     const html = await fs.readFile(htmlPath, "utf-8");
-    const config = { site, gatewayUrl, apiUrl, wocoAppUrl };
+    // Event images are uploaded to WoCo Bee at event-creation time and are not
+    // re-uploaded during site deploy. Inject contentGatewayUrl so the runtime
+    // always fetches event images from WoCo Bee regardless of site host.
+    const config: Record<string, unknown> = { site, gatewayUrl, apiUrl, wocoAppUrl };
+    if (target === "etherna") config.contentGatewayUrl = "https://gateway.woco-net.com";
     const configScript = `<script>window.SITE_CONFIG=${JSON.stringify(config)};</script>`;
     const injectedHtml = html.replace("</head>", `  ${configScript}\n  </head>`);
 

@@ -349,6 +349,10 @@ export interface SiteRuntimeConfig {
   /** URL of the WoCo app used for ticket purchasing links (e.g. https://woco.eth.limo).
    *  Injected at deploy time; defaults to https://woco.eth.limo if absent. */
   wocoAppUrl?: string;
+  /** Gateway for event images (uploaded to WoCo Bee at creation time, independent of
+   *  where the site itself is hosted). Always https://gateway.woco-net.com when set.
+   *  Falls back to gatewayUrl when absent (WoCo-hosted sites). */
+  contentGatewayUrl?: string;
 }
 
 declare global {
