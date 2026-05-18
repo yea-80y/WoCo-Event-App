@@ -19,7 +19,7 @@
 
   function logoUrl(rec: MySiteRecord): string | undefined {
     if (!rec.logoSwarmRef || /^0+$/.test(rec.logoSwarmRef)) return undefined;
-    return `${gatewayUrl}/bytes/${rec.logoSwarmRef}`;
+    return `https://gateway.woco-net.com/bytes/${rec.logoSwarmRef}`;
   }
 
   function timeAgo(ts: number): string {

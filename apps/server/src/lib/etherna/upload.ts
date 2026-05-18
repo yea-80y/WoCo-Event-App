@@ -9,7 +9,8 @@
  * instance configured to talk to Etherna with bearer-token auth.
  */
 
-import { Bee } from "@ethersphere/bee-js";
+import { Bee, type Topic, type PrivateKey, FeedIndex } from "@ethersphere/bee-js";
+import { Binary } from "cafe-utility";
 import { ensureEthernaToken, getCachedEthernaToken } from "./auth.js";
 
 const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
@@ -91,4 +92,102 @@ export async function registerEthernaOffer(ref: string): Promise<void> {
     const text = await r.text().catch(() => "");
     throw new Error(`Etherna offer-register failed ${r.status}: ${text.slice(0, 200)}`);
   }
+}
+
+/**
+ * Write a Swarm feed update to Etherna via raw HTTP.
+ *
+ * bee-js's onRequest receives a shallow copy — mutations are silently discarded,
+ * so auth headers never reach Etherna. This function bypasses bee-js for every
+ * HTTP call while reusing PrivateKey.sign() for the secp256k1 SOC signature.
+ *
+ * SOC signing protocol (from bee-js/dist/cjs/chunk/soc.js:makeSingleOwnerChunk):
+ *   signData  = concat(socId_bytes(32), cac_address_bytes(32))
+ *   signature = PrivateKey.sign(signData)   // EIP-191 personal_sign internally
+ *
+ * Returns the feed manifest hash (for ENS content hash) or throws.
+ */
+export async function writeEthernaFeedUpdate(opts: {
+  topic: Topic;
+  contentHash: string;   // 64-char hex, no 0x
+  batchId: string;
+  signer: PrivateKey;
+  ownerHex: string;      // 40-char hex, no 0x, lowercase
+}): Promise<string> {
+  const { topic, contentHash, batchId, signer, ownerHex } = opts;
+
+  await ensureEthernaToken();
+  const token = getCachedEthernaToken();
+  if (!token) throw new Error("Etherna token unavailable");
+
+  const topicHex = topic.toHex();
+  const feedPath = `/feeds/${ownerHex}/${topicHex}`;
+
+  // 1. Create feed manifest (POST) and read current index (GET) in parallel.
+  //    POST /feeds/{owner}/{topic} → { reference: manifestHash }
+  //    GET  /feeds/{owner}/{topic} → header swarm-feed-index-next (404 for fresh feed)
+  const [manifestRes, indexRes] = await Promise.all([
+    fetch(`${ETHERNA_GW}${feedPath}`, {
+      method: "POST",
+      headers: {
+        "Swarm-Postage-Batch-Id": batchId,
+        Authorization: `Bearer ${token}`,
+      },
+    }),
+    fetch(`${ETHERNA_GW}${feedPath}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  ]);
+
+  if (!manifestRes.ok) {
+    const text = await manifestRes.text().catch(() => "");
+    throw new Error(`Etherna feed manifest ${manifestRes.status}: ${text.slice(0, 200)}`);
+  }
+  const { reference: feedManifestHash } = await manifestRes.json() as { reference: string };
+
+  // Fresh feed (indexRes 404) → write at index 0; existing feed → use next index.
+  let nextIndex = 0n;
+  if (indexRes.ok) {
+    const h = indexRes.headers.get("swarm-feed-index-next");
+    if (h) nextIndex = new FeedIndex(h).toBigInt();
+  }
+
+  // 2. SOC identifier = keccak256(topic_bytes(32) || uint64_BE(index)(8))
+  const socId = Binary.keccak256(
+    Binary.concatBytes(topic.toUint8Array(), FeedIndex.fromBigInt(nextIndex).toUint8Array()),
+  );
+
+  // 3. Download root chunk (span+data of the content CAC) — POSTed as SOC body.
+  const chunkRes = await fetch(`${ETHERNA_GW}/chunks/${contentHash}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!chunkRes.ok) throw new Error(`Chunk download ${chunkRes.status}: ${contentHash.slice(0, 12)}…`);
+  const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+
+  // 4. Sign: signer.sign(concat(socId, contentHash_bytes))
+  //    contentHash_bytes = BMT address of the root CAC = the content reference itself.
+  const signData = Binary.concatBytes(socId, Binary.hexToUint8Array(contentHash));
+  const sig = signer.sign(signData) as unknown as { toUint8Array(): Uint8Array };
+  const sigHex = Binary.uint8ArrayToHex(sig.toUint8Array());
+
+  // 5. POST SOC: /soc/{owner}/{socId}?sig={sigHex}
+  //    Body = raw root chunk bytes (span(8) + chunk_data).
+  const socIdHex = Binary.uint8ArrayToHex(socId);
+  const postRes = await fetch(`${ETHERNA_GW}/soc/${ownerHex}/${socIdHex}?sig=${sigHex}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Swarm-Postage-Batch-Id": batchId,
+      Authorization: `Bearer ${token}`,
+    },
+    // @ts-ignore — Node 18 fetch duplex
+    duplex: "half",
+    body: chunkBytes,
+  });
+  if (!postRes.ok) {
+    const text = await postRes.text().catch(() => "");
+    throw new Error(`Etherna SOC write ${postRes.status}: ${text.slice(0, 200)}`);
+  }
+
+  return feedManifestHash;
 }

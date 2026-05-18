@@ -1,7 +1,6 @@
 import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import zlib from "node:zlib";
 import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from "../../config/swarm.js";
-import { ensureEthernaToken } from "../etherna/auth.js";
 import { beeUploadSem } from "./upload-queue.js";
 
 // ---------------------------------------------------------------------------
@@ -120,7 +119,6 @@ function rememberNextIndex(topic: Topic, next: FeedIndex | bigint | undefined): 
 
 export async function readFeedPage(topic: Topic): Promise<Uint8Array | null> {
   try {
-    await ensureEthernaToken();
     const reader = getBee().makeFeedReader(topic, getPlatformOwner());
     const result = await reader.downloadPayload();
     // Prime the write-index cache from the read response so subsequent writes
@@ -153,7 +151,6 @@ export type FeedReadStrictResult =
 
 export async function readFeedPageStrict(topic: Topic): Promise<FeedReadStrictResult> {
   try {
-    await ensureEthernaToken();
     const reader = getBee().makeFeedReader(topic, getPlatformOwner());
     const result = await reader.downloadPayload();
     const next = (result as { feedIndexNext?: FeedIndex })?.feedIndexNext;
@@ -245,7 +242,6 @@ async function doWriteFeedPage(
   page: Uint8Array,
   options: WriteFeedPageOptions,
 ): Promise<void> {
-  await ensureEthernaToken();
   // Resolve the next index without paying for findNextIndex when avoidable.
   let nextIndex: bigint | undefined;
   if (options.fresh) {

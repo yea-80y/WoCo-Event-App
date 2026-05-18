@@ -21,7 +21,7 @@ import {
   BEE_URL,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
-import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
+import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
@@ -613,7 +613,13 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         await writer.uploadReference(batchId, new Reference(contentHash));
       }
     } else {
-      await writer.uploadReference(batchId, new Reference(contentHash));
+      feedManifestHash = await writeEthernaFeedUpdate({
+        topic,
+        contentHash,
+        batchId,
+        signer,
+        ownerHex: owner.toHex(),
+      });
     }
 
     // Collect all image refs from the site so they're accessible via the gateway.

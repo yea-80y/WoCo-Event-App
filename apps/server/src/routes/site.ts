@@ -4,6 +4,7 @@ import {
   getBee,
   getPlatformSigner,
   getPlatformOwner,
+  POSTAGE_BATCH_ID,
   BEE_URL,
 } from "../config/swarm.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -93,7 +94,10 @@ site.post("/deploy", requireAuth, async (c) => {
 
     const config = {
       apiUrl,
-      gatewayUrl: gatewayUrl?.trim() || "https://gateway.ethswarm.org",
+      gatewayUrl: gatewayUrl?.trim() || "https://gateway.woco-net.com",
+      // Event images (uploaded to WoCo Bee at event-creation time) must always
+      // be fetched from the WoCo gateway, regardless of where the site is hosted.
+      contentGatewayUrl: "https://gateway.woco-net.com",
       eventId,
       ...(paraApiKey?.trim() ? { paraApiKey: paraApiKey.trim() } : {}),
     };
@@ -145,21 +149,25 @@ site.post("/deploy", requireAuth, async (c) => {
       ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
 
-    // 5) Per-event feed topic so each event gets its own updatable ENS entry
+    // 5) Per-event feed topic so each event gets its own updatable ENS entry.
+    // The feed index always lives on the WoCo Bee — bee-js v11's onRequest
+    // auth injection is unreliable for SOC writes, and this is a WoCo platform
+    // feed regardless of where the content was uploaded.
     const topic = Topic.fromString(`woco-site-${eventId}`);
+    const platformBee = getBee();
 
     // Create feed manifest (one-time; if it already exists the call still succeeds)
     let feedManifestHash = "";
     try {
-      const mRef = await bee.createFeedManifest(batchId, topic, owner);
+      const mRef = await platformBee.createFeedManifest(POSTAGE_BATCH_ID, topic, owner);
       feedManifestHash = mRef.toString();
     } catch {
       // Non-fatal — organiser can still use the direct content hash
     }
 
     // 6) Update feed → new content hash
-    const writer = bee.makeFeedWriter(topic, signer);
-    await writer.upload(batchId, new Reference(contentHash));
+    const writer = platformBee.makeFeedWriter(topic, signer);
+    await writer.upload(POSTAGE_BATCH_ID, new Reference(contentHash));
 
     return c.json({ ok: true, data: { contentHash, feedManifestHash } });
 

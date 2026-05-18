@@ -20,9 +20,7 @@ const TOKEN_ENDPOINT = process.env.ETHERNA_TOKEN_ENDPOINT || "https://sso.ethern
 
 const GNOSIS_BLOCK_SEC = 5;
 
-/** Seconds the freshly-purchased batch needs to propagate before /bzz uploads
- *  succeed. Test script comment says "wait ~2 min for usable: true". */
-const USABILITY_POLL_INTERVAL_MS = 5_000;
+const USABILITY_POLL_INTERVAL_MS = 2_000;
 const USABILITY_POLL_TIMEOUT_MS = 180_000;
 
 export interface UserBatchEntry {
@@ -240,16 +238,19 @@ export async function provisionEthernaBatch(input: ProvisionInput): Promise<Prov
   const label = encodeURIComponent(input.label ?? `woco-user-${Date.now()}`);
   const stamps = await authPost(token, `/stamps/${estimate.amountPerChunk}/${input.depth}?label=${label}`) as { batchID: string };
 
-  // Let the debit register before reading credit2 (Etherna lag, ~8s observed in test script).
-  await new Promise((r) => setTimeout(r, 8000));
-
-  const creditAfter = readCreditWei(await authGet(token, "/api/v0.3/users/current/credit2"));
-  const debitWei = creditBefore - creditAfter;
+  // Run debit measurement and usability polling concurrently. The credit read
+  // needs ~8s for the debit to register (observed Etherna lag); usability polling
+  // starts immediately so we react within 2s of the batch becoming ready rather
+  // than waiting the full 8s before even starting to check.
+  const [debitWei] = await Promise.all([
+    (async (): Promise<bigint> => {
+      await new Promise((r) => setTimeout(r, 8000));
+      const creditAfter = readCreditWei(await authGet(token, "/api/v0.3/users/current/credit2"));
+      return creditBefore - creditAfter;
+    })(),
+    waitForBatchUsable(token, stamps.batchID),
+  ]);
   const debitXDai = (Number(debitWei) / 1e18).toFixed(6);
-
-  // Block until the batch is propagated and usable on the gateway. The first
-  // /bzz upload would otherwise race and fail.
-  await waitForBatchUsable(token, stamps.batchID);
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + input.ttlDays * 86_400_000);

@@ -14,6 +14,22 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let receipt = $state<{ batchId: string; expiresAt: string; debit: string; estimatedBZZ?: string } | null>(null);
+  let elapsed = $state(0);
+  let elapsedInterval: ReturnType<typeof setInterval> | null = null;
+
+  function startTimer() {
+    elapsed = 0;
+    elapsedInterval = setInterval(() => { elapsed += 1; }, 1000);
+  }
+  function stopTimer() {
+    if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = null; }
+  }
+
+  function busyLabel(): string {
+    if (elapsed < 4) return "Contacting Etherna…";
+    if (elapsed < 12) return "Purchasing batch on Gnosis chain…";
+    return `Waiting for batch to propagate… (${elapsed}s)`;
+  }
 
   // Fetch preview whenever the modal opens fresh (clears any prior receipt).
   $effect(() => {
@@ -46,6 +62,7 @@
     if (busy) return;
     busy = true;
     error = null;
+    startTimer();
     try {
       const res = await purchaseEthernaBatch();
       if (res.ok && res.data) {
@@ -58,6 +75,7 @@
       error = e instanceof Error ? e.message : "Purchase failed";
     } finally {
       busy = false;
+      stopTimer();
     }
   }
 </script>
@@ -69,7 +87,8 @@
       <p class="intro">
         Your website is hosted on Swarm via Etherna. You need a postage batch — it
         funds the chunks that store your site for a fixed window. One batch covers
-        every website and event you publish.
+        every website and event you publish. Purchase takes 1–3 minutes while the
+        batch propagates on the Gnosis chain.
       </p>
 
       {#if preview}
@@ -101,7 +120,7 @@
         <button class="btn-ghost" onclick={onclose} disabled={busy}>Cancel</button>
         {#if !receipt}
           <button class="btn-primary" onclick={handleBuy} disabled={busy || !preview}>
-            {busy ? "Purchasing…" : "Buy batch"}
+            {busy ? busyLabel() : "Buy batch"}
           </button>
         {:else}
           <button class="btn-primary" onclick={onclose}>Continue</button>

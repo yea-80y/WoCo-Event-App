@@ -124,7 +124,7 @@
 
   const eventSiteUrl = $derived(
     deployResult
-      ? `${gatewayUrl.trim() || "https://gateway.ethswarm.org"}/bzz/${deployResult.contentHash}/`
+      ? `${gatewayUrl.trim()}/bzz/${deployResult.contentHash}/`
       : ""
   );
   const dashboardUrl = $derived(eventSiteUrl ? `${eventSiteUrl}#/dashboard` : "");
@@ -132,21 +132,16 @@
 
   async function deployToSwarm(): Promise<boolean> {
     if (!createdEventId) return false;
-    deploying = true;
-    deployError = null;
-    deployResult = null;
     try {
-      const resp = await fetch(`${apiUrl}/api/site/deploy`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const json = await authPost<{ contentHash: string; feedManifestHash: string }>(
+        "/api/site/deploy",
+        {
           eventId: createdEventId,
-          gatewayUrl: gatewayUrl.trim() || "https://gateway.ethswarm.org",
+          gatewayUrl: gatewayUrl.trim(),
           apiUrl,
           ...(paraApiKey.trim() ? { paraApiKey: paraApiKey.trim() } : {}),
-        }),
-      });
-      const json = await resp.json() as { ok: boolean; data?: { contentHash: string; feedManifestHash: string }; error?: string };
+        },
+      );
       if (json.ok && json.data) {
         deployResult = json.data;
         return true;
@@ -156,8 +151,6 @@
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Deploy failed";
       return false;
-    } finally {
-      deploying = false;
     }
   }
 
@@ -183,6 +176,9 @@
   }
 
   async function handleDeploy() {
+    deploying = true;
+    deployError = null;
+    deployResult = null;
     try {
       const ok = await deployToSwarm();
       if (!ok) return;
@@ -208,6 +204,8 @@
       step = 3;
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Unexpected error during deploy";
+    } finally {
+      deploying = false;
     }
   }
 

@@ -11,6 +11,25 @@ const BASE =
 export const apiBase = BASE;
 
 /**
+ * Read a response body as JSON, falling back to a typed `{ ok: false, error }`
+ * envelope when the server returns a non-JSON body (e.g. Hono's plain-text
+ * "404 Not Found" or an upstream HTML error page). Without this, callers
+ * `await resp.json()` throws SyntaxError unhandled — UI state machines that
+ * sit outside try/catch end up frozen instead of surfacing the error.
+ */
+async function safeJson<T>(resp: Response): Promise<ApiResponse<T>> {
+  const text = await resp.text();
+  try {
+    return JSON.parse(text) as ApiResponse<T>;
+  } catch {
+    return {
+      ok: false,
+      error: `HTTP ${resp.status}${text ? `: ${text.slice(0, 200)}` : ""}`,
+    } as ApiResponse<T>;
+  }
+}
+
+/**
  * Build the auth headers for an authenticated request.
  *
  * The session key signs a challenge derived from method + path + timestamp +
@@ -58,7 +77,7 @@ export async function authPost<T>(
     body: bodyText,
   });
 
-  return resp.json();
+  return safeJson<T>(resp);
 }
 
 /** Authenticated GET request. */
@@ -69,7 +88,7 @@ export async function authGet<T>(path: string, baseUrl?: string): Promise<ApiRes
     headers: authHeaders,
   });
 
-  const json = await resp.json() as ApiResponse<T>;
+  const json = await safeJson<T>(resp);
   if (!json.ok) {
     console.warn(`[authGet] ${path} failed:`, json.error);
   }
@@ -85,7 +104,7 @@ export async function authDelete<T>(path: string, baseUrl?: string): Promise<Api
     headers: authHeaders,
   });
 
-  return resp.json();
+  return safeJson<T>(resp);
 }
 
 /** Exported so callers that need to build a custom fetch (streaming, etc.) can reuse the same auth flow. */
@@ -94,5 +113,5 @@ export { buildAuthHeaders };
 /** Unauthenticated GET request. */
 export async function get<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
   const resp = await fetch(`${baseUrl ?? BASE}${path}`);
-  return resp.json();
+  return safeJson<T>(resp);
 }

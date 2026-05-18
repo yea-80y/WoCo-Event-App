@@ -68,16 +68,19 @@
     }
   });
 
-  function handleDone() {
-    // Clear the returning marker on explicit dismissal so the buyer doesn't
-    // re-land on the success page from a back-forward cache.
+  function clearReturningMarker() {
+    // Without this, a back-forward cache hit re-lands the buyer on success.
     try { sessionStorage.removeItem(`woco:stripe-returning:${eventId}`); } catch { /* ignore */ }
-    navigate("/discover");
   }
 
   function handleViewTickets() {
-    try { sessionStorage.removeItem(`woco:stripe-returning:${eventId}`); } catch { /* ignore */ }
+    clearReturningMarker();
     navigate("/tickets");
+  }
+
+  function handleBackToEvent() {
+    clearReturningMarker();
+    navigate(`/event/${eventId}`);
   }
 </script>
 
@@ -115,7 +118,7 @@
 
     <div class="actions">
       <button class="btn-primary" onclick={handleViewTickets}>View my tickets</button>
-      <button class="btn-secondary" onclick={handleDone}>Browse events</button>
+      <button class="btn-secondary" onclick={handleBackToEvent}>Back to event</button>
     </div>
 
     <p class="foot">

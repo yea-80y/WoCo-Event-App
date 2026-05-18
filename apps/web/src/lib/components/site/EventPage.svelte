@@ -21,8 +21,11 @@
 
   let { eventId, ondashboard, onback, apiUrl }: Props = $props();
 
+  // contentGatewayUrl is injected by the deploy step for standalone sites that
+  // are hosted on a different gateway (e.g. Etherna) — event images were uploaded
+  // to the WoCo Bee and must be fetched from there regardless of site host.
   const BEE_GATEWAY =
-    (typeof window !== "undefined" && window.SITE_CONFIG?.gatewayUrl) ||
+    (typeof window !== "undefined" && (window.SITE_CONFIG?.contentGatewayUrl || window.SITE_CONFIG?.gatewayUrl)) ||
     import.meta.env.VITE_GATEWAY_URL ||
     "https://gateway.woco-net.com";
 
@@ -93,10 +96,38 @@
   /** seriesId to auto-select after Stripe return — resolved once event loads */
   let stripeReturnSeriesId = $state<string | null>(null);
 
-  /** Persistent Stripe-success banner shown ABOVE the tickets card on return.
-   *  Local-only: dismissal clears it for this view, refresh strips the URL
-   *  hash so it does not reappear. */
+  /** Stripe-success card. When set, REPLACES the tickets + claim panel —
+   *  the buyer is done, the reservation will be consumed by the webhook,
+   *  and the ticket is in their inbox. Showing the reservation panel here
+   *  is confusing (their own held slot reads as "1 reserved" until webhook
+   *  catches up). */
   let stripeBanner = $state<{ email: string | null; qty: number } | null>(null);
+
+  // Sourced from the deployed-site runtime config injected by the deploy step.
+  const siteName = (typeof window !== "undefined" && window.SITE_CONFIG?.site?.theme?.brandName) || null;
+
+  function dismissPurchaseSuccess() {
+    stripeBanner = null;
+    claimOpen = false;
+    selectedSeries = null;
+    ticketQty = {};
+    try { sessionStorage.removeItem(`woco:stripe-returning:${eventId}`); } catch { /* ignore */ }
+    try {
+      const newHash = window.location.hash
+        .replace(/[?&]stripe=success/, "")
+        .replace(/[?&]session_id=[^&]*/, "");
+      const newSearch = window.location.search
+        .replace(/[?&]stripe=success/, "")
+        .replace(/[?&]session_id=[^&]*/, "")
+        .replace(/^\?$/, "");
+      window.history.replaceState(null, "", window.location.pathname + newSearch + newHash);
+    } catch { /* ignore */ }
+  }
+
+  function goToSite() {
+    dismissPurchaseSuccess();
+    window.location.hash = "#/";
+  }
 
   function handleClaimSuccess(data: { edition: number | null; claimedVia: "wallet" | "email" | null; ticket?: ClaimedTicket; claimerEmail?: string; editions?: Array<{ edition: number; ticket?: ClaimedTicket }> }) {
     successEdition = data.edition;
@@ -598,33 +629,35 @@
       <!-- Organizer chip — hidden until we display nickname / ENS / sub-ENS instead of raw address. -->
     </div>
 
-    <!-- ── Stripe success banner — sits above the tickets card so it's the
-         first thing the user sees on return, even after dismissing the modal.
-         Refresh strips the URL hash, so this won't re-appear on reload. ─── -->
     {#if stripeBanner}
-      <div class="stripe-banner" role="status">
-        <span class="stripe-banner-check" aria-hidden="true">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <div class="purchase-success card" role="status">
+        <div class="purchase-success-check" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="20 6 9 17 4 12"/>
           </svg>
-        </span>
-        <span class="stripe-banner-text">
-          Payment confirmed —
-          {stripeBanner.qty > 1 ? `${stripeBanner.qty} tickets are` : "your ticket is"} on the way
-          {#if stripeBanner.email} to <strong>{stripeBanner.email}</strong>{/if}.
-        </span>
-        <button
-          type="button"
-          class="stripe-banner-close"
-          onclick={() => { stripeBanner = null; }}
-          aria-label="Dismiss confirmation"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/>
-          </svg>
-        </button>
+        </div>
+        <h2 class="purchase-success-title">Payment confirmed</h2>
+        <p class="purchase-success-lede">
+          {stripeBanner.qty > 1 ? `Your ${stripeBanner.qty} tickets are` : "Your ticket is"} on the way{#if stripeBanner.email} to <strong>{stripeBanner.email}</strong>{/if}.
+        </p>
+        <ul class="purchase-success-steps">
+          <li><span class="purchase-success-bullet"></span>Check your inbox in the next few minutes.</li>
+          <li><span class="purchase-success-bullet"></span>If you don't see it, check your spam folder.</li>
+          <li><span class="purchase-success-bullet"></span>Show the QR code in the email at the door.</li>
+        </ul>
+        <div class="purchase-success-actions">
+          <button type="button" class="purchase-success-btn purchase-success-btn--primary" onclick={dismissPurchaseSuccess}>
+            Back to event
+          </button>
+          {#if siteName}
+            <button type="button" class="purchase-success-btn purchase-success-btn--ghost" onclick={goToSite}>
+              Back to {siteName}
+            </button>
+          {/if}
+        </div>
+        <p class="purchase-success-foot">A receipt has been sent by Stripe.</p>
       </div>
-    {/if}
+    {:else}
 
     <!-- ── Tickets card ──────────────────────────────────────────────────── -->
     <div class="tickets-card">
@@ -895,6 +928,7 @@
         {/if}
       </div>
     {/if}
+    {/if}
 
     <!-- ── About section ─────────────────────────────────────────────────── -->
     {#if event.description}
@@ -1039,7 +1073,7 @@
   .creator-bar-btn:hover {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink, #fff);
   }
 
   /* ── Event header ─────────────────────────────────────────────────────────── */
@@ -1089,9 +1123,11 @@
   }
 
   .meta-text {
-    font-size: 0.9375rem;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", "Menlo", monospace);
+    font-size: 0.875rem;
     color: var(--text-secondary);
     line-height: 1.4;
+    letter-spacing: 0.01em;
     overflow-wrap: break-word;
     word-break: break-word;
   }
@@ -1100,83 +1136,105 @@
     color: var(--text-muted);
   }
 
-  /* Organizer chip */
-  .organizer-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.375rem 0.75rem 0.375rem 0.375rem;
-    border: 1px solid var(--border);
-    border-radius: 9999px;
-    background: var(--bg-surface);
+  /* ── Stripe purchase success card ──────────────────────────────────────────── */
+  .purchase-success {
+    padding: 2rem 1.5rem 1.5rem;
+    margin-bottom: 1.5rem;
+    text-align: center;
+    animation: purchase-success-rise 320ms cubic-bezier(0.2, 0.9, 0.3, 1);
   }
-
-  .organizer-avatar {
-    width: 1.625rem;
-    height: 1.625rem;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--accent) 20%, var(--bg-elevated));
-    color: var(--accent-text);
-    font-size: 0.625rem;
-    font-weight: 700;
+  @keyframes purchase-success-rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .purchase-success-check {
+    width: 3rem;
+    height: 3rem;
+    margin: 0 auto 1rem;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-ink, #0B0B09);
     display: flex;
     align-items: center;
     justify-content: center;
-    letter-spacing: 0.02em;
-    flex-shrink: 0;
   }
-
-  .organizer-addr {
+  .purchase-success-title {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.015em;
+    margin: 0 0 0.5rem;
+  }
+  .purchase-success-lede {
+    font-size: 0.9375rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0 0 1.25rem;
+  }
+  .purchase-success-lede strong {
+    color: var(--text);
+    font-weight: 600;
+    word-break: break-all;
+  }
+  .purchase-success-steps {
+    list-style: none;
+    margin: 0 auto 1.5rem;
+    padding: 0;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    text-align: left;
+  }
+  .purchase-success-steps li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.625rem;
     font-size: 0.8125rem;
     color: var(--text-secondary);
-    font-family: monospace;
-    letter-spacing: 0.02em;
+    line-height: 1.5;
   }
-
-  /* ── Stripe success banner ─────────────────────────────────────────────────── */
-  .stripe-banner {
+  .purchase-success-bullet {
+    flex-shrink: 0;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transform: translateY(-3px);
+  }
+  .purchase-success-actions {
     display: flex;
-    align-items: center;
-    gap: 0.625rem;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin: 0 auto 0.75rem;
+    max-width: 320px;
+  }
+  .purchase-success-btn {
+    width: 100%;
     padding: 0.75rem 1rem;
-    margin-bottom: 1rem;
-    border: 1px solid color-mix(in srgb, var(--accent, #3ddb8a) 35%, transparent);
+    font-weight: 600;
+    font-size: 0.9375rem;
     border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--accent, #3ddb8a) 10%, transparent);
-    color: var(--text-primary);
-    font-size: 0.875rem;
-    line-height: 1.4;
+    cursor: pointer;
+    transition: background var(--transition), border-color var(--transition), color var(--transition);
   }
-  .stripe-banner-check {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    flex: 0 0 auto;
-    border-radius: 999px;
-    background: var(--accent, #3ddb8a);
-    color: var(--bg-base, #0a0a0a);
+  .purchase-success-btn--primary {
+    background: var(--accent);
+    color: var(--accent-ink, #0B0B09);
+    border: 1px solid var(--accent);
   }
-  .stripe-banner-text { flex: 1 1 auto; }
-  .stripe-banner-text strong { color: var(--text-primary); font-weight: 600; }
-  .stripe-banner-close {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: 0;
-    border-radius: 999px;
+  .purchase-success-btn--primary:hover { background: var(--accent-hover, var(--accent)); }
+  .purchase-success-btn--ghost {
     background: transparent;
     color: var(--text-secondary);
-    cursor: pointer;
+    border: 1px solid var(--border);
   }
-  .stripe-banner-close:hover {
-    background: color-mix(in srgb, currentColor 12%, transparent);
-    color: var(--text-primary);
+  .purchase-success-btn--ghost:hover { border-color: var(--text-muted); color: var(--text); }
+  .purchase-success-foot {
+    margin: 0;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    line-height: 1.5;
   }
 
   /* ── Tickets card ─────────────────────────────────────────────────────────── */
@@ -1189,6 +1247,9 @@
   }
 
   .tickets-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 1.125rem;
     font-weight: 700;
     color: var(--text);
@@ -1196,6 +1257,14 @@
     padding: 1.125rem 1.25rem 1rem;
     border-bottom: 1px solid var(--border);
     letter-spacing: -0.01em;
+  }
+  .tickets-heading::before {
+    content: "";
+    display: inline-block;
+    width: 0.375rem;
+    height: 0.375rem;
+    background: var(--accent);
+    flex-shrink: 0;
   }
 
   .ticket-rows {
@@ -1237,12 +1306,13 @@
 
   .wave-badge {
     display: inline-block;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", "Menlo", monospace);
     font-size: 0.625rem;
-    font-weight: 700;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     padding: 0.1rem 0.4rem;
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--accent) 15%, transparent);
     color: var(--accent-text);
     width: fit-content;
@@ -1264,11 +1334,12 @@
   }
 
   .ticket-status {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", "Menlo", monospace);
     font-size: 0.6875rem;
     color: var(--text-muted);
     font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
     line-height: 1.2;
   }
 
@@ -1357,7 +1428,7 @@
   .get-tickets-btn--active {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink, #fff);
     cursor: pointer;
   }
 
@@ -1442,11 +1513,12 @@
   }
 
   .form-label {
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", "Menlo", monospace);
+    font-size: 0.6875rem;
+    font-weight: 500;
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
   }
 
   .form-label-optional {
@@ -1505,7 +1577,7 @@
     font-weight: 700;
     border-radius: var(--radius-sm);
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink, #fff);
     white-space: nowrap;
     transition: background var(--transition);
     letter-spacing: 0.01em;
@@ -1603,7 +1675,7 @@
     width: 0.625rem;
     height: 0.625rem;
     border-radius: 50%;
-    background: #d97706;
+    background: var(--warning, #d97706);
     flex-shrink: 0;
     margin-top: 0.25rem;
   }
@@ -1611,7 +1683,7 @@
   .pending-title {
     font-size: 0.875rem;
     font-weight: 700;
-    color: #d97706;
+    color: var(--warning, #d97706);
     margin: 0 0 0.3rem;
   }
 
@@ -1627,11 +1699,22 @@
   }
 
   .section-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 1.125rem;
     font-weight: 700;
     color: var(--text);
     margin: 0 0 0.875rem;
     letter-spacing: -0.01em;
+  }
+  .section-heading::before {
+    content: "";
+    display: inline-block;
+    width: 0.375rem;
+    height: 0.375rem;
+    background: var(--accent);
+    flex-shrink: 0;
   }
 
   .about-text {

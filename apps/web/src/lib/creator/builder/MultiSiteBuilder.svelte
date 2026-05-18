@@ -174,11 +174,15 @@
   }
 
   /** Etherna website publish requires a per-user batch. Returns true if the
-   * batch exists OR the user just bought one in the modal; false if cancelled. */
+   * batch exists OR the user just bought one in the modal; false if cancelled.
+   * Throws on lookup errors (auth/network/server) so they surface as a publish
+   * failure instead of being mistaken for "no batch yet" and silently opening
+   * the purchase modal. */
   async function ensureUserBatchForEtherna(): Promise<boolean> {
     if (gatewayUrl !== ETHERNA_URL) return true;
     const res = await getMyEthernaBatch();
-    if (res.ok && res.data) return true;
+    if (!res.ok) throw new Error(res.error || 'Could not check Etherna batch');
+    if (res.data) return true;
     purchaseOpen = true;
     return await new Promise<boolean>((resolve) => {
       pendingPurchaseResolve = resolve;
@@ -202,48 +206,55 @@
   async function handlePublish() {
     if (publishState === 'publishing') return;
 
-    const batchOk = await ensureUserBatchForEtherna();
-    if (!batchOk) return;
-
+    // Flip state before any await so the spinner appears immediately —
+    // batch lookup and the purchase-modal round-trip can take seconds.
     publishState = 'publishing';
     publishError = '';
     deployedUrl = '';
+
     try {
-      const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents));
-      if (!feedRes.ok) {
-        publishError = feedRes.error ?? 'Publish failed';
-        publishState = 'error';
-        setTimeout(() => { publishState = 'idle'; }, 5000);
+      const batchOk = await ensureUserBatchForEtherna();
+      if (!batchOk) {
+        // User cancelled the purchase modal — not an error, just a no-op.
+        publishState = 'idle';
         return;
       }
 
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) });
-      if (deployRes.ok && deployRes.data) {
-        deployedUrl = deployRes.data.siteUrl;
-        if (deployRes.data.feedManifestHash) {
-          feedHash = deployRes.data.feedManifestHash;
-          localStorage.setItem(FEED_HASH_KEY, feedHash);
-        }
-        localStorage.setItem(LAST_SITE_KEY, site.siteId);
+      const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents));
+      if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
-        // Keep My Sites registry up to date
-        upsertSiteRecord({
-          siteId: site.siteId,
-          brandName: site.theme.brandName || 'Untitled site',
-          logoSwarmRef: site.theme.logoSwarmRef,
-          accentColor: site.theme.palette.accent,
-          feedHash: feedHash || deployRes.data.feedManifestHash,
-          deployedUrl: deployRes.data.siteUrl,
-          publishedAt: Date.now(),
-          updatedAt: Date.now(),
-        });
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) });
+      if (!deployRes.ok || !deployRes.data) {
+        throw new Error(deployRes.ok ? 'Deploy returned no data' : (deployRes.error ?? 'Deploy failed'));
       }
+
+      deployedUrl = deployRes.data.siteUrl;
+      if (deployRes.data.feedManifestHash) {
+        feedHash = deployRes.data.feedManifestHash;
+        localStorage.setItem(FEED_HASH_KEY, feedHash);
+      }
+      localStorage.setItem(LAST_SITE_KEY, site.siteId);
+
+      upsertSiteRecord({
+        siteId: site.siteId,
+        brandName: site.theme.brandName || 'Untitled site',
+        logoSwarmRef: site.theme.logoSwarmRef,
+        accentColor: site.theme.palette.accent,
+        feedHash: feedHash || deployRes.data.feedManifestHash,
+        deployedUrl: deployRes.data.siteUrl,
+        publishedAt: Date.now(),
+        updatedAt: Date.now(),
+      });
 
       publishState = 'done';
     } catch (err) {
       publishError = err instanceof Error ? err.message : 'Publish failed';
       publishState = 'error';
-      setTimeout(() => { publishState = 'idle'; }, 5000);
+      setTimeout(() => {
+        // Only auto-clear if still showing this same error — don't clobber
+        // a subsequent publish the user already started.
+        if (publishState === 'error') publishState = 'idle';
+      }, 5000);
     }
   }
 
