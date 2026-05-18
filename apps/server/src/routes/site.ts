@@ -4,9 +4,11 @@ import {
   getBee,
   getPlatformSigner,
   getPlatformOwner,
-  requirePostageBatch,
   BEE_URL,
 } from "../config/swarm.js";
+import { requireAuth } from "../middleware/auth.js";
+import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
+import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -38,11 +40,13 @@ function spawnPromise(cmd: string, args: string[]): Promise<void> {
 
 // ── POST /api/site/deploy ──────────────────────────────────────────────────
 
-site.post("/deploy", async (c) => {
+site.post("/deploy", requireAuth, async (c) => {
   let tmpDir: string | null = null;
   let tarPath: string | null = null;
 
   try {
+    const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+
     const body = await c.req.json() as {
       eventId: string;
       gatewayUrl?: string;
@@ -64,10 +68,24 @@ site.post("/deploy", async (c) => {
       }, 503);
     }
 
-    const batchId = requirePostageBatch();
+    const effectiveGateway = gatewayUrl?.trim() || "https://gateway.etherna.io";
+    let selection;
+    try {
+      selection = batchForDeploy({
+        ownerAddress: parentAddress,
+        gatewayUrl: effectiveGateway,
+        deployType: "event",
+      });
+    } catch (err) {
+      if (err instanceof BatchPurchaseRequired) {
+        return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
+      }
+      throw err;
+    }
+    const { batchId, target } = selection;
     const signer = getPlatformSigner();
     const owner = getPlatformOwner();
-    const bee = getBee();
+    const bee = target === "etherna" ? getEthernaBee() : getBee();
 
     // 1) Read site.html and inject runtime config before </head>
     const siteHtmlPath = join(DIST_SITE_PATH, "site.html");
@@ -94,27 +112,38 @@ site.post("/deploy", async (c) => {
     await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
     const tarData = await fs.readFile(tarPath);
 
-    // 4) Upload directory to Swarm as a collection
-    const uploadResp = await fetch(`${BEE_URL}/bzz`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-tar",
-        "Swarm-Postage-Batch-Id": batchId,
-        "Swarm-Index-Document": "site.html",
-        "Swarm-Error-Document": "site.html",
-        "Swarm-Collection": "true",
-      },
-      // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
-      duplex: "half",
-      body: tarData,
-    });
+    // 4) Upload directory to Swarm as a collection — branch by target
+    let contentHash: string;
+    if (target === "etherna") {
+      contentHash = await uploadCollectionToEtherna({
+        batchId,
+        tarData,
+        indexDocument: "site.html",
+      });
+      // Make anonymously readable via /bytes and /bzz/{ref}/file
+      await registerEthernaOffer(contentHash);
+    } else {
+      const uploadResp = await fetch(`${BEE_URL}/bzz`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-tar",
+          "Swarm-Postage-Batch-Id": batchId,
+          "Swarm-Index-Document": "site.html",
+          "Swarm-Error-Document": "site.html",
+          "Swarm-Collection": "true",
+        },
+        // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
+        duplex: "half",
+        body: tarData,
+      });
 
-    if (!uploadResp.ok) {
-      const text = await uploadResp.text().catch(() => "");
-      throw new Error(`Swarm upload failed ${uploadResp.status}: ${text.slice(0, 300)}`);
+      if (!uploadResp.ok) {
+        const text = await uploadResp.text().catch(() => "");
+        throw new Error(`Swarm upload failed ${uploadResp.status}: ${text.slice(0, 300)}`);
+      }
+
+      ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
-
-    const { reference: contentHash } = await uploadResp.json() as { reference: string };
 
     // 5) Per-event feed topic so each event gets its own updatable ENS entry
     const topic = Topic.fromString(`woco-site-${eventId}`);

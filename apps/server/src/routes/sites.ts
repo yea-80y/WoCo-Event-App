@@ -18,9 +18,10 @@ import {
   getBee,
   getPlatformSigner,
   getPlatformOwner,
-  requirePostageBatch,
   BEE_URL,
 } from "../config/swarm.js";
+import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
+import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
@@ -465,10 +466,23 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       site = fromSwarm;
     }
 
-    const batchId = requirePostageBatch();
+    let selection;
+    try {
+      selection = batchForDeploy({
+        ownerAddress: parentAddress,
+        gatewayUrl,
+        deployType: "website",
+      });
+    } catch (err) {
+      if (err instanceof BatchPurchaseRequired) {
+        return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
+      }
+      throw err;
+    }
+    const { batchId, target } = selection;
     const signer = getPlatformSigner();
     const owner = getPlatformOwner();
-    const bee = getBee();
+    const bee = target === "etherna" ? getEthernaBee() : getBee();
 
     // Inject runtime config into the HTML template
     const htmlPath = join(DIST_MULTISITE_PATH, "multi-site.html");
@@ -531,26 +545,36 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
     const tarData = await fs.readFile(tarPath);
 
-    const uploadResp = await fetch(`${BEE_URL}/bzz`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-tar",
-        "Swarm-Postage-Batch-Id": batchId,
-        "Swarm-Index-Document": "multi-site.html",
-        "Swarm-Error-Document": "multi-site.html",
-        "Swarm-Collection": "true",
-      },
-      // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
-      duplex: "half",
-      body: tarData,
-    });
+    let contentHash: string;
+    if (target === "etherna") {
+      contentHash = await uploadCollectionToEtherna({
+        batchId,
+        tarData,
+        indexDocument: "multi-site.html",
+      });
+      await registerEthernaOffer(contentHash);
+    } else {
+      const uploadResp = await fetch(`${BEE_URL}/bzz`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-tar",
+          "Swarm-Postage-Batch-Id": batchId,
+          "Swarm-Index-Document": "multi-site.html",
+          "Swarm-Error-Document": "multi-site.html",
+          "Swarm-Collection": "true",
+        },
+        // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
+        duplex: "half",
+        body: tarData,
+      });
 
-    if (!uploadResp.ok) {
-      const text = await uploadResp.text().catch(() => "");
-      throw new Error(`Swarm upload failed ${uploadResp.status}: ${text.slice(0, 300)}`);
+      if (!uploadResp.ok) {
+        const text = await uploadResp.text().catch(() => "");
+        throw new Error(`Swarm upload failed ${uploadResp.status}: ${text.slice(0, 300)}`);
+      }
+
+      ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
-
-    const { reference: contentHash } = await uploadResp.json() as { reference: string };
 
     // Per-site feed so an ENS name can point at it
     const topic = Topic.fromString(`woco-multisite-${siteId}`);
@@ -562,7 +586,35 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       // Non-fatal
     }
     const writer = bee.makeFeedWriter(topic, signer);
-    await writer.upload(batchId, new Reference(contentHash));
+
+    if (target === "wocoBee") {
+      // Inline SOC write via local bee-proxy: required for anonymous
+      // /bzz/{feedManifest}/... resolution on current upstream Bee, which
+      // dropped support for the legacy "SOC payload = ref to manifest" form.
+      // Etherna target uses a different chunk-read path — handled in commit 5.
+      try {
+        await fetch(`${BEE_URL}/admin/whitelist`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hashes: [contentHash] }),
+        });
+        const chunkRes = await fetch(`${BEE_URL}/chunks/${contentHash}`);
+        if (!chunkRes.ok) throw new Error(`fetch root chunk ${chunkRes.status}`);
+        const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+        const payload = chunkBytes.subarray(8);
+        if (payload.length > 4096) {
+          console.warn(`[sites/deploy] root chunk ${payload.length}B > 4096 — falling back to legacy SOC write`);
+          await writer.uploadReference(batchId, new Reference(contentHash));
+        } else {
+          await writer.uploadPayload(batchId, payload);
+        }
+      } catch (err) {
+        console.warn(`[sites/deploy] inline SOC write failed (${(err as Error).message}) — falling back to legacy`);
+        await writer.uploadReference(batchId, new Reference(contentHash));
+      }
+    } else {
+      await writer.uploadReference(batchId, new Reference(contentHash));
+    }
 
     // Collect all image refs from the site so they're accessible via the gateway.
     const imageRefs: string[] = [];

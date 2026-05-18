@@ -14,6 +14,10 @@
   import PagesTab from "./tabs/PagesTab.svelte";
   import NavTab from "./tabs/NavTab.svelte";
   import EventsTab from "./tabs/EventsTab.svelte";
+  import GatewayPicker from "./GatewayPicker.svelte";
+  import { GATEWAYS } from "./gateways.js";
+  import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
+  import { getMyEthernaBatch } from "../../api/etherna.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   function uid(): string {
@@ -28,8 +32,12 @@
   const MY_SITES_KEY  = 'woco:my-sites';
 
   const API_URL     = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? 'http://localhost:3001';
-  const GATEWAY_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+  const DEFAULT_GATEWAY = GATEWAYS.find((g) => g.default)?.url ?? GATEWAYS[0].url;
   const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? 'https://woco.eth.limo';
+
+  const ETHERNA_URL = 'https://gateway.etherna.io';
+  const USER_BATCH_DEPTH = 19;
+  const USER_BATCH_TTL_DAYS = 30;
 
   function loadDraft(): Site {
     if (typeof window === 'undefined') {
@@ -101,6 +109,9 @@
   let deployedUrl  = $state('');
   let feedHash     = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
+  let gatewayUrl   = $state(DEFAULT_GATEWAY);
+  let purchaseOpen = $state(false);
+
   let openingId = $state<string | undefined>(undefined); // card spinner
 
   // Autosave drafts
@@ -157,15 +168,45 @@
     if (typeof window === 'undefined') return;
     localStorage.setItem(PREVIEW_KEY, JSON.stringify({
       site: $state.snapshot(site),
-      gatewayUrl: GATEWAY_URL,
+      gatewayUrl,
       apiUrl: API_URL,
       previewEvents: $state.snapshot(siteEvents),
     }));
     window.open('./multi-site.html', '_blank');
   }
 
+  /** Etherna website publish requires a per-user batch. Returns true if the
+   * batch exists OR the user just bought one in the modal; false if cancelled. */
+  async function ensureUserBatchForEtherna(): Promise<boolean> {
+    if (gatewayUrl !== ETHERNA_URL) return true;
+    const res = await getMyEthernaBatch();
+    if (res.ok && res.data) return true;
+    purchaseOpen = true;
+    return await new Promise<boolean>((resolve) => {
+      pendingPurchaseResolve = resolve;
+    });
+  }
+
+  let pendingPurchaseResolve: ((ok: boolean) => void) | null = $state(null);
+
+  function handlePurchaseClose() {
+    purchaseOpen = false;
+    pendingPurchaseResolve?.(false);
+    pendingPurchaseResolve = null;
+  }
+
+  function handlePurchased() {
+    purchaseOpen = false;
+    pendingPurchaseResolve?.(true);
+    pendingPurchaseResolve = null;
+  }
+
   async function handlePublish() {
     if (publishState === 'publishing') return;
+
+    const batchOk = await ensureUserBatchForEtherna();
+    if (!batchOk) return;
+
     publishState = 'publishing';
     publishError = '';
     deployedUrl = '';
@@ -178,7 +219,7 @@
         return;
       }
 
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl: GATEWAY_URL, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) });
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) });
       if (deployRes.ok && deployRes.data) {
         deployedUrl = deployRes.data.siteUrl;
         if (deployRes.data.feedManifestHash) {
@@ -340,7 +381,7 @@
   {:else if screen === 'my-sites'}
     <MySitesScreen
       sites={mySites}
-      gatewayUrl={GATEWAY_URL}
+      gatewayUrl={gatewayUrl}
       onopen={handleOpenSite}
       onnew={handleNewSite}
       onloadbyid={handleLoadById}
@@ -411,6 +452,16 @@
       </div>
     </div>
 
+    <div class="gateway-row">
+      <label class="gateway-label" for="ms-gw-picker">Deploy gateway</label>
+      <div class="gateway-input"><GatewayPicker bind:value={gatewayUrl} /></div>
+      <span class="gateway-hint">
+        {gatewayUrl === ETHERNA_URL
+          ? 'Etherna serves your site — uses your batch'
+          : 'Testing only — uses platform WoCo batch'}
+      </span>
+    </div>
+
     {#if feedHash || deployedUrl}
       <div class="deploy-banner">
         {#if feedHash}
@@ -460,6 +511,14 @@
     </div>
   {/if}
 </div>
+
+<PurchaseBatchModal
+  open={purchaseOpen}
+  depth={USER_BATCH_DEPTH}
+  ttlDays={USER_BATCH_TTL_DAYS}
+  onclose={handlePurchaseClose}
+  onpurchased={handlePurchased}
+/>
 
 <style>
   .builder {
@@ -659,6 +718,27 @@
     border-color: var(--accent);
     color: var(--text);
   }
+
+  /* ── Gateway row ── */
+  .gateway-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex-wrap: wrap;
+  }
+  .gateway-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .gateway-input { min-width: 16rem; flex: 0 1 18rem; }
+  .gateway-hint { font-size: 0.75rem; color: var(--text-muted); }
 
   /* ── Deploy banner ── */
   .deploy-banner {

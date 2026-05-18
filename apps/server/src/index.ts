@@ -23,6 +23,7 @@ import { sitesRouter } from "./routes/sites.js";
 import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
+import { ethernaRoutes } from "./routes/etherna.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -321,6 +322,9 @@ app.route("/api/domains", domains);
 
 // Stripe Connect routes (organiser onboarding + attendee checkout)
 app.route("/api/stripe", stripeRoutes);
+
+// Etherna per-user batch registry + provisioning
+app.route("/api/etherna", ethernaRoutes);
 
 // Profile routes
 app.route("/api/profile", profiles);

@@ -1,8 +1,5 @@
 <script lang="ts">
-  export const GATEWAYS = [
-    { id: "woco",    label: "WoCo gateway (default)", url: "https://gateway.woco-net.com", default: true },
-    // { id: "etherna", label: "Etherna gateway",        url: "https://gateway.etherna.io"   }, // P5
-  ] as const;
+  import { GATEWAYS } from "./gateways.js";
 
   interface Props { value: string; }
   let { value = $bindable(GATEWAYS.find(g => g.default)?.url ?? GATEWAYS[0].url) }: Props = $props();

@@ -63,7 +63,7 @@
   }
 
   // Step 2 — deploy targets
-  let gatewayUrl = $state("https://gateway.woco-net.com");
+  let gatewayUrl = $state("https://gateway.etherna.io");
   let paraApiKey = $state("");
   let listOnWoco = $state(false);
   let selectedSiteIds = $state<string[]>([]);
@@ -183,27 +183,31 @@
   }
 
   async function handleDeploy() {
-    // Fire site-event additions concurrently with deploy — both are independent feed writes.
-    const siteAddPromise = createdEventId && selectedSiteIds.length > 0
-      ? Promise.allSettled(selectedSiteIds.map(id => addSiteEvent(id, createdEventId!)))
-      : Promise.resolve([] as PromiseSettledResult<unknown>[]);
+    try {
+      const ok = await deployToSwarm();
+      if (!ok) return;
 
-    const ok = await deployToSwarm();
-
-    const siteResults = await siteAddPromise;
-    siteAddErrors = {};
-    siteResults.forEach((r, i) => {
-      if (r.status === "rejected") {
-        siteAddErrors[selectedSiteIds[i]] = (r.reason as Error)?.message ?? "Failed";
-      } else if (r.status === "fulfilled") {
-        const v = r.value as { ok?: boolean; error?: string };
-        if (!v?.ok) siteAddErrors[selectedSiteIds[i]] = v?.error ?? "Failed";
+      // Site-event additions run after a confirmed deploy — they need auth (session signing)
+      // and running them before the deploy caused the session modal to block step → 3.
+      if (createdEventId && selectedSiteIds.length > 0) {
+        const siteResults = await Promise.allSettled(
+          selectedSiteIds.map(id => addSiteEvent(id, createdEventId!)),
+        );
+        siteAddErrors = {};
+        siteResults.forEach((r, i) => {
+          if (r.status === "rejected") {
+            siteAddErrors[selectedSiteIds[i]] = (r.reason as Error)?.message ?? "Failed";
+          } else if (r.status === "fulfilled") {
+            const v = r.value as { ok?: boolean; error?: string };
+            if (!v?.ok) siteAddErrors[selectedSiteIds[i]] = v?.error ?? "Failed";
+          }
+        });
       }
-    });
 
-    if (ok) {
       if (listOnWoco && !wocoListed) await createWocoListing();
       step = 3;
+    } catch (e) {
+      deployError = e instanceof Error ? e.message : "Unexpected error during deploy";
     }
   }
 
@@ -244,6 +248,14 @@
         </div>
       {:else}
         <div class="event-form">
+          <div class="field-group">
+            <label class="field-label" for="gw-picker">Gateway</label>
+            <GatewayPicker bind:value={gatewayUrl} />
+            <p class="field-hint">
+              The Swarm gateway that will host and serve your deployed event site.
+            </p>
+          </div>
+
           <ImportUrlPanel onapply={applyImport} />
 
           <EventEditor
@@ -298,14 +310,6 @@
           Event created ✓ &nbsp;<code>{createdEventId}</code>
         </div>
       {/if}
-
-      <div class="field-group">
-        <label class="field-label" for="gw-picker">Gateway</label>
-        <GatewayPicker bind:value={gatewayUrl} />
-        <p class="field-hint">
-          The Swarm gateway that will serve your event site.
-        </p>
-      </div>
 
       <div class="list-woco-card">
         <label class="checkbox-option list-woco-check">
