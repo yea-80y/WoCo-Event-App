@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { OrderField, ClaimMode } from "@woco/shared";
-  import { deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
+  import { deriveEncryptionKeypairFromPodSeed, FEATURES } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
@@ -58,7 +58,9 @@
     endDate &&
     imageDataUrl &&
     series.length > 0 &&
-    series.every((s) => s.name.trim() && s.totalSupply > 0)
+    series.every((s) => s.name.trim() && s.totalSupply > 0) &&
+    // When free events are disabled, every series must carry a price > 0.
+    (FEATURES.freeEventsAllowed || series.every((s) => s.payment && parseFloat(s.payment.price) > 0))
   );
 
   const hasPaidSeries = $derived(series.some((s) => s.payment));

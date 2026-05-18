@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV2Request, EventDirectoryEntry } from "@woco/shared";
+import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEventV2, confirmSeriesOnChain, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
@@ -124,6 +125,23 @@ events.post("/", requireAuth, async (c) => {
   for (const s of series) {
     if (!s.signedManifest || !s.podBodies?.length) {
       return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or podBodies` }, 400);
+    }
+    // Defence-in-depth — mirror FEATURES gates so an old client (or direct API
+    // hit) can't bypass the UI and ship a free / crypto-only event.
+    if (!FEATURES.freeEventsAllowed) {
+      if (!s.payment || !s.payment.price || parseFloat(s.payment.price) <= 0) {
+        return c.json({ ok: false, error: `Series ${s.seriesId}: free events are not allowed — set a price` }, 400);
+      }
+      if (!s.payment.stripeEnabled) {
+        return c.json({ ok: false, error: `Series ${s.seriesId}: Stripe must be enabled` }, 400);
+      }
+    }
+    if (!FEATURES.cryptoPaymentsAllowed && s.payment?.cryptoEnabled) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: crypto payments are not allowed` }, 400);
+    }
+    if (s.payment?.feePassedToCustomer && typeof s.payment.buyerFeePercent === "number"
+        && s.payment.buyerFeePercent < BUYER_FEE_FLOOR_PCT) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: buyer fee must be ≥ ${BUYER_FEE_FLOOR_PCT}%` }, 400);
     }
   }
 

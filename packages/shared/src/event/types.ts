@@ -34,6 +34,14 @@ export interface PaymentConfig {
   /** When true, processing fees are added on top of the ticket price (buyer pays).
    *  When false (default), fees come out of the organiser's revenue. */
   feePassedToCustomer?: boolean;
+  /**
+   * Organiser-set buyer-pays fee percentage. Only meaningful when
+   * `feePassedToCustomer` is true. Must be ≥ BUYER_FEE_FLOOR_PCT (4.5%).
+   * Default BUYER_FEE_DEFAULT_PCT (10%). The buyer is charged
+   * price × (1 + buyerFeePercent/100); the organiser keeps the gap
+   * between the markup and the actual Stripe + platform deductions.
+   */
+  buyerFeePercent?: number;
 }
 
 /** Payment proof submitted alongside a claim request */

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x } from "@woco/shared";
-  import { CHAIN_NAMES, PLATFORM_FEE_BP } from "@woco/shared";
+  import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import ConnectWalletModal from "../../components/profile/ConnectWalletModal.svelte";
@@ -38,6 +38,8 @@
     stripeEnabled: boolean;
     /** Pass processing fees to the buyer (default: true) */
     feePassedToCustomer: boolean;
+    /** Organiser-set buyer-pays fee % (≥ BUYER_FEE_FLOOR_PCT). Default BUYER_FEE_DEFAULT_PCT. */
+    buyerFeePercent: number;
   }
 
   interface SeriesDraft {
@@ -126,27 +128,32 @@
     stripeModalTierId = null;
   }
 
-  let tierGroups = $state<TierGroup[]>([{
-    id: crypto.randomUUID(),
-    tierName: "General Admission",
-    description: "",
-    approvalRequired: false,
-    isPaid: false,
-    price: "",
-    currency: "GBP",
-    cryptoEnabled: true,
-    acceptedChains: [8453] as PaymentChainId[],
-    stripeEnabled: false,
-    feePassedToCustomer: true,
-    waves: [{
+  function newTier(name = "General Admission"): TierGroup {
+    return {
       id: crypto.randomUUID(),
-      label: "",
-      totalSupply: 10,
-      saleStart: "",
-      saleEnd: "",
-      showSaleWindow: false,
-    }],
-  }]);
+      tierName: name,
+      description: "",
+      approvalRequired: false,
+      isPaid: !FEATURES.freeEventsAllowed,
+      price: "",
+      currency: "GBP",
+      cryptoEnabled: FEATURES.cryptoPaymentsAllowed,
+      acceptedChains: [8453] as PaymentChainId[],
+      stripeEnabled: !FEATURES.cryptoPaymentsAllowed,
+      feePassedToCustomer: true,
+      buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
+      waves: [{
+        id: crypto.randomUUID(),
+        label: "",
+        totalSupply: 10,
+        saleStart: "",
+        saleEnd: "",
+        showSaleWindow: false,
+      }],
+    };
+  }
+
+  let tierGroups = $state<TierGroup[]>([newTier()]);
 
   // Apply imported tiers (Skiddle/Fatsoma/Eventbrite) exactly once per assignment.
   $effect(() => {
@@ -156,7 +163,10 @@
     tierGroups = tiers.map((t) => {
       const priceStr = (t.price ?? "").trim();
       const priceNum = parseFloat(priceStr);
-      const isPaid = !Number.isNaN(priceNum) && priceNum > 0;
+      // When free events aren't allowed, importer rows with no/zero price still
+      // start as paid (empty price field) so the organiser sets one before publish.
+      const importedPaid = !Number.isNaN(priceNum) && priceNum > 0;
+      const isPaid = !FEATURES.freeEventsAllowed || importedPaid;
       const ccy = (t.currency ?? "GBP").toUpperCase();
       const currency: "USD" | "GBP" | "EUR" =
         (VALID as readonly string[]).includes(ccy) ? (ccy as "USD" | "GBP" | "EUR") : "GBP";
@@ -166,12 +176,13 @@
         description: "",
         approvalRequired: false,
         isPaid,
-        price: isPaid ? priceStr : "",
+        price: importedPaid ? priceStr : "",
         currency,
-        cryptoEnabled: isPaid,
+        cryptoEnabled: FEATURES.cryptoPaymentsAllowed && isPaid,
         acceptedChains: [8453] as PaymentChainId[],
-        stripeEnabled: false,
+        stripeEnabled: !FEATURES.cryptoPaymentsAllowed && isPaid,
         feePassedToCustomer: true,
+        buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
         waves: [{
           id: crypto.randomUUID(),
           label: "",
@@ -245,6 +256,7 @@
             cryptoEnabled: tier.cryptoEnabled,
             stripeEnabled: tier.stripeEnabled,
             feePassedToCustomer: tier.feePassedToCustomer,
+            ...(tier.feePassedToCustomer ? { buyerFeePercent: tier.buyerFeePercent } : {}),
           };
         }
         return base;
@@ -260,7 +272,7 @@
   const STRIPE_PERCENT = 0.029; // 2.9% (Connect includes +0.5%)
   const STRIPE_FIXED: Record<string, number> = { GBP: 0.20, USD: 0.30, EUR: 0.25 };
 
-  function feeBreakdown(price: string, currency: string, passToCustomer: boolean, hasStripe: boolean, hasCrypto: boolean) {
+  function feeBreakdown(price: string, currency: string, passToCustomer: boolean, hasStripe: boolean, hasCrypto: boolean, buyerFeePct: number) {
     const amount = parseFloat(price);
     if (!amount || amount <= 0) return null;
     const sym = CURRENCY_SYMBOLS[currency] ?? "";
@@ -269,17 +281,24 @@
     const platformFee = amount * PLATFORM_FEE_BP / 10_000;
 
     if (passToCustomer) {
-      // Buyer pays the fees — organiser receives the full ticket price
-      const cardTotal = amount + stripeFee + platformFee;
-      const cryptoTotal = amount + platformFee;
+      // Organiser-set markup. Buyer pays price × (1 + buyerFeePct/100).
+      // Organiser keeps the gap between the markup and the actual deductions.
+      const buyerMarkup = amount * (buyerFeePct / 100);
+      const cardTotal = amount + buyerMarkup;
+      const cryptoTotal = amount + buyerMarkup;
+      const payoutCard = hasStripe ? cardTotal - stripeFee - platformFee : 0;
+      const payoutCrypto = hasCrypto ? cryptoTotal - platformFee : 0;
       return {
         mode: "pass" as const,
         basePrice: fmt(amount),
+        buyerMarkup: fmt(buyerMarkup),
         stripeFee: hasStripe ? `~${fmt(stripeFee)}` : null,
         platformFee: fmt(platformFee),
-        cardTotal: hasStripe ? `~${fmt(cardTotal)}` : null,
+        cardTotal: hasStripe ? fmt(cardTotal) : null,
         cryptoTotal: hasCrypto ? fmt(cryptoTotal) : null,
-        payout: fmt(amount),
+        payoutCard: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : null,
+        payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
+        payout: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : fmt(Math.max(0, payoutCrypto)),
       };
     } else {
       // Organiser absorbs fees — buyer pays the ticket price only
@@ -300,27 +319,14 @@
   }
 
   function addTier() {
-    tierGroups.push({
-      id: crypto.randomUUID(),
-      tierName: "",
-      description: "",
-      approvalRequired: false,
-      isPaid: false,
-      price: "",
-      currency: "GBP",
-      cryptoEnabled: true,
-      acceptedChains: [8453] as PaymentChainId[],
-      stripeEnabled: false,
-      feePassedToCustomer: true,
-      waves: [{
-        id: crypto.randomUUID(),
-        label: "",
-        totalSupply: 10,
-        saleStart: "",
-        saleEnd: "",
-        showSaleWindow: false,
-      }],
-    });
+    tierGroups.push(newTier(""));
+  }
+
+  /** Snap a buyer-fee % input back to the floor when the user blurs below it. */
+  function clampBuyerFee(tier: TierGroup) {
+    if (!Number.isFinite(tier.buyerFeePercent) || tier.buyerFeePercent < BUYER_FEE_FLOOR_PCT) {
+      tier.buyerFeePercent = BUYER_FEE_FLOOR_PCT;
+    }
   }
 
   function removeTier(id: string) {
@@ -419,17 +425,19 @@
         </label>
 
         <!-- Payment config -->
-        <label class="approval-toggle">
-          <input type="checkbox" bind:checked={tier.isPaid} />
-          <span class="approval-label">Paid ticket</span>
-          <span class="approval-hint">Set a price — attendees can pay with crypto and/or card</span>
-        </label>
+        {#if FEATURES.freeEventsAllowed}
+          <label class="approval-toggle">
+            <input type="checkbox" bind:checked={tier.isPaid} />
+            <span class="approval-label">Paid ticket</span>
+            <span class="approval-hint">Set a price — attendees can pay with crypto and/or card</span>
+          </label>
+        {/if}
 
         {#if tier.isPaid}
           <div class="payment-config">
             <div class="payment-row">
               <label class="field payment-price-field">
-                <span class="field-label">Price</span>
+                <span class="field-label">Price <span class="required">*</span></span>
                 <input type="text" bind:value={tier.price} placeholder="e.g. 10.00" inputmode="decimal" />
               </label>
               <label class="field payment-currency-field">
@@ -445,34 +453,36 @@
             <div class="payment-methods">
               <span class="field-label">Payment methods</span>
 
-              <label class="chain-check">
-                <input type="checkbox" bind:checked={tier.cryptoEnabled} />
-                <span>Crypto (ETH/USDC — converted from {tier.currency} at claim time)</span>
-              </label>
+              {#if FEATURES.cryptoPaymentsAllowed}
+                <label class="chain-check">
+                  <input type="checkbox" bind:checked={tier.cryptoEnabled} />
+                  <span>Crypto (ETH/USDC — converted from {tier.currency} at claim time)</span>
+                </label>
 
-              {#if tier.cryptoEnabled}
-                <div class="payment-chains" style="margin-left: 1.5rem; margin-top: 0.25rem;">
-                  <span class="field-label" style="font-size: 0.6875rem;">Networks</span>
-                  <div class="chain-checkboxes">
-                    {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, name]}
-                      <label class="chain-check">
-                        <input
-                          type="checkbox"
-                          checked={tier.acceptedChains.includes(chainId as PaymentChainId)}
-                          onchange={(e) => {
-                            const cid = chainId as PaymentChainId;
-                            if ((e.target as HTMLInputElement).checked) {
-                              if (!tier.acceptedChains.includes(cid)) tier.acceptedChains = [...tier.acceptedChains, cid];
-                            } else {
-                              tier.acceptedChains = tier.acceptedChains.filter(c => c !== cid);
-                            }
-                          }}
-                        />
-                        <span>{name}</span>
-                      </label>
-                    {/each}
+                {#if tier.cryptoEnabled}
+                  <div class="payment-chains" style="margin-left: 1.5rem; margin-top: 0.25rem;">
+                    <span class="field-label" style="font-size: 0.6875rem;">Networks</span>
+                    <div class="chain-checkboxes">
+                      {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, name]}
+                        <label class="chain-check">
+                          <input
+                            type="checkbox"
+                            checked={tier.acceptedChains.includes(chainId as PaymentChainId)}
+                            onchange={(e) => {
+                              const cid = chainId as PaymentChainId;
+                              if ((e.target as HTMLInputElement).checked) {
+                                if (!tier.acceptedChains.includes(cid)) tier.acceptedChains = [...tier.acceptedChains, cid];
+                              } else {
+                                tier.acceptedChains = tier.acceptedChains.filter(c => c !== cid);
+                              }
+                            }}
+                          />
+                          <span>{name}</span>
+                        </label>
+                      {/each}
+                    </div>
                   </div>
-                </div>
+                {/if}
               {/if}
 
               <label class="chain-check">
@@ -514,7 +524,27 @@
                 </div>
               </div>
 
-              {@const fees = feeBreakdown(tier.price, tier.currency, tier.feePassedToCustomer, tier.stripeEnabled, tier.cryptoEnabled)}
+              {#if tier.feePassedToCustomer}
+                <label class="field buyer-fee-field">
+                  <span class="field-label">Booking fee % (added to buyer's total)</span>
+                  <div class="buyer-fee-input-wrap">
+                    <input
+                      type="number"
+                      min={BUYER_FEE_FLOOR_PCT}
+                      step="0.5"
+                      bind:value={tier.buyerFeePercent}
+                      onblur={() => clampBuyerFee(tier)}
+                    />
+                    <span class="buyer-fee-suffix">%</span>
+                  </div>
+                  <span class="approval-hint">
+                    Minimum {BUYER_FEE_FLOOR_PCT}% covers Stripe (~3%) + WoCo (1.5%).
+                    Anything above goes to you.
+                  </span>
+                </label>
+              {/if}
+
+              {@const fees = feeBreakdown(tier.price, tier.currency, tier.feePassedToCustomer, tier.stripeEnabled, tier.cryptoEnabled, tier.buyerFeePercent)}
               {#if fees}
                 <div class="fee-breakdown">
                   {#if fees.mode === "pass"}
@@ -523,22 +553,23 @@
                       <div class="fee-breakdown-col">
                         <span class="fee-col-label">Card checkout</span>
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
-                        <div class="fee-row fee-deduction"><span>Processing (~2.9% + fixed)</span><span>+{fees.stripeFee}</span></div>
-                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>+{fees.platformFee}</span></div>
+                        <div class="fee-row fee-deduction"><span>Booking fee ({tier.buyerFeePercent}%)</span><span>+{fees.buyerMarkup}</span></div>
                         <div class="fee-row fee-total"><span>Card total</span><span>{fees.cardTotal}</span></div>
+                        <div class="fee-row fee-deduction"><span>Stripe processing</span><span>−{fees.stripeFee}</span></div>
+                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>−{fees.platformFee}</span></div>
+                        <div class="fee-row fee-total"><span>Card payout</span><span>{fees.payoutCard}</span></div>
                       </div>
                     {/if}
                     {#if tier.cryptoEnabled}
                       <div class="fee-breakdown-col">
                         <span class="fee-col-label">Crypto checkout</span>
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
-                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>+{fees.platformFee}</span></div>
+                        <div class="fee-row fee-deduction"><span>Booking fee ({tier.buyerFeePercent}%)</span><span>+{fees.buyerMarkup}</span></div>
                         <div class="fee-row fee-total"><span>Crypto total</span><span>{fees.cryptoTotal}</span></div>
+                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>−{fees.platformFee}</span></div>
+                        <div class="fee-row fee-total"><span>Crypto payout</span><span>{fees.payoutCrypto}</span></div>
                       </div>
                     {/if}
-                    <div class="fee-payout-line">
-                      <span>You receive</span><span class="fee-payout-value">{fees.payout}</span>
-                    </div>
                   {:else}
                     <span class="fee-breakdown-title">Your payout (per ticket)</span>
                     <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
@@ -1068,6 +1099,41 @@
 
   .fee-mode-btn--active:hover {
     color: #fff;
+  }
+
+  .buyer-fee-field {
+    margin-top: 0.25rem;
+  }
+
+  .buyer-fee-input-wrap {
+    position: relative;
+    width: 6rem;
+  }
+
+  .buyer-fee-input-wrap input {
+    width: 100%;
+    padding: 0.375rem 1.4rem 0.375rem 0.5rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.8125rem;
+    font-family: inherit;
+  }
+
+  .buyer-fee-input-wrap input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .buyer-fee-suffix {
+    position: absolute;
+    right: 0.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    pointer-events: none;
   }
 
   /* ── Fee breakdown ── */
