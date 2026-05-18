@@ -621,19 +621,28 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Per-site feed so an ENS name can point at it
     const topic = Topic.fromString(`woco-multisite-${siteId}`);
     let feedManifestHash = "";
-    try {
-      const mRef = await bee.createFeedManifest(batchId, topic, owner);
-      feedManifestHash = mRef.toString();
-    } catch {
-      // Non-fatal
-    }
-    const writer = bee.makeFeedWriter(topic, signer);
 
-    if (target === "wocoBee") {
-      // Inline SOC write via local bee-proxy: required for anonymous
-      // /bzz/{feedManifest}/... resolution on current upstream Bee, which
-      // dropped support for the legacy "SOC payload = ref to manifest" form.
-      // Etherna target uses a different chunk-read path — handled in commit 5.
+    if (target === "etherna") {
+      // Etherna's Beehive only resolves feeds written with inline SOC (uploadPayload).
+      // writeEthernaFeedUpdate bypasses bee-js auth issues and uses raw HTTP with
+      // the correct inline-chunk SOC format (confirmed by etherna-soc-legacy-probe.ts).
+      feedManifestHash = await writeEthernaFeedUpdate({
+        topic,
+        contentHash,
+        batchId,
+        signer,
+        ownerHex: owner.toHex(),
+      });
+    } else {
+      // WoCo Bee — inline SOC write; fall back to uploadReference if root chunk
+      // exceeds 4096B (unlikely for a site manifest but handled defensively).
+      try {
+        const mRef = await bee.createFeedManifest(batchId, topic, owner);
+        feedManifestHash = mRef.toString();
+      } catch {
+        // Non-fatal
+      }
+      const writer = bee.makeFeedWriter(topic, signer);
       try {
         await fetch(`${BEE_URL}/admin/whitelist`, {
           method: "POST",
@@ -654,20 +663,6 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         console.warn(`[sites/deploy] inline SOC write failed (${(err as Error).message}) — falling back to legacy`);
         await writer.uploadReference(batchId, new Reference(contentHash));
       }
-    } else {
-      // Feed written to WoCo Bee in standard timestamp+reference format.
-      // writeEthernaFeedUpdate uses a Beehive-specific inline-chunk SOC that
-      // gateway.ethswarm.org (used by .limo ENS resolution) cannot interpret.
-      // Content lives on Etherna; the ENS pointer lives on WoCo Bee.
-      const platformBee = getBee();
-      try {
-        const mRef = await platformBee.createFeedManifest(POSTAGE_BATCH_ID, topic, owner);
-        feedManifestHash = mRef.toString();
-      } catch {
-        // Non-fatal
-      }
-      const platformWriter = platformBee.makeFeedWriter(topic, signer);
-      await platformWriter.uploadReference(POSTAGE_BATCH_ID, new Reference(contentHash));
     }
 
     // Collect all image refs from the site so they're accessible via the gateway.
