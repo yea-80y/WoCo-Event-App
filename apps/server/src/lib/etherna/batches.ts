@@ -19,7 +19,11 @@ const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.i
 const TOKEN_ENDPOINT = process.env.ETHERNA_TOKEN_ENDPOINT || "https://sso.etherna.io/connect/token";
 
 const GNOSIS_BLOCK_SEC = 5;
-const SECONDS_PER_DAY = 86_400n;
+
+/** Seconds the freshly-purchased batch needs to propagate before /bzz uploads
+ *  succeed. Test script comment says "wait ~2 min for usable: true". */
+const USABILITY_POLL_INTERVAL_MS = 5_000;
+const USABILITY_POLL_TIMEOUT_MS = 180_000;
 
 export interface UserBatchEntry {
   batchId: string;
@@ -117,10 +121,15 @@ function readCreditWei(c: unknown): bigint {
 
 interface ProvisionInput {
   depth: number;
+  /** May be fractional — 1.1 = 26h 24min. Keep a margin above your test window
+   *  so a slightly-stale block timestamp can't expire the batch mid-deploy. */
   ttlDays: number;
   marginPct?: number;
-  /** Per-purchase cap in xDai. Refuse to call /stamps if estimated cost exceeds this. */
-  maxXDai?: number;
+  /** Per-purchase cap on BZZ committed (NOT xDai). The /stamps `amount` param
+   *  is denominated in PLUR (1 BZZ = 1e16 PLUR); we compute committed BZZ from
+   *  amount × 2^depth and refuse if it exceeds this. Actual xDai debit is
+   *  typically less (BZZ trades below xDai), so this is a strict upper bound. */
+  maxBZZ?: number;
   /** Label sent to Etherna for ops visibility. */
   label?: string;
 }
@@ -128,20 +137,28 @@ interface ProvisionInput {
 interface ProvisionResult {
   batchId: string;
   debitXDai: string;
+  estimatedBZZ: string;
   purchasedAt: string;
   expiresAt: string;
 }
 
-/**
- * Provision a new Etherna postage batch. Reads chainstate to size the purchase,
- * caps by maxXDai (per-purchase safety floor — NOT an aggregate budget), and
- * returns the batchId plus actual xDai debit (credit_before − credit_after).
- */
-export async function provisionEthernaBatch(input: ProvisionInput): Promise<ProvisionResult> {
-  const depth = input.depth;
-  const ttlDays = input.ttlDays;
+interface BatchEstimate {
+  depth: number;
+  ttlDays: number;
+  marginPct: number;
+  amountPerChunk: string;
+  estimatedBZZ: string;
+}
+
+/** Compute the /stamps `amount` and committed-BZZ estimate for given inputs.
+ *  Used by both provisionEthernaBatch and the purchase-preview endpoint. */
+export async function estimateEthernaBatch(input: {
+  depth: number;
+  ttlDays: number;
+  marginPct?: number;
+}): Promise<BatchEstimate> {
+  const { depth, ttlDays } = input;
   const marginPct = input.marginPct ?? 25;
-  const maxXDai = input.maxXDai ?? 5;
 
   await ensureEthernaToken();
   const token = await fetchToken();
@@ -149,41 +166,98 @@ export async function provisionEthernaBatch(input: ProvisionInput): Promise<Prov
   const chainstate = await authGet(token, "/api/v0.3/system/chainstate") as { currentPrice: string | number };
   const currentPrice = BigInt(chainstate.currentPrice);
 
-  const blocksInTtl = BigInt(ttlDays) * SECONDS_PER_DAY / BigInt(GNOSIS_BLOCK_SEC);
+  // Seconds-first arithmetic so fractional ttlDays (e.g. 1.1) works correctly.
+  const ttlSeconds = BigInt(Math.round(ttlDays * 86_400));
+  const blocksInTtl = ttlSeconds / BigInt(GNOSIS_BLOCK_SEC);
   const baseAmount = currentPrice * blocksInTtl;
   const amountPerChunk = (baseAmount * BigInt(100 + marginPct)) / 100n;
   const totalChunks = 1n << BigInt(depth);
   const totalPlur = amountPerChunk * totalChunks;
-  // 1 BZZ = 1e16 PLUR; on Etherna, 1 BZZ ≈ 1 xDai of credit (we anchor against
-  // measured debit, not this constant — this estimate just gates the safety cap).
-  const estimatedXDai = Number(totalPlur) / 1e16;
+  // 1 BZZ = 1e16 PLUR. This is BZZ committed to the batch — the xDai debit
+  // is approximately BZZ × (BZZ market price), typically a fraction of it.
+  const estimatedBZZ = Number(totalPlur) / 1e16;
 
-  if (estimatedXDai > maxXDai) {
+  return {
+    depth,
+    ttlDays,
+    marginPct,
+    amountPerChunk: amountPerChunk.toString(),
+    estimatedBZZ: estimatedBZZ.toFixed(6),
+  };
+}
+
+/** Poll Etherna until the batch reports usable=true, or timeout.
+ *  Without this, the first /bzz upload against a fresh batch can 400/422. */
+async function waitForBatchUsable(token: string, batchId: string): Promise<void> {
+  const start = Date.now();
+  let lastErr = "";
+  while (Date.now() - start < USABILITY_POLL_TIMEOUT_MS) {
+    try {
+      const r = await fetch(`${ETHERNA_GW}/stamps/${batchId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) {
+        const data = await r.json() as { usable?: boolean };
+        if (data.usable === true) return;
+      } else {
+        lastErr = `${r.status}`;
+      }
+    } catch (e) {
+      lastErr = (e as Error).message;
+    }
+    await new Promise((res) => setTimeout(res, USABILITY_POLL_INTERVAL_MS));
+  }
+  throw new Error(`Batch ${batchId.slice(0, 12)}… did not become usable within ${USABILITY_POLL_TIMEOUT_MS / 1000}s (last: ${lastErr || "no error"})`);
+}
+
+/**
+ * Provision a new Etherna postage batch. Reads chainstate to size the purchase,
+ * caps by maxBZZ (per-purchase safety floor — NOT an aggregate budget), polls
+ * until the batch is usable, then returns batchId + measured xDai debit
+ * (credit_before − credit_after, denominated in the user's credit balance).
+ */
+export async function provisionEthernaBatch(input: ProvisionInput): Promise<ProvisionResult> {
+  const marginPct = input.marginPct ?? 25;
+  const maxBZZ = input.maxBZZ ?? 1;
+
+  const estimate = await estimateEthernaBatch({
+    depth: input.depth,
+    ttlDays: input.ttlDays,
+    marginPct,
+  });
+
+  const estimatedBZZ = Number(estimate.estimatedBZZ);
+  if (estimatedBZZ > maxBZZ) {
     throw new Error(
-      `Batch cost ${estimatedXDai.toFixed(4)} xDai exceeds per-purchase cap ${maxXDai} xDai. ` +
-      `Refusing to provision — raise ETHERNA_PURCHASE_MAX_XDAI to override.`,
+      `Batch would commit ${estimatedBZZ.toFixed(4)} BZZ — exceeds per-purchase cap ${maxBZZ} BZZ. ` +
+      `Refusing to provision — raise ETHERNA_PURCHASE_MAX_BZZ to override.`,
     );
   }
 
+  const token = await fetchToken();
   const creditBefore = readCreditWei(await authGet(token, "/api/v0.3/users/current/credit2"));
 
   const label = encodeURIComponent(input.label ?? `woco-user-${Date.now()}`);
-  const stamps = await authPost(token, `/stamps/${amountPerChunk}/${depth}?label=${label}`) as { batchID: string };
+  const stamps = await authPost(token, `/stamps/${estimate.amountPerChunk}/${input.depth}?label=${label}`) as { batchID: string };
 
-  // Allow the credit debit to settle. Etherna's docs say it can take a few
-  // seconds for the post-purchase balance to register; the test script waits 8s.
+  // Let the debit register before reading credit2 (Etherna lag, ~8s observed in test script).
   await new Promise((r) => setTimeout(r, 8000));
 
   const creditAfter = readCreditWei(await authGet(token, "/api/v0.3/users/current/credit2"));
   const debitWei = creditBefore - creditAfter;
   const debitXDai = (Number(debitWei) / 1e18).toFixed(6);
 
+  // Block until the batch is propagated and usable on the gateway. The first
+  // /bzz upload would otherwise race and fail.
+  await waitForBatchUsable(token, stamps.batchID);
+
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + ttlDays * 86_400_000);
+  const expiresAt = new Date(now.getTime() + input.ttlDays * 86_400_000);
 
   return {
     batchId: stamps.batchID,
     debitXDai,
+    estimatedBZZ: estimate.estimatedBZZ,
     purchasedAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
   };

@@ -36,8 +36,6 @@
   const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? 'https://woco.eth.limo';
 
   const ETHERNA_URL = 'https://gateway.etherna.io';
-  const USER_BATCH_DEPTH = 19;
-  const USER_BATCH_TTL_DAYS = 30;
 
   function loadDraft(): Site {
     if (typeof window === 'undefined') {
@@ -514,8 +512,6 @@
 
 <PurchaseBatchModal
   open={purchaseOpen}
-  depth={USER_BATCH_DEPTH}
-  ttlDays={USER_BATCH_TTL_DAYS}
   onclose={handlePurchaseClose}
   onpurchased={handlePurchased}
 />

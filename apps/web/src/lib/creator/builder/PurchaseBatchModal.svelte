@@ -1,27 +1,53 @@
 <script lang="ts">
-  import { purchaseEthernaBatch } from "../../api/etherna.js";
+  import { purchaseEthernaBatch, getPurchasePreview, type PurchasePreview } from "../../api/etherna.js";
 
   interface Props {
     open: boolean;
-    depth: number;
-    ttlDays: number;
-    estimatedXDai?: string;
     onclose: () => void;
     onpurchased: () => void;
   }
 
-  let { open, depth, ttlDays, estimatedXDai, onclose, onpurchased }: Props = $props();
+  let { open, onclose, onpurchased }: Props = $props();
 
+  let preview = $state<PurchasePreview | null>(null);
+  let previewError = $state<string | null>(null);
   let busy = $state(false);
   let error = $state<string | null>(null);
-  let receipt = $state<{ batchId: string; expiresAt: string; debit: string } | null>(null);
+  let receipt = $state<{ batchId: string; expiresAt: string; debit: string; estimatedBZZ?: string } | null>(null);
+
+  // Fetch preview whenever the modal opens fresh (clears any prior receipt).
+  $effect(() => {
+    if (!open) return;
+    receipt = null;
+    error = null;
+    preview = null;
+    previewError = null;
+    (async () => {
+      try {
+        const r = await getPurchasePreview();
+        if (r.ok && r.data) preview = r.data;
+        else previewError = r.error ?? "Could not load batch preview";
+      } catch (e) {
+        previewError = e instanceof Error ? e.message : "Preview failed";
+      }
+    })();
+  });
+
+  function formatTtl(d: number): string {
+    if (d >= 1) {
+      const days = Math.floor(d);
+      const extraHours = Math.round((d - days) * 24);
+      return extraHours > 0 ? `${days}d ${extraHours}h` : `${days} day${days === 1 ? '' : 's'}`;
+    }
+    return `${Math.round(d * 24)}h`;
+  }
 
   async function handleBuy() {
     if (busy) return;
     busy = true;
     error = null;
     try {
-      const res = await purchaseEthernaBatch({ depth, ttlDays });
+      const res = await purchaseEthernaBatch();
       if (res.ok && res.data) {
         receipt = res.data;
         onpurchased();
@@ -46,19 +72,24 @@
         every website and event you publish.
       </p>
 
-      <dl class="spec">
-        <div><dt>Batch depth</dt><dd>{depth}</dd></div>
-        <div><dt>Time to live</dt><dd>{ttlDays} day{ttlDays === 1 ? "" : "s"}</dd></div>
-        {#if estimatedXDai}
-          <div><dt>Est. debit</dt><dd>≈ {estimatedXDai} xDai</dd></div>
-        {/if}
-      </dl>
+      {#if preview}
+        <dl class="spec">
+          <div><dt>Batch depth</dt><dd>{preview.depth}</dd></div>
+          <div><dt>Time to live</dt><dd>{formatTtl(preview.ttlDays)}</dd></div>
+          <div><dt>Est. committed</dt><dd>≈ {preview.estimatedBZZ} BZZ</dd></div>
+          <div><dt>Safety cap</dt><dd>≤ {preview.maxBZZ} BZZ</dd></div>
+        </dl>
+      {:else if previewError}
+        <div class="err">{previewError}</div>
+      {:else}
+        <div class="spec"><div><dt>Loading batch preview…</dt><dd></dd></div></div>
+      {/if}
 
       {#if receipt}
         <div class="ok">
           <strong>Batch purchased ✓</strong>
           <code>{receipt.batchId.slice(0, 12)}…</code>
-          <span class="debit">Debit: {receipt.debit} xDai</span>
+          <span class="debit">Debit: {receipt.debit} xDai{receipt.estimatedBZZ ? ` (${receipt.estimatedBZZ} BZZ committed)` : ''}</span>
         </div>
       {/if}
 
@@ -69,7 +100,7 @@
       <div class="actions">
         <button class="btn-ghost" onclick={onclose} disabled={busy}>Cancel</button>
         {#if !receipt}
-          <button class="btn-primary" onclick={handleBuy} disabled={busy}>
+          <button class="btn-primary" onclick={handleBuy} disabled={busy || !preview}>
             {busy ? "Purchasing…" : "Buy batch"}
           </button>
         {:else}
