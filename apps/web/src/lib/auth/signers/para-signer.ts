@@ -1,15 +1,21 @@
-import { ParaEthersSigner } from "@getpara/ethers-v6-integration";
 import type { EIP712Signer, SigningRequestInfo } from "@woco/shared";
-import { para } from "../para-client.js";
+import { getPara } from "../para-client.js";
 
 /**
  * Create an EIP-712 signer backed by the Para embedded wallet.
  * Shows WoCo's SigningConfirmDialog for explicit user approval before
  * Para signs on their infrastructure — consistent with local/passkey flow.
+ *
+ * Async so the Para SDK + ethers-v6 integration only load when a Para user
+ * actually signs — keeps them out of chunks that never touch Para.
  */
-export function createParaSigner(
+export async function createParaSigner(
   confirmFn: (info: SigningRequestInfo) => Promise<boolean>,
-): EIP712Signer {
+): Promise<EIP712Signer> {
+  const [{ ParaEthersSigner }, para] = await Promise.all([
+    import("@getpara/ethers-v6-integration"),
+    getPara(),
+  ]);
   // Provider is not needed for EIP-712 signing when domain has no chainId
   const signer = new ParaEthersSigner(para, null as any);
 

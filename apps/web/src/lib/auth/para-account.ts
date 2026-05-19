@@ -1,4 +1,4 @@
-import { para } from "./para-client.js";
+import { getPara } from "./para-client.js";
 
 /**
  * Start the Para email authentication flow.
@@ -10,6 +10,7 @@ export async function authenticateWithPara(
   onUrl: (url: string, isNewUser: boolean) => void,
   isCanceled: () => boolean,
 ): Promise<{ address: string }> {
+  const para = await getPara();
   const authState = await para.signUpOrLogIn({ auth: { email } });
 
   if (authState.stage !== "verify" || !authState.loginUrl) {
@@ -36,6 +37,7 @@ export async function authenticateWithPara(
  */
 export async function restoreParaSession(): Promise<{ address: string } | null> {
   try {
+    const para = await getPara();
     // para.isSessionActive() can hang on network requests — cap at 3 s
     const isActive = await Promise.race([
       para.isSessionActive(),
@@ -53,6 +55,7 @@ export async function restoreParaSession(): Promise<{ address: string } | null> 
 
 export async function logoutPara(): Promise<void> {
   try {
+    const para = await getPara();
     await para.logout();
   } catch {
     // ignore — best effort
@@ -60,6 +63,7 @@ export async function logoutPara(): Promise<void> {
 }
 
 async function _getParaAddress(): Promise<string | null> {
+  const para = await getPara();
   // Wallet address may take a moment to populate after waitForLogin/waitForWalletCreation.
   // Retry a few times with backoff before giving up.
   for (let attempt = 0; attempt < 5; attempt++) {

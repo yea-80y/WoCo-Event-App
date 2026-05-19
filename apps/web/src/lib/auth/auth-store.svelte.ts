@@ -28,8 +28,7 @@ import {
   restorePasskeyAccount,
   hasStoredPasskeyCredential,
 } from "./passkey-account.js";
-import { restoreParaSession, logoutPara } from "./para-account.js";
-import { createWeb3Signer, createLocalSigner, createPasskeySigner, createParaSigner } from "./signers/index.js";
+import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
 import { signingRequest } from "./signing-request.svelte.js";
 import { cacheClearByPrefix, USER_SCOPED_PREFIXES } from "../cache/cache.js";
 
@@ -73,7 +72,7 @@ const isAuthenticated = $derived(isConnected && hasSession);
 /**
  * Get the right EIP712Signer based on the current auth kind.
  */
-function _getSigner(): EIP712Signer {
+async function _getSigner(): Promise<EIP712Signer> {
   if (_kind === "web3" && _parent) {
     return createWeb3Signer(_parent);
   }
@@ -88,6 +87,7 @@ function _getSigner(): EIP712Signer {
     );
   }
   if (_kind === "para") {
+    const { createParaSigner } = await import("./signers/para-signer.js");
     return createParaSigner((info) => signingRequest.request(info));
   }
   throw new Error("No signer available for auth kind: " + _kind);
@@ -211,6 +211,7 @@ async function init(): Promise<void> {
         await clearAllAuth();
       }
     } else if (kind === "para") {
+      const { restoreParaSession } = await import("./para-account.js");
       const session = await restoreParaSession();
       if (session) {
         _kind = "para";
@@ -392,7 +393,7 @@ async function ensureSession(): Promise<boolean> {
   _sessionInFlight = (async () => {
     try {
       if (_kind === "passkey") await _ensurePasskeyKey();
-      const signer = _getSigner();
+      const signer = await _getSigner();
       const { sessionAddress } = await requestSessionDelegation(parent, signer);
       _sessionAddress = sessionAddress;
       return true;
@@ -421,7 +422,7 @@ async function ensurePodIdentity(): Promise<string | null> {
   _podInFlight = (async () => {
     try {
       if (_kind === "passkey") await _ensurePasskeyKey();
-      const signer = _getSigner();
+      const signer = await _getSigner();
       const { podPublicKeyHex } = await requestPodIdentity(parent, signer);
       _podPublicKeyHex = podPublicKeyHex;
       return podPublicKeyHex;
@@ -532,6 +533,7 @@ async function logout(): Promise<void> {
     await disconnectWalletConnect();
   }
   if (_kind === "para") {
+    const { logoutPara } = await import("./para-account.js");
     await logoutPara();
   }
   await clearAllAuth();
