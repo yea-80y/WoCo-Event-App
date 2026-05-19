@@ -62,6 +62,45 @@ if (!process.env.EMAIL_HASH_SECRET) {
   process.exit(1);
 }
 
+// PAYMENT_QUOTE_SECRET is the HMAC key that commits the server to an exact
+// wei amount for every crypto claim. Without it, /api/payment/quote can't
+// sign and all crypto claims fail at verify time. Refuse to boot in
+// production — dev can iterate without crypto pay enabled.
+if (process.env.NODE_ENV === "production" && !process.env.PAYMENT_QUOTE_SECRET) {
+  console.error(
+    "\n[startup] FATAL: PAYMENT_QUOTE_SECRET is not set in production.\n" +
+    "  Generate one with:\n" +
+    "    node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"\n" +
+    "  and add to apps/server/.env as PAYMENT_QUOTE_SECRET=<hex>\n" +
+    "  Required to sign payment quotes — crypto claims fail without it.\n",
+  );
+  process.exit(1);
+}
+
+// Stripe webhook secrets — production rejects unsigned webhooks (route policy)
+// to prevent forged free-ticket claims. If the keys aren't set, every real
+// webhook fails signature verification and paid buyers receive no ticket.
+// Two distinct secrets: one for the platform endpoint (account.updated etc.)
+// and one for the connect-account endpoint (checkout.session.completed).
+// Only enforced when Stripe is actually configured — deployments that don't
+// take card payments can omit STRIPE_SECRET_KEY entirely.
+if (process.env.NODE_ENV === "production" && process.env.STRIPE_SECRET_KEY) {
+  const missing: string[] = [];
+  if (!process.env.STRIPE_WEBHOOK_SECRET) missing.push("STRIPE_WEBHOOK_SECRET");
+  if (!process.env.STRIPE_WEBHOOK_SECRET_PLATFORM) missing.push("STRIPE_WEBHOOK_SECRET_PLATFORM");
+  if (missing.length > 0) {
+    console.error(
+      `\n[startup] FATAL: Stripe webhook secret(s) missing in production: ${missing.join(", ")}.\n` +
+      "  Without these, Stripe webhook signature verification fails and paid\n" +
+      "  buyers receive no ticket. Pull both from the Stripe dashboard:\n" +
+      "    - STRIPE_WEBHOOK_SECRET           → 'Connected and v2 accounts' endpoint\n" +
+      "    - STRIPE_WEBHOOK_SECRET_PLATFORM  → 'Your account' endpoint\n" +
+      "  and add to apps/server/.env.\n",
+    );
+    process.exit(1);
+  }
+}
+
 const app = new Hono<AppEnv>();
 
 // CORS - allow frontend dev server

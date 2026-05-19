@@ -51,6 +51,12 @@ let _passkeyPrivateKey: string | null = null;
 // Cleanup function for wallet event listeners
 let _cleanupAccountListener: (() => void) | null = null;
 
+// In-flight singletons — coalesce concurrent ensureSession/ensurePodIdentity
+// calls so parallel authGets after login don't each trigger their own EIP-712
+// prompt. First caller signs; the rest await the same promise.
+let _sessionInFlight: Promise<boolean> | null = null;
+let _podInFlight: Promise<string | null> | null = null;
+
 // ---------------------------------------------------------------------------
 // Derived
 // ---------------------------------------------------------------------------
@@ -376,20 +382,29 @@ async function login(method?: "web3" | "local" | "passkey"): Promise<boolean> {
 async function ensureSession(): Promise<boolean> {
   if (hasSession) return true;
   if (!isConnected || !_parent) return false;
+  // Coalesce concurrent callers (e.g. CreatorHome firing /events/mine,
+  // /sites/mine and /stripe/account-status in parallel) so the wallet
+  // only ever sees a single AuthorizeSession prompt.
+  if (_sessionInFlight) return _sessionInFlight;
 
   _busy = true;
-  try {
-    if (_kind === "passkey") await _ensurePasskeyKey();
-    const signer = _getSigner();
-    const { sessionAddress } = await requestSessionDelegation(_parent, signer);
-    _sessionAddress = sessionAddress;
-    return true;
-  } catch (e) {
-    console.error("[auth] session delegation failed:", e);
-    return false;
-  } finally {
-    _busy = false;
-  }
+  const parent = _parent;
+  _sessionInFlight = (async () => {
+    try {
+      if (_kind === "passkey") await _ensurePasskeyKey();
+      const signer = _getSigner();
+      const { sessionAddress } = await requestSessionDelegation(parent, signer);
+      _sessionAddress = sessionAddress;
+      return true;
+    } catch (e) {
+      console.error("[auth] session delegation failed:", e);
+      return false;
+    } finally {
+      _busy = false;
+      _sessionInFlight = null;
+    }
+  })();
+  return _sessionInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,20 +414,26 @@ async function ensureSession(): Promise<boolean> {
 async function ensurePodIdentity(): Promise<string | null> {
   if (_podPublicKeyHex) return _podPublicKeyHex;
   if (!isConnected || !_parent) return null;
+  if (_podInFlight) return _podInFlight;
 
   _busy = true;
-  try {
-    if (_kind === "passkey") await _ensurePasskeyKey();
-    const signer = _getSigner();
-    const { podPublicKeyHex } = await requestPodIdentity(_parent, signer);
-    _podPublicKeyHex = podPublicKeyHex;
-    return podPublicKeyHex;
-  } catch (e) {
-    console.error("[auth] POD identity derivation failed:", e);
-    return null;
-  } finally {
-    _busy = false;
-  }
+  const parent = _parent;
+  _podInFlight = (async () => {
+    try {
+      if (_kind === "passkey") await _ensurePasskeyKey();
+      const signer = _getSigner();
+      const { podPublicKeyHex } = await requestPodIdentity(parent, signer);
+      _podPublicKeyHex = podPublicKeyHex;
+      return podPublicKeyHex;
+    } catch (e) {
+      console.error("[auth] POD identity derivation failed:", e);
+      return null;
+    } finally {
+      _busy = false;
+      _podInFlight = null;
+    }
+  })();
+  return _podInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +553,8 @@ async function clearAllAuth(): Promise<void> {
   _podPublicKeyHex = null;
   _localPrivateKey = null;
   _passkeyPrivateKey = null;
+  _sessionInFlight = null;
+  _podInFlight = null;
 }
 
 // ---------------------------------------------------------------------------
