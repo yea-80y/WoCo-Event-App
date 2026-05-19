@@ -32,15 +32,35 @@ DEV COMMANDS:
   npm run build:embed    # IIFE bundle → packages/embed/dist/woco-embed.js
   npm run build:site     # generated-site build → apps/web/dist-site/
 
-DEPLOYMENT:
-- Backend server: 192.168.0.144 (user: ntl-dev), dir: ~/woco-events-server
+DEPLOYMENT (Hetzner CPX22, migrated 2026-05-19 — see docs/HETZNER_DEPLOY.md):
+- Backend: Hetzner CPX22 VM at 46.225.174.72 (user: root, dir: /opt/woco), Docker Compose 3-service stack
+  (bee + bee-proxy + server). Connect: `ssh root@46.225.174.72` (key on laptop `~/.ssh/id_ed25519`).
 - Frontend: Swarm feed via gateway.woco-net.com AND woco.eth.limo (ENS)
-- API: events-api.woco-net.com (Cloudflare tunnel → :3001)
+- API: events-api.woco-net.com (host cloudflared → 127.0.0.1:3001 server)
+- Gateway: gateway.woco-net.com (host cloudflared → 127.0.0.1:3000 bee-proxy)
+- Old laptop-server (192.168.0.144) is DECOMMISSIONED but kept cold for 2-week rollback until 2026-06-02.
+  Containers removed, compose file renamed. See docs/LAPTOP_BEE_EMERGENCY_RESURRECTION.md for rollback.
+
+SERVER DEPLOY (Hetzner — much simpler than the old kill-and-restart laptop flow):
+- apps/server/.env on THIS LAPTOP is master. Mirrored to /opt/woco/server.env on the VM.
+- Server code update (1 command from laptop, 1 command on VM):
+    rsync -az --exclude=node_modules --exclude=.git --exclude=dist \
+      --exclude=apps/web/dist-site --exclude=apps/web/dist-multisite \
+      --exclude=packages/embed/dist \
+      ~/projects/woco_app/ root@46.225.174.72:/opt/woco/repo/
+    ssh root@46.225.174.72 'cd /opt/woco && docker compose up -d --build server'
+- Env update:
+    scp ~/projects/woco_app/apps/server/.env root@46.225.174.72:/opt/woco/server.env
+    ssh root@46.225.174.72 'sed -i "s|^BEE_URL=.*|BEE_URL=http://bee-node:1633|" /opt/woco/server.env && cd /opt/woco && docker compose restart server'
+- Logs: `ssh root@46.225.174.72 'cd /opt/woco && docker compose logs -f --tail 50 server'`
+- Verify: `curl https://events-api.woco-net.com/api/health` (HTTPS only — no LAN IP path anymore)
+- No PID hunting, no nohup, no duplicate-process worries — docker compose handles lifecycle.
 
 PRODUCTION ENV (`apps/server/.env`):
 - apps/server/.env ON THIS LAPTOP is master — synced to server every deploy
 - ALLOWED_HOSTS must include every frontend host (gateway.woco-net.com, etc.)
-- BEE_URL=http://192.168.0.144:3323 (same address for laptop + server)
+- BEE_URL: laptop master keeps LAN IP, but the scp deploy step rewrites it to `http://bee-node:1633`
+  (in-docker DNS) on the VM. Don't edit the VM copy directly — it'll be overwritten on next deploy.
 - EMAIL_HASH_SECRET must be set (HMAC key for email hashing — without it falls back to
   unsalted SHA-256). Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
 - PAYMENT_QUOTE_SECRET must be set (HMAC key for signed payment quotes). Same generator.
@@ -89,7 +109,8 @@ SWARM
 ============================================================================
 
 - Frontend Bee gateway: https://gateway.woco-net.com (dev) / gateway.ethswarm.org (generated prod sites)
-- Backend Bee (local): http://192.168.0.144:3323
+- Backend Bee (in-cluster on Hetzner): http://bee-node:1633 (internal docker DNS, set as BEE_URL on the VM)
+  Laptop dev master still has BEE_URL pointing at LAN; the deploy step rewrites it (see deploy section above).
 - Postage batch: `POSTAGE_BATCH_ID` (server-only)
 - Feed private key: `FEED_PRIVATE_KEY` (server-only; platform signer owns all feeds — centralised for now)
 
