@@ -32,6 +32,9 @@ export type TemplateId = "pub-venue-v1" | "nightlife-v1" | "clean-modern-v1";
 /** Font family choice — limited allowlist so the deployed bundle stays small. */
 export type FontFamilyId = "system" | "serif" | "display";
 
+/** Logo size scale — controls height in the site nav bar and intro animation. */
+export type LogoSize = "sm" | "md" | "lg" | "xl";
+
 /**
  * Navigation layout style for the deployed site.
  * - topbar: logo left, links right, hamburger on mobile (classic)
@@ -70,6 +73,16 @@ export interface ThemeTokens {
    * Defaults to true for nightlife-v1, false otherwise.
    */
   introAnimation?: boolean;
+  /**
+   * Logo height in the site nav bar. Defaults to "md" if absent.
+   */
+  logoSize?: LogoSize;
+  /**
+   * Logo height in the intro curtain animation (center-logo nav only).
+   * Independent from logoSize so the animation logo can be much larger.
+   * Defaults to "lg" if absent.
+   */
+  introLogoSize?: LogoSize;
 }
 
 // ---------------------------------------------------------------------------

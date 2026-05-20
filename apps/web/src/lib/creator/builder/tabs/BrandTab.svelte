@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Site, FontFamilyId, RadiusScale, SitePalette, NavStyleId } from "@woco/shared";
-  import { fileToBase64 } from "../../../utils.js";
+  import type { Site, FontFamilyId, RadiusScale, SitePalette, NavStyleId, LogoSize } from "@woco/shared";
+  import { compressImage, imgPreset } from "../../../utils.js";
 
   interface Props {
     site: Site;
@@ -33,7 +33,7 @@
 
     logoError = '';
     logoPreviewUrl = URL.createObjectURL(file);
-    pendingLogoBase64 = await fileToBase64(file);
+    pendingLogoBase64 = await compressImage(file, imgPreset.logo);
   }
 
   function removeLogo() {
@@ -57,6 +57,13 @@
     { id: 'sm', label: 'Sharp', desc: '4px' },
     { id: 'md', label: 'Rounded', desc: '8px' },
     { id: 'lg', label: 'Pill', desc: '12px' },
+  ];
+
+  const LOGO_SIZE_OPTIONS: { id: LogoSize; label: string; navH: number; introBarH: number }[] = [
+    { id: 'sm',  label: 'Small',   navH: 28, introBarH: 8  },
+    { id: 'md',  label: 'Medium',  navH: 44, introBarH: 14 },
+    { id: 'lg',  label: 'Large',   navH: 60, introBarH: 21 },
+    { id: 'xl',  label: 'X-Large', navH: 80, introBarH: 28 },
   ];
 
   const NAV_OPTIONS: { id: NavStyleId; label: string; desc: string }[] = [
@@ -164,6 +171,24 @@
     {#if logoError}
       <p class="logo-error">{logoError}</p>
     {/if}
+
+    <!-- Logo size in nav -->
+    <div class="logo-size-row">
+      <span class="logo-size-label">Nav logo size</span>
+      <div class="logo-size-options">
+        {#each LOGO_SIZE_OPTIONS as opt}
+          <button
+            class="logo-size-btn"
+            class:active={(site.theme.logoSize ?? 'md') === opt.id}
+            onclick={() => { site.theme.logoSize = opt.id; }}
+            title="{opt.label} — {opt.navH}px nav height"
+          >
+            <div class="logo-size-bar" style="height: {Math.round(opt.navH * 0.45)}px"></div>
+            <span>{opt.label}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
   </section>
 
   <!-- Font family -->
@@ -253,6 +278,25 @@
         />
         <span>Show logo-split intro animation on page load</span>
       </label>
+
+      {#if site.theme.introAnimation !== false}
+        <div class="logo-size-row logo-size-row--indent">
+          <span class="logo-size-label">Intro logo size</span>
+          <div class="logo-size-options">
+            {#each LOGO_SIZE_OPTIONS as opt}
+              <button
+                class="logo-size-btn"
+                class:active={(site.theme.introLogoSize ?? 'lg') === opt.id}
+                onclick={() => { site.theme.introLogoSize = opt.id; }}
+                title="{opt.label} — ~{opt.introH} screen height"
+              >
+                <div class="logo-size-bar logo-size-bar--intro" style="height: {opt.introBarH}px"></div>
+                <span>{opt.label}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {/if}
   </section>
 
@@ -416,6 +460,77 @@
     font-size: 0.8125rem;
     color: #ef4444;
     margin: 0;
+  }
+
+  /* ── Logo size controls ── */
+  .logo-size-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding-top: 0.25rem;
+  }
+
+  .logo-size-row--indent {
+    margin-top: 0.75rem;
+    padding-left: 1.625rem;
+  }
+
+  .logo-size-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    white-space: nowrap;
+    min-width: 7rem;
+  }
+
+  .logo-size-options {
+    display: flex;
+    gap: 0.375rem;
+  }
+
+  .logo-size-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    padding: 0.5rem 0.75rem 0.375rem;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    min-width: 3.5rem;
+    height: 3.5rem;
+    transition: all var(--transition);
+    cursor: pointer;
+  }
+
+  .logo-size-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+  }
+
+  .logo-size-btn.active {
+    border-color: var(--accent);
+    color: var(--accent-text);
+    background: var(--accent-subtle);
+  }
+
+  .logo-size-bar {
+    width: 28px;
+    background: currentColor;
+    border-radius: 2px;
+    min-height: 3px;
+    opacity: 0.8;
+  }
+
+  .logo-size-bar--intro {
+    width: 22px;
   }
 
   .input {

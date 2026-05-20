@@ -92,6 +92,16 @@
     root.style.setProperty('--radius-lg', radius === 'lg' ? '18px' : radius === 'md' ? '12px' : '8px');
 
     document.title = site.theme.brandName;
+
+    const logoNavH: Record<string, string> = { sm: '28px', md: '44px', lg: '60px', xl: '80px' };
+    const logoIntroH: Record<string, string> = {
+      sm: 'clamp(80px, 14vh, 160px)',
+      md: 'clamp(140px, 28vh, 300px)',
+      lg: 'clamp(180px, 38vh, 420px)',
+      xl: 'clamp(220px, 48vh, 540px)',
+    };
+    root.style.setProperty('--logo-nav-h',   logoNavH[site.theme.logoSize   ?? 'md'] ?? '44px');
+    root.style.setProperty('--logo-intro-h', logoIntroH[site.theme.introLogoSize ?? 'lg'] ?? logoIntroH.lg);
   }
 
   function activateSite() {
@@ -379,9 +389,9 @@
   .intro-split-logo {
     position: absolute;
     top: 50%;
-    height: clamp(100px, 22vh, 260px);
+    height: var(--logo-intro-h, clamp(180px, 38vh, 420px));
     width: auto;
-    max-width: min(680px, 72vw);
+    max-width: min(780px, 80vw);
     object-fit: contain;
     animation: intro-logo-appear 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
   }
@@ -444,9 +454,9 @@
   .brand:hover { color: var(--accent); }
 
   .brand-logo {
-    height: 36px;
+    height: var(--logo-nav-h, 44px);
     width: auto;
-    max-width: 180px;
+    max-width: 240px;
     object-fit: contain;
     display: block;
   }

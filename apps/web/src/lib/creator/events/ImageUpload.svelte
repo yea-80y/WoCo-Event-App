@@ -1,23 +1,26 @@
 <script lang="ts">
+  import { compressImage, imgPreset } from "../../utils.js";
+
   interface Props {
     imageDataUrl: string | null;
     onchange: (dataUrl: string) => void;
   }
 
   let { imageDataUrl = $bindable(), onchange }: Props = $props();
+  let compressing = $state(false);
 
-  function handleFile(e: Event) {
+  async function handleFile(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
+    compressing = true;
+    try {
+      const result = await compressImage(file, imgPreset.eventCover);
       imageDataUrl = result;
       onchange(result);
-    };
-    reader.readAsDataURL(file);
+    } finally {
+      compressing = false;
+    }
   }
 </script>
 
@@ -28,12 +31,17 @@
       Change image
     </button>
   {:else}
-    <button class="upload-area" onclick={() => document.getElementById('img-input')?.click()}>
-      <span class="upload-icon">+</span>
-      <span class="upload-text">Add event image</span>
+    <button class="upload-area" onclick={() => document.getElementById('img-input')?.click()} disabled={compressing}>
+      {#if compressing}
+        <span class="upload-icon">⋯</span>
+        <span class="upload-text">Optimising…</span>
+      {:else}
+        <span class="upload-icon">+</span>
+        <span class="upload-text">Add event image</span>
+      {/if}
     </button>
   {/if}
-  <input id="img-input" type="file" accept="image/*" onchange={handleFile} hidden />
+  <input id="img-input" type="file" accept="image/*" onchange={handleFile} hidden disabled={compressing} />
 </div>
 
 <style>

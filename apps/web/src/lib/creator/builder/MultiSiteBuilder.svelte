@@ -827,27 +827,46 @@
     box-sizing: border-box;
   }
 
-  /* Mobile: swap tab nav for select, compress actions */
+  /* Mobile: two-row tab bar — nav controls on row 1, action buttons on row 2 */
   @media (max-width: 639px) {
-    .tab-nav { display: none; }
-    .tab-select-mobile { display: flex; flex: 1; min-width: 0; max-width: 180px; }
-    .preview-label { display: none; }
-    .preview-btn {
-      padding: 0.4375rem 0.5rem;
+    .tab-bar {
+      flex-wrap: wrap;
+      padding: 0;
       gap: 0;
+      border-bottom: none;
     }
-    .pub-label { display: none; }
-    .publish-btn {
-      padding: 0.4375rem 0.625rem;
-      min-width: 2.25rem;
-      justify-content: center;
+
+    /* Row 1: back + tab select */
+    .tab-bar-left {
+      flex: 1 0 100%;
+      padding: 0.375rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      gap: 0.375rem;
     }
-    .tab-bar { padding: 0 0.5rem; gap: 0.375rem; }
-    .tab-bar-right { gap: 0.375rem; }
+
+    .tab-nav { display: none; }
+    .tab-select-mobile { display: flex; flex: 1; min-width: 0; }
     .back-label { display: none; }
-    .back-btn {
-      padding: 0.5rem 0.625rem;
-      margin-right: 0;
+    .back-btn { padding: 0.375rem 0.5rem; margin-right: 0; }
+
+    /* Row 2: preview + publish side by side, full width, labeled */
+    .tab-bar-right {
+      flex: 1 0 100%;
+      padding: 0.5rem;
+      gap: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .preview-btn {
+      flex: 1;
+      justify-content: center;
+      padding: 0.5625rem 0.75rem;
+    }
+
+    .publish-btn {
+      flex: 1;
+      justify-content: center;
+      padding: 0.5625rem 0.75rem;
     }
   }
 

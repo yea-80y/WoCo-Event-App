@@ -13,7 +13,7 @@
     EmbedSection,
   } from "@woco/shared";
   import { uploadSiteImage } from "../../api/sites.js";
-  import { fileToBase64 } from "../../utils.js";
+  import { compressImage, imgPreset } from "../../utils.js";
 
   interface Props {
     section: Section;
@@ -43,7 +43,7 @@
     galleryUploadState = 'uploading';
     galleryUploadError = '';
     try {
-      const base64 = await fileToBase64(file);
+      const base64 = await compressImage(file, imgPreset.siteImage);
       const res = await uploadSiteImage(base64, gatewayUrl);
       if (res.ok && res.data) {
         const s = section as GallerySection;
@@ -85,7 +85,7 @@
     imageUploadState = 'uploading';
     imageUploadError = '';
     try {
-      const base64 = await fileToBase64(file);
+      const base64 = await compressImage(file, imgPreset.siteImage);
       const res = await uploadSiteImage(base64, gatewayUrl);
       if (res.ok && res.data) {
         onpatch({ ref: res.data.imageRef });
