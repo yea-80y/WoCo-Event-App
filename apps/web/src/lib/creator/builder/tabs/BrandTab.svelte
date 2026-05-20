@@ -1,19 +1,18 @@
 <script lang="ts">
   import type { Site, FontFamilyId, RadiusScale, SitePalette, NavStyleId } from "@woco/shared";
-  import { uploadSiteImage } from "../../../api/sites.js";
   import { fileToBase64 } from "../../../utils.js";
 
   interface Props {
     site: Site;
     gatewayUrl?: string;
+    pendingLogoBase64?: string | null;
   }
 
-  let { site = $bindable(), gatewayUrl }: Props = $props();
+  let { site = $bindable(), gatewayUrl, pendingLogoBase64 = $bindable(null) }: Props = $props();
 
-  // ── Logo upload ───────────────────────────────────────────────────────────
+  // ── Logo ──────────────────────────────────────────────────────────────────
   let logoPreviewUrl = $state<string | null>(null);
-  let logoUploadState = $state<'idle' | 'uploading' | 'error'>('idle');
-  let logoUploadError = $state('');
+  let logoError = $state('');
   let fileInput: HTMLInputElement | undefined = $state();
 
   const WOCO_GATEWAY = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
@@ -21,7 +20,6 @@
   function existingLogoUrl(): string | null {
     const ref = site.theme.logoSwarmRef;
     if (!ref || /^0+$/.test(ref)) return null;
-    // Use the selected deploy gateway so images uploaded to Etherna resolve correctly.
     return `${gatewayUrl || WOCO_GATEWAY}/bytes/${ref}`;
   }
 
@@ -29,44 +27,25 @@
     const file = (e.currentTarget as HTMLInputElement).files?.[0];
     if (!file) return;
     if (!file.type.startsWith('image/')) {
-      logoUploadError = 'Please select an image file';
-      logoUploadState = 'error';
+      logoError = 'Please select an image file';
       return;
     }
 
-    logoUploadState = 'uploading';
-    logoUploadError = '';
-
-    // Show local preview immediately
+    logoError = '';
     logoPreviewUrl = URL.createObjectURL(file);
-
-    try {
-      const base64 = await fileToBase64(file);
-      const res = await uploadSiteImage(base64, gatewayUrl);
-      if (res.ok && res.data) {
-        site.theme.logoSwarmRef = res.data.imageRef;
-        logoUploadState = 'idle';
-      } else {
-        logoUploadError = res.error ?? 'Upload failed';
-        logoUploadState = 'error';
-        logoPreviewUrl = null;
-      }
-    } catch {
-      logoUploadError = 'Upload failed — check connection';
-      logoUploadState = 'error';
-      logoPreviewUrl = null;
-    }
+    pendingLogoBase64 = await fileToBase64(file);
   }
 
   function removeLogo() {
     site.theme.logoSwarmRef = undefined;
+    pendingLogoBase64 = null;
     logoPreviewUrl = null;
-    logoUploadState = 'idle';
-    logoUploadError = '';
+    logoError = '';
     if (fileInput) fileInput.value = '';
   }
 
   const displayLogoUrl = $derived(logoPreviewUrl ?? existingLogoUrl());
+  const logoPending = $derived(!!pendingLogoBase64);
 
   const FONT_OPTIONS: { id: FontFamilyId; label: string; sample: string }[] = [
     { id: 'system', label: 'System', sample: 'Aa' },
@@ -158,8 +137,8 @@
       <div class="logo-preview-wrap">
         <img class="logo-preview" src={displayLogoUrl} alt="Logo preview" />
         <div class="logo-actions">
-          {#if logoUploadState === 'uploading'}
-            <span class="logo-status">Uploading to Swarm…</span>
+          {#if logoPending}
+            <span class="logo-status">Ready — will upload on publish</span>
           {:else if site.theme.logoSwarmRef}
             <span class="logo-status ok">Saved to Swarm</span>
           {:else}
@@ -170,9 +149,7 @@
       </div>
     {:else}
       <div class="logo-upload-area">
-        <label class="logo-upload-label" for="logo-file-input">
-          {logoUploadState === 'uploading' ? 'Uploading…' : 'Choose logo image'}
-        </label>
+        <label class="logo-upload-label" for="logo-file-input">Choose logo image</label>
         <input
           id="logo-file-input"
           type="file"
@@ -180,13 +157,12 @@
           class="logo-file-input"
           bind:this={fileInput}
           onchange={handleLogoFile}
-          disabled={logoUploadState === 'uploading'}
         />
       </div>
     {/if}
 
-    {#if logoUploadState === 'error'}
-      <p class="logo-error">{logoUploadError}</p>
+    {#if logoError}
+      <p class="logo-error">{logoError}</p>
     {/if}
   </section>
 

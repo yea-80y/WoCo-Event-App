@@ -2,7 +2,7 @@
   import type { Site, SiteEventEntry, TemplateId } from "@woco/shared";
   import { newSiteFromTemplate } from "@woco/shared";
   import { onMount } from 'svelte';
-  import { publishSite, deploySite, loadSite, getSiteEvents } from "../../api/sites.js";
+  import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage } from "../../api/sites.js";
   import { getMySitesSWR } from "../../api/creator-cache.js";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -104,8 +104,9 @@
   let deployedUrl  = $state('');
   let feedHash     = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
-  let gatewayUrl   = $state(DEFAULT_GATEWAY);
-  let purchaseOpen = $state(false);
+  let gatewayUrl        = $state(DEFAULT_GATEWAY);
+  let purchaseOpen      = $state(false);
+  let pendingLogoBase64 = $state<string | null>(null);
 
   let openingId = $state<string | undefined>(undefined); // card spinner
 
@@ -221,6 +222,13 @@
         // User cancelled the purchase modal — not an error, just a no-op.
         publishState = 'idle';
         return;
+      }
+
+      if (pendingLogoBase64) {
+        const imgRes = await uploadSiteImage(pendingLogoBase64, gatewayUrl);
+        if (!imgRes.ok) throw new Error(imgRes.error ?? 'Logo upload failed');
+        site.theme.logoSwarmRef = imgRes.data!.imageRef;
+        pendingLogoBase64 = null;
       }
 
       const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents));
@@ -508,7 +516,7 @@
           onselect={resetWithTemplate}
         />
       {:else if tab === 'brand'}
-        <BrandTab bind:site {gatewayUrl} />
+        <BrandTab bind:site bind:pendingLogoBase64 {gatewayUrl} />
       {:else if tab === 'pages'}
         <PagesTab bind:site {gatewayUrl} />
       {:else if tab === 'nav'}
