@@ -1,57 +1,37 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { get } from "../../api/client.js";
-  import { onMount } from "svelte";
   import StripeConnect from "../../creator/dashboard/StripeConnect.svelte";
-
-  const authKindLabel: Record<string, string> = {
-    web3: "Web3 Wallet",
-    para: "Para Wallet",
-    passkey: "Passkey",
-    local: "Browser Account",
-  };
-
-  let isOrganiser = $state(false);
-
-  onMount(async () => {
-    if (!auth.parent) return;
-    try {
-      const resp = await get<Array<{ creatorAddress: string }>>("/api/events");
-      if (resp.ok && resp.data) {
-        isOrganiser = resp.data.some(
-          (e) => e.creatorAddress.toLowerCase() === auth.parent?.toLowerCase(),
-        );
-      }
-    } catch { /* silent — not load-bearing */ }
-  });
-
-  function truncate(addr: string): string {
-    return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-  }
 </script>
 
 <div class="wallet-tab">
-  <!-- Identity card -->
+  <!-- Identity row -->
   <section class="identity-card">
     <div class="identity-row">
       <span class="identity-label">Account type</span>
-      <span class="identity-value">{authKindLabel[auth.kind ?? ""] ?? "Not connected"}</span>
+      <span class="identity-value">
+        {#if auth.kind === "web3"}Web3 Wallet
+        {:else if auth.kind === "para"}Para Wallet
+        {:else if auth.kind === "passkey"}Passkey
+        {:else if auth.kind === "local"}Browser Account
+        {:else}Not connected{/if}
+      </span>
     </div>
     {#if auth.parent}
       <div class="identity-row">
         <span class="identity-label">Address</span>
-        <span class="identity-value identity-mono" title={auth.parent}>{truncate(auth.parent)}</span>
+        <span class="identity-value identity-mono" title={auth.parent}>
+          {auth.parent.slice(0, 6)}…{auth.parent.slice(-4)}
+        </span>
       </div>
     {/if}
   </section>
 
-  <!-- Stripe section — only for users who have created events.
-       Stripe's "Connect" CTA can otherwise confuse attendees who never need it. -->
-  {#if isOrganiser}
+  <!-- Stripe — shown to all auth'd users; StripeConnect handles not-yet-connected gracefully -->
+  {#if auth.isConnected}
     <section class="stripe-section">
       <h3 class="section-title">Card Payments</h3>
       <p class="section-hint">
-        Connect Stripe so attendees can pay for tickets by card. Payouts go straight to your Stripe balance.
+        Connect Stripe to accept card payments for your events. Payouts go straight to your Stripe balance.
       </p>
       <StripeConnect />
     </section>
@@ -73,7 +53,6 @@
     background: var(--bg-surface);
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
   }
 
   .identity-row {
