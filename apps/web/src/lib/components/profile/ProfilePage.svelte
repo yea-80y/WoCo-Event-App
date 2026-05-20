@@ -9,7 +9,6 @@
   import WalletTab from "./WalletTab.svelte";
   import EventCard from "../../attendee/events/EventCard.svelte";
   import { get } from "../../api/client.js";
-  import { onMount } from "svelte";
 
   type ProfileTab = "profile" | "wallet";
 
@@ -207,15 +206,33 @@
     }
   }
 
-  onMount(() => {
-    if (!viewAddress && !auth.isConnected) {
-      // Not logged in and no address — prompt login
-      loginRequest.request().then((ok) => {
-        if (!ok) navigate("/");
-      });
+  // React to viewAddress and auth changes so sign-out, account switch, and
+  // navigation between profiles all reset the page cleanly. The previous
+  // onMount-only loader left stale events on screen after sign-out.
+  let _prevView = "";
+  $effect(() => {
+    const v = viewAddress;
+    if (v === _prevView) return;
+    _prevView = v;
+
+    profile = null;
+    events = [];
+    editing = false;
+    avatarPreviewUrl = null;
+
+    if (!v) {
       loading = false;
+      eventsLoading = false;
+      if (!auth.isConnected) {
+        loginRequest.request().then((ok) => {
+          if (!ok) navigate("/");
+        });
+      }
       return;
     }
+
+    loading = true;
+    eventsLoading = true;
     loadProfile();
     loadEvents();
   });

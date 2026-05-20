@@ -29,6 +29,15 @@
 
   async function loadAll() {
     if (!auth.isConnected || !auth.parent) { loadState = "error"; return; }
+
+    // EIP-712 must be signed before any per-address creator event list is
+    // rendered — cache contents are user-private even though the key is
+    // scoped to the address.
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (!ok) { loadState = "error"; return; }
+    }
+
     loadState = "loading";
     const addr = auth.parent.toLowerCase();
     const [evIdx, swr] = await Promise.allSettled([

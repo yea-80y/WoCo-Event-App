@@ -66,10 +66,24 @@
     loadingSites = false;
   }
 
-  function loadFor(addr: string): void {
+  async function loadFor(addr: string): Promise<void> {
     const token = ++loadToken;
     loadingEvents = true;
     loadingSites = true;
+
+    // Gate cached paint on a verified session: per-address localStorage must
+    // not flash on screen during sign-in before EIP-712 is signed. Looks
+    // phishing-adjacent, and would surface any future bug that ever writes
+    // a stale entry under the current address key.
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (token !== loadToken) return;
+      if (!ok) {
+        loadingEvents = false;
+        loadingSites = false;
+        return;
+      }
+    }
 
     // SWR: paint from cache instantly, then patch with fresh data.
     const evSWR = getMyEventsSWR(addr);

@@ -1,0 +1,61 @@
+services:
+  bee:
+    image: ethersphere/bee:2.7.1
+    container_name: bee-node
+    restart: unless-stopped
+    volumes:
+      - ./bee-data:/home/bee/.bee
+      - ./secrets/bee-password:/run/secrets/bee-password:ro
+    networks: [bee-internal]
+    ports:
+      - "1634:1634"   # P2P inbound for Swarm peers
+    command: >
+      start
+      --api-addr=:1633
+      --p2p-addr=:1634
+      --verbosity=info
+      --cors-allowed-origins=*
+      --full-node=false
+      --swap-enable=true
+      --mainnet=true
+      --blockchain-rpc-endpoint=${GNOSIS_RPC_ENDPOINT}
+      --password-file=/run/secrets/bee-password
+      --nat-addr=46.225.174.72:1634
+
+  bee-proxy:
+    build:
+      context: ./repo-bee-proxy
+      dockerfile: Dockerfile
+    container_name: bee-proxy
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - BEE_API_URL=http://bee-node:1633
+      - WHITELIST_PATH=/data/whitelist.json
+      - UPLOAD_SECRET=${UPLOAD_SECRET}
+    volumes:
+      - ./proxy-data:/data
+    networks: [bee-internal]
+    ports:
+      - "127.0.0.1:3000:3000"   # only loopback; cloudflared (host) reaches it via localhost
+    depends_on: [bee]
+
+  server:
+    build:
+      context: ./repo
+      dockerfile: apps/server/Dockerfile
+    container_name: woco-server
+    restart: unless-stopped
+    env_file: ./server.env
+    environment:
+      - BEE_URL=http://bee-node:1633
+    volumes:
+      - ./woco-data:/app/.data
+    networks: [bee-internal]
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on: [bee]
+
+networks:
+  bee-internal:
+    driver: bridge

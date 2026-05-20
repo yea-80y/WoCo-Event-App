@@ -10,6 +10,7 @@ import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
+import { getStripeAccount } from "../lib/stripe/accounts.js";
 const events = new Hono<AppEnv>();
 
 /** True when an event has definitively ended. Uses endDate if present and valid, falls back to startDate. */
@@ -142,6 +143,19 @@ events.post("/", requireAuth, async (c) => {
     if (s.payment?.feePassedToCustomer && typeof s.payment.buyerFeePercent === "number"
         && s.payment.buyerFeePercent < BUYER_FEE_FLOOR_PCT) {
       return c.json({ ok: false, error: `Series ${s.seriesId}: buyer fee must be ≥ ${BUYER_FEE_FLOOR_PCT}%` }, 400);
+    }
+  }
+
+  // Stripe verification gate: block event creation if any series uses Stripe
+  // but the organiser hasn't completed Stripe onboarding.
+  const hasStripeSeries = series.some((s) => s.payment?.stripeEnabled);
+  if (hasStripeSeries) {
+    const stripeRecord = getStripeAccount(parentAddress.toLowerCase());
+    if (!stripeRecord?.onboardingComplete) {
+      return c.json({
+        ok: false,
+        error: "Complete Stripe account setup before publishing paid events. Go to Dashboard → Payments to connect Stripe.",
+      }, 403);
     }
   }
 

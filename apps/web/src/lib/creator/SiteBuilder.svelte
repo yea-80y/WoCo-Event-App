@@ -41,8 +41,8 @@
   let eventImageDataUrl = $state<string | null>(null);
   let eventSeries = $state<SeriesDraft[]>([]);
   let eventOrderFields = $state<OrderField[]>([]);
-  let claimMode = $state<ClaimMode>("both");
-  let collectEmail = $state(false);
+  let claimMode = $state<ClaimMode>("email");
+  let collectEmail = $state(true);
   let collectInfo = $state(false);
   let cryptoRecipientMissing = $state(false);
   let createdEventId = $state<string | null>(null);

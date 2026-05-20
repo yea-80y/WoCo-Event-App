@@ -36,6 +36,15 @@
       state = "unauth";
       return;
     }
+
+    // EIP-712 must be signed before painting per-address cached events: the
+    // localStorage entry is scoped to the address but its contents are private,
+    // so painting before the session is signed skips the wallet-control proof.
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (!ok) { state = "unauth"; return; }
+    }
+
     const addr = auth.parent.toLowerCase();
     const swr = getMyEventsSWR(addr);
 

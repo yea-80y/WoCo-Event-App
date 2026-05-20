@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { OrderField, ClaimMode, PaymentConfig } from "@woco/shared";
+  import { FEATURES } from "@woco/shared";
   import ImageUpload from "./ImageUpload.svelte";
   import TicketSeriesEditor from "./TicketSeriesEditor.svelte";
   import OrderFieldsEditor from "./OrderFieldsEditor.svelte";
@@ -109,48 +110,50 @@
 
 <TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers />
 
-<fieldset class="claim-mode-section">
-  <legend>Claim method</legend>
-  <p class="claim-mode-hint">How can attendees claim tickets?</p>
-  <div class="claim-mode-options">
-    <label class="claim-mode-option">
-      <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} />
-      <div>
-        <span class="claim-mode-label">Wallet only</span>
-        <span class="claim-mode-desc">Attendees connect a crypto wallet</span>
-      </div>
-    </label>
-    <label class="claim-mode-option">
-      <input type="radio" name="claim-mode" value="email" bind:group={claimMode} />
-      <div>
-        <span class="claim-mode-label">Email only</span>
-        <span class="claim-mode-desc">Attendees enter their email — no wallet needed</span>
-      </div>
-    </label>
-    <label class="claim-mode-option">
-      <input type="radio" name="claim-mode" value="both" bind:group={claimMode} />
-      <div>
-        <span class="claim-mode-label">Both</span>
-        <span class="claim-mode-desc">Attendees choose wallet or email</span>
-      </div>
-    </label>
-  </div>
+{#if FEATURES.cryptoPaymentsAllowed}
+  <fieldset class="claim-mode-section">
+    <legend>Claim method</legend>
+    <p class="claim-mode-hint">How can attendees claim tickets?</p>
+    <div class="claim-mode-options">
+      <label class="claim-mode-option">
+        <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} />
+        <div>
+          <span class="claim-mode-label">Wallet only</span>
+          <span class="claim-mode-desc">Attendees connect a crypto wallet</span>
+        </div>
+      </label>
+      <label class="claim-mode-option">
+        <input type="radio" name="claim-mode" value="email" bind:group={claimMode} />
+        <div>
+          <span class="claim-mode-label">Email only</span>
+          <span class="claim-mode-desc">Attendees enter their email — no wallet needed</span>
+        </div>
+      </label>
+      <label class="claim-mode-option">
+        <input type="radio" name="claim-mode" value="both" bind:group={claimMode} />
+        <div>
+          <span class="claim-mode-label">Both</span>
+          <span class="claim-mode-desc">Attendees choose wallet or email</span>
+        </div>
+      </label>
+    </div>
 
-  {#if claimMode === "email"}
-    <p class="claim-mode-note">An email field will be added to the claim form automatically.</p>
-  {:else}
-    <label class="claim-mode-toggle">
-      <input type="checkbox" bind:checked={collectEmail} />
-      <span>
-        {#if claimMode === "both"}
-          Collect email from attendees (optional for wallet users)
-        {:else}
-          Collect email from attendees
-        {/if}
-      </span>
-    </label>
-  {/if}
-</fieldset>
+    {#if claimMode === "email"}
+      <p class="claim-mode-note">An email field will be added to the claim form automatically.</p>
+    {:else}
+      <label class="claim-mode-toggle">
+        <input type="checkbox" bind:checked={collectEmail} />
+        <span>
+          {#if claimMode === "both"}
+            Collect email from attendees (optional for wallet users)
+          {:else}
+            Collect email from attendees
+          {/if}
+        </span>
+      </label>
+    {/if}
+  </fieldset>
+{/if}
 
 <OrderFieldsEditor bind:orderFields bind:enabled={collectInfo} />
 

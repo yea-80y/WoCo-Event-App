@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents } from "../../api/sites.js";
   import { getMySitesSWR } from "../../api/creator-cache.js";
-  import { cacheSet, cacheKey, TTL } from "../../cache/cache.js";
+  import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import type { MySiteRecord } from './types.js';
@@ -29,7 +29,6 @@
   const PREVIEW_KEY   = 'woco:site-preview';
   const LAST_SITE_KEY = 'woco:last-site-id';
   const FEED_HASH_KEY = 'woco:site-feed-hash';
-  const MY_SITES_KEY  = 'woco:my-sites';
 
   const API_URL     = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? 'http://localhost:3001';
   const DEFAULT_GATEWAY = GATEWAYS.find((g) => g.default)?.url ?? GATEWAYS[0].url;
@@ -57,23 +56,18 @@
     return [];
   }
 
-  function readMySites(): MySiteRecord[] {
-    if (typeof window === 'undefined') return [];
-    const raw = localStorage.getItem(MY_SITES_KEY);
-    if (raw) {
-      try { return JSON.parse(raw) as MySiteRecord[]; } catch {}
-    }
-    return [];
+  // Sites list is stored in the shared per-address SWR cache
+  // (cacheKey.creatorSites(addr)). Keying by address is what prevents the next
+  // user on a shared device from briefly seeing the previous user's sites,
+  // and auth-store.logout() wipes the prefix via USER_SCOPED_PREFIXES.
+  function readMySites(addr: string | null): MySiteRecord[] {
+    if (!addr) return [];
+    return cacheGet<MySiteRecord[]>(cacheKey.creatorSites(addr.toLowerCase())) ?? [];
   }
 
-  function saveMySites(records: MySiteRecord[]) {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(MY_SITES_KEY, JSON.stringify(records));
-    // Mirror to the shared per-address SWR cache so other components
-    // (CreatorHome's "Your sites" panel) see new publishes instantly.
-    if (auth.parent) {
-      cacheSet(cacheKey.creatorSites(auth.parent.toLowerCase()), records, TTL.CREATOR_SITES);
-    }
+  function saveMySites(addr: string | null, records: MySiteRecord[]) {
+    if (!addr) return;
+    cacheSet(cacheKey.creatorSites(addr.toLowerCase()), records, TTL.CREATOR_SITES);
   }
 
   function upsertSiteRecord(update: Partial<MySiteRecord> & { siteId: string }) {
@@ -91,13 +85,16 @@
     }
     const filtered = mySites.filter((r) => r.siteId !== update.siteId);
     mySites = [next, ...filtered];
-    saveMySites(mySites);
+    saveMySites(auth.parent, mySites);
   }
 
   // ── State ─────────────────────────────────────────────────────────────────────
   let site       = $state<Site>(loadDraft());
   let siteEvents = $state<SiteEventEntry[]>(loadEventsDraft());
-  let mySites    = $state<MySiteRecord[]>(readMySites());
+  // Initial paint: empty. We only read the per-address cache once auth.parent is
+  // known (the auth effect below). Reading at module init time would risk
+  // showing whichever address last wrote to localStorage on a shared device.
+  let mySites    = $state<MySiteRecord[]>([]);
   let screen     = $state<'my-sites' | 'builder'>('my-sites');
   let tab        = $state<'template' | 'brand' | 'pages' | 'nav' | 'events'>('brand');
 
@@ -125,40 +122,46 @@
     }
   });
 
-  // React to auth state changes.
-  // - On login: fetch creator's sites from Swarm and merge with localStorage cache.
-  // - On logout: wipe the local cache so another user on this device can't see their sites.
-  let _prevConnected = $state<boolean | null>(null);
+  // React to identity changes. We track `auth.parent` (not just isConnected) so
+  // a same-tab account switch (A → B without an intermediate logout) repaints
+  // with the right user's sites instead of B briefly seeing A's data.
+  let _prevAddr = $state<string | null>(null);
   $effect(() => {
-    const connected = auth.isConnected;
-    if (connected === _prevConnected) return;
-    _prevConnected = connected;
+    const addr = auth.isConnected && auth.parent ? auth.parent.toLowerCase() : null;
+    if (addr === _prevAddr) return;
+    _prevAddr = addr;
 
-    if (connected && auth.parent) {
-      const addr = auth.parent.toLowerCase();
-      // Seed from the shared SWR cache so a hop from CreatorHome paints
-      // the list instantly even if MY_SITES_KEY has been cleared.
-      const swr = getMySitesSWR(addr);
-      if (swr.cached && mySites.length === 0) {
-        mySites = [...swr.cached];
-        saveMySites(mySites);
-      }
-      // Refresh in the background. Failure keeps the localStorage view.
-      swr.refresh().then((apiSites) => {
-        if (!apiSites) return;
-        const apiIds = new Set(apiSites.map((s) => s.siteId));
-        const localOnly = mySites.filter((s) => !apiIds.has(s.siteId));
-        mySites = [...apiSites, ...localOnly];
-        saveMySites(mySites);
-      });
-    } else {
-      // Logged out: clear everything so no data leaks to the next user.
+    if (!addr) {
+      // Logged out (or switching identities). Clear in-memory state — the
+      // per-address localStorage entry is wiped by auth-store.logout() via
+      // USER_SCOPED_PREFIXES, so nothing leaks to the next user.
       mySites = [];
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem(MY_SITES_KEY);
-      }
       screen = 'my-sites';
+      return;
     }
+
+    // Logged in (or switched to a new identity). Force EIP-712 before any
+    // per-address site list is on screen: cache is keyed by address but its
+    // contents are user-private, so painting before the session is signed
+    // would skip the boundary that proves wallet control this session.
+    (async () => {
+      if (!auth.hasSession) {
+        const ok = await auth.ensureSession();
+        if (!ok || _prevAddr !== addr) return;
+      }
+
+      const swr = getMySitesSWR(addr);
+      mySites = swr.cached ? [...swr.cached] : [];
+
+      // Refresh from Swarm in the background. On failure the cached view stays.
+      const apiSites = await swr.refresh();
+      if (_prevAddr !== addr) return;
+      if (!apiSites) return;
+      const apiIds = new Set(apiSites.map((s) => s.siteId));
+      const localOnly = mySites.filter((s) => !apiIds.has(s.siteId));
+      mySites = [...apiSites, ...localOnly];
+      saveMySites(addr, mySites);
+    })();
   });
 
   // ── Actions ───────────────────────────────────────────────────────────────────

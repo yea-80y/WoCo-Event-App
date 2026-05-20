@@ -98,18 +98,17 @@
     if (!auth.isConnected || !auth.parent) { loading = false; return; }
     const addr = auth.parent.toLowerCase();
 
-    // Paint from cache first so the list is on-screen before we touch auth.
+    // Gate cached paint on a verified session: per-address localStorage must
+    // not flash on screen during sign-in before EIP-712 is signed.
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (!ok) { loading = false; return; }
+    }
+
     const swr = getMyEventsSWR(addr);
     if (swr.cached) {
       allEvents = swr.cached;
       loading = false;
-    }
-
-    // Background refresh — needs a session. If session derivation fails or is
-    // refused, keep the cached view; don't blank the page.
-    if (!auth.hasSession) {
-      const ok = await auth.ensureSession();
-      if (!ok) { loading = false; return; }
     }
     const fresh = await swr.refresh();
     // Don't overwrite a populated cached view with an unexpected empty response.

@@ -60,11 +60,13 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
     if (!POSTAGE_BATCH_ID) {
       throw new Error("POSTAGE_BATCH_ID not configured — cannot deploy via WoCo gateway");
     }
+    console.log(`[batch-router] ${deployType} deploy → wocoBee batch ${POSTAGE_BATCH_ID.slice(0, 12)}…`);
     return { batchId: POSTAGE_BATCH_ID, target: "wocoBee" };
   }
 
   const user = getUserBatch(ownerAddress);
   if (user) {
+    console.log(`[batch-router] ${deployType} deploy → etherna USER batch ${user.batchId.slice(0, 12)}… (owner ${ownerAddress.slice(0, 10)}…)`);
     return { batchId: user.batchId, target: "etherna" };
   }
 
@@ -73,6 +75,7 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
     if (!platform) {
       throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot fall back for event deploy");
     }
+    console.log(`[batch-router] ${deployType} deploy → etherna PLATFORM batch ${platform.slice(0, 12)}… (no user batch for ${ownerAddress.slice(0, 10)}…)`);
     return { batchId: platform, target: "etherna" };
   }
 

@@ -20,8 +20,8 @@
   let imageDataUrl = $state<string | null>(null);
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
   let cryptoRecipientMissing = $state(false);
-  let claimMode = $state<ClaimMode>("wallet");
-  let collectEmail = $state(false);
+  let claimMode = $state<ClaimMode>("email");
+  let collectEmail = $state(true);
   let collectInfo = $state(false);
   let orderFields = $state<OrderField[]>([]);
   let importedTiers = $state<ImportTier[] | null>(null);

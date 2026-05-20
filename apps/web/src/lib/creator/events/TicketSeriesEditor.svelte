@@ -8,6 +8,7 @@
   import { getConnectedAddress } from "../../wallet/connection.js";
   import { onMount } from "svelte";
   import type { ImportTier } from "./ImportUrlPanel.svelte";
+  import { getStripeAccountStatus, type StripeAccountStatus } from "../../api/stripe.js";
 
   interface WaveItem {
     id: string;
@@ -80,6 +81,11 @@
   let stripeModalTierId = $state<string | null>(null);
   let walletModalOpen = $state(false);
 
+  // Real Stripe account status fetched from the server.
+  // null = not yet loaded, undefined = not authenticated
+  let stripeStatus = $state<StripeAccountStatus | null>(null);
+  let stripeStatusLoading = $state(true);
+
   /** Whether the current auth identity owns a real EVM wallet. */
   const hasNativeWallet = $derived(auth.kind === "web3" || auth.kind === "para");
 
@@ -113,20 +119,36 @@
   }
 
   function handleStripeConnected() {
-    // Stripe is fully connected — enable the toggle for the tier that triggered it
     if (stripeModalTierId) {
       const tier = tierGroups.find(t => t.id === stripeModalTierId);
       if (tier) tier.stripeEnabled = true;
     }
+    // Mark locally so the status pill updates immediately without a refetch
+    stripeStatus = { ok: true, connected: true, onboardingComplete: true };
+    stripeStatusLoading = false;
     stripeModalOpen = false;
     stripeModalTierId = null;
   }
 
   function handleStripeModalClose() {
-    // Closed without connecting — don't enable the toggle
     stripeModalOpen = false;
     stripeModalTierId = null;
   }
+
+  onMount(async () => {
+    if (!auth.isConnected) {
+      stripeStatusLoading = false;
+      return;
+    }
+    try {
+      const resp = await getStripeAccountStatus();
+      if (resp.ok) stripeStatus = resp;
+    } catch {
+      // non-fatal — server gate enforces the real check
+    } finally {
+      stripeStatusLoading = false;
+    }
+  });
 
   function newTier(name = "General Admission"): TierGroup {
     return {
@@ -277,43 +299,51 @@
     if (!amount || amount <= 0) return null;
     const sym = CURRENCY_SYMBOLS[currency] ?? "";
     const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
-    const stripeFee = hasStripe ? amount * STRIPE_PERCENT + (STRIPE_FIXED[currency] ?? 0.20) : 0;
-    const platformFee = amount * PLATFORM_FEE_BP / 10_000;
+    const stripeFixed = STRIPE_FIXED[currency] ?? 0.20;
+    // Crypto-path platform fee: flat 1.5% of base (PLATFORM_FEE_BP on-chain rate).
+    const platformFeeCrypto = amount * PLATFORM_FEE_BP / 10_000;
 
     if (passToCustomer) {
       // Organiser-set markup. Buyer pays price × (1 + buyerFeePct/100).
-      // Organiser keeps the gap between the markup and the actual deductions.
       const buyerMarkup = amount * (buyerFeePct / 100);
       const cardTotal = amount + buyerMarkup;
       const cryptoTotal = amount + buyerMarkup;
-      const payoutCard = hasStripe ? cardTotal - stripeFee - platformFee : 0;
-      const payoutCrypto = hasCrypto ? cryptoTotal - platformFee : 0;
+      // Stripe charges its % on the amount it actually processes (cardTotal), not the base price.
+      const stripeFee = hasStripe ? cardTotal * STRIPE_PERCENT + stripeFixed : 0;
+      // Server policy for the card path (apps/server/src/routes/stripe.ts): application_fee
+      // = min(stripe_estimate, buyer_markup). Platform never claws back more than the markup.
+      const platformFeeCard = hasStripe ? Math.min(stripeFee, buyerMarkup) : 0;
+      const payoutCard = hasStripe ? cardTotal - stripeFee - platformFeeCard : 0;
+      const payoutCrypto = hasCrypto ? cryptoTotal - platformFeeCrypto : 0;
       return {
         mode: "pass" as const,
         basePrice: fmt(amount),
         buyerMarkup: fmt(buyerMarkup),
         stripeFee: hasStripe ? `~${fmt(stripeFee)}` : null,
-        platformFee: fmt(platformFee),
+        platformFeeCard: hasStripe ? `~${fmt(platformFeeCard)}` : null,
+        platformFeeCrypto: hasCrypto ? fmt(platformFeeCrypto) : null,
         cardTotal: hasStripe ? fmt(cardTotal) : null,
         cryptoTotal: hasCrypto ? fmt(cryptoTotal) : null,
         payoutCard: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : null,
         payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
-        payout: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : fmt(Math.max(0, payoutCrypto)),
       };
     } else {
-      // Organiser absorbs fees — buyer pays the ticket price only
-      const payoutCard = amount - stripeFee - platformFee;
-      const payoutCrypto = amount - platformFee;
+      // Organiser absorbs fees — buyer pays the ticket price only.
+      // Note: server currently always passes 10% to the buyer on the card path; this
+      // absorb-mode display is only meaningful for the crypto path until that aligns.
+      const stripeFee = hasStripe ? amount * STRIPE_PERCENT + stripeFixed : 0;
+      const payoutCard = amount - stripeFee - platformFeeCrypto;
+      const payoutCrypto = amount - platformFeeCrypto;
       return {
         mode: "absorb" as const,
         basePrice: fmt(amount),
         stripeFee: hasStripe ? `~${fmt(stripeFee)}` : null,
-        platformFee: fmt(platformFee),
+        platformFeeCard: hasStripe ? fmt(platformFeeCrypto) : null,
+        platformFeeCrypto: hasCrypto ? fmt(platformFeeCrypto) : null,
         cardTotal: null,
         cryptoTotal: null,
         payoutCard: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : null,
         payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
-        payout: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : fmt(Math.max(0, payoutCrypto)),
       };
     }
   }
@@ -429,7 +459,7 @@
           <label class="approval-toggle">
             <input type="checkbox" bind:checked={tier.isPaid} />
             <span class="approval-label">Paid ticket</span>
-            <span class="approval-hint">Set a price — attendees can pay with crypto and/or card</span>
+            <span class="approval-hint">Set a price for this tier</span>
           </label>
         {/if}
 
@@ -485,15 +515,55 @@
                 {/if}
               {/if}
 
-              <label class="chain-check">
-                <input
-                  type="checkbox"
-                  checked={tier.stripeEnabled}
-                  onchange={(e) => handleStripeToggle(tier, (e.target as HTMLInputElement).checked)}
-                />
-                <span>Card payments via Stripe</span>
-              </label>
-              {#if tier.stripeEnabled}
+              {#if FEATURES.cryptoPaymentsAllowed}
+                <label class="chain-check">
+                  <input
+                    type="checkbox"
+                    checked={tier.stripeEnabled}
+                    onchange={(e) => handleStripeToggle(tier, (e.target as HTMLInputElement).checked)}
+                  />
+                  <span>Card payments</span>
+                </label>
+              {:else}
+                <!-- Card-only mode: Stripe is the sole payment rail; surface real
+                     account verification state. -->
+                <button
+                  type="button"
+                  class="card-payments-row"
+                  onclick={() => handleStripeToggle(tier, true)}
+                  disabled={stripeStatus?.onboardingComplete === true}
+                >
+                  <span class="card-payments-label">
+                    <span class="card-payments-title">Card payments</span>
+                    <span class="card-payments-sub">Powered by Stripe</span>
+                  </span>
+                  {#if stripeStatusLoading}
+                    <span class="card-payments-status card-payments-status--loading">
+                      <span class="stripe-status-spinner"></span>
+                      Checking...
+                    </span>
+                  {:else if stripeStatus?.onboardingComplete}
+                    <span class="card-payments-status card-payments-status--ok">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <circle cx="7" cy="7" r="6" fill="var(--success)" opacity="0.15"/>
+                        <path d="M4 7.5L6 9.5L10 5" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      Verified
+                    </span>
+                  {:else if stripeStatus?.connected}
+                    <span class="card-payments-status card-payments-status--warn">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <circle cx="7" cy="7" r="6" stroke="var(--warning)" stroke-width="1.2" fill="none" opacity="0.6"/>
+                        <path d="M7 4.5V7.5M7 9.5V10" stroke="var(--warning)" stroke-width="1.3" stroke-linecap="round"/>
+                      </svg>
+                      Setup incomplete →
+                    </span>
+                  {:else}
+                    <span class="card-payments-status card-payments-status--cta">Connect Stripe →</span>
+                  {/if}
+                </button>
+              {/if}
+              {#if FEATURES.cryptoPaymentsAllowed && tier.stripeEnabled}
                 <div class="stripe-connected-badge">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                     <circle cx="7" cy="7" r="6" fill="var(--success)" opacity="0.15"/>
@@ -505,87 +575,92 @@
             </div>
 
             {#if (tier.stripeEnabled || tier.cryptoEnabled) && tier.price && parseFloat(tier.price) > 0}
-              <!-- Fee handling toggle -->
-              <div class="fee-mode">
-                <span class="fee-mode-label">Who pays the fees?</span>
-                <div class="fee-mode-toggle">
-                  <button
-                    type="button"
-                    class="fee-mode-btn"
-                    class:fee-mode-btn--active={tier.feePassedToCustomer}
-                    onclick={() => { tier.feePassedToCustomer = true; }}
-                  >Buyer pays</button>
-                  <button
-                    type="button"
-                    class="fee-mode-btn"
-                    class:fee-mode-btn--active={!tier.feePassedToCustomer}
-                    onclick={() => { tier.feePassedToCustomer = false; }}
-                  >I absorb</button>
-                </div>
-              </div>
-
-              {#if tier.feePassedToCustomer}
-                <label class="field buyer-fee-field">
-                  <span class="field-label">Booking fee % (added to buyer's total)</span>
-                  <div class="buyer-fee-input-wrap">
-                    <input
-                      type="number"
-                      min={BUYER_FEE_FLOOR_PCT}
-                      step="0.5"
-                      bind:value={tier.buyerFeePercent}
-                      onblur={() => clampBuyerFee(tier)}
-                    />
-                    <span class="buyer-fee-suffix">%</span>
+              {#if FEATURES.cryptoPaymentsAllowed}
+                <!-- Fee handling toggle — hidden in card-only mode because the server
+                     currently hardcodes the buyer-pays policy for Stripe payments. -->
+                <div class="fee-mode">
+                  <span class="fee-mode-label">Who pays the fees?</span>
+                  <div class="fee-mode-toggle">
+                    <button
+                      type="button"
+                      class="fee-mode-btn"
+                      class:fee-mode-btn--active={tier.feePassedToCustomer}
+                      onclick={() => { tier.feePassedToCustomer = true; }}
+                    >Buyer pays</button>
+                    <button
+                      type="button"
+                      class="fee-mode-btn"
+                      class:fee-mode-btn--active={!tier.feePassedToCustomer}
+                      onclick={() => { tier.feePassedToCustomer = false; }}
+                    >I absorb</button>
                   </div>
-                  <span class="approval-hint">
-                    Minimum {BUYER_FEE_FLOOR_PCT}% covers Stripe (~3%) + WoCo (1.5%).
-                    Anything above goes to you.
-                  </span>
-                </label>
+                </div>
+
+                {#if tier.feePassedToCustomer}
+                  <label class="field buyer-fee-field">
+                    <span class="field-label">Booking fee % (added to buyer's total)</span>
+                    <div class="buyer-fee-input-wrap">
+                      <input
+                        type="number"
+                        min={BUYER_FEE_FLOOR_PCT}
+                        step="0.5"
+                        bind:value={tier.buyerFeePercent}
+                        onblur={() => clampBuyerFee(tier)}
+                      />
+                      <span class="buyer-fee-suffix">%</span>
+                    </div>
+                    <span class="approval-hint">
+                      Minimum {BUYER_FEE_FLOOR_PCT}% covers card processing (~3%) + platform fee (1.5%).
+                      Anything above goes to you.
+                    </span>
+                  </label>
+                {/if}
+              {:else}
+                <p class="booking-fee-note">
+                  A {BUYER_FEE_DEFAULT_PCT}% booking fee is added at checkout and covers
+                  card processing and the platform fee.
+                </p>
               {/if}
 
               {@const fees = feeBreakdown(tier.price, tier.currency, tier.feePassedToCustomer, tier.stripeEnabled, tier.cryptoEnabled, tier.buyerFeePercent)}
               {#if fees}
                 <div class="fee-breakdown">
                   {#if fees.mode === "pass"}
-                    <span class="fee-breakdown-title">Buyer pays (per ticket)</span>
+                    <span class="fee-breakdown-title">Per ticket</span>
                     {#if tier.stripeEnabled}
                       <div class="fee-breakdown-col">
-                        <span class="fee-col-label">Card checkout</span>
+                        {#if tier.cryptoEnabled}
+                          <span class="fee-col-label">Card</span>
+                        {/if}
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
                         <div class="fee-row fee-deduction"><span>Booking fee ({tier.buyerFeePercent}%)</span><span>+{fees.buyerMarkup}</span></div>
-                        <div class="fee-row fee-total"><span>Card total</span><span>{fees.cardTotal}</span></div>
-                        <div class="fee-row fee-deduction"><span>Stripe processing</span><span>−{fees.stripeFee}</span></div>
-                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>−{fees.platformFee}</span></div>
-                        <div class="fee-row fee-total"><span>Card payout</span><span>{fees.payoutCard}</span></div>
+                        <div class="fee-row fee-total"><span>Buyer pays</span><span>{fees.cardTotal}</span></div>
+                        <div class="fee-row fee-deduction"><span>Card processing</span><span>−{fees.stripeFee}</span></div>
+                        <div class="fee-row fee-deduction"><span>Platform fee</span><span>−{fees.platformFeeCard}</span></div>
+                        <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCard}</span></div>
                       </div>
                     {/if}
                     {#if tier.cryptoEnabled}
                       <div class="fee-breakdown-col">
-                        <span class="fee-col-label">Crypto checkout</span>
+                        <span class="fee-col-label">Crypto</span>
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
                         <div class="fee-row fee-deduction"><span>Booking fee ({tier.buyerFeePercent}%)</span><span>+{fees.buyerMarkup}</span></div>
-                        <div class="fee-row fee-total"><span>Crypto total</span><span>{fees.cryptoTotal}</span></div>
-                        <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>−{fees.platformFee}</span></div>
-                        <div class="fee-row fee-total"><span>Crypto payout</span><span>{fees.payoutCrypto}</span></div>
+                        <div class="fee-row fee-total"><span>Buyer pays</span><span>{fees.cryptoTotal}</span></div>
+                        <div class="fee-row fee-deduction"><span>Platform fee (1.5%)</span><span>−{fees.platformFeeCrypto}</span></div>
+                        <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCrypto}</span></div>
                       </div>
                     {/if}
                   {:else}
                     <span class="fee-breakdown-title">Your payout (per ticket)</span>
                     <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
-                    <div class="fee-row fee-deduction"><span>Platform (1.5%)</span><span>−{fees.platformFee}</span></div>
                     {#if tier.stripeEnabled}
-                      <div class="fee-row fee-deduction"><span>Stripe processing</span><span>−{fees.stripeFee}</span></div>
-                      <div class="fee-row fee-total"><span>Card payout</span><span>{fees.payoutCard}</span></div>
+                      <div class="fee-row fee-deduction"><span>Card processing</span><span>−{fees.stripeFee}</span></div>
+                      <div class="fee-row fee-deduction"><span>Platform fee</span><span>−{fees.platformFeeCard}</span></div>
+                      <div class="fee-row fee-total"><span>You receive (card)</span><span>{fees.payoutCard}</span></div>
                     {/if}
                     {#if tier.cryptoEnabled}
-                      {#if tier.stripeEnabled}
-                        <div class="fee-row fee-total" style="border-top: none; padding-top: 0; margin-top: 0;">
-                          <span>Crypto payout</span><span>{fees.payoutCrypto}</span>
-                        </div>
-                      {:else}
-                        <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCrypto}</span></div>
-                      {/if}
+                      <div class="fee-row fee-deduction"><span>Platform fee (1.5%)</span><span>−{fees.platformFeeCrypto}</span></div>
+                      <div class="fee-row fee-total"><span>You receive (crypto)</span><span>{fees.payoutCrypto}</span></div>
                     {/if}
                   {/if}
                 </div>
@@ -1207,6 +1282,95 @@
     color: var(--success);
   }
 
+  /* ── Card payments row (card-only mode) ── */
+  .card-payments-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color var(--transition), background var(--transition);
+  }
+
+  .card-payments-row:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  .card-payments-row:disabled {
+    cursor: default;
+  }
+
+  .card-payments-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+  }
+
+  .card-payments-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .card-payments-sub {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+  }
+
+  .card-payments-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .card-payments-status--ok {
+    color: var(--success);
+  }
+
+  .card-payments-status--warn {
+    color: var(--warning, #f59e0b);
+  }
+
+  .card-payments-status--loading {
+    color: var(--text-muted);
+    gap: 0.4375rem;
+  }
+
+  .card-payments-status--cta {
+    color: var(--accent-text);
+  }
+
+  .stripe-status-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--border);
+    border-top-color: var(--text-muted);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+
+  /* ── Booking-fee note (card-only mode) ── */
+  .booking-fee-note {
+    margin: 0;
+    padding: 0.5rem 0.625rem;
+    background: var(--bg-elevated);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
   .stripe-connected-badge {
     display: inline-flex;
     align-items: center;
@@ -1308,5 +1472,9 @@
     font-size: 0.6875rem;
     color: var(--accent-text, #d97706);
     font-style: italic;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 </style>

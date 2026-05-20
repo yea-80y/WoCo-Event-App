@@ -420,6 +420,19 @@
       return;
     }
 
+    // EIP-712 must be signed before any user-specific data (orders, attendees,
+    // pending approvals) is rendered. Cache key is per-event but the contents
+    // are private to the organiser, so painting pre-session would skip the
+    // boundary that proves the wallet is currently controlled.
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (!ok) {
+        error = "Session authentication required to view order data.";
+        loading = false;
+        return;
+      }
+    }
+
     // ── Step 1: Paint from cache if we have it ────────────────────────────
     // Only if the cached event confirms the current user is the organiser —
     // never reveal another organiser's cached orders.
@@ -458,16 +471,6 @@
         pendingEntries = [];
         loading = false;
         return;
-      }
-
-      // Session required to fetch orders (passkey: biometric + EIP-712 if not cached)
-      if (!auth.hasSession) {
-        const ok = await auth.ensureSession();
-        if (!ok) {
-          if (!cachedShown) error = "Session authentication required to view order data.";
-          loading = false;
-          return;
-        }
       }
 
       const [freshOrders, freshPending] = await Promise.all([

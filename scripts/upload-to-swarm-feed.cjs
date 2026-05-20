@@ -19,6 +19,7 @@
  */
 
 const { Bee, PrivateKey, Topic, Reference } = require('@ethersphere/bee-js');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const tar = require('tar');
@@ -34,6 +35,8 @@ require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const BEE_URL = process.env.BEE_URL || 'https://gateway.woco-net.com';
 const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || '';
 const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || '';
+const UPLOAD_SECRET = process.env.UPLOAD_SECRET || '';
+const SSH_HOST = process.env.SSH_HOST || 'root@46.225.174.72';
 const FEED_TOPIC = 'woco-events-v1';
 const UPLOAD_DIR = path.resolve(__dirname, '../apps/web/dist');
 
@@ -78,8 +81,43 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     process.exit(1);
   }
 
+  // Open SSH tunnel if the proxy isn't already reachable at BEE_URL
+  let sshTunnel = null;
   try {
-    const bee = new Bee(BEE_URL);
+    await axios.get(`${BEE_URL}/health`, { timeout: 2000, validateStatus: () => true });
+    console.log(`Proxy already reachable at ${BEE_URL}`);
+  } catch {
+    console.log(`Opening SSH tunnel: ${SSH_HOST} → localhost:3000 ...`);
+    sshTunnel = spawn('ssh', [
+      '-NL', '3000:127.0.0.1:3000',
+      '-o', 'BatchMode=yes',
+      '-o', 'ConnectTimeout=10',
+      SSH_HOST,
+    ], { stdio: 'ignore' });
+    sshTunnel.on('error', (err) => {
+      console.error('SSH tunnel error:', err.message);
+      process.exit(1);
+    });
+    let ready = false;
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        await axios.get(`${BEE_URL}/health`, { timeout: 2000, validateStatus: () => true });
+        ready = true;
+        break;
+      } catch { /* keep waiting */ }
+    }
+    if (!ready) {
+      sshTunnel.kill();
+      console.error(`ERROR: SSH tunnel to ${SSH_HOST} failed to establish after 15s.`);
+      process.exit(1);
+    }
+    console.log('SSH tunnel established.\n');
+  }
+
+  try {
+    const uploadHeaders = UPLOAD_SECRET ? { 'x-upload-secret': UPLOAD_SECRET } : {};
+    const bee = new Bee(BEE_URL, { headers: uploadHeaders });
     const signer = new PrivateKey(FEED_PRIVATE_KEY);
     const ownerObj = signer.publicKey().address();
     const ownerHex = ownerObj.toHex();
@@ -89,37 +127,68 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     console.log(`Feed Topic: ${FEED_TOPIC}`);
     console.log(`Feed Owner: ${ownerHex}\n`);
 
-    // 1) Create tar from dist directory
-    console.log(`Creating tar from: ${UPLOAD_DIR} ...`);
+    // Two-pass upload so the served index.html carries an absolute <base href>
+    // pointing at our fast gateway. Without this, woco.eth.limo serves the bundle
+    // and the browser fetches every JS/CSS chunk from eth.limo's content path
+    // (slow, outside our infra). With it, only the 1.2KB HTML comes from there;
+    // assets resolve to https://gateway.woco-net.com/bzz/{assetsRef}/... which
+    // hits our 24h-cached registry path.
+    //
+    // Pass 1 uploads dist/ verbatim to get assetsRef (the hash assets live under).
+    // Pass 2 patches index.html with <base href=".../{assetsRef}/"> and re-uploads.
+    // Asset chunks dedupe in bee, so pass 2 only writes the manifest + new HTML.
     const tarPath = path.resolve(__dirname, '../site.tar');
     const filesToInclude = getAllFilesRecursive(UPLOAD_DIR);
+    const indexPath = path.join(UPLOAD_DIR, 'index.html');
+    const indexOriginal = fs.readFileSync(indexPath, 'utf-8');
 
-    await tar.create(
-      { file: tarPath, cwd: UPLOAD_DIR, portable: true, gzip: false },
-      filesToInclude,
-    );
+    async function uploadDist(label) {
+      console.log(`[${label}] Creating tar from: ${UPLOAD_DIR} ...`);
+      await tar.create(
+        { file: tarPath, cwd: UPLOAD_DIR, portable: true, gzip: false },
+        filesToInclude,
+      );
+      const tarData = fs.readFileSync(tarPath);
+      console.log(`[${label}] Uploading tar (${tarData.length} bytes)...`);
+      const resp = await axios.post(`${BEE_URL}/bzz`, tarData, {
+        headers: {
+          'Content-Type': 'application/x-tar',
+          'Swarm-Postage-Batch-Id': POSTAGE_BATCH_ID,
+          'Swarm-Index-Document': 'index.html',
+          'Swarm-Error-Document': 'index.html',
+          'Swarm-Collection': 'true',
+          ...uploadHeaders,
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+      fs.unlinkSync(tarPath);
+      const ref = resp.data.reference;
+      console.log(`[${label}] Reference: ${ref}`);
+      return ref;
+    }
 
-    const tarData = fs.readFileSync(tarPath);
-    console.log(`Uploading tar (${tarData.length} bytes)...`);
+    let siteRef;
+    try {
+      // Pass 1: assets live under this ref
+      const assetsRef = await uploadDist('pass1');
 
-    // 2) Upload to Swarm as collection
-    const uploadResponse = await axios.post(`${BEE_URL}/bzz`, tarData, {
-      headers: {
-        'Content-Type': 'application/x-tar',
-        'Swarm-Postage-Batch-Id': POSTAGE_BATCH_ID,
-        'Swarm-Index-Document': 'index.html',
-        'Swarm-Error-Document': 'index.html',
-        'Swarm-Collection': 'true',
-      },
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-    });
+      // Patch index.html with absolute <base href> → fast gateway
+      const baseTag = `<base href="https://gateway.woco-net.com/bzz/${assetsRef}/">`;
+      const patched = indexOriginal.replace(/<head>/i, `<head>\n    ${baseTag}`);
+      if (patched === indexOriginal) {
+        throw new Error('Could not inject <base href> — no <head> tag found in dist/index.html');
+      }
+      fs.writeFileSync(indexPath, patched);
+      console.log(`Injected <base href="https://gateway.woco-net.com/bzz/${assetsRef}/"> into index.html`);
 
-    const siteRef = uploadResponse.data.reference;
-    console.log(`Uploaded. Reference: ${siteRef}`);
-
-    // Clean up tar
-    fs.unlinkSync(tarPath);
+      // Pass 2: this ref is what the feed points to. Browser loads its index.html,
+      // then base-href redirects every relative asset fetch to assetsRef on our gateway.
+      siteRef = await uploadDist('pass2');
+    } finally {
+      // Restore unpatched index.html so the build tree isn't dirty
+      fs.writeFileSync(indexPath, indexOriginal);
+    }
 
     // 3) Create or reuse feed manifest
     await ensureDir(STATE_DIR);
@@ -259,5 +328,10 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     console.error('Upload failed:', err?.message ?? err);
     if (err.response?.data) console.error('Response:', err.response.data);
     process.exit(1);
+  } finally {
+    if (sshTunnel) {
+      sshTunnel.kill();
+      console.log('SSH tunnel closed.');
+    }
   }
 })();
