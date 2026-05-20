@@ -1,5 +1,6 @@
 <script lang="ts">
   import { router, navigate } from "./lib/router/router.svelte.js";
+  import { auth } from "./lib/auth/auth-store.svelte.js";
   import CreatorShell from "./lib/layouts/CreatorShell.svelte";
   import EventForm from "./lib/creator/events/EventForm.svelte";
   import EmbedSetup from "./lib/creator/embed/EmbedSetup.svelte";
@@ -10,11 +11,36 @@
   import MultiSiteBuilder from "./lib/creator/builder/MultiSiteBuilder.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
   import SiteEventsManager from "./lib/creator/sites/SiteEventsManager.svelte";
+  import type { StripeAccountStatus } from "./lib/api/stripe.js";
 
   $effect(() => {
     if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
       navigate("/site-builder");
     }
+  });
+
+  let stripeStatus = $state<StripeAccountStatus | null>(null);
+  let stripeStatusError = $state(false);
+  let stripeStatusLoading = $state(false);
+
+  $effect(() => {
+    if (router.route !== "stripe-return") {
+      stripeStatus = null;
+      stripeStatusError = false;
+      stripeStatusLoading = false;
+      return;
+    }
+    if (!auth.ready) return;
+    if (!auth.isConnected) return;
+    if (stripeStatus || stripeStatusError || stripeStatusLoading) return;
+    stripeStatusLoading = true;
+    import("./lib/api/stripe.js").then(m => m.getStripeAccountStatus()).then(s => {
+      stripeStatus = s;
+      stripeStatusLoading = false;
+    }).catch(() => {
+      stripeStatusError = true;
+      stripeStatusLoading = false;
+    });
   });
 </script>
 
@@ -40,20 +66,23 @@
   {:else if router.route === "stripe-return"}
     <div class="stripe-return-page">
       <h2>Stripe Setup</h2>
-      <p>Checking your onboarding status...</p>
-      {#await import("./lib/api/stripe.js").then(m => m.getStripeAccountStatus())}
-        <p>Loading...</p>
-      {:then status}
-        {#if status.onboardingComplete}
+      {#if !auth.ready || (!auth.isConnected && !stripeStatusError)}
+        <p>Reconnecting your account…</p>
+      {:else if stripeStatusLoading}
+        <p>Checking your onboarding status…</p>
+      {:else if stripeStatusError}
+        <p>Could not check status. Please try again.</p>
+        <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
+      {:else if stripeStatus}
+        {#if stripeStatus.onboardingComplete}
           <p class="stripe-success">Your Stripe account is connected and ready to accept payments!</p>
         {:else}
           <p>Your onboarding is not yet complete. Some information may still be required.</p>
         {/if}
         <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
-      {:catch}
-        <p>Could not check status. Please try again.</p>
-        <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
-      {/await}
+      {:else}
+        <p>Checking your onboarding status…</p>
+      {/if}
     </div>
   {:else if router.route === "stripe-refresh"}
     <div class="stripe-return-page">

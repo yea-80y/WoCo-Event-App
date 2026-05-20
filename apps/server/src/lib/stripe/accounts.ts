@@ -95,3 +95,12 @@ export function getOrganiserByStripeAccount(stripeAccountId: string): string | u
   }
   return undefined;
 }
+
+export function deleteStripeAccount(organiserAddress: string): boolean {
+  ensureLoaded();
+  const key = organiserAddress.toLowerCase();
+  if (!store[key]) return false;
+  delete store[key];
+  persist();
+  return true;
+}

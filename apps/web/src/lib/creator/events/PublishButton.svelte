@@ -6,6 +6,7 @@
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, type PublishProgress } from "../../api/events.js";
+  import { navigate } from "../../router/router.svelte.js";
 
   interface SeriesDraft {
     seriesId: string;
@@ -255,7 +256,23 @@
   {/if}
 
   {#if error}
-    <p class="error">{error}</p>
+    {#if error.includes("Complete Stripe account setup")}
+      <div class="stripe-gate">
+        <div class="stripe-gate-body">
+          <svg class="stripe-gate-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+            <path d="M8 5v4M8 11v.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <div>
+            <p class="stripe-gate-title">Stripe not connected</p>
+            <p class="stripe-gate-sub">Connect a Stripe account to accept card payments before publishing.</p>
+          </div>
+        </div>
+        <button class="stripe-gate-btn" onclick={() => navigate("/creator")}>Set up Stripe →</button>
+      </div>
+    {:else}
+      <p class="error">{error}</p>
+    {/if}
   {/if}
 </div>
 
@@ -321,4 +338,54 @@
     text-align: center;
     margin: 0;
   }
+
+  .stripe-gate {
+    padding: 0.75rem;
+    background: color-mix(in srgb, var(--accent, #C7F23A) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent, #C7F23A) 25%, transparent);
+    border-radius: var(--radius-sm, 8px);
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+  }
+
+  .stripe-gate-body {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+
+  .stripe-gate-icon {
+    flex-shrink: 0;
+    margin-top: 0.1em;
+    color: var(--accent, #C7F23A);
+    opacity: 0.9;
+  }
+
+  .stripe-gate-title {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .stripe-gate-sub {
+    margin: 0.125rem 0 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .stripe-gate-btn {
+    align-self: flex-start;
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    background: var(--accent, #C7F23A);
+    color: var(--accent-ink, #0a0a0a);
+    border-radius: var(--radius-sm, 8px);
+    transition: opacity 0.14s;
+  }
+
+  .stripe-gate-btn:hover { opacity: 0.85; }
 </style>

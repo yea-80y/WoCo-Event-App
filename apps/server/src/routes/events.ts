@@ -10,7 +10,8 @@ import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
-import { getStripeAccount } from "../lib/stripe/accounts.js";
+import { getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
+import { getStripe } from "../lib/stripe/client.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -174,16 +175,44 @@ events.post("/", requireAuth, async (c) => {
     }
   }
 
-  // Stripe verification gate: block event creation if any series uses Stripe
-  // but the organiser hasn't completed Stripe onboarding.
+  // Stripe verification gate: live-check charges_enabled directly from Stripe
+  // so a stale local cache can never let an unverified account publish.
   const hasStripeSeries = series.some((s) => s.payment?.stripeEnabled);
   if (hasStripeSeries) {
     const stripeRecord = getStripeAccount(parentAddress.toLowerCase());
-    if (!stripeRecord?.onboardingComplete) {
+    if (!stripeRecord) {
       return c.json({
         ok: false,
         error: "Complete Stripe account setup before publishing paid events. Go to Dashboard → Payments to connect Stripe.",
       }, 403);
+    }
+    try {
+      const s = getStripe();
+      const account = await s.accounts.retrieve(stripeRecord.stripeAccountId);
+      if (!account.charges_enabled) {
+        // Keep local cache in sync
+        if (stripeRecord.onboardingComplete) {
+          setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, false);
+        }
+        return c.json({
+          ok: false,
+          error: "Your Stripe account is not yet verified. Complete identity verification in Dashboard → Payments.",
+        }, 403);
+      }
+      // Sync cache if it was behind
+      if (!stripeRecord.onboardingComplete) {
+        setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, true);
+      }
+    } catch (err: any) {
+      if (err?.statusCode === 404 || err?.code === "resource_missing") {
+        deleteStripeAccount(parentAddress.toLowerCase());
+        return c.json({
+          ok: false,
+          error: "Complete Stripe account setup before publishing paid events. Go to Dashboard → Payments to connect Stripe.",
+        }, 403);
+      }
+      console.error("[stripe-gate] Failed to verify account:", err);
+      return c.json({ ok: false, error: "Could not verify Stripe account status. Please try again." }, 503);
     }
   }
 

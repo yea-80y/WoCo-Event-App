@@ -290,59 +290,47 @@
 
   const CURRENCY_SYMBOLS: Record<string, string> = { GBP: "£", USD: "$", EUR: "€" };
 
-  /** Stripe processing fee estimates (UK/EU domestic cards) */
-  const STRIPE_PERCENT = 0.029; // 2.9% (Connect includes +0.5%)
-  const STRIPE_FIXED: Record<string, number> = { GBP: 0.20, USD: 0.30, EUR: 0.25 };
+  const STRIPE_PERCENT = 0.03;   // 3% of ticket price
+  const PLATFORM_PERCENT = PLATFORM_FEE_BP / 10_000; // 1.5%
 
   function feeBreakdown(price: string, currency: string, passToCustomer: boolean, hasStripe: boolean, hasCrypto: boolean, buyerFeePct: number) {
     const amount = parseFloat(price);
     if (!amount || amount <= 0) return null;
     const sym = CURRENCY_SYMBOLS[currency] ?? "";
     const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
-    const stripeFixed = STRIPE_FIXED[currency] ?? 0.20;
-    // Crypto-path platform fee: flat 1.5% of base (PLATFORM_FEE_BP on-chain rate).
-    const platformFeeCrypto = amount * PLATFORM_FEE_BP / 10_000;
+    const stripeFee = hasStripe ? amount * STRIPE_PERCENT : 0;
+    const platformFee = amount * PLATFORM_PERCENT;
 
     if (passToCustomer) {
-      // Organiser-set markup. Buyer pays price × (1 + buyerFeePct/100).
       const buyerMarkup = amount * (buyerFeePct / 100);
       const cardTotal = amount + buyerMarkup;
       const cryptoTotal = amount + buyerMarkup;
-      // Stripe charges its % on the amount it actually processes (cardTotal), not the base price.
-      const stripeFee = hasStripe ? cardTotal * STRIPE_PERCENT + stripeFixed : 0;
-      // Server policy for the card path (apps/server/src/routes/stripe.ts): application_fee
-      // = min(stripe_estimate, buyer_markup). Platform never claws back more than the markup.
-      const platformFeeCard = hasStripe ? Math.min(stripeFee, buyerMarkup) : 0;
-      const payoutCard = hasStripe ? cardTotal - stripeFee - platformFeeCard : 0;
-      const payoutCrypto = hasCrypto ? cryptoTotal - platformFeeCrypto : 0;
+      const payoutCard = hasStripe ? cardTotal - stripeFee - platformFee : 0;
+      const payoutCrypto = hasCrypto ? cryptoTotal - platformFee : 0;
       return {
         mode: "pass" as const,
         basePrice: fmt(amount),
         buyerMarkup: fmt(buyerMarkup),
-        stripeFee: hasStripe ? `~${fmt(stripeFee)}` : null,
-        platformFeeCard: hasStripe ? `~${fmt(platformFeeCard)}` : null,
-        platformFeeCrypto: hasCrypto ? fmt(platformFeeCrypto) : null,
+        stripeFee: hasStripe ? fmt(stripeFee) : null,
+        platformFeeCard: hasStripe ? fmt(platformFee) : null,
+        platformFeeCrypto: hasCrypto ? fmt(platformFee) : null,
         cardTotal: hasStripe ? fmt(cardTotal) : null,
         cryptoTotal: hasCrypto ? fmt(cryptoTotal) : null,
-        payoutCard: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : null,
+        payoutCard: hasStripe ? fmt(Math.max(0, payoutCard)) : null,
         payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
       };
     } else {
-      // Organiser absorbs fees — buyer pays the ticket price only.
-      // Note: server currently always passes 10% to the buyer on the card path; this
-      // absorb-mode display is only meaningful for the crypto path until that aligns.
-      const stripeFee = hasStripe ? amount * STRIPE_PERCENT + stripeFixed : 0;
-      const payoutCard = amount - stripeFee - platformFeeCrypto;
-      const payoutCrypto = amount - platformFeeCrypto;
+      const payoutCard = amount - stripeFee - platformFee;
+      const payoutCrypto = amount - platformFee;
       return {
         mode: "absorb" as const,
         basePrice: fmt(amount),
-        stripeFee: hasStripe ? `~${fmt(stripeFee)}` : null,
-        platformFeeCard: hasStripe ? fmt(platformFeeCrypto) : null,
-        platformFeeCrypto: hasCrypto ? fmt(platformFeeCrypto) : null,
+        stripeFee: hasStripe ? fmt(stripeFee) : null,
+        platformFeeCard: hasStripe ? fmt(platformFee) : null,
+        platformFeeCrypto: hasCrypto ? fmt(platformFee) : null,
         cardTotal: null,
         cryptoTotal: null,
-        payoutCard: hasStripe ? `~${fmt(Math.max(0, payoutCard))}` : null,
+        payoutCard: hasStripe ? fmt(Math.max(0, payoutCard)) : null,
         payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
       };
     }
@@ -610,7 +598,7 @@
                       <span class="buyer-fee-suffix">%</span>
                     </div>
                     <span class="approval-hint">
-                      Minimum {BUYER_FEE_FLOOR_PCT}% covers card processing (~3%) + platform fee (1.5%).
+                      Minimum {BUYER_FEE_FLOOR_PCT}% covers card processing (3%) + platform fee (1.5%).
                       Anything above goes to you.
                     </span>
                   </label>

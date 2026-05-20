@@ -182,6 +182,19 @@ async function init(): Promise<void> {
         // via loginWeb3(), which restores the cached auth if addresses match.
         _kind = "none";
         _parent = null;
+        // Background retry: MetaMask can be slow to inject in a fresh tab
+        // (e.g. after Stripe onboarding redirect). Try once more via
+        // eth_accounts only — never prompts the user.
+        setTimeout(async () => {
+          if (_kind !== "none") return; // already reconnected elsewhere
+          const addr = await getConnectedAddress();
+          if (addr && addr.toLowerCase() === storedParent.toLowerCase()) {
+            _kind = "web3";
+            _parent = storedParent;
+            await _restoreCachedAuth();
+            _cleanupAccountListener = onAccountsChanged(handleAccountsChanged);
+          }
+        }, 2000);
       } else {
         await clearAllAuth();
       }

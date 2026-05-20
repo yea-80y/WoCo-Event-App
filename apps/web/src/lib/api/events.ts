@@ -43,9 +43,13 @@ export async function createEventStreaming(
     body: bodyText,
   });
 
-  if (!resp.ok && !resp.body) {
-    const json = await resp.json();
-    return { ok: false, error: json.error || "Request failed" };
+  if (!resp.ok) {
+    try {
+      const json = await resp.json();
+      return { ok: false, error: json.error || "Request failed" };
+    } catch {
+      return { ok: false, error: `Request failed (${resp.status})` };
+    }
   }
 
   const reader = resp.body!.getReader();
