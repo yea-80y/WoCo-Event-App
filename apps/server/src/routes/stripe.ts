@@ -14,6 +14,7 @@ import {
   setStripeAccount,
   updateOnboardingStatus,
   getOrganiserByStripeAccount,
+  deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
@@ -27,6 +28,7 @@ import { topicClaimers } from "../lib/swarm/topics.js";
 import type { ClaimersFeed } from "@woco/shared";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { sendTicketEmail } from "./tickets.js";
+import { getSiteTheme } from "../lib/site/service.js";
 import { getReservation, consume as consumeReservation } from "../lib/event/reservation-store.js";
 
 const stripe = new Hono<AppEnv>();
@@ -139,6 +141,10 @@ stripe.post("/connect", requireAuth, async (c) => {
     const s = getStripe();
     const account = await s.accounts.create({
       type: "express",
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
       metadata: { organiserAddress },
     });
 
@@ -177,6 +183,7 @@ stripe.post("/onboarding-link", requireAuth, async (c) => {
       refresh_url: `${frontendUrl}/#/stripe/refresh`,
       return_url: `${frontendUrl}/#/stripe/return`,
       type: "account_onboarding",
+      collection_options: { fields: "eventually_due" },
     });
 
     return c.json({ ok: true, url: accountLink.url });
@@ -263,7 +270,12 @@ stripe.get("/account-status", requireAuth, async (c) => {
         categories: requirementCategories,
       },
     });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.statusCode === 404 || err?.code === "resource_missing") {
+      deleteStripeAccount(organiserAddress);
+      console.log(`[stripe] Account ${record.stripeAccountId} not found on Stripe — removed local record`);
+      return c.json({ ok: true, connected: false });
+    }
     console.error("[stripe] Failed to retrieve account:", err);
     return c.json({
       ok: true,
@@ -272,6 +284,16 @@ stripe.get("/account-status", requireAuth, async (c) => {
       onboardingComplete: record.onboardingComplete,
     });
   }
+});
+
+/** DELETE /api/stripe/account — remove our local record for a deleted Stripe account */
+stripe.delete("/account", requireAuth, async (c) => {
+  const organiserAddress = c.get("parentAddress").toLowerCase();
+  const deleted = deleteStripeAccount(organiserAddress);
+  if (!deleted) {
+    return c.json({ ok: false, error: "No Stripe account record found" }, 404);
+  }
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -352,7 +374,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -365,7 +387,11 @@ stripe.post("/create-checkout", async (c) => {
     orderRef?: string;
     encryptedOrder?: SealedBox;
     reservationId?: string;
+    /** Deployed site id — passed when checkout originates from an organiser's
+     *  site-builder page so the webhook can theme the ticket email + PNG. */
+    siteId?: string;
   };
+  const siteId = typeof rawSiteId === "string" && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
 
   // Validate reservation if one was supplied. The reservation is expected to
@@ -524,19 +550,20 @@ stripe.post("/create-checkout", async (c) => {
   // so the buyer is returned to exactly where they came from, even on standalone
   // ENS event sites whose host isn't in ALLOWED_HOSTS. Validated only as a
   // well-formed HTTPS URL — no host restriction needed for a back-navigation.
-  function buildCancelUrl(): string {
+  function buildReturnUrl(marker: string): string {
     if (cancelUrl) {
       try {
         const u = new URL(cancelUrl);
         if (u.protocol === "https:" || u.hostname === "localhost") {
           const sep = cancelUrl.includes("?") ? "&" : "?";
-          return `${cancelUrl}${sep}stripe=cancelled`;
+          return `${cancelUrl}${sep}${marker}`;
         }
       } catch { /* fall through */ }
     }
-    return `${frontendUrl}/#/event/${eventId}?stripe=cancelled`;
+    return `${frontendUrl}/#/events/${eventId}?${marker}`;
   }
-  const stripeCancelUrl = buildCancelUrl();
+  const stripeCancelUrl = buildReturnUrl("stripe=cancelled");
+  const stripeSuccessUrl = buildReturnUrl("stripe=success&session_id={CHECKOUT_SESSION_ID}");
 
   try {
     const s = getStripe();
@@ -584,8 +611,11 @@ stripe.post("/create-checkout", async (c) => {
           // Optional: legacy / expired-reservation flows fall back to the
           // existing availability check at claim time.
           ...(reservationId ? { reservationId } : {}),
+          // Site id — present when checkout comes from a deployed organiser site.
+          // Webhook uses it to fetch the site theme for branded email + ticket PNG.
+          ...(siteId ? { siteId } : {}),
         },
-        success_url: `${frontendUrl}/#/event/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
+        success_url: stripeSuccessUrl,
         cancel_url: stripeCancelUrl,
         ...(claimerEmail ? { customer_email: claimerEmail } : {}),
       },
@@ -701,6 +731,16 @@ stripe.post("/webhook", async (c) => {
       break;
     }
 
+    case "account.deleted": {
+      const account = event.data.object;
+      const organiser = getOrganiserByStripeAccount(account.id);
+      if (organiser) {
+        deleteStripeAccount(organiser);
+        console.log(`[stripe-webhook] Account ${account.id} deleted — removed record for ${organiser}`);
+      }
+      break;
+    }
+
     default:
       // Ignore other event types
       break;
@@ -723,7 +763,7 @@ async function handleSuccessfulPayment(
   session: import("stripe").Stripe.Checkout.Session,
   webhookEventCreated: number,
 ): Promise<void> {
-  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId } = session.metadata ?? {};
+  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId, siteId: metaSiteId } = session.metadata ?? {};
 
   if (!eventId || !seriesId) {
     console.error("[stripe-webhook] Missing eventId/seriesId in session metadata");
@@ -1013,18 +1053,24 @@ async function handleSuccessfulPayment(
   // baked into the composite ticket-card PNG and shown on the standalone page.
   if (claimerEmail && claimedResults.length > 0 && eventTitle) {
     const buyerName = session.customer_details?.name?.trim() || undefined;
-    sendTicketEmail({
-      to: claimerEmail,
-      eventTitle,
-      eventDate,
-      eventLocation,
-      seriesName,
-      totalSupply,
-      tickets: claimedResults,
-      buyerName,
-    }).catch((err) => {
-      console.error("[stripe-webhook] Auto-email failed (non-fatal):", err);
-    });
+    const siteThemePromise = metaSiteId ? getSiteTheme(metaSiteId) : Promise.resolve(null);
+    siteThemePromise
+      .then((siteTheme) =>
+        sendTicketEmail({
+          to: claimerEmail,
+          eventTitle,
+          eventDate,
+          eventLocation,
+          seriesName,
+          totalSupply,
+          tickets: claimedResults,
+          buyerName,
+          palette: siteTheme?.palette,
+        }),
+      )
+      .catch((err) => {
+        console.error("[stripe-webhook] Auto-email failed (non-fatal):", err);
+      });
   }
 }
 

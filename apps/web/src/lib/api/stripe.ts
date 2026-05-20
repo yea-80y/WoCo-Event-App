@@ -46,6 +46,20 @@ export async function getStripeAccountStatus(): Promise<StripeAccountStatus> {
   return resp as any as StripeAccountStatus;
 }
 
+export async function removeStripeAccount(): Promise<void> {
+  const { buildAuthHeaders } = await import("./client.js");
+  const path = "/api/stripe/account";
+  const authHeaders = await buildAuthHeaders("DELETE", path, "");
+  const resp = await fetch(`${apiBase}${path}`, {
+    method: "DELETE",
+    headers: authHeaders,
+  });
+  if (!resp.ok) {
+    const json = await resp.json().catch(() => ({}));
+    throw new Error((json as any).error ?? "Failed to remove Stripe account");
+  }
+}
+
 /**
  * Pre-upload the encrypted order payload to Swarm and return the ref.
  *
@@ -101,6 +115,12 @@ export async function createCheckoutSession(params: {
   const cancelUrl =
     typeof window !== "undefined" ? window.location.href : undefined;
 
+  // If we're on a deployed organiser site, pass the siteId so the server can
+  // theme the ticket email + PNG card with the organiser's brand palette.
+  const siteId = typeof window !== "undefined"
+    ? (window as typeof window & { SITE_CONFIG?: { site?: { siteId?: string } } }).SITE_CONFIG?.site?.siteId
+    : undefined;
+
   const body = {
     eventId: params.eventId,
     seriesId: params.seriesId,
@@ -109,6 +129,7 @@ export async function createCheckoutSession(params: {
     ...(params.orderRef ? { orderRef: params.orderRef } : {}),
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
     ...(params.reservationId ? { reservationId: params.reservationId } : {}),
+    ...(siteId ? { siteId } : {}),
     ...(returnUrl ? { returnUrl } : {}),
     ...(cancelUrl ? { cancelUrl } : {}),
   };

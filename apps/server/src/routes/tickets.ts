@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
+import type { SitePalette } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
 
@@ -27,6 +28,9 @@ export interface TicketEmailOpts {
   /** Optional buyer name (from Stripe customer details). Baked into the
    *  composite PNG and shown on the standalone ticket page. */
   buyerName?: string;
+  /** Organiser site palette — when present, email + PNG card match their brand.
+   *  Falls back to WoCo Concrete & Acid defaults when absent. */
+  palette?: SitePalette;
 }
 
 /** Parse `woco://t/{eventId}/{seriesId}/{edition}/{sig}` → its parts.
@@ -57,7 +61,17 @@ function escHtml(s: string): string {
 }
 
 function buildTicketHtml(opts: TicketEmailOpts): string {
-  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, buyerName } = opts;
+  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, buyerName, palette: p } = opts;
+  // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
+  const c = {
+    bg:      p?.bg      ?? '#0B0B09',
+    cardBg:  p?.cardBg  ?? '#14140F',
+    headerBg: p?.cardBg  ?? '#1B1A14',
+    text:    p?.text    ?? '#F2EBE0',
+    muted:   p?.muted   ?? '#8A8478',
+    accent:  p?.accent  ?? '#C7F23A',
+    border:  p?.border  ?? '#2B2A23',
+  };
   const dateStr = eventDate
     ? new Date(eventDate).toLocaleDateString(undefined, {
         weekday: "long", year: "numeric", month: "long", day: "numeric",
@@ -89,21 +103,21 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0d0a07; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #f5f0ea; }
+    body { background: ${c.bg}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: ${c.text}; }
     .wrap { max-width: 560px; margin: 0 auto; padding: 32px 16px; }
-    .card { background: #191410; border: 1px solid rgba(255,255,255,0.07); border-radius: 16px; overflow: hidden; }
-    .header { background: linear-gradient(135deg, #231a0f 0%, #140e08 100%); padding: 32px 32px 24px; }
-    .badge { display: inline-block; background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.3); color: #f59e0b; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 10px; border-radius: 4px; margin-bottom: 14px; }
-    h1 { font-size: 22px; font-weight: 800; color: #f5f0ea; line-height: 1.2; letter-spacing: -0.02em; }
+    .card { background: ${c.cardBg}; border: 1px solid ${c.border}; border-radius: 8px; overflow: hidden; }
+    .header { background: ${c.headerBg}; border-bottom: 1px solid ${c.border}; padding: 32px 32px 24px; }
+    .badge { display: inline-block; background: ${c.accent}1a; border: 1px solid ${c.accent}38; color: ${c.accent}; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 10px; border-radius: 2px; margin-bottom: 14px; }
+    h1 { font-size: 22px; font-weight: 800; color: ${c.text}; line-height: 1.2; letter-spacing: -0.02em; }
     .meta { margin-top: 12px; display: flex; flex-direction: column; gap: 5px; }
-    .meta-row { font-size: 12px; color: rgba(245,240,234,0.4); }
+    .meta-row { font-size: 12px; color: ${c.muted}; }
     .body { padding: 28px 32px; }
-    .qr-section { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 24px 16px; text-align: center; margin-bottom: 16px; }
-    .qr-label { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: rgba(255,255,255,0.22); margin-bottom: 14px; }
-    .qr-image { display: block; margin: 0 auto 16px; max-width: 100%; height: auto; border-radius: 10px; }
-    .qr-link { display: inline-block; background: rgba(124,108,240,0.14); border: 1px solid rgba(124,108,240,0.28); color: #a298f5; font-size: 12px; font-weight: 600; text-decoration: none; padding: 10px 20px; border-radius: 8px; }
-    .instructions { font-size: 13px; color: rgba(245,240,234,0.45); line-height: 1.65; margin-top: 8px; }
-    .footer { border-top: 1px solid rgba(255,255,255,0.05); padding: 20px 32px; font-size: 11px; color: rgba(255,255,255,0.18); }
+    .qr-section { background: ${c.border}22; border: 1px solid ${c.border}; border-radius: 4px; padding: 24px 16px; text-align: center; margin-bottom: 16px; }
+    .qr-label { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: ${c.muted}; margin-bottom: 14px; }
+    .qr-image { display: block; margin: 0 auto 16px; max-width: 100%; height: auto; border-radius: 4px; }
+    .qr-link { display: inline-block; background: ${c.accent}14; border: 1px solid ${c.accent}33; color: ${c.accent}; font-size: 12px; font-weight: 600; text-decoration: none; padding: 10px 20px; border-radius: 4px; }
+    .instructions { font-size: 13px; color: ${c.muted}; line-height: 1.65; margin-top: 8px; }
+    .footer { border-top: 1px solid ${c.border}; padding: 20px 32px; font-size: 11px; color: ${c.muted}; }
   </style>
 </head>
 <body>
@@ -147,7 +161,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
 export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
   const resend = getResend();
   const fromAddress = getFromAddress();
-  const { to, eventTitle, eventDate, eventLocation, tickets: tix, buyerName } = opts;
+  const { to, eventTitle, eventDate, eventLocation, tickets: tix, buyerName, palette } = opts;
   const subjectEdition = tix.length === 1 && tix[0].edition != null
     ? ` #${String(tix[0].edition).padStart(3, "0")}`
     : tix.length > 1 ? ` (×${tix.length})` : "";
@@ -162,6 +176,7 @@ export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
         buyerEmail: to,
         buyerName,
         qrContent,
+        palette,
       });
       const editionStr = edition != null ? String(edition).padStart(3, "0") : String(i + 1);
       return {

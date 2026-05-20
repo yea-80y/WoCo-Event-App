@@ -15,6 +15,7 @@
 
 import { Resvg } from "@resvg/resvg-js";
 import QRCode from "qrcode";
+import type { SitePalette } from "@woco/shared";
 
 export interface TicketCardData {
   /** Full event title, e.g. "Devcon Brussels 2026" */
@@ -31,6 +32,9 @@ export interface TicketCardData {
   buyerName?: string;
   /** Full QR payload — `woco://t/{eventId}/{seriesId}/{edition}/{sig}` */
   qrContent: string;
+  /** Organiser site palette — when present the card matches their brand.
+   *  Falls back to WoCo Concrete & Acid defaults when absent. */
+  palette?: SitePalette;
 }
 
 const WIDTH = 800;
@@ -95,7 +99,17 @@ async function renderQrMatrix(content: string): Promise<{ size: number; modules:
 
 /** Build the SVG markup for the ticket card. Pure string concat — no DOM. */
 async function buildSvg(data: TicketCardData): Promise<string> {
-  const { eventTitle, eventDate, eventLocation, edition, buyerEmail, buyerName, qrContent } = data;
+  const { eventTitle, eventDate, eventLocation, edition, buyerEmail, buyerName, qrContent, palette: p } = data;
+  // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
+  const col = {
+    bg:     p?.bg     ?? '#0B0B09',
+    cardBg: p?.cardBg ?? '#14140F',
+    border: p?.border ?? '#2B2A23',
+    accent: p?.accent ?? '#C7F23A',
+    text:   p?.text   ?? '#F2EBE0',
+    muted:  p?.muted  ?? '#B5AC9D',
+    dim:    p?.muted  ?? '#8A8478',
+  };
   const dateStr = formatDate(eventDate);
   const editionStr = edition != null ? `#${String(edition).padStart(3, "0")}` : null;
 
@@ -120,59 +134,59 @@ async function buildSvg(data: TicketCardData): Promise<string> {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" font-family="'DejaVu Sans', 'Liberation Sans', Helvetica, Arial, sans-serif">
   <!-- Background -->
-  <rect width="${WIDTH}" height="${HEIGHT}" fill="#0c0d12"/>
-  <!-- Subtle inner border to give the card a defined edge -->
-  <rect x="20" y="20" width="${WIDTH - 40}" height="${HEIGHT - 40}" rx="20" fill="#15161f" stroke="#252634" stroke-width="1"/>
+  <rect width="${WIDTH}" height="${HEIGHT}" fill="${col.bg}"/>
+  <!-- Inner card surface -->
+  <rect x="20" y="20" width="${WIDTH - 40}" height="${HEIGHT - 40}" rx="6" fill="${col.cardBg}" stroke="${col.border}" stroke-width="1"/>
 
   <!-- Brand row -->
   <text x="${WIDTH / 2}" y="92" text-anchor="middle" font-size="14" font-weight="700"
-        letter-spacing="6" fill="#7c6cf0">WOCO TICKET</text>
+        letter-spacing="6" fill="${col.accent}">WOCO TICKET</text>
 
   ${editionStr ? `
   <!-- Edition pill -->
   <g>
-    <rect x="${(WIDTH - 130) / 2}" y="116" width="130" height="34" rx="17" fill="#1c1d2a" stroke="#2c2e40"/>
-    <text x="${WIDTH / 2}" y="138" text-anchor="middle" font-size="14" font-weight="600"
-          letter-spacing="3" fill="#a298f5">${editionStr}</text>
+    <rect x="${(WIDTH - 130) / 2}" y="116" width="130" height="30" rx="2" fill="${col.cardBg}" stroke="${col.border}"/>
+    <text x="${WIDTH / 2}" y="136" text-anchor="middle" font-size="13" font-weight="600"
+          letter-spacing="3" fill="${col.accent}">${editionStr}</text>
   </g>` : ""}
 
   <!-- Event title -->
   <text x="${WIDTH / 2}" y="200" text-anchor="middle" font-size="36" font-weight="700"
-        fill="#f3f4f8">${titleClipped}</text>
+        fill="${col.text}">${titleClipped}</text>
 
   ${dateLine ? `
   <text x="${WIDTH / 2}" y="240" text-anchor="middle" font-size="16"
-        fill="#a0a0b8">${dateLine}</text>` : ""}
+        fill="${col.muted}">${dateLine}</text>` : ""}
 
   ${locationLine ? `
   <text x="${WIDTH / 2}" y="${dateLine ? 268 : 240}" text-anchor="middle" font-size="14"
-        fill="#6a6a80">${locationLine}</text>` : ""}
+        fill="${col.dim}">${locationLine}</text>` : ""}
 
   <!-- QR card (white surface for max scanner contrast) -->
-  <rect x="${qrX}" y="${qrY}" width="${QR_BOX}" height="${QR_BOX}" rx="14" fill="#ffffff"/>
-  <g transform="translate(${qrInnerX} ${qrInnerY})" fill="#0c0d12" shape-rendering="crispEdges">
+  <rect x="${qrX}" y="${qrY}" width="${QR_BOX}" height="${QR_BOX}" rx="4" fill="#ffffff"/>
+  <g transform="translate(${qrInnerX} ${qrInnerY})" fill="#111111" shape-rendering="crispEdges">
     ${qr.modules}
   </g>
 
   <!-- Caption under QR -->
   <text x="${WIDTH / 2}" y="${qrY + QR_BOX + 44}" text-anchor="middle" font-size="13"
-        letter-spacing="2" fill="#6a6a80" font-weight="600">SHOW AT THE DOOR</text>
+        letter-spacing="2" fill="${col.dim}" font-weight="600">SHOW AT THE DOOR</text>
 
   ${nameLine || emailLine ? `
   <!-- Buyer block -->
   <g transform="translate(${WIDTH / 2} ${qrY + QR_BOX + 90})">
     <text text-anchor="middle" font-size="11" letter-spacing="3" font-weight="600"
-          fill="#6a6a80">ISSUED TO</text>
+          fill="${col.dim}">ISSUED TO</text>
     ${nameLine ? `<text y="28" text-anchor="middle" font-size="20" font-weight="600"
-                       fill="#eeeff5">${nameLine}</text>` : ""}
+                       fill="${col.text}">${nameLine}</text>` : ""}
     ${emailLine ? `<text y="${nameLine ? 56 : 30}" text-anchor="middle" font-size="${nameLine ? 14 : 17}"
-                         fill="${nameLine ? "#a0a0b8" : "#eeeff5"}"
+                         fill="${nameLine ? col.muted : col.text}"
                          font-family="'DejaVu Sans Mono', 'Liberation Mono', monospace">${emailLine}</text>` : ""}
   </g>` : ""}
 
   <!-- Footer note -->
   <text x="${WIDTH / 2}" y="${HEIGHT - 50}" text-anchor="middle" font-size="11"
-        fill="#4a4a60">Cryptographically signed · Verifies offline</text>
+        fill="${col.dim}">Cryptographically signed · Verifies offline</text>
 </svg>`;
 }
 
@@ -188,7 +202,7 @@ export async function renderTicketCardPng(data: TicketCardData): Promise<Buffer>
   const svg = await buildSvg(data);
   const resvg = new Resvg(svg, {
     fitTo: { mode: "width", value: WIDTH },
-    background: "#0c0d12",
+    background: data.palette?.bg ?? "#0B0B09",
     font: {
       loadSystemFonts: true,
       defaultFontFamily: "DejaVu Sans",

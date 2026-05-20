@@ -556,20 +556,24 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const brandNameEsc = escHtml(site.theme.brandName?.trim() || 'WoCo Site');
     const descEsc = escHtml(desc);
     const logoRef = site.theme.logoSwarmRef;
-    const ogImage = logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : '';
+    // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
+    const thumbnailUrl = logoRef && !/^0+$/.test(logoRef)
+      ? `${gatewayUrl}/bytes/${logoRef}`
+      : './logo.png';
 
     const headLines = [
       `  <link rel="manifest" href="./manifest.json">`,
+      thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
       `  <meta name="theme-color" content="${site.theme.palette.accent}">`,
       desc ? `  <meta name="description" content="${descEsc}">` : '',
       `  <meta property="og:type" content="website">`,
       `  <meta property="og:title" content="${brandNameEsc}">`,
       desc ? `  <meta property="og:description" content="${descEsc}">` : '',
-      ogImage ? `  <meta property="og:image" content="${ogImage}">` : '',
-      `  <meta name="twitter:card" content="${ogImage ? 'summary_large_image' : 'summary'}">`,
+      thumbnailUrl ? `  <meta property="og:image" content="${thumbnailUrl}">` : '',
+      `  <meta name="twitter:card" content="${thumbnailUrl ? 'summary_large_image' : 'summary'}">`,
       `  <meta name="twitter:title" content="${brandNameEsc}">`,
       desc ? `  <meta name="twitter:description" content="${descEsc}">` : '',
-      ogImage ? `  <meta name="twitter:image" content="${ogImage}">` : '',
+      thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
     ].filter(Boolean).join('\n');
 
     const injectedWithPwa = injectedHtml.replace("</head>", `${headLines}\n  </head>`);

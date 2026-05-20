@@ -1,6 +1,6 @@
 import { Topic } from "@ethersphere/bee-js";
-import { siteCreatorDirectoryTopic } from "@woco/shared";
-import type { SiteDirectoryEntry, SiteDirectory } from "@woco/shared";
+import { siteCreatorDirectoryTopic, siteConfigTopic } from "@woco/shared";
+import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette } from "@woco/shared";
 import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
 
 const DIR_PAGE_LIMIT = 4096;
@@ -15,6 +15,23 @@ const DIR_PAGE_LIMIT = 4096;
 const CREATOR_SITES_MEMO_TTL_MS = 5 * 60_000;
 const _creatorSitesMemo = new Map<string, { at: number; data: SiteDirectoryEntry[] }>();
 const _creatorSitesInFlight = new Map<string, Promise<SiteDirectoryEntry[]>>();
+
+/**
+ * Fetch just the theme palette + brandName for a site. Used by the Stripe
+ * webhook to theme ticket emails and PNG cards with the organiser's branding.
+ * Reads page 0 only (theme lives in the config feed, not the pages overflow).
+ */
+export async function getSiteTheme(siteId: string): Promise<{ palette: SitePalette; brandName: string } | null> {
+  try {
+    const page = await readFeedPage(Topic.fromString(siteConfigTopic(siteId)));
+    if (!page) return null;
+    const site = decodeJsonFeed<Site>(page);
+    if (!site?.theme?.palette) return null;
+    return { palette: site.theme.palette, brandName: site.theme.brandName };
+  } catch {
+    return null;
+  }
+}
 
 export function invalidateCreatorSitesCache(ethAddress: string): void {
   _creatorSitesMemo.delete(ethAddress.toLowerCase());
