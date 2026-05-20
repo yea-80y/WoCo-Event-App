@@ -139,20 +139,19 @@
 {#if showIntro}
   <div class="intro-curtain" aria-hidden="true">
     <div class="intro-half intro-left">
-      <div class="intro-brand">
-        {#if logoUrl() && !logoFailed}
-          <img
-            class="intro-logo-img"
-            src={logoUrl()!}
-            alt={site.theme.brandName}
-            onerror={() => { logoFailed = true; }}
-          />
-        {:else}
-          <span class="intro-brand-text">{site.theme.brandName}</span>
-        {/if}
-      </div>
+      {#if logoUrl() && !logoFailed}
+        <img class="intro-split-logo intro-split-left" src={logoUrl()!} alt="" onerror={() => { logoFailed = true; }} />
+      {:else}
+        <span class="intro-split-text intro-split-text-left">{site.theme.brandName}</span>
+      {/if}
     </div>
-    <div class="intro-half intro-right"></div>
+    <div class="intro-half intro-right">
+      {#if logoUrl() && !logoFailed}
+        <img class="intro-split-logo intro-split-right" src={logoUrl()!} alt={site.theme.brandName} />
+      {:else}
+        <span class="intro-split-text intro-split-text-right">{site.theme.brandName}</span>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -324,12 +323,14 @@
     position: fixed;
     inset: 0;
     z-index: 9999;
-    display: flex;
     pointer-events: none;
   }
 
   .intro-half {
-    flex: 1;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    overflow: hidden;
     background: var(--bg);
     animation-duration: 0.85s;
     animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
@@ -337,33 +338,38 @@
     animation-fill-mode: forwards;
   }
 
-  .intro-left  { animation-name: curtain-left; }
-  .intro-right { animation-name: curtain-right; }
+  .intro-left  { left: 0; width: 50%; animation-name: curtain-left; }
+  .intro-right { left: 50%; right: 0; animation-name: curtain-right; }
 
-  .intro-brand {
-    position: fixed;
-    left: 50%;
+  /* Same logo image in both panels — each panel clips its respective half.
+     Logo center sits at the boundary (50vw) so halves separate cleanly. */
+  .intro-split-logo {
+    position: absolute;
     top: 50%;
-    transform: translate(-50%, -50%);
-    animation: intro-brand-show 0.5s ease 0.15s both, intro-brand-hide 0.3s ease 1s forwards;
-    white-space: nowrap;
+    height: clamp(80px, 18vw, 180px);
+    width: auto;
+    max-width: 520px;
+    object-fit: contain;
+    animation: intro-logo-appear 0.5s ease 0.1s both;
   }
 
-  .intro-brand-text {
-    font-size: clamp(1.5rem, 5vw, 3rem);
+  .intro-split-left  { right: 0; transform: translate(50%, -50%); }
+  .intro-split-right { left: 0;  transform: translate(-50%, -50%); }
+
+  .intro-split-text {
+    position: absolute;
+    top: 50%;
+    font-size: clamp(2.5rem, 8vw, 6rem);
     font-weight: 900;
     color: var(--text);
     letter-spacing: -0.03em;
     font-family: var(--font-family);
+    white-space: nowrap;
+    animation: intro-logo-appear 0.5s ease 0.1s both;
   }
 
-  .intro-logo-img {
-    height: clamp(48px, 10vw, 96px);
-    width: auto;
-    max-width: 280px;
-    object-fit: contain;
-    display: block;
-  }
+  .intro-split-text-left  { right: 0; transform: translate(50%, -50%); }
+  .intro-split-text-right { left: 0;  transform: translate(-50%, -50%); }
 
   @keyframes curtain-left {
     from { transform: translateX(0); }
@@ -373,13 +379,9 @@
     from { transform: translateX(0); }
     to   { transform: translateX(100%); }
   }
-  @keyframes intro-brand-show {
-    from { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
-    to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  }
-  @keyframes intro-brand-hide {
-    from { opacity: 1; }
-    to   { opacity: 0; }
+  @keyframes intro-logo-appear {
+    from { opacity: 0; }
+    to   { opacity: 1; }
   }
 
   /* ── Shared site shell ─────────────────────────────────────────────── */
@@ -569,7 +571,7 @@
     background: var(--bg);
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
     justify-content: center;
     padding: 4rem 3rem;
     transform: translateX(-100%);

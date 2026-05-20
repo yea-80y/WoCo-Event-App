@@ -36,7 +36,19 @@
       if (section.mode === 'featured' || sortMode === "manual") {
         out.sort((a, b) => orderedIds.indexOf(a.eventId) - orderedIds.indexOf(b.eventId));
       } else {
-        out.sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
+        const now = Date.now();
+        out.sort((a, b) => {
+          const ta = new Date(a.startDate).getTime();
+          const tb = new Date(b.startDate).getTime();
+          const af = !isNaN(ta) && ta > now;
+          const bf = !isNaN(tb) && tb > now;
+          if (af && !bf) return -1;
+          if (!af && bf) return 1;
+          if (isNaN(ta) && isNaN(tb)) return 0;
+          if (isNaN(ta)) return 1;
+          if (isNaN(tb)) return -1;
+          return af ? ta - tb : tb - ta;
+        });
       }
     }
 
