@@ -346,11 +346,11 @@
   .intro-split-logo {
     position: absolute;
     top: 50%;
-    height: clamp(80px, 18vw, 180px);
+    height: clamp(52px, 10vw, 120px);
     width: auto;
-    max-width: 520px;
+    max-width: min(420px, 46vw);
     object-fit: contain;
-    animation: intro-logo-appear 0.5s ease 0.1s both;
+    animation: intro-logo-appear 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
   }
 
   .intro-split-left  { right: 0; transform: translate(50%, -50%); }
@@ -359,13 +359,13 @@
   .intro-split-text {
     position: absolute;
     top: 50%;
-    font-size: clamp(2.5rem, 8vw, 6rem);
+    font-size: clamp(2rem, 6vw, 4.5rem);
     font-weight: 900;
     color: var(--text);
     letter-spacing: -0.03em;
     font-family: var(--font-family);
     white-space: nowrap;
-    animation: intro-logo-appear 0.5s ease 0.1s both;
+    animation: intro-logo-appear 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
   }
 
   .intro-split-text-left  { right: 0; transform: translate(50%, -50%); }
@@ -380,8 +380,8 @@
     to   { transform: translateX(100%); }
   }
   @keyframes intro-logo-appear {
-    from { opacity: 0; }
-    to   { opacity: 1; }
+    from { opacity: 0; filter: blur(8px); }
+    to   { opacity: 1; filter: blur(0px); }
   }
 
   /* ── Shared site shell ─────────────────────────────────────────────── */
