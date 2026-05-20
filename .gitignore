@@ -35,6 +35,9 @@ apps/server/data/
 **/.data/
 packages/shared/tsconfig.tsbuildinfo
 
+# Contracts (nested Foundry repo — not tracked here)
+contracts/
+
 # Swarm deployment state
 .swarm/
 
