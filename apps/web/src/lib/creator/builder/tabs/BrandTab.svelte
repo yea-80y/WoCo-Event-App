@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Site, FontFamilyId, RadiusScale, SitePalette, NavStyleId, LogoSize } from "@woco/shared";
   import { compressImage, imgPreset } from "../../../utils.js";
+  import ColorField from "../ColorField.svelte";
 
   interface Props {
     site: Site;
@@ -326,24 +327,10 @@
         <div class="token-row">
           <label class="token-label" for="color-{key}">{label}</label>
           <div class="token-inputs">
-            <input
+            <ColorField
               id="color-{key}"
-              type="color"
-              class="color-swatch-input"
-              value={site.theme.palette[key]}
-              oninput={(e) => { site.theme.palette[key] = (e.currentTarget as HTMLInputElement).value; }}
-            />
-            <input
-              class="input hex-input"
-              type="text"
-              value={site.theme.palette[key]}
-              placeholder="#000000"
-              oninput={(e) => {
-                const v = (e.currentTarget as HTMLInputElement).value;
-                if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-                  site.theme.palette[key] = v;
-                }
-              }}
+              {label}
+              bind:value={site.theme.palette[key]}
             />
           </div>
         </div>
@@ -859,30 +846,4 @@
     flex: 1;
   }
 
-  .color-swatch-input {
-    width: 2rem;
-    height: 2rem;
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    flex-shrink: 0;
-    background: none;
-  }
-
-  .color-swatch-input::-webkit-color-swatch-wrapper {
-    padding: 2px;
-  }
-
-  .color-swatch-input::-webkit-color-swatch {
-    border: none;
-    border-radius: 2px;
-  }
-
-  .hex-input {
-    font-family: monospace;
-    font-size: 0.8125rem;
-    max-width: 7rem;
-    padding: 0.375rem 0.5rem;
-  }
 </style>

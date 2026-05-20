@@ -251,13 +251,10 @@
         <div class="nav-spacer" aria-hidden="true"></div>
       </div>
 
-      <!-- Fullscreen overlay menu (slides from left) -->
+      <!-- Fullscreen overlay menu (slides from left). The hamburger morphs to an
+           X via .bar-open and sits above the overlay (z-index 200 > 150), so it
+           is the single close affordance — no duplicate close button here. -->
       <div class="overlay-menu" class:overlay-open={menuOpen} aria-hidden={!menuOpen}>
-        <button class="overlay-close" aria-label="Close menu" onclick={() => (menuOpen = false)}>
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M4 4l12 12M16 4L4 16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
-          </svg>
-        </button>
         <ul class="overlay-links">
           {#each site.nav as item, i}
             <li style="--i: {i}">
@@ -295,13 +292,9 @@
         </button>
       </div>
 
-      <!-- Full-screen drawer (slides from right) -->
+      <!-- Full-screen drawer (slides from right). Same single-affordance rule:
+           the morphed hamburger is the only close button. -->
       <div class="drawer-menu" class:drawer-open={menuOpen} aria-hidden={!menuOpen}>
-        <button class="overlay-close" aria-label="Close menu" onclick={() => (menuOpen = false)}>
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M4 4l12 12M16 4L4 16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
-          </svg>
-        </button>
         <ul class="drawer-links">
           {#each site.nav as item, i}
             <li style="--i: {i}">
@@ -488,21 +481,6 @@
   .hamburger span:nth-child(2).bar-open { opacity: 0; transform: scaleX(0); }
   .hamburger span:nth-child(3).bar-open { transform: translateY(-7px) rotate(-45deg); }
 
-  /* Close button inside overlay/drawer */
-  .overlay-close {
-    position: absolute;
-    top: 1.25rem;
-    right: 1.5rem;
-    padding: 0.5rem;
-    color: var(--muted);
-    background: none;
-    border: none;
-    cursor: pointer;
-    transition: color 0.15s ease;
-    z-index: 10;
-  }
-  .overlay-close:hover { color: var(--text); }
-
   /* ── TOP-BAR nav ───────────────────────────────────────────────────── */
   .nav-topbar {
     border-bottom: 1px solid var(--border);
@@ -545,7 +523,7 @@
   }
 
   @media (max-width: 640px) {
-    .hamburger { display: flex; margin-left: auto; }
+    .hamburger { display: flex; margin-left: auto; margin-right: -0.5rem; }
 
     .nav-links {
       display: none;
@@ -593,6 +571,7 @@
     display: flex;
     z-index: 200;
     position: relative;
+    margin-left: -0.5rem; /* offset hamburger's own padding so bars sit at the content gutter, not indented past it */
   }
 
   .brand-center {
@@ -686,6 +665,7 @@
 
   .hamburger-drawer {
     display: flex;
+    margin-right: -0.5rem; /* mirror of hamburger-center: bars sit at the content gutter on the right edge */
   }
 
   /* Full-screen drawer from right */
