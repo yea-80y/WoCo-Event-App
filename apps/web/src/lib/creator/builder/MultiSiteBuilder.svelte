@@ -165,15 +165,26 @@
   // ── Actions ───────────────────────────────────────────────────────────────────
   function openPreview() {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(PREVIEW_KEY, JSON.stringify({
+    const data = JSON.stringify({
       site: $state.snapshot(site),
       gatewayUrl,
       apiUrl: API_URL,
       previewEvents: $state.snapshot(siteEvents),
       previewLogoDataUrl: pendingLogoBase64 ?? undefined,
-    }));
-    localStorage.setItem('woco:preview-timestamp', String(Date.now()));
-    window.open('./multi-site.html', '_blank');
+    });
+    // Write to localStorage (works when builder + preview share the same origin)
+    try {
+      localStorage.setItem(PREVIEW_KEY, data);
+      localStorage.setItem('woco:preview-timestamp', String(Date.now()));
+    } catch {}
+    const win = window.open('./multi-site.html', '_blank');
+    // Also send via postMessage — works even when origins differ (e.g. woco.eth.limo
+    // builder opens gateway.woco-net.com preview). Multiple sends handle timing.
+    if (win) {
+      const msg = { type: 'woco-preview', data };
+      setTimeout(() => win.postMessage(msg, '*'), 300);
+      setTimeout(() => win.postMessage(msg, '*'), 1000);
+    }
   }
 
   /** Etherna website publish requires a per-user batch. Returns true if the

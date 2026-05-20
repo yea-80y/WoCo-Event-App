@@ -3,40 +3,32 @@
   import type { Site, SiteRuntimeConfig, NavStyleId } from '@woco/shared';
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
   import EventPage from './lib/components/site/EventPage.svelte';
-  function getConfig(): SiteRuntimeConfig {
-    const fallback: SiteRuntimeConfig = {
-      gatewayUrl: import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com',
-      apiUrl: import.meta.env.VITE_API_URL ?? 'http://localhost:3001',
-    };
-    if (typeof window === 'undefined') return fallback;
-
-    // If the builder wrote a preview timestamp within the last 30s, prefer
-    // localStorage over any window.SITE_CONFIG injected at deploy time.
-    // This is more robust than query params which Swarm gateways can strip.
+  // Try to get config from localStorage (same-origin case).
+  // Returns null if nothing is found — postMessage handler will fill it in.
+  function getInitialConfig(): SiteRuntimeConfig | null {
+    if (typeof window === 'undefined') return null;
     const tsRaw = localStorage.getItem('woco:preview-timestamp');
-    const isBuilderPreview = tsRaw !== null && (Date.now() - parseInt(tsRaw, 10)) < 30_000;
-
+    const isBuilderPreview = tsRaw !== null && (Date.now() - parseInt(tsRaw, 10)) < 300_000;
     if (!isBuilderPreview && window.SITE_CONFIG?.site) return window.SITE_CONFIG as SiteRuntimeConfig;
-
     const preview = localStorage.getItem('woco:site-preview');
     if (preview) {
-      try { return JSON.parse(preview) as SiteRuntimeConfig; } catch {}
+      try {
+        const c = JSON.parse(preview) as SiteRuntimeConfig;
+        if (c?.site) return c;
+      } catch {}
     }
-
-    return fallback;
+    return null;
   }
-  const config = getConfig();
-  if (typeof window !== 'undefined') window.SITE_CONFIG = config;
-  const site = config.site as Site;
-  const gatewayUrl = config.gatewayUrl;
-  const apiUrl = config.apiUrl ?? 'http://localhost:3001';
 
-  const navStyle: NavStyleId = site.theme.navStyle ?? 'topbar';
-  const wantsIntro = navStyle === 'center-logo' && site.theme.introAnimation !== false;
+  let config = $state<SiteRuntimeConfig | null>(getInitialConfig());
+  const site       = $derived(config?.site as Site | undefined);
+  const gatewayUrl = $derived(config?.gatewayUrl ?? (import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com'));
+  const apiUrl     = $derived(config?.apiUrl ?? (import.meta.env.VITE_API_URL ?? 'http://localhost:3001'));
+  const navStyle   = $derived<NavStyleId>((site?.theme?.navStyle as NavStyleId) ?? 'topbar');
 
   function logoUrl(): string | null {
-    if (config.previewLogoDataUrl) return config.previewLogoDataUrl;
-    const ref = site.theme.logoSwarmRef;
+    if (config?.previewLogoDataUrl) return config.previewLogoDataUrl;
+    const ref = site?.theme?.logoSwarmRef;
     if (!ref || /^0+$/.test(ref)) return null;
     return `${gatewayUrl}/bytes/${ref}`;
   }
@@ -45,10 +37,11 @@
     | { type: 'page'; slug: string }
     | { type: 'event'; eventId: string };
 
-  let route        = $state<Route>(parseHash());
-  let menuOpen     = $state(false);
-  let logoFailed   = $state(false);
-  let showIntro    = $state(wantsIntro);
+  let route      = $state<Route>({ type: 'page', slug: '/' });
+  let menuOpen   = $state(false);
+  let logoFailed = $state(false);
+  let showIntro  = $state(false);
+  let configReady = $state(false);
 
   function parseHash(): Route {
     const raw = window.location.hash.replace(/^#/, '') || '/';
@@ -59,10 +52,11 @@
   }
 
   function currentPage(slug: string) {
-    return site.pages.find(p => p.slug === slug) ?? site.pages.find(p => p.slug === '/');
+    return site?.pages.find(p => p.slug === slug) ?? site?.pages.find(p => p.slug === '/');
   }
 
   function applyTheme() {
+    if (!site) return;
     const root = document.documentElement;
     const { palette, fontFamily, radius } = site.theme;
     root.style.setProperty('--bg', palette.bg);
@@ -100,19 +94,46 @@
     document.title = site.theme.brandName;
   }
 
-  onMount(() => {
+  function activateSite() {
+    if (configReady) return;
+    configReady = true;
+    window.SITE_CONFIG = config!;
+    route = parseHash();
+    const intro = navStyle === 'center-logo' && (site?.theme?.introAnimation !== false);
+    showIntro = intro;
     applyTheme();
-
-    if (showIntro) {
-      // Remove curtain from DOM after the CSS animation completes (1.2s delay + 0.8s slide = 2.1s)
-      setTimeout(() => { showIntro = false; }, 2400);
-    }
-
+    if (intro) setTimeout(() => { showIntro = false; }, 2400);
     window.addEventListener('hashchange', () => {
       route = parseHash();
       menuOpen = false;
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
+  }
+
+  onMount(() => {
+    if (site) {
+      activateSite();
+      return;
+    }
+    // Config not in localStorage — wait for postMessage from builder window.
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === 'woco-preview' && e.data.data) {
+        try {
+          const c = JSON.parse(e.data.data) as SiteRuntimeConfig;
+          if (c?.site) {
+            config = c;
+            window.removeEventListener('message', handler);
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  });
+
+  // Fires when config arrives asynchronously via postMessage
+  $effect(() => {
+    if (site && !configReady) activateSite();
   });
 
   // Lock body scroll when overlay/drawer menu is open
@@ -123,22 +144,23 @@
   });
 
   $effect(() => {
-    if (route.type === 'page') {
-      const page = currentPage(route.slug);
-      if (page) {
-        document.title = page.title ?? site.theme.brandName;
-        const desc = page.metaDescription || site.theme.siteDescription || '';
-        let metaDesc = document.querySelector<HTMLMetaElement>('meta[name="description"]');
-        if (!metaDesc) {
-          metaDesc = document.createElement('meta');
-          metaDesc.name = 'description';
-          document.head.appendChild(metaDesc);
-        }
-        metaDesc.content = desc;
+    if (!site || route.type !== 'page') return;
+    const page = currentPage(route.slug);
+    if (page) {
+      document.title = page.title ?? site.theme.brandName;
+      const desc = page.metaDescription || site.theme.siteDescription || '';
+      let metaDesc = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+      if (!metaDesc) {
+        metaDesc = document.createElement('meta');
+        metaDesc.name = 'description';
+        document.head.appendChild(metaDesc);
       }
+      metaDesc.content = desc;
     }
   });
 </script>
+
+{#if site}
 
 <!-- ── Logo-split intro curtain (center-logo nav only) ──────────────── -->
 {#if showIntro}
@@ -321,6 +343,12 @@
     </div>
   </footer>
 </div>
+
+{:else}
+  <div class="preview-waiting">
+    <p>Preparing preview…</p>
+  </div>
+{/if}
 
 <style>
   /* ── Logo-split intro curtain ──────────────────────────────────────── */
@@ -761,4 +789,13 @@
 
   .footer-powered { margin-left: auto; }
   .footer-powered a { color: var(--accent); }
+
+  .preview-waiting {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    color: #888;
+    font-family: system-ui, sans-serif;
+  }
 </style>
