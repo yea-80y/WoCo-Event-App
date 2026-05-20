@@ -133,11 +133,8 @@
     _prevAddr = addr;
 
     if (!addr) {
-      // Logged out (or switching identities). Clear in-memory state — the
-      // per-address localStorage entry is wiped by auth-store.logout() via
-      // USER_SCOPED_PREFIXES, so nothing leaks to the next user.
       mySites = [];
-      screen = 'my-sites';
+      screen = 'builder'; // stay in builder — no auth needed for draft/preview
       return;
     }
 
@@ -210,8 +207,15 @@
   async function handlePublish() {
     if (publishState === 'publishing') return;
 
-    // Flip state before any await so the spinner appears immediately —
-    // batch lookup and the purchase-modal round-trip can take seconds.
+    if (!auth.isConnected) {
+      const ok = await loginRequest.request();
+      if (!ok) return;
+    }
+    if (!auth.hasSession) {
+      const ok = await auth.ensureSession();
+      if (!ok) return;
+    }
+
     publishState = 'publishing';
     publishError = '';
     deployedUrl = '';
@@ -379,25 +383,6 @@
     <!-- Auth restoring from IndexedDB — avoid flashing the sign-in screen -->
     <div class="auth-loading" aria-label="Loading…"></div>
 
-  {:else if !auth.isConnected}
-    <!-- Not logged in — show a clear prompt, same pattern as other protected builder areas -->
-    <div class="auth-wall">
-      <div class="auth-wall-inner">
-        <div class="auth-wall-icon" aria-hidden="true">
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-            <rect x="8" y="18" width="24" height="16" rx="3" stroke="currentColor" stroke-width="2" fill="none" opacity=".4"/>
-            <path d="M13 18v-5a7 7 0 0 1 14 0v5" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-            <circle cx="20" cy="26" r="2" fill="currentColor" opacity=".6"/>
-          </svg>
-        </div>
-        <h2 class="auth-wall-title">Sign in to manage your websites</h2>
-        <p class="auth-wall-desc">Your websites are linked to your WoCo account. Sign in to access them.</p>
-        <button class="auth-wall-btn" onclick={() => loginRequest.request()}>
-          Sign in
-        </button>
-      </div>
-    </div>
-
   {:else if screen === 'my-sites'}
     <MySitesScreen
       sites={mySites}
@@ -550,59 +535,6 @@
   .auth-loading {
     flex: 1;
     min-height: 12rem;
-  }
-
-  /* ── Auth wall ── */
-  .auth-wall {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 3rem 1.5rem;
-  }
-
-  .auth-wall-inner {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 0.75rem;
-    max-width: 340px;
-  }
-
-  .auth-wall-icon {
-    color: var(--muted);
-    opacity: 0.5;
-    margin-bottom: 0.25rem;
-  }
-
-  .auth-wall-title {
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: var(--text);
-    margin: 0;
-  }
-
-  .auth-wall-desc {
-    font-size: 0.9375rem;
-    color: var(--muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
-  .auth-wall-btn {
-    margin-top: 0.5rem;
-    padding: 0.625rem 1.5rem;
-    background: var(--accent);
-    color: #fff;
-    border-radius: var(--radius-md);
-    font-size: 0.9375rem;
-    font-weight: 700;
-    transition: background 150ms ease;
-  }
-
-  .auth-wall-btn:hover {
-    background: var(--accent-hover);
   }
 
   /* Tab bar */

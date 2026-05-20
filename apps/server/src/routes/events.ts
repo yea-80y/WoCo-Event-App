@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV2Request, EventDirectoryEntry } from "@woco/shared";
 import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
@@ -13,6 +13,32 @@ import { manifestDigest, bytesToHex0x } from "@woco/shared";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
 const events = new Hono<AppEnv>();
 
+// ---------------------------------------------------------------------------
+// Public read rate limiter — 200 req/min per IP.
+// Preview mode fires one request per event (up to ~20 concurrent); deployed
+// sites use the bundled events-full endpoint so this budget is ample.
+// ---------------------------------------------------------------------------
+const readRateMap = new Map<string, number[]>();
+const READ_RATE_LIMIT  = 200;
+const READ_RATE_WINDOW = 60_000;
+
+function clientIp(c: Context<AppEnv>): string {
+  return (
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
+    c.req.header("cf-connecting-ip") ||
+    "unknown"
+  );
+}
+
+function checkReadRate(ip: string): boolean {
+  const now = Date.now();
+  const recent = (readRateMap.get(ip) ?? []).filter((t) => now - t < READ_RATE_WINDOW);
+  if (recent.length >= READ_RATE_LIMIT) return false;
+  recent.push(now);
+  readRateMap.set(ip, recent);
+  return true;
+}
+
 /** True when an event has definitively ended. Uses endDate if present and valid, falls back to startDate. */
 function isPastEntry(e: EventDirectoryEntry, now: number): boolean {
   const raw = (e.endDate && e.endDate.length > 0) ? e.endDate : e.startDate;
@@ -23,6 +49,7 @@ function isPastEntry(e: EventDirectoryEntry, now: number): boolean {
 // GET /api/events - public listing (served from in-memory cache, backed by Swarm directory)
 // ?filter=upcoming (default) | past | all
 events.get("/", async (c) => {
+  if (!checkReadRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
   try {
     const all = await listEvents();
     const filter = c.req.query("filter") ?? "all";
@@ -95,6 +122,7 @@ events.get("/mine", requireAuth, async (c) => {
 
 // GET /api/events/:id - public detail
 events.get("/:id", async (c) => {
+  if (!checkReadRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
   const eventId = c.req.param("id");
   try {
     const event = await getEvent(eventId);
