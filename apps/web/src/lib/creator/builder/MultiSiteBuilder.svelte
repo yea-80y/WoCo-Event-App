@@ -172,7 +172,8 @@
       previewEvents: $state.snapshot(siteEvents),
       previewLogoDataUrl: pendingLogoBase64 ?? undefined,
     }));
-    window.open('./multi-site.html?preview=1', '_blank');
+    localStorage.setItem('woco:preview-timestamp', String(Date.now()));
+    window.open('./multi-site.html', '_blank');
   }
 
   /** Etherna website publish requires a per-user batch. Returns true if the

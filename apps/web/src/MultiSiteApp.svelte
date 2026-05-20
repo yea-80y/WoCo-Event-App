@@ -3,26 +3,27 @@
   import type { Site, SiteRuntimeConfig, NavStyleId } from '@woco/shared';
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
   import EventPage from './lib/components/site/EventPage.svelte';
-  import blackPrinceSite from '../Black-Prince/site.json';
-
-  const DEV_FALLBACK: SiteRuntimeConfig = {
-    site: blackPrinceSite as unknown as Site,
-    gatewayUrl: import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com',
-    apiUrl: import.meta.env.VITE_API_URL ?? 'http://localhost:3001',
-  };
-
   function getConfig(): SiteRuntimeConfig {
-    if (typeof window !== 'undefined') {
-      // ?preview=1 means the builder opened this tab — always read from localStorage
-      // so the injected window.SITE_CONFIG from the last deploy doesn't override the draft.
-      const isBuilderPreview = window.location.search.includes('preview=1');
-      if (!isBuilderPreview && window.SITE_CONFIG?.site) return window.SITE_CONFIG as SiteRuntimeConfig;
-      const preview = localStorage.getItem('woco:site-preview');
-      if (preview) {
-        try { return JSON.parse(preview) as SiteRuntimeConfig; } catch {}
-      }
+    const fallback: SiteRuntimeConfig = {
+      gatewayUrl: import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com',
+      apiUrl: import.meta.env.VITE_API_URL ?? 'http://localhost:3001',
+    };
+    if (typeof window === 'undefined') return fallback;
+
+    // If the builder wrote a preview timestamp within the last 30s, prefer
+    // localStorage over any window.SITE_CONFIG injected at deploy time.
+    // This is more robust than query params which Swarm gateways can strip.
+    const tsRaw = localStorage.getItem('woco:preview-timestamp');
+    const isBuilderPreview = tsRaw !== null && (Date.now() - parseInt(tsRaw, 10)) < 30_000;
+
+    if (!isBuilderPreview && window.SITE_CONFIG?.site) return window.SITE_CONFIG as SiteRuntimeConfig;
+
+    const preview = localStorage.getItem('woco:site-preview');
+    if (preview) {
+      try { return JSON.parse(preview) as SiteRuntimeConfig; } catch {}
     }
-    return DEV_FALLBACK;
+
+    return fallback;
   }
   const config = getConfig();
   if (typeof window !== 'undefined') window.SITE_CONFIG = config;
