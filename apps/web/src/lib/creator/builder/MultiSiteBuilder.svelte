@@ -177,7 +177,7 @@
       localStorage.setItem(PREVIEW_KEY, data);
       localStorage.setItem('woco:preview-timestamp', String(Date.now()));
     } catch {}
-    const win = window.open(`${WOCO_APP_URL}/multi-site.html`, '_blank');
+    const win = window.open('./multi-site.html', '_blank');
     // Also send via postMessage — works even when origins differ (e.g. woco.eth.limo
     // builder opens gateway.woco-net.com preview). Multiple sends handle timing.
     if (win) {
@@ -445,7 +445,7 @@
       </div>
 
       <div class="tab-bar-right">
-        <button class="preview-btn" onclick={openPreview} title="Open preview in new tab">
+        <button class="preview-btn" onclick={openPreview} title="Draft preview — only visible to you. Publish to get a shareable link.">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M6 2H2v10h10V8M9 2h3v3M8 6l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="preview-label">Preview</span>
         </button>
