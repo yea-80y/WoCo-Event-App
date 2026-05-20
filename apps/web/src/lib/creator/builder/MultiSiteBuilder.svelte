@@ -177,7 +177,7 @@
       localStorage.setItem(PREVIEW_KEY, data);
       localStorage.setItem('woco:preview-timestamp', String(Date.now()));
     } catch {}
-    const win = window.open('./multi-site.html', '_blank');
+    const win = window.open(`${WOCO_APP_URL}/multi-site.html`, '_blank');
     // Also send via postMessage — works even when origins differ (e.g. woco.eth.limo
     // builder opens gateway.woco-net.com preview). Multiple sends handle timing.
     if (win) {
