@@ -47,7 +47,7 @@ export async function compressImage(file: File, opts: CompressOptions = {}): Pro
 
 // Named presets so callers stay readable.
 export const imgPreset = {
-  eventCover:  { maxWidth: 1400, maxHeight: 900,  quality: 0.85 } satisfies CompressOptions,
+  eventCover:  { maxWidth: 1400, maxHeight: 900,  quality: 0.80 } satisfies CompressOptions,
   logo:        { maxWidth: 1600, maxHeight: 1200, quality: 0.88 } satisfies CompressOptions,
-  siteImage:   { maxWidth: 1800, maxHeight: 1200, quality: 0.85 } satisfies CompressOptions,
+  siteImage:   { maxWidth: 1800, maxHeight: 1200, quality: 0.80 } satisfies CompressOptions,
 } as const;
