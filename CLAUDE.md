@@ -43,15 +43,27 @@ DEPLOYMENT (Hetzner CPX22, migrated 2026-05-19 — see docs/HETZNER_DEPLOY.md):
 
 SERVER DEPLOY (Hetzner — much simpler than the old kill-and-restart laptop flow):
 - apps/server/.env on THIS LAPTOP is master. Mirrored to /opt/woco/server.env on the VM.
-- Server code update (1 command from laptop, 1 command on VM):
+
+STEP 1 — server code update:
     rsync -az --exclude=node_modules --exclude=.git --exclude=dist \
       --exclude=apps/web/dist-site --exclude=apps/web/dist-multisite \
       --exclude=packages/embed/dist \
       ~/projects/woco_app/ root@46.225.174.72:/opt/woco/repo/
     ssh root@46.225.174.72 'cd /opt/woco && docker compose up -d --build server'
-- Env update:
+
+STEP 1b — multisite bundle update (only when MultiSiteApp.svelte or anything in the
+  multisite build has changed — i.e. the deployed site runtime, NOT just the WoCo builder UI):
+    npm run build:multisite
+    rsync -az apps/web/dist-multisite/ root@46.225.174.72:/opt/woco/repo/apps/web/dist-multisite/
+  No server restart needed — it is a read-only Docker volume mount; the container reads the
+  new files immediately. HOWEVER: organisers must re-publish their sites from the builder
+  after this sync, because each live Swarm site contains the bundle baked in at publish time.
+
+STEP 2 — env update (only if .env changed):
     scp ~/projects/woco_app/apps/server/.env root@46.225.174.72:/opt/woco/server.env
     ssh root@46.225.174.72 'sed -i "s|^BEE_URL=.*|BEE_URL=http://bee-node:1633|" /opt/woco/server.env && sed -i "s|^PROXY_URL=.*|PROXY_URL=http://bee-proxy:3000|" /opt/woco/server.env && cd /opt/woco && docker compose restart server'
+
+STEP 3 — verify:
 - Logs: `ssh root@46.225.174.72 'cd /opt/woco && docker compose logs -f --tail 50 server'`
 - Verify: `curl https://events-api.woco-net.com/api/health` (HTTPS only — no LAN IP path anymore)
 - No PID hunting, no nohup, no duplicate-process worries — docker compose handles lifecycle.
@@ -356,8 +368,10 @@ SEO:
 TEMPLATE PRESET: pub-venue-v1 (only one so far). newSiteFromTemplate() in shared.
 
 KNOWN GOTCHAS (site builder):
-- build:multisite → dist-multisite/ (NOT build:site → dist-site/). Server deploy endpoint
-  reads DIST_MULTISITE_PATH; must rsync apps/web/dist-multisite/ before first deploy.
+- build:multisite → dist-multisite/ (NOT build:site → dist-site/). The server reads this
+  directory at site-publish time and bakes it into the Swarm collection. dist-multisite/ is
+  excluded from the standard rsync — run STEP 1b whenever the multisite runtime changes,
+  then organisers must re-publish their sites to pick up the new bundle.
 - GET /api/sites/mine must be registered BEFORE /:id in Hono or "mine" matches as a siteId.
 - Creator directory upsert is fire-and-forget on both publish and deploy — non-fatal.
 - events-full has 5-min server-side Map cache per siteId; invalidated on server restart.
