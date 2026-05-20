@@ -6,6 +6,10 @@ const ETHERNA_GATEWAY_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.
 // getBee() always reads/writes via the local node — per-deploy Etherna uploads
 // use getEthernaBee() (lib/etherna/upload.ts) and never go through here.
 export const BEE_URL = process.env.BEE_URL || "http://localhost:3323";
+// Internal proxy URL — for admin/whitelist calls. Distinct from BEE_URL (raw bee).
+// On Hetzner: http://bee-proxy:3000 (rewritten by deploy sed). Laptop: public gateway.
+export const PROXY_URL = process.env.PROXY_URL || "https://gateway.woco-net.com";
+export const UPLOAD_SECRET = process.env.UPLOAD_SECRET || "";
 export const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || "";
 export const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || "";
 

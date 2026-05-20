@@ -19,6 +19,8 @@ import {
   getPlatformSigner,
   getPlatformOwner,
   BEE_URL,
+  PROXY_URL,
+  UPLOAD_SECRET,
   POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
@@ -642,9 +644,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       }
       const writer = bee.makeFeedWriter(topic, signer);
       try {
-        await fetch(`${BEE_URL}/admin/whitelist`, {
+        await fetch(`${PROXY_URL}/admin/whitelist`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-upload-secret": UPLOAD_SECRET },
           body: JSON.stringify({ hashes: [contentHash] }),
         });
         const chunkRes = await fetch(`${BEE_URL}/chunks/${contentHash}`);
@@ -681,9 +683,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Whitelist BZZ hash, feed manifest, and all image refs on the gateway.
     // Fire-and-forget — whitelist failure must not block the deploy response.
     const hashesToWhitelist = [contentHash, feedManifestHash, ...imageRefs].filter(Boolean);
-    fetch(`${BEE_URL}/admin/whitelist`, {
+    fetch(`${PROXY_URL}/admin/whitelist`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-upload-secret": UPLOAD_SECRET },
       body: JSON.stringify({ hashes: hashesToWhitelist }),
     }).catch((e) => console.warn("[sites/deploy] whitelist call failed:", e));
 

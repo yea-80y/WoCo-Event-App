@@ -51,7 +51,7 @@ SERVER DEPLOY (Hetzner — much simpler than the old kill-and-restart laptop flo
     ssh root@46.225.174.72 'cd /opt/woco && docker compose up -d --build server'
 - Env update:
     scp ~/projects/woco_app/apps/server/.env root@46.225.174.72:/opt/woco/server.env
-    ssh root@46.225.174.72 'sed -i "s|^BEE_URL=.*|BEE_URL=http://bee-node:1633|" /opt/woco/server.env && cd /opt/woco && docker compose restart server'
+    ssh root@46.225.174.72 'sed -i "s|^BEE_URL=.*|BEE_URL=http://bee-node:1633|" /opt/woco/server.env && sed -i "s|^PROXY_URL=.*|PROXY_URL=http://bee-proxy:3000|" /opt/woco/server.env && cd /opt/woco && docker compose restart server'
 - Logs: `ssh root@46.225.174.72 'cd /opt/woco && docker compose logs -f --tail 50 server'`
 - Verify: `curl https://events-api.woco-net.com/api/health` (HTTPS only — no LAN IP path anymore)
 - No PID hunting, no nohup, no duplicate-process worries — docker compose handles lifecycle.
