@@ -93,12 +93,12 @@
 
     document.title = site.theme.brandName;
 
-    const logoNavH: Record<string, string> = { sm: '28px', md: '44px', lg: '60px', xl: '80px' };
+    const logoNavH: Record<string, string> = { sm: '28px', md: '44px', lg: '68px', xl: '100px' };
     const logoIntroH: Record<string, string> = {
-      sm: 'clamp(80px, 14vh, 160px)',
-      md: 'clamp(140px, 28vh, 300px)',
-      lg: 'clamp(180px, 38vh, 420px)',
-      xl: 'clamp(220px, 48vh, 540px)',
+      sm: 'clamp(80px,  15vh, 180px)',
+      md: 'clamp(160px, 32vh, 360px)',
+      lg: 'clamp(220px, 48vh, 560px)',
+      xl: 'clamp(300px, 65vh, 780px)',
     };
     root.style.setProperty('--logo-nav-h',   logoNavH[site.theme.logoSize   ?? 'md'] ?? '44px');
     root.style.setProperty('--logo-intro-h', logoIntroH[site.theme.introLogoSize ?? 'lg'] ?? logoIntroH.lg);
@@ -110,8 +110,8 @@
     window.SITE_CONFIG = config!;
     route = parseHash();
     const intro = navStyle === 'center-logo' && (site?.theme?.introAnimation !== false);
+    applyTheme(); // must run before showIntro so CSS vars are set before the intro renders
     showIntro = intro;
-    applyTheme();
     if (intro) setTimeout(() => { showIntro = false; }, 2400);
     window.addEventListener('hashchange', () => {
       route = parseHash();
@@ -389,7 +389,7 @@
   .intro-split-logo {
     position: absolute;
     top: 50%;
-    height: var(--logo-intro-h, clamp(180px, 38vh, 420px));
+    height: var(--logo-intro-h, clamp(220px, 48vh, 560px));
     width: auto;
     max-width: min(780px, 80vw);
     object-fit: contain;
