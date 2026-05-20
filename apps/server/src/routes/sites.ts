@@ -128,12 +128,10 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
       }
       await ensureEthernaToken();
       const token = getCachedEthernaToken();
-      const mimeMatch = body.image.match(/^data:([^;,]+)[;,]/);
-      const contentType = mimeMatch?.[1] ?? "image/jpeg";
       const resp = await fetch(`${ETHERNA_GW}/bytes`, {
         method: "POST",
         headers: {
-          "Content-Type": contentType,
+          "Content-Type": "application/octet-stream",
           "Swarm-Postage-Batch-Id": userBatch.batchId,
           Authorization: `Bearer ${token}`,
         },
