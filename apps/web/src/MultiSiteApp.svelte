@@ -346,9 +346,9 @@
   .intro-split-logo {
     position: absolute;
     top: 50%;
-    height: clamp(52px, 10vw, 120px);
+    height: clamp(100px, 22vh, 260px);
     width: auto;
-    max-width: min(420px, 46vw);
+    max-width: min(680px, 72vw);
     object-fit: contain;
     animation: intro-logo-appear 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
   }
