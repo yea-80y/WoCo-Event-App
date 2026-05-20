@@ -13,7 +13,10 @@
 
   function getConfig(): SiteRuntimeConfig {
     if (typeof window !== 'undefined') {
-      if (window.SITE_CONFIG?.site) return window.SITE_CONFIG as SiteRuntimeConfig;
+      // ?preview=1 means the builder opened this tab — always read from localStorage
+      // so the injected window.SITE_CONFIG from the last deploy doesn't override the draft.
+      const isBuilderPreview = window.location.search.includes('preview=1');
+      if (!isBuilderPreview && window.SITE_CONFIG?.site) return window.SITE_CONFIG as SiteRuntimeConfig;
       const preview = localStorage.getItem('woco:site-preview');
       if (preview) {
         try { return JSON.parse(preview) as SiteRuntimeConfig; } catch {}
@@ -31,6 +34,7 @@
   const wantsIntro = navStyle === 'center-logo' && site.theme.introAnimation !== false;
 
   function logoUrl(): string | null {
+    if (config.previewLogoDataUrl) return config.previewLogoDataUrl;
     const ref = site.theme.logoSwarmRef;
     if (!ref || /^0+$/.test(ref)) return null;
     return `${gatewayUrl}/bytes/${ref}`;

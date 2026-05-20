@@ -346,6 +346,9 @@ export interface SiteRuntimeConfig {
   /** Builder preview only — event entries injected from builder state so events
    *  grid renders without requiring the feed to be published first. */
   previewEvents?: SiteEventEntry[];
+  /** Builder preview only — base64 data URL of the pending logo, so the logo
+   *  renders locally without a Swarm upload. */
+  previewLogoDataUrl?: string;
   /** URL of the WoCo app used for ticket purchasing links (e.g. https://woco.eth.limo).
    *  Injected at deploy time; defaults to https://woco.eth.limo if absent. */
   wocoAppUrl?: string;

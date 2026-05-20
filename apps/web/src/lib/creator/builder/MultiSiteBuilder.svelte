@@ -170,8 +170,9 @@
       gatewayUrl,
       apiUrl: API_URL,
       previewEvents: $state.snapshot(siteEvents),
+      previewLogoDataUrl: pendingLogoBase64 ?? undefined,
     }));
-    window.open('./multi-site.html', '_blank');
+    window.open('./multi-site.html?preview=1', '_blank');
   }
 
   /** Etherna website publish requires a per-user batch. Returns true if the
