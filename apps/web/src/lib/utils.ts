@@ -15,11 +15,14 @@ export interface CompressOptions {
 
 // Canvas-based image compression. Downscales to maxWidth/maxHeight (never upscales),
 // outputs WebP where supported, JPEG otherwise. SVG and GIF are passed through unchanged.
+// Already-small files that fit within the limits are passed through to avoid generation loss
+// from double-compressing an already-lossy JPEG/WebP.
 export async function compressImage(file: File, opts: CompressOptions = {}): Promise<string> {
   if (file.type === 'image/svg+xml' || file.type === 'image/gif') {
     return fileToBase64(file);
   }
   const { maxWidth = 1920, maxHeight = 1080, quality = 0.85 } = opts;
+  const SIZE_THRESHOLD = 300 * 1024; // skip Canvas re-encode if file already < 300 KB
 
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -27,6 +30,12 @@ export async function compressImage(file: File, opts: CompressOptions = {}): Pro
 
     img.onload = () => {
       URL.revokeObjectURL(objectUrl);
+      const needsResize = img.naturalWidth > maxWidth || img.naturalHeight > maxHeight;
+      // Pass through small files that don't need resizing to avoid generation loss.
+      if (!needsResize && file.size < SIZE_THRESHOLD) {
+        fileToBase64(file).then(resolve, reject);
+        return;
+      }
       const scale = Math.min(maxWidth / img.naturalWidth, maxHeight / img.naturalHeight, 1);
       const w = Math.round(img.naturalWidth * scale);
       const h = Math.round(img.naturalHeight * scale);
