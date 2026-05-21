@@ -285,6 +285,11 @@
       <span class="cf-swatch-bg" aria-hidden="true"></span>
     </span>
     <span class="cf-hex">{value.replace('#', '').toUpperCase()}</span>
+    <span class="cf-edit-icon" aria-hidden="true">
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+        <path d="M8.5 1.5l2 2-6.5 6.5-2.5.5.5-2.5 6.5-6.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+      </svg>
+    </span>
   </button>
 
   {#if open}
@@ -502,6 +507,20 @@
     letter-spacing: 0.04em;
     color: var(--text);
     white-space: nowrap;
+  }
+
+  .cf-edit-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 150ms ease;
+    margin-left: -1px;
+  }
+
+  .cf-trigger:hover .cf-edit-icon,
+  .cf-trigger.open .cf-edit-icon {
+    opacity: 1;
   }
 
   /* ── Popover ──────────────────────────────────────────────────────── */

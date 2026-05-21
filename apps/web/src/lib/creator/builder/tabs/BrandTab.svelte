@@ -88,14 +88,14 @@
     { name: 'Light',     palette: { bg:'#ffffff', text:'#111111', muted:'#666666', accent:'#2563eb', accentHover:'#1d4ed8', border:'#e5e7eb', cardBg:'#f9fafb' } },
   ];
 
-  const TOKEN_LABELS: { key: keyof SitePalette; label: string }[] = [
-    { key: 'bg',         label: 'Background' },
-    { key: 'text',       label: 'Text' },
-    { key: 'muted',      label: 'Muted text' },
-    { key: 'accent',     label: 'Accent' },
-    { key: 'accentHover',label: 'Accent hover' },
-    { key: 'border',     label: 'Border' },
-    { key: 'cardBg',     label: 'Card background' },
+  const TOKEN_LABELS: { key: keyof SitePalette; label: string; desc: string }[] = [
+    { key: 'bg',          label: 'Background',      desc: 'Your page background colour' },
+    { key: 'text',        label: 'Text',            desc: 'Headings and body text' },
+    { key: 'muted',       label: 'Muted text',      desc: 'Captions and secondary info' },
+    { key: 'accent',      label: 'Accent',          desc: 'Buttons and your brand colour' },
+    { key: 'accentHover', label: 'Accent hover',    desc: 'Buttons when you hover over them' },
+    { key: 'border',      label: 'Border',          desc: 'Lines between sections' },
+    { key: 'cardBg',      label: 'Card background', desc: 'Event cards and panels' },
   ];
 
   function applyPreset(palette: SitePalette) {
@@ -304,6 +304,7 @@
   <!-- Colour palette -->
   <section class="section">
     <h3 class="section-title">Colour palette</h3>
+    <p class="section-desc">Pick a ready-made theme to get started. You can then change any individual colour to match your brand exactly.</p>
 
     <div class="preset-grid">
       {#each PRESETS as preset}
@@ -322,10 +323,28 @@
       {/each}
     </div>
 
+    <div class="palette-bridge">
+      <div class="palette-bridge-rule"></div>
+      <span class="palette-bridge-text">fine-tune individual colours</span>
+      <div class="palette-bridge-rule"></div>
+    </div>
+
+    <p class="token-hint">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="flex-shrink:0;margin-top:1px">
+        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M8 7v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <circle cx="8" cy="5" r="0.75" fill="currentColor"/>
+      </svg>
+      Click the coloured square next to any item to open the colour picker and change it.
+    </p>
+
     <div class="token-grid">
-      {#each TOKEN_LABELS as { key, label }}
+      {#each TOKEN_LABELS as { key, label, desc }}
         <div class="token-row">
-          <label class="token-label" for="color-{key}">{label}</label>
+          <div class="token-label-group">
+            <label class="token-label" for="color-{key}">{label}</label>
+            <span class="token-desc">{desc}</span>
+          </div>
           <div class="token-inputs">
             <ColorField
               id="color-{key}"
@@ -818,6 +837,43 @@
     white-space: nowrap;
   }
 
+  /* ── Palette bridge + hint ── */
+  .palette-bridge {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.125rem 0;
+  }
+
+  .palette-bridge-rule {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .palette-bridge-text {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    white-space: nowrap;
+  }
+
+  .token-hint {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    padding: 0.625rem 0.875rem;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    border-radius: var(--radius-sm);
+    margin: 0;
+  }
+
   /* ── Token grid ── */
   .token-grid {
     display: flex;
@@ -832,11 +888,24 @@
     gap: 0.75rem;
   }
 
+  .token-label-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    width: 9.5rem;
+    flex-shrink: 0;
+  }
+
   .token-label {
     font-size: 0.8125rem;
+    font-weight: 500;
     color: var(--text-secondary);
-    width: 8rem;
-    flex-shrink: 0;
+  }
+
+  .token-desc {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    line-height: 1.3;
   }
 
   .token-inputs {
