@@ -11,17 +11,19 @@
 
 {#if section.images.length > 0}
   <div class="gallery-wrap">
-    {#if section.title}
-      <h2 class="gallery-heading">{section.title}</h2>
-    {/if}
-    <div class="grid">
-      {#each section.images as img}
-        <img
-          src="{gatewayUrl}/bytes/{img.ref}"
-          alt={img.alt}
-          loading="lazy"
-        />
-      {/each}
+    <div class="inner">
+      {#if section.title}
+        <h2 class="gallery-heading">{section.title}</h2>
+      {/if}
+      <div class="grid">
+        {#each section.images as img}
+          <img
+            src="{gatewayUrl}/bytes/{img.ref}"
+            alt={img.alt}
+            loading="lazy"
+          />
+        {/each}
+      </div>
     </div>
   </div>
 {/if}
@@ -29,6 +31,9 @@
 <style>
   .gallery-wrap {
     padding: var(--sec-pt, 2rem) 1.5rem var(--sec-pb, 1rem);
+  }
+
+  .inner {
     max-width: 1100px;
     margin: 0 auto;
   }

@@ -74,7 +74,7 @@
   function imageUrl(ev: EventFeed): string | undefined {
     if (!ev.imageHash || /^0+$/.test(ev.imageHash)) return undefined;
     const gw = (typeof window !== 'undefined' && (window.SITE_CONFIG?.contentGatewayUrl || window.SITE_CONFIG?.gatewayUrl)) || gatewayUrl || 'https://gateway.woco-net.com';
-    return `${gw}/bzz/${ev.imageHash}`;
+    return `${gw}/bytes/${ev.imageHash}`;
   }
 </script>
 
@@ -144,8 +144,6 @@
 <style>
   .featured-section {
     padding: var(--sec-pt, 2rem) 1.5rem var(--sec-pb, 1rem);
-    max-width: 900px;
-    margin: 0 auto;
   }
 
   .section-heading {
@@ -153,6 +151,9 @@
     font-weight: 700;
     color: var(--text);
     margin: 0 0 1.25rem;
+    max-width: 900px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .inner {

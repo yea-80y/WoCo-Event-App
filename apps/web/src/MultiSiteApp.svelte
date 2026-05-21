@@ -125,7 +125,10 @@
       activateSite();
       return;
     }
-    // Config not in localStorage — wait for postMessage from builder window.
+    // Config not in localStorage — handshake with the builder window.
+    // We request on mount (listener already attached), so it doesn't matter
+    // how slow the bundle was to load on this side.
+    let pollId: ReturnType<typeof setInterval> | null = null;
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'woco-preview' && e.data.data) {
         try {
@@ -133,12 +136,33 @@
           if (c?.site) {
             config = c;
             window.removeEventListener('message', handler);
+            if (pollId) clearInterval(pollId);
           }
         } catch {}
       }
     };
     window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
+
+    const requestConfig = () => {
+      if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage({ type: 'woco-preview-request' }, '*'); } catch {}
+      }
+    };
+    requestConfig();
+    // Retry a few times in case the opener was navigating; give up after ~6s.
+    let tries = 0;
+    pollId = setInterval(() => {
+      if (config || ++tries > 12) {
+        if (pollId) clearInterval(pollId);
+        return;
+      }
+      requestConfig();
+    }, 500);
+
+    return () => {
+      window.removeEventListener('message', handler);
+      if (pollId) clearInterval(pollId);
+    };
   });
 
   // Fires when config arrives asynchronously via postMessage

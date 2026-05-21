@@ -163,29 +163,46 @@
   });
 
   // ── Actions ───────────────────────────────────────────────────────────────────
-  function openPreview() {
-    if (typeof window === 'undefined') return;
-    const data = JSON.stringify({
+  // Latest snapshot served to the preview tab on demand. The preview tab pulls
+  // via a `woco-preview-request` handshake (see onMount below) — this removes
+  // the timing-sensitive broadcast that races slow bundle loads on cold cache.
+  let lastPreviewData: string | null = null;
+
+  function buildPreviewData(): string {
+    return JSON.stringify({
       site: $state.snapshot(site),
       gatewayUrl,
       apiUrl: API_URL,
       previewEvents: $state.snapshot(siteEvents),
       previewLogoDataUrl: pendingLogoBase64 ?? undefined,
     });
-    // Write to localStorage (works when builder + preview share the same origin)
+  }
+
+  function openPreview() {
+    if (typeof window === 'undefined') return;
+    const data = buildPreviewData();
+    lastPreviewData = data;
+    // localStorage fast-path (same-origin only; can quota-fail with large logo base64).
     try {
       localStorage.setItem(PREVIEW_KEY, data);
       localStorage.setItem('woco:preview-timestamp', String(Date.now()));
     } catch {}
-    const win = window.open('./multi-site.html', '_blank');
-    // Also send via postMessage — works even when origins differ (e.g. woco.eth.limo
-    // builder opens gateway.woco-net.com preview). Multiple sends handle timing.
-    if (win) {
-      const msg = { type: 'woco-preview', data };
-      setTimeout(() => win.postMessage(msg, '*'), 300);
-      setTimeout(() => win.postMessage(msg, '*'), 1000);
-    }
+    window.open('./multi-site.html', '_blank');
+    // No timed postMessage — preview tab requests on ready (handler in onMount).
   }
+
+  // Reply to handshake requests from any preview tab this builder opened.
+  // The tab posts `{type:'woco-preview-request'}` once Svelte has mounted, so
+  // we always respond after the listener is attached on the preview side.
+  onMount(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== 'woco-preview-request') return;
+      if (!lastPreviewData || !e.source) return;
+      (e.source as Window).postMessage({ type: 'woco-preview', data: lastPreviewData }, '*');
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  });
 
   /** Etherna website publish requires a per-user batch. Returns true if the
    * batch exists OR the user just bought one in the modal; false if cancelled.

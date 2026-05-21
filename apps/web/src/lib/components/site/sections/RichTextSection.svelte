@@ -23,7 +23,7 @@
 </script>
 
 <div class="richtext">
-  <div class="content">
+  <div class="inner">
     {@html renderMarkdown(section.markdown)}
   </div>
 </div>
@@ -31,23 +31,26 @@
 <style>
   .richtext {
     padding: var(--sec-pt, 2.5rem) 1.5rem var(--sec-pb, 1.5rem);
+  }
+
+  .inner {
     max-width: 760px;
     margin: 0 auto;
   }
 
-  .content :global(h1),
-  .content :global(h2),
-  .content :global(h3) {
+  .inner :global(h1),
+  .inner :global(h2),
+  .inner :global(h3) {
     color: var(--text);
     margin: 0 0 1rem;
     line-height: 1.25;
   }
 
-  .content :global(h1) { font-size: 2rem; }
-  .content :global(h2) { font-size: 1.625rem; }
-  .content :global(h3) { font-size: 1.25rem; }
+  .inner :global(h1) { font-size: 2rem; }
+  .inner :global(h2) { font-size: 1.625rem; }
+  .inner :global(h3) { font-size: 1.25rem; }
 
-  .content :global(p) {
+  .inner :global(p) {
     color: var(--muted);
     margin: 0 0 1rem;
     line-height: 1.75;
@@ -56,6 +59,6 @@
     word-break: break-word;
   }
 
-  .content :global(strong) { color: var(--text); font-weight: 600; }
-  .content :global(em) { font-style: italic; }
+  .inner :global(strong) { color: var(--text); font-weight: 600; }
+  .inner :global(em) { font-style: italic; }
 </style>

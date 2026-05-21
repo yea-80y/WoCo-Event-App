@@ -24,6 +24,9 @@
 <style>
   .embed-wrap {
     padding: var(--sec-pt, 2rem) 1.5rem var(--sec-pb, 1rem);
+  }
+
+  .inner {
     max-width: 760px;
     margin: 0 auto;
   }
