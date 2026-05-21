@@ -31,12 +31,18 @@
       default:         return '';
     }
   });
+
+  const CARD_SECTIONS = new Set(['richText', 'openingHours', 'contactForm', 'embed']);
 </script>
 
 {#if section.type === 'hero'}
   <HeroSection {section} {gatewayUrl} />
 {:else}
-  <div style={spacingStyle}>
+  <div
+    class="section-wrap"
+    class:section-card={CARD_SECTIONS.has(section.type)}
+    style={spacingStyle}
+  >
     {#if section.type === 'richText'}
       <RichTextSection {section} />
     {:else if section.type === 'gallery'}
@@ -58,3 +64,13 @@
     {/if}
   </div>
 {/if}
+
+<style>
+  .section-wrap {
+    border-top: 1px solid var(--border);
+  }
+
+  .section-card {
+    background: var(--card-bg);
+  }
+</style>

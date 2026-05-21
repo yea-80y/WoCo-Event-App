@@ -94,8 +94,8 @@
     { key: 'muted',       label: 'Muted text',      desc: 'Captions and secondary info' },
     { key: 'accent',      label: 'Accent',          desc: 'Buttons and your brand colour' },
     { key: 'accentHover', label: 'Accent hover',    desc: 'Buttons when you hover over them' },
-    { key: 'border',      label: 'Border',          desc: 'Lines between sections' },
-    { key: 'cardBg',      label: 'Card background', desc: 'Event cards and panels' },
+    { key: 'border',      label: 'Section divider',  desc: 'The line that separates each section of your page' },
+    { key: 'cardBg',      label: 'Card background', desc: 'Event cards, text blocks, forms and panels' },
   ];
 
   function applyPreset(palette: SitePalette) {

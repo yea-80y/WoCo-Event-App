@@ -100,7 +100,7 @@
   }
 
   input, textarea {
-    background: var(--card-bg);
+    background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text);
