@@ -31,6 +31,9 @@ export interface TicketEmailOpts {
   /** Organiser site palette — when present, email + PNG card match their brand.
    *  Falls back to WoCo Concrete & Acid defaults when absent. */
   palette?: SitePalette;
+  /** Organiser site ID — appended to ticket page URLs so the standalone page
+   *  can look up the site palette and render in the organiser's brand colours. */
+  siteId?: string;
 }
 
 /** Parse `woco://t/{eventId}/{seriesId}/{edition}/{sig}` → its parts.
@@ -45,12 +48,13 @@ function parseQrContent(qr: string): { eventId: string; seriesId: string; editio
 
 /** Build the public URL for a ticket — both the HTML page and the composite
  *  PNG share the same base; the .png suffix toggles between them. */
-function ticketUrl(qrContent: string, buyerEmail?: string, buyerName?: string, png = false): string | null {
+function ticketUrl(qrContent: string, buyerEmail?: string, buyerName?: string, png = false, siteId?: string): string | null {
   const p = parseQrContent(qrContent);
   if (!p) return null;
   const params = new URLSearchParams();
   if (buyerName) params.set("n", buyerName);
   if (buyerEmail) params.set("e", buyerEmail);
+  if (siteId) params.set("s", siteId);
   const q = params.toString();
   const path = `/t/${p.eventId}/${p.seriesId}/${p.edition}/${p.sig}${png ? ".png" : ""}`;
   return `${PUBLIC_API_BASE}${path}${q ? `?${q}` : ""}`;
@@ -61,7 +65,7 @@ function escHtml(s: string): string {
 }
 
 function buildTicketHtml(opts: TicketEmailOpts): string {
-  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, buyerName, palette: p } = opts;
+  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, buyerName, palette: p, siteId } = opts;
   // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
   const c = {
     bg:      p?.bg      ?? '#0B0B09',
@@ -81,7 +85,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
   const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
     const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
     // Standalone HTML page: fast server-rendered, no SPA load.
-    const pageUrl = ticketUrl(qrContent, to, buyerName, false);
+    const pageUrl = ticketUrl(qrContent, to, buyerName, false, siteId);
     const cid = `woco-card-${i}`;
     return `
       <div class="qr-section">

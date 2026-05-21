@@ -630,33 +630,7 @@
     </div>
 
     {#if stripeBanner}
-      <div class="purchase-success card" role="status">
-        <div class="purchase-success-check" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="20 6 9 17 4 12"/>
-          </svg>
-        </div>
-        <h2 class="purchase-success-title">Payment confirmed</h2>
-        <p class="purchase-success-lede">
-          {stripeBanner.qty > 1 ? `Your ${stripeBanner.qty} tickets are` : "Your ticket is"} on the way{#if stripeBanner.email} to <strong>{stripeBanner.email}</strong>{/if}.
-        </p>
-        <ul class="purchase-success-steps">
-          <li><span class="purchase-success-bullet"></span>Check your inbox in the next few minutes.</li>
-          <li><span class="purchase-success-bullet"></span>If you don't see it, check your spam folder.</li>
-          <li><span class="purchase-success-bullet"></span>Show the QR code in the email at the door.</li>
-        </ul>
-        <div class="purchase-success-actions">
-          <button type="button" class="purchase-success-btn purchase-success-btn--primary" onclick={dismissPurchaseSuccess}>
-            Back to event
-          </button>
-          {#if siteName}
-            <button type="button" class="purchase-success-btn purchase-success-btn--ghost" onclick={goToSite}>
-              Back to {siteName}
-            </button>
-          {/if}
-        </div>
-        <p class="purchase-success-foot">A receipt has been sent by Stripe.</p>
-      </div>
+      <!-- rendered outside page flow via position:fixed — see CSS -->
     {:else}
 
     <!-- ── Tickets card ──────────────────────────────────────────────────── -->
@@ -974,6 +948,38 @@
   />
 {/if}
 
+{#if stripeBanner}
+  <div class="purchase-success-overlay" role="status" aria-live="polite">
+    <div class="purchase-success-inner">
+      <div class="purchase-success-check" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      </div>
+      <h2 class="purchase-success-title">Payment confirmed</h2>
+      <p class="purchase-success-lede">
+        {stripeBanner.qty > 1 ? `Your ${stripeBanner.qty} tickets are` : "Your ticket is"} on the way{#if stripeBanner.email} to <strong>{stripeBanner.email}</strong>{/if}.
+      </p>
+      <ul class="purchase-success-steps">
+        <li><span class="purchase-success-bullet"></span>Check your inbox in the next few minutes.</li>
+        <li><span class="purchase-success-bullet"></span>If you don't see it, check your spam folder.</li>
+        <li><span class="purchase-success-bullet"></span>Show the QR code in the email at the door.</li>
+      </ul>
+      <div class="purchase-success-actions">
+        <button type="button" class="purchase-success-btn purchase-success-btn--primary" onclick={dismissPurchaseSuccess}>
+          Back to event
+        </button>
+        {#if siteName}
+          <button type="button" class="purchase-success-btn purchase-success-btn--ghost" onclick={goToSite}>
+            Back to {siteName}
+          </button>
+        {/if}
+      </div>
+      <p class="purchase-success-foot">A receipt has been sent by Stripe.</p>
+    </div>
+  </div>
+{/if}
+
 <style>
   /* ── Page shell ───────────────────────────────────────────────────────────── */
   .event-page {
@@ -1136,21 +1142,32 @@
     color: var(--text-muted);
   }
 
-  /* ── Stripe purchase success card ──────────────────────────────────────────── */
-  .purchase-success {
-    padding: 2rem 1.5rem 1.5rem;
-    margin-bottom: 1.5rem;
-    text-align: center;
-    animation: purchase-success-rise 320ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  /* ── Stripe purchase success — full-screen overlay ────────────────────────── */
+  .purchase-success-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--bg);
+    overflow-y: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1.5rem 3rem;
+    animation: purchase-success-rise 350ms cubic-bezier(0.2, 0.9, 0.3, 1);
   }
   @keyframes purchase-success-rise {
-    from { opacity: 0; transform: translateY(8px); }
+    from { opacity: 0; transform: translateY(12px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+  .purchase-success-inner {
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+  }
   .purchase-success-check {
-    width: 3rem;
-    height: 3rem;
-    margin: 0 auto 1rem;
+    width: 4rem;
+    height: 4rem;
+    margin: 0 auto 1.5rem;
     border-radius: 999px;
     background: var(--accent);
     color: var(--accent-ink, #0B0B09);
@@ -1159,17 +1176,17 @@
     justify-content: center;
   }
   .purchase-success-title {
-    font-size: 1.5rem;
-    font-weight: 600;
+    font-size: 1.75rem;
+    font-weight: 700;
     color: var(--text);
-    letter-spacing: -0.015em;
-    margin: 0 0 0.5rem;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.625rem;
   }
   .purchase-success-lede {
-    font-size: 0.9375rem;
-    color: var(--text-secondary);
-    line-height: 1.5;
-    margin: 0 0 1.25rem;
+    font-size: 1rem;
+    color: var(--text-secondary, var(--muted));
+    line-height: 1.55;
+    margin: 0 0 1.5rem;
   }
   .purchase-success-lede strong {
     color: var(--text);
@@ -1178,20 +1195,20 @@
   }
   .purchase-success-steps {
     list-style: none;
-    margin: 0 auto 1.5rem;
+    margin: 0 auto 1.75rem;
     padding: 0;
     max-width: 320px;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.625rem;
     text-align: left;
   }
   .purchase-success-steps li {
     display: flex;
     align-items: baseline;
     gap: 0.625rem;
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
+    font-size: 0.875rem;
+    color: var(--text-secondary, var(--muted));
     line-height: 1.5;
   }
   .purchase-success-bullet {
@@ -1199,24 +1216,25 @@
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background: var(--text-muted);
-    transform: translateY(-3px);
+    background: var(--text-muted, var(--muted));
+    transform: translateY(-2px);
   }
   .purchase-success-actions {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    margin: 0 auto 0.75rem;
+    gap: 0.625rem;
+    margin: 0 auto 1rem;
     max-width: 320px;
   }
   .purchase-success-btn {
     width: 100%;
-    padding: 0.75rem 1rem;
+    padding: 0.875rem 1rem;
     font-weight: 600;
     font-size: 0.9375rem;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-md, 8px);
     cursor: pointer;
-    transition: background var(--transition), border-color var(--transition), color var(--transition);
+    transition: background var(--transition, 150ms ease), border-color var(--transition, 150ms ease), color var(--transition, 150ms ease);
+    font-family: inherit;
   }
   .purchase-success-btn--primary {
     background: var(--accent);
@@ -1226,14 +1244,14 @@
   .purchase-success-btn--primary:hover { background: var(--accent-hover, var(--accent)); }
   .purchase-success-btn--ghost {
     background: transparent;
-    color: var(--text-secondary);
+    color: var(--text-secondary, var(--muted));
     border: 1px solid var(--border);
   }
-  .purchase-success-btn--ghost:hover { border-color: var(--text-muted); color: var(--text); }
+  .purchase-success-btn--ghost:hover { border-color: var(--muted); color: var(--text); }
   .purchase-success-foot {
     margin: 0;
     font-size: 0.6875rem;
-    color: var(--text-muted);
+    color: var(--text-muted, var(--muted));
     line-height: 1.5;
   }
 

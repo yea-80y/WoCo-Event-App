@@ -1066,6 +1066,7 @@ async function handleSuccessfulPayment(
           tickets: claimedResults,
           buyerName,
           palette: siteTheme?.palette,
+          siteId: metaSiteId || undefined,
         }),
       )
       .catch((err) => {

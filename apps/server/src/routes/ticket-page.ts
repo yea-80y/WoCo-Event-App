@@ -22,10 +22,12 @@ import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import { verifyMessage } from "ethers";
 import { buildTicketCanonicalMessage } from "@woco/shared";
+import type { SitePalette } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
 import { getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+import { getSiteTheme } from "../lib/site/service.js";
 
 const ticketPage = new Hono<AppEnv>();
 
@@ -154,16 +156,23 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
   const buyerName = url.searchParams.get("n")?.trim() || undefined;
   const buyerEmail = url.searchParams.get("e")?.trim() || undefined;
 
+  const siteId = url.searchParams.get("s")?.trim() || undefined;
+
   let eventTitle = "Event ticket";
   let eventDate: string | undefined;
   let eventLocation: string | undefined;
+  let palette: SitePalette | undefined;
   try {
-    const ev = await getEvent(eventId);
+    const [ev, theme] = await Promise.all([
+      getEvent(eventId),
+      siteId ? getSiteTheme(siteId) : Promise.resolve(null),
+    ]);
     if (ev) {
       eventTitle = ev.title || eventTitle;
       eventDate = ev.startDate;
       eventLocation = ev.location;
     }
+    if (theme?.palette) palette = theme.palette;
   } catch {
     // non-fatal — render with generic labels
   }
@@ -176,6 +185,7 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
     buyerEmail,
     buyerName,
     qrContent: `woco://t/${eventId}/${seriesId}/${edition}/${sig}`,
+    palette,
   });
 
   // Convert Node Buffer to Uint8Array for the Response BodyInit type.
@@ -202,13 +212,19 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
     });
   }
 
-  // Best-effort event fetch — page still works if Swarm is slow / unreachable.
+  const siteId = new URL(c.req.url).searchParams.get("s")?.trim() || undefined;
+
+  // Best-effort event + site-theme fetch — page still works if Swarm is slow.
   let eventTitle = "Event ticket";
   let eventDate: string | undefined;
   let eventLocation: string | undefined;
   let seriesName: string | undefined;
+  let palette: SitePalette | undefined;
   try {
-    const ev = await getEvent(ctx.eventId);
+    const [ev, theme] = await Promise.all([
+      getEvent(ctx.eventId),
+      siteId ? getSiteTheme(siteId) : Promise.resolve(null),
+    ]);
     if (ev) {
       eventTitle = ev.title || eventTitle;
       eventDate = ev.startDate;
@@ -216,9 +232,21 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
       const series = ev.series.find((s) => s.seriesId === ctx.seriesId);
       seriesName = series?.name;
     }
+    if (theme?.palette) palette = theme.palette;
   } catch {
     // event fetch is non-fatal; fall through to generic labels
   }
+
+  // Resolved palette — organiser brand when available, WoCo defaults otherwise
+  const pc = {
+    bg:      palette?.bg      ?? '#0c0d12',
+    cardBg:  palette?.cardBg  ?? '#15161f',
+    border:  palette?.border  ?? '#252634',
+    text:    palette?.text    ?? '#f3f4f8',
+    muted:   palette?.muted   ?? '#a0a0b8',
+    accent:  palette?.accent  ?? '#7c6cf0',
+    accentHover: palette?.accentHover ?? (palette?.accent ?? '#6b5ad8'),
+  };
 
   const dateStr = eventDate
     ? new Date(eventDate).toLocaleString("en-GB", {
@@ -250,30 +278,30 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
   <meta property="og:image" content="${escHtml(pngUrl)}" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { background: #0c0d12; color: #f3f4f8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-font-smoothing: antialiased; min-height: 100vh; }
+    html, body { background: ${pc.bg}; color: ${pc.text}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-font-smoothing: antialiased; min-height: 100vh; }
     .root { min-height: 100vh; padding: 1.25rem 1rem 2.5rem; display: flex; flex-direction: column; align-items: center; }
-    .brand { font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.4em; color: #7c6cf0; margin: 0.5rem 0 1.5rem; }
-    .card { width: 100%; max-width: 420px; background: #15161f; border: 1px solid #252634; border-radius: 18px; overflow: hidden; }
-    .header { padding: 1.5rem 1.5rem 1.25rem; text-align: center; border-bottom: 1px solid #1c1d2a; }
-    .pill { display: inline-block; padding: 4px 12px; border-radius: 999px; background: #1c1d2a; border: 1px solid #2c2e40; color: #a298f5; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.18em; margin-bottom: 0.875rem; }
+    .brand { font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.4em; color: ${pc.accent}; margin: 0.5rem 0 1.5rem; }
+    .card { width: 100%; max-width: 420px; background: ${pc.cardBg}; border: 1px solid ${pc.border}; border-radius: 18px; overflow: hidden; }
+    .header { padding: 1.5rem 1.5rem 1.25rem; text-align: center; border-bottom: 1px solid ${pc.border}; }
+    .pill { display: inline-block; padding: 4px 12px; border-radius: 999px; background: ${pc.bg}; border: 1px solid ${pc.border}; color: ${pc.accent}; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.18em; margin-bottom: 0.875rem; }
     h1 { font-size: 1.375rem; font-weight: 700; line-height: 1.25; letter-spacing: -0.015em; margin-bottom: 0.5rem; }
-    .meta { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8125rem; color: #a0a0b8; }
-    .meta-muted { color: #6a6a80; }
-    .qr-wrap { padding: 1.5rem; background: #0c0d12; }
+    .meta { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8125rem; color: ${pc.muted}; }
+    .meta-muted { color: ${pc.muted}; opacity: 0.7; }
+    .qr-wrap { padding: 1.5rem; background: ${pc.bg}; }
     .qr { width: 100%; max-width: 320px; aspect-ratio: 1; margin: 0 auto; padding: 12px; background: #fff; border-radius: 12px; }
     .qr svg { display: block; width: 100%; height: 100%; }
-    .qr-cap { margin-top: 0.875rem; text-align: center; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; color: #6a6a80; }
+    .qr-cap { margin-top: 0.875rem; text-align: center; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; color: ${pc.muted}; }
     .footer { padding: 1.25rem 1.5rem 1.5rem; text-align: center; }
-    .footer-label { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; color: #6a6a80; margin-bottom: 0.375rem; }
-    .footer-name { font-size: 1rem; font-weight: 600; color: #eeeff5; word-break: break-word; }
-    .footer-email { margin-top: 0.25rem; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.875rem; color: #a0a0b8; word-break: break-all; }
+    .footer-label { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; color: ${pc.muted}; margin-bottom: 0.375rem; }
+    .footer-name { font-size: 1rem; font-weight: 600; color: ${pc.text}; word-break: break-word; }
+    .footer-email { margin-top: 0.25rem; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.875rem; color: ${pc.muted}; word-break: break-all; }
     .actions { width: 100%; max-width: 420px; margin-top: 1rem; display: flex; gap: 0.5rem; }
     .btn { flex: 1; padding: 0.75rem; text-align: center; text-decoration: none; font-size: 0.8125rem; font-weight: 600; border-radius: 10px; transition: background 0.15s; }
-    .btn-primary { background: #7c6cf0; color: #fff; }
-    .btn-primary:hover { background: #6b5ad8; }
-    .btn-ghost { background: transparent; border: 1px solid #252634; color: #a0a0b8; }
-    .btn-ghost:hover { background: #15161f; color: #eeeff5; }
-    .note { max-width: 420px; margin: 1.25rem auto 0; text-align: center; font-size: 0.6875rem; color: #4a4a60; line-height: 1.5; }
+    .btn-primary { background: ${pc.accent}; color: ${pc.bg}; }
+    .btn-primary:hover { background: ${pc.accentHover}; }
+    .btn-ghost { background: transparent; border: 1px solid ${pc.border}; color: ${pc.muted}; }
+    .btn-ghost:hover { background: ${pc.cardBg}; color: ${pc.text}; }
+    .note { max-width: 420px; margin: 1.25rem auto 0; text-align: center; font-size: 0.6875rem; color: ${pc.muted}; opacity: 0.6; line-height: 1.5; }
     @media (max-width: 480px) { h1 { font-size: 1.25rem; } }
   </style>
 </head>
