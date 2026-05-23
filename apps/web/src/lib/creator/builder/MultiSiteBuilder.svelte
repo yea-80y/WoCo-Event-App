@@ -18,6 +18,7 @@
   import { GATEWAYS } from "./gateways.js";
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
   import DomainLinker from "./DomainLinker.svelte";
+  import DomainTab from "./DomainTab.svelte";
   import { getMyEthernaBatch } from "../../api/etherna.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -321,6 +322,7 @@
         localStorage.setItem(FEED_HASH_KEY, rec.feedHash ?? '');
         feedHash = rec.feedHash ?? '';
         deployedUrl = rec.deployedUrl ?? '';
+        deployedHash = (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1] ?? '';
         if (eventsRes.ok && eventsRes.data) {
           siteEvents = eventsRes.data.events;
           localStorage.setItem(EVENTS_KEY, JSON.stringify(eventsRes.data.events));
@@ -400,7 +402,7 @@
     tab = 'brand';
   }
 
-  type TabId = 'template' | 'brand' | 'pages' | 'nav' | 'events';
+  type TabId = 'template' | 'brand' | 'pages' | 'nav' | 'events' | 'domain';
 
   const TABS: { id: TabId; label: string }[] = [
     { id: 'template', label: 'Template' },
@@ -408,6 +410,7 @@
     { id: 'pages',    label: 'Pages' },
     { id: 'nav',      label: 'Navigation' },
     { id: 'events',   label: 'Events' },
+    { id: 'domain',   label: 'Domain' },
   ];
 </script>
 
@@ -526,14 +529,6 @@
       </div>
     {/if}
 
-    {#if deployedHash}
-      <DomainLinker
-        siteId={site.siteId}
-        contentHash={deployedHash}
-        feedManifestHash={feedHash}
-      />
-    {/if}
-
     <!-- Tab content -->
     <div class="tab-content">
       {#if tab === 'template'}
@@ -553,6 +548,14 @@
           {siteEvents}
           onsiteeventschange={(ev) => siteEvents = ev}
         />
+      {:else if tab === 'domain'}
+        <DomainTab feedHash={feedHash} onpublish={handlePublish}>
+          <DomainLinker
+            siteId={site.siteId}
+            contentHash={deployedHash}
+            feedManifestHash={feedHash}
+          />
+        </DomainTab>
       {/if}
     </div>
   {/if}
