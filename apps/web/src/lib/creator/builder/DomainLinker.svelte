@@ -23,13 +23,25 @@
 
   const instr = $derived(entry ? getProviderInstructions(entry.provider ?? 'Unknown') : null);
 
+  const CC_SLDS = new Set(['co', 'org', 'net', 'gov', 'ac', 'me', 'ltd', 'plc', 'sch', 'com', 'edu', 'mil']);
+
+  function apexDomain(hostname: string): string {
+    const parts = hostname.split('.');
+    if (parts.length <= 2) return hostname;
+    const tld = parts[parts.length - 1];
+    const sld = parts[parts.length - 2];
+    if (tld.length === 2 && CC_SLDS.has(sld)) return parts.slice(-3).join('.');
+    return parts.slice(-2).join('.');
+  }
+
+  const isApex = $derived(entry ? entry.hostname === apexDomain(entry.hostname) : false);
+
   const cnameNameField = $derived((() => {
     if (!entry) return 'www';
-    const parts = entry.hostname.split('.');
-    return parts.length > 2 ? parts.slice(0, -2).join('.') : '@';
+    const apex = apexDomain(entry.hostname);
+    if (entry.hostname === apex) return '@';
+    return entry.hostname.slice(0, -(apex.length + 1));
   })());
-
-  const isApex = $derived(entry ? entry.hostname.split('.').length === 2 : false);
 
   const providerLabel = $derived(
     entry?.provider && entry.provider !== 'Unknown' ? entry.provider : 'your DNS provider'

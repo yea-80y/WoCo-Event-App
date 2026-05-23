@@ -4,6 +4,7 @@ import {
   markDomainVerified,
   CNAME_TARGET,
   SERVER_IP,
+  rootDomain,
 } from "./service.js";
 import { getResend, getFromAddress } from "../email/client.js";
 
@@ -19,7 +20,7 @@ async function checkDomain(hostname: string): Promise<boolean> {
   } catch { /* fall through */ }
 
   // Apex/bare domains: A record → our server IP
-  const isApex = hostname.split(".").length === 2;
+  const isApex = rootDomain(hostname) === hostname;
   if (isApex) {
     try {
       const a = await dns.resolve4(hostname);

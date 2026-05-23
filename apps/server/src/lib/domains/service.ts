@@ -107,7 +107,7 @@ const NS_PATTERNS: Array<{ test: (ns: string) => boolean; provider: string }> = 
   { test: (n) => n === "hydrogen.ns.hetzner.com" || n === "helium.ns.hetzner.de" || n.includes(".ns.hetzner."), provider: "Hetzner DNS" },
 ];
 
-/** Strip subdomain prefix to get the registrable domain for NS lookup.
+export /** Strip subdomain prefix to get the registrable domain for NS lookup.
  *  Handles ccSLDs like .co.uk, .org.uk, .com.au by keeping 3 labels. */
 function rootDomain(hostname: string): string {
   const parts = hostname.split(".");
@@ -202,7 +202,7 @@ export async function verifyDomain(hostname: string): Promise<{
     return { verified: false, error: "Domain not registered" };
   }
 
-  const isApex = normalized.split(".").length === 2;
+  const isApex = rootDomain(normalized) === normalized;
 
   // Try CNAME first (works for subdomains)
   try {
