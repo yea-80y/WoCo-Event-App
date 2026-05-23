@@ -1,11 +1,8 @@
 import { promises as fs } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import dns from "node:dns/promises";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-const DOMAINS_FILE = resolve(__dirname, "../../../data/domains.json");
+const DOMAINS_FILE = join(process.cwd(), ".data", "domains.json");
 
 // ---------------------------------------------------------------------------
 // Types
