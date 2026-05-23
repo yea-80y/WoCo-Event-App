@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { DomainEntry } from '../../api/domains.js';
-  import { registerSiteDomain, verifyDomainDns, getSiteDomains } from '../../api/domains.js';
+  import { registerSiteDomain, verifyDomainDns, getSiteDomains, removeDomain } from '../../api/domains.js';
   import { getProviderInstructions } from './domain-instructions.js';
 
   interface Props {
@@ -17,6 +17,7 @@
   let loadingInit = $state(true);
   let registering = $state(false);
   let verifying   = $state(false);
+  let removing    = $state(false);
   let error       = $state('');
   let copied      = $state<string | null>(null);
 
@@ -91,6 +92,21 @@
     hostnameInput = entry?.hostname ?? '';
     entry = null;
     error = '';
+  }
+
+  async function disconnect() {
+    if (!entry || removing) return;
+    removing = true;
+    error = '';
+    try {
+      await removeDomain(entry.hostname);
+      hostnameInput = '';
+      entry = null;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to remove domain';
+    } finally {
+      removing = false;
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -175,6 +191,9 @@
       <span class="hostname-text">{entry.hostname}</span>
       <span class="badge badge--live">✓ Live</span>
       <button class="ghost-btn" onclick={editDomain}>Change</button>
+      <button class="ghost-btn ghost-btn--danger" onclick={disconnect} disabled={removing}>
+        {removing ? '…' : 'Disconnect'}
+      </button>
 
     {:else}
       <!-- Registered but awaiting DNS -->
@@ -186,6 +205,9 @@
       {/if}
       <span class="badge badge--pending">Awaiting DNS</span>
       <button class="ghost-btn" onclick={editDomain}>Change</button>
+      <button class="ghost-btn ghost-btn--danger" onclick={disconnect} disabled={removing}>
+        {removing ? '…' : 'Disconnect'}
+      </button>
     {/if}
   </div>
 
@@ -431,6 +453,11 @@
   .ghost-btn:hover {
     color: var(--text);
     border-color: var(--accent);
+  }
+
+  .ghost-btn--danger:hover {
+    color: #f87171;
+    border-color: #f87171;
   }
 
   /* ── Error bar ───────────────────────────────────────────────────────────── */
