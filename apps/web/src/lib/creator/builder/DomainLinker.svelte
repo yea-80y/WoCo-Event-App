@@ -243,9 +243,13 @@
             </button>
           </div>
         </div>
-        <p class="apex-note">
-          SSL is issued automatically on first visit — no extra configuration needed.
-        </p>
+        {#if entry?.provider === 'Cloudflare'}
+          <div class="proxy-warning">
+            <strong>Important:</strong> set Proxy status to <strong>DNS Only (grey cloud)</strong> — not Proxied (orange). Click the cloud icon to toggle.
+          </div>
+        {:else}
+          <p class="apex-note">SSL is issued automatically on first visit — no extra configuration needed.</p>
+        {/if}
 
       {:else}
         <!-- Subdomain → CNAME -->
@@ -270,6 +274,11 @@
             </button>
           </div>
         </div>
+        {#if entry?.provider === 'Cloudflare'}
+          <div class="proxy-warning">
+            <strong>Important:</strong> set Proxy status to <strong>DNS Only (grey cloud)</strong> — not Proxied (orange). Click the cloud icon to toggle.
+          </div>
+        {/if}
       {/if}
 
       {#if instr}
@@ -552,6 +561,16 @@
     font-size: 0.8125rem;
     color: var(--text-muted);
     margin: 0;
+    line-height: 1.5;
+  }
+
+  .proxy-warning {
+    font-size: 0.8125rem;
+    color: #f59e0b;
+    background: color-mix(in srgb, #f59e0b 7%, var(--bg));
+    border: 1px solid color-mix(in srgb, #f59e0b 25%, transparent);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.75rem;
     line-height: 1.5;
   }
 

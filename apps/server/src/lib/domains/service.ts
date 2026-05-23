@@ -228,16 +228,22 @@ export async function verifyDomain(hostname: string): Promise<{
         await saveDomains();
         return { verified: true };
       }
+      return {
+        verified: false,
+        error: `A record found but points to ${aRecords[0]} — change it to ${SERVER_IP}`,
+      };
     } catch {
-      // No A record configured yet
+      return {
+        verified: false,
+        error: `No A record found yet for ${normalized}. Add one pointing to ${SERVER_IP} and wait a few minutes for DNS to propagate.`,
+      };
     }
   }
 
-  const hint = isApex
-    ? `Add an A record: ${normalized} → ${SERVER_IP}`
-    : `Add a CNAME record: ${normalized} → ${CNAME_TARGET}`;
-
-  return { verified: false, error: `DNS not configured yet. ${hint}` };
+  return {
+    verified: false,
+    error: `No CNAME record found yet for ${normalized}. Add one pointing to ${CNAME_TARGET} and wait a few minutes for DNS to propagate.`,
+  };
 }
 
 export async function getDomainByHostname(
