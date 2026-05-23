@@ -107,10 +107,18 @@ const NS_PATTERNS: Array<{ test: (ns: string) => boolean; provider: string }> = 
   { test: (n) => n === "hydrogen.ns.hetzner.com" || n === "helium.ns.hetzner.de" || n.includes(".ns.hetzner."), provider: "Hetzner DNS" },
 ];
 
-/** Strip subdomain prefix to get the registrable domain for NS lookup */
+/** Strip subdomain prefix to get the registrable domain for NS lookup.
+ *  Handles ccSLDs like .co.uk, .org.uk, .com.au by keeping 3 labels. */
 function rootDomain(hostname: string): string {
   const parts = hostname.split(".");
-  return parts.length > 2 ? parts.slice(-2).join(".") : hostname;
+  if (parts.length <= 2) return hostname;
+  const tld = parts[parts.length - 1];
+  const sld = parts[parts.length - 2];
+  const ccSLDs = new Set(["co", "org", "net", "gov", "ac", "me", "ltd", "plc", "sch", "com", "edu", "mil"]);
+  if (tld.length === 2 && ccSLDs.has(sld)) {
+    return parts.slice(-3).join(".");
+  }
+  return parts.slice(-2).join(".");
 }
 
 export async function detectProvider(hostname: string): Promise<{
