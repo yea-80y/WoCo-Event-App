@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import dns from "node:dns/promises";
 
 const DOMAINS_FILE = join(process.cwd(), ".data", "domains.json");
