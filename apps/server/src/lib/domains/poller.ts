@@ -10,15 +10,25 @@ import { getResend, getFromAddress } from "../email/client.js";
 const POLL_INTERVAL_MS = 15 * 60_000; // 15 minutes
 const GRACE_DAYS = 7;
 
-async function checkDomain(hostname: string): Promise<boolean> {
+async function checkDomain(hostname: string, onCloudflare: boolean): Promise<boolean> {
+  // Try CNAME (subdomains)
   try {
     const records = await dns.resolveCname(hostname);
-    return records.some(
-      (r) => r.toLowerCase().replace(/\.$/, "") === CNAME_TARGET,
-    );
-  } catch {
-    return false;
+    if (records.some((r) => r.toLowerCase().replace(/\.$/, "") === CNAME_TARGET)) {
+      return true;
+    }
+  } catch { /* fall through */ }
+
+  // Apex on Cloudflare: CNAME flattened to A record — accept any A record
+  const isApex = hostname.split(".").length === 2;
+  if (isApex && onCloudflare) {
+    try {
+      const a = await dns.resolve4(hostname);
+      return a.length > 0;
+    } catch { /* not configured */ }
   }
+
+  return false;
 }
 
 async function sendVerifiedEmail(
@@ -52,7 +62,7 @@ async function tick(): Promise<void> {
 
   await Promise.allSettled(
     domains.map(async (entry) => {
-      const cnameOk = await checkDomain(entry.hostname);
+      const cnameOk = await checkDomain(entry.hostname, entry.onCloudflare ?? false);
 
       if (cnameOk) {
         await markDomainVerified(entry.hostname);

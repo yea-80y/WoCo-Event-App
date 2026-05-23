@@ -198,37 +198,61 @@
           You're already on Cloudflare — SSL is handled for you
         </div>
 
-        <p class="instr-lead">Add this one record in your <strong>Cloudflare DNS</strong> dashboard:</p>
-
-        <div class="dns-record-block">
-          <div class="dns-field">
-            <span class="dns-field-label">Type</span>
-            <span class="dns-field-value">CNAME</span>
-          </div>
-          <div class="dns-field">
-            <span class="dns-field-label">Name</span>
-            <span class="dns-field-value mono">{cnameNameField}</span>
-            <button class="copy-btn" onclick={() => copy(cnameNameField, 'name')}>
-              {copied === 'name' ? '✓' : 'Copy'}
-            </button>
-          </div>
-          <div class="dns-field">
-            <span class="dns-field-label">Target</span>
-            <span class="dns-field-value mono">sites.woco-net.com</span>
-            <button class="copy-btn" onclick={() => copy('sites.woco-net.com', 'target')}>
-              {copied === 'target' ? '✓' : 'Copy'}
-            </button>
-          </div>
-          <div class="dns-field dns-field--note">
-            <span class="dns-field-label">Proxy</span>
-            <span class="dns-field-value">Proxied <span class="cf-orange">(orange cloud)</span> — don't set to DNS Only</span>
-          </div>
-        </div>
-
         {#if isApex}
+          <p class="instr-lead">Add this record in your <strong>Cloudflare DNS</strong> dashboard:</p>
+          <div class="dns-record-block">
+            <div class="dns-field">
+              <span class="dns-field-label">Type</span>
+              <span class="dns-field-value">A</span>
+            </div>
+            <div class="dns-field">
+              <span class="dns-field-label">Name</span>
+              <span class="dns-field-value mono">@</span>
+              <button class="copy-btn" onclick={() => copy('@', 'name')}>
+                {copied === 'name' ? '✓' : 'Copy'}
+              </button>
+            </div>
+            <div class="dns-field">
+              <span class="dns-field-label">IPv4</span>
+              <span class="dns-field-value mono">192.0.2.1</span>
+              <button class="copy-btn" onclick={() => copy('192.0.2.1', 'target')}>
+                {copied === 'target' ? '✓' : 'Copy'}
+              </button>
+            </div>
+            <div class="dns-field dns-field--note">
+              <span class="dns-field-label">Proxy</span>
+              <span class="dns-field-value">Proxied <span class="cf-orange">(orange cloud)</span> — required</span>
+            </div>
+          </div>
           <p class="apex-note">
-            Using <code>{entry.hostname}</code> (bare domain)? Set Name to <code>@</code> — Cloudflare supports this.
+            Bare domains use an A record on Cloudflare, not a CNAME. The IP is a placeholder — Cloudflare intercepts the traffic before it ever reaches it.
           </p>
+        {:else}
+          <p class="instr-lead">Add this one record in your <strong>Cloudflare DNS</strong> dashboard:</p>
+          <div class="dns-record-block">
+            <div class="dns-field">
+              <span class="dns-field-label">Type</span>
+              <span class="dns-field-value">CNAME</span>
+            </div>
+            <div class="dns-field">
+              <span class="dns-field-label">Name</span>
+              <span class="dns-field-value mono">{cnameNameField}</span>
+              <button class="copy-btn" onclick={() => copy(cnameNameField, 'name')}>
+                {copied === 'name' ? '✓' : 'Copy'}
+              </button>
+            </div>
+            <div class="dns-field">
+              <span class="dns-field-label">Target</span>
+              <span class="dns-field-value mono">sites.woco-net.com</span>
+              <button class="copy-btn" onclick={() => copy('sites.woco-net.com', 'target')}>
+                {copied === 'target' ? '✓' : 'Copy'}
+              </button>
+            </div>
+            <div class="dns-field dns-field--note">
+              <span class="dns-field-label">Proxy</span>
+              <span class="dns-field-value">Proxied <span class="cf-orange">(orange cloud)</span> — don't set to DNS Only</span>
+            </div>
+          </div>
         {/if}
 
         <div class="verify-row">

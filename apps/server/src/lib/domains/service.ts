@@ -201,30 +201,44 @@ export async function verifyDomain(hostname: string): Promise<{
     return { verified: false, error: "Domain not registered" };
   }
 
+  const isApex = normalized.split(".").length === 2;
+
+  // Try CNAME first (works for subdomains)
   try {
     const records = await dns.resolveCname(normalized);
-    const hasCname = records.some(
-      (r) => r.toLowerCase().replace(/\.$/, "") === CNAME_TARGET,
-    );
-
-    if (hasCname) {
+    if (records.some((r) => r.toLowerCase().replace(/\.$/, "") === CNAME_TARGET)) {
       entry.verified = true;
       entry.verifiedAt = new Date().toISOString();
       await saveDomains();
       return { verified: true };
     }
-
-    return {
-      verified: false,
-      error: `CNAME not found. Add a CNAME record: ${normalized} → ${CNAME_TARGET}`,
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "DNS lookup failed";
-    return {
-      verified: false,
-      error: `DNS lookup failed: ${msg}. Add a CNAME record: ${normalized} → ${CNAME_TARGET}`,
-    };
+  } catch {
+    // CNAME lookup failed — may be an apex domain with Cloudflare CNAME flattening,
+    // or the record genuinely doesn't exist yet. Fall through.
   }
+
+  // Apex domains on Cloudflare use CNAME flattening: the CNAME is set in the
+  // Cloudflare dashboard but DNS resolvers return A records, not the CNAME itself.
+  // If the entry was registered as onCloudflare=true and has an A record, accept it.
+  if (isApex && entry.onCloudflare) {
+    try {
+      const aRecords = await dns.resolve4(normalized);
+      if (aRecords.length > 0) {
+        entry.verified = true;
+        entry.verifiedAt = new Date().toISOString();
+        await saveDomains();
+        return { verified: true };
+      }
+    } catch {
+      // No A record either — not configured yet
+    }
+  }
+
+  const hint = isApex && entry.onCloudflare
+    ? `Add an A record: ${normalized} → 192.0.2.1 (Proxied) in Cloudflare DNS`
+    : `Add a CNAME record: ${normalized} → ${CNAME_TARGET}`;
+
+  return { verified: false, error: `DNS not configured yet. ${hint}` };
 }
 
 export async function getDomainByHostname(
