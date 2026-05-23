@@ -16,7 +16,7 @@ import {
 const domains = new Hono<AppEnv>();
 
 const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
-const BLOCKED = ["woco-net.com", "woco.eth.limo", "localhost"];
+const BLOCKED = ["woco.eth.limo", "localhost"];
 
 function validateHostname(hostname: string): string | null {
   const h = hostname.toLowerCase().trim();
