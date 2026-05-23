@@ -25,6 +25,7 @@ import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
+import { customDomainProxy } from "./middleware/custom-domain.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -103,6 +104,9 @@ if (process.env.NODE_ENV === "production" && process.env.STRIPE_SECRET_KEY) {
 }
 
 const app = new Hono<AppEnv>();
+
+// Custom domain proxy — must run before API routes so organiser domains short-circuit
+app.use("*", customDomainProxy);
 
 // CORS - allow frontend dev server
 app.use(

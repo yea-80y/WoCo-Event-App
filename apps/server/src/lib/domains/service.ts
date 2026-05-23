@@ -80,6 +80,7 @@ async function saveDomains(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export const CNAME_TARGET = "sites.woco-net.com";
+export const SERVER_IP = "46.225.174.72";
 
 // ---------------------------------------------------------------------------
 // NS detection
@@ -167,10 +168,6 @@ export async function registerDomain(
     return { ...existing, onCloudflare, provider };
   }
 
-  const trialExpiresAt = onCloudflare
-    ? undefined
-    : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-
   const entry: DomainEntry = {
     hostname: normalized,
     feedManifestHash,
@@ -180,7 +177,6 @@ export async function registerDomain(
     createdAt: new Date().toISOString(),
     onCloudflare,
     provider,
-    ...(trialExpiresAt ? { trialExpiresAt } : {}),
     ...("eventId" in target ? { eventId: target.eventId } : { siteId: target.siteId }),
   };
 
@@ -217,25 +213,23 @@ export async function verifyDomain(hostname: string): Promise<{
     // or the record genuinely doesn't exist yet. Fall through.
   }
 
-  // Apex domains on Cloudflare use CNAME flattening: the CNAME is set in the
-  // Cloudflare dashboard but DNS resolvers return A records, not the CNAME itself.
-  // If the entry was registered as onCloudflare=true and has an A record, accept it.
-  if (isApex && entry.onCloudflare) {
+  // Apex/bare domains can't use CNAME — verify via A record pointing to our server
+  if (isApex) {
     try {
       const aRecords = await dns.resolve4(normalized);
-      if (aRecords.length > 0) {
+      if (aRecords.includes(SERVER_IP)) {
         entry.verified = true;
         entry.verifiedAt = new Date().toISOString();
         await saveDomains();
         return { verified: true };
       }
     } catch {
-      // No A record either — not configured yet
+      // No A record configured yet
     }
   }
 
-  const hint = isApex && entry.onCloudflare
-    ? `Add an A record: ${normalized} → 192.0.2.1 (Proxied) in Cloudflare DNS`
+  const hint = isApex
+    ? `Add an A record: ${normalized} → ${SERVER_IP}`
     : `Add a CNAME record: ${normalized} → ${CNAME_TARGET}`;
 
   return { verified: false, error: `DNS not configured yet. ${hint}` };
@@ -287,16 +281,6 @@ export async function markDomainVerified(hostname: string): Promise<void> {
   if (!entry) return;
   entry.verified = true;
   entry.verifiedAt = new Date().toISOString();
-  await saveDomains();
-}
-
-export async function deactivateDomain(hostname: string): Promise<void> {
-  const store = await loadDomains();
-  const entry = store.domains.find(
-    (d) => d.hostname === hostname.toLowerCase(),
-  );
-  if (!entry) return;
-  entry.deactivated = true;
   await saveDomains();
 }
 

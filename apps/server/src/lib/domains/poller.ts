@@ -2,16 +2,15 @@ import dns from "node:dns/promises";
 import {
   getAllUnverifiedDomains,
   markDomainVerified,
-  deactivateDomain,
   CNAME_TARGET,
+  SERVER_IP,
 } from "./service.js";
 import { getResend, getFromAddress } from "../email/client.js";
 
 const POLL_INTERVAL_MS = 15 * 60_000; // 15 minutes
-const GRACE_DAYS = 7;
 
-async function checkDomain(hostname: string, onCloudflare: boolean): Promise<boolean> {
-  // Try CNAME (subdomains)
+async function checkDomain(hostname: string): Promise<boolean> {
+  // Subdomains: CNAME → sites.woco-net.com
   try {
     const records = await dns.resolveCname(hostname);
     if (records.some((r) => r.toLowerCase().replace(/\.$/, "") === CNAME_TARGET)) {
@@ -19,12 +18,12 @@ async function checkDomain(hostname: string, onCloudflare: boolean): Promise<boo
     }
   } catch { /* fall through */ }
 
-  // Apex on Cloudflare: CNAME flattened to A record — accept any A record
+  // Apex/bare domains: A record → our server IP
   const isApex = hostname.split(".").length === 2;
-  if (isApex && onCloudflare) {
+  if (isApex) {
     try {
       const a = await dns.resolve4(hostname);
-      return a.length > 0;
+      return a.includes(SERVER_IP);
     } catch { /* not configured */ }
   }
 
@@ -58,26 +57,14 @@ async function tick(): Promise<void> {
     return;
   }
 
-  const now = Date.now();
-
   await Promise.allSettled(
     domains.map(async (entry) => {
-      const cnameOk = await checkDomain(entry.hostname, entry.onCloudflare ?? false);
+      const dnsOk = await checkDomain(entry.hostname);
 
-      if (cnameOk) {
+      if (dnsOk) {
         await markDomainVerified(entry.hostname);
         console.log(`[domains/poller] verified: ${entry.hostname}`);
         await sendVerifiedEmail(entry.ownerAddress, entry.hostname);
-        return;
-      }
-
-      // Grace period expiry check (non-CF domains only)
-      if (!entry.onCloudflare && entry.trialExpiresAt) {
-        const expired = new Date(entry.trialExpiresAt).getTime() < now;
-        if (expired) {
-          await deactivateDomain(entry.hostname);
-          console.log(`[domains/poller] deactivated (grace expired): ${entry.hostname}`);
-        }
       }
     }),
   );

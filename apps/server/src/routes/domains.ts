@@ -128,8 +128,21 @@ domains.get("/site/:siteId", async (c) => {
 });
 
 /**
- * GET /api/domains/resolve/:hostname — resolve domain to Swarm content hash
- * Public — used by the Cloudflare Worker edge proxy
+ * GET /api/domains/can-issue-cert?domain=hostname
+ * Called by Caddy on_demand_tls ask — returns 200 if domain is registered, 400 if not.
+ * Caddy only issues a cert if this returns 200.
+ */
+domains.get("/can-issue-cert", async (c) => {
+  const domain = c.req.query("domain");
+  if (!domain) return c.json({}, 400);
+  const { getDomainByHostname } = await import("../lib/domains/service.js");
+  const entry = await getDomainByHostname(domain);
+  if (!entry || entry.deactivated) return c.json({}, 400);
+  return c.json({}, 200);
+});
+
+/**
+ * GET /api/domains/resolve/:hostname — resolve domain to Swarm content hash (public)
  */
 domains.get("/resolve/:hostname", async (c) => {
   const hostname = c.req.param("hostname");

@@ -19,7 +19,6 @@
   let verifying   = $state(false);
   let error       = $state('');
   let copied      = $state<string | null>(null);
-  let option      = $state<'quick' | 'free'>('quick');
 
   const instr = $derived(entry ? getProviderInstructions(entry.provider ?? 'Unknown') : null);
 
@@ -30,6 +29,10 @@
   })());
 
   const isApex = $derived(entry ? entry.hostname.split('.').length === 2 : false);
+
+  const providerLabel = $derived(
+    entry?.provider && entry.provider !== 'Unknown' ? entry.provider : 'your DNS provider'
+  );
 
   onMount(async () => {
     try {
@@ -145,7 +148,7 @@
         <input
           class="domain-input"
           type="text"
-          placeholder="events.mybar.com or www.mybar.com"
+          placeholder="events.mybar.com or mybar.com"
           bind:value={hostnameInput}
           onkeydown={handleKeydown}
           disabled={registering}
@@ -193,224 +196,85 @@
 
   <!-- ── Instructions — shown when registered but not yet verified ──── -->
   {#if entry && !entry.verified}
+    <div class="instr-panel">
 
-    {#if entry.onCloudflare}
-      <!-- ── Cloudflare path — simplest possible ───────────────────── -->
-      <div class="instr-panel">
-        <div class="cf-green-badge">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2.5 7.5 5.5 10.5 11.5 4" stroke="#22c55e" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          You're already on Cloudflare — SSL is handled for you
+      {#if isApex}
+        <!-- Bare domain → A record -->
+        <p class="instr-lead">Add this record at <strong>{providerLabel}</strong>:</p>
+        <div class="dns-record-block">
+          <div class="dns-field">
+            <span class="dns-field-label">Type</span>
+            <span class="dns-field-value">A</span>
+          </div>
+          <div class="dns-field">
+            <span class="dns-field-label">Name</span>
+            <span class="dns-field-value mono">@</span>
+            <button class="copy-btn" onclick={() => copy('@', 'name')}>
+              {copied === 'name' ? '✓' : 'Copy'}
+            </button>
+          </div>
+          <div class="dns-field">
+            <span class="dns-field-label">Value</span>
+            <span class="dns-field-value mono">46.225.174.72</span>
+            <button class="copy-btn" onclick={() => copy('46.225.174.72', 'target')}>
+              {copied === 'target' ? '✓' : 'Copy'}
+            </button>
+          </div>
         </div>
+        <p class="apex-note">
+          SSL is issued automatically on first visit — no extra configuration needed.
+        </p>
 
-        {#if isApex}
-          <p class="instr-lead">Add this record in your <strong>Cloudflare DNS</strong> dashboard:</p>
-          <div class="dns-record-block">
-            <div class="dns-field">
-              <span class="dns-field-label">Type</span>
-              <span class="dns-field-value">A</span>
-            </div>
-            <div class="dns-field">
-              <span class="dns-field-label">Name</span>
-              <span class="dns-field-value mono">@</span>
-              <button class="copy-btn" onclick={() => copy('@', 'name')}>
-                {copied === 'name' ? '✓' : 'Copy'}
-              </button>
-            </div>
-            <div class="dns-field">
-              <span class="dns-field-label">IPv4</span>
-              <span class="dns-field-value mono">192.0.2.1</span>
-              <button class="copy-btn" onclick={() => copy('192.0.2.1', 'target')}>
-                {copied === 'target' ? '✓' : 'Copy'}
-              </button>
-            </div>
-            <div class="dns-field dns-field--note">
-              <span class="dns-field-label">Proxy</span>
-              <span class="dns-field-value">Proxied <span class="cf-orange">(orange cloud)</span> — required</span>
-            </div>
+      {:else}
+        <!-- Subdomain → CNAME -->
+        <p class="instr-lead">Add this record at <strong>{providerLabel}</strong>:</p>
+        <div class="dns-record-block">
+          <div class="dns-field">
+            <span class="dns-field-label">Type</span>
+            <span class="dns-field-value">CNAME</span>
           </div>
-          <p class="apex-note">
-            Bare domains use an A record on Cloudflare, not a CNAME. The IP is a placeholder — Cloudflare intercepts the traffic before it ever reaches it.
-          </p>
-        {:else}
-          <p class="instr-lead">Add this one record in your <strong>Cloudflare DNS</strong> dashboard:</p>
-          <div class="dns-record-block">
-            <div class="dns-field">
-              <span class="dns-field-label">Type</span>
-              <span class="dns-field-value">CNAME</span>
-            </div>
-            <div class="dns-field">
-              <span class="dns-field-label">Name</span>
-              <span class="dns-field-value mono">{cnameNameField}</span>
-              <button class="copy-btn" onclick={() => copy(cnameNameField, 'name')}>
-                {copied === 'name' ? '✓' : 'Copy'}
-              </button>
-            </div>
-            <div class="dns-field">
-              <span class="dns-field-label">Target</span>
-              <span class="dns-field-value mono">sites.woco-net.com</span>
-              <button class="copy-btn" onclick={() => copy('sites.woco-net.com', 'target')}>
-                {copied === 'target' ? '✓' : 'Copy'}
-              </button>
-            </div>
-            <div class="dns-field dns-field--note">
-              <span class="dns-field-label">Proxy</span>
-              <span class="dns-field-value">Proxied <span class="cf-orange">(orange cloud)</span> — don't set to DNS Only</span>
-            </div>
+          <div class="dns-field">
+            <span class="dns-field-label">Name</span>
+            <span class="dns-field-value mono">{cnameNameField}</span>
+            <button class="copy-btn" onclick={() => copy(cnameNameField, 'name')}>
+              {copied === 'name' ? '✓' : 'Copy'}
+            </button>
           </div>
+          <div class="dns-field">
+            <span class="dns-field-label">Target</span>
+            <span class="dns-field-value mono">sites.woco-net.com</span>
+            <button class="copy-btn" onclick={() => copy('sites.woco-net.com', 'target')}>
+              {copied === 'target' ? '✓' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      {/if}
+
+      {#if instr}
+        {@const steps = isApex ? (instr.aRecordSteps ?? instr.cnameSteps) : instr.cnameSteps}
+        {#if steps.length > 0}
+          <details class="steps-details">
+            <summary class="steps-summary">Step-by-step for {instr.provider}</summary>
+            <ol class="steps-list">
+              {#each steps as step}
+                <li>{step}</li>
+              {/each}
+            </ol>
+            {#if instr.gotcha}
+              <p class="steps-gotcha">⚠ {instr.gotcha}</p>
+            {/if}
+          </details>
         {/if}
+      {/if}
 
-        <div class="verify-row">
-          <button class="verify-btn" onclick={verify} disabled={verifying}>
-            {#if verifying}<span class="btn-spinner btn-spinner--dark" aria-hidden="true"></span>{/if}
-            {verifying ? 'Checking…' : 'Check DNS now'}
-          </button>
-          <span class="verify-hint">We also check automatically every 15 minutes</span>
-        </div>
+      <div class="verify-row">
+        <button class="verify-btn" onclick={verify} disabled={verifying}>
+          {#if verifying}<span class="btn-spinner btn-spinner--dark" aria-hidden="true"></span>{/if}
+          {verifying ? 'Checking…' : 'Check DNS now'}
+        </button>
+        <span class="verify-hint">We also check automatically every 15 minutes</span>
       </div>
-
-    {:else}
-      <!-- ── Non-Cloudflare path — two options ─────────────────────── -->
-      <div class="instr-panel">
-        <p class="instr-lead">How would you like to connect <strong>{entry.hostname}</strong>?</p>
-
-        <div class="option-tabs">
-          <button
-            class="option-tab"
-            class:active={option === 'quick'}
-            onclick={() => option = 'quick'}
-          >
-            <span class="option-tab-title">⚡ Near-instant</span>
-            <span class="option-tab-sub">Add one DNS record</span>
-            <span class="option-tab-badge option-tab-badge--trial">7-day free trial</span>
-          </button>
-          <button
-            class="option-tab"
-            class:active={option === 'free'}
-            onclick={() => option = 'free'}
-          >
-            <span class="option-tab-title">Free forever</span>
-            <span class="option-tab-sub">Move DNS to Cloudflare</span>
-            <span class="option-tab-badge option-tab-badge--free">Takes 24–48 hrs</span>
-          </button>
-        </div>
-
-        {#if option === 'quick'}
-          <!-- Option B — add CNAME, keep DNS -->
-          <div class="option-body">
-            <p class="option-desc">
-              Add this record at <strong>{entry.provider ?? 'your DNS provider'}</strong>.
-              Your site will be live at <strong>{entry.hostname}</strong> within the hour.
-              Free for 7 days, then £2/month.
-            </p>
-
-            <div class="dns-record-block">
-              <div class="dns-field">
-                <span class="dns-field-label">Type</span>
-                <span class="dns-field-value">CNAME</span>
-              </div>
-              <div class="dns-field">
-                <span class="dns-field-label">Name</span>
-                <span class="dns-field-value mono">{cnameNameField}</span>
-                <button class="copy-btn" onclick={() => copy(cnameNameField, 'qname')}>
-                  {copied === 'qname' ? '✓' : 'Copy'}
-                </button>
-              </div>
-              <div class="dns-field">
-                <span class="dns-field-label">Target</span>
-                <span class="dns-field-value mono">sites.woco-net.com</span>
-                <button class="copy-btn" onclick={() => copy('sites.woco-net.com', 'qtarget')}>
-                  {copied === 'qtarget' ? '✓' : 'Copy'}
-                </button>
-              </div>
-            </div>
-
-            {#if instr && instr.cnameSteps.length > 0}
-              <details class="steps-details">
-                <summary class="steps-summary">Step-by-step for {instr.provider}</summary>
-                <ol class="steps-list">
-                  {#each instr.cnameSteps as step}
-                    <li>{step}</li>
-                  {/each}
-                </ol>
-                {#if instr.gotcha}
-                  <p class="steps-gotcha">⚠ {instr.gotcha}</p>
-                {/if}
-              </details>
-            {/if}
-
-            {#if isApex && !instr?.apexSupported}
-              <div class="apex-warning">
-                <strong>Heads up:</strong> Most DNS providers don't support linking a bare domain (<code>{entry.hostname}</code>).
-                Try <code>www.{entry.hostname}</code> or <code>events.{entry.hostname}</code> — or move to Cloudflare DNS (free) for bare domain support.
-              </div>
-            {/if}
-          </div>
-
-        {:else}
-          <!-- Option A — move to Cloudflare (free forever) -->
-          <div class="option-body">
-            <p class="option-desc">
-              Moving your DNS to Cloudflare takes about 5 minutes and is completely free.
-              Once done, add the CNAME record in Cloudflare and your domain is connected — no ongoing cost.
-            </p>
-
-            {#if instr && instr.nsSteps && instr.nsSteps.length > 0}
-              <p class="step-heading">Step 1 — Change nameservers at <strong>{instr.provider}</strong></p>
-              <ol class="steps-list steps-list--inline">
-                {#each instr.nsSteps as step}
-                  <li>{step}</li>
-                {/each}
-              </ol>
-            {:else}
-              <p class="option-desc">
-                Go to your domain registrar, find the nameservers setting, and replace them
-                with Cloudflare's two NS hostnames. You'll find these in the Cloudflare dashboard
-                after adding your domain at <strong>cloudflare.com</strong>.
-              </p>
-            {/if}
-
-            <p class="step-heading" style="margin-top: 1rem">Step 2 — Add CNAME in Cloudflare</p>
-            <div class="dns-record-block">
-              <div class="dns-field">
-                <span class="dns-field-label">Type</span>
-                <span class="dns-field-value">CNAME</span>
-              </div>
-              <div class="dns-field">
-                <span class="dns-field-label">Name</span>
-                <span class="dns-field-value mono">{cnameNameField === '@' ? '@' : cnameNameField}</span>
-                <button class="copy-btn" onclick={() => copy(cnameNameField, 'fname')}>
-                  {copied === 'fname' ? '✓' : 'Copy'}
-                </button>
-              </div>
-              <div class="dns-field">
-                <span class="dns-field-label">Target</span>
-                <span class="dns-field-value mono">sites.woco-net.com</span>
-                <button class="copy-btn" onclick={() => copy('sites.woco-net.com', 'ftarget')}>
-                  {copied === 'ftarget' ? '✓' : 'Copy'}
-                </button>
-              </div>
-              <div class="dns-field dns-field--note">
-                <span class="dns-field-label">Proxy</span>
-                <span class="dns-field-value">Proxied <span class="cf-orange">(orange cloud)</span></span>
-              </div>
-            </div>
-
-            <p class="propagation-note">
-              Nameserver changes take 24–48 hours to fully propagate.
-              We'll check automatically and can email you once it's live.
-            </p>
-          </div>
-        {/if}
-
-        <div class="verify-row">
-          <button class="verify-btn" onclick={verify} disabled={verifying}>
-            {#if verifying}<span class="btn-spinner btn-spinner--dark" aria-hidden="true"></span>{/if}
-            {verifying ? 'Checking…' : 'Check DNS now'}
-          </button>
-          <span class="verify-hint">Checked automatically every 15 minutes</span>
-        </div>
-      </div>
-    {/if}
+    </div>
   {/if}
 </div>
 
@@ -594,20 +458,6 @@
     line-height: 1.5;
   }
 
-  .cf-green-badge {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: #22c55e;
-    background: color-mix(in srgb, #22c55e 8%, var(--bg));
-    border: 1px solid color-mix(in srgb, #22c55e 20%, transparent);
-    border-radius: var(--radius-sm);
-    padding: 0.4rem 0.75rem;
-    width: fit-content;
-  }
-
   /* ── DNS record block ──────────────────────────────────────────────────── */
   .dns-record-block {
     display: flex;
@@ -631,10 +481,6 @@
     border-bottom: none;
   }
 
-  .dns-field--note {
-    background: color-mix(in srgb, var(--accent) 4%, var(--bg-elevated));
-  }
-
   .dns-field-label {
     font-size: 0.6875rem;
     font-weight: 700;
@@ -656,8 +502,6 @@
     font-size: 0.8125rem;
   }
 
-  .cf-orange { color: #f48120; font-weight: 600; }
-
   .copy-btn {
     font-size: 0.6875rem;
     font-weight: 700;
@@ -676,87 +520,15 @@
     color: var(--accent);
   }
 
-  /* ── Option tabs ─────────────────────────────────────────────────────────── */
-  .option-tabs {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.5rem;
-  }
-
-  .option-tab {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    padding: 0.625rem 0.75rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    text-align: left;
-    transition: border-color 150ms, background 150ms;
-    cursor: pointer;
-  }
-
-  .option-tab:hover {
-    border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  }
-
-  .option-tab.active {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
-  }
-
-  .option-tab-title {
-    font-size: 0.8125rem;
-    font-weight: 700;
-    color: var(--text);
-  }
-
-  .option-tab-sub {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
-
-  .option-tab-badge {
-    font-size: 0.6875rem;
-    font-weight: 700;
-    padding: 0.1em 0.45em;
-    border-radius: 9999px;
-    width: fit-content;
-    margin-top: 0.25rem;
-  }
-
-  .option-tab-badge--trial {
-    background: color-mix(in srgb, #f59e0b 12%, transparent);
-    color: #f59e0b;
-  }
-
-  .option-tab-badge--free {
-    background: color-mix(in srgb, #22c55e 12%, transparent);
-    color: #22c55e;
-  }
-
-  /* ── Option body ─────────────────────────────────────────────────────────── */
-  .option-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.625rem;
-  }
-
-  .option-desc {
+  /* ── Notes ───────────────────────────────────────────────────────────────── */
+  .apex-note {
     font-size: 0.8125rem;
     color: var(--text-muted);
     margin: 0;
-    line-height: 1.55;
+    line-height: 1.5;
   }
 
-  .step-heading {
-    font-size: 0.8125rem;
-    font-weight: 700;
-    color: var(--text);
-    margin: 0;
-  }
-
-  /* ── Steps list ──────────────────────────────────────────────────────────── */
+  /* ── Steps ───────────────────────────────────────────────────────────────── */
   .steps-details {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -791,19 +563,7 @@
     background: var(--bg-elevated);
   }
 
-  .steps-list--inline {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-elevated);
-    padding: 0.625rem 0.75rem 0.625rem 1.75rem;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-
-  .steps-list li,
-  .steps-list--inline li {
+  .steps-list li {
     font-size: 0.8125rem;
     color: var(--text);
     line-height: 1.5;
@@ -816,39 +576,6 @@
     color: #f59e0b;
     background: color-mix(in srgb, #f59e0b 6%, var(--bg-elevated));
     border-top: 1px solid color-mix(in srgb, #f59e0b 15%, transparent);
-  }
-
-  /* ── Warnings / notes ────────────────────────────────────────────────────── */
-  .apex-warning {
-    font-size: 0.8125rem;
-    color: #f59e0b;
-    background: color-mix(in srgb, #f59e0b 7%, var(--bg));
-    border: 1px solid color-mix(in srgb, #f59e0b 20%, transparent);
-    border-radius: var(--radius-sm);
-    padding: 0.5rem 0.75rem;
-    line-height: 1.5;
-  }
-
-  .apex-warning code, .apex-note code {
-    font-family: monospace;
-    font-size: 0.875em;
-    padding: 0.1em 0.3em;
-    background: color-mix(in srgb, #f59e0b 10%, transparent);
-    border-radius: 3px;
-  }
-
-  .apex-note {
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    margin: 0;
-    line-height: 1.5;
-  }
-
-  .propagation-note {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin: 0;
-    line-height: 1.5;
   }
 
   /* ── Verify row ──────────────────────────────────────────────────────────── */
@@ -921,7 +648,6 @@
   @media (max-width: 540px) {
     .top-row { padding: 0.4rem 0.875rem; }
     .instr-panel { padding: 0.75rem 0.875rem 1rem; }
-    .option-tabs { grid-template-columns: 1fr; }
     .input-wrap { max-width: none; flex: 1 0 100%; }
     .row-hint { display: none; }
   }
