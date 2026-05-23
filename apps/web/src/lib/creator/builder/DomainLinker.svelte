@@ -232,96 +232,118 @@
   {#if entry && !entry.verified}
     <div class="instr-panel">
 
-      {#if isApex}
-        <!-- Bare domain → A record -->
-        <p class="instr-lead">Add this DNS record at <strong>{providerLabel}</strong>:</p>
-        {#if entry?.provider && entry.provider !== 'Unknown'}
-          <p class="registrar-note">Changes go to <strong>{entry.provider}</strong> (your DNS provider), not your domain registrar.</p>
+      <!-- Where to make changes -->
+      <div class="where-header">
+        <span class="where-label">Where to make changes</span>
+        {#if entry.provider && entry.provider !== 'Unknown'}
+          <span class="provider-target" style="--pc: {providerColor}">{entry.provider}</span>
+        {:else}
+          <span class="provider-target" style="--pc: #6b7280">Your DNS provider</span>
         {/if}
-        <div class="dns-record-block">
-          <div class="dns-field">
-            <span class="dns-field-label">Type</span>
-            <span class="dns-field-value">A</span>
-          </div>
+        {#if entry.provider && entry.provider !== 'Unknown'}
+          <span class="registrar-note">— not your domain registrar</span>
+        {/if}
+      </div>
+
+      <!-- DNS record block -->
+      <div class="dns-record-block">
+        <div class="dns-record-header">
+          <span class="dns-record-title">DNS RECORD</span>
+          <span class="dns-type-tag">{isApex ? 'A' : 'CNAME'}</span>
+        </div>
+        {#if isApex}
           <div class="dns-field">
             <span class="dns-field-label">Name</span>
             <span class="dns-field-value mono">@</span>
             <button class="copy-btn" onclick={() => copy('@', 'name')}>
-              {copied === 'name' ? '✓' : 'Copy'}
+              {copied === 'name' ? '✓ Copied' : 'Copy'}
             </button>
           </div>
           <div class="dns-field">
             <span class="dns-field-label">Value</span>
             <span class="dns-field-value mono">46.225.174.72</span>
             <button class="copy-btn" onclick={() => copy('46.225.174.72', 'target')}>
-              {copied === 'target' ? '✓' : 'Copy'}
+              {copied === 'target' ? '✓ Copied' : 'Copy'}
             </button>
           </div>
-        </div>
-        {#if entry?.provider === 'Cloudflare'}
-          <div class="proxy-warning">
-            <strong>Important:</strong> set Proxy status to <strong>DNS Only (grey cloud)</strong> — not Proxied (orange). Click the cloud icon to toggle.
-          </div>
-        {/if}
-        <p class="apex-note">HTTPS is issued automatically on first visit — no extra setup needed.</p>
-
-      {:else}
-        <!-- Subdomain → CNAME -->
-        <p class="instr-lead">Add this DNS record at <strong>{providerLabel}</strong>:</p>
-        {#if entry?.provider && entry.provider !== 'Unknown'}
-          <p class="registrar-note">Changes go to <strong>{entry.provider}</strong> (your DNS provider), not your domain registrar.</p>
-        {/if}
-        <div class="dns-record-block">
-          <div class="dns-field">
-            <span class="dns-field-label">Type</span>
-            <span class="dns-field-value">CNAME</span>
-          </div>
+        {:else}
           <div class="dns-field">
             <span class="dns-field-label">Name</span>
             <span class="dns-field-value mono">{cnameNameField}</span>
             <button class="copy-btn" onclick={() => copy(cnameNameField, 'name')}>
-              {copied === 'name' ? '✓' : 'Copy'}
+              {copied === 'name' ? '✓ Copied' : 'Copy'}
             </button>
           </div>
           <div class="dns-field">
             <span class="dns-field-label">Target</span>
             <span class="dns-field-value mono">sites.woco-net.com</span>
             <button class="copy-btn" onclick={() => copy('sites.woco-net.com', 'target')}>
-              {copied === 'target' ? '✓' : 'Copy'}
+              {copied === 'target' ? '✓ Copied' : 'Copy'}
             </button>
           </div>
-        </div>
-        {#if entry?.provider === 'Cloudflare'}
-          <div class="proxy-warning">
-            <strong>Important:</strong> set Proxy status to <strong>DNS Only (grey cloud)</strong> — not Proxied (orange). Click the cloud icon to toggle.
-          </div>
         {/if}
-        <p class="apex-note">HTTPS is issued automatically on first visit — no extra setup needed.</p>
+      </div>
+
+      <!-- Cloudflare proxy warning -->
+      {#if entry.provider === 'Cloudflare'}
+        <div class="proxy-warning">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-2.75a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-1.5 0V6A.75.75 0 0 1 8 5.25ZM8 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z" fill="currentColor"/>
+          </svg>
+          <span><strong>Proxy must be off.</strong> In Cloudflare, click the orange cloud next to this record to make it grey (DNS Only). Orange cloud will break the connection.</span>
+        </div>
       {/if}
 
+      <!-- HTTPS auto note -->
+      <p class="ssl-note">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M6 1a3.5 3.5 0 0 0-3.5 3.5V5H2a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-.5v-.5A3.5 3.5 0 0 0 6 1Zm2 4v-.5a2 2 0 1 0-4 0V5h4Z" fill="currentColor"/>
+        </svg>
+        HTTPS certificate issued automatically on first visit — nothing else needed.
+      </p>
+
+      <!-- Step-by-step walkthrough -->
       {#if instr}
         {@const steps = isApex ? (instr.aRecordSteps ?? instr.cnameSteps) : instr.cnameSteps}
         {#if steps.length > 0}
           <details class="steps-details" open>
-            <summary class="steps-summary">Step-by-step: {instr.provider}</summary>
+            <summary class="steps-summary">
+              <svg class="steps-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <path d="M2 4l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Step-by-step in {instr.provider}
+            </summary>
             <ol class="steps-list">
               {#each steps as step}
                 <li>{step}</li>
               {/each}
             </ol>
             {#if instr.gotcha}
-              <p class="steps-gotcha">⚠ {instr.gotcha}</p>
+              <p class="steps-gotcha">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M6 1L1 10h10L6 1Zm0 3v3m0 1.5v.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                {instr.gotcha}
+              </p>
             {/if}
           </details>
         {/if}
       {/if}
 
+      <!-- Verify CTA -->
       <div class="verify-row">
         <button class="verify-btn" onclick={verify} disabled={verifying}>
-          {#if verifying}<span class="btn-spinner btn-spinner--dark" aria-hidden="true"></span>{/if}
-          {verifying ? 'Checking…' : 'Check DNS now'}
+          {#if verifying}
+            <span class="btn-spinner" aria-hidden="true"></span>
+            Checking DNS…
+          {:else}
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+              <path d="M6.5 1a5.5 5.5 0 1 0 0 11A5.5 5.5 0 0 0 6.5 1Zm2.7 4.2-3 3a.5.5 0 0 1-.7 0l-1.5-1.5a.5.5 0 0 1 .7-.7l1.15 1.14 2.65-2.65a.5.5 0 0 1 .7.71Z" fill="currentColor"/>
+            </svg>
+            Check DNS now
+          {/if}
         </button>
-        <span class="verify-hint">We also check automatically every 15 minutes</span>
+        <span class="verify-hint">Auto-checked every 15 min</span>
       </div>
     </div>
   {/if}
@@ -498,36 +520,84 @@
 
   /* ── Instructions panel ─────────────────────────────────────────────────── */
   .instr-panel {
-    padding: 0.75rem 1.25rem 1rem;
+    padding: 0.875rem 1.25rem 1rem;
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.875rem;
   }
 
-  .instr-lead {
+  /* ── Where header ──────────────────────────────────────────────────────── */
+  .where-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .where-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .provider-target {
     font-size: 0.8125rem;
-    color: var(--text);
-    margin: 0;
-    line-height: 1.5;
+    font-weight: 800;
+    color: color-mix(in srgb, var(--pc, #6b7280) 90%, #fff);
+    white-space: nowrap;
+  }
+
+  .registrar-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
   }
 
   /* ── DNS record block ──────────────────────────────────────────────────── */
   .dns-record-block {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     overflow: hidden;
     background: var(--bg-elevated);
   }
 
+  .dns-record-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.3rem 0.75rem;
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  }
+
+  .dns-record-title {
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .dns-type-tag {
+    font-size: 0.625rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    padding: 0.1em 0.45em;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: 3px;
+  }
+
   .dns-field {
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    padding: 0.4rem 0.75rem;
+    padding: 0.45rem 0.75rem;
     border-bottom: 1px solid var(--border);
   }
 
@@ -559,7 +629,7 @@
   .copy-btn {
     font-size: 0.6875rem;
     font-weight: 700;
-    padding: 0.2rem 0.5rem;
+    padding: 0.2rem 0.55rem;
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-muted);
@@ -567,6 +637,8 @@
     white-space: nowrap;
     transition: all 150ms;
     flex-shrink: 0;
+    min-width: 4rem;
+    text-align: center;
   }
 
   .copy-btn:hover {
@@ -574,29 +646,39 @@
     color: var(--accent);
   }
 
-  /* ── Notes ───────────────────────────────────────────────────────────────── */
-  .registrar-note {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin: -0.25rem 0 0;
+  /* ── Proxy warning ───────────────────────────────────────────────────────── */
+  .proxy-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: #f59e0b;
+    background: color-mix(in srgb, #f59e0b 8%, var(--bg));
+    border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.75rem;
     line-height: 1.5;
   }
 
-  .apex-note {
-    font-size: 0.8125rem;
+  .proxy-warning svg {
+    flex-shrink: 0;
+    margin-top: 0.2em;
+  }
+
+  /* ── SSL note ────────────────────────────────────────────────────────────── */
+  .ssl-note {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.75rem;
     color: var(--text-muted);
     margin: 0;
     line-height: 1.5;
   }
 
-  .proxy-warning {
-    font-size: 0.8125rem;
-    color: #f59e0b;
-    background: color-mix(in srgb, #f59e0b 7%, var(--bg));
-    border: 1px solid color-mix(in srgb, #f59e0b 25%, transparent);
-    border-radius: var(--radius-sm);
-    padding: 0.5rem 0.75rem;
-    line-height: 1.5;
+  .ssl-note svg {
+    flex-shrink: 0;
+    opacity: 0.6;
   }
 
   /* ── Steps ───────────────────────────────────────────────────────────────── */
@@ -607,46 +689,98 @@
   }
 
   .steps-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
     padding: 0.5rem 0.75rem;
     font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text-muted);
+    font-weight: 700;
+    color: var(--text);
     cursor: pointer;
     user-select: none;
-    background: var(--bg-elevated);
+    background: color-mix(in srgb, var(--accent) 5%, var(--bg-elevated));
+    border-bottom: 1px solid transparent;
     list-style: none;
-    transition: color 150ms;
+    transition: background 150ms;
   }
 
-  .steps-summary:hover { color: var(--text); }
+  .steps-summary::-webkit-details-marker { display: none; }
 
   .steps-details[open] .steps-summary {
-    border-bottom: 1px solid var(--border);
-    color: var(--text);
+    border-bottom-color: var(--border);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+  }
+
+  .steps-chevron {
+    flex-shrink: 0;
+    color: var(--accent);
+    transition: transform 150ms;
+  }
+
+  .steps-details[open] .steps-chevron {
+    transform: rotate(180deg);
   }
 
   .steps-list {
     margin: 0;
-    padding: 0.625rem 0.75rem 0.625rem 1.75rem;
+    padding: 0.625rem 0.75rem 0.625rem 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
+    gap: 0;
     background: var(--bg-elevated);
+    list-style: none;
+    counter-reset: step-counter;
   }
 
   .steps-list li {
+    counter-increment: step-counter;
+    position: relative;
+    padding: 0.375rem 0 0.375rem 2rem;
     font-size: 0.8125rem;
     color: var(--text);
     line-height: 1.5;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  }
+
+  .steps-list li:last-child {
+    border-bottom: none;
+    padding-bottom: 0.25rem;
+  }
+
+  .steps-list li::before {
+    content: counter(step-counter);
+    position: absolute;
+    left: 0;
+    top: 0.45rem;
+    width: 1.25rem;
+    height: 1.25rem;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: 50%;
+    font-size: 0.625rem;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .steps-gotcha {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
     margin: 0;
     padding: 0.5rem 0.75rem;
     font-size: 0.75rem;
     color: #f59e0b;
     background: color-mix(in srgb, #f59e0b 6%, var(--bg-elevated));
     border-top: 1px solid color-mix(in srgb, #f59e0b 15%, transparent);
+    line-height: 1.5;
+  }
+
+  .steps-gotcha svg {
+    flex-shrink: 0;
+    margin-top: 0.15em;
   }
 
   /* ── Verify row ──────────────────────────────────────────────────────────── */
@@ -655,32 +789,31 @@
     align-items: center;
     gap: 0.75rem;
     flex-wrap: wrap;
-    border-top: 1px solid var(--border);
-    padding-top: 0.625rem;
-    margin-top: 0.125rem;
   }
 
   .verify-btn {
     display: flex;
     align-items: center;
-    gap: 0.375rem;
-    padding: 0.4rem 0.875rem;
+    gap: 0.4rem;
+    padding: 0.45rem 1rem;
     font-size: 0.8125rem;
-    font-weight: 700;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    color: var(--text);
+    font-weight: 800;
+    background: var(--accent);
+    color: #000;
     border-radius: var(--radius-sm);
-    transition: border-color 150ms, color 150ms;
     white-space: nowrap;
+    transition: opacity 150ms;
+    letter-spacing: 0.01em;
   }
 
   .verify-btn:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
+    opacity: 0.88;
   }
 
-  .verify-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .verify-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
 
   .verify-hint {
     font-size: 0.75rem;
@@ -696,11 +829,7 @@
     border-top-color: #000;
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
-  }
-
-  .btn-spinner--dark {
-    border-color: rgba(255,255,255,0.2);
-    border-top-color: var(--text);
+    flex-shrink: 0;
   }
 
   .loading-pulse {
