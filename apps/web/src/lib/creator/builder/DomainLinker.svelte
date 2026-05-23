@@ -45,6 +45,10 @@
   async function connect() {
     const h = hostnameInput.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
     if (!h || registering) return;
+    if (!contentHash) {
+      error = 'Re-publish your site first — the deploy hash is needed to link a domain.';
+      return;
+    }
     error = '';
     registering = true;
     try {

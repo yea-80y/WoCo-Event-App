@@ -104,7 +104,11 @@
   let publishState = $state<PublishState>('idle');
   let publishError = $state('');
   let deployedUrl       = $state('');
-  let deployedHash      = $state('');
+  let deployedHash      = $state(
+    typeof window !== 'undefined'
+      ? (localStorage.getItem(`woco:site-content-hash:${localStorage.getItem(LAST_SITE_KEY) ?? ''}`) ?? '')
+      : ''
+  );
   let feedHash          = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
   let gatewayUrl        = $state(DEFAULT_GATEWAY);
@@ -278,6 +282,7 @@
 
       deployedUrl  = deployRes.data.siteUrl;
       deployedHash = deployRes.data.contentHash;
+      localStorage.setItem(`woco:site-content-hash:${site.siteId}`, deployedHash);
       if (deployRes.data.feedManifestHash) {
         feedHash = deployRes.data.feedManifestHash;
         localStorage.setItem(FEED_HASH_KEY, feedHash);
@@ -322,7 +327,10 @@
         localStorage.setItem(FEED_HASH_KEY, rec.feedHash ?? '');
         feedHash = rec.feedHash ?? '';
         deployedUrl = rec.deployedUrl ?? '';
-        deployedHash = (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1] ?? '';
+        deployedHash =
+          localStorage.getItem(`woco:site-content-hash:${rec.siteId}`) ??
+          (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1] ??
+          '';
         if (eventsRes.ok && eventsRes.data) {
           siteEvents = eventsRes.data.events;
           localStorage.setItem(EVENTS_KEY, JSON.stringify(eventsRes.data.events));
