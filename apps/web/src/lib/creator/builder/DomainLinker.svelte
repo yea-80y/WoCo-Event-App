@@ -294,12 +294,20 @@
         </div>
       {/if}
 
+      <!-- Existing site warning -->
+      <p class="existing-site-warning">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M6 1L1 10h10L6 1Zm0 3v3m0 1.5v.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        If this domain currently points to another website, changing the record will redirect it here.
+      </p>
+
       <!-- HTTPS auto note -->
       <p class="ssl-note">
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
           <path d="M6 1a3.5 3.5 0 0 0-3.5 3.5V5H2a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-.5v-.5A3.5 3.5 0 0 0 6 1Zm2 4v-.5a2 2 0 1 0-4 0V5h4Z" fill="currentColor"/>
         </svg>
-        HTTPS certificate issued automatically on first visit — nothing else needed.
+        HTTPS is issued automatically on first visit. DNS usually propagates within 15 minutes, but can take up to a few hours.
       </p>
 
       <!-- Step-by-step walkthrough -->
@@ -663,6 +671,23 @@
   .proxy-warning svg {
     flex-shrink: 0;
     margin-top: 0.2em;
+  }
+
+  /* ── Existing site warning ──────────────────────────────────────────────── */
+  .existing-site-warning {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.75rem;
+    color: color-mix(in srgb, #f59e0b 80%, var(--text-muted));
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .existing-site-warning svg {
+    flex-shrink: 0;
+    color: #f59e0b;
+    opacity: 0.8;
   }
 
   /* ── SSL note ────────────────────────────────────────────────────────────── */
