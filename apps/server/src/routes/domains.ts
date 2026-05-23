@@ -16,12 +16,10 @@ import {
 const domains = new Hono<AppEnv>();
 
 const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
-const BLOCKED = ["sites.woco-net.com", "localhost"];
 
 function validateHostname(hostname: string): string | null {
   const h = hostname.toLowerCase().trim();
   if (!HOSTNAME_RE.test(h)) return "Invalid hostname format";
-  if (BLOCKED.some((b) => h === b || h.endsWith(`.${b}`))) return "Cannot register this hostname";
   return null;
 }
 
