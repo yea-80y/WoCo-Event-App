@@ -234,7 +234,10 @@
 
       {#if isApex}
         <!-- Bare domain → A record -->
-        <p class="instr-lead">Add this record at <strong>{providerLabel}</strong>:</p>
+        <p class="instr-lead">Add this DNS record at <strong>{providerLabel}</strong>:</p>
+        {#if entry?.provider && entry.provider !== 'Unknown'}
+          <p class="registrar-note">Changes go to <strong>{entry.provider}</strong> (your DNS provider), not your domain registrar.</p>
+        {/if}
         <div class="dns-record-block">
           <div class="dns-field">
             <span class="dns-field-label">Type</span>
@@ -259,13 +262,15 @@
           <div class="proxy-warning">
             <strong>Important:</strong> set Proxy status to <strong>DNS Only (grey cloud)</strong> — not Proxied (orange). Click the cloud icon to toggle.
           </div>
-        {:else}
-          <p class="apex-note">SSL is issued automatically on first visit — no extra configuration needed.</p>
         {/if}
+        <p class="apex-note">HTTPS is issued automatically on first visit — no extra setup needed.</p>
 
       {:else}
         <!-- Subdomain → CNAME -->
-        <p class="instr-lead">Add this record at <strong>{providerLabel}</strong>:</p>
+        <p class="instr-lead">Add this DNS record at <strong>{providerLabel}</strong>:</p>
+        {#if entry?.provider && entry.provider !== 'Unknown'}
+          <p class="registrar-note">Changes go to <strong>{entry.provider}</strong> (your DNS provider), not your domain registrar.</p>
+        {/if}
         <div class="dns-record-block">
           <div class="dns-field">
             <span class="dns-field-label">Type</span>
@@ -291,13 +296,14 @@
             <strong>Important:</strong> set Proxy status to <strong>DNS Only (grey cloud)</strong> — not Proxied (orange). Click the cloud icon to toggle.
           </div>
         {/if}
+        <p class="apex-note">HTTPS is issued automatically on first visit — no extra setup needed.</p>
       {/if}
 
       {#if instr}
         {@const steps = isApex ? (instr.aRecordSteps ?? instr.cnameSteps) : instr.cnameSteps}
         {#if steps.length > 0}
-          <details class="steps-details">
-            <summary class="steps-summary">Step-by-step for {instr.provider}</summary>
+          <details class="steps-details" open>
+            <summary class="steps-summary">Step-by-step: {instr.provider}</summary>
             <ol class="steps-list">
               {#each steps as step}
                 <li>{step}</li>
@@ -569,6 +575,13 @@
   }
 
   /* ── Notes ───────────────────────────────────────────────────────────────── */
+  .registrar-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: -0.25rem 0 0;
+    line-height: 1.5;
+  }
+
   .apex-note {
     font-size: 0.8125rem;
     color: var(--text-muted);
