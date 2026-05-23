@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite } from "../lib/site/service.js";
+import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
   readFeedPage,
   writeFeedPage,
@@ -694,6 +695,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     }).catch((e) => console.warn("[sites/deploy] whitelist call failed:", e));
 
     const siteUrl = `${gatewayUrl}/bzz/${contentHash}/`;
+
+    // Auto-update any custom domains registered for this site (fire-and-forget).
+    updateDomainsForSite(siteId, contentHash, feedManifestHash).catch((e) =>
+      console.warn("[sites/deploy] domain auto-update failed:", e)
+    );
 
     // Update creator directory with feedHash + deployedUrl (fire-and-forget).
     upsertCreatorSite(parentAddress, {

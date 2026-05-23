@@ -96,6 +96,7 @@ export default {
 interface ResolveResult {
   contentHash: string;
   feedManifestHash: string;
+  gatewayUrl?: string;
 }
 
 async function resolveDomain(

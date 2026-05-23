@@ -24,6 +24,7 @@ import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
+import { startDomainPoller } from "./lib/domains/poller.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -393,3 +394,4 @@ app.get("/woco-embed.js", (c) => {
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
+startDomainPoller();

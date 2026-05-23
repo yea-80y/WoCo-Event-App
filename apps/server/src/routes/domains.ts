@@ -6,6 +6,7 @@ import {
   registerDomain,
   verifyDomain,
   getDomainsForEvent,
+  getDomainsForSite,
   getDomainsForOwner,
   removeDomain,
   resolveDomain,
@@ -14,10 +15,20 @@ import {
 
 const domains = new Hono<AppEnv>();
 
+const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+const BLOCKED = ["woco-net.com", "woco.eth.limo", "localhost"];
+
+function validateHostname(hostname: string): string | null {
+  const h = hostname.toLowerCase().trim();
+  if (!HOSTNAME_RE.test(h)) return "Invalid hostname format";
+  if (BLOCKED.some((b) => h === b || h.endsWith(`.${b}`))) return "Cannot register this hostname";
+  return null;
+}
+
 /**
- * POST /api/domains — register a custom domain for an event site
- * Body: { hostname, eventId, feedManifestHash, contentHash }
- * Auth: must be event creator
+ * POST /api/domains — register a custom domain for an event site or multi-page site
+ * Body: { hostname, contentHash, feedManifestHash, eventId? } | { hostname, contentHash, feedManifestHash, siteId? }
+ * Auth required. For siteId path, ownership = authenticated address (no event lookup).
  */
 domains.post("/", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
@@ -25,39 +36,39 @@ domains.post("/", requireAuth, async (c) => {
 
   try {
     const hostname = body.hostname as string;
-    const eventId = body.eventId as string;
-    const feedManifestHash = body.feedManifestHash as string;
     const contentHash = body.contentHash as string;
+    const feedManifestHash = (body.feedManifestHash as string) ?? "";
+    const eventId = body.eventId as string | undefined;
+    const siteId = body.siteId as string | undefined;
 
-    if (!hostname || !eventId || !contentHash) {
-      return c.json({ ok: false, error: "hostname, eventId, and contentHash are required" }, 400);
+    if (!hostname || !contentHash) {
+      return c.json({ ok: false, error: "hostname and contentHash are required" }, 400);
+    }
+    if (!eventId && !siteId) {
+      return c.json({ ok: false, error: "eventId or siteId is required" }, 400);
     }
 
-    // Validate hostname format (no protocol, no path, no port)
-    const hostnameRegex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
-    if (!hostnameRegex.test(hostname.toLowerCase())) {
-      return c.json({ ok: false, error: "Invalid hostname format" }, 400);
-    }
+    const hostnameErr = validateHostname(hostname);
+    if (hostnameErr) return c.json({ ok: false, error: hostnameErr }, 400);
 
-    // Block registering woco-net.com subdomains or common domains
-    const blocked = ["woco-net.com", "woco.eth.limo", "localhost"];
-    if (blocked.some((b) => hostname.toLowerCase() === b || hostname.toLowerCase().endsWith(`.${b}`))) {
-      return c.json({ ok: false, error: "Cannot register this hostname" }, 400);
-    }
+    let target: { eventId: string } | { siteId: string };
 
-    // Verify event exists and caller is the creator
-    const event = await getEvent(eventId);
-    if (!event) {
-      return c.json({ ok: false, error: "Event not found" }, 404);
-    }
-    if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
-      return c.json({ ok: false, error: "Only the event organiser can register domains" }, 403);
+    if (siteId) {
+      target = { siteId };
+    } else {
+      // Event path: verify event exists and caller is creator
+      const event = await getEvent(eventId!);
+      if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+      if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
+        return c.json({ ok: false, error: "Only the event organiser can register domains" }, 403);
+      }
+      target = { eventId: eventId! };
     }
 
     const entry = await registerDomain(
       hostname,
-      eventId,
-      feedManifestHash || "",
+      target,
+      feedManifestHash,
       contentHash,
       parentAddress,
     );
@@ -78,10 +89,8 @@ domains.post("/", requireAuth, async (c) => {
 /**
  * POST /api/domains/verify — check DNS for a registered domain
  * Body: { hostname }
- * Auth: must be the domain owner
  */
 domains.post("/verify", requireAuth, async (c) => {
-  const parentAddress = c.get("parentAddress");
   const body = c.get("body") as Record<string, unknown>;
   const hostname = body.hostname as string;
 
@@ -94,7 +103,7 @@ domains.post("/verify", requireAuth, async (c) => {
 });
 
 /**
- * GET /api/domains/mine — list all domains for the authenticated user
+ * POST /api/domains/mine — list all domains for the authenticated user
  */
 domains.post("/mine", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
@@ -103,8 +112,7 @@ domains.post("/mine", requireAuth, async (c) => {
 });
 
 /**
- * GET /api/domains/event/:eventId — list domains for a specific event
- * Public endpoint (no auth) so the Worker can look up domains
+ * GET /api/domains/event/:eventId — list domains for a specific event (public)
  */
 domains.get("/event/:eventId", async (c) => {
   const eventId = c.req.param("eventId");
@@ -113,8 +121,17 @@ domains.get("/event/:eventId", async (c) => {
 });
 
 /**
+ * GET /api/domains/site/:siteId — list domains for a specific site (public)
+ */
+domains.get("/site/:siteId", async (c) => {
+  const siteId = c.req.param("siteId");
+  const entries = await getDomainsForSite(siteId);
+  return c.json({ ok: true, data: entries });
+});
+
+/**
  * GET /api/domains/resolve/:hostname — resolve domain to Swarm content hash
- * Public endpoint — used by the Cloudflare Worker edge proxy
+ * Public — used by the Cloudflare Worker edge proxy
  */
 domains.get("/resolve/:hostname", async (c) => {
   const hostname = c.req.param("hostname");
@@ -126,9 +143,8 @@ domains.get("/resolve/:hostname", async (c) => {
 });
 
 /**
- * DELETE /api/domains — remove a custom domain
+ * POST /api/domains/remove — remove a custom domain
  * Body: { hostname }
- * Auth: must be the domain owner
  */
 domains.post("/remove", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");

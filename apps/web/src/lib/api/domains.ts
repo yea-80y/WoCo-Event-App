@@ -2,7 +2,8 @@ import { authPost, get } from "./client.js";
 
 export interface DomainEntry {
   hostname: string;
-  eventId: string;
+  eventId?: string;
+  siteId?: string;
   feedManifestHash: string;
   contentHash: string;
   ownerAddress: string;
@@ -10,6 +11,10 @@ export interface DomainEntry {
   createdAt: string;
   verifiedAt?: string;
   cnameTarget?: string;
+  onCloudflare?: boolean;
+  provider?: string;
+  trialExpiresAt?: string;
+  deactivated?: boolean;
 }
 
 export async function registerDomain(
@@ -21,6 +26,22 @@ export async function registerDomain(
   const resp = await authPost<DomainEntry>("/api/domains", {
     hostname,
     eventId,
+    contentHash,
+    feedManifestHash: feedManifestHash ?? "",
+  });
+  if (!resp.data) throw new Error(resp.error || "Failed to register domain");
+  return resp.data;
+}
+
+export async function registerSiteDomain(
+  hostname: string,
+  siteId: string,
+  contentHash: string,
+  feedManifestHash?: string,
+): Promise<DomainEntry> {
+  const resp = await authPost<DomainEntry>("/api/domains", {
+    hostname,
+    siteId,
     contentHash,
     feedManifestHash: feedManifestHash ?? "",
   });
@@ -46,6 +67,11 @@ export async function getMyDomains(): Promise<DomainEntry[]> {
 
 export async function getEventDomains(eventId: string): Promise<DomainEntry[]> {
   const resp = await get<DomainEntry[]>(`/api/domains/event/${eventId}`);
+  return resp.data ?? [];
+}
+
+export async function getSiteDomains(siteId: string): Promise<DomainEntry[]> {
+  const resp = await get<DomainEntry[]>(`/api/domains/site/${siteId}`);
   return resp.data ?? [];
 }
 

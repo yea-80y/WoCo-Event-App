@@ -17,6 +17,7 @@
   import GatewayPicker from "./GatewayPicker.svelte";
   import { GATEWAYS } from "./gateways.js";
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
+  import DomainLinker from "./DomainLinker.svelte";
   import { getMyEthernaBatch } from "../../api/etherna.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -101,8 +102,9 @@
   type PublishState = 'idle' | 'publishing' | 'done' | 'error';
   let publishState = $state<PublishState>('idle');
   let publishError = $state('');
-  let deployedUrl  = $state('');
-  let feedHash     = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
+  let deployedUrl       = $state('');
+  let deployedHash      = $state('');
+  let feedHash          = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
   let gatewayUrl        = $state(DEFAULT_GATEWAY);
   let purchaseOpen      = $state(false);
@@ -273,7 +275,8 @@
         throw new Error(deployRes.ok ? 'Deploy returned no data' : (deployRes.error ?? 'Deploy failed'));
       }
 
-      deployedUrl = deployRes.data.siteUrl;
+      deployedUrl  = deployRes.data.siteUrl;
+      deployedHash = deployRes.data.contentHash;
       if (deployRes.data.feedManifestHash) {
         feedHash = deployRes.data.feedManifestHash;
         localStorage.setItem(FEED_HASH_KEY, feedHash);
@@ -521,6 +524,14 @@
       <div class="publish-error-bar">
         <span>Publish failed: {publishError}</span>
       </div>
+    {/if}
+
+    {#if deployedHash}
+      <DomainLinker
+        siteId={site.siteId}
+        contentHash={deployedHash}
+        feedManifestHash={feedHash}
+      />
     {/if}
 
     <!-- Tab content -->

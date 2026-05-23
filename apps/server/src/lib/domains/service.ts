@@ -5,7 +5,6 @@ import dns from "node:dns/promises";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Domain registry stored as JSON file alongside the server
 const DOMAINS_FILE = resolve(__dirname, "../../../data/domains.json");
 
 // ---------------------------------------------------------------------------
@@ -15,8 +14,10 @@ const DOMAINS_FILE = resolve(__dirname, "../../../data/domains.json");
 export interface DomainEntry {
   /** Custom hostname e.g. "events.mycompany.com" */
   hostname: string;
-  /** Event ID this domain is linked to */
-  eventId: string;
+  /** Event ID this domain is linked to (event-site path) */
+  eventId?: string;
+  /** Site ID this domain is linked to (multi-page builder path) */
+  siteId?: string;
   /** Swarm feed manifest hash (from site deploy) */
   feedManifestHash: string;
   /** Direct content hash (latest deploy) */
@@ -29,6 +30,14 @@ export interface DomainEntry {
   createdAt: string;
   /** When DNS was last verified */
   verifiedAt?: string;
+  /** Whether the domain's NS is on Cloudflare (detected at registration) */
+  onCloudflare?: boolean;
+  /** DNS provider name detected at registration */
+  provider?: string;
+  /** ISO date when the 7-day free trial expires (non-CF domains only) */
+  trialExpiresAt?: string;
+  /** Set by poller when grace period expires and no CF DNS + no subscription */
+  deactivated?: boolean;
 }
 
 interface DomainsStore {
@@ -73,47 +82,111 @@ async function saveDomains(): Promise<void> {
 export const CNAME_TARGET = "sites.woco-net.com";
 
 // ---------------------------------------------------------------------------
+// NS detection
+// ---------------------------------------------------------------------------
+
+const NS_PATTERNS: Array<{ test: (ns: string) => boolean; provider: string }> = [
+  { test: (n) => n.endsWith(".ns.cloudflare.com"),                           provider: "Cloudflare" },
+  { test: (n) => n.includes(".domaincontrol.com"),                           provider: "GoDaddy" },
+  { test: (n) => n.includes(".registrar-servers.com"),                       provider: "Namecheap" },
+  { test: (n) => n.includes(".googledomains.com") || n.includes(".squarespacedns.com") || n.includes(".nsone.net") || n.includes(".systemdns.com"), provider: "Squarespace" },
+  { test: (n) => n.includes(".ui-dns."),                                     provider: "IONOS" },
+  { test: (n) => /ns-\d+-[abc]\.awsdns/.test(n),                            provider: "AWS Route 53" },
+  { test: (n) => /^ns[1-4]\.name\.com$/.test(n),                            provider: "Name.com" },
+  { test: (n) => /^ns[1-2]\.hover\.com$/.test(n),                           provider: "Hover" },
+  { test: (n) => n.endsWith(".ns.porkbun.com"),                              provider: "Porkbun" },
+  { test: (n) => n.endsWith(".ovh.net") || n.endsWith(".anycast.me") || n.endsWith(".ovh.ca"), provider: "OVHcloud" },
+  { test: (n) => /^ns-\d+-[abc]\.gandi\.net$/.test(n),                      provider: "Gandi" },
+  { test: (n) => n === "ns.123-reg.co.uk" || n.includes("123-reg"),         provider: "123-reg" },
+  { test: (n) => /^ns0[12]\.one\.com$/.test(n),                             provider: "One.com" },
+  { test: (n) => /^ns[1-4]\.strato\.de$/.test(n),                          provider: "Strato" },
+  { test: (n) => n.includes(".fasthosts.co.uk") || n.includes(".ukfast.net"), provider: "Fasthosts" },
+  { test: (n) => n.includes(".ultradns."),                                   provider: "Network Solutions" },
+  { test: (n) => /^ns[1-3]\.dreamhost\.com$/.test(n),                      provider: "DreamHost" },
+  { test: (n) => /^ns[1-2]\.bluehost\.com$/.test(n),                       provider: "Bluehost" },
+  { test: (n) => /^ns[1-2]\.hostgator\.com$/.test(n),                      provider: "HostGator" },
+  { test: (n) => n.includes(".heartinternet.uk"),                            provider: "Heart Internet" },
+  { test: (n) => n === "hydrogen.ns.hetzner.com" || n === "helium.ns.hetzner.de" || n.includes(".ns.hetzner."), provider: "Hetzner DNS" },
+];
+
+/** Strip subdomain prefix to get the registrable domain for NS lookup */
+function rootDomain(hostname: string): string {
+  const parts = hostname.split(".");
+  return parts.length > 2 ? parts.slice(-2).join(".") : hostname;
+}
+
+export async function detectProvider(hostname: string): Promise<{
+  onCloudflare: boolean;
+  provider: string;
+}> {
+  try {
+    const root = rootDomain(hostname);
+    const nsRecords = await dns.resolveNs(root);
+    const normalized = nsRecords.map((n) => n.toLowerCase().replace(/\.$/, ""));
+    for (const { test, provider } of NS_PATTERNS) {
+      if (normalized.some(test)) {
+        return { onCloudflare: provider === "Cloudflare", provider };
+      }
+    }
+  } catch {
+    // DNS lookup failed (NXDOMAIN, timeout, etc.) — treat as unknown
+  }
+  return { onCloudflare: false, provider: "Unknown" };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export async function registerDomain(
   hostname: string,
-  eventId: string,
+  target: { eventId: string } | { siteId: string },
   feedManifestHash: string,
   contentHash: string,
   ownerAddress: string,
-): Promise<DomainEntry> {
+): Promise<DomainEntry & { onCloudflare: boolean; provider: string }> {
   const store = await loadDomains();
   const normalized = hostname.toLowerCase().trim();
 
-  // Check if already registered
+  const { onCloudflare, provider } = await detectProvider(normalized);
+
   const existing = store.domains.find((d) => d.hostname === normalized);
   if (existing) {
     if (existing.ownerAddress !== ownerAddress.toLowerCase()) {
       throw new Error("Domain already registered by another organiser");
     }
     // Update existing entry
-    existing.eventId = eventId;
+    if ("eventId" in target) existing.eventId = target.eventId;
+    if ("siteId" in target) existing.siteId = target.siteId;
     existing.feedManifestHash = feedManifestHash;
     existing.contentHash = contentHash;
-    existing.verified = false; // Re-verify after update
+    existing.verified = false;
+    existing.onCloudflare = onCloudflare;
+    existing.provider = provider;
     await saveDomains();
-    return existing;
+    return { ...existing, onCloudflare, provider };
   }
+
+  const trialExpiresAt = onCloudflare
+    ? undefined
+    : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   const entry: DomainEntry = {
     hostname: normalized,
-    eventId,
     feedManifestHash,
     contentHash,
     ownerAddress: ownerAddress.toLowerCase(),
     verified: false,
     createdAt: new Date().toISOString(),
+    onCloudflare,
+    provider,
+    ...(trialExpiresAt ? { trialExpiresAt } : {}),
+    ...("eventId" in target ? { eventId: target.eventId } : { siteId: target.siteId }),
   };
 
   store.domains.push(entry);
   await saveDomains();
-  return entry;
+  return { ...entry, onCloudflare, provider };
 }
 
 export async function verifyDomain(hostname: string): Promise<{
@@ -171,6 +244,13 @@ export async function getDomainsForEvent(
   return store.domains.filter((d) => d.eventId === eventId);
 }
 
+export async function getDomainsForSite(
+  siteId: string,
+): Promise<DomainEntry[]> {
+  const store = await loadDomains();
+  return store.domains.filter((d) => d.siteId === siteId);
+}
+
 export async function getDomainsForOwner(
   ownerAddress: string,
 ): Promise<DomainEntry[]> {
@@ -178,6 +258,50 @@ export async function getDomainsForOwner(
   return store.domains.filter(
     (d) => d.ownerAddress === ownerAddress.toLowerCase(),
   );
+}
+
+export async function getAllUnverifiedDomains(): Promise<DomainEntry[]> {
+  const store = await loadDomains();
+  return store.domains.filter((d) => !d.verified && !d.deactivated);
+}
+
+export async function markDomainVerified(hostname: string): Promise<void> {
+  const store = await loadDomains();
+  const entry = store.domains.find(
+    (d) => d.hostname === hostname.toLowerCase(),
+  );
+  if (!entry) return;
+  entry.verified = true;
+  entry.verifiedAt = new Date().toISOString();
+  await saveDomains();
+}
+
+export async function deactivateDomain(hostname: string): Promise<void> {
+  const store = await loadDomains();
+  const entry = store.domains.find(
+    (d) => d.hostname === hostname.toLowerCase(),
+  );
+  if (!entry) return;
+  entry.deactivated = true;
+  await saveDomains();
+}
+
+/** Called after a successful site re-deploy to update contentHash for all registered domains. */
+export async function updateDomainsForSite(
+  siteId: string,
+  contentHash: string,
+  feedManifestHash: string,
+): Promise<void> {
+  const store = await loadDomains();
+  let changed = false;
+  for (const d of store.domains) {
+    if (d.siteId === siteId) {
+      d.contentHash = contentHash;
+      d.feedManifestHash = feedManifestHash;
+      changed = true;
+    }
+  }
+  if (changed) await saveDomains();
 }
 
 export async function removeDomain(
@@ -199,13 +323,13 @@ export async function removeDomain(
 
 /**
  * Look up domain → content hash. Used by the Cloudflare Worker proxy.
- * Returns null if domain not registered or not verified.
+ * Returns null if domain not registered, not verified, or deactivated.
  */
 export async function resolveDomain(
   hostname: string,
 ): Promise<{ contentHash: string; feedManifestHash: string } | null> {
   const entry = await getDomainByHostname(hostname);
-  if (!entry || !entry.verified) return null;
+  if (!entry || !entry.verified || entry.deactivated) return null;
   return {
     contentHash: entry.contentHash,
     feedManifestHash: entry.feedManifestHash,
