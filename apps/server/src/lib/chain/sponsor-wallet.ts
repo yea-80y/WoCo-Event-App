@@ -1,5 +1,11 @@
 import { Wallet, HDNodeWallet, Contract, Interface, JsonRpcProvider } from "ethers";
-import { getActiveChainId, getWoCoEventAddress, getChainRpcUrl } from "./event-contract.js";
+import {
+  getActiveChainId,
+  getWoCoEventAddress,
+  getChainRpcUrl,
+  getEventContractVersion,
+} from "./event-contract.js";
+import { claimForV2, batchClaimForV2 } from "./event-contract-v2.js";
 
 const CLAIM_ABI = [
   "function claimFor(bytes32 eventId, address burner, bytes32 orderRef) returns (uint256 slot)",
@@ -61,6 +67,12 @@ export async function claimForOnChain(
   const address = getWoCoEventAddress(chainId);
   if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
 
+  if (getEventContractVersion(chainId) === "v2") {
+    const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+    if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    return claimForV2(onChainEventId, burnerAddress, orderRefBytes32, address, pk, chainId);
+  }
+
   const wallet = getSponsorWallet();
   const contract = new Contract(address, CLAIM_ABI, wallet);
 
@@ -118,6 +130,12 @@ export async function batchClaimForOnChain(
   const chainId = getActiveChainId();
   const address = getWoCoEventAddress(chainId);
   if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
+
+  if (getEventContractVersion(chainId) === "v2") {
+    const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+    if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    return batchClaimForV2(onChainEventId, burners, orderRefBytes32, address, pk, chainId);
+  }
 
   const wallet = getSponsorWallet();
   const contract = new Contract(address, CLAIM_ABI, wallet);
