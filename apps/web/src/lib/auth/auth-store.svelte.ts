@@ -90,6 +90,10 @@ async function _getSigner(): Promise<EIP712Signer> {
     const { createParaSigner } = await import("./signers/para-signer.js");
     return createParaSigner((info) => signingRequest.request(info));
   }
+  if (_kind === "coinbase" && _parent) {
+    const { createCoinbaseSigner } = await import("./signers/coinbase-signer.js");
+    return createCoinbaseSigner(_parent);
+  }
   throw new Error("No signer available for auth kind: " + _kind);
 }
 
@@ -233,6 +237,17 @@ async function init(): Promise<void> {
       } else {
         await clearAllAuth();
       }
+    } else if (kind === "coinbase") {
+      const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
+      const { restoreCoinbaseSession } = await import("./coinbase-account.js");
+      const session = await restoreCoinbaseSession();
+      if (session && storedParent && session.address === storedParent) {
+        _kind = "coinbase";
+        _parent = storedParent;
+        await _restoreCachedAuth();
+      } else {
+        await clearAllAuth();
+      }
     }
   } catch (e) {
     console.error("[auth] init failed:", e);
@@ -340,6 +355,66 @@ async function loginPara(address: string): Promise<boolean> {
     return true;
   } catch (e) {
     console.error("[auth] para login failed:", e);
+    return false;
+  } finally {
+    _busy = false;
+  }
+}
+
+/**
+ * Idle-prefetch the Coinbase SDK + signer modules so the actual login click
+ * doesn't burn its user-gesture token on dynamic imports. Call from
+ * CoinbaseLogin button mount / hover / focus — safe to call repeatedly.
+ */
+let _coinbasePrefetch: Promise<void> | null = null;
+function prefetchCoinbaseSdk(): Promise<void> {
+  if (!_coinbasePrefetch) {
+    _coinbasePrefetch = Promise.all([
+      import("./coinbase-account.js"),
+      import("./signers/coinbase-signer.js"),
+    ]).then(() => undefined);
+  }
+  return _coinbasePrefetch;
+}
+
+/**
+ * Open the Coinbase Smart Wallet popup, claim the connected address as the
+ * parent. ERC-6492/1271 signature shape is handled transparently at verify time.
+ *
+ * Two-step UX is intentional. CSW (`@coinbase/wallet-sdk` v4) spawns one
+ * popup per RPC call: `eth_requestAccounts` for connect, `eth_signTypedData_v4`
+ * for sign. The connect popup self-closes when the user approves, and the
+ * SDK's `Communicator.disconnect()` runs in response to the `PopupUnload`
+ * event — rejecting any in-flight sign listener with EIP-1193 4001. So we
+ * MUST NOT call signTypedData inside the same click as connect. Caller
+ * (CoinbaseLogin.svelte) drives the second click for the AuthorizeSession
+ * sign explicitly via `ensureSession()`.
+ */
+async function loginCoinbase(): Promise<boolean> {
+  if (_busy) return false;
+  _busy = true;
+
+  try {
+    await prefetchCoinbaseSdk();
+    const { connectCoinbase } = await import("./coinbase-account.js");
+    const { address } = await connectCoinbase();
+
+    await _clearStaleAuthForSwitch(address);
+    await putKV(StorageKeys.AUTH_KIND, "coinbase" as AuthKind);
+    await putKV(StorageKeys.PARENT_ADDRESS, address);
+    _kind = "coinbase";
+    _parent = address;
+    _localPrivateKey = null;
+    _passkeyPrivateKey = null;
+
+    await _restoreCachedAuth();
+
+    _cleanupAccountListener?.();
+    _cleanupAccountListener = null;
+
+    return true;
+  } catch (e) {
+    console.error("[auth] coinbase login failed:", e);
     return false;
   } finally {
     _busy = false;
@@ -549,6 +624,10 @@ async function logout(): Promise<void> {
     const { logoutPara } = await import("./para-account.js");
     await logoutPara();
   }
+  if (_kind === "coinbase") {
+    const { logoutCoinbase } = await import("./coinbase-account.js");
+    await logoutCoinbase();
+  }
   await clearAllAuth();
 }
 
@@ -619,6 +698,8 @@ export const auth = {
   loginLocal,
   loginPasskey,
   loginPara,
+  loginCoinbase,
+  prefetchCoinbaseSdk,
   ensureSession,
   logout,
   ensurePodIdentity,

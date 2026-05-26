@@ -143,7 +143,7 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
     }
 
     const allowedHosts = resolveAllowedHosts();
-    const result = verifyDelegation(delegation, sessionAddress, allowedHosts);
+    const result = await verifyDelegation(delegation, sessionAddress, allowedHosts);
     if (!result.valid) {
       return c.json({ ok: false, error: result.error }, 403);
     }

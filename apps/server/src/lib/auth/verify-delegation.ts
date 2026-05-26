@@ -1,4 +1,4 @@
-import { verifyTypedData, verifyMessage, getAddress, type TypedDataField } from "ethers";
+import { verifyMessage, getAddress } from "ethers";
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
@@ -6,6 +6,7 @@ import {
   type VerifyDelegationResult,
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
+import { getSmartWalletClient } from "./smart-wallet-client.js";
 
 /**
  * Verify a session delegation bundle.
@@ -16,15 +17,17 @@ import { isSessionRevoked } from "./revocation.js";
  * 3. Not future-dated (1 min clock skew allowed)
  * 4. Host matches allowed list (if provided)
  * 5. Claimed session address matches delegation
- * 6. EIP-712 signature recovers to the claimed parent
+ * 6. EIP-712 signature is valid for the claimed parent — EOA (ecrecover),
+ *    ERC-1271 (deployed smart account), or ERC-6492 (counterfactual smart
+ *    account). Smart-account paths read isValidSignature via RPC.
  * 7. sessionProof was signed by the claimed session key
  * 8. Session not revoked
  */
-export function verifyDelegation(
+export async function verifyDelegation(
   delegation: SessionDelegation,
   claimedSession: string,
   allowedHosts?: string[],
-): VerifyDelegationResult {
+): Promise<VerifyDelegationResult> {
   try {
     if (!delegation?.message || !delegation?.parentSig) {
       return { valid: false, error: "Missing delegation message or signature" };
@@ -57,25 +60,27 @@ export function verifyDelegation(
       };
     }
 
-    // EIP-712 signature verification
-    let recovered: string;
+    // EIP-712 signature verification. viem handles all three signature shapes
+    // in one call: EOA (local ecrecover, no RPC), ERC-1271 (deployed smart
+    // account, eth_call to isValidSignature), and ERC-6492 (counterfactual
+    // smart account, simulated deploy + isValidSignature). The shift from
+    // recover-and-compare to verify-against-claimed-address is mandatory for
+    // smart accounts — their signatures are not recoverable to an EOA.
+    let validSig: boolean;
     try {
-      recovered = verifyTypedData(
-        SESSION_DOMAIN,
-        SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
-        message,
-        parentSig,
-      );
+      validSig = await getSmartWalletClient().verifyTypedData({
+        address: message.parent as `0x${string}`,
+        domain: SESSION_DOMAIN,
+        types: SESSION_TYPES,
+        primaryType: "AuthorizeSession",
+        message: message as unknown as Record<string, unknown>,
+        signature: parentSig as `0x${string}`,
+      });
     } catch {
-      return { valid: false, error: "Invalid signature" };
+      return { valid: false, error: "Signature verification failed" };
     }
-
-    // Recovered must match claimed parent
-    if (recovered.toLowerCase() !== message.parent.toLowerCase()) {
-      return {
-        valid: false,
-        error: "Signature does not match claimed parent",
-      };
+    if (!validSig) {
+      return { valid: false, error: "Invalid signature" };
     }
 
     // Verify sessionProof: the session key signed "${host}:${nonce}"
@@ -96,14 +101,16 @@ export function verifyDelegation(
       return { valid: false, error: "Invalid session proof signature" };
     }
 
-    // Check server-side revocation
-    if (isSessionRevoked(message.nonce, recovered, message.issuedAt)) {
+    // Check server-side revocation. Verification proved message.parent signed,
+    // so we use it as the authoritative parent address (no separate recovered
+    // value — that pattern only existed for the EOA-only ethers flow).
+    if (isSessionRevoked(message.nonce, message.parent, message.issuedAt)) {
       return { valid: false, error: "Session has been revoked" };
     }
 
     return {
       valid: true,
-      parentAddress: getAddress(recovered),
+      parentAddress: getAddress(message.parent),
       sessionAddress: getAddress(message.session),
     };
   } catch {

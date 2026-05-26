@@ -20,7 +20,8 @@
     "hono": "^4.7.0",
     "qrcode": "^1.5.3",
     "resend": "^6.9.4",
-    "stripe": "^22.0.1"
+    "stripe": "^22.0.1",
+    "viem": "^2.51.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

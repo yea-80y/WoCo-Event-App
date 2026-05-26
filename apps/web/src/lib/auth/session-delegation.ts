@@ -61,15 +61,26 @@ export async function requestSessionDelegation(
     message as unknown as Record<string, unknown>,
   );
 
-  // 4. Verify locally before storing
-  const recovered = verifyTypedData(
-    SESSION_DOMAIN,
-    SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
-    message,
-    parentSig,
-  );
-  if (recovered.toLowerCase() !== parentAddress.toLowerCase()) {
-    throw new Error("Session delegation signature verification failed");
+  // 4. Local sanity check (defence in depth — server re-verifies via viem
+  //    with 1271/6492 awareness). ethers can only ecrecover EOA-shaped sigs,
+  //    so smart-account signatures (CSW / Safe — ERC-1271 or ERC-6492
+  //    wrapped) will throw here. Treat that as "not an EOA, skip" rather
+  //    than as a verification failure.
+  if (parentSig.length === 132) {
+    try {
+      const recovered = verifyTypedData(
+        SESSION_DOMAIN,
+        SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
+        message,
+        parentSig,
+      );
+      if (recovered.toLowerCase() !== parentAddress.toLowerCase()) {
+        throw new Error("Session delegation signature verification failed");
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Session delegation")) throw err;
+      // ethers rejected the sig shape — treat as smart-account, let server verify.
+    }
   }
 
   const delegation: SessionDelegation = { message, parentSig };

@@ -143,7 +143,7 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
 
   // Verify the delegation bundle (parent EIP-712 sig, sessionProof, expiry, host, revocation)
   const allowedHosts = getAllowedHosts();
-  const result = verifyDelegation(delegation, sessionAddress, allowedHosts);
+  const result = await verifyDelegation(delegation, sessionAddress, allowedHosts);
   if (!result.valid) {
     return c.json({ ok: false, error: result.error }, 403);
   }
@@ -204,13 +204,14 @@ function sha256Hex(text: string): string {
  * Caller is responsible for reading the raw body via `c.req.text()` once and
  * passing it in — we must hash the exact bytes the client signed.
  */
-export function tryVerifyAuth(
+export async function tryVerifyAuth(
   c: Context<AppEnv>,
   rawBody: string,
-):
+): Promise<
   | { ok: true; parentAddress: string; sessionAddress: string }
   | { ok: false; error: string }
-  | null {
+  | null
+> {
   const sessionAddress = c.req.header("x-session-address");
   const sessionSig = c.req.header("x-session-sig");
   const sessionNonce = c.req.header("x-session-nonce");
@@ -238,7 +239,7 @@ export function tryVerifyAuth(
   }
 
   const allowedHosts = getAllowedHosts();
-  const result = verifyDelegation(delegation, sessionAddress, allowedHosts);
+  const result = await verifyDelegation(delegation, sessionAddress, allowedHosts);
   if (!result.valid) return { ok: false, error: result.error ?? "Invalid delegation" };
 
   const method = c.req.method.toUpperCase();

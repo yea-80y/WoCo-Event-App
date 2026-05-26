@@ -438,7 +438,7 @@ stripe.post("/create-checkout", async (c) => {
 
   // Soft auth: if session headers are present, verify them. Malformed auth
   // headers are rejected — never silently fall through to anonymous path.
-  const authResult = tryVerifyAuth(c, rawBody);
+  const authResult = await tryVerifyAuth(c, rawBody);
   let verifiedAddress: string | undefined;
   if (authResult) {
     if (!authResult.ok) {

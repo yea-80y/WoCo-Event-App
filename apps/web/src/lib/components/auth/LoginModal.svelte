@@ -1,5 +1,6 @@
 <script lang="ts">
   import WalletLogin from "./WalletLogin.svelte";
+  import CoinbaseLogin from "./CoinbaseLogin.svelte";
   import PasskeyLogin from "./PasskeyLogin.svelte";
   import ParaLogin from "./ParaLogin.svelte";
   import ZupassLogin from "./ZupassLogin.svelte";
@@ -57,6 +58,10 @@
 
       <div class="options">
         <WalletLogin oncomplete={handleComplete} />
+
+        <div class="divider"><span>or</span></div>
+
+        <CoinbaseLogin oncomplete={handleComplete} />
 
         <div class="divider"><span>or</span></div>
 
