@@ -12,6 +12,7 @@ const CHAINLINK_ETH_USD: Record<number, string> = {
   1: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",       // Ethereum mainnet
   8453: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",     // Base
   10: "0x13e3Ee699D1909E989722E753853AE30b17e08c5",       // Optimism
+  42161: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",    // Arbitrum One
   11155111: "0x694AA1769357215DE4FAC081bf1f309aDC325306",  // Sepolia
 };
 
@@ -41,7 +42,7 @@ const CACHE_TTL = 60_000; // 1 minute
 export const PRICE_SLIPPAGE = 0.05;
 
 /** Try chains in order until one succeeds */
-const CHAIN_ORDER = [1, 8453, 10, 11155111] as const;
+const CHAIN_ORDER = [1, 8453, 10, 42161, 11155111] as const;
 
 /**
  * Fetch current ETH price in USD from Chainlink oracle.

@@ -11,7 +11,9 @@ export const CHAIN_COLORS: Record<number, string> = {
   1: "#627eea",
   8453: "#0052ff",
   10: "#ff0420",
+  42161: "#28a0f0",
   11155111: "#888",
+  421614: "#888",
 };
 
 export function explorerUrl(chainId: PaymentChainId, txHash: string): string {

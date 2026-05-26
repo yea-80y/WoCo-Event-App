@@ -9,7 +9,8 @@ const IFACE = new Interface(ABI);
 
 /** Deployed WoCoEvent addresses by chainId. */
 const ADDRESSES: Record<number, string> = {
-  84532: "0x4bf8aa0FDaF5045EFEd675e019F81316063c94b4", // Base Sepolia (redeployed 2026-05-09)
+  84532: "0x4bf8aa0FDaF5045EFEd675e019F81316063c94b4",  // Base Sepolia (redeployed 2026-05-09)
+  421614: "0x172031E6a8428617B05F2002e0e278bb8fb3Ed8A", // Arbitrum Sepolia (Arbitrum buildathon, deployed 2026-05-26)
 };
 
 export function getWoCoEventAddress(chainId: number): string | undefined {
@@ -59,6 +60,20 @@ export async function callRegisterEvent(
             nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
             rpcUrls: ["https://mainnet.base.org"],
             blockExplorerUrls: ["https://basescan.org"],
+          },
+          421614: {
+            chainId: chainIdHex,
+            chainName: "Arbitrum Sepolia",
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: ["https://sepolia-rollup.arbitrum.io/rpc"],
+            blockExplorerUrls: ["https://sepolia.arbiscan.io"],
+          },
+          42161: {
+            chainId: chainIdHex,
+            chainName: "Arbitrum One",
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: ["https://arb1.arbitrum.io/rpc"],
+            blockExplorerUrls: ["https://arbiscan.io"],
           },
         };
         const params = CHAIN_PARAMS[chainId];

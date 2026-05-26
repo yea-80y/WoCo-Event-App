@@ -481,7 +481,7 @@
                   <div class="payment-chains" style="margin-left: 1.5rem; margin-top: 0.25rem;">
                     <span class="field-label" style="font-size: 0.6875rem;">Networks</span>
                     <div class="chain-checkboxes">
-                      {#each [[8453, "Base"], [10, "Optimism"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"]] as [chainId, name]}
+                      {#each [[8453, "Base"], [10, "Optimism"], [42161, "Arbitrum"], [1, "Ethereum"], [11155111, "Sepolia (testnet)"], [421614, "Arbitrum Sepolia (testnet)"]] as [chainId, name]}
                         <label class="chain-check">
                           <input
                             type="checkbox"

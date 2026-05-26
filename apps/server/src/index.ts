@@ -150,7 +150,7 @@ app.get("/api/eth-price", async (c) => {
 // Escrow contract addresses per chain — frontend needs these to send payment to the right contract
 app.get("/api/payment/escrow-addresses", async (c) => {
   const { getEscrowAddress } = await import("./lib/payment/constants.js");
-  const chainIds = [1, 8453, 10, 11155111] as const;
+  const chainIds = [1, 8453, 10, 42161, 11155111, 421614] as const;
   const addresses: Record<number, string> = {};
   for (const chainId of chainIds) {
     const addr = getEscrowAddress(chainId);

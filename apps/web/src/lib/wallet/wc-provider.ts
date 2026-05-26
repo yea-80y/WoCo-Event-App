@@ -10,7 +10,7 @@ async function _init(): Promise<InstanceType<typeof EthereumProvider>> {
   if (_wc) return _wc;
   _wc = await EthereumProvider.init({
     projectId: WC_PROJECT_ID,
-    chains: [1, 11155111, 8453, 10],
+    chains: [1, 11155111, 8453, 10, 42161, 421614],
     showQrModal: true,
     methods: [
       "eth_sendTransaction",

@@ -38,6 +38,14 @@ export const CHAIN_INFO: Record<PaymentChainId, ChainInfo> = {
     blockExplorer: "https://optimistic.etherscan.io",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   },
+  42161: {
+    chainId: 42161,
+    name: CHAIN_NAMES[42161],
+    hexChainId: "0xa4b1",
+    rpcUrl: "https://arb1.arbitrum.io/rpc",
+    blockExplorer: "https://arbiscan.io",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  },
   11155111: {
     chainId: 11155111,
     name: CHAIN_NAMES[11155111],
@@ -45,6 +53,14 @@ export const CHAIN_INFO: Record<PaymentChainId, ChainInfo> = {
     rpcUrl: "https://1rpc.io/sepolia",
     blockExplorer: "https://sepolia.etherscan.io",
     nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
+  },
+  421614: {
+    chainId: 421614,
+    name: CHAIN_NAMES[421614],
+    hexChainId: "0x66eee",
+    rpcUrl: "https://sepolia-rollup.arbitrum.io/rpc",
+    blockExplorer: "https://sepolia.arbiscan.io",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   },
 };
 

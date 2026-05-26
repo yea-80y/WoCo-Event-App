@@ -6,7 +6,9 @@ export const DEFAULT_RPC_URLS: Record<PaymentChainId, string> = {
   1: "https://eth.llamarpc.com",
   8453: "https://mainnet.base.org",
   10: "https://mainnet.optimism.io",
+  42161: "https://arb1.arbitrum.io/rpc",
   11155111: "https://1rpc.io/sepolia",
+  421614: "https://sepolia-rollup.arbitrum.io/rpc",
 };
 
 /** Get RPC URL for a chain, preferring env override */

@@ -2,10 +2,12 @@ import { JsonRpcProvider, Contract } from "ethers";
 import type { PaymentChainId } from "@woco/shared";
 import { getRpcUrl } from "../payment/constants.js";
 
-/** RPC URLs for chains used by WoCoEvent but outside PaymentChainId (e.g. testnets). */
+/** RPC URLs for chains used by WoCoEvent but outside PaymentChainId (e.g. L2 testnets). */
 const EXTRA_RPC_URLS: Record<number, string> = {
   84532: "https://sepolia.base.org", // Base Sepolia
 };
+// NOTE: Arbitrum One (42161) + Arbitrum Sepolia (421614) live in shared PaymentChainId
+// and resolve through getRpcUrl() — no extra entry needed here.
 
 export function getChainRpcUrl(chainId: number): string {
   return (
@@ -23,7 +25,8 @@ const ABI = [
 
 /** Deployed WoCoEvent addresses by chainId. Override via WOCO_EVENT_ADDRESS_{chainId} env. */
 const DEPLOYED: Record<number, string> = {
-  84532: "0x00824e220571D09d1C3D9B68A8F4c5423D166780", // Base Sepolia (redeployed 2026-05-12 — adds batchClaimFor + per-batch orderRef storage)
+  84532: "0x00824e220571D09d1C3D9B68A8F4c5423D166780",  // Base Sepolia (redeployed 2026-05-12 — adds batchClaimFor + per-batch orderRef storage)
+  421614: "0x172031E6a8428617B05F2002e0e278bb8fb3Ed8A", // Arbitrum Sepolia (Arbitrum buildathon, deployed 2026-05-26)
 };
 
 /** Chain the server currently uses for event registration. Override via WOCO_EVENT_CHAIN_ID. */

@@ -9,8 +9,9 @@ export type ClaimMode = "wallet" | "email" | "both";
 // Payment types
 // ---------------------------------------------------------------------------
 
-/** Supported payment chains: Ethereum mainnet, Base, Optimism, + Sepolia (testnet) */
-export type PaymentChainId = 1 | 8453 | 10 | 11155111;
+/** Supported payment chains: Ethereum mainnet, Base, Optimism, Arbitrum One,
+ *  + Sepolia / Arbitrum Sepolia (testnets) */
+export type PaymentChainId = 1 | 8453 | 10 | 42161 | 11155111 | 421614;
 
 /** Fiat currencies supported for ticket pricing */
 export type FiatCurrency = "USD" | "GBP" | "EUR";
@@ -111,7 +112,8 @@ export const USDC_ADDRESSES: Partial<Record<PaymentChainId, Hex0x>> = {
   1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex0x,
   8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Hex0x,
   10: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85" as Hex0x,
-  // No USDC on Sepolia testnet — ETH only for testing
+  42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as Hex0x,
+  // No USDC on Sepolia / Arbitrum Sepolia — ETH only for testing
 };
 
 /** Human-readable chain names */
@@ -119,7 +121,9 @@ export const CHAIN_NAMES: Record<PaymentChainId, string> = {
   1: "Ethereum",
   8453: "Base",
   10: "Optimism",
+  42161: "Arbitrum",
   11155111: "Sepolia",
+  421614: "Arbitrum Sepolia",
 };
 
 /**
@@ -146,7 +150,9 @@ export const MIN_CONFIRMATIONS_BY_CHAIN: Record<PaymentChainId, number> = {
   1: 12,          // Ethereum mainnet
   8453: 3,        // Base
   10: 3,          // Optimism
+  42161: 3,       // Arbitrum One — sequencer soft finality, same model as Base/OP
   11155111: 3,    // Sepolia
+  421614: 3,      // Arbitrum Sepolia — testnet, same bar as L2 mainnets
 };
 
 /** Fallback if a chain is somehow not in the map (should never happen at runtime). */
