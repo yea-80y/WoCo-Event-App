@@ -26,11 +26,26 @@ DEV & DEPLOYMENT
 
 DEV COMMANDS:
   npm run dev:web        # Vite dev server :5173
-  npm run dev:server     # tsx watch :3001
+  npm run dev:server     # opens SSH tunnel to Hetzner bee, then tsx watch :3001
   npm run build:web      # production frontend build
   npm run build:server   # tsc typecheck + build
   npm run build:embed    # IIFE bundle → packages/embed/dist/woco-embed.js
   npm run build:site     # generated-site build → apps/web/dist-site/
+
+DEV BEE TUNNEL (since 2026-05-26):
+- The old laptop bee at 192.168.0.144 is gone; local dev now reads/writes against the
+  Hetzner bee via SSH port-forward. `apps/server/.env` has `BEE_URL=http://localhost:1633`.
+- `npm run dev:server` runs `apps/server/scripts/dev-with-tunnel.mjs`, which:
+    1. resolves `bee-node` container IP via `ssh root@46.225.174.72 'docker inspect ...'`
+    2. opens `ssh -N -L 1633:<ip>:1633 root@46.225.174.72` as a child process
+    3. execs tsx watch
+  Ctrl-C / tsx crash / terminal close kills the tunnel (trap on EXIT/INT/TERM).
+- If port 1633 is already bound (e.g. you started a separate `ssh -fN` manually) the
+  wrapper reuses it instead of erroring.
+- Bypass the tunnel: `npm run dev:notunnel -w @woco/server` (will fail Swarm reads
+  unless BEE_URL_FALLBACK=https://gateway.woco-net.com handles them).
+- IMPORTANT: dev WRITES now hit the production Hetzner bee. Anything you publish
+  locally lands in the real platform feeds (events directory, etc.) — be careful.
 
 DEPLOYMENT (Hetzner CPX22, migrated 2026-05-19 — see docs/HETZNER_DEPLOY.md):
 - Backend: Hetzner CPX22 VM at 46.225.174.72 (user: root, dir: /opt/woco), Docker Compose 3-service stack

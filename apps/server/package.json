@@ -4,7 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node scripts/dev-with-tunnel.mjs",
+    "dev:notunnel": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node --import tsx src/index.ts"
   },
