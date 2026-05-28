@@ -1,6 +1,6 @@
 import { getBee, requirePostageBatch } from "../../config/swarm.js";
 import { ensureEthernaToken } from "../etherna/auth.js";
-import { beeUploadSem } from "./upload-queue.js";
+import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import type { Hex64 } from "@woco/shared";
 
 /** Delay helper */
@@ -42,7 +42,11 @@ export async function uploadToBytes(data: string | Uint8Array): Promise<Hex64> {
       const release = await beeUploadSem.acquire();
       let result;
       try {
-        result = await getBee().uploadData(requirePostageBatch(), bytes, { deferred: true });
+        result = await withTimeout(
+          getBee().uploadData(requirePostageBatch(), bytes, { deferred: true }),
+          BEE_CALL_TIMEOUT_MS,
+          "bytes upload",
+        );
       } finally {
         release();
       }

@@ -1,7 +1,7 @@
 import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import zlib from "node:zlib";
 import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from "../../config/swarm.js";
-import { beeUploadSem } from "./upload-queue.js";
+import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 
 // ---------------------------------------------------------------------------
 // Binary packing (128 slots x 32 bytes = 4096 bytes)
@@ -270,7 +270,11 @@ async function doWriteFeedPage(
       }
       const release = await beeUploadSem.acquire();
       try {
-        await writer.uploadPayload(requirePostageBatch(), page, uploadOpts);
+        await withTimeout(
+          writer.uploadPayload(requirePostageBatch(), page, uploadOpts),
+          BEE_CALL_TIMEOUT_MS,
+          `feed write ${key.slice(0, 16)}`,
+        );
       } finally {
         release();
       }

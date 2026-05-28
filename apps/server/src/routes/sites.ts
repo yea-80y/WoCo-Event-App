@@ -37,6 +37,7 @@ import {
 import type { Site, Page, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
+import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 
 const sitesRouter = new Hono();
 
@@ -613,6 +614,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
         duplex: "half",
         body: tarData,
+        signal: AbortSignal.timeout(BEE_COLLECTION_TIMEOUT_MS),
       });
 
       if (!uploadResp.ok) {
@@ -642,7 +644,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       // WoCo Bee — inline SOC write; fall back to uploadReference if root chunk
       // exceeds 4096B (unlikely for a site manifest but handled defensively).
       try {
-        const mRef = await bee.createFeedManifest(batchId, topic, owner);
+        const mRef = await withTimeout(
+          bee.createFeedManifest(batchId, topic, owner),
+          BEE_CALL_TIMEOUT_MS,
+          "multisite feed manifest",
+        );
         feedManifestHash = mRef.toString();
       } catch {
         // Non-fatal
@@ -653,20 +659,35 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-upload-secret": UPLOAD_SECRET },
           body: JSON.stringify({ hashes: [contentHash] }),
+          signal: AbortSignal.timeout(10_000),
         });
-        const chunkRes = await fetch(`${BEE_URL}/chunks/${contentHash}`);
+        const chunkRes = await fetch(`${BEE_URL}/chunks/${contentHash}`, {
+          signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
+        });
         if (!chunkRes.ok) throw new Error(`fetch root chunk ${chunkRes.status}`);
         const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
         const payload = chunkBytes.subarray(8);
         if (payload.length > 4096) {
           console.warn(`[sites/deploy] root chunk ${payload.length}B > 4096 — falling back to legacy SOC write`);
-          await writer.uploadReference(batchId, new Reference(contentHash));
+          await withTimeout(
+            writer.uploadReference(batchId, new Reference(contentHash)),
+            BEE_CALL_TIMEOUT_MS,
+            "multisite feed write (legacy)",
+          );
         } else {
-          await writer.uploadPayload(batchId, payload);
+          await withTimeout(
+            writer.uploadPayload(batchId, payload),
+            BEE_CALL_TIMEOUT_MS,
+            "multisite feed write (inline)",
+          );
         }
       } catch (err) {
         console.warn(`[sites/deploy] inline SOC write failed (${(err as Error).message}) — falling back to legacy`);
-        await writer.uploadReference(batchId, new Reference(contentHash));
+        await withTimeout(
+          writer.uploadReference(batchId, new Reference(contentHash)),
+          BEE_CALL_TIMEOUT_MS,
+          "multisite feed write (legacy fallback)",
+        );
       }
     }
 

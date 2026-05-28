@@ -10,6 +10,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
+import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -139,6 +140,7 @@ site.post("/deploy", requireAuth, async (c) => {
         // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
         duplex: "half",
         body: tarData,
+        signal: AbortSignal.timeout(BEE_COLLECTION_TIMEOUT_MS),
       });
 
       if (!uploadResp.ok) {
@@ -159,7 +161,11 @@ site.post("/deploy", requireAuth, async (c) => {
     // Create feed manifest (one-time; if it already exists the call still succeeds)
     let feedManifestHash = "";
     try {
-      const mRef = await platformBee.createFeedManifest(POSTAGE_BATCH_ID, topic, owner);
+      const mRef = await withTimeout(
+        platformBee.createFeedManifest(POSTAGE_BATCH_ID, topic, owner),
+        BEE_CALL_TIMEOUT_MS,
+        "site feed manifest",
+      );
       feedManifestHash = mRef.toString();
     } catch {
       // Non-fatal — organiser can still use the direct content hash
@@ -167,7 +173,11 @@ site.post("/deploy", requireAuth, async (c) => {
 
     // 6) Update feed → new content hash
     const writer = platformBee.makeFeedWriter(topic, signer);
-    await writer.upload(POSTAGE_BATCH_ID, new Reference(contentHash));
+    await withTimeout(
+      writer.upload(POSTAGE_BATCH_ID, new Reference(contentHash)),
+      BEE_CALL_TIMEOUT_MS,
+      "site feed write",
+    );
 
     return c.json({ ok: true, data: { contentHash, feedManifestHash } });
 

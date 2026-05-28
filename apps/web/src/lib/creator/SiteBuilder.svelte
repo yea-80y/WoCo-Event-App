@@ -77,6 +77,7 @@
   let listingOnWoco = $state(false);
   let wocoListError = $state<string | null>(null);
   let wocoListed = $state(false);
+  let addingToSites = $state(false);
 
   let customDomainInput = $state("");
   let domainRegistering = $state(false);
@@ -175,6 +176,36 @@
     }
   }
 
+  // Background post-deploy work. The deployed site is live the moment
+  // /api/site/deploy returns; site-event additions and WoCo directory listing
+  // are additive — both endpoints are idempotent on the server (set-add /
+  // no-op-if-listed). Running them inline blocked step → 3 for minutes when
+  // the global directory had grown to multiple paged feed writes.
+  async function runPostDeployTasks(targetSiteIds: string[]) {
+    if (createdEventId && targetSiteIds.length > 0) {
+      addingToSites = true;
+      const next: Record<string, string> = {};
+      try {
+        const siteResults = await Promise.allSettled(
+          targetSiteIds.map(id => addSiteEvent(id, createdEventId!)),
+        );
+        siteResults.forEach((r, i) => {
+          const id = targetSiteIds[i];
+          if (r.status === "rejected") {
+            next[id] = (r.reason as Error)?.message ?? "Failed";
+          } else if (r.status === "fulfilled") {
+            const v = r.value as { ok?: boolean; error?: string };
+            if (!v?.ok) next[id] = v?.error ?? "Failed";
+          }
+        });
+      } finally {
+        siteAddErrors = next;
+        addingToSites = false;
+      }
+    }
+    if (listOnWoco && !wocoListed) await createWocoListing();
+  }
+
   async function handleDeploy() {
     deploying = true;
     deployError = null;
@@ -183,30 +214,23 @@
       const ok = await deployToSwarm();
       if (!ok) return;
 
-      // Site-event additions run after a confirmed deploy — they need auth (session signing)
-      // and running them before the deploy caused the session modal to block step → 3.
-      if (createdEventId && selectedSiteIds.length > 0) {
-        const siteResults = await Promise.allSettled(
-          selectedSiteIds.map(id => addSiteEvent(id, createdEventId!)),
-        );
-        siteAddErrors = {};
-        siteResults.forEach((r, i) => {
-          if (r.status === "rejected") {
-            siteAddErrors[selectedSiteIds[i]] = (r.reason as Error)?.message ?? "Failed";
-          } else if (r.status === "fulfilled") {
-            const v = r.value as { ok?: boolean; error?: string };
-            if (!v?.ok) siteAddErrors[selectedSiteIds[i]] = v?.error ?? "Failed";
-          }
-        });
-      }
-
-      if (listOnWoco && !wocoListed) await createWocoListing();
+      // Advance the wizard immediately — site is live. Background tasks
+      // surface their status via step-3 UI (addingToSites, siteAddErrors,
+      // listingOnWoco, wocoListError, wocoListed).
+      siteAddErrors = {};
       step = 3;
+      void runPostDeployTasks([...selectedSiteIds]);
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Unexpected error during deploy";
     } finally {
       deploying = false;
     }
+  }
+
+  function retrySiteAdditions() {
+    const failedIds = Object.keys(siteAddErrors);
+    if (failedIds.length === 0) return;
+    void runPostDeployTasks(failedIds);
   }
 
   function copyText(text: string) { navigator.clipboard.writeText(text); }
@@ -482,6 +506,25 @@
           {#if domainError}<p class="domain-error">{domainError}</p>{/if}
         {/if}
       </div>
+
+      <!-- Site additions (background; spinner while pending, retry on partial failure) -->
+      {#if selectedSiteIds.length > 0 && (addingToSites || Object.keys(siteAddErrors).length > 0)}
+        <div class="woco-listing-section">
+          {#if addingToSites}
+            <div class="progress-status">
+              <div class="spinner"></div>
+              <span>Adding to {Object.keys(siteAddErrors).length > 0 ? Object.keys(siteAddErrors).length : selectedSiteIds.length} of your sites…</span>
+            </div>
+          {:else if Object.keys(siteAddErrors).length > 0}
+            {#each Object.entries(siteAddErrors) as [siteId, err]}
+              <p class="site-add-error">Could not add to site <code>{siteId}</code>: {err}</p>
+            {/each}
+            <button class="btn-primary" style="margin-top: 0.75rem;" onclick={retrySiteAdditions} disabled={addingToSites}>
+              Retry site additions
+            </button>
+          {/if}
+        </div>
+      {/if}
 
       <!-- WoCo listing (shown only if opted in and still pending or errored) -->
       {#if listOnWoco && (!wocoListed || wocoListError)}
