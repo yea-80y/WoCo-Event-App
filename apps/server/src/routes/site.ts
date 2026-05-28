@@ -11,6 +11,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
+import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -55,10 +56,22 @@ site.post("/deploy", requireAuth, async (c) => {
       paraApiKey?: string;
       apiUrl: string;
     };
-    const { eventId, gatewayUrl, paraApiKey, apiUrl } = body;
+    const { eventId, gatewayUrl, paraApiKey, apiUrl: clientApiUrl } = body;
 
-    if (!eventId || !apiUrl) {
-      return c.json({ ok: false, error: "eventId and apiUrl are required" }, 400);
+    if (!eventId) {
+      return c.json({ ok: false, error: "eventId is required" }, 400);
+    }
+
+    // Substitute the server's own PUBLIC_API_BASE for any localhost / private /
+    // non-https value the client supplied. Without this, sites deployed from
+    // a local dev frontend bake `http://localhost:3001` into SITE_CONFIG and
+    // visitors on the public internet can't reach the API.
+    const apiUrl = sanitisePublicApiUrl(clientApiUrl);
+    if (!apiUrl) {
+      return c.json({
+        ok: false,
+        error: "apiUrl is required and PUBLIC_API_BASE is not configured on the server",
+      }, 400);
     }
 
     if (!existsSync(DIST_SITE_PATH)) {

@@ -12,6 +12,7 @@ import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
 import { getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
 import { getStripe } from "../lib/stripe/client.js";
+import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -336,6 +337,9 @@ events.post("/:id/list", requireAuth, async (c) => {
   }
 
   try {
+    // Substitute the server's own PUBLIC_API_BASE for any localhost / private /
+    // non-https value the client supplied. Federated public URLs pass through.
+    const directoryApiUrl = sanitisePublicApiUrl(body.sourceApiUrl);
     await addEventToDirectory({
       eventId: eventFeed.eventId,
       title: eventFeed.title,
@@ -346,7 +350,7 @@ events.post("/:id/list", requireAuth, async (c) => {
       seriesCount: eventFeed.series.length,
       totalTickets: eventFeed.series.reduce((sum, s) => sum + s.totalSupply, 0),
       createdAt: eventFeed.createdAt,
-      ...(body.sourceApiUrl ? { apiUrl: body.sourceApiUrl.trim().replace(/\/$/, "") } : {}),
+      ...(directoryApiUrl ? { apiUrl: directoryApiUrl } : {}),
     });
 
   } catch (err) {
