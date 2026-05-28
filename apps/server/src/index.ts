@@ -29,6 +29,17 @@ import { customDomainProxy } from "./middleware/custom-domain.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Node 26 kills the process on unhandledRejection by default. A single
+// fire-and-forget Swarm/Bee call without a catch can take down the whole
+// server, cutting every in-flight HTTP response mid-chunk
+// (ERR_INCOMPLETE_CHUNKED_ENCODING in the browser). Log loudly and stay up.
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
+});
+
 // ---------------------------------------------------------------------------
 // Startup safety checks
 // ---------------------------------------------------------------------------
