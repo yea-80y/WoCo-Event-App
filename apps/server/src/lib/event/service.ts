@@ -108,6 +108,10 @@ export async function createEventV2(opts: {
   // ── Phase 1: Upload image (start immediately) ─────────────────────────
   emit("image", 0, 1, "Uploading event image...");
   const imagePromise = uploadToBytes(imageData);
+  // Real rejection is re-thrown at the awaited consumer below; the noop
+  // catch only prevents Node from crashing as unhandledRejection if an
+  // earlier phase throws before we reach the await.
+  imagePromise.catch(() => {});
 
   // ── Phase 2: Upload pod bodies for all series ─────────────────────────
   emit("pods", 0, totalPods, "Uploading pod bodies...");
