@@ -137,6 +137,14 @@
       const organiserNonce = 0n;
       progress = 8;
 
+      // Convert the datetime-local picker values (local wall-clock, no zone) to
+      // absolute UTC instants for storage. This is what makes dates unambiguous:
+      // the server reads the same instant regardless of its own timezone, and
+      // every viewer's `toLocaleString()` then renders it in their local zone.
+      // canPublish already guaranteed both dates are valid + in the future.
+      const startDateIso = new Date(startDate).toISOString();
+      const endDateIso = new Date(endDate).toISOString();
+
       // ── Build manifests ───────────────────────────────────────────────
       phase = "building";
       step = "Building manifests...";
@@ -149,7 +157,7 @@
         organiserNonce,
         creatorPodPrivateKey: keypair.privateKey,
         creatorPodPublicKeyHex: keypair.publicKeyHex,
-        eventMeta: { startDate, endDate, location },
+        eventMeta: { startDate: startDateIso, endDate: endDateIso, location },
         series: series.map((s) => ({
           seriesId: s.seriesId,
           name: s.name,
@@ -166,7 +174,7 @@
 
       const result = await createEventStreaming(
         {
-          event: { title, ...(tagline ? { tagline } : {}), description, startDate, endDate, location },
+          event: { title, ...(tagline ? { tagline } : {}), description, startDate: startDateIso, endDate: endDateIso, location },
           series: series.map((s, i) => ({
             seriesId: s.seriesId,
             name: s.name,
