@@ -15,6 +15,7 @@ const V2_READ_ABI = [
   "function organiserNonce(address) view returns (uint256)",
   "function getEvent(bytes32) view returns (uint64 totalSupply, uint64 nextSlot, uint128 priceBaseUnits, address organiser, address payoutRecipient, uint16 platformFeeBps, address dropGate, bytes32 manifestRef)",
   "function getSlotData(bytes32 eventId, uint256 slot) view returns (address owner, address claimer, bytes32 orderRef, bool escrowed, bool refunded)",
+  "function authorisedSponsors(address) view returns (bool)",
 ];
 
 const V2_CLAIM_ABI = [
@@ -23,7 +24,15 @@ const V2_CLAIM_ABI = [
   "event SlotClaimed(bytes32 indexed eventId, uint256 indexed slot, address indexed owner, address claimer, bytes32 orderRef)",
 ];
 
-export const V2_ABI = [...V2_READ_ABI, ...V2_CLAIM_ABI] as const;
+// V2 `registerEvent` is 6-arg (V1 was 2-arg) and `Registered` carries the full
+// escrow config — the topic hash differs from V1, so receipts parse against
+// this dedicated fragment set.
+const V2_REGISTER_ABI = [
+  "function registerEvent(uint64 supply, uint128 priceBaseUnits, address payoutRecipient, address dropGate, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32 eventId)",
+  "event Registered(bytes32 indexed eventId, address indexed organiser, uint64 supply, uint128 priceBaseUnits, address payoutRecipient, address dropGate, bytes32 manifestRef, uint64 eventEndTs, uint32 releaseDelay)",
+];
+
+export const V2_ABI = [...V2_READ_ABI, ...V2_CLAIM_ABI, ...V2_REGISTER_ABI] as const;
 
 const _providers = new Map<number, JsonRpcProvider>();
 
@@ -46,6 +55,20 @@ export async function getOrganiserNonceV2(
   chainId: number,
 ): Promise<bigint> {
   return readContract(contractAddress, chainId).organiserNonce(address) as Promise<bigint>;
+}
+
+/**
+ * Whether `sponsorAddress` is on the V2 contract's `authorisedSponsors` allow-
+ * list. The sponsor-path mint (`claimFor`/`batchClaimFor`) is `onlyAuthorised`,
+ * so a false here means every Stripe-paid claim will revert `NotAuthorised` —
+ * the caller uses this to refuse a checkout BEFORE the buyer is charged.
+ */
+export async function isSponsorAuthorisedV2(
+  sponsorAddress: string,
+  contractAddress: string,
+  chainId: number,
+): Promise<boolean> {
+  return readContract(contractAddress, chainId).authorisedSponsors(sponsorAddress) as Promise<boolean>;
 }
 
 export async function getOnChainEventV2(
@@ -149,6 +172,58 @@ export async function batchClaimForV2(
     );
   }
   return slots;
+}
+
+/**
+ * Register an event on V2 via the sponsor wallet. Six-arg signature; the
+ * Stripe-paid model passes `priceBaseUnits = 0` (USDC escrow dormant),
+ * `payoutRecipient = organiser`, `dropGate = address(0)` (open FIFO). The
+ * contract reverts `InvalidEventEnd` unless `eventEndTs > block.timestamp`,
+ * so callers must floor it above now.
+ */
+export async function registerEventV2(
+  supply: number,
+  priceBaseUnits: bigint,
+  payoutRecipient: string,
+  dropGate: string,
+  manifestRef: string,
+  eventEndTs: number,
+  contractAddress: string,
+  sponsorPk: string,
+  chainId: number,
+): Promise<{ onChainEventId: string; txHash: string }> {
+  const wallet   = new Wallet(sponsorPk, getProvider(chainId));
+  const contract = new Contract(contractAddress, V2_REGISTER_ABI, wallet);
+
+  console.log(
+    `[sponsor v2] registerEvent supply=${supply} price=${priceBaseUnits} ` +
+    `payout=${payoutRecipient} dropGate=${dropGate} eventEndTs=${eventEndTs} ` +
+    `manifestRef=${manifestRef.slice(0, 10)}… chain=${chainId}`,
+  );
+
+  const tx = await contract.registerEvent(
+    supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs,
+  );
+  const receipt = await tx.wait(1);
+  if (!receipt) throw new Error("No receipt from V2 registerEvent tx");
+
+  console.log(`[sponsor v2] registerEvent confirmed txHash=${receipt.hash} gasUsed=${receipt.gasUsed}`);
+
+  const iface = new Interface(V2_REGISTER_ABI);
+  for (const log of receipt.logs) {
+    try {
+      const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
+      if (parsed?.name === "Registered") {
+        const onChainEventId = parsed.args.eventId as string;
+        console.log(`[sponsor v2] Registered onChainEventId=${onChainEventId}`);
+        return { onChainEventId, txHash: receipt.hash };
+      }
+    } catch {
+      // skip logs from other contracts
+    }
+  }
+
+  throw new Error("Registered event not found in V2 registerEvent receipt");
 }
 
 /**

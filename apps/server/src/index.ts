@@ -25,6 +25,7 @@ import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
+import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -410,3 +411,4 @@ const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
 startDomainPoller();
+void logSponsorReadiness();

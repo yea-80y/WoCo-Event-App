@@ -10,7 +10,7 @@ import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
-import { getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
+import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 const events = new Hono<AppEnv>();
@@ -508,10 +508,27 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const digestBytes = manifestDigest(blob.signedManifest.body);
   const manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
 
+  // V2 (USDC-escrow) register params. Stripe is the only live payment path, so
+  // priceBaseUnits=0 keeps the on-chain escrow dormant; the organiser is the
+  // payout recipient; dropGate is open FIFO. eventEndTs is the event's real end
+  // (Unix secs) but floored at now+1h so past-dated test events still satisfy
+  // the contract's `eventEndTs > block.timestamp` guard. It doubles as the
+  // on-chain sales cutoff and the start of the withdraw release window.
+  // Ignored on V1 chains (registerEventOnChain dispatches on contract version).
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const endSec = Math.floor(new Date(feed.endDate).getTime() / 1000);
+  const eventEndTs = Math.max(Number.isFinite(endSec) ? endSec : 0, nowSec + 3600);
+
   let onChainEventId: string;
   let txHash: string;
   try {
-    ({ onChainEventId, txHash } = await registerEventOnChain(series.totalSupply, manifestRef));
+    ({ onChainEventId, txHash } = await registerEventOnChain(series.totalSupply, manifestRef, {
+      priceBaseUnits: 0n,
+      payoutRecipient: feed.creatorAddress,
+      dropGate: ZERO_ADDRESS,
+      eventEndTs,
+    }));
   } catch (err) {
     console.error("[api] register-on-chain tx error:", err);
     const message = err instanceof Error ? err.message : "registerEvent tx failed";

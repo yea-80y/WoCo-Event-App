@@ -5,7 +5,24 @@ import {
   getChainRpcUrl,
   getEventContractVersion,
 } from "./event-contract.js";
-import { claimForV2, batchClaimForV2 } from "./event-contract-v2.js";
+import {
+  claimForV2,
+  batchClaimForV2,
+  registerEventV2,
+  isSponsorAuthorisedV2,
+} from "./event-contract-v2.js";
+
+/** V2 registerEvent params not present in the V1 2-arg call. */
+export interface RegisterV2Params {
+  /** Per-ticket price in payment-token base units. Stripe path = 0n. */
+  priceBaseUnits: bigint;
+  /** Receives escrowed funds at withdraw time (the organiser). */
+  payoutRecipient: string;
+  /** Optional gate contract; address(0) = open FIFO. */
+  dropGate: string;
+  /** UNIX seconds sales cutoff; MUST be > now (contract reverts otherwise). */
+  eventEndTs: number;
+}
 
 const CLAIM_ABI = [
   "function claimFor(bytes32 eventId, address burner, bytes32 orderRef) returns (uint256 slot)",
@@ -37,6 +54,68 @@ function getSponsorWallet(): Wallet {
 /** Generate a fresh ephemeral burner address. Private key is discarded immediately. */
 export function generateBurnerAddress(): string {
   return Wallet.createRandom().address;
+}
+
+/** Public address of the platform sponsor wallet (no provider needed). */
+export function getSponsorAddress(): string {
+  const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+  if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+  return new Wallet(pk).address;
+}
+
+// Sponsor authorisation is a config invariant that only changes via an owner
+// addSponsor/removeSponsor tx, so a confirmed-ready result is cached. Only the
+// positive is cached — a negative is a fixable misconfig we want to re-detect
+// promptly (e.g. right after the owner runs addSponsor).
+const SPONSOR_READY_TTL_MS = 10 * 60 * 1000;
+let _sponsorReady: { chainId: number; expires: number } | null = null;
+
+/**
+ * Whether the sponsor wallet can actually mint on the active contract. V1 uses
+ * a different (deploy-time) authorisation model and is treated as always ready;
+ * V2 gates `claimFor`/`batchClaimFor` behind `authorisedSponsors`, so an
+ * unauthorised sponsor would make every paid claim revert `NotAuthorised`.
+ *
+ * Throws on RPC failure (caller decides fail-open vs fail-closed). A definitive
+ * `false` means the sponsor is genuinely not on the allow-list.
+ */
+export async function isSponsorReady(chainId: number): Promise<boolean> {
+  if (getEventContractVersion(chainId) !== "v2") return true;
+
+  const now = Date.now();
+  if (_sponsorReady && _sponsorReady.chainId === chainId && _sponsorReady.expires > now) {
+    return true;
+  }
+
+  const address = getWoCoEventAddress(chainId);
+  if (!address) return false;
+
+  const ready = await isSponsorAuthorisedV2(getSponsorAddress(), address, chainId);
+  if (ready) _sponsorReady = { chainId, expires: now + SPONSOR_READY_TTL_MS };
+  return ready;
+}
+
+/**
+ * Boot-time readiness probe. Logs loudly if the sponsor can't mint on the
+ * active contract so a misconfigured deploy is caught immediately rather than
+ * at the first (charged-then-refunded) purchase. Never throws — purely
+ * advisory; the create-checkout gate is the hard guard.
+ */
+export async function logSponsorReadiness(): Promise<void> {
+  const chainId = getActiveChainId();
+  try {
+    const ready = await isSponsorReady(chainId);
+    if (ready) {
+      console.log(`[sponsor] readiness OK — authorised to mint on chain ${chainId}`);
+    } else {
+      console.error(
+        `[sponsor] NOT AUTHORISED on chain ${chainId} contract ${getWoCoEventAddress(chainId)} — ` +
+        `paid checkouts will be refused. Owner must call addSponsor(${getSponsorAddress()}).`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[sponsor] readiness probe failed on chain ${chainId} (RPC?):`, err);
+  }
 }
 
 /**
@@ -183,15 +262,37 @@ export async function batchClaimForOnChain(
  *
  * @param supply         Total ticket supply for the series
  * @param manifestRef    "0x" + 64-char manifest digest hex
+ * @param v2Params       Required when the active chain runs the V2 contract
+ *                       (6-arg registerEvent); ignored on V1 chains.
  * @returns on-chain eventId emitted in the Registered event
  */
 export async function registerEventOnChain(
   supply: number,
   manifestRef: string,
+  v2Params?: RegisterV2Params,
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const chainId = getActiveChainId();
   const address = getWoCoEventAddress(chainId);
   if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
+
+  if (getEventContractVersion(chainId) === "v2") {
+    const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+    if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    if (!v2Params) {
+      throw new Error(`registerEventOnChain: chain ${chainId} runs V2 but no v2Params supplied`);
+    }
+    return registerEventV2(
+      supply,
+      v2Params.priceBaseUnits,
+      v2Params.payoutRecipient,
+      v2Params.dropGate,
+      manifestRef,
+      v2Params.eventEndTs,
+      address,
+      pk,
+      chainId,
+    );
+  }
 
   const wallet = getSponsorWallet();
   const contract = new Contract(address, REGISTER_ABI, wallet);

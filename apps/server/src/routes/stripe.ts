@@ -21,7 +21,8 @@ import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "..
 import { queueSeriesClaim } from "./claims.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
 import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
-import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../lib/chain/sponsor-wallet.js";
+import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
+import { getActiveChainId } from "../lib/chain/event-contract.js";
 import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
 import { readFeedPage, writeFeedPage, decodeJsonFeed, encodeJsonFeed } from "../lib/swarm/feeds.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
@@ -117,6 +118,18 @@ function getFrontendUrl(c?: { req: { header: (name: string) => string | undefine
     return `${proto}://${host}`;
   }
   return "http://localhost:5173";
+}
+
+function canonicalSuccessUrl(baseUrl: string): string {
+  try {
+    const u = new URL(baseUrl);
+    if (u.hostname === "gateway.woco-net.com" && u.pathname.startsWith("/bzz/")) {
+      return (process.env.FRONTEND_URL || "https://woco.eth.limo").replace(/\/$/, "");
+    }
+  } catch {
+    return baseUrl;
+  }
+  return baseUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -542,15 +555,41 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Event organiser has not completed Stripe onboarding" }, 400);
   }
 
-  // Prefer client-supplied returnUrl (preserves Swarm /bzz/{hash}/ path that
-  // browsers strip from the Referer cross-origin). Falls back to Referer/Origin.
-  const frontendUrl = validateReturnUrl(returnUrl) ?? getFrontendUrl(c);
+  // Sponsor-readiness gate. For on-chain (v2) series the webhook mints via the
+  // sponsor wallet's `batchClaimFor`, which reverts `NotAuthorised` if the
+  // sponsor isn't on the contract allow-list — that would charge the buyer then
+  // auto-refund. Refuse the checkout up front instead. Fail-OPEN on an RPC error
+  // (transient) since the webhook's auto-refund remains the backstop; only a
+  // definitive "not authorised" blocks the sale.
+  if (series.swarmManifestRef && series.onChainEventId) {
+    let sponsorReady = true;
+    try {
+      sponsorReady = await isSponsorReady(getActiveChainId());
+    } catch (err) {
+      console.warn("[stripe/create-checkout] sponsor readiness check errored (continuing):", err);
+    }
+    if (!sponsorReady) {
+      console.error(
+        `[stripe/create-checkout] BLOCKED — sponsor not authorised on chain ${getActiveChainId()}; ` +
+        `refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
+      );
+      return c.json(
+        { ok: false, error: "Ticketing is temporarily unavailable — please try again shortly." },
+        503,
+      );
+    }
+  }
+
+  // Success should land on the canonical WoCo app, not a gateway /bzz/{hash}
+  // collection URL from an older deployed frontend. cancelUrl separately
+  // preserves the exact source page for aborted checkouts.
+  const frontendUrl = canonicalSuccessUrl(validateReturnUrl(returnUrl) ?? getFrontendUrl(c));
 
   // Cancel URL: use the client-supplied full page URL (including hash fragment)
   // so the buyer is returned to exactly where they came from, even on standalone
   // ENS event sites whose host isn't in ALLOWED_HOSTS. Validated only as a
   // well-formed HTTPS URL — no host restriction needed for a back-navigation.
-  function buildReturnUrl(marker: string): string {
+  function buildCancelUrl(marker: string): string {
     if (cancelUrl) {
       try {
         const u = new URL(cancelUrl);
@@ -560,10 +599,10 @@ stripe.post("/create-checkout", async (c) => {
         }
       } catch { /* fall through */ }
     }
-    return `${frontendUrl}/#/events/${eventId}?${marker}`;
+    return `${frontendUrl}/#/event/${eventId}?${marker}`;
   }
-  const stripeCancelUrl = buildReturnUrl("stripe=cancelled");
-  const stripeSuccessUrl = buildReturnUrl("stripe=success&session_id={CHECKOUT_SESSION_ID}");
+  const stripeCancelUrl = buildCancelUrl("stripe=cancelled");
+  const stripeSuccessUrl = `${frontendUrl}/#/event/${eventId}/purchased?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
 
   try {
     const s = getStripe();
@@ -698,9 +737,9 @@ stripe.post("/webhook", async (c) => {
     return c.text("Webhook signature verification failed", 400);
   }
 
-  switch (event.type) {
+  switch (event.type as string) {
     case "checkout.session.completed": {
-      const session = event.data.object;
+      const session = event.data.object as import("stripe").Stripe.Checkout.Session;
       if (session.payment_status === "paid") {
         // Deduplicate before doing any work. Both the platform and connected-accounts
         // webhooks can deliver the same event; Stripe also retries on any non-2xx.
@@ -724,7 +763,7 @@ stripe.post("/webhook", async (c) => {
     }
 
     case "account.updated": {
-      const account = event.data.object;
+      const account = event.data.object as import("stripe").Stripe.Account;
       const complete = !!(account.charges_enabled && account.payouts_enabled);
       updateOnboardingStatus(account.id, complete);
       console.log(`[stripe-webhook] Account ${account.id} updated: charges=${account.charges_enabled}, payouts=${account.payouts_enabled}`);
@@ -732,7 +771,7 @@ stripe.post("/webhook", async (c) => {
     }
 
     case "account.deleted": {
-      const account = event.data.object;
+      const account = event.data.object as { id: string };
       const organiser = getOrganiserByStripeAccount(account.id);
       if (organiser) {
         deleteStripeAccount(organiser);
