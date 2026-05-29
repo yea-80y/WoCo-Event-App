@@ -24,6 +24,7 @@ import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
+import { subEnsRoutes } from "./routes/sub-ens.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
@@ -381,6 +382,9 @@ app.route("/api/stripe", stripeRoutes);
 
 // Etherna per-user batch registry + provisioning
 app.route("/api/etherna", ethernaRoutes);
+
+// Sub-ENS on Arbitrum — check/claim/update label.woco.eth names
+app.route("/api/sub-ens", subEnsRoutes);
 
 // Profile routes
 app.route("/api/profile", profiles);
