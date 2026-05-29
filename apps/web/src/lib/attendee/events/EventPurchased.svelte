@@ -73,11 +73,6 @@
     try { sessionStorage.removeItem(`woco:stripe-returning:${eventId}`); } catch { /* ignore */ }
   }
 
-  function handleViewTickets() {
-    clearReturningMarker();
-    navigate("/tickets");
-  }
-
   function handleBackToEvent() {
     clearReturningMarker();
     navigate(`/event/${eventId}`);
@@ -116,9 +111,11 @@
       <li><span class="bullet"></span>Show the QR code in the email at the door.</li>
     </ul>
 
+    <!-- Email-only release: tickets are delivered to the inbox; there is no
+         on-platform MyTickets collection yet, so don't offer "View my tickets"
+         — it would land the buyer on an empty page. Back-to-event only. -->
     <div class="actions">
-      <button class="btn-primary" onclick={handleViewTickets}>View my tickets</button>
-      <button class="btn-secondary" onclick={handleBackToEvent}>Back to event</button>
+      <button class="btn-primary" onclick={handleBackToEvent}>Back to event</button>
     </div>
 
     <p class="foot">
