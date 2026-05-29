@@ -3,6 +3,7 @@ import { isError } from "ethers";
 import { requireAuth } from "../middleware/auth.js";
 import {
   isLabelAvailable,
+  getLabelOwner,
   mintSubEnsName,
   updateSubEnsContenthash,
 } from "../lib/chain/sub-ens-contract.js";
@@ -136,6 +137,7 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
  * Body: { label: string, swarmHash: string }
  */
 subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
+  const parentAddress = c.get("parentAddress");
   const body = await c.req.json<{ label: string; swarmHash: string }>();
 
   const label = body.label?.toLowerCase()?.trim() ?? "";
@@ -145,6 +147,15 @@ subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
   if (!swarmHash) return c.json({ ok: false, error: "swarmHash is required" }, 400);
   if (!/^[a-f0-9]{64}$/.test(swarmHash)) {
     return c.json({ ok: false, error: "swarmHash must be a 64-char hex string" }, 400);
+  }
+
+  // Ownership check — verify the authenticated organiser owns this label on-chain.
+  // The sponsor wallet is authorised to update ANY label's contenthash, so this
+  // server-side guard is the only thing preventing cross-organiser overwrite (IDOR).
+  const owner = await getLabelOwner(label);
+  if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
+  if (owner !== parentAddress.toLowerCase()) {
+    return c.json({ ok: false, error: "not authorised for this label" }, 403);
   }
 
   try {
