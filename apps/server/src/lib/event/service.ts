@@ -280,11 +280,16 @@ const DIR_PAGE_LIMIT = 4096;
 // ---------------------------------------------------------------------------
 // In-memory directory cache
 // ---------------------------------------------------------------------------
-// Avoids re-reading Swarm feeds on every GET /api/events request.
-// The cache is populated on the first read and kept in sync by
-// addToEventDirectory / removeEventFromDirectory.
+// Read-through cache with TTL. Avoids re-reading Swarm feeds on every
+// GET /api/events while still healing from out-of-band writes (dev server
+// writing via SSH tunnel, future client-side feed signers) within the TTL.
+// Same-process writes prime the cache directly so the author sees their
+// change immediately.
 
-let _dirCache: EventDirectoryEntry[] | null = null;
+const DIR_CACHE_TTL_MS = 60_000;
+
+let _dirCache: { at: number; data: EventDirectoryEntry[] } | null = null;
+let _dirInFlight: Promise<EventDirectoryEntry[]> | null = null;
 
 /** Read directory from Swarm (used on first call and cache miss). */
 async function readDirectoryFromSwarm(): Promise<EventDirectoryEntry[]> {
@@ -307,15 +312,29 @@ async function readDirectoryFromSwarm(): Promise<EventDirectoryEntry[]> {
 }
 
 export async function listEvents(): Promise<EventDirectoryEntry[]> {
-  if (_dirCache !== null) return _dirCache;
-  const data = await readDirectoryFromSwarm();
-  // Only persist non-empty results into the long-lived cache. A transient
-  // Swarm read failure returns [] (readFeedPage swallows errors), and
-  // because _dirCache is only invalidated on publish/remove, caching that
-  // empty would serve "no events" to every visitor until the next write or
-  // server restart.
-  if (data.length > 0) _dirCache = data;
-  return data;
+  if (_dirCache && Date.now() - _dirCache.at < DIR_CACHE_TTL_MS) {
+    return _dirCache.data;
+  }
+  if (_dirInFlight) return _dirInFlight;
+
+  _dirInFlight = (async () => {
+    try {
+      const data = await readDirectoryFromSwarm();
+      // Only persist non-empty results. readFeedPage() swallows transient
+      // Swarm errors into null (→ []); caching that would serve "no events"
+      // until the next write or restart. Empty result falls through to the
+      // last good cache if one exists.
+      if (data.length > 0) {
+        _dirCache = { at: Date.now(), data };
+        return data;
+      }
+      return _dirCache?.data ?? data;
+    } finally {
+      _dirInFlight = null;
+    }
+  })();
+
+  return _dirInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,16 +471,15 @@ async function addToEventDirectory(
 ): Promise<void> {
   // Write to global public directory (skipped for site-builder events until explicitly listed).
   if (!opts.skipPublicDirectory) {
-    // Trust _dirCache only when populated (set from a confirmed read or our
-    // own writes). On cache miss, do a STRICT read — throw rather than
-    // overwrite the public directory with a partial view.
-    const allEntries = _dirCache !== null
-      ? _dirCache
-      : await readDirectoryStrict(topicEventDirectory);
+    // Always strict-read at write time. The read-cache may be up to
+    // DIR_CACHE_TTL_MS stale, and with dev-tunnel writes (and future
+    // client-side feed signers) another writer may have appended entries
+    // we don't know about — trusting a stale local view would clobber them.
+    const allEntries = await readDirectoryStrict(topicEventDirectory);
 
     if (!allEntries.some((e) => e.eventId === entry.eventId)) {
       const updated = [entry, ...allEntries];
-      _dirCache = updated;
+      _dirCache = { at: Date.now(), data: updated };
       const updatedAt = new Date().toISOString();
       await writeDirectoryPages(updated, updatedAt, topicEventDirectory);
       console.log(`[event] Directory updated: ${updated.length} events`);
@@ -554,13 +572,13 @@ export async function getCreatorEvents(
 }
 
 export async function removeEventFromDirectory(eventId: string): Promise<void> {
-  const allEntries = await listEvents();
+  // Strict-read at write time — see addToEventDirectory for rationale.
+  const allEntries = await readDirectoryStrict(topicEventDirectory);
   const before = allEntries.length;
   const filtered = allEntries.filter((e) => e.eventId !== eventId);
   if (filtered.length === before) return; // not in directory
 
-  // Update cache immediately
-  _dirCache = filtered;
+  _dirCache = { at: Date.now(), data: filtered };
   const updatedAt = new Date().toISOString();
   await writeDirectoryPages(filtered, updatedAt, topicEventDirectory);
   console.log(`[event] Directory updated (removed ${eventId}): ${filtered.length} events`);
