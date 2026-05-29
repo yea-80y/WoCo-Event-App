@@ -5,6 +5,7 @@
   import TicketSeriesEditor from "./TicketSeriesEditor.svelte";
   import OrderFieldsEditor from "./OrderFieldsEditor.svelte";
   import type { ImportTier } from "./ImportUrlPanel.svelte";
+  import { localInputFromNow } from "./date.js";
 
   type SeriesDraft = {
     seriesId: string;
@@ -54,6 +55,12 @@
 
   const EMAIL_FIELD_ID = "__email";
 
+  // Lower bounds for the date pickers — start can't be before "now", end can't
+  // be before start. `min` is a soft guard (manual typing can bypass it); the
+  // publish button does the authoritative future/order validation.
+  const minStart = localInputFromNow(0);
+  const minEnd = $derived(startDate || minStart);
+
   $effect(() => {
     if (claimMode === "email") collectEmail = true;
   });
@@ -94,11 +101,11 @@
   <div class="row">
     <label>
       <span>Start date</span>
-      <input type="datetime-local" bind:value={startDate} />
+      <input type="datetime-local" bind:value={startDate} min={minStart} />
     </label>
     <label>
       <span>End date</span>
-      <input type="datetime-local" bind:value={endDate} />
+      <input type="datetime-local" bind:value={endDate} min={minEnd} />
     </label>
   </div>
 

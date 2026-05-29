@@ -3,6 +3,7 @@
   import EventEditor from "./EventEditor.svelte";
   import PublishButton from "./PublishButton.svelte";
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./ImportUrlPanel.svelte";
+  import { localInputFromNow } from "./date.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -14,8 +15,11 @@
   let title = $state("");
   let tagline = $state("");
   let description = $state("");
-  let startDate = $state("");
-  let endDate = $state("");
+  // Default to sensible future values so the form never starts empty or in the
+  // past (a past end date silently blocks ticket sales — the event reads as
+  // "already passed"). Start +1h, end +3h; the user adjusts as needed.
+  let startDate = $state(localInputFromNow(60));
+  let endDate = $state(localInputFromNow(180));
   let location = $state("");
   let imageDataUrl = $state<string | null>(null);
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);

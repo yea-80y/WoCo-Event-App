@@ -53,10 +53,24 @@
   let progress = $state(0);
   let phase = $state<"auth" | "building" | "uploading" | "chain" | "done">("auth");
 
+  // Authoritative date validation (the input `min` attrs are only a soft guard).
+  // A past end date silently blocks ticket sales — the event reads as already
+  // passed — so we refuse to publish one. Returns a message when invalid, else null.
+  const dateError = $derived.by(() => {
+    if (!startDate || !endDate) return null; // empty handled by canPublish below
+    const s = new Date(startDate).getTime();
+    const e = new Date(endDate).getTime();
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return "Enter valid start and end dates.";
+    if (e <= s) return "End date must be after the start date.";
+    if (e <= Date.now()) return "End date must be in the future.";
+    return null;
+  });
+
   const canPublish = $derived(
     title.trim() &&
     startDate &&
     endDate &&
+    !dateError &&
     imageDataUrl &&
     series.length > 0 &&
     series.every((s) => s.name.trim() && s.totalSupply > 0) &&
@@ -251,6 +265,8 @@
 
   {#if disabled && disabledReason && !publishing}
     <p class="hint">{disabledReason}</p>
+  {:else if dateError && !publishing}
+    <p class="hint">{dateError}</p>
   {:else if !canPublish && !publishing}
     <p class="hint">Fill in all required fields to publish</p>
   {/if}
