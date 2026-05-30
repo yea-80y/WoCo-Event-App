@@ -20,6 +20,8 @@
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
   import SubENSPicker from "./SubENSPicker.svelte";
+  import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
+  import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getMyEthernaBatch } from "../../api/etherna.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -117,6 +119,20 @@
   let pendingLogoBase64 = $state<string | null>(null);
 
   let openingId = $state<string | undefined>(undefined); // card spinner
+
+  // Stripe status — fetched lazily when domain tab opens; passed to SubENSPicker
+  let stripeConnected = $state<boolean | undefined>(undefined);
+  let stripeModalOpen = $state(false);
+  let _stripeChecked  = $state(false);
+
+  // Fetch stripe status once when domain tab is opened and user is logged in
+  $effect(() => {
+    if (tab !== 'domain' || !auth.isConnected || _stripeChecked) return;
+    _stripeChecked = true;
+    getStripeAccountStatus().then((s) => {
+      stripeConnected = !!(s.ok && s.onboardingComplete);
+    }).catch(() => { stripeConnected = false; });
+  });
 
   // Autosave drafts
   $effect(() => {
@@ -562,6 +578,8 @@
           bind:claimedLabel={site.subEnsLabel}
           deployedHash={deployedHash}
           onclaim={(label) => { site.subEnsLabel = label; }}
+          stripeConnected={stripeConnected}
+          onstripesetup={() => { stripeModalOpen = true; }}
         />
         <DomainTab feedHash={feedHash} onpublish={handlePublish}>
           <DomainLinker
@@ -579,6 +597,12 @@
   open={purchaseOpen}
   onclose={handlePurchaseClose}
   onpurchased={handlePurchased}
+/>
+
+<StripeConnectModal
+  bind:open={stripeModalOpen}
+  onconnected={() => { stripeConnected = true; stripeModalOpen = false; }}
+  onclose={() => { stripeModalOpen = false; }}
 />
 
 <style>

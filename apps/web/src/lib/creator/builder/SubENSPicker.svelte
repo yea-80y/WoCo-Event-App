@@ -2,14 +2,57 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { checkSubEnsLabel, claimSubEnsLabel } from "../../api/sub-ens.js";
+  import { getStripeAccountStatus } from "../../api/stripe.js";
+  import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
 
   interface Props {
     claimedLabel?: string;
     deployedHash?: string;
     onclaim?: (label: string) => void;
+    /** Parent can pre-fetch and pass; if undefined, picker self-checks. */
+    stripeConnected?: boolean;
+    /** If parent manages the Stripe modal lifecycle, provide this callback. */
+    onstripesetup?: () => void;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, stripeConnected, onstripesetup }: Props = $props();
+
+  // ── Stripe gate ──────────────────────────────────────────────────────────────
+  // null = loading/unknown, false = not connected, true = connected+complete
+  let stripeStatus = $state<boolean | null>(null);
+  let stripeModalOpen = $state(false);
+
+  $effect(() => {
+    if (stripeConnected !== undefined) {
+      stripeStatus = stripeConnected;
+      return;
+    }
+    if (!auth.isConnected) {
+      stripeStatus = false;
+      return;
+    }
+    stripeStatus = null;
+    getStripeAccountStatus().then((s) => {
+      stripeStatus = !!(s.ok && s.onboardingComplete);
+    }).catch(() => { stripeStatus = false; });
+  });
+
+  function openStripeSetup() {
+    if (onstripesetup) {
+      onstripesetup();
+    } else {
+      if (!auth.isConnected) {
+        loginRequest.request().then((ok) => { if (ok) stripeModalOpen = true; });
+        return;
+      }
+      stripeModalOpen = true;
+    }
+  }
+
+  function onStripeConnected() {
+    stripeStatus = true;
+    stripeModalOpen = false;
+  }
 
   // ── Input state ──────────────────────────────────────────────────────────────
   let rawInput  = $state(claimedLabel ?? '');
@@ -113,7 +156,67 @@
   }
 </script>
 
-{#if claimed}
+{#if stripeStatus !== true}
+  <!-- ── Stripe gate ─────────────────────────────────────────────────────── -->
+  <div class="picker picker--locked">
+    {#if stripeStatus === null}
+      <div class="lock-loading">
+        <span class="spinner" aria-label="Checking…"></span>
+        <span class="lock-loading-text">Checking your account…</span>
+      </div>
+    {:else}
+      <div class="lock-body">
+        <div class="lock-header">
+          <span class="lock-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <rect x="4" y="8" width="10" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M6 8V6a3 3 0 0 1 6 0v2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <circle cx="9" cy="12" r="1.2" fill="currentColor"/>
+            </svg>
+          </span>
+          <div class="lock-text">
+            <p class="lock-title">Claim your free <code class="inline-code">.woco.eth</code> address</p>
+            <p class="lock-sub">
+              {#if !auth.isConnected}
+                Connect your wallet to get started.
+              {:else}
+                Verify your business via Stripe to unlock — takes 2 minutes.
+              {/if}
+            </p>
+          </div>
+        </div>
+
+        <button class="setup-btn" onclick={openStripeSetup}>
+          {#if !auth.isConnected}
+            Connect wallet →
+          {:else}
+            Set up Stripe →
+          {/if}
+        </button>
+
+        <ul class="feature-list feature-list--muted" aria-label="What you get">
+          <li>
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Permanent ENS name on Arbitrum — no domain registrar
+          </li>
+          <li>
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Auto-links to your site on every publish
+          </li>
+          <li>
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Works as a payment address for ETH
+          </li>
+        </ul>
+      </div>
+    {/if}
+  </div>
+
+  {#if stripeModalOpen && !onstripesetup}
+    <StripeConnectModal bind:open={stripeModalOpen} onconnected={onStripeConnected} />
+  {/if}
+
+{:else if claimed}
   <!-- ── Success / Already claimed ──────────────────────────────────────── -->
   <div class="picker picker--claimed">
     <div class="claimed-header">
@@ -311,6 +414,94 @@
 
 <style>
   /* ── Card shell ──────────────────────────────────────────────────────────── */
+  .picker--locked {
+    border-left-color: var(--border);
+    background: var(--bg-elevated);
+  }
+
+  .lock-loading {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.25rem 0;
+  }
+
+  .lock-loading-text {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+  }
+
+  .lock-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+  }
+
+  .lock-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .lock-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    background: color-mix(in srgb, currentColor 8%, var(--bg));
+    border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+    border-radius: 50%;
+    margin-top: 0.0625rem;
+  }
+
+  .lock-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .lock-title {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.02em;
+  }
+
+  .lock-sub {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .setup-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5625rem 0.875rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    background: transparent;
+    border: 1.5px solid var(--border);
+    border-radius: 5px;
+    transition: border-color 120ms, color 120ms;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  .setup-btn:hover {
+    border-color: #C7F23A;
+    color: #C7F23A;
+  }
+
+  .feature-list--muted svg { color: var(--text-muted); opacity: 0.5; }
+  .feature-list--muted li  { opacity: 0.65; }
+
   .picker {
     border: 1px solid var(--border);
     border-left: 3px solid #C7F23A;

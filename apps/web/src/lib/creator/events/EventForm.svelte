@@ -2,6 +2,7 @@
   import type { OrderField, ClaimMode, PaymentConfig } from "@woco/shared";
   import EventEditor from "./EventEditor.svelte";
   import PublishButton from "./PublishButton.svelte";
+  import SubENSPicker from "../builder/SubENSPicker.svelte";
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./ImportUrlPanel.svelte";
   import { localInputFromNow } from "./date.js";
   import { onMount } from "svelte";
@@ -72,6 +73,8 @@
     bind:cryptoRecipientMissing
     bind:importedTiers
   />
+
+  <SubENSPicker />
 
   <PublishButton
     {title}
