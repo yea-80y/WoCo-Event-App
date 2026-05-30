@@ -19,6 +19,7 @@
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
+  import SubENSPicker from "./SubENSPicker.svelte";
   import { getMyEthernaBatch } from "../../api/etherna.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -557,6 +558,11 @@
           onsiteeventschange={(ev) => siteEvents = ev}
         />
       {:else if tab === 'domain'}
+        <SubENSPicker
+          bind:claimedLabel={site.subEnsLabel}
+          deployedHash={deployedHash}
+          onclaim={(label) => { site.subEnsLabel = label; }}
+        />
         <DomainTab feedHash={feedHash} onpublish={handlePublish}>
           <DomainLinker
             siteId={site.siteId}

@@ -289,6 +289,12 @@ export interface Site {
   createdAt: number;
   /** Unix ms. Bumped on every publish. */
   updatedAt: number;
+  /**
+   * The sub-ENS label claimed for this site (e.g. "punkpub" for punkpub.woco.eth).
+   * Set when the organiser claims via SubENSPicker; deploy route uses it to auto-update
+   * the on-chain contenthash after each Swarm upload.
+   */
+  subEnsLabel?: string;
 }
 
 // ---------------------------------------------------------------------------

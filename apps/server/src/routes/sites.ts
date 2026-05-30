@@ -37,6 +37,7 @@ import {
 import type { Site, Page, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
+import { getLabelOwner, updateSubEnsContenthash } from "../lib/chain/sub-ens-contract.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 
 const sitesRouter = new Hono();
@@ -716,6 +717,22 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     }).catch((e) => console.warn("[sites/deploy] whitelist call failed:", e));
 
     const siteUrl = `${gatewayUrl}/bzz/${contentHash}/`;
+
+    // Auto-update sub-ENS contenthash if the site has a claimed label (fire-and-forget).
+    if (site.subEnsLabel) {
+      const label = site.subEnsLabel;
+      (async () => {
+        try {
+          const owner = await getLabelOwner(label);
+          if (owner && owner === parentAddress.toLowerCase()) {
+            await updateSubEnsContenthash(label, contentHash);
+            console.log(`[sites/deploy] sub-ens ${label}.woco.eth → ${contentHash.slice(0, 10)}…`);
+          }
+        } catch (e) {
+          console.warn("[sites/deploy] sub-ens contenthash update failed:", e);
+        }
+      })();
+    }
 
     // Auto-update any custom domains registered for this site (fire-and-forget).
     updateDomainsForSite(siteId, contentHash, feedManifestHash).catch((e) =>
