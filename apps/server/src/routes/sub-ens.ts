@@ -6,6 +6,7 @@ import {
   getLabelOwner,
   mintSubEnsName,
   updateSubEnsContenthash,
+  signSubEnsPermit,
 } from "../lib/chain/sub-ens-contract.js";
 import type { AppEnv } from "../types.js";
 
@@ -126,6 +127,52 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
 
     console.error("[sub-ens] claim failed:", err);
     return c.json({ ok: false, error: "claim failed" }, 500);
+  }
+});
+
+/**
+ * POST /api/sub-ens/permit
+ * Auth required. Verifies the authenticated organiser can claim this label, then returns
+ * an EIP-712 signed permit. The organiser's wallet submits registerWithPermit() directly
+ * (gas covered by ZeroDev paymaster) — no on-chain tx from the server on this path.
+ *
+ * Body: { label: string }
+ * Response: { label, ensName, sig, expiry, registrarAddress, chainId }
+ */
+subEnsRoutes.post("/permit", requireAuth, async (c) => {
+  const parentAddress = c.get("parentAddress");
+  const body = await c.req.json<{ label: string }>();
+
+  const label = body.label?.toLowerCase()?.trim();
+  if (!label) return c.json({ ok: false, error: "label is required" }, 400);
+
+  const validationError = validateLabel(label);
+  if (validationError) return c.json({ ok: false, error: validationError }, 400);
+
+  try {
+    const available = await isLabelAvailable(label);
+    if (!available) return c.json({ ok: false, error: "label already taken" }, 409);
+  } catch (err) {
+    console.error("[sub-ens] permit pre-flight check failed:", err);
+    return c.json({ ok: false, error: "availability check failed" }, 500);
+  }
+
+  try {
+    const { sig, expiry } = await signSubEnsPermit(label, parentAddress);
+    return c.json({
+      ok: true,
+      data: {
+        label,
+        ensName: `${label}.woco.eth`,
+        sig,
+        expiry,
+        chainId: parseInt(process.env.SUB_ENS_CHAIN_ID ?? "421614"),
+        registrarAddress: process.env.SUB_ENS_REGISTRAR_ADDRESS,
+      },
+    });
+  } catch (err) {
+    console.error("[sub-ens] permit signing failed:", err);
+    return c.json({ ok: false, error: "permit signing failed" }, 500);
   }
 });
 

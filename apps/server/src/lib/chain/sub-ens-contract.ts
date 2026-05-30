@@ -1,4 +1,7 @@
-import { JsonRpcProvider, Contract, Wallet, keccak256, toUtf8Bytes, concat, namehash } from "ethers";
+import {
+  JsonRpcProvider, Contract, Wallet, keccak256, toUtf8Bytes, concat, namehash,
+  AbiCoder, solidityPackedKeccak256, getBytes,
+} from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
 
 // Arbitrum Sepolia (421614) — deployed 2026-05-29, verified
@@ -48,16 +51,23 @@ function computeLabelNode(label: string): bigint {
 const REGISTRAR_ABI = [
   // Views
   "function available(string label) view returns (bool)",
+  "function DOMAIN_SEPARATOR() view returns (bytes32)",
+  "function PERMIT_TYPEHASH() view returns (bytes32)",
   // Sponsor writes
   "function register(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues) returns (bytes32 node)",
   "function setContenthash(string label, bytes contenthash)",
   "function setText(string label, string key, string value)",
+  // Permit write — organiser submits tx, server only signs off-chain
+  "function registerWithPermit(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues, uint256 expiry, bytes sig) returns (bytes32 node)",
   // Custom errors — required for ethers v6 to decode reverts by name
   "error NotAuthorisedSponsor(address caller)",
   "error LabelIsReserved(string label)",
   "error InvalidLabel(string label)",
   "error EmptyContenthash()",
   "error ArrayLengthMismatch()",
+  "error PermitExpired()",
+  "error PermitAlreadyUsed()",
+  "error PermitInvalid()",
 ];
 
 // ENS contenthash encoding for a Swarm BZZ hash (EIP-1577 / ENSIP-7).
@@ -128,6 +138,67 @@ export async function mintSubEnsName(
   if (!receipt) throw new Error("No receipt from register tx");
   console.log(`[sub-ens] registered label=${label} txHash=${receipt.hash} gasUsed=${receipt.gasUsed}`);
   return receipt.hash as string;
+}
+
+/**
+ * Signs an EIP-712 RegisterPermit for the given (label, ownerAddress).
+ * The permit authorises the organiser's wallet to call registerWithPermit() directly,
+ * covering gas via ZeroDev paymaster — the server never submits a tx on this path.
+ *
+ * Expiry = now + PERMIT_TTL (15 min). Returned sig is 65 bytes (r + s + v).
+ *
+ * Matches WoCoRegistrar's EIP-712 domain: name="WoCoRegistrar", version="1",
+ * chainId from the deployment, verifyingContract = registrar address.
+ */
+export async function signSubEnsPermit(
+  label: string,
+  ownerAddress: string,
+): Promise<{ sig: string; expiry: number }> {
+  const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+  if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+
+  const chainId = getSubEnsChainId();
+  const registrarAddress = getRegistrarAddress(chainId);
+
+  // Must exactly match the PERMIT_TYPEHASH in WoCoRegistrar.sol
+  const PERMIT_TYPEHASH = "0xa899c01319c2d96c76d865f0fa8e4533f1bf4f65cd5814a1564eff695487a2df";
+
+  const DOMAIN_TYPEHASH = keccak256(
+    toUtf8Bytes("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+  );
+
+  const domainSeparator = keccak256(AbiCoder.defaultAbiCoder().encode(
+    ["bytes32", "bytes32", "bytes32", "uint256", "address"],
+    [
+      DOMAIN_TYPEHASH,
+      keccak256(toUtf8Bytes("WoCoRegistrar")),
+      keccak256(toUtf8Bytes("1")),
+      chainId,
+      registrarAddress,
+    ],
+  ));
+
+  const PERMIT_TTL_SECS = 15 * 60;
+  const expiry = Math.floor(Date.now() / 1000) + PERMIT_TTL_SECS;
+
+  const structHash = keccak256(AbiCoder.defaultAbiCoder().encode(
+    ["bytes32", "bytes32", "address", "uint256"],
+    [PERMIT_TYPEHASH, keccak256(toUtf8Bytes(label)), ownerAddress, expiry],
+  ));
+
+  // EIP-712 final digest: "\x19\x01" + domainSeparator + structHash
+  const digest = solidityPackedKeccak256(
+    ["string", "bytes32", "bytes32"],
+    ["\x19\x01", domainSeparator, structHash],
+  );
+
+  const wallet = new Wallet(pk);
+  // Sign the raw digest (already EIP-712 structured — do NOT add personal_sign prefix)
+  const sig = await wallet.signingKey.sign(getBytes(digest));
+  const sigBytes = sig.serialized; // compact 65-byte sig
+
+  console.log(`[sub-ens] signed permit label=${label} owner=${ownerAddress} expiry=${expiry} chain=${chainId}`);
+  return { sig: sigBytes, expiry };
 }
 
 export async function updateSubEnsContenthash(label: string, swarmHash: string): Promise<string> {
