@@ -18,6 +18,11 @@ export const StorageKeys = {
   POD_ADDRESS: "woco:auth:pod-address",
   LOCAL_KEY: "woco:auth:local-key",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
+  // ZeroDev on-chain session key: the scoped, serialized permission account
+  // (contains the session private key) encrypted at rest. DISTINCT from
+  // SESSION_KEY, which is the EIP-712 HTTP session-delegation key — these are
+  // two unrelated "session" concepts (see ZERODEV_PASSKEY_INTEGRATION_PLAN.md).
+  WOCO_AA_SESSION: "woco:auth:aa-session",
 } as const;
 
 /** Fixed salt input for passkey PRF → secp256k1 key derivation */

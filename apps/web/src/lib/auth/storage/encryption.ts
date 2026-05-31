@@ -50,6 +50,11 @@ export const AAD = {
     `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
   POD_SEED: (parent: string) =>
     `woco/device/pod-seed/v1:${parent.toLowerCase()}`,
+  // ZeroDev scoped session key, bound to the Kernel (smart-account) address that
+  // owns it. A serialized permission account written under one Kernel cannot be
+  // decrypted by a different Kernel on the same device.
+  WOCO_AA_SESSION: (kernel: string) =>
+    `woco/device/aa-session/v1:${kernel.toLowerCase()}`,
 } as const;
 
 /** Any string is accepted at the encrypt/decrypt boundary; AAD constructors

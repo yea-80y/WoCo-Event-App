@@ -739,6 +739,8 @@ async function clearAllAuth(): Promise<void> {
   await delKV(StorageKeys.AUTH_KIND);
   await delKV(StorageKeys.PARENT_ADDRESS);
   await delKV(StorageKeys.POD_ADDRESS);
+  // Drop the scoped ZeroDev session key (Phase 3). Re-login mints a fresh one.
+  await delKV(StorageKeys.WOCO_AA_SESSION);
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   cacheClearByPrefix(USER_SCOPED_PREFIXES);
   _kind = "none";

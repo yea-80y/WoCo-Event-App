@@ -14,8 +14,8 @@ bottom.
 | 0 — deps + env + smoke test | ✅ done (paymaster 500 deferred to Phase 5) | `d6b7304` |
 | 1 — `kernel-account.ts` | ✅ done | `e0fd245` |
 | 2 — auth-store wiring (Kernel parent, POD on PRF-EOA) | ✅ done | `fcb69c7` |
-| 3 — scoped ZeroDev session keys | ⬜ **NEXT** | — |
-| 4 — sub-ENS `claimSubEnsViaPermit` | ⬜ | — |
+| 3 — scoped ZeroDev session keys | ✅ done | _this commit_ |
+| 4 — sub-ENS `claimSubEnsViaPermit` | ⬜ **NEXT** | — |
 | 5 — verify end-to-end on Arb Sepolia (+ fix paymaster 500) | ⬜ | — |
 
 All UNCOMMITTED→COMMITTED on `main`; frontend NOT yet deployed to Swarm (user runs `npm run deploy`).
@@ -32,6 +32,24 @@ builder files (GatewayPicker/BrandTab/EventsTab/MultiSiteBuilder) and are unrela
   `StorageKeys.POD_ADDRESS` persists the PRF-EOA so POD restores without biometric and
   `restorePodSeed` never sees the Kernel address. Pre-upgrade sessions force a clean re-login.
 - In-memory `_kernel: BuiltKernel | null` is the cache to reuse in Phase 3 (`getWocoSessionClient`).
+
+**What Phase 3 actually built (so Phase 4 doesn't re-derive it):**
+- `kernel-account.ts` adds `createWocoSessionKey(builtKernel)` → mints a fresh secp256k1 session key,
+  scopes it with `toCallPolicy` (V0_0_5, pinned to `registerWithPermit` on `WOCO_REGISTRAR_ADDRESS`),
+  `toGasPolicy({ allowed: 0n, enforcePaymaster: true })` (session key can NEVER spend Kernel ETH —
+  gasless-only) and `toTimestampPolicy` (30-day TTL); `serializePermissionAccount` → encrypt
+  (`AAD.WOCO_AA_SESSION(kernelAddress)`) → IndexedDB `StorageKeys.WOCO_AA_SESSION`. ECDSA sudo signs
+  the enable data in-memory — NO extra passkey prompt.
+- `getWocoSessionClient(kernelAddress)` → decrypt + `deserializePermissionAccount` → gasless
+  `KernelAccountClient` (no passkey). `hasWocoSessionKey()` / `clearWocoSessionKey()` helpers; logout
+  drops the slot in auth-store `clearAllAuth()`.
+- `WOCO_REGISTRAR_ADDRESS = 0x7c0DE55…` exported (single source of truth; matches prod env + permit
+  response). FLAG: the `0x206e5e2f…` default in `apps/server/.../sub-ens-contract.ts` is STALE —
+  overridden by env in prod. Phase 4 MUST cross-check this constant against the live permit
+  `registrarAddress` and refuse on mismatch (else the call policy silently rejects the userOp).
+- `@zerodev/permissions` import paths confirmed: root (`toPermissionValidator`,
+  `serialize/deserializePermissionAccount`), `/signers` (`toECDSASigner`), `/policies`
+  (`toCallPolicy`+`CallPolicyVersion`, `toGasPolicy`, `toTimestampPolicy`).
 
 ---
 
