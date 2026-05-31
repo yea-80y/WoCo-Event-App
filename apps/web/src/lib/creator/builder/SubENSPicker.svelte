@@ -1,7 +1,7 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { checkSubEnsLabel, claimSubEnsLabel } from "../../api/sub-ens.js";
+  import { checkSubEnsLabel, claimSubEnsLabel, claimSubEnsViaPermit } from "../../api/sub-ens.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
 
@@ -129,10 +129,19 @@
     const label = rawInput.toLowerCase().trim();
 
     try {
-      const res = await claimSubEnsLabel({
-        label,
-        description: profileBio.trim() || undefined,
-      });
+      // Passkey users own a ZeroDev Kernel → claim client-side via permit +
+      // scoped session key (gasless, name owned by their smart account). Every
+      // other login kind uses the server-sponsored path.
+      const res = auth.kind === 'passkey'
+        ? await claimSubEnsViaPermit({
+            label,
+            kernelAddress: await auth.ensureWocoSessionKey(),
+            description: profileBio.trim() || undefined,
+          })
+        : await claimSubEnsLabel({
+            label,
+            description: profileBio.trim() || undefined,
+          });
       if (!res.ok) {
         claimError = res.error ?? 'Claim failed — try again';
         return;

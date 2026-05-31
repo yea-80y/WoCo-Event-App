@@ -22,7 +22,7 @@
  * coinbase-account.ts).
  */
 
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
@@ -69,6 +69,13 @@ const REGISTRAR_PERMIT_ABI = [
     outputs: [{ name: "node", type: "bytes32" }],
   },
 ] as const;
+
+/**
+ * EIP-1577 / ENSIP-7 contenthash prefix for a Swarm BZZ hash. Mirrors
+ * SWARM_ENS_PREFIX in apps/server/.../sub-ens-contract.ts:
+ * swarm-manifest codec | version 1 | swarm network | keccak-256 | len 0x20.
+ */
+const SWARM_CONTENTHASH_PREFIX = "e40101fa011b20";
 
 /** EntryPoint 0.7 + stable Kernel v3.1, fixed for this whole layer. */
 type KernelAccount = CreateKernelAccountReturnType<"0.7">;
@@ -370,4 +377,71 @@ export async function getWocoSessionClient(
       getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
     },
   });
+}
+
+export interface SubEnsPermitArgs {
+  /** Kernel address that owns the session key AND is the permit's `owner`. */
+  kernelAddress: string;
+  /** Registrar address returned by /api/sub-ens/permit (cross-checked here). */
+  registrarAddress: string;
+  label: string;
+  expiry: number;
+  /** 0x 65-byte permit signature from the server (sponsor key). */
+  sig: string;
+  /** 64-char hex Swarm BZZ hash (no 0x) → ENS contenthash; omit for empty. */
+  swarmHash?: string;
+  textKeys?: string[];
+  textValues?: string[];
+}
+
+/**
+ * Submit `registerWithPermit` as a gasless userOp signed by the scoped session
+ * key. The permit binds only (label, owner, expiry); owner MUST be the Kernel
+ * address (= the parentAddress the server authenticated when issuing the
+ * permit), so the new name is owned by the user's smart account.
+ *
+ * Hard guard (plan flag A): the session key's call policy is pinned to
+ * WOCO_REGISTRAR_ADDRESS. If the permit points at a different registrar the
+ * policy would silently reject the userOp — we fail loudly up front instead.
+ */
+export async function registerSubEnsViaPermit(
+  args: SubEnsPermitArgs,
+): Promise<{ userOpHash: string; txHash: string }> {
+  if (args.registrarAddress.toLowerCase() !== WOCO_REGISTRAR_ADDRESS.toLowerCase()) {
+    throw new Error(
+      `Registrar mismatch: permit=${args.registrarAddress} policy=${WOCO_REGISTRAR_ADDRESS}. Refusing to submit.`,
+    );
+  }
+
+  const client = await getWocoSessionClient(args.kernelAddress);
+  if (!client) {
+    throw new Error("No WoCo session key on this device — call createWocoSessionKey first.");
+  }
+
+  const { encodeFunctionData } = await import("viem");
+
+  const contenthash: Hex = args.swarmHash
+    ? (`0x${SWARM_CONTENTHASH_PREFIX}${args.swarmHash.replace(/^0x/, "")}` as Hex)
+    : "0x";
+
+  const data = encodeFunctionData({
+    abi: REGISTRAR_PERMIT_ABI,
+    functionName: "registerWithPermit",
+    args: [
+      args.label,
+      args.kernelAddress as Address,
+      contenthash,
+      args.textKeys ?? [],
+      args.textValues ?? [],
+      BigInt(args.expiry),
+      args.sig as Hex,
+    ],
+  });
+
+  const userOpHash = await client.sendUserOperation({
+    calls: [{ to: WOCO_REGISTRAR_ADDRESS as Address, data }],
+  });
+  const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
+
+  return { userOpHash, txHash: receipt.receipt.transactionHash };
 }

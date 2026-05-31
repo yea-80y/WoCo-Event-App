@@ -14,9 +14,9 @@ bottom.
 | 0 — deps + env + smoke test | ✅ done (paymaster 500 deferred to Phase 5) | `d6b7304` |
 | 1 — `kernel-account.ts` | ✅ done | `e0fd245` |
 | 2 — auth-store wiring (Kernel parent, POD on PRF-EOA) | ✅ done | `fcb69c7` |
-| 3 — scoped ZeroDev session keys | ✅ done | _this commit_ |
-| 4 — sub-ENS `claimSubEnsViaPermit` | ⬜ **NEXT** | — |
-| 5 — verify end-to-end on Arb Sepolia (+ fix paymaster 500) | ⬜ | — |
+| 3 — scoped ZeroDev session keys | ✅ done | `527593a` |
+| 4 — sub-ENS `claimSubEnsViaPermit` | ✅ done | _this commit_ |
+| 5 — verify end-to-end on Arb Sepolia (+ fix paymaster 500) | ⬜ **NEXT (live, needs browser+passkey)** | — |
 
 All UNCOMMITTED→COMMITTED on `main`; frontend NOT yet deployed to Swarm (user runs `npm run deploy`).
 typecheck (`npm run check -w @woco/web`) is GREEN for this work — 23 pre-existing errors live in
@@ -50,6 +50,32 @@ builder files (GatewayPicker/BrandTab/EventsTab/MultiSiteBuilder) and are unrela
 - `@zerodev/permissions` import paths confirmed: root (`toPermissionValidator`,
   `serialize/deserializePermissionAccount`), `/signers` (`toECDSASigner`), `/policies`
   (`toCallPolicy`+`CallPolicyVersion`, `toGasPolicy`, `toTimestampPolicy`).
+
+**What Phase 4 actually built:**
+- `kernel-account.ts` `registerSubEnsViaPermit(args)` — encodes `registerWithPermit` (viem
+  `encodeFunctionData`) and sends it via `getWocoSessionClient().sendUserOperation({ calls })` +
+  `waitForUserOperationReceipt`. Owner = Kernel address (= the permit's `owner`, since /permit
+  authenticates the Kernel as `parentAddress`). Guards registrar mismatch up front (flag A).
+- The permit binds ONLY (label, owner, expiry) — verified in `signSubEnsPermit`. So the client
+  freely sets contenthash + text records; `claimSubEnsViaPermit` builds description/avatar text
+  records exactly like the server `/claim` route. contenthash empty at claim (deploy hook sets it).
+- `sub-ens.ts` `claimSubEnsViaPermit({ label, kernelAddress, description?, avatar?, swarmHash? })`
+  → /permit → `registerSubEnsViaPermit`. `claimSubEnsLabel` (sponsor) kept for non-passkey.
+- `auth-store` `ensureWocoSessionKey()` (passkey-only) → `_ensureKernel()` + mint session key if
+  absent → returns Kernel address. Exposed on the `auth` object.
+- `SubENSPicker.doClaim()` branches: `auth.kind === "passkey"` → permit path (one passkey ceremony
+  mints the session key, then gasless), else sponsor path. No UI change.
+- typecheck NET-ZERO: clean-tree baseline and post-Phase-4 both report exactly 23 ERRORS /
+  49 WARNINGS (all pre-existing builder + DOM-lib `Uint8Array`/`ArrayBuffer` strictness; none in
+  the touched files).
+
+## Phase 5 — live verification (NEXT, needs a browser + passkey, user-driven)
+Cannot be done headless. Steps: passkey login → Kernel address shown; `ensureSession()` one prompt →
+authenticated call OK; POD stable across two logins (same `podPublicKeyHex`); claim a sub-ENS in
+SubENSPicker → ONE passkey ceremony mints the session key, then a gasless `registerWithPermit`
+userOp lands, `label.woco.eth` resolves. If sponsorship 500s: fix is dashboard-side
+(`dashboard.zerodev.app/paymasters` → enable gas policy / fund the self-funded tank), not code.
+Frontend `npm run deploy` (user) before live testing on Swarm.
 
 ---
 

@@ -624,6 +624,25 @@ async function ensurePodIdentity(): Promise<string | null> {
   return _podInFlight;
 }
 
+/**
+ * Ensure a scoped on-chain ZeroDev session key exists for the passkey Kernel,
+ * minting one (one PRF ceremony, via _ensureKernel) on first use. Returns the
+ * Kernel address that owns the session key, for the caller to feed into the
+ * permit userOp. Passkey-only — every other login kind uses the sponsor path.
+ */
+async function ensureWocoSessionKey(): Promise<string> {
+  if (_kind !== "passkey") {
+    throw new Error("ensureWocoSessionKey: only available for passkey logins");
+  }
+  await _ensureKernel();
+  if (!_kernel) throw new Error("Kernel unavailable — cannot mint session key");
+  const { hasWocoSessionKey, createWocoSessionKey } = await import("./kernel-account.js");
+  if (!(await hasWocoSessionKey())) {
+    await createWocoSessionKey(_kernel);
+  }
+  return _kernel.address;
+}
+
 // ---------------------------------------------------------------------------
 // API request signing
 // ---------------------------------------------------------------------------
@@ -807,6 +826,7 @@ export const auth = {
   ensureSession,
   logout,
   ensurePodIdentity,
+  ensureWocoSessionKey,
   signRequest,
   // Bind to the active parent so callers don't need to pass it (and can't
   // pass the wrong one). Returns null when not logged in.
