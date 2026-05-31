@@ -6,7 +6,7 @@ import {
   type VerifyDelegationResult,
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
-import { getSmartWalletClient } from "./smart-wallet-client.js";
+import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
 
 /**
  * Verify a session delegation bundle.
@@ -68,7 +68,7 @@ export async function verifyDelegation(
     // smart accounts — their signatures are not recoverable to an EOA.
     let validSig: boolean;
     try {
-      validSig = await getSmartWalletClient().verifyTypedData({
+      validSig = await verifySmartWalletTypedData({
         address: message.parent as `0x${string}`,
         domain: SESSION_DOMAIN,
         types: SESSION_TYPES,
