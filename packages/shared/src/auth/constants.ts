@@ -12,6 +12,10 @@ export const StorageKeys = {
   SESSION_KEY: "woco:auth:session-key",
   SESSION_DELEGATION: "woco:auth:session-delegation",
   POD_SEED: "woco:auth:pod-seed",
+  // PRF-EOA address used as the POD derivation/AAD key for passkey logins.
+  // The Kernel smart-account address is the parent; POD must stay on the raw
+  // PRF-EOA address (invariant #1) so it survives the future Option 2 swap.
+  POD_ADDRESS: "woco:auth:pod-address",
   LOCAL_KEY: "woco:auth:local-key",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
 } as const;

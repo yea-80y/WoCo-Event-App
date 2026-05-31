@@ -29,6 +29,7 @@ import {
   hasStoredPasskeyCredential,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
+import type { BuiltKernel } from "./kernel-account.js";
 import { signingRequest } from "./signing-request.svelte.js";
 import { cacheClearByPrefix, USER_SCOPED_PREFIXES } from "../cache/cache.js";
 
@@ -46,6 +47,15 @@ let _busy = $state(false);
 // In-memory only — never exposed reactively
 let _localPrivateKey: string | null = null;
 let _passkeyPrivateKey: string | null = null;
+
+// Passkey (ZeroDev Kernel) only. The Kernel smart-account address is the
+// parent identity; POD identity stays on the raw PRF-EOA address (invariant #1
+// — deterministic, wallet-independent, survives the future Option 2 swap).
+//  - _podAddress: PRF-EOA address used as the POD EIP-712 address field + AAD.
+//  - _kernel: the built Kernel (account + client + sudo validator), cached in
+//    memory after the first PRF ceremony of a session. Never persisted.
+let _podAddress: string | null = null;
+let _kernel: BuiltKernel | null = null;
 
 // Cleanup function for wallet event listeners
 let _cleanupAccountListener: (() => void) | null = null;
@@ -81,10 +91,14 @@ async function _getSigner(): Promise<EIP712Signer> {
       signingRequest.request(info),
     );
   }
-  if (_kind === "passkey" && _passkeyPrivateKey) {
-    return createPasskeySigner(_passkeyPrivateKey, (info) =>
-      signingRequest.request(info),
-    );
+  if (_kind === "passkey") {
+    // Passkey parent is the ZeroDev Kernel — it signs AuthorizeSession as an
+    // ERC-1271/6492 signature (server verify-delegation.ts handles it). NOT the
+    // raw PRF key. POD uses _getPodSigner() instead (invariant #1).
+    await _ensureKernel();
+    if (!_kernel) throw new Error("Kernel unavailable for passkey signer");
+    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
+    return createKernelTypedDataSigner(_kernel.account);
   }
   if (_kind === "para") {
     const { createParaSigner } = await import("./signers/para-signer.js");
@@ -95,6 +109,39 @@ async function _getSigner(): Promise<EIP712Signer> {
     return createCoinbaseSigner(_parent);
   }
   throw new Error("No signer available for auth kind: " + _kind);
+}
+
+/**
+ * Signer used ONLY for POD identity derivation.
+ *
+ * INVARIANT #1: POD must be derived from a DETERMINISTIC signature. For passkey
+ * logins that is the raw PRF-EOA secp256k1 key (ethers Wallet → RFC-6979), NOT
+ * the Kernel (smart-account 1271 signatures are non-deterministic and would
+ * corrupt the user's encryption + ticket-signing identity). For every other
+ * kind the POD signer is the same as the request signer.
+ */
+async function _getPodSigner(): Promise<EIP712Signer> {
+  if (_kind === "passkey") {
+    await _ensurePasskeyKey();
+    if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for POD signer");
+    return createPasskeySigner(_passkeyPrivateKey, (info) =>
+      signingRequest.request(info),
+    );
+  }
+  return _getSigner();
+}
+
+/**
+ * Address used as the POD EIP-712 `address` field + encryption AAD.
+ *
+ * INVARIANT #1: passkey POD is keyed by the PRF-EOA address (not the Kernel
+ * parent), so the derived ed25519 identity is stable across the Option 2 swap.
+ * Kind-aware so a stale passkey `_podAddress` can never leak into another
+ * login method after an in-tab account switch.
+ */
+function _getPodAddress(): string | null {
+  if (_kind === "passkey") return _podAddress ?? _parent;
+  return _parent;
 }
 
 /**
@@ -109,10 +156,17 @@ async function _restoreCachedAuth(): Promise<void> {
     _sessionAddress = session.sessionWallet.address;
   }
 
-  const seed = await restorePodSeed(_parent);
-  if (seed) {
-    const kp = await getPodKeypair(_parent);
-    _podPublicKeyHex = kp?.publicKeyHex ?? null;
+  // POD is keyed by the PRF-EOA address for passkey (invariant #1), the parent
+  // for everyone else. restorePodSeed deletes the blob on an AAD mismatch, so
+  // it must never be called with the Kernel address for a passkey user — the
+  // PRF-EOA address is loaded from storage in init() before this runs.
+  const podAddr = _getPodAddress();
+  if (podAddr) {
+    const seed = await restorePodSeed(podAddr);
+    if (seed) {
+      const kp = await getPodKeypair(podAddr);
+      _podPublicKeyHex = kp?.publicKeyHex ?? null;
+    }
   }
 }
 
@@ -131,12 +185,36 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
 }
 
 /**
- * Re-derive passkey private key via biometric prompt (if not already in memory).
+ * Re-derive the raw PRF key + PRF-EOA address via a biometric prompt (if not
+ * already in memory). This is the deterministic POD key source (invariant #1)
+ * and the Kernel's sudo signer source — it never builds the Kernel itself.
  */
 async function _ensurePasskeyKey(): Promise<void> {
-  if (_passkeyPrivateKey) return;
+  if (_passkeyPrivateKey && _podAddress) return;
   const result = await restorePasskeyAccount();
   _passkeyPrivateKey = result.privateKey;
+  _podAddress = result.address; // PRF-EOA address — POD derivation/AAD key
+}
+
+/**
+ * Ensure the ZeroDev Kernel is built and cached in memory. Triggers one PRF
+ * ceremony (via _ensurePasskeyKey) on first use of a session, then builds the
+ * Kernel from the raw PRF key. The Kernel address is deterministic (CREATE2),
+ * so we assert it matches the stored parent — refusing to attach a divergent
+ * smart account that would break the user's on-chain + auth identity.
+ */
+async function _ensureKernel(): Promise<void> {
+  await _ensurePasskeyKey();
+  if (_kernel) return;
+  if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
+  const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+  const kernel = await buildKernelFromPrivateKey(_passkeyPrivateKey);
+  if (_parent && kernel.address !== _parent.toLowerCase()) {
+    throw new Error(
+      "Kernel address mismatch on restore — refusing to attach a divergent smart account.",
+    );
+  }
+  _kernel = kernel;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,15 +294,23 @@ async function init(): Promise<void> {
       }
     } else if (kind === "passkey") {
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
+      const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
       const hasCredential = await hasStoredPasskeyCredential();
 
-      if (hasCredential && storedParent) {
-        // Set connected state — private key stays null until needed
-        // (biometric prompt is deferred to ensureSession / ensurePodIdentity)
+      if (hasCredential && storedParent && storedPodAddr) {
+        // Connected state only — the Kernel (and raw PRF key) stay null until
+        // first use; the biometric prompt is deferred to ensureSession /
+        // ensurePodIdentity. storedParent = Kernel address; storedPodAddr =
+        // PRF-EOA address (loaded BEFORE _restoreCachedAuth so POD restore uses
+        // the right AAD and never deletes the seed on a Kernel-address mismatch).
         _kind = "passkey";
         _parent = storedParent;
+        _podAddress = storedPodAddr;
         await _restoreCachedAuth();
       } else {
+        // Missing POD_ADDRESS = a pre-Kernel-upgrade session (parent was the
+        // PRF-EOA, not the Kernel). Force a clean re-login so the parent becomes
+        // the Kernel address rather than silently mixing identity layers.
         await clearAllAuth();
       }
     } else if (kind === "para") {
@@ -429,13 +515,23 @@ async function loginPasskey(): Promise<boolean> {
     // Always use discoverable get() → shows passkey picker → falls back to create
     const account = await authenticatePasskey();
 
-    await _clearStaleAuthForSwitch(account.address);
+    // Build the ZeroDev Kernel; its deterministic address is the parent identity.
+    // The raw PRF key remains the POD source + the Kernel's ECDSA sudo signer.
+    const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+    const kernel = await buildKernelFromPrivateKey(account.privateKey);
+
+    await _clearStaleAuthForSwitch(kernel.address);
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
-    await putKV(StorageKeys.PARENT_ADDRESS, account.address);
+    await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
+    // PRF-EOA address persisted so POD restores on reload without a biometric
+    // and with the correct AAD (invariant #1).
+    await putKV(StorageKeys.POD_ADDRESS, account.address);
     _kind = "passkey";
-    _parent = account.address;
+    _parent = kernel.address;
     _passkeyPrivateKey = account.privateKey;
+    _podAddress = account.address;
+    _kernel = kernel;
     _localPrivateKey = null;
 
     await _restoreCachedAuth();
@@ -480,7 +576,7 @@ async function ensureSession(): Promise<boolean> {
   const parent = _parent;
   _sessionInFlight = (async () => {
     try {
-      if (_kind === "passkey") await _ensurePasskeyKey();
+      if (_kind === "passkey") await _ensureKernel();
       const signer = await _getSigner();
       const { sessionAddress } = await requestSessionDelegation(parent, signer);
       _sessionAddress = sessionAddress;
@@ -506,12 +602,15 @@ async function ensurePodIdentity(): Promise<string | null> {
   if (_podInFlight) return _podInFlight;
 
   _busy = true;
-  const parent = _parent;
   _podInFlight = (async () => {
     try {
-      if (_kind === "passkey") await _ensurePasskeyKey();
-      const signer = await _getSigner();
-      const { podPublicKeyHex } = await requestPodIdentity(parent, signer);
+      // POD uses the deterministic PRF-EOA signer + PRF-EOA address for passkey
+      // (invariant #1), the parent for every other kind. _getPodSigner() runs
+      // _ensurePasskeyKey() internally, so _podAddress is populated before read.
+      const signer = await _getPodSigner();
+      const podAddr = _getPodAddress();
+      if (!podAddr) return null;
+      const { podPublicKeyHex } = await requestPodIdentity(podAddr, signer);
       _podPublicKeyHex = podPublicKeyHex;
       return podPublicKeyHex;
     } catch (e) {
@@ -639,6 +738,7 @@ async function clearAllAuth(): Promise<void> {
   // The key stays in IndexedDB; only the session state is wiped.
   await delKV(StorageKeys.AUTH_KIND);
   await delKV(StorageKeys.PARENT_ADDRESS);
+  await delKV(StorageKeys.POD_ADDRESS);
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   cacheClearByPrefix(USER_SCOPED_PREFIXES);
   _kind = "none";
@@ -647,6 +747,8 @@ async function clearAllAuth(): Promise<void> {
   _podPublicKeyHex = null;
   _localPrivateKey = null;
   _passkeyPrivateKey = null;
+  _podAddress = null;
+  _kernel = null;
   _sessionInFlight = null;
   _podInFlight = null;
 }
