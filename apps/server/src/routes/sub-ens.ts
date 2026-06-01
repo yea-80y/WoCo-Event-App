@@ -8,6 +8,7 @@ import {
   updateSubEnsContenthash,
   signSubEnsPermit,
 } from "../lib/chain/sub-ens-contract.js";
+import { recordOwner, listOwnedLabels } from "../lib/chain/sub-ens-owners.js";
 import type { AppEnv } from "../types.js";
 
 export const subEnsRoutes = new Hono<AppEnv>();
@@ -52,6 +53,37 @@ subEnsRoutes.get("/check/:label", async (c) => {
     console.error("[sub-ens] availability check failed:", err);
     return c.json({ ok: false, error: "availability check failed" }, 500);
   }
+});
+
+/**
+ * GET /api/sub-ens/owned
+ * Auth required. Lists the labels the authenticated organiser owns, so the event
+ * flow can offer "point an existing name at this event". Reconciles the local
+ * claim index against the live on-chain owner — entries the caller no longer owns
+ * (transferred away, or a permit that was signed but never submitted) are dropped.
+ *
+ * Response: { names: { label, ensName }[] }
+ */
+subEnsRoutes.get("/owned", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const labels = listOwnedLabels(parentAddress);
+
+  const checks = await Promise.all(
+    labels.map(async (label) => {
+      try {
+        const owner = await getLabelOwner(label);
+        return owner === parentAddress ? label : null;
+      } catch {
+        return null; // RPC hiccup — omit rather than show a name we can't confirm
+      }
+    }),
+  );
+
+  const names = checks
+    .filter((l): l is string => l !== null)
+    .map((label) => ({ label, ensName: `${label}.woco.eth` }));
+
+  return c.json({ ok: true, data: { names } });
 });
 
 /**
@@ -109,6 +141,7 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
       textKeys,
       textValues,
     );
+    recordOwner(parentAddress, label);
     return c.json({
       ok: true,
       data: { label, ensName: `${label}.woco.eth`, txHash },
@@ -162,6 +195,10 @@ subEnsRoutes.post("/permit", requireAuth, async (c) => {
 
   try {
     const { sig, expiry } = await signSubEnsPermit(label, parentAddress);
+    // Optimistic: the client submits the registerWithPermit userOp itself, so we
+    // record now and let GET /owned reconcile against on-chain ownerOf (drops any
+    // permit that was signed but never landed).
+    recordOwner(parentAddress, label);
     return c.json({
       ok: true,
       data: {

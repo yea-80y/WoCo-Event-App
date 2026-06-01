@@ -1,4 +1,4 @@
-import { authPost } from "./client.js";
+import { authPost, authGet } from "./client.js";
 
 const BASE =
   (typeof window !== "undefined" && (window as unknown as { SITE_CONFIG?: { apiUrl?: string } }).SITE_CONFIG?.apiUrl) ||
@@ -27,8 +27,25 @@ export async function claimSubEnsLabel(opts: {
   label: string;
   description?: string;
   avatar?: string;
+  /** 64-char hex Swarm hash (no 0x) to set as the label's contenthash in the mint tx. */
+  swarmHash?: string;
 }) {
   return authPost<SubEnsClaimResult>("/api/sub-ens/claim", opts);
+}
+
+export interface OwnedSubEnsName {
+  label: string;
+  ensName: string;
+}
+
+/** Labels the authenticated organiser owns (reconciled against on-chain ownerOf). */
+export async function getOwnedSubEns() {
+  return authGet<{ names: OwnedSubEnsName[] }>("/api/sub-ens/owned");
+}
+
+/** Point an already-owned label's contenthash at a new Swarm hash (server checks ownership). */
+export async function setSubEnsContenthash(label: string, swarmHash: string) {
+  return authPost<{ label: string; txHash: string }>("/api/sub-ens/set-contenthash", { label, swarmHash });
 }
 
 interface SubEnsPermitResponse {

@@ -171,28 +171,30 @@ It's the #1 risk on the demo critical path. Demo via Arbiscan (the on-chain name
 
 ---
 
-## NEXT CHAT — Event ↔ sub-ENS routing (NOT built; the real gap)
+## Event ↔ sub-ENS routing — ✅ BUILT (2026-06-01)
 
-**Problem the user hit:** in `EventForm.svelte` the `<SubENSPicker />` (line 77, no props) only
-*claims a new name* and is **not wired to event deployment at all** — there is no event→Swarm
-→`set-contenthash` flow (events live in platform feeds, only multi-page SITES deploy as standalone
-Swarm collections + set a sub-ENS contenthash). So "set a sub-ENS for an event" does nothing useful
-today, and there's no way to pick an EXISTING name.
+**Correction to earlier note:** events DO deploy to Swarm as a standalone renderable page.
+`SiteBuilder.svelte` (route `site-builder`, the live 3-step wizard — NOT the flag-gated
+`EventForm.svelte`) calls `POST /api/site/deploy` at **Step 2**, returning
+`{ contentHash, feedManifestHash }`. The gap was only the sub-ENS option in that step.
 
-**Desired model (user, 2026-06-01):** when creating an event, let the organiser choose one of:
-1. **Post to an existing site** — event appears on their already-deployed site under its existing
-   sub-ENS (already possible via the builder EventsTab; just surface it in the event flow).
-2. **Create a NEW sub-ENS for the event** — deploy a standalone event page to Swarm, claim a new
-   label, set that label's contenthash to it.
-3. **Use an EXISTING sub-ENS they own** — overwrite that label's contenthash with the new event
-   page's hash.
+**Shipped (built + typechecked, not yet deployed / not on Swarm):**
+- `apps/server/src/lib/chain/sub-ens-owners.ts` — file-backed owner index
+  (`.data/sub-ens-owners.json`); `recordOwner` on `/claim` + `/permit` (optimistic).
+- `GET /api/sub-ens/owned` (auth) — lists owned labels, reconciled against on-chain
+  `getLabelOwner` so abandoned permits / transfers drop out.
+- `apps/web/src/lib/api/sub-ens.ts` — `swarmHash` on `claimSubEnsLabel`, plus
+  `getOwnedSubEns()` and `setSubEnsContenthash()`.
+- `apps/web/src/lib/creator/builder/EventDomainPicker.svelte` — Stripe-gated 3-way
+  intent (none / claim new / use a name I own), reuses SubENSPicker's check UX + tokens.
+  Captures intent only.
+- `SiteBuilder.svelte` Step 2 renders the picker; `runSubEnsTask(contentHash)` fires
+  AFTER deploy — `new` mints with contenthash (passkey → permit, else sponsor),
+  `existing` → `setSubEnsContenthash`. Step 3 shows a result card ("Live soon" pill).
 
-**Build sub-tasks for next chat:**
-- Standalone single-event page deploy to Swarm (reuse the multisite runtime to render a one-event
-  site, or a minimal event template) → returns a content hash. Mirror `sites.ts` deploy.
-- Enumerate a user's owned sub-ENS names (registry is ERC-721; options: index Transfer events,
-  a creator feed `woco/sub-ens/owner/{addr}`, or NameStone API). Needed for the "select existing"
-  option — the app currently does NOT track a user's set of names.
-- New `EventDomainPicker` (or extend `SubENSPicker`) with the 3-way choice; wire the chosen label →
-  `POST /api/sub-ens/set-contenthash` (already live, ownership-checked) with the event page hash.
-- Decide overwrite UX/warning when option 3 replaces a label already pointing at a site.
+Contenthash points at the immutable per-deploy `contentHash` (proven gateway resolution;
+`.woco.eth.limo` resolution still parked). "Post to an existing site" (option 1) was already
+covered by the SiteSelector "Add to my websites" in the same step.
+
+**Remaining nits / future:** point contenthash at `feedManifestHash` for auto-update-on-redeploy;
+per-wallet cap / squatting (post-buildathon).

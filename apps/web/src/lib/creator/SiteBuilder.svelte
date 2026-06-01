@@ -10,7 +10,9 @@
   import GatewayPicker from "./builder/GatewayPicker.svelte";
   import AdvancedSetup from "./builder/AdvancedSetup.svelte";
   import SiteSelector from "./builder/SiteSelector.svelte";
+  import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
   import { addSiteEvent } from "../api/sites.js";
+  import { claimSubEnsLabel, claimSubEnsViaPermit, setSubEnsContenthash } from "../api/sub-ens.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
@@ -68,6 +70,12 @@
   let listOnWoco = $state(false);
   let selectedSiteIds = $state<string[]>([]);
   let siteAddErrors = $state<Record<string, string>>({});
+
+  // Sub-ENS for this event — intent captured here, acted on after deploy (needs contentHash)
+  let domainIntent = $state<EventDomainIntent>({ mode: "none" });
+  let subEnsPhase = $state<"idle" | "pending" | "done" | "error">("idle");
+  let subEnsLabel = $state("");
+  let subEnsError = $state<string | null>(null);
 
   // Step 3 — live + domain (deploy state)
   let deploying = $state(false);
@@ -176,6 +184,48 @@
     }
   }
 
+  // Route the chosen sub-ENS at the freshly deployed event page. Runs after deploy
+  // because it needs the contentHash. "new" mints (gasless permit for passkey logins,
+  // sponsor mint otherwise) with the contenthash set in the same tx; "existing"
+  // repoints an owned label via the ownership-checked set-contenthash endpoint.
+  async function runSubEnsTask(contentHash: string) {
+    const intent = domainIntent;
+    if (intent.mode === "none") return;
+    if (intent.mode === "new" && !intent.label) {
+      subEnsPhase = "error";
+      subEnsError = "Enter and confirm an available name in step 2 before deploying.";
+      return;
+    }
+
+    subEnsPhase = "pending";
+    subEnsError = null;
+    subEnsLabel = intent.label;
+    try {
+      if (intent.mode === "new") {
+        const res = auth.kind === "passkey"
+          ? await claimSubEnsViaPermit({
+              label: intent.label,
+              kernelAddress: await auth.ensureWocoSessionKey(),
+              swarmHash: contentHash,
+              description: intent.description,
+            })
+          : await claimSubEnsLabel({
+              label: intent.label,
+              swarmHash: contentHash,
+              description: intent.description,
+            });
+        if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not claim the name"; return; }
+      } else {
+        const res = await setSubEnsContenthash(intent.label, contentHash);
+        if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not update the name"; return; }
+      }
+      subEnsPhase = "done";
+    } catch (e) {
+      subEnsPhase = "error";
+      subEnsError = e instanceof Error ? e.message : "Sub-ENS update failed";
+    }
+  }
+
   // Background post-deploy work. The deployed site is live the moment
   // /api/site/deploy returns; site-event additions and WoCo directory listing
   // are additive — both endpoints are idempotent on the server (set-add /
@@ -216,10 +266,11 @@
 
       // Advance the wizard immediately — site is live. Background tasks
       // surface their status via step-3 UI (addingToSites, siteAddErrors,
-      // listingOnWoco, wocoListError, wocoListed).
+      // listingOnWoco, wocoListError, wocoListed, subEnsPhase).
       siteAddErrors = {};
       step = 3;
       void runPostDeployTasks([...selectedSiteIds]);
+      if (deployResult) void runSubEnsTask(deployResult.contentHash);
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Unexpected error during deploy";
     } finally {
@@ -232,6 +283,12 @@
     if (failedIds.length === 0) return;
     void runPostDeployTasks(failedIds);
   }
+
+  function retrySubEns() {
+    if (deployResult) void runSubEnsTask(deployResult.contentHash);
+  }
+
+  const subEnsName = $derived(subEnsLabel ? `${subEnsLabel}.woco.eth` : "");
 
   function copyText(text: string) { navigator.clipboard.writeText(text); }
 </script>
@@ -355,6 +412,8 @@
         {/if}
       </div>
 
+      <EventDomainPicker bind:intent={domainIntent} />
+
       <details class="advanced-panel">
         <summary>Advanced</summary>
         <div class="advanced-panel-body">
@@ -458,6 +517,36 @@
           </div>
         {/if}
       </div>
+
+      <!-- Sub-ENS (.woco.eth) result -->
+      {#if subEnsPhase !== "idle"}
+        <div class="output-section subens-section" class:subens-done={subEnsPhase === "done"}>
+          <div class="output-section-header">
+            <span class="output-section-title">Web3 address</span>
+          </div>
+          {#if subEnsPhase === "pending"}
+            <div class="progress-status">
+              <div class="spinner"></div>
+              <span>{domainIntent.mode === "new" ? "Registering" : "Repointing"} <code>{subEnsName}</code> on Arbitrum…</span>
+            </div>
+          {:else if subEnsPhase === "done"}
+            <div class="subens-claimed">
+              <span class="subens-name">{subEnsName}</span>
+              <span class="subens-arrow">→ this event</span>
+              <span class="subens-soon" title="Goes live once woco.eth's mainnet ENS resolver points to the Arbitrum registry">
+                <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><circle cx="5.5" cy="5.5" r="4.2" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 3.4V5.5l1.5 .9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Live soon
+              </span>
+            </div>
+            <p class="output-hint">Registered on Arbitrum — view the record on Arbiscan. The web address activates once woco.eth's resolver points to the L2 registry.</p>
+          {:else if subEnsPhase === "error"}
+            <div class="create-error" style="margin: 0;">{subEnsError}</div>
+            {#if !(domainIntent.mode === "new" && !domainIntent.label)}
+              <button class="btn-primary" style="margin-top: 0.75rem;" onclick={retrySubEns}>Retry</button>
+            {/if}
+          {/if}
+        </div>
+      {/if}
 
       <!-- Custom domain -->
       <div class="output-section">
@@ -777,6 +866,21 @@
     background: color-mix(in srgb, var(--accent) 4%, transparent);
   }
   .woco-listed-banner { font-weight: 600; color: var(--success); font-size: 0.9375rem; }
+
+  /* ── Sub-ENS result ──────────────────────────────────────────────────────── */
+  .subens-section.subens-done {
+    border-left: 3px solid #C7F23A;
+    background: color-mix(in srgb, #C7F23A 4%, transparent);
+  }
+  .subens-claimed { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .subens-name { font-family: var(--font-mono, monospace); font-size: 0.9375rem; font-weight: 800; color: var(--text); letter-spacing: -0.01em; }
+  .subens-arrow { font-size: 0.8125rem; color: var(--text-muted); }
+  .subens-soon {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    padding: 0.2rem 0.5rem; font-size: 0.6875rem; font-weight: 600;
+    color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+    border: 1px dashed var(--border); border-radius: 4px;
+  }
 
   /* ── Custom domain ───────────────────────────────────────────────────────── */
   .domain-verified-banner {
