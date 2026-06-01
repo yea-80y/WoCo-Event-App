@@ -808,6 +808,11 @@ export const auth = {
   get parent() { return _parent; },
   get sessionAddress() { return _sessionAddress; },
   get podPublicKeyHex() { return _podPublicKeyHex; },
+  // PRF-EOA address for passkey (where the POD seed + keypair are keyed,
+  // invariant #1); the parent address for every other kind. POD seed/keypair
+  // lookups MUST use this, NOT auth.parent — for passkey, parent is the Kernel
+  // address and the POD seed is not stored there.
+  get podAddress() { return _getPodAddress(); },
   get ready() { return _ready; },
   get busy() { return _busy; },
   get hasSession() { return hasSession; },
@@ -828,7 +833,8 @@ export const auth = {
   ensurePodIdentity,
   ensureWocoSessionKey,
   signRequest,
-  // Bind to the active parent so callers don't need to pass it (and can't
-  // pass the wrong one). Returns null when not logged in.
-  getPodKeypair: () => (_parent ? getPodKeypair(_parent) : Promise.resolve(null)),
+  // Bind to the POD address so callers don't need to pass it (and can't pass
+  // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel
+  // parent (invariant #1). Returns null when not logged in.
+  getPodKeypair: () => { const a = _getPodAddress(); return a ? getPodKeypair(a) : Promise.resolve(null); },
 };

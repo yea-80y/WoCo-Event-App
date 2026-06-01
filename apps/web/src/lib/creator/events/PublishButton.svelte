@@ -126,7 +126,7 @@
 
       // Derive encryption keypair (no extra popup)
       let encryptionKey: string | undefined;
-      const podSeed = auth.parent ? await restorePodSeed(auth.parent) : null;
+      const podSeed = auth.podAddress ? await restorePodSeed(auth.podAddress) : null;
       if (podSeed) {
         encryptionKey = deriveEncryptionKeypairFromPodSeed(podSeed).publicKeyHex;
       }

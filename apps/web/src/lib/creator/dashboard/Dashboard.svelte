@@ -345,12 +345,14 @@
 
     decrypting = true;
 
-    if (!auth.parent) {
+    if (!auth.podAddress) {
       decryptError = "Not logged in. Cannot decrypt orders.";
       decrypting = false;
       return;
     }
-    let podSeed = await restorePodSeed(auth.parent);
+    // POD seed is keyed by the PRF-EOA address for passkey (invariant #1), the
+    // parent for everyone else — auth.podAddress resolves the right one.
+    let podSeed = await restorePodSeed(auth.podAddress);
     if (!podSeed) {
       const pk = await auth.ensurePodIdentity();
       if (!pk) {
@@ -358,7 +360,7 @@
         decrypting = false;
         return;
       }
-      podSeed = await restorePodSeed(auth.parent);
+      podSeed = await restorePodSeed(auth.podAddress);
     }
     if (!podSeed) {
       decryptError = "POD identity not found. Please re-derive your identity.";
