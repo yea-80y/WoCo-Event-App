@@ -15,8 +15,19 @@ bottom.
 | 1 — `kernel-account.ts` | ✅ done | `e0fd245` |
 | 2 — auth-store wiring (Kernel parent, POD on PRF-EOA) | ✅ done | `fcb69c7` |
 | 3 — scoped ZeroDev session keys | ✅ done | `527593a` |
-| 4 — sub-ENS `claimSubEnsViaPermit` | ✅ done | _this commit_ |
-| 5 — verify end-to-end on Arb Sepolia (+ fix paymaster 500) | ⬜ **NEXT (live, needs browser+passkey)** | — |
+| 4 — sub-ENS `claimSubEnsViaPermit` | ✅ done | `a6facab` |
+| 5 — verify end-to-end on Arb Sepolia | ✅ VERIFIED in dev 2026-06-01 | `da59a83`,`9f6f4f5`,`6a3c5bb` |
+
+**Phase 5 result (2026-06-01):** gasless passkey sub-ENS claim works end-to-end on Arb Sepolia.
+Three fixes were needed along the way (the "no server change" invariant #5 was wrong — Kernel is
+on Arbitrum, not Base):
+1. `da59a83` — server sig verifier was Base-only → 403; now multi-chain (Base + Arb Sepolia).
+2. `9f6f4f5` — session-key gas policy `allowed:0n` → `PolicyFailed(1)`; set a real budget, dropped
+   `enforcePaymaster` (sponsor call simulates before attaching the paymaster).
+3. `6a3c5bb` — POD seed keyed by PRF-EOA, not Kernel parent; added `auth.podAddress`.
+Paymaster: use the MANAGED `VITE_ZERODEV_RPC` (NO `?selfFunded=true`) + a dashboard Gas Policy.
+Remaining = post-buildathon hardening only: restore `enforcePaymaster`, and the `.woco.eth.limo`
+mainnet resolver cutover (parked — see `SUBENS_PROFILES_HANDOVER.md`).
 
 All UNCOMMITTED→COMMITTED on `main`; frontend NOT yet deployed to Swarm (user runs `npm run deploy`).
 typecheck (`npm run check -w @woco/web`) is GREEN for this work — 23 pre-existing errors live in
@@ -164,8 +175,14 @@ ZeroDev session key signs on-chain userOps.
    Never ship `toSudoPolicy({})` to production — it's only acceptable in a throwaway spike.
 4. **Pluggable validator.** Put the sudo signer behind a small interface so swapping ECDSA →
    passkey-validator (Option 2) is a localized change, never a rewrite.
-5. **Server unchanged for auth.** `verify-delegation.ts` already verifies EOA/1271/6492 via viem's
-   universal validator (same path CSW uses). Do not touch it.
+5. ~~**Server unchanged for auth.**~~ **CORRECTED 2026-05-31 (found in live test):** the verifier
+   handled 1271/6492 but on a SINGLE chain (`SMART_WALLET_VERIFY_CHAIN=base-sepolia`, for CSW). The
+   Kernel is a smart account on **Arbitrum Sepolia**, and its 6492 sig only validates there → every
+   passkey authed request 403'd "Invalid signature". Fix (`da59a83`): `smart-wallet-client.ts`
+   `verifySmartWalletTypedData` now tries ALL candidate home chains (base-sepolia + arbitrum-sepolia
+   by default, env-mergeable) and accepts if any validates. EOA sigs still short-circuit on the first
+   client (local ecrecover). Deployed to Hetzner. **Lesson: any new smart-account kind on a new chain
+   needs its chain added to the verifier's candidate set.**
 
 ---
 

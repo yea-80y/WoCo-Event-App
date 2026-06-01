@@ -1,158 +1,118 @@
-# Sub-ENS + Profiles — Handover (2026-05-30)
+# Sub-ENS + Profiles — Handover (2026-05-30, updated)
 
-## State as of this handover
+## Deployed & live state
 
-### What's deployed and live (Hetzner)
+| Item | Status | Commit |
+|------|--------|--------|
+| L2Registry (Durin) | ✅ Arb Sepolia `0x41Fb196…` | contracts `9420998` |
+| WoCoRegistrar v2 (EIP-712 permit) | ✅ Arb Sepolia `0x7c0DE55…`, verified | contracts `7c8e628` |
+| `GET /api/sub-ens/check/:label` | ✅ Live on Hetzner | `9206215` |
+| `POST /api/sub-ens/claim` | ✅ Live — server-sponsored (ZeroDev path not yet built) | `9206215` |
+| `POST /api/sub-ens/permit` | ✅ Live — EIP-712 sig for future ZeroDev client path | `ff9784c` |
+| `POST /api/sub-ens/set-contenthash` | ✅ Live — auth + on-chain ownership check | `89f26cb` |
+| `SubENSPicker.svelte` | ✅ Committed — Stripe gate + claim UI + success state | `d28aeb0` |
+| Stripe gate on SubENSPicker | ✅ Shipped — locked card until Stripe onboarding complete | `d28aeb0` |
+| ENS picker in EventForm | ✅ Shipped — appears between EventEditor and PublishButton | `d28aeb0` |
+| Deploy hook (auto set-contenthash) | ✅ Live — fires on every site deploy if subEnsLabel set | `b01f28b` |
+| `Site.subEnsLabel?: string` | ✅ In shared types | `b01f28b` |
 
-| Item | Status | Contract / Commit |
-|------|--------|-------------------|
-| L2Registry (Durin) | ✅ Arb Sepolia | `0x41Fb196Ae7D65E06880A240c8d1B91245Fb84807` |
-| WoCoRegistrar v2 (EIP-712 permit) | ✅ Arb Sepolia, verified | `0x7c0DE55a1713e6C1a53Db50314C7CB608179aAf1` |
-| `GET /api/sub-ens/check/:label` | ✅ Live | — |
-| `POST /api/sub-ens/claim` | ✅ Live | Server-sponsored (sponsor wallet) |
-| `POST /api/sub-ens/permit` | ✅ Live | Returns EIP-712 sig for ZeroDev path |
-| `POST /api/sub-ens/set-contenthash` | ✅ Live | Auth + on-chain ownership check |
-| `SubENSPicker.svelte` | ✅ Committed `b01f28b` | In site builder Domain tab |
-| Deploy hook (auto set-contenthash) | ✅ Committed `b01f28b` | In `apps/server/src/routes/sites.ts` |
-| `Site.subEnsLabel?: string` | ✅ In shared types | — |
-
-**NOT deployed yet (committed but needs `npm run deploy`):**
-- `SubENSPicker.svelte` and the domain-tab integration are frontend changes.
-  The frontend Swarm deploy is manual (`npm run deploy`) — user runs this.
-
-### What the SubENSPicker currently does
-
-- Lives in the **Domain tab** of `MultiSiteBuilder.svelte` (the site/website builder)
-- Debounced availability check (380ms) → green ✓ / red ✗ with reason
-- Profile bio field (stored as ENS `description` text record)
-- Claims via `POST /api/sub-ens/claim` (server-sponsored for all users — ZeroDev path not built yet)
-- On success: shows `label.woco.eth` + copy/visit buttons
-- On every site deploy (publish): server calls `setContenthash` fire-and-forget if `site.subEnsLabel` is set
-
-### What's NOT done yet (priority order)
-
-1. **Stripe verification gate on SubENSPicker** (immediate next)
-2. **ENS picker in the event creation flow** (`EventEditor.svelte`)
-3. **Attendee/user profile claiming** (post-purchase gate)
-4. **ZeroDev passkey wallet** (replaces server-sponsored claim path)
-5. **WoCoStore.sol + store section builder** (buildathon item #2/#3)
-6. **EAS likes + Stylus aggregator** (buildathon items #4/#5)
-7. **Pitch deck + demo video** (buildathon item #7)
+**Frontend Swarm deploy (`npm run deploy`) still needed by user** — all frontend commits above are built but not yet on Swarm.
 
 ---
 
-## IMMEDIATE NEXT: Stripe gating on SubENSPicker
+## What SubENSPicker does (current)
 
-### Requirement
+- **Stripe gate** — self-checks `getStripeAccountStatus()` on mount; shows locked card with lock icon + "Set up Stripe →" CTA until `onboardingComplete`. Accepts `stripeConnected` prop from parent to skip duplicate fetch; calls `onstripesetup` callback if parent manages the modal, otherwise opens `StripeConnectModal` internally.
+- **Site builder** — lives in Domain tab of `MultiSiteBuilder.svelte`. Builder fetches Stripe status lazily on first Domain-tab open, passes it down.
+- **Event creation flow** — `EventForm.svelte` includes `<SubENSPicker />` between EventEditor and PublishButton; self-checks Stripe (no parent wiring).
+- **Claim flow** — debounced availability check (380ms) → green ✓ / red ✗; profile bio field (ENS `description` text record); claims via server-sponsored `POST /api/sub-ens/claim`; success shows `label.woco.eth` + copy/visit buttons.
+- **Deploy hook** — every site publish auto-calls `set-contenthash` fire-and-forget if `site.subEnsLabel` is set.
 
-The ENS picker should only be shown/enabled to organisers who have completed **Stripe Connect verification**.
+---
 
-- **Site builder (MultiSiteBuilder.svelte → Domain tab):** SubENSPicker is hidden/locked until Stripe is connected. Show a "Verify with Stripe first" prompt with a button to open `StripeConnectModal`.
-- **Event creation flow (EventEditor.svelte):** Same gate — ENS claiming step only appears if Stripe is verified. If not, skip or show locked state.
+## Sub-ENS gating decisions (settled)
 
-**Why:** Prevents squatting. Only verified organisers (real business intent) can claim `label.woco.eth`.
+| User type | Gate |
+|-----------|------|
+| Venues / organisers | Stripe Connect onboarding ✅ (built) |
+| Attendees | First purchase (ticket or store item) — Phase 2, post-buildathon |
+| Bands / artists | "Get in touch" manual whitelist for now; automation path: organiser tags performer on event → EAS `performer` attestation → band claims name without Stripe (ties into EAS #4) |
 
-### How to implement
+**Anti-squatting:** reserved name list (already in WoCoRegistrar) + 1-per-wallet limit post-buildathon.
 
-1. **Check Stripe status:** `getStripeAccountStatus()` in `apps/web/src/lib/api/stripe.ts` — calls `GET /api/stripe/account-status`, returns `{ connected: boolean, stripeAccountId?: string }`.
+---
 
-2. **In SubENSPicker.svelte:** Add a new top-level state. On mount (after auth check), call `getStripeAccountStatus()`. If `!connected`, show a locked card:
-   ```
-   ┌─ LOCKED ────────────────────────────────────────────┐
-   │  🔒  Verify your business to claim yourname.woco.eth │
-   │  Complete Stripe setup to unlock your free .eth      │
-   │  [ Set up Stripe → ]                                 │
-   └──────────────────────────────────────────────────────┘
-   ```
-   The "Set up Stripe →" button should open `StripeConnectModal` (already exists at `apps/web/src/lib/creator/dashboard/StripeConnectModal.svelte`). After the modal reports `onconnected`, re-check and show the full picker.
+## Referral system — designed, not built
 
-3. **SubENSPicker.svelte props to add:**
-   - `stripeConnected?: boolean` — optional override so the parent can pass in a cached value (avoids duplicate API calls if the parent already knows the Stripe status)
-   - `onstripesetup?: () => void` — callback to open the Stripe modal from the parent (so the modal lifecycle stays in the parent)
-
-4. **In MultiSiteBuilder.svelte:** Pass Stripe status down. The builder already calls `getStripeAccountStatus` in Dashboard context — reuse or refetch.
-
-5. **In EventEditor.svelte:** Find the publish step / payment configuration step (where Stripe Connect prompt appears). Add the ENS picker below it, locked until `connected === true`.
-
-### Relevant existing files
-
-```
-apps/web/src/lib/api/stripe.ts                      # getStripeAccountStatus()
-apps/web/src/lib/creator/dashboard/StripeConnect.svelte     # Stripe connect button/panel
-apps/web/src/lib/creator/dashboard/StripeConnectModal.svelte # Modal (onconnected callback)
-apps/web/src/lib/creator/builder/SubENSPicker.svelte        # The picker (add stripe gate)
-apps/web/src/lib/creator/builder/MultiSiteBuilder.svelte    # Domain tab host
-apps/web/src/lib/creator/events/EventEditor.svelte          # Event creation — add ENS step
-```
+Record referral on-chain as EAS attestation `referred(referrer, referee, venueId)`. Gasless via ZeroDev paymaster. Kickback: Stripe webhook fires on referred venue's first sale → distribute reward (post-buildathon). Stylus can count referrals per address just like likes. **Design hook: leave EAS schema slot for `referred` when building #4; leave Stripe webhook hook point for reward dispatch.** See memory `project_referrals.md`.
 
 ---
 
 ## Profile Architecture — Decided
 
-### Attendee/user profiles
+### Attendee profiles (Phase 2, post-buildathon)
 
-**Gate:** Profiles are unlocked by making a purchase (ticket or store item). When someone buys their first ticket, they are prompted to claim a sub-ENS name and set up their profile. The profile is their `label.woco.eth` ENS identity.
-
-**Rationale:**
-- Sybil resistance — ENS names earned, not farmed
-- Social graph bootstrapped from commerce, not explicit follows
-- "Your receipt IS your identity" pitch for non-crypto users
-
-**Auto-follow on purchase (novel idea — implement later):** When a ticket is purchased, automatically create an EAS `follows` attestation: the buyer follows the organiser/venue. Profile is pre-populated with their social graph.
-
-**Tiered unlock:**
-- Level 1 (1 purchase): claim sub-ENS + basic profile (bio, avatar link)
-- Level 2 (3+ EAS attendance attestations): "verified attendee" badge on profile
+Gate: first purchase unlocks sub-ENS claim + basic profile. Tiered:
+- Level 1 (1 purchase): claim sub-ENS + profile (bio, avatar)
+- Level 2 (3+ EAS attendance attestations): "verified attendee" badge
 - Level 3 (Stripe-verified organiser): organiser badge + featured listing
-All verifiable on-chain, no WoCo database.
 
-### Profile page integration (Phase 2, after buildathon)
-
-The existing profile page at `/profile/{address}` should grow to support:
-- ENS claiming inline (same SubENSPicker component, no site required)
-- Display resolved ENS name if already claimed
-- Bio, avatar, social links (all from ENS text records)
-- EAS attendance badges (from Stylus aggregator)
-- Like/follow counts
-
-This reuses the same SubENSPicker and sub-ENS infrastructure — just exposed on a different page.
+All verifiable on-chain. Auto-follow on purchase → EAS `follows` attestation (buyer follows organiser). Profile page at `/profile/{address}` grows to show ENS name, bio, EAS badges, like/follow counts — reuses SubENSPicker component.
 
 ---
 
-## EAS + Stylus Relationship (clarification)
-
-These are two separate, complementary layers:
+## EAS + Stylus layers
 
 | Layer | Tool | Role |
 |-------|------|------|
-| Write | **EAS (Ethereum Attestation Service)** | Creates attestations: `liked(subject)`, `follows(subject)`, `attended(event)`. Gasless via ZeroDev paymaster. On Arbitrum. |
-| Read/Aggregate | **Stylus (Rust contract on Arbitrum)** | Reads EAS attestations, computes trending / follower counts on-chain. One Stylus query = "top 10 venues by likes this week" — cheap, verifiable, demo-able. |
+| Write | EAS | `liked`, `follows`, `attended`, `referred`, `performer` attestations. Gasless via ZeroDev paymaster. |
+| Read/Aggregate | Stylus (Rust on Arbitrum) | Reads EAS, computes trending/ranking/counts on-chain. ~$0.0001/query. |
 
-Stylus does NOT replace EAS. It is the aggregation/indexing layer that makes EAS data queryable on-chain without a server. This is the buildathon pitch: "social graph computed in Rust on Arbitrum for $0.0001 per query."
-
-**EAS schemas to define:**
+**EAS schemas to register:**
 ```
-follows(address subject, bytes32 subEnsNode)  // subject ENS node being followed
-likes(address subject, bytes32 subEnsNode)    // subject being liked
-attended(bytes32 eventId, bytes32 subEnsNode) // attendance proof
+follows(address subject, bytes32 subEnsNode)
+likes(address subject, bytes32 subEnsNode)
+attended(bytes32 eventId, bytes32 subEnsNode)
+referred(address referrer, address referee, bytes32 venueId)   // design hook — build with #4
+performer(bytes32 eventId, address artist)                     // enables artist ENS gate
 ```
 
 ---
 
-## Remaining Buildathon Items (priority order)
+## Remaining Buildathon Items
 
 | # | Item | Effort | Status |
 |---|------|--------|--------|
-| 1b | ZeroDev passkey wallet | 1.5d | ⬜ Not started — research first |
-| 1 (cont) | Stripe gate on SubENSPicker | 0.25d | ⬜ Next |
-| 1 (cont) | ENS picker in EventEditor | 0.5d | ⬜ Next |
+| 1b | ZeroDev passkey wallet | 1.5d | ⬜ **NEXT — start here** |
 | 2 | WoCoStore.sol (Arb Sepolia) | 3d | ⬜ Not started |
 | 3 | Store section in MultiSiteBuilder | 3d | ⬜ Not started |
 | 4 | EAS likes + attendance | 2d | ⬜ Not started |
 | 5 | Stylus aggregator contract | 2.5d | ⬜ Not started |
 | 7 | Pitch deck + 2-min demo | 2.5d | ⬜ Not started |
 
-**Cut valve if tight:** Stylus → testnet tx + benchmark slide only; Store → product grid only (no cart/checkout). Do NOT cut Sub-ENS, ZeroDev, or pitch.
+Cut valve if tight: Stylus → testnet tx + benchmark slide only; Store → product grid only (no cart). Do NOT cut ZeroDev, Sub-ENS, or pitch.
+
+---
+
+## ZeroDev — RESEARCHED + PLANNED (2026-05-30)
+
+Research done; architecture decided. **Full plan: `docs/ZERODEV_PASSKEY_INTEGRATION_PLAN.md`**
+(has a copy-paste START NEXT CHAT block).
+
+**Decision: Option 1 — ECDSA-over-PRF Kernel** (DRY, no passkey server, deterministic POD kept).
+NOT native passkey-validator — that's Option 2, deferred as post-buildathon hardening + demo
+roadmap slide (needs a passkey server + an independent PRF-only POD seed source).
+
+Key points carried into the build:
+1. **Reuse `passkey-account.ts` untouched** — PRF→secp256k1 becomes the Kernel's ECDSA sudo signer.
+2. **POD identity stays on the raw PRF key (deterministic), never the Kernel** — hard invariant.
+3. Scoped on-chain ZeroDev session keys (`@zerodev/permissions`, `toCallPolicy` → WoCoRegistrar/EAS) + gasless paymaster.
+4. `SubENSPicker` permit path: `POST /api/sub-ens/permit` → Kernel session-key userOp calls `registerWithPermit`. Keep sponsor `/claim` for email-only organisers.
+5. Server `verify-delegation.ts` already handles ERC-1271/6492 — **no server change for auth**.
+6. Pluggable sudo-validator interface so the Option 2 swap is localized.
+
+**Needs from user before coding:** a ZeroDev project (Arb Sepolia) + paymaster gas policy →
+`VITE_ZERODEV_RPC` in `apps/web/.env`.
 
 ---
 
@@ -165,14 +125,74 @@ SUB_ENS_REGISTRY_ADDRESS=0x41Fb196Ae7D65E06880A240c8d1B91245Fb84807
 WOCO_SPONSOR_PRIVATE_KEY=<set>
 ```
 
-## Key file map (sub-ENS related)
+## Key file map
 
 ```
-apps/web/src/lib/api/sub-ens.ts                   # checkSubEnsLabel, claimSubEnsLabel
-apps/web/src/lib/creator/builder/SubENSPicker.svelte  # claim UI (add Stripe gate here)
-apps/web/src/lib/creator/builder/MultiSiteBuilder.svelte  # Domain tab host
-apps/server/src/routes/sub-ens.ts                 # check / claim / permit / set-contenthash routes
-apps/server/src/lib/chain/sub-ens-contract.ts     # ABI, isLabelAvailable, mintSubEnsName, signSubEnsPermit
-apps/server/src/routes/sites.ts                   # deploy hook (auto set-contenthash)
-packages/shared/src/site/types.ts                 # Site.subEnsLabel?: string
+apps/web/src/lib/creator/builder/SubENSPicker.svelte      # claim UI + Stripe gate
+apps/web/src/lib/creator/builder/MultiSiteBuilder.svelte  # Domain tab host + Stripe status
+apps/web/src/lib/creator/events/EventForm.svelte          # event creation — has SubENSPicker
+apps/web/src/lib/api/sub-ens.ts                           # checkSubEnsLabel, claimSubEnsLabel
+apps/server/src/routes/sub-ens.ts                         # check / claim / permit / set-contenthash
+apps/server/src/lib/chain/sub-ens-contract.ts             # ABI, isLabelAvailable, signSubEnsPermit
+apps/server/src/routes/sites.ts                           # deploy hook (auto set-contenthash)
+packages/shared/src/site/types.ts                         # Site.subEnsLabel?: string
 ```
+
+---
+
+## CURRENT STATE — 2026-06-01 (verified live in dev)
+
+**Sub-ENS for the buildathon is functionally DONE.** Verified end-to-end on Arb Sepolia
+via passkey/ZeroDev:
+- Gasless passkey claim works: `POST /api/sub-ens/permit` → scoped ZeroDev session-key
+  userOp → `registerWithPermit` lands on-chain, no gas, no popup. (ZeroDev Phases 0–4
+  shipped; see `ZERODEV_PASSKEY_INTEGRATION_PLAN.md`.)
+- Three bugs found + fixed during live test (all committed):
+  1. Server signature verifier was pinned to Base only → 403 "Invalid signature" for the
+     Kernel (Arb Sepolia). Now multi-chain (`smart-wallet-client.ts`). `da59a83`/`c54a07e`.
+  2. Session-key gas policy had `allowed: 0n` → `PolicyFailed(1)`. Fixed to a real budget,
+     dropped `enforcePaymaster`. `9f6f4f5`.
+  3. POD seed/keypair looked up under `auth.parent` (Kernel) instead of the PRF-EOA
+     address → "Could not get signing key" on publish. Added `auth.podAddress`. `6a3c5bb`.
+- ZeroDev paymaster: use the MANAGED endpoint (`VITE_ZERODEV_RPC` WITHOUT `?selfFunded=true`)
+  + a Gas Policy enabled on the dashboard. `selfFunded` hit AA30 (self-funded paymaster
+  never deployed).
+- `SubENSPicker` claim card shows `label.woco.eth.limo` with a non-clickable **"Live soon"**
+  pill (the `.limo` URL needs the mainnet resolver cutover — parked, see below). `959cda7`.
+
+**Multiple sub-ENS per account: SUPPORTED.** No per-wallet cap is enforced (the 1-per-wallet
+limit is post-buildathon). `Site.subEnsLabel` is per-site, so N sites = N names (user verified
+two). The registry is plain ERC-721 — one independent token + records per label.
+
+**`.woco.eth.limo` resolution: PARKED post-buildathon (decided).** Needs the one mainnet step
+(point `woco.eth`'s resolver at NameStone's L1Resolver + `setL2Registry` → Arb registry).
+It's the #1 risk on the demo critical path. Demo via Arbiscan (the on-chain name + records)
++ the `gateway.woco-net.com/bzz/{hash}/` site URL. See `SUB_ENS_ARBITRUM_PLAN.md`.
+
+---
+
+## NEXT CHAT — Event ↔ sub-ENS routing (NOT built; the real gap)
+
+**Problem the user hit:** in `EventForm.svelte` the `<SubENSPicker />` (line 77, no props) only
+*claims a new name* and is **not wired to event deployment at all** — there is no event→Swarm
+→`set-contenthash` flow (events live in platform feeds, only multi-page SITES deploy as standalone
+Swarm collections + set a sub-ENS contenthash). So "set a sub-ENS for an event" does nothing useful
+today, and there's no way to pick an EXISTING name.
+
+**Desired model (user, 2026-06-01):** when creating an event, let the organiser choose one of:
+1. **Post to an existing site** — event appears on their already-deployed site under its existing
+   sub-ENS (already possible via the builder EventsTab; just surface it in the event flow).
+2. **Create a NEW sub-ENS for the event** — deploy a standalone event page to Swarm, claim a new
+   label, set that label's contenthash to it.
+3. **Use an EXISTING sub-ENS they own** — overwrite that label's contenthash with the new event
+   page's hash.
+
+**Build sub-tasks for next chat:**
+- Standalone single-event page deploy to Swarm (reuse the multisite runtime to render a one-event
+  site, or a minimal event template) → returns a content hash. Mirror `sites.ts` deploy.
+- Enumerate a user's owned sub-ENS names (registry is ERC-721; options: index Transfer events,
+  a creator feed `woco/sub-ens/owner/{addr}`, or NameStone API). Needed for the "select existing"
+  option — the app currently does NOT track a user's set of names.
+- New `EventDomainPicker` (or extend `SubENSPicker`) with the 3-way choice; wire the chosen label →
+  `POST /api/sub-ens/set-contenthash` (already live, ownership-checked) with the event page hash.
+- Decide overwrite UX/warning when option 3 replaces a label already pointing at a site.
