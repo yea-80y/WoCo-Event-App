@@ -246,12 +246,13 @@
       <button class="action-btn action-btn--copy" onclick={copyUrl}>
         {copied ? '✓ Copied' : 'Copy'}
       </button>
-      <a class="action-btn action-btn--visit" href={ensUrl} target="_blank" rel="noopener">
-        Visit
+      <span class="action-btn action-btn--soon" title="Goes live once woco.eth's mainnet ENS resolver points to the Arbitrum registry">
         <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-          <path d="M2 2h7v7M9 2L2 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="5.5" cy="5.5" r="4.2" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M5.5 3.4V5.5l1.5 .9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-      </a>
+        Live soon
+      </span>
     </div>
 
     {#if deployedHash}
@@ -880,12 +881,15 @@
   }
   .action-btn--copy:hover { background: color-mix(in srgb, #22c55e 10%, transparent); }
 
-  .action-btn--visit {
-    background: transparent;
-    border: 1px solid var(--border);
+  /* Non-clickable pending state: the .woco.eth.limo web address activates once
+     woco.eth's mainnet resolver points to the Arbitrum registry (the resolver
+     cutover is parked post-buildathon — see SUB_ENS_ARBITRUM_PLAN.md). */
+  .action-btn--soon {
+    background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+    border: 1px dashed var(--border);
     color: var(--text-muted);
+    cursor: default;
   }
-  .action-btn--visit:hover { color: var(--text); border-color: var(--text-muted); }
 
   .claimed-note {
     margin: 0;
