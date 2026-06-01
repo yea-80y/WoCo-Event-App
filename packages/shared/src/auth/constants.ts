@@ -22,7 +22,9 @@ export const StorageKeys = {
   // (contains the session private key) encrypted at rest. DISTINCT from
   // SESSION_KEY, which is the EIP-712 HTTP session-delegation key — these are
   // two unrelated "session" concepts (see ZERODEV_PASSKEY_INTEGRATION_PLAN.md).
-  WOCO_AA_SESSION: "woco:auth:aa-session",
+  // :v2 — invalidates session keys minted with the broken allowed=0 gas policy
+  // (PolicyFailed(1)); a fresh key with the corrected policy mints on next use.
+  WOCO_AA_SESSION: "woco:auth:aa-session:v2",
 } as const;
 
 /** Fixed salt input for passkey PRF → secp256k1 key derivation */

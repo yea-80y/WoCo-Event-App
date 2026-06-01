@@ -48,6 +48,14 @@ export const WOCO_REGISTRAR_ADDRESS =
 const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 /**
+ * Total gas budget (wei) the scoped session key may consume across all its
+ * userOps (the GasPolicy `allowed` cap). 0.2 ETH-equivalent — effectively
+ * unlimited on Arb Sepolia where gas is ~free, but still a finite cap so a
+ * leaked key can't burn the sponsor tank without bound.
+ */
+const SESSION_GAS_ALLOWANCE_WEI = 200000000000000000n; // 0.2 ETH
+
+/**
  * Minimal ABI fragment so the call policy pins the session key to exactly
  * `registerWithPermit` on the registrar (function-selector scoped, not merely
  * target-scoped). Mirrors REGISTRAR_ABI in apps/server/src/lib/chain/sub-ens-contract.ts.
@@ -293,9 +301,16 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
         },
       ],
     }),
-    // allowed=0 + enforcePaymaster: the session key cannot spend the Kernel's
-    // own ETH — it can only ever run gasless through the ZeroDev paymaster.
-    d.toGasPolicy({ allowed: 0n, enforcePaymaster: true }),
+    // `allowed` is the TOTAL gas budget (wei) this session key may consume —
+    // NOT "self-paid only". 0n = zero budget → every op fails PolicyFailed(1),
+    // so it must be a real cap. Generous on Arb Sepolia (gas is ~free).
+    // `enforcePaymaster` is intentionally NOT set: ZeroDev's sponsor call
+    // simulates validation BEFORE attaching its paymaster, so enforcing one
+    // there trips the same PolicyFailed. Scope stays tight via the call policy
+    // (registerWithPermit only, no ETH value) + the 30-day timestamp policy.
+    // TODO(post-buildathon): restore enforcePaymaster once the sponsor-then-send
+    // ordering is confirmed (so a leaked key can't burn Kernel ETH on gas).
+    d.toGasPolicy({ allowed: SESSION_GAS_ALLOWANCE_WEI }),
     d.toTimestampPolicy({ validUntil }),
   ];
 
