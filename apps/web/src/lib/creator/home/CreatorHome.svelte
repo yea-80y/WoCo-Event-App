@@ -13,6 +13,8 @@
   import { getMyEventsSWR, getMySitesSWR, getMyShopsSWR } from "../../api/creator-cache.js";
   import { getPendingClaims } from "../../api/events.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
+  import { getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
+  import OwnedNamesList from "../builder/OwnedNamesList.svelte";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount, onDestroy } from "svelte";
   import { isPastEvent } from "../../utils/events.js";
@@ -22,6 +24,7 @@
   import CalendarDays from "lucide-svelte/icons/calendar-days";
   import Monitor from "lucide-svelte/icons/monitor";
   import ShoppingBag from "lucide-svelte/icons/shopping-bag";
+  import Globe from "lucide-svelte/icons/globe";
   import CodeSquare from "lucide-svelte/icons/code-xml";
   import Webhook from "lucide-svelte/icons/webhook";
   import Wallet from "lucide-svelte/icons/wallet";
@@ -39,6 +42,8 @@
   let loadingEvents = $state(true);
   let loadingSites = $state(true);
   let loadingShops = $state(true);
+  let ownedNames = $state<OwnedSubEnsName[]>([]);
+  let loadingNames = $state(true);
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
   // Monotonic token to discard results from a prior sign-in / account switch.
@@ -66,9 +71,11 @@
     shops = [];
     pendingTotal = 0;
     stripeReady = null;
+    ownedNames = [];
     loadingEvents = false;
     loadingSites = false;
     loadingShops = false;
+    loadingNames = false;
   }
 
   async function loadFor(addr: string): Promise<void> {
@@ -76,6 +83,7 @@
     loadingEvents = true;
     loadingSites = true;
     loadingShops = true;
+    loadingNames = true;
 
     // Gate cached paint on a verified session: per-address localStorage must
     // not flash on screen during sign-in before EIP-712 is signed. Looks
@@ -138,6 +146,14 @@
       if (token !== loadToken) return;
       stripeReady = !!s.onboardingComplete;
     }).catch(() => { if (token === loadToken) stripeReady = false; });
+
+    // Owned .woco.eth names (authoritative on-chain read) — independent of the
+    // events/sites panels so it paints as soon as it resolves.
+    getOwnedSubEns().then(res => {
+      if (token !== loadToken) return;
+      ownedNames = res.ok && res.data ? res.data.names : [];
+      loadingNames = false;
+    }).catch(() => { if (token === loadToken) loadingNames = false; });
   }
 
   onMount(() => {
@@ -426,6 +442,29 @@
                 </li>
               {/each}
             </ul>
+          {/if}
+        </div>
+
+        <!-- Web3 names panel -->
+        <div class="panel panel--wide">
+          <div class="panel-head">
+            <span class="panel-title">
+              <Globe size={16} strokeWidth={2.25} />
+              Web3 names
+            </span>
+          </div>
+
+          {#if loadingNames}
+            <div class="panel-empty">Loading…</div>
+          {:else if ownedNames.length === 0}
+            <div class="panel-empty">
+              <span>No <span class="mono">.woco.eth</span> names yet.</span>
+              <button class="inline-link" onclick={() => navigate("/creator/sites")}>
+                <Plus size={14} strokeWidth={2.5} /> Claim one
+              </button>
+            </div>
+          {:else}
+            <OwnedNamesList state="ready" names={ownedNames} />
           {/if}
         </div>
       </div>
@@ -735,6 +774,7 @@
   @media (max-width: 720px) {
     .work-grid { grid-template-columns: 1fr; }
   }
+  .panel--wide { grid-column: 1 / -1; }
   .panel {
     background: var(--bg-surface);
     border: 1px solid var(--border);

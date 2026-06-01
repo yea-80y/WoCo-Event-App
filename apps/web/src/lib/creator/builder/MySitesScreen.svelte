@@ -8,9 +8,10 @@
     onnew: () => void;
     onloadbyid: (id: string) => void;
     loadingId?: string;
+    error?: string;
   }
 
-  let { sites, gatewayUrl, onopen, onnew, onloadbyid, loadingId }: Props = $props();
+  let { sites, gatewayUrl, onopen, onnew, onloadbyid, loadingId, error }: Props = $props();
 
   let showAdvanced = $state(false);
   let advancedId = $state('');
@@ -70,6 +71,10 @@
   </header>
 
   <main class="main">
+    {#if error}
+      <div class="open-error" role="alert">{error}</div>
+    {/if}
+
     {#if sites.length === 0}
       <!-- Empty state -->
       <div class="empty">
@@ -327,6 +332,18 @@
   .empty-cta:hover {
     background: var(--accent-hover);
     transform: translateY(-1px);
+  }
+
+  /* ── Open error ───────────────────────────────────────────────────── */
+  .open-error {
+    margin-bottom: 1.25rem;
+    padding: 0.75rem 1rem;
+    background: color-mix(in srgb, #f59e0b 10%, transparent);
+    border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
+    border-radius: var(--radius-md);
+    color: #f59e0b;
+    font-size: 0.875rem;
+    line-height: 1.5;
   }
 
   /* ── Card grid ────────────────────────────────────────────────────── */

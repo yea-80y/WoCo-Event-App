@@ -120,6 +120,7 @@
   let pendingLogoBase64 = $state<string | null>(null);
 
   let openingId = $state<string | undefined>(undefined); // card spinner
+  let openError = $state(''); // surfaced when a draft can't be opened
 
   // Stripe status — fetched lazily when domain tab opens; passed to SubENSPicker
   let stripeConnected = $state<boolean | undefined>(undefined);
@@ -330,32 +331,54 @@
     }
   }
 
-  /** Open a site from the My Sites registry. Always fetches latest from Swarm. */
+  /** The on-device draft (single slot), or null. A never-published site only
+   *  exists here — there's nothing on Swarm to load. */
+  function localDraftFor(siteId: string): Site | null {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return null;
+      const draft = JSON.parse(raw) as Site;
+      return draft?.siteId === siteId ? draft : null;
+    } catch { return null; }
+  }
+
+  /** Open a site from the My Sites registry. Prefers the published copy on Swarm;
+   *  falls back to the local draft for sites that were never published (otherwise
+   *  the GET 404s and the card silently does nothing). */
   async function handleOpenSite(rec: MySiteRecord) {
     openingId = rec.siteId;
+    openError = '';
     try {
       const [siteRes, eventsRes] = await Promise.all([
         loadSite(rec.siteId),
         getSiteEvents(rec.siteId),
       ]);
-      if (siteRes.ok && siteRes.data) {
-        site = siteRes.data;
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(siteRes.data));
-        localStorage.setItem(LAST_SITE_KEY, rec.siteId);
-        localStorage.setItem(FEED_HASH_KEY, rec.feedHash ?? '');
-        feedHash = rec.feedHash ?? '';
-        deployedUrl = rec.deployedUrl ?? '';
-        deployedHash =
-          localStorage.getItem(`woco:site-content-hash:${rec.siteId}`) ??
-          (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1] ??
-          '';
-        if (eventsRes.ok && eventsRes.data) {
-          siteEvents = eventsRes.data.events;
-          localStorage.setItem(EVENTS_KEY, JSON.stringify(eventsRes.data.events));
-        }
-        screen = 'builder';
-        tab = 'brand';
+
+      const loaded = (siteRes.ok && siteRes.data) ? siteRes.data : localDraftFor(rec.siteId);
+      if (!loaded) {
+        openError = `“${rec.brandName}” hasn't been published yet and isn't saved on this device. Open it on the device where you created it, or start a new site.`;
+        return;
       }
+
+      site = loaded;
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(loaded));
+      localStorage.setItem(LAST_SITE_KEY, rec.siteId);
+      localStorage.setItem(FEED_HASH_KEY, rec.feedHash ?? '');
+      feedHash = rec.feedHash ?? '';
+      deployedUrl = rec.deployedUrl ?? '';
+      deployedHash =
+        localStorage.getItem(`woco:site-content-hash:${rec.siteId}`) ??
+        (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1] ??
+        '';
+      if (eventsRes.ok && eventsRes.data) {
+        siteEvents = eventsRes.data.events;
+        localStorage.setItem(EVENTS_KEY, JSON.stringify(eventsRes.data.events));
+      } else if (!siteRes.ok) {
+        // Draft fallback — pair it with the local events draft for the same site.
+        siteEvents = loadEventsDraft();
+      }
+      screen = 'builder';
+      tab = 'brand';
     } finally {
       openingId = undefined;
     }
@@ -463,6 +486,7 @@
       onnew={handleNewSite}
       onloadbyid={handleLoadById}
       loadingId={openingId}
+      error={openError}
     />
 
   {:else}

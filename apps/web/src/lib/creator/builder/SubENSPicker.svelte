@@ -1,9 +1,10 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { checkSubEnsLabel, claimSubEnsLabel, claimSubEnsViaPermit } from "../../api/sub-ens.js";
+  import { checkSubEnsLabel, claimSubEnsLabel, claimSubEnsViaPermit, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
+  import OwnedNamesList from "./OwnedNamesList.svelte";
 
   interface Props {
     claimedLabel?: string;
@@ -58,6 +59,40 @@
   function onStripeConnected() {
     stripeStatus = true;
     stripeModalOpen = false;
+  }
+
+  // ── Claim vs reuse-existing ───────────────────────────────────────────────────
+  // A name is permanent on Arbitrum, so an organiser who already claimed one must
+  // be able to point it at this site rather than being forced to mint another
+  // (otherwise earlier names get stranded). "new" mints; "existing" just links a
+  // name they already own — the deploy hook sets its contenthash on next publish.
+  let claimMode = $state<'new' | 'existing'>('new');
+  type OwnedState = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+  let ownedState = $state<OwnedState>('idle');
+  let ownedNames = $state<OwnedSubEnsName[]>([]);
+
+  async function loadOwned() {
+    if (ownedState === 'loading' || ownedState === 'ready') return;
+    ownedState = 'loading';
+    const res = await getOwnedSubEns();
+    if (res.ok && res.data) {
+      ownedNames = res.data.names;
+      ownedState = ownedNames.length === 0 ? 'empty' : 'ready';
+    } else {
+      ownedState = 'error';
+    }
+  }
+
+  function selectMode(next: 'new' | 'existing') {
+    claimMode = next;
+    if (next === 'existing') void loadOwned();
+  }
+
+  // Linking an already-owned name needs no on-chain write — the user owns it and
+  // the site deploy hook repoints its contenthash. Just record it on the site.
+  function useExisting(label: string) {
+    claimedLabel = label;
+    onclaim?.(label);
   }
 
   // ── Input state ──────────────────────────────────────────────────────────────
@@ -343,6 +378,26 @@
       </div>
     </div>
 
+    <!-- Mode toggle: claim a fresh name vs reuse one you already own -->
+    <div class="mode-toggle" role="tablist" aria-label="Address source">
+      <button type="button" class="mode-btn" class:mode-btn--active={claimMode === 'new'} role="tab" aria-selected={claimMode === 'new'} onclick={() => selectMode('new')}>
+        Claim a new name
+      </button>
+      <button type="button" class="mode-btn" class:mode-btn--active={claimMode === 'existing'} role="tab" aria-selected={claimMode === 'existing'} onclick={() => selectMode('existing')}>
+        Use a name I own
+      </button>
+    </div>
+
+    {#if claimMode === 'existing'}
+      <OwnedNamesList
+        state={ownedState === 'idle' ? 'loading' : ownedState}
+        names={ownedNames}
+        onselect={useExisting}
+        onretry={() => { ownedState = 'idle'; loadOwned(); }}
+        emptyText="You haven't claimed any .woco.eth names yet — switch to “Claim a new name”."
+      />
+      <p class="reuse-hint">Linking a name you own points it at this site on your next publish — replacing wherever it points now.</p>
+    {:else}
     <!-- Label input row -->
     <div class="input-row">
       <div class="input-wrap" class:input-wrap--ok={checkPhase === 'ok'} class:input-wrap--bad={checkPhase === 'taken' || checkPhase === 'invalid'}>
@@ -487,6 +542,7 @@
           Auto-links to your site on every publish
         </li>
       </ul>
+    {/if}
     {/if}
   </div>
 {/if}
@@ -651,6 +707,23 @@
     border-radius: 3px;
     padding: 0.1em 0.3em;
   }
+
+  /* ── Mode toggle ───────────────────────────────────────────────────────── */
+  .mode-toggle {
+    display: flex; gap: 0.25rem; padding: 0.25rem;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+  }
+  .mode-btn {
+    flex: 1; padding: 0.45rem 0.5rem; font-size: 0.8125rem; font-weight: 600;
+    color: var(--text-muted); background: transparent; border: none; border-radius: 5px;
+    cursor: pointer; transition: background 120ms, color 120ms;
+  }
+  .mode-btn:hover { color: var(--text); }
+  .mode-btn--active {
+    color: #0d0d0d; background: #C7F23A;
+  }
+
+  .reuse-hint { margin: 0; font-size: 0.75rem; color: var(--text-muted); opacity: 0.75; line-height: 1.45; }
 
   /* ── Input row ─────────────────────────────────────────────────────────── */
   .input-row { display: flex; gap: 0.5rem; align-items: stretch; }

@@ -12,6 +12,7 @@
   import { checkSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
+  import OwnedNamesList from "./OwnedNamesList.svelte";
 
   interface Props {
     intent?: EventDomainIntent;
@@ -237,40 +238,21 @@
 
       {#if mode === "existing"}
         <div class="opt-body">
-          {#if ownedState === "loading"}
-            <div class="lock-loading"><span class="spinner"></span><span class="muted-sm">Loading your names…</span></div>
-          {:else if ownedState === "error"}
-            <p class="msg msg--warn">Couldn't load your names. <button class="link-btn" onclick={() => { ownedState = "idle"; loadOwned(); }}>Retry</button></p>
-          {:else if ownedState === "empty"}
-            <p class="muted-sm">You don't own any <code class="inline-code">.woco.eth</code> names yet — choose “Claim a new name” above.</p>
-          {:else if ownedState === "ready"}
-            <div class="name-list">
-              {#each ownedNames as n (n.label)}
-                <div class="name-row" class:name-row--active={selectedExisting === n.label}>
-                  <button type="button" class="name-select" onclick={() => selectedExisting = n.label}>
-                    <span class="name-chip-mark" aria-hidden="true"></span>
-                    <span class="name-row-text">
-                      <span class="name-row-ens">{n.ensName}</span>
-                      <span class="name-row-status">{n.previewUrl ? "points at a site" : "not pointed anywhere yet"}</span>
-                    </span>
-                  </button>
-                  {#if n.previewUrl}
-                    <a class="preview-link" href={n.previewUrl} target="_blank" rel="noopener" title="Preview current content">
-                      Preview
-                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 1h6v6M9 1L3.5 6.5M4 2H1v7h7V6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    </a>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-            {#if selectedExisting}
-              {@const sel = ownedNames.find((n) => n.label === selectedExisting)}
-              {#if sel?.previewUrl}
-                <p class="msg msg--warn">
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                  <code class="inline-code">{selectedExisting}.woco.eth</code> already points at a site — deploying will repoint it to this event.
-                </p>
-              {/if}
+          <OwnedNamesList
+            state={ownedState === "idle" ? "loading" : ownedState}
+            names={ownedNames}
+            selected={selectedExisting}
+            onselect={(label) => selectedExisting = label}
+            onretry={() => { ownedState = "idle"; loadOwned(); }}
+            emptyText="You don't own any .woco.eth names yet — choose “Claim a new name” above."
+          />
+          {#if selectedExisting}
+            {@const sel = ownedNames.find((n) => n.label === selectedExisting)}
+            {#if sel?.previewUrl}
+              <p class="msg msg--warn">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                <code class="inline-code">{selectedExisting}.woco.eth</code> already points at a site — deploying will repoint it to this event.
+              </p>
             {/if}
           {/if}
         </div>
@@ -392,34 +374,6 @@
   .msg--warn { color: #f59e0b; }
   .msg svg { flex-shrink: 0; }
 
-  /* ── Owned name rows ── */
-  .name-list { display: flex; flex-direction: column; gap: 0.4rem; }
-  .name-row {
-    display: flex; align-items: center; gap: 0.5rem;
-    background: var(--bg-elevated); border: 1.5px solid var(--border);
-    border-radius: 6px; transition: border-color 130ms, background 130ms; overflow: hidden;
-  }
-  .name-row:hover { border-color: color-mix(in srgb, #C7F23A 40%, var(--border)); }
-  .name-row--active { border-color: #C7F23A; background: color-mix(in srgb, #C7F23A 6%, var(--bg)); }
-  .name-select {
-    flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem;
-    padding: 0.5rem 0.625rem; cursor: pointer; text-align: left; background: none; border: none;
-  }
-  .name-chip-mark { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--border); position: relative; flex-shrink: 0; transition: border-color 130ms; }
-  .name-row--active .name-chip-mark { border-color: #C7F23A; }
-  .name-row--active .name-chip-mark::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: #C7F23A; }
-  .name-row-text { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
-  .name-row-ens { font-family: monospace; font-size: 0.8125rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
-  .name-row-status { font-size: 0.6875rem; color: var(--text-muted); }
-  .preview-link {
-    display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0;
-    margin-right: 0.5rem; padding: 0.3rem 0.5rem; font-size: 0.6875rem; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
-    color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; transition: all 120ms;
-  }
-  .preview-link:hover { color: #C7F23A; border-color: color-mix(in srgb, #C7F23A 45%, var(--border)); }
-
-  .link-btn { color: #C7F23A; text-decoration: underline; cursor: pointer; background: none; border: none; padding: 0; font: inherit; }
 
   .spinner {
     display: inline-block; width: 13px; height: 13px;
