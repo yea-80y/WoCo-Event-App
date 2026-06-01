@@ -246,17 +246,31 @@
           {:else if ownedState === "ready"}
             <div class="name-list">
               {#each ownedNames as n (n.label)}
-                <button type="button" class="name-chip" class:name-chip--active={selectedExisting === n.label} onclick={() => selectedExisting = n.label}>
-                  <span class="name-chip-mark" aria-hidden="true"></span>
-                  <span class="name-chip-text">{n.ensName}</span>
-                </button>
+                <div class="name-row" class:name-row--active={selectedExisting === n.label}>
+                  <button type="button" class="name-select" onclick={() => selectedExisting = n.label}>
+                    <span class="name-chip-mark" aria-hidden="true"></span>
+                    <span class="name-row-text">
+                      <span class="name-row-ens">{n.ensName}</span>
+                      <span class="name-row-status">{n.previewUrl ? "points at a site" : "not pointed anywhere yet"}</span>
+                    </span>
+                  </button>
+                  {#if n.previewUrl}
+                    <a class="preview-link" href={n.previewUrl} target="_blank" rel="noopener" title="Preview current content">
+                      Preview
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 1h6v6M9 1L3.5 6.5M4 2H1v7h7V6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </a>
+                  {/if}
+                </div>
               {/each}
             </div>
             {#if selectedExisting}
-              <p class="msg msg--warn">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                <code class="inline-code">{selectedExisting}.woco.eth</code> will repoint to this event — replacing wherever it points now.
-              </p>
+              {@const sel = ownedNames.find((n) => n.label === selectedExisting)}
+              {#if sel?.previewUrl}
+                <p class="msg msg--warn">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                  <code class="inline-code">{selectedExisting}.woco.eth</code> already points at a site — deploying will repoint it to this event.
+                </p>
+              {/if}
             {/if}
           {/if}
         </div>
@@ -378,19 +392,32 @@
   .msg--warn { color: #f59e0b; }
   .msg svg { flex-shrink: 0; }
 
-  /* ── Owned name chips ── */
-  .name-list { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .name-chip {
-    display: inline-flex; align-items: center; gap: 0.4rem;
-    padding: 0.375rem 0.625rem; cursor: pointer; font-family: monospace; font-size: 0.8125rem; font-weight: 600;
-    color: var(--text-muted); background: var(--bg-elevated);
-    border: 1.5px solid var(--border); border-radius: 5px; transition: all 130ms;
+  /* ── Owned name rows ── */
+  .name-list { display: flex; flex-direction: column; gap: 0.4rem; }
+  .name-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    background: var(--bg-elevated); border: 1.5px solid var(--border);
+    border-radius: 6px; transition: border-color 130ms, background 130ms; overflow: hidden;
   }
-  .name-chip:hover { border-color: color-mix(in srgb, #C7F23A 40%, var(--border)); color: var(--text); }
-  .name-chip--active { border-color: #C7F23A; color: var(--text); background: color-mix(in srgb, #C7F23A 7%, var(--bg)); }
-  .name-chip-mark { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--border); position: relative; flex-shrink: 0; }
-  .name-chip--active .name-chip-mark { border-color: #C7F23A; }
-  .name-chip--active .name-chip-mark::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: #C7F23A; }
+  .name-row:hover { border-color: color-mix(in srgb, #C7F23A 40%, var(--border)); }
+  .name-row--active { border-color: #C7F23A; background: color-mix(in srgb, #C7F23A 6%, var(--bg)); }
+  .name-select {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 0.625rem; cursor: pointer; text-align: left; background: none; border: none;
+  }
+  .name-chip-mark { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--border); position: relative; flex-shrink: 0; transition: border-color 130ms; }
+  .name-row--active .name-chip-mark { border-color: #C7F23A; }
+  .name-row--active .name-chip-mark::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: #C7F23A; }
+  .name-row-text { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
+  .name-row-ens { font-family: monospace; font-size: 0.8125rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+  .name-row-status { font-size: 0.6875rem; color: var(--text-muted); }
+  .preview-link {
+    display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0;
+    margin-right: 0.5rem; padding: 0.3rem 0.5rem; font-size: 0.6875rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
+    color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; transition: all 120ms;
+  }
+  .preview-link:hover { color: #C7F23A; border-color: color-mix(in srgb, #C7F23A 45%, var(--border)); }
 
   .link-btn { color: #C7F23A; text-decoration: underline; cursor: pointer; background: none; border: none; padding: 0; font: inherit; }
 

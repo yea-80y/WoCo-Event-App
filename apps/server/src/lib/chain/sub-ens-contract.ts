@@ -22,6 +22,13 @@ const WOCO_ETH_BASE_NODE = namehash("woco.eth");
 const REGISTRY_ABI = [
   // ERC-721 ownerOf — reverts if token (label) doesn't exist
   "function ownerOf(uint256 tokenId) view returns (address)",
+  // Enumeration: standard ERC-721 mint/transfer; tokenId == node
+  "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
+  // node → DNS-encoded name; decodeName turns it back into "label.woco.eth"
+  "function names(bytes32 node) view returns (bytes)",
+  "function decodeName(bytes name) view returns (string)",
+  // Resolver record — current Swarm pointer for a name (EIP-1577 contenthash)
+  "function contenthash(bytes32 node) view returns (bytes)",
 ];
 
 // Override either with env. Chain defaults to Arb Sepolia during buildathon.
@@ -80,6 +87,17 @@ export function encodeSwarmContenthash(hexHash: string): Uint8Array {
   return Buffer.concat([SWARM_ENS_PREFIX, Buffer.from(clean, "hex")]);
 }
 
+const SWARM_ENS_PREFIX_HEX = SWARM_ENS_PREFIX.toString("hex");
+
+/** Reverse of encodeSwarmContenthash — recovers the 64-hex Swarm hash, or null for a
+ *  non-Swarm / empty record. Used to build a preview URL for a name's current target. */
+export function decodeSwarmContenthash(contenthash: string): string | null {
+  const clean = (contenthash || "").replace(/^0x/, "").toLowerCase();
+  if (!clean.startsWith(SWARM_ENS_PREFIX_HEX)) return null;
+  const hash = clean.slice(SWARM_ENS_PREFIX_HEX.length);
+  return /^[a-f0-9]{64}$/.test(hash) ? hash : null;
+}
+
 const _providers = new Map<number, JsonRpcProvider>();
 
 function getProvider(chainId: number): JsonRpcProvider {
@@ -120,6 +138,49 @@ export async function getLabelOwner(label: string): Promise<string | null> {
     // ERC-721 reverts when the tokenId doesn't exist (unregistered label)
     return null;
   }
+}
+
+export interface OwnedLabel {
+  label: string;
+  /** 64-hex Swarm hash the name currently points at, or null if unset / non-Swarm. */
+  contentHash: string | null;
+}
+
+/**
+ * Enumerates every label.woco.eth currently owned by `address`, authoritatively
+ * from chain (covers names claimed via any path — sponsor mint or ZeroDev permit).
+ *
+ * The L2Registry is a small ERC-721, so a full-range Transfer scan is cheap (a
+ * handful of logs). For each token minted/transferred TO the address we confirm
+ * the live owner (drops names transferred away), decode the readable name, and
+ * read its current contenthash for a preview URL.
+ */
+export async function getOwnedLabels(address: string): Promise<OwnedLabel[]> {
+  const chainId = getSubEnsChainId();
+  const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
+  const addr = address.toLowerCase();
+
+  const logs = await registry.queryFilter(registry.filters.Transfer!(null, address));
+  const tokenIds = [...new Set(logs.map((l) => (l as unknown as { args: { tokenId: bigint } }).args.tokenId.toString()))];
+
+  const out: OwnedLabel[] = [];
+  for (const tid of tokenIds) {
+    const node = "0x" + BigInt(tid).toString(16).padStart(64, "0");
+    let owner: string;
+    try { owner = (await registry.ownerOf(tid) as string).toLowerCase(); } catch { continue; }
+    if (owner !== addr) continue; // transferred away since the mint/transfer-in
+
+    let name: string;
+    try { name = await registry.decodeName(await registry.names(node)) as string; } catch { continue; }
+    if (!name || name === "woco.eth" || !name.endsWith(".woco.eth")) continue; // skip base node / malformed
+    const label = name.slice(0, -".woco.eth".length);
+
+    let contentHash: string | null = null;
+    try { contentHash = decodeSwarmContenthash(await registry.contenthash(node) as string); } catch { /* unset */ }
+
+    out.push({ label, contentHash });
+  }
+  return out;
 }
 
 export async function mintSubEnsName(

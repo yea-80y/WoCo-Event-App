@@ -36,6 +36,10 @@ export async function claimSubEnsLabel(opts: {
 export interface OwnedSubEnsName {
   label: string;
   ensName: string;
+  /** 64-hex Swarm hash the name currently points at (absent if unset). */
+  contentHash?: string;
+  /** Gateway URL to preview the name's current content (absent if it points nowhere). */
+  previewUrl?: string;
 }
 
 /** Labels the authenticated organiser owns (reconciled against on-chain ownerOf). */
