@@ -20,6 +20,7 @@ import { broadcast } from "./routes/broadcast.js";
 import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
 import { sitesRouter } from "./routes/sites.js";
+import { shopsRouter } from "./routes/shops.js";
 import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
@@ -373,6 +374,9 @@ app.route("/api/site", siteRoute);
 
 // Multi-page site builder: config + events index CRUD
 app.route("/api/sites", sitesRouter);
+
+// Shop: catalog + order CRUD
+app.route("/api/shops", shopsRouter);
 
 // Custom domain routes
 app.route("/api/domains", domains);

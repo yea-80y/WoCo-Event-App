@@ -219,6 +219,28 @@ export interface ShopDirectory {
   owner: Hex0x;
   shops: ShopDirectoryEntry[];
   updatedAt: string;
+  /** Number of overflow pages (1..N) beyond page 0. Page 0 only. */
+  pages?: number;
+}
+
+/** Paged catalog envelope at `woco/shop/{shopId}/products[/pN]`. */
+export interface ProductsIndex {
+  v: 1;
+  shopId: string;
+  products: Product[];
+  updatedAt: string;
+  /** Number of overflow pages (1..N) beyond page 0. Page 0 only. */
+  pages?: number;
+}
+
+/** Paged order log at `woco/shop/{shopId}/orders[/pN]` — newest first. */
+export interface OrdersLog {
+  v: 1;
+  shopId: string;
+  orders: Order[];
+  updatedAt: string;
+  /** Number of overflow pages (1..N) beyond page 0. Page 0 only. */
+  pages?: number;
 }
 
 // ---------------------------------------------------------------------------
