@@ -25,6 +25,13 @@ import type { PaymentConfig, FiatCurrency, PaymentChainId } from "../event/types
  */
 export type ShopPaymentConfig = Omit<PaymentConfig, "price" | "currency">;
 
+/**
+ * Sales channel a product is offered on. Omit on a product = all channels.
+ * Lets a merchant tie the same catalog to the customer web shop and/or the
+ * staff POS (e.g. a kitchen-only item hidden from the web menu).
+ */
+export type SalesChannel = "web" | "pos";
+
 /** A grouping in the menu (e.g. "Drinks", "Vinyl", "Merch"). */
 export interface ProductCategory {
   /** Stable slug/ULID — survives renames, used as the product's categoryId. */
@@ -46,6 +53,8 @@ export interface ProductVariant {
   priceDelta: string;
   /** Finite stock for this variant; omit to inherit the product's stock semantics. */
   stock?: number;
+  /** Stock-keeping unit for reconciliation / POS lookup. */
+  sku?: string;
 }
 
 /**
@@ -57,13 +66,22 @@ export interface Product {
   shopId: string;
   name: string;
   description?: string;
+  /** Primary image. */
   imageRef?: Hex64;
+  /** Additional gallery images shown after the primary. */
+  imageRefs?: Hex64[];
   /** Decimal string in the shop's fiat currency (e.g. "4.50"). */
   price: string;
+  /** Original price for sale display (struck through). Decimal string; omit = not on sale. */
+  compareAtPrice?: string;
+  /** Stock-keeping unit for reconciliation / POS lookup. */
+  sku?: string;
   categoryId?: string;
   variants?: ProductVariant[];
   /** Finite stock count. Omit = unlimited. Finite reuses reservation→claim. */
   stock?: number;
+  /** Channels this product is sold on. Omit = all channels (web + pos). */
+  channels?: SalesChannel[];
   /** Loyalty badges awarded when this specific item is bought. */
   podRewards?: PodRewardRule[];
   active: boolean;
@@ -267,10 +285,14 @@ export interface UpsertProductRequest {
   name: string;
   description?: string;
   imageRef?: Hex64;
+  imageRefs?: Hex64[];
   price: string;
+  compareAtPrice?: string;
+  sku?: string;
   categoryId?: string;
   variants?: ProductVariant[];
   stock?: number;
+  channels?: SalesChannel[];
   podRewards?: PodRewardRule[];
   active?: boolean;
   sortIndex?: number;

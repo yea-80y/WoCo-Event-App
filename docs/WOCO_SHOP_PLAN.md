@@ -63,10 +63,16 @@ Mirrors event/series + PaymentConfig conventions (lowercase addrs, Hex64 refs, U
 
 - `Shop` — { shopId(ULID), ownerAddress, name, currency(FiatCurrency), categories[],
   paymentConfig(reuse PaymentConfig), createdAt }
-- `Product` — { productId, shopId, name, description, imageRef, price, category,
-  variants[], stock?(number — OMIT = unlimited), podRewards?[], active }
-- `ProductVariant` — { variantId, label (e.g. "Large"), priceDelta }  (flat only in p1;
-  prep-changing modifiers are the fast-food rabbit hole — deferred)
+- `Product` — { productId, shopId, name, description, imageRef, imageRefs?, price,
+  compareAtPrice?(sale), sku?, category, variants[], stock?(OMIT = unlimited),
+  channels?(web|pos — OMIT = both), podRewards?[], active }
+- `ProductVariant` — { variantId, label (e.g. "Large"), priceDelta, stock?, sku? }
+  (flat only in p1; multi-dimension option matrix (Size×Colour) + prep-changing
+  modifiers deferred — flat variants also suit the POS tappable grid)
+
+Shopify-aligned subset (products→variants, optional inventory tracking, collections=
+categories, sale price, SKU, channel visibility). `channels` ties the one catalog to both
+the web shop and the staff POS. Multi-option variant matrix is the main deferred parity gap.
 - `Order` — { orderId, shopId, code(short human-readable), lines[], total, currency,
   paymentRail("card"|"crypto"), payment(proof/quote), status, fulfilledAt?, buyerRef }
 - `OrderLine` — { productId, variantId?, qty, unitPrice }
@@ -94,6 +100,30 @@ Stock: optional per product. Finite-stock items (limited vinyl, capped merch) re
   attestation feeding the same aggregator (two input sources, one tally).
 - POD issuance reuses existing rails (`woco.manifest.v1` ed25519 + Merkle batch).
 
+## 4b. Decentralization posture (client-first)
+
+Server is the "needs a server secret / shared durable state" carve-out only. Feed writes
+need both the platform feed-signing key (`FEED_PRIVATE_KEY`) and the postage batch — both
+server-only — which is exactly why events/sites/profiles write through the server. The shop
+inherits that same constraint, NOT a new one.
+
+- **Server-only (stays):** Stripe (secret + webhooks), postage, HMAC payment-quote signing,
+  on-chain/x402 verification, email.
+- **Reads are decentralizable now:** a deployed web shop can read the product feed straight
+  from the Swarm gateway; the GET endpoints are an optional cache, not a requirement.
+- **Pricing is pure:** move `priceOrder` + money helpers from `apps/server/src/lib/shop/`
+  into `packages/shared` (step 2) so the CLIENT prices/validates locally (UX) and the
+  server/payment-verification only re-checks the final amount (trust — defense in depth).
+- **Writes migrate cleanly:** when client-side feed signing lands (see
+  signing_role_architecture), catalog/order writes move client-side — same types, same
+  topics, the user's scoped key signs instead of the platform key. The server endpoints are
+  thin relays specifically so this is mechanical, not a rewrite.
+
+**Agentic inventory (hook only for now):** an agent adding stock is the write-side twin of
+x402 purchasing. Reserve a `shop:manage` session-delegation scope so a scoped session key
+(ZeroDev) grants an agent catalog-write capability limited to one shop. The catalog API is
+already machine-clean (JSON in/out, header auth). Build the agent flow later.
+
 ## 5. Security invariants
 
 - Spend permission cap + window are the drain ceiling; verify on-chain before fulfilment.
@@ -111,6 +141,11 @@ Stock: optional per product. Finite-stock items (limited vinyl, capped merch) re
    (`apps/server/src/lib/shop/service.ts`) + routes (`apps/server/src/routes/shops.ts`,
    mounted `/api/shops`). Builds clean; NOT yet deployed/tested against live bee.
 2. **USDC spend-permission rail** + Stripe parallel — the security-critical core.  *(Opus — NEXT)*
+   Tasks: (a) move `priceOrder` + money helpers to `packages/shared` (client-first); (b) Stripe
+   checkout + webhook → order pending→paid (reuse events' Stripe Connect); (c) USDC: online
+   per-order signed-quote flow, then POS spend-permission (capped, time-boxed) draw; (d) on-chain
+   verification + replay prevention; (e) reserve `shop:manage` session scope. Decide first:
+   test-USDC token on Arb Sepolia; Spend Permission SDK (Coinbase native vs ZeroDev session keys).
 3. **Web shop UI + staff POS skin** — same catalog, two front-ends; tap-and-go on rail.  *(Sonnet — mechanical component build; back to Opus for any signature/funds code)*
 4. **POD loyalty milestones** — listen to spend events, issue badges via aggregator.  *(Opus review on crypto touches)*
 
