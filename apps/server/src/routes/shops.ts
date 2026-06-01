@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { requireAuth } from "../middleware/auth.js";
 import {
   getShop,
+  getShopStrict,
   writeShop,
   getProducts,
   upsertProduct,
@@ -68,14 +69,18 @@ shopsRouter.post("/", requireAuth, async (c) => {
     let createdAt = now;
     const shopId = body.shopId ?? randomUUID();
 
-    // On update, only the owner may overwrite.
+    // On update, only the owner may overwrite. Strict read: a transient Swarm
+    // failure must not be read as "new shop" and skip the ownership check.
     if (body.shopId) {
-      const existing = await getShop(body.shopId);
-      if (existing) {
-        if (existing.ownerAddress.toLowerCase() !== parentAddress) {
+      const res = await getShopStrict(body.shopId);
+      if (res.status === "error") {
+        return c.json({ ok: false, error: "Read failed — refusing to write" }, 503);
+      }
+      if (res.status === "present") {
+        if (res.shop.ownerAddress.toLowerCase() !== parentAddress) {
           return c.json({ ok: false, error: "Not the shop owner" }, 403);
         }
-        createdAt = existing.createdAt;
+        createdAt = res.shop.createdAt;
       }
     }
 

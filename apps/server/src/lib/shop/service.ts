@@ -170,6 +170,26 @@ export async function getShop(shopId: string): Promise<Shop | null> {
   return decodeJsonFeed<Shop>(page);
 }
 
+export type ShopReadResult =
+  | { status: "present"; shop: Shop }
+  | { status: "absent" }
+  | { status: "error"; error: Error };
+
+/**
+ * Strict read for the WRITE path. A swallowed null from a transient Swarm
+ * failure must NOT be treated as "no such shop" on the create-or-update path —
+ * doing so would skip the ownership check and let a caller overwrite an
+ * existing shop's owner. "error" → refuse to write; "absent" → genuinely new.
+ */
+export async function getShopStrict(shopId: string): Promise<ShopReadResult> {
+  const page = await readFeedPageStrict(Topic.fromString(shopConfigTopic(shopId)));
+  if (page.status === "error") return { status: "error", error: page.error };
+  if (page.status === "absent") return { status: "absent" };
+  const shop = decodeJsonFeed<Shop>(page.data);
+  if (!shop) return { status: "error", error: new Error("Shop config decoded to null") };
+  return { status: "present", shop };
+}
+
 export async function writeShop(shop: Shop): Promise<void> {
   await writeFeedPage(Topic.fromString(shopConfigTopic(shop.shopId)), encodeJsonFeed(shop));
 }
