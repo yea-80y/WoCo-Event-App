@@ -105,8 +105,12 @@ Stock: optional per product. Finite-stock items (limited vinyl, capped merch) re
 
 ## 6. Build order (phases)
 
-1. **Catalog + order model** — shared types + feeds + server CRUD.  *(Opus — data model)*
-2. **USDC spend-permission rail** + Stripe parallel — the security-critical core.  *(Opus)*
+1. **Catalog + order model** — shared types + feeds + server CRUD.  *(Opus)* ✅ DONE
+   (branch `feat/woco-shop`, commits 5f06144 + 93a9c3e). Shared model
+   (`packages/shared/src/shop/{types,topics}.ts`), server service
+   (`apps/server/src/lib/shop/service.ts`) + routes (`apps/server/src/routes/shops.ts`,
+   mounted `/api/shops`). Builds clean; NOT yet deployed/tested against live bee.
+2. **USDC spend-permission rail** + Stripe parallel — the security-critical core.  *(Opus — NEXT)*
 3. **Web shop UI + staff POS skin** — same catalog, two front-ends; tap-and-go on rail.  *(Sonnet — mechanical component build; back to Opus for any signature/funds code)*
 4. **POD loyalty milestones** — listen to spend events, issue badges via aggregator.  *(Opus review on crypto touches)*
 
