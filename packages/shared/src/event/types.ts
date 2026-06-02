@@ -113,7 +113,10 @@ export const USDC_ADDRESSES: Partial<Record<PaymentChainId, Hex0x>> = {
   8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Hex0x,
   10: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85" as Hex0x,
   42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as Hex0x,
-  // No USDC on Sepolia / Arbitrum Sepolia — ETH only for testing
+  // Circle native test USDC on Arbitrum Sepolia (faucet.circle.com) — same 6-dec
+  // ERC-20 surface as mainnet, so going live is a one-line swap to 42161 above.
+  // No native USDC on Ethereum Sepolia (11155111) — ETH only there for testing.
+  421614: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d" as Hex0x,
 };
 
 /** Human-readable chain names */

@@ -11,11 +11,11 @@ import {
   getOrders,
   appendOrder,
   updateOrder,
-  priceOrder,
   genOrderCode,
   getCreatorShops,
   upsertCreatorShop,
 } from "../lib/shop/service.js";
+import { priceOrder } from "@woco/shared";
 import type {
   Shop,
   Product,
