@@ -95,6 +95,22 @@ export async function authGet<T>(path: string, baseUrl?: string): Promise<ApiRes
   return json;
 }
 
+/** Authenticated PATCH request. */
+export async function authPatch<T>(
+  path: string,
+  body: Record<string, unknown>,
+  baseUrl?: string,
+): Promise<ApiResponse<T>> {
+  const bodyText = JSON.stringify(body);
+  const authHeaders = await buildAuthHeaders("PATCH", path, bodyText);
+  const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: bodyText,
+  });
+  return safeJson<T>(resp);
+}
+
 /** Authenticated DELETE request. */
 export async function authDelete<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
   const authHeaders = await buildAuthHeaders("DELETE", path, "");

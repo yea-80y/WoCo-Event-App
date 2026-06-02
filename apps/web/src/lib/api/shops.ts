@@ -15,7 +15,7 @@ import type {
   CreateOrderRequest,
   OrderLineRequest,
 } from "@woco/shared";
-import { apiBase, authPost } from "./client.js";
+import { apiBase, authPost, authGet, authPatch, authDelete } from "./client.js";
 
 // ---------------------------------------------------------------------------
 // Public reads
@@ -46,7 +46,7 @@ export async function getProducts(shopId: string): Promise<Product[]> {
 // ---------------------------------------------------------------------------
 
 export async function getMyShops(): Promise<ShopDirectoryEntry[]> {
-  const r = await authPost<ShopDirectoryEntry[]>("/api/shops/mine", {});
+  const r = await authGet<ShopDirectoryEntry[]>("/api/shops/mine");
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to load shops");
   return r.data;
 }
@@ -58,7 +58,7 @@ export async function createShop(req: CreateShopRequest): Promise<Shop> {
 }
 
 export async function updateShop(shopId: string, req: UpdateShopRequest): Promise<Shop> {
-  const r = await authPost<Shop>(`/api/shops/${shopId}`, req as unknown as Record<string, unknown>);
+  const r = await authPatch<Shop>(`/api/shops/${shopId}`, req as unknown as Record<string, unknown>);
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to update shop");
   return r.data;
 }
@@ -73,7 +73,7 @@ export async function upsertProduct(shopId: string, req: UpsertProductRequest): 
 }
 
 export async function deleteProduct(shopId: string, productId: string): Promise<void> {
-  const r = await authPost<void>(`/api/shops/${shopId}/products/${productId}/delete`, {});
+  const r = await authDelete<void>(`/api/shops/${shopId}/products/${productId}`);
   if (!r.ok) throw new Error(r.error ?? "Failed to delete product");
 }
 
