@@ -26,6 +26,7 @@ import {
   drawSpendPermission,
   revokeSpendPermission,
   getSpendPermission,
+  listSpendPermissionsByKernel,
 } from "../lib/shop/spend-permission.js";
 import { verifyPayment } from "../lib/payment/verify.js";
 import { checkAndConsumeTxHash } from "../lib/payment/tx-registry.js";
@@ -207,6 +208,20 @@ shopsRouter.get("/mine", requireAuth, async (c) => {
     return c.json({ ok: true, data: shops });
   } catch {
     return c.json({ ok: false, error: "Failed to read shop directory" }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/shops/spend-permissions/mine — the attendee's own spend permissions
+// (their "spending wallet"). MUST precede /:id. Filtered by the authed Kernel.
+// ---------------------------------------------------------------------------
+
+shopsRouter.get("/spend-permissions/mine", requireAuth, (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  try {
+    return c.json({ ok: true, data: listSpendPermissionsByKernel(parentAddress) });
+  } catch {
+    return c.json({ ok: false, error: "Failed to read spend permissions" }, 500);
   }
 });
 

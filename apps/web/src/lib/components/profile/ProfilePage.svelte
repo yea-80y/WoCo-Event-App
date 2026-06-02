@@ -8,6 +8,7 @@
   import { authPost, authGet } from "../../api/client.js";
   import UserAvatar from "./UserAvatar.svelte";
   import WalletTab from "./WalletTab.svelte";
+  import SpendingWallet from "../../attendee/shop/SpendingWallet.svelte";
   import EventCard from "../../attendee/events/EventCard.svelte";
 
   type ProfileTab = "profile" | "wallet" | "events";
@@ -532,6 +533,9 @@
 
     {#if activeTab === "wallet"}
       <div class="tab-body">
+        {#if auth.kind === "passkey"}
+          <SpendingWallet />
+        {/if}
         <WalletTab />
       </div>
     {/if}

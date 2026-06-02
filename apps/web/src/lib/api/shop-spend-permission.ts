@@ -21,7 +21,15 @@ import type {
   SpendPermissionGrantParams,
   RegisterSpendPermissionRequest,
 } from "@woco/shared";
-import { apiBase, authPost } from "./client.js";
+import { apiBase, authPost, authGet } from "./client.js";
+
+/** The attendee's own spend permissions across all shops — their spending-wallet
+ *  view. Auth-gated; the server filters by the authenticated Kernel address. */
+export async function getMySpendPermissions(): Promise<ShopSpendPermission[]> {
+  const res = await authGet<ShopSpendPermission[]>("/api/shops/spend-permissions/mine");
+  if (!res.ok || !res.data) throw new Error(res.error || "Failed to load spend permissions");
+  return res.data;
+}
 
 /** Server-dictated grant scope — the approval MUST be built to match it. Public. */
 export async function fetchSpendGrantParams(shopId: string): Promise<SpendPermissionGrantParams> {

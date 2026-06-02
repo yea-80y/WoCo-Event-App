@@ -196,6 +196,20 @@ export function getSpendPermission(permissionId: string): ShopSpendPermission | 
   return r ? toPublic(r) : null;
 }
 
+/**
+ * All permissions an attendee granted, newest first — the data behind their
+ * "spending wallet" view. Filtered by the authenticated Kernel address (the
+ * same identity that registered them), so it never leaks another wallet's holds.
+ */
+export function listSpendPermissionsByKernel(kernelAddress: string): ShopSpendPermission[] {
+  ensureLoaded();
+  const addr = kernelAddress.toLowerCase();
+  return [...store.values()]
+    .filter((r) => r.kernelAddress.toLowerCase() === addr)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map(toPublic);
+}
+
 // ---------------------------------------------------------------------------
 // Register — store an approval the attendee granted on their Kernel.
 // ---------------------------------------------------------------------------
