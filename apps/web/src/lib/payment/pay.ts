@@ -23,14 +23,27 @@ export type PaymentProgress = (ev: {
 }) => void;
 
 /**
+ * The subset of progress phases `waitForConfirmations` emits. Narrowing the
+ * callback here lets any caller's wider progress type (events' `PaymentProgress`,
+ * the shop's `ShopPayProgress`) be passed in directly — they all handle these
+ * two phases.
+ */
+export type ConfirmationProgress = (ev: {
+  phase: "waiting-confirmations" | "confirmed";
+  current?: number;
+  total?: number;
+  txHash?: string;
+}) => void;
+
+/**
  * Wait for a transaction to reach the server's required confirmation count
  * (plus a one-block buffer to absorb RPC-node head skew). Reports progress on
  * each new block so the UI isn't a frozen spinner.
  */
-async function waitForConfirmations(
+export async function waitForConfirmations(
   tx: { hash: string; wait: (n: number) => Promise<unknown> },
   chainId: PaymentChainId,
-  onProgress?: PaymentProgress,
+  onProgress?: ConfirmationProgress,
 ): Promise<void> {
   const provider = getEthersProvider();
   const required = getMinConfirmations(chainId) + 1; // +1 = buffer for RPC skew

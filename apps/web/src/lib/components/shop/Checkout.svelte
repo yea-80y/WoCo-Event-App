@@ -9,10 +9,17 @@
    *
    * Funds/signature flow is in shop-payment.ts — this component only calls it.
    */
-  import type { Shop, FiatCurrency } from "@woco/shared";
+  import type {
+    Shop,
+    FiatCurrency,
+    PaymentChainId,
+    ShopPaymentQuote,
+    ShopPaymentBinding,
+  } from "@woco/shared";
   import type { CartLine } from "./Storefront.svelte";
   import { createOrder } from "../../api/shops.js";
   import { fetchShopPaymentQuote } from "../../api/shop-payment.js";
+  import { isWalletAvailable } from "../../wallet/provider.js";
 
   interface Props {
     shop: Shop;
@@ -54,12 +61,54 @@
   let phase = $state<Phase>("cart");
   let errorMsg = $state("");
   let successCode = $state("");
+  let payStatus = $state("");
+
+  /**
+   * Proof of a USDC payment whose funds have ALREADY left the wallet but whose
+   * server-side settlement has not yet confirmed. While this is set, retrying
+   * re-submits the same proof — it must never trigger a second on-chain charge.
+   */
+  type PendingSettle = {
+    orderId: string;
+    chainId: PaymentChainId;
+    quote: ShopPaymentQuote;
+    txHash: string;
+    binding: ShopPaymentBinding;
+  };
+  let pendingSettle = $state<PendingSettle | null>(null);
+
+  /** Submit a confirmed on-chain payment for settlement. Idempotent server-side. */
+  async function settleCrypto(p: PendingSettle) {
+    const { submitShopCryptoPayment } = await import("../../api/shop-payment.js");
+    payStatus = "Finalising order…";
+    const settled = await submitShopCryptoPayment({
+      shopId: shop.shopId,
+      orderId: p.orderId,
+      txHash: p.txHash,
+      chainId: p.chainId,
+      quote: p.quote,
+      binding: p.binding,
+    });
+    successCode = settled.code;
+    phase = "success";
+    pendingSettle = null;
+    onSuccess(settled.orderId, settled.code);
+  }
 
   async function pay() {
-    if (cart.length === 0 || phase === "paying") return;
+    if (phase === "paying") return;
+    if (!pendingSettle && cart.length === 0) return;
     phase = "paying";
     errorMsg = "";
+    payStatus = "";
     try {
+      // Recovery: a prior on-chain payment confirmed but settling failed — the
+      // funds are already gone, so re-submit the SAME proof, never re-charge.
+      if (pendingSettle) {
+        await settleCrypto(pendingSettle);
+        return;
+      }
+
       const lines = cart.map((l) => ({ productId: l.productId, qty: l.qty }));
       const order = await createOrder(shop.shopId, { lines, rail });
 
@@ -71,26 +120,50 @@
         return;
       }
 
-      // Crypto path — fetch quote then hand off to the on-chain USDC transfer.
-      // The on-chain execution (ERC-20 transfer + submitShopCryptoPayment) lives
-      // in a dedicated shop payment module (Opus step 3b — not yet wired here).
-      const defaultChain = (shop.payment.acceptedChains?.[0] ?? 421614) as number;
-      await fetchShopPaymentQuote({
-        shopId: shop.shopId,
-        orderId: order.orderId,
-        chainId: defaultChain as Parameters<typeof fetchShopPaymentQuote>[0]["chainId"],
+      // Crypto path — fetch the server-signed quote, transfer the EXACT quoted
+      // USDC amount on-chain (with EIP-712 payer binding), then settle the order.
+      // The amount comes solely from the signed quote; we never re-derive it.
+      if (!isWalletAvailable()) {
+        throw new Error("Connect a wallet to pay with USDC, or use card instead.");
+      }
+      const chainId = (shop.payment.acceptedChains?.[0] ?? 421614) as PaymentChainId;
+      const quote = await fetchShopPaymentQuote({ shopId: shop.shopId, orderId: order.orderId, chainId });
+
+      const { payShopUSDC } = await import("../../payment/shop-usdc-pay.js");
+      const { txHash, binding } = await payShopUSDC({
+        quote,
+        onProgress: (ev) => {
+          if (ev.phase === "switch-chain") payStatus = "Switching network…";
+          else if (ev.phase === "sign-binding") payStatus = "Authorise in your wallet…";
+          else if (ev.phase === "send-tx") payStatus = "Confirm the USDC payment…";
+          else if (ev.phase === "waiting-confirmations") payStatus = `Confirming on-chain… ${ev.current ?? 0}/${ev.total ?? ""}`;
+          else if (ev.phase === "confirmed") payStatus = "Confirmed";
+        },
       });
-      // TODO (Opus, step 3b): call executeShopUSDCTransfer(quote) → settleCryptoOrder(proof)
-      throw new Error("USDC payment requires a connected smart wallet. Use card for now.");
+
+      // Funds have left the wallet — pin the proof so any settle failure resolves
+      // by re-submitting (settleCrypto), not by charging again. Use quote.chainId
+      // as authoritative.
+      pendingSettle = { orderId: order.orderId, chainId: quote.chainId, quote, txHash, binding };
+      await settleCrypto(pendingSettle);
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Payment failed";
       phase = "error";
+    } finally {
+      payStatus = "";
     }
   }
 
   function retry() {
-    phase = "cart";
     errorMsg = "";
+    payStatus = "";
+    // If funds already moved, re-submit the pinned proof (never re-charge);
+    // otherwise return to the cart for a fresh attempt.
+    if (pendingSettle) {
+      void pay();
+    } else {
+      phase = "cart";
+    }
   }
 </script>
 
@@ -193,10 +266,10 @@
     <button
       class="btn btn--primary pay-btn"
       onclick={phase === "error" ? retry : pay}
-      disabled={phase === "paying" || cart.length === 0}
+      disabled={phase === "paying" || (cart.length === 0 && !pendingSettle)}
     >
       {#if phase === "paying"}
-        Processing…
+        {payStatus || "Processing…"}
       {:else if phase === "error"}
         Try again
       {:else if rail === "card"}
