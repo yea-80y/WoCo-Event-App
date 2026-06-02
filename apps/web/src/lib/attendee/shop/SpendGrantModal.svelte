@@ -54,6 +54,22 @@
   let permission = $state<ShopSpendPermission | null>(null);
   let capInput = $state(String(defaultCapMinor / 100));
   let copied = $state(false);
+  let qrSvg = $state<string | null>(null);
+
+  // Scannable token staff's POS reads to pull against this permission. Display
+  // only — versioned so the scanner can validate the shopId and extract the id.
+  async function makeQr(permissionId: string) {
+    try {
+      const { renderSVG } = await import("uqr");
+      qrSvg = renderSVG(`woco-spend-v1:${shopId}:${permissionId}`, {
+        ecc: "M",
+        blackColor: "#0B0B09",
+        whiteColor: "#ffffff",
+      });
+    } catch {
+      qrSvg = null;
+    }
+  }
 
   const sym = $derived(SYMBOLS[currency] ?? "");
   const capNumber = $derived(Number(capInput));
@@ -101,6 +117,7 @@
 
       permission = perm;
       onGranted?.(perm);
+      void makeQr(perm.permissionId);
       phase = "done";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Authorisation failed";
@@ -218,10 +235,16 @@
       </span>
       <span class="kicker">Spend permission granted</span>
       <p class="done-desc">
-        Show this code at the bar or tap your phone to the staff POS. No further approval needed each round.
+        Show this code at the bar — staff scan it to charge your tab. No further approval needed each round.
       </p>
 
-      <!-- QR placeholder — a real QR lib can be swapped in; for now a styled code pill -->
+      {#if qrSvg}
+        <div class="qr-panel">
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -- generated SVG, no user input -->
+          {@html qrSvg}
+        </div>
+      {/if}
+
       <div class="perm-id-block">
         <span class="perm-id mono">{permission.permissionId.slice(0, 24)}…</span>
         <button class="copy-btn" onclick={copyId}>
@@ -342,6 +365,14 @@
     border-radius: var(--radius-md); margin-bottom: 0.25rem;
   }
   .done-desc { margin: 0; font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.4; max-width: 300px; }
+
+  .qr-panel {
+    background: #ffffff; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 0.875rem;
+    width: 188px; height: 188px; display: grid; place-items: center;
+    box-shadow: 0 0 0 4px var(--bg-surface), 0 0 0 5px var(--border);
+  }
+  .qr-panel :global(svg) { width: 100%; height: 100%; display: block; }
 
   .perm-id-block {
     display: flex; align-items: center; gap: 0.5rem;

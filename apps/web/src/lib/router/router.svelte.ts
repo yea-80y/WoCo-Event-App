@@ -12,6 +12,7 @@
  *     /tickets   (and /my-tickets) my-tickets
  *     /verify                      verify
  *     /profile, /profile/:addr     profile
+ *     /shops/:id/tap               shop-tap (tap-to-pay activation)
  *
  *   CREATOR surface
  *     /creator                          creator-home  (studio dashboard)
@@ -21,6 +22,7 @@
  *     /creator/events/:id/embed         embed-setup
  *     /creator/sites        (and /build)  build
  *     /creator/shops                    my-shops
+ *     /creator/shops/:shopId            shop-editor
  *     /creator/shops/:shopId/pos        shop-pos
  *     /creator/profile/:addr            profile (creator surface)
  *     /dashboard, /dashboard/:id        dashboard-index / dashboard (legacy)
@@ -66,6 +68,9 @@ function matchRoute(pathWithQuery: string): Match {
   const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);
   if (shopPosMatch) return { route: "shop-pos", params: { shopId: shopPosMatch[1] }, surface: "creator" };
 
+  const shopEditorMatch = path.match(/^\/creator\/shops\/([^/]+)$/);
+  if (shopEditorMatch) return { route: "shop-editor", params: { shopId: shopEditorMatch[1] }, surface: "creator" };
+
   const creatorSiteEventsMatch = path.match(/^\/creator\/sites\/([^/]+)\/events$/);
   if (creatorSiteEventsMatch) return { route: "site-events", params: { siteId: creatorSiteEventsMatch[1] }, surface: "creator" };
 
@@ -85,6 +90,9 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
   const soonMatch = path.match(/^\/soon\/(.+)$/);
   if (soonMatch) return { route: "soon", params: { feature: soonMatch[1] }, surface: "attendee" };
+
+  const shopTapMatch = path.match(/^\/shops\/([^/]+)\/tap$/);
+  if (shopTapMatch) return { route: "shop-tap", params: { shopId: shopTapMatch[1] }, surface: "attendee" };
 
   const profileMatch = path.match(/^\/profile\/(0x[a-fA-F0-9]{40})$/);
   if (profileMatch) return { route: "profile", params: { address: profileMatch[1] }, surface: "attendee" };
