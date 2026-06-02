@@ -103,6 +103,24 @@ const OWNER_SETTABLE_STATUS: ReadonlySet<OrderStatus> = new Set([
   "cancelled",
 ]);
 
+/**
+ * Catalog-write authorization seam — the `shop:manage` scope hook (2e, RESERVED;
+ * not enforced yet). Today every catalog/config write requires the verified shop
+ * OWNER (parentAddress === ownerAddress). The future agentic-inventory path (the
+ * write-side twin of x402) issues a SCOPED capability — a ZeroDev-style session
+ * key authorised ONLY for `shop:manage` on a single shopId — so an agent never
+ * wields the owner's full session. When that lands, the scope check slots in HERE
+ * (one site): `return owner(...) || hasShopManageScope(c, shopId)`. Enforcing it
+ * needs an authenticated `scope` in the AuthorizeSession EIP-712 payload, a
+ * versioned SESSION_DOMAIN bump deferred so live sessions don't break. The scope
+ * name/shape are reserved in @woco/shared (SHOP_MANAGE_SCOPE / ScopedShopCapability).
+ * NOTE: this seam covers catalog + shop config only — order fulfilment / funds
+ * stay owner-only (a separate, narrower capability if ever delegated).
+ */
+function canManageShop(ownerAddress: string, parentAddress: string, _shopId: string): boolean {
+  return ownerAddress.toLowerCase() === parentAddress.toLowerCase();
+}
+
 // In-flight settlement lock per order — a spend-permission draw moves real funds,
 // so two concurrent settlements of the SAME order must never both draw. The
 // per-permission mutex serialises the draws themselves; this guards the
@@ -133,7 +151,7 @@ shopsRouter.post("/", requireAuth, async (c) => {
         return c.json({ ok: false, error: "Read failed — refusing to write" }, 503);
       }
       if (res.status === "present") {
-        if (res.shop.ownerAddress.toLowerCase() !== parentAddress) {
+        if (!canManageShop(res.shop.ownerAddress, parentAddress, shopId)) {
           return c.json({ ok: false, error: "Not the shop owner" }, 403);
         }
         createdAt = res.shop.createdAt;
@@ -216,7 +234,7 @@ shopsRouter.patch("/:id", requireAuth, async (c) => {
   try {
     const existing = await getShop(shopId);
     if (!existing) return c.json({ ok: false, error: "Shop not found" }, 404);
-    if (existing.ownerAddress.toLowerCase() !== parentAddress) {
+    if (!canManageShop(existing.ownerAddress, parentAddress, shopId)) {
       return c.json({ ok: false, error: "Not the shop owner" }, 403);
     }
     const patch = (await c.req.json()) as UpdateShopRequest;
@@ -260,7 +278,7 @@ shopsRouter.post("/:id/products", requireAuth, async (c) => {
   try {
     const shop = await getShop(shopId);
     if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
-    if (shop.ownerAddress.toLowerCase() !== parentAddress) {
+    if (!canManageShop(shop.ownerAddress, parentAddress, shopId)) {
       return c.json({ ok: false, error: "Not the shop owner" }, 403);
     }
     const body = (await c.req.json()) as UpsertProductRequest;
@@ -311,7 +329,7 @@ shopsRouter.delete("/:id/products/:productId", requireAuth, async (c) => {
   try {
     const shop = await getShop(shopId);
     if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
-    if (shop.ownerAddress.toLowerCase() !== parentAddress) {
+    if (!canManageShop(shop.ownerAddress, parentAddress, shopId)) {
       return c.json({ ok: false, error: "Not the shop owner" }, 403);
     }
     const products = await deleteProduct(shopId, c.req.param("productId"));

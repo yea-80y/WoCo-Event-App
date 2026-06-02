@@ -194,7 +194,13 @@ already machine-clean (JSON in/out, header auth). Build the agent flow later.
      integrity (omnipin) for the grant UI = noted hook for the World Computer Registry milestone.
      AGENTIC/x402 hook left: spend-permission + a future `pay-x402` converge on the same verified-
      transfer→paid terminal (`OrderPayment.x402Header` + rail "x402" already in the schema).
-   - (e) reserve `shop:manage` session-delegation scope (hook only).
+   - (e) ✅ DONE (Opus) — reserved `shop:manage` scope (HOOK ONLY, not enforced). Shared:
+     `SHOP_MANAGE_SCOPE` + `ScopedShopCapability` ({scope, shopId}). Server: single catalog-write
+     seam `canManageShop(owner, parent, shopId)` — all four catalog/config write owner-checks
+     (create/update shop, PATCH shop, POST/DELETE product) now route through it, so the future
+     scoped-token check slots in at ONE site. Orders/funds stay owner-only. Enforcement is deferred
+     (needs an authenticated `scope` in the AuthorizeSession EIP-712 payload = versioned
+     SESSION_DOMAIN bump; not done so live sessions don't break).
    Crypto fee LOCKED: 0.25% recorded (`CryptoFeeConfig`/`cryptoFeeBp`) but NOT collected on the
    direct-transfer rail — split moves to a non-custodial `pay(merchant,amount,orderRef)` forwarder
    (escrow/splitter milestone) which also gives immutable on-chain order binding (0 sign prompts).

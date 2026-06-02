@@ -530,3 +530,28 @@ export interface ShopSpendPermission {
 export interface PaySpendPermissionRequest {
   permissionId: string;
 }
+
+// ---------------------------------------------------------------------------
+// Delegation scopes — agentic catalog management (RESERVED, not enforced yet)
+//
+// The write-side twin of x402 purchasing: an agent that adds stock / edits the
+// catalog. Rather than handing an agent the owner's full session (which can
+// create events, deploy sites, move funds…), the future flow issues a SCOPED
+// capability — a ZeroDev-style session key authorised ONLY for `shop:manage` on
+// a SINGLE shopId. This reserves the scope name + shape so the server's
+// catalog-write seam and a later scoped-token verifier agree. Enforcement needs
+// an authenticated `scope` field in the AuthorizeSession EIP-712 payload, which
+// is a versioned SESSION_DOMAIN bump — deferred so live sessions don't break.
+// See docs/WOCO_SHOP_PLAN.md §4b.
+// ---------------------------------------------------------------------------
+
+/** Reserved capability: manage one shop's catalog + config (NOT orders/funds). */
+export const SHOP_MANAGE_SCOPE = "shop:manage" as const;
+export type ShopDelegationScope = typeof SHOP_MANAGE_SCOPE;
+
+/** A scoped grant binds a capability to exactly one shop. */
+export interface ScopedShopCapability {
+  scope: ShopDelegationScope;
+  /** The single shop this capability may manage. */
+  shopId: string;
+}
