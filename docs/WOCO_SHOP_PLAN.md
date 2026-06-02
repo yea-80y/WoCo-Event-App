@@ -155,8 +155,36 @@ cheap as a fraction of the build). Switch to **Sonnet** at step 3 once the spec 
 and work is mechanical (Svelte components, CRUD endpoints, wiring existing patterns).
 Opus reviews anything touching signatures, spend permissions, or funds.
 
-## 7. Open items
-- Test USDC on Arbitrum Sepolia for the buildathon (no native Circle USDC on testnet —
-  need a mock/bridged token address). Decide before step 2.
-- Exact Spend Permission API surface (Coinbase SDK vs ZeroDev session keys) — pick in step 2.
+## 7. Decisions (step 2, 2026-06-02) + open items
+
+RESOLVED:
+- **Test USDC = Circle native test USDC on Arbitrum Sepolia** `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d`
+  (faucet.circle.com, 20/2h). Earlier "no testnet USDC" note was wrong. Same 6-dec ERC-20
+  surface as Arb One mainnet `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` → go-live is a
+  one-line address swap. Both live in `USDC_ADDRESSES` (packages/shared/src/event/types.ts).
+- **Spend Permission SDK = ZeroDev Kernel session keys** (NOT Coinbase native Spend Permissions).
+  Reasons: Kernel is deployed on Arbitrum (the buildathon chain) and we already run it there
+  end-to-end with a gasless paymaster ([[project_zerodev_passkey]]); Coinbase Spend Permissions
+  are a Base-only primitive (CSW contracts live on Base — [[feedback_csw_signs_on_base]]) and
+  would force the pull rail onto Base. Cap = spending-limit policy; window = timestamp policy;
+  target = call policy pinned to USDC.transferFrom. ZeroDev co-authored ERC-7715, so this IS
+  the standard. CSW-login users keep the per-order online signed-quote flow (any chain); the
+  tap-and-go spend-permission rail is Kernel/Arbitrum only — never mix chains on the pull path.
+
+### Fiat onramp (separate axis from the pull rail — applies to ALL login types)
+How USDC gets INTO the wallet, independent of how the venue pulls it. Both CSW and passkey
+(Kernel) users can onramp: CSW ships Coinbase's built-in onramp; passkey users use Coinbase
+Onramp (funds any address on a supported chain) or Stripe Onramp (we already run Stripe).
+CAVEAT: onramps are mainnet/production only — testnet wallets fund via the Circle faucet, so
+onramp is a go-live integration, not a buildathon demo. Leave an "Add funds" hook now.
+
+### Yield on held balances (deferred phase — design kept open)
+Non-custodial yield: the held balance is a yield-bearing USDC form (Aave aUSDC / ERC-4626 vault
+share) that accrues to the USER in their own wallet; the session key redeems-and-transfers at
+spend time. Custodial preload earning yield = deposit-taking/e-money (regulated) — stays OUT.
+To keep this open without building it: step 2 puts USDC behind a per-chain "spend token" config
+and keeps the spend-permission call-policy target swappable, so "held balance = vault share,
+spend redeems on the fly" is a later phase, not a rewrite. Sits alongside x402 + Stylus aggregator.
+
+OPEN:
 - Variant/category UX in the builder — defer detail to step 3.
