@@ -204,7 +204,15 @@ already machine-clean (JSON in/out, header auth). Build the agent flow later.
    Crypto fee LOCKED: 0.25% recorded (`CryptoFeeConfig`/`cryptoFeeBp`) but NOT collected on the
    direct-transfer rail — split moves to a non-custodial `pay(merchant,amount,orderRef)` forwarder
    (escrow/splitter milestone) which also gives immutable on-chain order binding (0 sign prompts).
-3. **Web shop UI + staff POS skin** — same catalog, two front-ends; tap-and-go on rail.  *(Sonnet — mechanical component build; back to Opus for any signature/funds code)*
+3. **Web shop UI + staff POS skin** — same catalog, two front-ends; tap-and-go on rail.
+   *(HYBRID: Opus locked the look + built the hero surfaces; Sonnet builds the rest; back to
+   Opus for any signature/funds code.)* Opus DONE: design spec + Sonnet handover
+   `docs/SHOP_UI_SONNET_HANDOVER.md`; `lib/components/shop/ProductCard.svelte` (storefront + pos
+   variants, the reused atom); `lib/components/shop/pos/ShopPos.svelte` (tap-and-go POS hero — owns
+   UX/state, parent supplies `placeAndCharge` so funds code stays out of the view). Concrete & Acid
+   throughout. Sonnet TO BUILD (see handover): Storefront grid, `ProductGridSection` site section,
+   Checkout (mirror ClaimButton + reuse api/shop-payment), builder shop/product editor tabs, POS
+   shell/routing + grant ("Tap to pay") flow wiring.
 4. **POD loyalty milestones** — listen to spend events, issue badges via aggregator.  *(Opus review on crypto touches)*
 
 ### Model split (token economy)
