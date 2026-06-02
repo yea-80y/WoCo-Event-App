@@ -20,6 +20,8 @@
  *     /creator/events/:id               dashboard
  *     /creator/events/:id/embed         embed-setup
  *     /creator/sites        (and /build)  build
+ *     /creator/shops                    my-shops
+ *     /creator/shops/:shopId/pos        shop-pos
  *     /creator/profile/:addr            profile (creator surface)
  *     /dashboard, /dashboard/:id        dashboard-index / dashboard (legacy)
  *     /event/:id/dashboard              dashboard (legacy)
@@ -58,7 +60,11 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/creator/events") return { route: "dashboard-index", params: {}, surface: "creator" };
   if (path === "/creator/events/new") return { route: "create", params: {}, surface: "creator" };
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
+  if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
   if (path === "/creator/profile") return { route: "profile", params: {}, surface: "creator" };
+
+  const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);
+  if (shopPosMatch) return { route: "shop-pos", params: { shopId: shopPosMatch[1] }, surface: "creator" };
 
   const creatorSiteEventsMatch = path.match(/^\/creator\/sites\/([^/]+)\/events$/);
   if (creatorSiteEventsMatch) return { route: "site-events", params: { siteId: creatorSiteEventsMatch[1] }, surface: "creator" };

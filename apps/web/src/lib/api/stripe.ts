@@ -151,6 +151,36 @@ export async function createCheckoutSession(params: {
   return { url: data.url };
 }
 
+/** Stripe card checkout for a shop order. The order must already exist (pending). */
+export async function createShopCheckout(
+  shopId: string,
+  orderId: string,
+  returnUrl?: string,
+): Promise<{ url: string }> {
+  const cancelUrl = typeof window !== "undefined" ? window.location.href : undefined;
+  const body = {
+    ...(returnUrl ? { returnUrl } : {}),
+    ...(cancelUrl ? { cancelUrl } : {}),
+  };
+  if (auth.isConnected) {
+    const resp = await authPost<{ url: string }>(
+      `/api/shops/${shopId}/orders/${orderId}/checkout`,
+      body,
+    );
+    const data = resp as { ok: boolean; url?: string; error?: string };
+    if (!data.ok || !data.url) throw new Error(data.error || "Failed to create shop checkout");
+    return { url: data.url };
+  }
+  const resp = await fetch(`${apiBase}/api/shops/${shopId}/orders/${orderId}/checkout`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await resp.json()) as { ok: boolean; url?: string; error?: string };
+  if (!data.ok || !data.url) throw new Error(data.error || "Failed to create shop checkout");
+  return { url: data.url };
+}
+
 /** Save encrypted order data after successful Stripe payment.
  *
  * `expectedEditions` is the number of tickets the user paid for. The server

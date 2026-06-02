@@ -14,6 +14,7 @@
   import PagesTab from "./tabs/PagesTab.svelte";
   import NavTab from "./tabs/NavTab.svelte";
   import EventsTab from "./tabs/EventsTab.svelte";
+  import ShopTab from "./tabs/ShopTab.svelte";
   import GatewayPicker from "./GatewayPicker.svelte";
   import { GATEWAYS } from "./gateways.js";
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
@@ -101,7 +102,7 @@
   // showing whichever address last wrote to localStorage on a shared device.
   let mySites    = $state<MySiteRecord[]>([]);
   let screen     = $state<'my-sites' | 'builder'>('my-sites');
-  let tab        = $state<'template' | 'brand' | 'pages' | 'nav' | 'events'>('brand');
+  let tab        = $state<'template' | 'brand' | 'pages' | 'nav' | 'events' | 'shop' | 'domain'>('brand');
 
   type PublishState = 'idle' | 'publishing' | 'done' | 'error';
   let publishState = $state<PublishState>('idle');
@@ -427,7 +428,7 @@
     tab = 'brand';
   }
 
-  type TabId = 'template' | 'brand' | 'pages' | 'nav' | 'events' | 'domain';
+  type TabId = 'template' | 'brand' | 'pages' | 'nav' | 'events' | 'shop' | 'domain';
 
   const TABS: { id: TabId; label: string }[] = [
     { id: 'template', label: 'Template' },
@@ -435,8 +436,18 @@
     { id: 'pages',    label: 'Pages' },
     { id: 'nav',      label: 'Navigation' },
     { id: 'events',   label: 'Events' },
+    { id: 'shop',     label: 'Shop' },
     { id: 'domain',   label: 'Domain' },
   ];
+
+  // Per-site shopId — persisted in localStorage so it survives page reloads.
+  let siteShopId = $state<string | null>(
+    typeof window !== 'undefined' ? (localStorage.getItem(`woco:site-shopid:${loadDraft().siteId}`) ?? null) : null,
+  );
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    if (siteShopId) localStorage.setItem(`woco:site-shopid:${site.siteId}`, siteShopId);
+  });
 </script>
 
 <div class="builder">
@@ -572,6 +583,12 @@
           siteId={site.siteId}
           {siteEvents}
           onsiteeventschange={(ev) => siteEvents = ev}
+        />
+      {:else if tab === 'shop'}
+        <ShopTab
+          siteId={site.siteId}
+          shopId={siteShopId}
+          onshopchange={(id) => { siteShopId = id; }}
         />
       {:else if tab === 'domain'}
         <SubENSPicker

@@ -87,6 +87,10 @@ export const TTL = {
   EVENT_ORDERS: 24 * 60 * 60,
   /** Pending-approval queue for an event. */
   PENDING_CLAIMS: 24 * 60 * 60,
+  /** Shop product catalog for a deployed site section. */
+  SHOP_PRODUCTS: 5 * 60,
+  /** Merchant's own shop list. */
+  CREATOR_SHOPS: 24 * 60 * 60,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -116,6 +120,10 @@ export const cacheKey = {
   eventOrders: (eventId: string) => `event-orders:${eventId}`,
   /** Event admin: pending-approval queue for a given event. */
   pendingClaims: (eventId: string) => `pending-claims:${eventId}`,
+  /** Shop product catalog (deployed site section). */
+  shopProducts: (shopId: string) => `shop-products:${shopId}`,
+  /** Merchant's own shop list. */
+  creatorShops: (address: string) => `creator-shops:${address.toLowerCase()}`,
 };
 
 // ---------------------------------------------------------------------------

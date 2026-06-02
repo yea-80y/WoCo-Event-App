@@ -644,6 +644,34 @@ async function ensureWocoSessionKey(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Shop spend-permission grant (passkey/Kernel only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build + sudo-sign a spend-permission approval for the venue spender.
+ * Wraps kernel-account.grantShopSpendPermission with the cached _kernel.
+ * Returns the serialized approval blob (no private key).
+ * Passkey-only — other login kinds use the per-order crypto rail instead.
+ */
+async function grantSpendPermission(args: {
+  shopId: string;
+  spenderAddress: string;
+  usdcAddress: string;
+  recipient: string;
+  perDrawCeilingAtomic: string;
+  maxDraws: number;
+  validUntil: number;
+}): Promise<string> {
+  if (_kind !== "passkey") {
+    throw new Error("Spend permissions require a passkey (Kernel) account");
+  }
+  await _ensureKernel();
+  if (!_kernel) throw new Error("Kernel unavailable — cannot grant spend permission");
+  const { grantShopSpendPermission } = await import("./kernel-account.js");
+  return grantShopSpendPermission({ builtKernel: _kernel, ...args });
+}
+
+// ---------------------------------------------------------------------------
 // API request signing
 // ---------------------------------------------------------------------------
 
@@ -832,6 +860,7 @@ export const auth = {
   logout,
   ensurePodIdentity,
   ensureWocoSessionKey,
+  grantSpendPermission,
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass
   // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel

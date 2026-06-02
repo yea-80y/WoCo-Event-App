@@ -204,6 +204,18 @@ export interface EmbedSection extends SectionBase {
   html: string;
 }
 
+export interface ProductGridSection extends SectionBase {
+  type: "productGrid";
+  /** Optional heading shown above the grid. */
+  title?: string;
+  /** Shop id whose product catalog to render. */
+  shopId: string;
+  /** Cap on cards rendered. Omit for unlimited. */
+  max?: number;
+  /** Filter to a specific category id; omit = all active products. */
+  categoryId?: string;
+}
+
 export interface ImageSection extends SectionBase {
   type: "image";
   /** Swarm bytes ref (64-char hex). Empty string = no image yet. */
@@ -224,7 +236,8 @@ export type Section =
   | OpeningHoursSection
   | MapSection
   | ContactFormSection
-  | EmbedSection;
+  | EmbedSection
+  | ProductGridSection;
 
 export type SectionType = Section["type"];
 

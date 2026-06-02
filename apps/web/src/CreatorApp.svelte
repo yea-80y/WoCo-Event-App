@@ -11,6 +11,8 @@
   import MultiSiteBuilder from "./lib/creator/builder/MultiSiteBuilder.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
   import SiteEventsManager from "./lib/creator/sites/SiteEventsManager.svelte";
+  import MyShopsScreen from "./lib/creator/shops/MyShopsScreen.svelte";
+  import ShopPosShell from "./lib/creator/shops/ShopPosShell.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";
 
   $effect(() => {
@@ -61,6 +63,10 @@
     <SiteBuilder />
   {:else if router.route === "build"}
     <MultiSiteBuilder />
+  {:else if router.route === "my-shops"}
+    <MyShopsScreen />
+  {:else if router.route === "shop-pos"}
+    <ShopPosShell shopId={router.params.shopId} />
   {:else if router.route === "profile"}
     <ProfilePage address={router.params.address} />
   {:else if router.route === "stripe-return"}

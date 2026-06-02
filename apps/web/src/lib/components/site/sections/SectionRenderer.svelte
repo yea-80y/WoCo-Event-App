@@ -10,6 +10,7 @@
   import ContactFormSection from './ContactFormSection.svelte';
   import EmbedSection from './EmbedSection.svelte';
   import ImageSection from './ImageSection.svelte';
+  import ProductGridSection from './ProductGridSection.svelte';
 
   interface Props {
     section: Section;
@@ -61,6 +62,8 @@
       <ContactFormSection {section} {site} {apiUrl} />
     {:else if section.type === 'embed'}
       <EmbedSection {section} />
+    {:else if section.type === 'productGrid'}
+      <ProductGridSection {section} {site} {apiUrl} />
     {/if}
   </div>
 {/if}
