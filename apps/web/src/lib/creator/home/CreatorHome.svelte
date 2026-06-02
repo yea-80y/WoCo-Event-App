@@ -7,10 +7,10 @@
   Design spec: memory/project_ui_theming_direction.md
 -->
 <script lang="ts">
-  import type { EventDirectoryEntry, SiteDirectoryEntry } from "@woco/shared";
+  import type { EventDirectoryEntry, SiteDirectoryEntry, ShopDirectoryEntry } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { getMyEventsSWR, getMySitesSWR } from "../../api/creator-cache.js";
+  import { getMyEventsSWR, getMySitesSWR, getMyShopsSWR } from "../../api/creator-cache.js";
   import { getPendingClaims } from "../../api/events.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -21,6 +21,7 @@
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import CalendarDays from "lucide-svelte/icons/calendar-days";
   import Monitor from "lucide-svelte/icons/monitor";
+  import ShoppingBag from "lucide-svelte/icons/shopping-bag";
   import CodeSquare from "lucide-svelte/icons/code-xml";
   import Webhook from "lucide-svelte/icons/webhook";
   import Wallet from "lucide-svelte/icons/wallet";
@@ -30,12 +31,14 @@
 
   let events = $state<EventDirectoryEntry[]>([]);
   let sites = $state<SiteDirectoryEntry[]>([]);
+  let shops = $state<ShopDirectoryEntry[]>([]);
   let pendingTotal = $state(0);
   let stripeReady = $state<boolean | null>(null);
   // Per-panel loading so the events panel doesn't wait for the sites Swarm
   // read (or vice versa) — each paints as soon as its own data resolves.
   let loadingEvents = $state(true);
   let loadingSites = $state(true);
+  let loadingShops = $state(true);
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
   // Monotonic token to discard results from a prior sign-in / account switch.
@@ -60,16 +63,19 @@
     loadToken++; // invalidate any in-flight fetches
     events = [];
     sites = [];
+    shops = [];
     pendingTotal = 0;
     stripeReady = null;
     loadingEvents = false;
     loadingSites = false;
+    loadingShops = false;
   }
 
   async function loadFor(addr: string): Promise<void> {
     const token = ++loadToken;
     loadingEvents = true;
     loadingSites = true;
+    loadingShops = true;
 
     // Gate cached paint on a verified session: per-address localStorage must
     // not flash on screen during sign-in before EIP-712 is signed. Looks
@@ -88,8 +94,10 @@
     // SWR: paint from cache instantly, then patch with fresh data.
     const evSWR = getMyEventsSWR(addr);
     const siteSWR = getMySitesSWR(addr);
+    const shopSWR = getMyShopsSWR(addr);
     if (evSWR.cached && token === loadToken) { events = evSWR.cached; loadingEvents = false; }
     if (siteSWR.cached && token === loadToken) { sites = siteSWR.cached; loadingSites = false; }
+    if (shopSWR.cached && token === loadToken) { shops = shopSWR.cached; loadingShops = false; }
 
     // Fire both refreshes in parallel but resolve them independently so the
     // events panel doesn't block on the sites Swarm read (or vice versa).
@@ -105,6 +113,12 @@
       if (token !== loadToken) return;
       if (fresh && (fresh.length > 0 || !siteSWR.cached)) sites = fresh;
       loadingSites = false;
+    });
+
+    shopSWR.refresh().then((fresh) => {
+      if (token !== loadToken) return;
+      if (fresh && (fresh.length > 0 || !shopSWR.cached)) shops = fresh;
+      loadingShops = false;
     });
 
     // Pending approvals — fire as soon as events arrive; don't wait on sites.
@@ -183,6 +197,7 @@
       .slice(0, 3)
   );
   const latestSites = $derived(sites.slice(0, 3));
+  const latestShops = $derived(shops.slice(0, 3));
 
   function fmtDate(d: string | number | undefined) {
     if (!d) return "—";
@@ -212,6 +227,10 @@
         <div class="stat">
           <span class="stat-label mono">YOUR SITES</span>
           <span class="stat-num mono" class:hot={sites.length > 0}>{loadingSites ? "—" : String(sites.length).padStart(2, "0")}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label mono">YOUR SHOPS</span>
+          <span class="stat-num mono" class:hot={shops.length > 0}>{loadingShops ? "—" : String(shops.length).padStart(2, "0")}</span>
         </div>
         <div class="stat">
           <span class="stat-label mono">PENDING</span>
@@ -360,6 +379,46 @@
                       <span class="row-title">{s.brandName || s.siteId}</span>
                       <span class="row-meta mono">
                         {s.deployedUrl ? "DEPLOYED" : "DRAFT"}
+                      </span>
+                    </span>
+                    <ArrowRight size={14} strokeWidth={2.5} />
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <!-- Shops panel -->
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">
+              <ShoppingBag size={16} strokeWidth={2.25} />
+              Shops
+            </span>
+            <button class="link-quiet" onclick={() => navigate("/creator/shops")}>
+              See all →
+            </button>
+          </div>
+
+          {#if loadingShops}
+            <div class="panel-empty">Loading…</div>
+          {:else if latestShops.length === 0}
+            <div class="panel-empty">
+              <span>No shops yet.</span>
+              <button class="inline-link" onclick={() => navigate("/creator/shops/new")}>
+                <Plus size={14} strokeWidth={2.5} /> Create one
+              </button>
+            </div>
+          {:else}
+            <ul class="row-list">
+              {#each latestShops as sh}
+                <li>
+                  <button class="row" onclick={() => navigate(`/creator/shops/${sh.shopId}`)}>
+                    <span class="row-main">
+                      <span class="row-title">{sh.name}</span>
+                      <span class="row-meta mono">
+                        {sh.productCount} product{sh.productCount !== 1 ? "s" : ""}
                       </span>
                     </span>
                     <ArrowRight size={14} strokeWidth={2.5} />

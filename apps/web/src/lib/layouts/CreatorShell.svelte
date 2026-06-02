@@ -10,6 +10,7 @@
   import CalendarDays from "lucide-svelte/icons/calendar-days";
   import Plus from "lucide-svelte/icons/plus";
   import Monitor from "lucide-svelte/icons/monitor";
+  import ShoppingBag from "lucide-svelte/icons/shopping-bag";
   import ArrowLeft from "lucide-svelte/icons/arrow-left";
 
   interface Props {
@@ -27,6 +28,12 @@
   );
   const isSites = $derived(router.route === "build" || router.route === "site-builder");
   const isProfile = $derived(router.route === "profile");
+
+  let createOpen = $state(false);
+  function create(path: string) {
+    createOpen = false;
+    navigate(path);
+  }
 </script>
 
 <main>
@@ -81,10 +88,12 @@
     </button>
     <button
       class="bottom-nav-item bottom-nav-item--accent"
-      class:active={router.route === "create"}
-      onclick={() => navigate("/creator/events/new")}
+      class:active={createOpen}
+      aria-haspopup="menu"
+      aria-expanded={createOpen}
+      onclick={() => { createOpen = !createOpen; }}
     >
-      <span class="nav-icon"><Plus size={20} strokeWidth={2.5} /></span>
+      <span class="nav-icon" class:rot={createOpen}><Plus size={20} strokeWidth={2.5} /></span>
       <span class="nav-label">Create</span>
     </button>
     <button
@@ -108,6 +117,25 @@
       </button>
     {/if}
   </nav>
+
+  {#if createOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <button class="create-scrim" aria-label="Close create menu" onclick={() => { createOpen = false; }}></button>
+    <div class="create-sheet" role="menu">
+      <button class="create-opt" role="menuitem" onclick={() => create("/creator/events/new")}>
+        <span class="opt-ic"><CalendarDays size={16} strokeWidth={2.25} /></span>
+        <span class="opt-text"><strong>New event</strong><small>Tickets, dates, payments</small></span>
+      </button>
+      <button class="create-opt" role="menuitem" onclick={() => create("/creator/shops/new")}>
+        <span class="opt-ic"><ShoppingBag size={16} strokeWidth={2.25} /></span>
+        <span class="opt-text"><strong>New shop</strong><small>Catalog, POS, tap-to-pay</small></span>
+      </button>
+      <button class="create-opt" role="menuitem" onclick={() => create("/creator/sites")}>
+        <span class="opt-ic"><Monitor size={16} strokeWidth={2.25} /></span>
+        <span class="opt-text"><strong>New website</strong><small>Multi-page site builder</small></span>
+      </button>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -254,6 +282,49 @@
     justify-content: center;
   }
   .bottom-nav-item--accent.active .nav-icon { background: var(--accent-hover); }
+  .bottom-nav-item--accent .nav-icon { transition: transform var(--transition); }
+  .bottom-nav-item--accent .nav-icon.rot { transform: rotate(45deg); }
+
+  /* ── Create action sheet ── */
+  .create-scrim {
+    position: fixed; inset: 0; z-index: 101;
+    background: rgba(0, 0, 0, 0.5);
+    border: none; cursor: pointer;
+    animation: scrim-in 0.15s ease;
+  }
+  @keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+
+  .create-sheet {
+    position: fixed; z-index: 102;
+    left: 50%; transform: translateX(-50%);
+    bottom: calc(4.25rem + env(safe-area-inset-bottom));
+    width: min(320px, calc(100vw - 2rem));
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.375rem;
+    display: flex; flex-direction: column; gap: 1px;
+    box-shadow: 0 20px 48px -20px rgba(0, 0, 0, 0.7);
+    animation: sheet-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes sheet-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+  .create-opt {
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.625rem 0.75rem;
+    background: none; border: none; cursor: pointer; text-align: left;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
+  }
+  .create-opt:hover { background: var(--accent-subtle); }
+  .opt-ic {
+    display: grid; place-items: center; flex-shrink: 0;
+    width: 2rem; height: 2rem; border-radius: var(--radius-sm);
+    background: var(--bg-elevated); border: 1px solid var(--border); color: var(--accent-text);
+  }
+  .opt-text { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
+  .opt-text strong { font-size: 0.875rem; font-weight: 700; color: var(--text); }
+  .opt-text small { font-size: 0.6875rem; color: var(--text-muted); }
   .nav-avatar {
     display: flex;
     align-items: center;

@@ -21,7 +21,7 @@
  * auth-store.logout() wipes USER_SCOPED_PREFIXES on its way out.
  */
 
-import type { EventDirectoryEntry, EventFeed, SiteDirectoryEntry } from "@woco/shared";
+import type { EventDirectoryEntry, EventFeed, SiteDirectoryEntry, ShopDirectoryEntry } from "@woco/shared";
 import { authGet, get } from "./client.js";
 import { cacheGet, cacheSet, cacheKey, TTL } from "../cache/cache.js";
 import {
@@ -73,6 +73,26 @@ export function getMySitesSWR(address: string): SWRResult<SiteDirectoryEntry[]> 
       const resp = await authGet<SiteDirectoryEntry[]>("/api/sites/mine");
       if (!resp.ok || !resp.data) return null;
       if (resp.data.length > 0) cacheSet(key, resp.data, TTL.CREATOR_SITES);
+      return resp.data;
+    } catch {
+      return null;
+    }
+  };
+  return { cached, refresh };
+}
+
+// ---------------------------------------------------------------------------
+// Creator shops list — /api/shops/mine
+// ---------------------------------------------------------------------------
+
+export function getMyShopsSWR(address: string): SWRResult<ShopDirectoryEntry[]> {
+  const key = cacheKey.creatorShops(address);
+  const cached = cacheGet<ShopDirectoryEntry[]>(key);
+  const refresh = async (): Promise<ShopDirectoryEntry[] | null> => {
+    try {
+      const resp = await authGet<ShopDirectoryEntry[]>("/api/shops/mine");
+      if (!resp.ok || !resp.data) return null;
+      if (resp.data.length > 0) cacheSet(key, resp.data, TTL.CREATOR_SHOPS);
       return resp.data;
     } catch {
       return null;

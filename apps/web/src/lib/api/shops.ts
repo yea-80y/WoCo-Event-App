@@ -51,6 +51,13 @@ export async function getMyShops(): Promise<ShopDirectoryEntry[]> {
   return r.data;
 }
 
+/** Order log for a shop — owner only (sensitive). Newest first per server. */
+export async function getShopOrders(shopId: string): Promise<Order[]> {
+  const r = await authGet<Order[]>(`/api/shops/${shopId}/orders`);
+  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to load orders");
+  return r.data;
+}
+
 export async function createShop(req: CreateShopRequest): Promise<Shop> {
   const r = await authPost<Shop>("/api/shops", req as unknown as Record<string, unknown>);
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to create shop");

@@ -12,6 +12,7 @@
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
   import SiteEventsManager from "./lib/creator/sites/SiteEventsManager.svelte";
   import MyShopsScreen from "./lib/creator/shops/MyShopsScreen.svelte";
+  import ShopEditor from "./lib/creator/shops/ShopEditor.svelte";
   import ShopPosShell from "./lib/creator/shops/ShopPosShell.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";
 
@@ -65,6 +66,10 @@
     <MultiSiteBuilder />
   {:else if router.route === "my-shops"}
     <MyShopsScreen />
+  {:else if router.route === "shop-editor"}
+    {#key router.params.shopId}
+      <ShopEditor shopId={router.params.shopId} />
+    {/key}
   {:else if router.route === "shop-pos"}
     <ShopPosShell shopId={router.params.shopId} />
   {:else if router.route === "profile"}

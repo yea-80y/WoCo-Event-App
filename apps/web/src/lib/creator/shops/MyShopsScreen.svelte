@@ -47,7 +47,7 @@
       <h1>My shops</h1>
       <span class="kicker">Manage catalogs · POS · Spend permissions</span>
     </div>
-    <button class="btn btn--primary" onclick={() => navigate("/creator/sites")}>
+    <button class="btn btn--primary" onclick={() => navigate("/creator/shops/new")}>
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="square"><path d="M6 1v10M1 6h10" /></svg>
       New shop
     </button>
@@ -81,8 +81,8 @@
           <path d="M10 8v4a4 4 0 008 0V8" />
         </svg>
       </div>
-      <p>No shops yet. Create one from the <strong>Sites builder</strong> by adding a shop tab.</p>
-      <button class="btn btn--primary" onclick={() => navigate("/creator/sites")}>Go to site builder</button>
+      <p>No shops yet. A shop is one catalog you can sell from a POS, a standalone page, or your website.</p>
+      <button class="btn btn--primary" onclick={() => navigate("/creator/shops/new")}>Create your first shop</button>
     </div>
 
   {:else}
@@ -103,9 +103,9 @@
           <div class="card-actions">
             <button
               class="btn btn--ghost btn--sm"
-              onclick={() => navigate(`/creator/sites`)}
+              onclick={() => navigate(`/creator/shops/${s.shopId}`)}
             >
-              Edit catalog
+              Manage
             </button>
             <button
               class="btn btn--primary btn--sm pos-btn"
