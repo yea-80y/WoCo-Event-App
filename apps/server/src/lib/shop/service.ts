@@ -242,6 +242,12 @@ export async function getOrders(shopId: string): Promise<Order[]> {
   );
 }
 
+/** Read a single order by id (lenient read path). Returns null if absent. */
+export async function getOrder(shopId: string, orderId: string): Promise<Order | null> {
+  const orders = await getOrders(shopId);
+  return orders.find((o) => o.orderId === orderId) ?? null;
+}
+
 function makeOrdersEnvelope(shopId: string) {
   return ({ items, pages, updatedAt }: Envelope<Order>): OrdersLog => ({
     v: 1,

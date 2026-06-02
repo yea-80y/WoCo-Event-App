@@ -9,13 +9,17 @@ import {
   upsertProduct,
   deleteProduct,
   getOrders,
+  getOrder,
   appendOrder,
   updateOrder,
   genOrderCode,
   getCreatorShops,
   upsertCreatorShop,
 } from "../lib/shop/service.js";
-import { priceOrder } from "@woco/shared";
+import { getStripe } from "../lib/stripe/client.js";
+import { getStripeAccount } from "../lib/stripe/accounts.js";
+import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
+import { priceOrder, moneyToMinor, PLATFORM_FEE_BP } from "@woco/shared";
 import type {
   Shop,
   Product,
@@ -328,6 +332,93 @@ shopsRouter.post("/:id/orders", async (c) => {
   } catch (err) {
     // Pricing/validation errors are client faults (bad product, qty, variant).
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Order failed" }, 400);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/shops/:id/orders/:orderId/checkout — Stripe card checkout.
+// Public (buyers may be email-only). Direct charge on the merchant's connected
+// account; the platform collects PLATFORM_FEE_BP as application_fee. The webhook
+// (POST /api/stripe/webhook) flips the order pending→paid on confirmation.
+// ---------------------------------------------------------------------------
+
+shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
+  const shopId = c.req.param("id");
+  const orderId = c.req.param("orderId");
+  try {
+    const shop = await getShop(shopId);
+    if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
+
+    const order = await getOrder(shopId, orderId);
+    if (!order) return c.json({ ok: false, error: "Order not found" }, 404);
+    if (order.status !== "pending") {
+      return c.json({ ok: false, error: "Order is not awaiting payment" }, 409);
+    }
+    if (!shop.payment.stripeEnabled) {
+      return c.json({ ok: false, error: "Card payments are not enabled for this shop" }, 400);
+    }
+
+    const merchant = getStripeAccount(shop.ownerAddress.toLowerCase());
+    if (!merchant?.onboardingComplete) {
+      return c.json({ ok: false, error: "Shop owner has not completed Stripe onboarding" }, 400);
+    }
+
+    const amountMinor = moneyToMinor(order.total);
+    if (amountMinor <= 0) return c.json({ ok: false, error: "Order total must be positive" }, 400);
+    const currency = order.currency.toLowerCase();
+    // Platform fee taken from the merchant's cut (standard retail). Buyer pays
+    // exactly the priced total; merchant absorbs Stripe + platform fee.
+    const applicationFee = Math.round((amountMinor * PLATFORM_FEE_BP) / 10_000);
+
+    const body = (await c.req.json().catch(() => ({}))) as { returnUrl?: string; cancelUrl?: string };
+    const frontendUrl = canonicalSuccessUrl(validateReturnUrl(body.returnUrl) ?? getFrontendUrl(c));
+    const successUrl = `${frontendUrl}/#/shop/${shopId}/order/${order.code}?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = (() => {
+      if (body.cancelUrl) {
+        try {
+          const u = new URL(body.cancelUrl);
+          if (u.protocol === "https:" || u.hostname === "localhost") {
+            const sep = body.cancelUrl.includes("?") ? "&" : "?";
+            return `${body.cancelUrl}${sep}stripe=cancelled`;
+          }
+        } catch { /* fall through */ }
+      }
+      return `${frontendUrl}/#/shop/${shopId}?stripe=cancelled`;
+    })();
+
+    const s = getStripe();
+    const session = await s.checkout.sessions.create(
+      {
+        mode: "payment",
+        line_items: order.lines.map((l) => ({
+          price_data: {
+            currency,
+            product_data: { name: l.name },
+            unit_amount: moneyToMinor(l.unitPrice),
+          },
+          quantity: l.qty,
+        })),
+        payment_intent_data: {
+          application_fee_amount: applicationFee,
+          // No transfer_data — direct charge settles on the connected account.
+        },
+        metadata: {
+          shopId,
+          orderId,
+          orderCode: order.code,
+          // Stored so a refund can be issued through the connected account later.
+          connectedAccountId: merchant.stripeAccountId,
+        },
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+      },
+      { stripeAccount: merchant.stripeAccountId },
+    );
+
+    return c.json({ ok: true, url: session.url });
+  } catch (err) {
+    console.error("[shops] Failed to create checkout session:", err);
+    return c.json({ ok: false, error: "Failed to create checkout session" }, 500);
   }
 });
 
