@@ -66,3 +66,42 @@ export const CLAIM_TYPES = {
     { name: "timestamp", type: "uint256" },
   ],
 } as const;
+
+/**
+ * Domain for WoCo Shop crypto-payment binding signatures.
+ *
+ * Shop orders are placed anonymously (public endpoint), so a USDC payment — a
+ * bare ERC-20 transfer with no memo — has nothing on-chain tying it to an order.
+ * An anonymous buyer therefore signs this structured envelope to bind the
+ * paying wallet to a specific order before paying; the server recovers the
+ * signer and requires `tx.from === payer`. This is the anti-front-running guard
+ * (an attacker cannot forge the buyer's wallet signing over a different orderId).
+ *
+ * EIP-712 (not EIP-191) deliberately: wallets render each labelled field so the
+ * user sees exactly what they authorise — the opposite of blind signing — and
+ * the domain (name/version/salt) makes the signature non-replayable in any
+ * other WoCo context. Logged-in wallet buyers skip this entirely: their session
+ * delegation already proves wallet control, so the payment is a single prompt.
+ *
+ * The binding deliberately OMITS the txHash so it can be pre-signed before the
+ * transfer is broadcast (no sign → wait-for-tx → sign-again stall); it commits
+ * to `quoteId` instead, which the server-side HMAC quote pins to the exact
+ * amount + recipient + order.
+ */
+export const SHOP_PAYMENT_DOMAIN = {
+  name: "WoCo Shop Payment",
+  version: "1",
+  salt: "0xa2562bedb66f3e39915c2bb23863110406fa11f5c97e4857f65eec064c1df8a7",
+} as const;
+
+/** EIP-712 types for the shop crypto-payment binding (anonymous buyers). */
+export const SHOP_PAYMENT_TYPES = {
+  ShopPayment: [
+    { name: "shopId", type: "string" },
+    { name: "orderId", type: "string" },
+    { name: "quoteId", type: "string" },
+    { name: "payer", type: "address" },
+    { name: "amount", type: "string" },
+    { name: "chainId", type: "uint256" },
+  ],
+} as const;

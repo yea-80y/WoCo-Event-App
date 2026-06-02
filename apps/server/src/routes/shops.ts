@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
-import { requireAuth } from "../middleware/auth.js";
+import { parseUnits, formatUnits, verifyTypedData, type TypedDataField } from "ethers";
+import type { AppEnv } from "../types.js";
+import { requireAuth, tryVerifyAuth } from "../middleware/auth.js";
 import {
   getShop,
   getShopStrict,
@@ -16,10 +18,22 @@ import {
   getCreatorShops,
   upsertCreatorShop,
 } from "../lib/shop/service.js";
+import { signShopQuote, verifyShopQuote, consumeShopQuote } from "../lib/shop/quote.js";
+import { getCryptoFeeConfig } from "../lib/shop/fees.js";
+import { verifyPayment } from "../lib/payment/verify.js";
+import { checkAndConsumeTxHash } from "../lib/payment/tx-registry.js";
+import { fiatToUSD } from "../lib/payment/eth-price.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
-import { priceOrder, moneyToMinor, PLATFORM_FEE_BP } from "@woco/shared";
+import {
+  priceOrder,
+  moneyToMinor,
+  PLATFORM_FEE_BP,
+  USDC_ADDRESSES,
+  SHOP_PAYMENT_DOMAIN,
+  SHOP_PAYMENT_TYPES,
+} from "@woco/shared";
 import type {
   Shop,
   Product,
@@ -30,9 +44,13 @@ import type {
   CreateOrderRequest,
   ShopDirectoryEntry,
   OrderStatus,
+  PaymentChainId,
+  Hex0x,
+  ShopQuoteRequest,
+  ShopPaymentProof,
 } from "@woco/shared";
 
-const shopsRouter = new Hono();
+const shopsRouter = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
 // Rate limiter — public order creation writes to Swarm (postage cost); bound
@@ -43,12 +61,31 @@ const orderRateMap = new Map<string, number[]>();
 const ORDER_RATE_LIMIT = 20;
 const ORDER_RATE_WINDOW = 60_000;
 
+// Quote + crypto-settle limiter — these hit the fiat oracle / chain RPC rather
+// than Swarm, but are still public; bound floods independently of order writes.
+const payRateMap = new Map<string, number[]>();
+const PAY_RATE_LIMIT = 30;
+const PAY_RATE_WINDOW = 60_000;
+
 function clientIp(c: { req: { header: (k: string) => string | undefined } }): string {
   return (
     c.req.header("cf-connecting-ip") ||
     c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
     "unknown"
   );
+}
+
+/** Sliding-window rate check. Returns true when the caller is over the limit. */
+function rateLimited(map: Map<string, number[]>, ip: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const hits = (map.get(ip) ?? []).filter((t) => now - t < windowMs);
+  if (hits.length >= limit) {
+    map.set(ip, hits);
+    return true;
+  }
+  hits.push(now);
+  map.set(ip, hits);
+  return false;
 }
 
 // Status transitions an owner may apply from the dashboard / POS.
@@ -415,6 +452,247 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
   } catch (err) {
     console.error("[shops] Failed to create checkout session:", err);
     return c.json({ ok: false, error: "Failed to create checkout session" }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/shops/:id/orders/:orderId/quote — signed USDC payment quote.
+// Public + rate-limited. Server commits (HMAC) to the EXACT 6-dec USDC amount
+// for this order on the chosen chain (fiat→USD at quote time). The buyer pays
+// exactly that to the MERCHANT; /pay-crypto verifies the on-chain match. Full
+// amount lands with the merchant — the crypto platform fee is recorded on the
+// quote but NOT split at launch (a single ERC-20 transfer can't split
+// non-custodially; the split moves to the escrow/splitter path).
+// ---------------------------------------------------------------------------
+
+shopsRouter.post("/:id/orders/:orderId/quote", async (c) => {
+  if (rateLimited(payRateMap, clientIp(c), PAY_RATE_LIMIT, PAY_RATE_WINDOW)) {
+    return c.json({ ok: false, error: "Too many requests. Please wait before trying again." }, 429);
+  }
+  const shopId = c.req.param("id");
+  const orderId = c.req.param("orderId");
+  try {
+    const shop = await getShop(shopId);
+    if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
+    if (!shop.payment.cryptoEnabled) {
+      return c.json({ ok: false, error: "Crypto payments are not enabled for this shop" }, 400);
+    }
+
+    const order = await getOrder(shopId, orderId);
+    if (!order) return c.json({ ok: false, error: "Order not found" }, 404);
+    if (order.status !== "pending") {
+      return c.json({ ok: false, error: "Order is not awaiting payment" }, 409);
+    }
+
+    const body = (await c.req.json().catch(() => ({}))) as ShopQuoteRequest;
+    const chainId = body?.chainId as PaymentChainId | undefined;
+    if (!chainId) return c.json({ ok: false, error: "chainId is required" }, 400);
+    if (!shop.payment.acceptedChains.includes(chainId)) {
+      return c.json({ ok: false, error: `Chain ${chainId} not accepted for this shop` }, 400);
+    }
+    if (!USDC_ADDRESSES[chainId]) {
+      return c.json({ ok: false, error: `USDC is not available on chain ${chainId}` }, 400);
+    }
+
+    // Full amount to the merchant. The shared config carries an `escrow` flag,
+    // but the shop escrow/splitter is not built — the online rail pays direct
+    // (the locked non-custodial-launch decision; docs/WOCO_SHOP_PLAN.md §2).
+    const recipient = shop.payment.recipientAddress;
+    if (!recipient) {
+      return c.json({ ok: false, error: "Shop has no crypto recipient configured" }, 400);
+    }
+
+    // USDC is dollar-pegged 1:1 — convert fiat→USD, then to 6-dec atomic units.
+    const usd = await fiatToUSD(order.total, order.currency);
+    const amountAtomic = parseUnits(usd.toFixed(6), 6).toString();
+    if (BigInt(amountAtomic) <= 0n) {
+      return c.json({ ok: false, error: "Order total must be positive" }, 400);
+    }
+
+    const quote = signShopQuote({
+      shopId,
+      orderId,
+      chainId,
+      recipient,
+      amountAtomic,
+      fiatTotal: order.total,
+      fiatCurrency: order.currency,
+      feeBp: getCryptoFeeConfig().bp,
+      ...(body?.buyerAddress ? { boundTo: body.buyerAddress } : {}),
+    });
+
+    return c.json({ ok: true, data: quote });
+  } catch (err) {
+    console.error("[shops/quote]", err);
+    return c.json({ ok: false, error: err instanceof Error ? err.message : "Quote failed" }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/shops/:id/orders/:orderId/pay-crypto — settle a crypto (USDC) order.
+//
+// Soft-auth: a logged-in wallet buyer authenticates via session delegation and
+// the verified parentAddress IS the payer binding — a single wallet prompt (just
+// the transfer). An anonymous/email buyer instead supplies an EIP-712
+// ShopPayment binding proving control of the paying wallet (the anti-front-
+// running guard). Either way the server requires tx.from === the bound payer and
+// NEVER trusts an address taken from the body.
+//
+// Invariants (mirror events claims): signed quote pins exact amount + recipient
+// + order; on-chain verify is exact-match amount + recipient + confirmations +
+// tx.from; txHash and quote are both one-shot (file-backed) — no replay.
+// ---------------------------------------------------------------------------
+
+shopsRouter.post("/:id/orders/:orderId/pay-crypto", async (c) => {
+  if (rateLimited(payRateMap, clientIp(c), PAY_RATE_LIMIT, PAY_RATE_WINDOW)) {
+    return c.json({ ok: false, error: "Too many requests. Please wait before trying again." }, 429);
+  }
+  const shopId = c.req.param("id");
+  const orderId = c.req.param("orderId");
+
+  // Read the raw body exactly once — tryVerifyAuth must hash the same bytes the
+  // client signed in the canonical session challenge.
+  let rawBody: string;
+  try {
+    rawBody = await c.req.text();
+  } catch {
+    return c.json({ ok: false, error: "Invalid body" }, 400);
+  }
+  let proof: ShopPaymentProof;
+  try {
+    proof = JSON.parse(rawBody) as ShopPaymentProof;
+  } catch {
+    return c.json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+  if (!proof?.txHash || !proof?.quote || !proof?.chainId) {
+    return c.json({ ok: false, error: "txHash, chainId and quote are required" }, 400);
+  }
+
+  try {
+    const shop = await getShop(shopId);
+    if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
+
+    const order = await getOrder(shopId, orderId);
+    if (!order) return c.json({ ok: false, error: "Order not found" }, 404);
+
+    // Idempotent retry: this exact tx already settled this order → return ok.
+    if (
+      order.status === "paid" &&
+      order.payment?.rail === "crypto" &&
+      order.payment.txHash?.toLowerCase() === proof.txHash.toLowerCase()
+    ) {
+      return c.json({ ok: true, data: order });
+    }
+    if (order.status !== "pending") {
+      return c.json({ ok: false, error: "Order is not awaiting payment" }, 409);
+    }
+
+    // 1. Verify the quote (signature, expiry, one-shot) and bind it to THIS order.
+    const quoteCheck = verifyShopQuote(proof.quote);
+    if (!quoteCheck.ok) {
+      return c.json({ ok: false, error: `Payment quote rejected: ${quoteCheck.error}` }, 402);
+    }
+    const quote = quoteCheck.quote;
+    if (quote.shopId !== shopId || quote.orderId !== orderId) {
+      return c.json({ ok: false, error: "Quote is for a different order" }, 400);
+    }
+    if (quote.chainId !== proof.chainId) {
+      return c.json({ ok: false, error: "Quote chain does not match payment chain" }, 400);
+    }
+    const recipient = shop.payment.recipientAddress;
+    if (!recipient || quote.recipient.toLowerCase() !== recipient.toLowerCase()) {
+      return c.json({ ok: false, error: "Quote recipient does not match shop recipient" }, 400);
+    }
+
+    // 2. Establish the payer (expectedFrom) WITHOUT trusting any body address.
+    //    Logged-in wallet → verified parentAddress (1 prompt). Anonymous → EIP-712 binding.
+    let expectedFrom: Hex0x;
+    const auth = await tryVerifyAuth(c, rawBody);
+    if (auth && !auth.ok) {
+      // Auth headers present but invalid — never silently downgrade to anonymous.
+      return c.json({ ok: false, error: auth.error }, 403);
+    }
+    if (auth) {
+      expectedFrom = auth.parentAddress.toLowerCase() as Hex0x;
+    } else {
+      const binding = proof.binding;
+      if (!binding?.payer || !binding?.signature) {
+        return c.json({ ok: false, error: "Payment binding required for anonymous checkout" }, 400);
+      }
+      // Reconstruct the typed message from the AUTHORITATIVE quote (not the body)
+      // so a tampered binding can't bind to a different amount/order.
+      const message = {
+        shopId: quote.shopId,
+        orderId: quote.orderId,
+        quoteId: quote.quoteId,
+        payer: binding.payer.toLowerCase(),
+        amount: formatUnits(BigInt(quote.amountAtomic), 6),
+        chainId: quote.chainId,
+      };
+      let recovered: string;
+      try {
+        recovered = verifyTypedData(
+          SHOP_PAYMENT_DOMAIN,
+          SHOP_PAYMENT_TYPES as unknown as Record<string, TypedDataField[]>,
+          message,
+          binding.signature,
+        );
+      } catch {
+        return c.json({ ok: false, error: "Invalid payment binding signature" }, 403);
+      }
+      if (recovered.toLowerCase() !== binding.payer.toLowerCase()) {
+        return c.json({ ok: false, error: "Binding signature does not match payer" }, 403);
+      }
+      expectedFrom = recovered.toLowerCase() as Hex0x;
+    }
+
+    // If the quote was bound to a payer at quote time, enforce it.
+    if (quote.boundTo && quote.boundTo.toLowerCase() !== expectedFrom.toLowerCase()) {
+      return c.json({ ok: false, error: "Quote is bound to a different payer" }, 403);
+    }
+
+    // 3. Verify the on-chain USDC transfer — exact amount, recipient, confirmations, tx.from.
+    const amount = formatUnits(BigInt(quote.amountAtomic), 6);
+    const verification = await verifyPayment(
+      { type: "tx", txHash: proof.txHash, chainId: proof.chainId, from: expectedFrom },
+      { amount, currency: "USDC", recipient, expectedFrom },
+    );
+    if (!verification.valid) {
+      return c.json({ ok: false, error: `Payment verification failed: ${verification.error}` }, 402);
+    }
+
+    // 4. Replay prevention — txHash one-shot (global, file-backed). A tx already
+    //    consumed for any order/claim cannot fund a second.
+    if (!checkAndConsumeTxHash(proof.txHash)) {
+      return c.json({ ok: false, error: "This transaction has already been used" }, 409);
+    }
+    // Quote one-shot — consume only AFTER the tx-replay gate passes.
+    consumeShopQuote(quote.quoteId);
+
+    // 5. Flip pending → paid with the verified payment record.
+    const updated = await updateOrder(shopId, orderId, {
+      status: "paid",
+      rail: "crypto",
+      buyerRef: expectedFrom,
+      payment: {
+        rail: "crypto",
+        txHash: proof.txHash,
+        chainId: proof.chainId,
+        cryptoFeeBp: quote.feeBp,
+      },
+    });
+    if (!updated) {
+      // tx + quote already consumed above; we read the order moments ago, so this
+      // is not expected — surface loudly for ops if a Swarm write race ever hits it.
+      console.error(
+        `[shops/pay-crypto] order ${shopId}/${orderId} vanished after verify — tx ${proof.txHash} consumed`,
+      );
+      return c.json({ ok: false, error: "Order not found" }, 404);
+    }
+    return c.json({ ok: true, data: updated });
+  } catch (err) {
+    console.error("[shops/pay-crypto]", err);
+    return c.json({ ok: false, error: err instanceof Error ? err.message : "Payment failed" }, 500);
   }
 });
 

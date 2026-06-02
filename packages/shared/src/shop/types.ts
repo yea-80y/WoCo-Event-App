@@ -19,11 +19,48 @@ import type { PaymentConfig, FiatCurrency, PaymentChainId } from "../event/types
 // ---------------------------------------------------------------------------
 
 /**
+ * Who bears the platform fee on a shop's sales.
+ * - "absorb" (default): the merchant absorbs the WoCo fee out of their revenue.
+ * - "pass": the fee is surfaced to the customer as a transparent WoCo *service*
+ *   fee (a later UI toggle). NOTE: passing raw *card-processing* costs to
+ *   consumers is banned in the UK/EU — "pass" may only ever show a WoCo service
+ *   fee, never a Stripe-cost surcharge.
+ */
+export type FeeMode = "absorb" | "pass";
+
+/**
  * Shop-wide payment rails. Price lives per-product, so the shared
  * `PaymentConfig` is reused minus its per-item price/currency — the merchant
  * has one recipient and one set of accepted rails for the whole catalog.
  */
-export type ShopPaymentConfig = Omit<PaymentConfig, "price" | "currency">;
+export type ShopPaymentConfig = Omit<PaymentConfig, "price" | "currency"> & {
+  /** Fee bearer. Defaults to "absorb" when omitted. */
+  feeMode?: FeeMode;
+};
+
+/**
+ * Platform crypto (USDC) fee configuration. A struct rather than a bare number
+ * so the model can ratchet toward a flat micro-fee as volume grows without a
+ * schema change. Card uses the fixed `PLATFORM_FEE_BP` (1.5%); crypto is
+ * operationally lighter and starts at 0.25%.
+ *
+ * NOT collected on the launch online direct-transfer rail: a single ERC-20
+ * transfer can't split merchant/platform non-custodially, so the buyer pays the
+ * FULL amount to the merchant and the split waits for the escrow/splitter/
+ * aggregator path (which can divide funds in one tx without WoCo ever holding
+ * them). The rate is recorded on the quote/order so that future path knows the
+ * agreed terms. Server reads env overrides via `getCryptoFeeConfig()`.
+ */
+export interface CryptoFeeConfig {
+  /** Basis points taken as the WoCo platform fee on crypto spend (25 = 0.25%). */
+  bp: number;
+  /** Optional flat micro-fee in fiat minor units added on top (future ratchet); 0 = none. */
+  flatMinor: number;
+}
+
+/** Default crypto platform fee — 0.25%, no flat component. Env-overridable on the server. */
+export const DEFAULT_CRYPTO_FEE_BP = 25;
+export const DEFAULT_CRYPTO_FEE: CryptoFeeConfig = { bp: DEFAULT_CRYPTO_FEE_BP, flatMinor: 0 };
 
 /**
  * Sales channel a product is offered on. Omit on a product = all channels.
@@ -161,6 +198,9 @@ export interface OrderPayment {
   settlementTxHash?: string;
   /** Agentic x402 payment header value (rail "x402"). Settles USDC on-chain. */
   x402Header?: string;
+  /** Crypto platform fee bps agreed at quote time. Recorded for the future
+   *  non-custodial split; NOT deducted at launch (buyer paid full to merchant). */
+  cryptoFeeBp?: number;
 }
 
 /** An order stored in `woco/shop/{shopId}/orders`. */
@@ -316,4 +356,81 @@ export interface CreateOrderRequest {
   rail: PaymentRail;
   /** Optional buyer identity for non-wallet (email) orders; hashed server-side. */
   buyerEmail?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Crypto (USDC) online payment — signed quote + proof
+// ---------------------------------------------------------------------------
+
+/**
+ * Server-issued, HMAC-signed commitment to the EXACT USDC amount an order must
+ * be paid in. Mirrors the events `PaymentQuote` but is shop/order-scoped and
+ * USDC-only. The client pays exactly `amountAtomic` to `recipient`; the server
+ * verifies the on-chain transfer matches and that the quote signature, expiry,
+ * and one-shot status all hold. Eliminates the client/server oracle race.
+ *
+ * `recipient` is the MERCHANT address (full amount, no split at launch — see
+ * `CryptoFeeConfig`). The HMAC domain (`woco-shop-quote-v1`) is distinct from
+ * the events quote so a quote issued for one surface can never be replayed on
+ * the other, even though both use `PAYMENT_QUOTE_SECRET`.
+ */
+export interface ShopPaymentQuote {
+  quoteId: string;
+  shopId: string;
+  orderId: string;
+  chainId: PaymentChainId;
+  /** Crypto rail is USDC-only for shops. */
+  currency: "USDC";
+  /** Merchant address (lowercased). Full amount lands here — no platform split at launch. */
+  recipient: Hex0x;
+  /** Exact amount in USDC's smallest unit (6-dec atomic). The on-chain transfer must match. */
+  amountAtomic: string;
+  /** Display total in the shop's fiat currency (what the buyer sees). */
+  fiatTotal: string;
+  fiatCurrency: FiatCurrency;
+  /** Crypto platform fee bps in effect at quote time — recorded for the future
+   *  non-custodial split; NOT deducted from `amountAtomic` at launch. */
+  feeBp: number;
+  /** Unix milliseconds. Quote rejected after this. */
+  expiresAt: number;
+  /** Optional payer binding (lowercased) — defense-in-depth alongside the EIP-712 binding. */
+  boundTo?: string;
+  /** HMAC-SHA256 hex over the canonical quote string. */
+  sig: string;
+}
+
+/**
+ * The buyer's EIP-712 `ShopPayment` binding (anonymous buyers only). Proves the
+ * controller of `payer` authorised this exact order/quote — the anti-front-
+ * running guard. Logged-in wallet buyers omit this; their session delegation is
+ * the binding and the server uses the verified parentAddress as the payer.
+ */
+export interface ShopPaymentBinding {
+  /** The paying wallet (lowercased). Server requires `tx.from === payer`. */
+  payer: Hex0x;
+  /** EIP-712 signature over SHOP_PAYMENT_DOMAIN / SHOP_PAYMENT_TYPES. */
+  signature: string;
+}
+
+/**
+ * Proof submitted to settle a crypto order. The full signed quote travels with
+ * the proof so the server verifies statelessly (only the consumed-quoteId set
+ * needs to persist).
+ */
+export interface ShopPaymentProof {
+  /** On-chain tx hash of the USDC transfer. */
+  txHash: string;
+  /** Chain the payment was made on — must equal `quote.chainId`. */
+  chainId: PaymentChainId;
+  /** The server-signed quote being settled. */
+  quote: ShopPaymentQuote;
+  /** EIP-712 payer binding — required for anonymous buyers, omitted when session-authenticated. */
+  binding?: ShopPaymentBinding;
+}
+
+/** POST /api/shops/:id/orders/:orderId/quote — request a signed USDC quote. */
+export interface ShopQuoteRequest {
+  chainId: PaymentChainId;
+  /** Buyer's paying wallet (optional). When supplied, the quote is bound to it. */
+  buyerAddress?: Hex0x;
 }
