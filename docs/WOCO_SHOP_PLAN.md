@@ -25,6 +25,24 @@ Money spent is **USDC**, surfaced to the user as £/$ — they never need to kno
 crypto. There is NO separate points/credit token. "Spend at the festival, then the
 coffee shop" = the same USDC in the user's own wallet, spendable anywhere.
 
+### Platform fee (LOCKED 2026-06-02, differentiated by rail)
+Retail is operationally lighter than a ticket sale (no mint/POD/PNG/email/sponsor gas —
+just a feed flip), so the WoCo fee is lower and rail-dependent:
+- **Card = 1.5%** (`PLATFORM_FEE_BP=150`), merchant absorbs. Matches events; covers the
+  heavier Stripe-bound path. Already wired in the 2b checkout.
+- **Crypto (USDC) = 0.25% to start** (25 bps), with a roadmap to ratchet toward a flat
+  micro-fee (~1p/£1–10k) as volume grows. Both rates MUST be config constants
+  (env-overridable) so they can be reduced over time without a rebuild.
+- **Fee bearer = merchant absorbs only** for now. Leave a per-shop `feeMode: "absorb" |
+  "pass"` field defaulting to `absorb` so "customer pays" is a later UI toggle, no schema
+  migration. NOTE: passing *card processing* fees to consumers is banned in UK/EU — `pass`
+  may only ever surface a transparent WoCo *service* fee, never a raw Stripe-cost surcharge.
+- **Crypto fee collection is a 2c design decision:** a single ERC-20 transfer can't split
+  merchant/platform non-custodially. The 0.25% belongs on the escrow/splitter or Stylus
+  aggregator path — NOT by routing funds through a WoCo address. Recommendation: the online
+  direct-transfer quote verifies *full amount to merchant* at launch; apply the 0.25% split
+  once escrow/aggregator lands. Do not break the non-custodial thesis to collect a fee.
+
 Two rails, mirroring events:
 
 - **Card** — Stripe Connect (existing destination-charge + webhook claim flow).
