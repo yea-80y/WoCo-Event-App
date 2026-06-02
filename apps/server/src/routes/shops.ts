@@ -373,18 +373,14 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { returnUrl?: string; cancelUrl?: string };
     const frontendUrl = canonicalSuccessUrl(validateReturnUrl(body.returnUrl) ?? getFrontendUrl(c));
     const successUrl = `${frontendUrl}/#/shop/${shopId}/order/${order.code}?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = (() => {
-      if (body.cancelUrl) {
-        try {
-          const u = new URL(body.cancelUrl);
-          if (u.protocol === "https:" || u.hostname === "localhost") {
-            const sep = body.cancelUrl.includes("?") ? "&" : "?";
-            return `${body.cancelUrl}${sep}stripe=cancelled`;
-          }
-        } catch { /* fall through */ }
-      }
-      return `${frontendUrl}/#/shop/${shopId}?stripe=cancelled`;
-    })();
+    // Validate cancelUrl against ALLOWED_HOSTS (same guard as returnUrl) rather
+    // than accepting any https host — avoids an open redirect on Stripe's cancel
+    // bounce. Falls back to the canonical app when not allowlisted. (A deployed
+    // shop's own ENS host can be allowlisted explicitly in step 3 if needed.)
+    const validatedCancel = validateReturnUrl(body.cancelUrl);
+    const cancelUrl = validatedCancel
+      ? `${validatedCancel}${validatedCancel.includes("?") ? "&" : "?"}stripe=cancelled`
+      : `${frontendUrl}/#/shop/${shopId}?stripe=cancelled`;
 
     const s = getStripe();
     const session = await s.checkout.sessions.create(
