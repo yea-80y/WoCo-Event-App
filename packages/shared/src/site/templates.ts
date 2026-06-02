@@ -368,6 +368,69 @@ export function newSiteFromTemplate(args: {
   };
 }
 
+/**
+ * Single-page storefront site for a shop — hero + productGrid. Deployed through
+ * the standard site publish/deploy pipeline, so a merchant can put a shop online
+ * at its own URL without building a full multi-page website. "Expand into a full
+ * website" later just opens this same site in the builder. See docs/SHOP_IA.md.
+ */
+export function newSiteFromShop(args: {
+  siteId: string;
+  ownerAddress: string;
+  shopId: string;
+  shopName: string;
+  idGen: IdGen;
+  now?: number;
+}): Site {
+  const { siteId, ownerAddress, shopId, shopName, idGen } = args;
+  const now = args.now ?? Date.now();
+
+  const theme: ThemeTokens = {
+    brandName: shopName,
+    siteDescription: `${shopName} — browse the shop and check out in seconds.`,
+    palette: {
+      bg: "#0B0B09",
+      text: "#F5F0EA",
+      muted: "#8A857C",
+      accent: "#C7F23A",
+      accentHover: "#B4DE2E",
+      border: "#2A2824",
+      cardBg: "#15140F",
+    },
+    fontFamily: "system",
+    radius: "md",
+    navStyle: "topbar",
+  };
+
+  const nav: NavItem[] = [{ label: "Shop", pageSlug: "/" }];
+
+  const pages: Page[] = [
+    {
+      slug: "/",
+      title: shopName,
+      sections: [
+        { id: idGen(), type: "hero", heading: shopName, subheading: "Browse the shop and check out in seconds." },
+        { id: idGen(), type: "productGrid", shopId, title: "Shop" },
+      ],
+    },
+  ];
+
+  return {
+    siteId,
+    ownerAddress: ownerAddress.toLowerCase(),
+    templateId: "clean-modern-v1",
+    schemaVersion: SITE_SCHEMA_VERSION,
+    theme,
+    nav,
+    pages,
+    contact: {},
+    socials: {},
+    eventsIndexTopic: siteEventsIndexTopic(siteId),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 /** Catalogue entry shown in the template-picker step of the builder. */
 export interface TemplateCatalogueEntry {
   id: TemplateId;

@@ -15,7 +15,15 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { createShop, updateShop, getShop, getShopOrders } from "../../api/shops.js";
+  import { publishSite, deploySite } from "../../api/sites.js";
+  import { GATEWAYS } from "../builder/gateways.js";
+  import { newSiteFromShop } from "@woco/shared";
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
+
+  const API_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "http://localhost:3001";
+  const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? "https://woco.eth.limo";
+  const DEFAULT_GATEWAY = GATEWAYS.find((g) => g.default)?.url ?? GATEWAYS[0].url;
+  const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 
   interface Props { shopId: string; }
   let { shopId }: Props = $props();
@@ -48,6 +56,13 @@
   let tapQr = $state<string | null>(null);
   let copied = $state("");
 
+  // standalone storefront deploy
+  let storefrontUrl = $state("");
+  let storefrontQr = $state<string | null>(null);
+  let deploying = $state(false);
+  let deployErr = $state("");
+  const storefrontKey = $derived(`woco:shop-storefront:${shopId}`);
+
   const tapUrl = $derived(
     typeof window !== "undefined" ? `${window.location.origin}/#/shops/${shopId}/tap` : "",
   );
@@ -59,6 +74,11 @@
       const s = await getShop(shopId);
       if (!s) { errorMsg = "Shop not found."; phase = "error"; return; }
       hydrate(s);
+      // Recall a previously-deployed storefront for this shop (URL display only).
+      try {
+        const saved = localStorage.getItem(`woco:shop-storefront:${shopId}`);
+        if (saved) storefrontUrl = (JSON.parse(saved) as { url?: string }).url ?? "";
+      } catch { /* ignore malformed cache */ }
       phase = "ready";
     } catch {
       errorMsg = "Couldn't load this shop.";
@@ -144,6 +164,50 @@
 
   $effect(() => {
     if (tab === "surfaces" && phase === "ready") void makeTapQr();
+  });
+
+  // Standalone storefront = a one-page site (hero + productGrid) deployed through
+  // the existing site pipeline. Reuse the saved siteId so re-deploy updates the
+  // same site instead of orphaning the old one.
+  async function deployStorefront() {
+    if (!shop || deploying) return;
+    if (!(await ensureAuthed())) return;
+    deploying = true; deployErr = "";
+    try {
+      let siteId = uid();
+      try {
+        const saved = localStorage.getItem(storefrontKey);
+        if (saved) siteId = (JSON.parse(saved) as { siteId?: string }).siteId ?? siteId;
+      } catch { /* ignore */ }
+
+      const site = newSiteFromShop({
+        siteId,
+        ownerAddress: auth.parent as string,
+        shopId: shop.shopId,
+        shopName: shop.name,
+        idGen: uid,
+      });
+
+      const pub = await publishSite(site, []);
+      if (!pub.ok) throw new Error(pub.error ?? "Publish failed");
+
+      const dep = await deploySite(siteId, { apiUrl: API_URL, gatewayUrl: DEFAULT_GATEWAY, wocoAppUrl: WOCO_APP_URL, site });
+      if (!dep.ok || !dep.data) throw new Error(dep.ok ? "Deploy returned no data" : (dep.error ?? "Deploy failed"));
+
+      storefrontUrl = dep.data.siteUrl;
+      storefrontQr = null;
+      localStorage.setItem(storefrontKey, JSON.stringify({ siteId, url: storefrontUrl }));
+    } catch (e) {
+      deployErr = e instanceof Error ? e.message : "Deploy failed";
+    } finally { deploying = false; }
+  }
+
+  $effect(() => {
+    if (tab === "surfaces" && storefrontUrl && !storefrontQr) {
+      import("uqr").then(({ renderSVG }) => {
+        storefrontQr = renderSVG(storefrontUrl, { ecc: "M", blackColor: "#0B0B09", whiteColor: "#ffffff" });
+      }).catch(() => { storefrontQr = null; });
+    }
   });
 
   async function copy(text: string, key: string) {
@@ -277,11 +341,22 @@
             </div>
           </div>
 
-          <div class="surface">
+          <div class="surface surface--col">
             <div class="surface-text">
-              <span class="s-title">Standalone storefront <span class="soon">soon</span></span>
-              <span class="s-desc">Deploy a hosted shop page at its own URL — no full website needed. Lands next.</span>
+              <span class="s-title">Standalone storefront</span>
+              <span class="s-desc">A hosted shop page at its own URL — no full website needed. Deploys a one-page site (your products + checkout) to Swarm.</span>
             </div>
+            {#if storefrontUrl}
+              {#if storefrontQr}<div class="qr">{@html storefrontQr}</div>{/if}
+              <div class="link-row">
+                <a class="link mono" href={storefrontUrl} target="_blank" rel="noopener">{storefrontUrl}</a>
+                <button class="copy" onclick={() => copy(storefrontUrl, "store")}>{copied === "store" ? "Copied" : "Copy"}</button>
+              </div>
+            {/if}
+            {#if deployErr}<div class="err-box mono">{deployErr}</div>{/if}
+            <button class="btn btn--ghost btn--sm self-start" onclick={deployStorefront} disabled={deploying}>
+              {deploying ? "Deploying…" : storefrontUrl ? "Re-deploy storefront" : "Deploy storefront"}
+            </button>
           </div>
 
           <div class="surface">
