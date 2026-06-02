@@ -94,6 +94,11 @@ PRODUCTION ENV (`apps/server/.env`):
   Without it, /api/payment/quote cannot sign and all crypto claims will fail.
 - STRIPE_WEBHOOK_SECRET (connect-account events) + STRIPE_WEBHOOK_SECRET_PLATFORM
   (platform events like account.updated). Both required in production.
+- SHOP_SPENDER_SECRET (HMAC key → per-shop spender key for the POS spend-permission
+  rail). MUST be stable + protected like FEED_PRIVATE_KEY — rotating it changes every
+  shop's spender address and orphans live spend permissions. Generate: same as EMAIL_HASH_SECRET.
+- ZERODEV_RPC (server bundler+paymaster RPC for Kernel spend-permission draws — the
+  server-side twin of VITE_ZERODEV_RPC; required for the POS rail to settle).
 
 ============================================================================
 AUTH ARCHITECTURE

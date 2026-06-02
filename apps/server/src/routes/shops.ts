@@ -20,6 +20,13 @@ import {
 } from "../lib/shop/service.js";
 import { signShopQuote, verifyShopQuote, consumeShopQuote } from "../lib/shop/quote.js";
 import { getCryptoFeeConfig } from "../lib/shop/fees.js";
+import {
+  grantParams,
+  registerSpendPermission,
+  drawSpendPermission,
+  revokeSpendPermission,
+  getSpendPermission,
+} from "../lib/shop/spend-permission.js";
 import { verifyPayment } from "../lib/payment/verify.js";
 import { checkAndConsumeTxHash } from "../lib/payment/tx-registry.js";
 import { fiatToUSD } from "../lib/payment/eth-price.js";
@@ -48,6 +55,8 @@ import type {
   Hex0x,
   ShopQuoteRequest,
   ShopPaymentProof,
+  RegisterSpendPermissionRequest,
+  PaySpendPermissionRequest,
 } from "@woco/shared";
 
 const shopsRouter = new Hono<AppEnv>();
@@ -93,6 +102,12 @@ const OWNER_SETTABLE_STATUS: ReadonlySet<OrderStatus> = new Set([
   "fulfilled",
   "cancelled",
 ]);
+
+// In-flight settlement lock per order — a spend-permission draw moves real funds,
+// so two concurrent settlements of the SAME order must never both draw. The
+// per-permission mutex serialises the draws themselves; this guards the
+// read-status → draw → flip sequence at the order level.
+const settlingOrders = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // POST /api/shops — create or update a shop (owner stamped server-side)
@@ -693,6 +708,179 @@ shopsRouter.post("/:id/orders/:orderId/pay-crypto", async (c) => {
   } catch (err) {
     console.error("[shops/pay-crypto]", err);
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Payment failed" }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Spend-permission rail (POS tap-and-go) — ZeroDev Kernel session-key draws.
+//
+// grant-params (public): server-dictated scope the client builds its approval to
+//   match (spender, merchant, USDC, window, per-draw ceiling, max draws).
+// register (auth): store a granted approval; caller's parentAddress MUST be the
+//   granting Kernel; the approval is cryptographically re-checked to that Kernel.
+// pay-spend-permission (auth): draw an order's amount against a permission. Owner
+//   (POS) or the granting attendee (self-serve) may trigger; cap/window/target
+//   on-chain policies are the real guards. Amount is computed server-side
+//   (fiat→USD) exactly as the online quote does. Funds go Kernel→merchant direct.
+// revoke (auth): the granting attendee stops further server-side draws.
+//
+// AGENTIC / x402 HOOK: this rail is the third USDC authorisation mode alongside
+// the online signed-quote rail. An agent buyer settles the same way — either by
+// being granted a spend permission like any attendee, or via the HTTP 402
+// handshake (402 → pay USDC → retry with X-PAYMENT). Both converge on the SAME
+// terminal: a verified on-chain USDC transfer to the merchant flips the order to
+// paid and accrues loyalty. The order schema already carries the seam
+// (OrderPayment.x402Header + PaymentRail "x402"); a future POST .../pay-x402
+// reuses verifyDrawOnChain + the settledOrders one-shot + the order flip below.
+// ---------------------------------------------------------------------------
+
+shopsRouter.post("/:id/spend-permission/grant-params", async (c) => {
+  if (rateLimited(payRateMap, clientIp(c), PAY_RATE_LIMIT, PAY_RATE_WINDOW)) {
+    return c.json({ ok: false, error: "Too many requests. Please wait before trying again." }, 429);
+  }
+  const shopId = c.req.param("id");
+  try {
+    const shop = await getShop(shopId);
+    if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
+    if (!shop.payment.cryptoEnabled) {
+      return c.json({ ok: false, error: "Crypto payments are not enabled for this shop" }, 400);
+    }
+    const recipient = shop.payment.recipientAddress;
+    if (!recipient) {
+      return c.json({ ok: false, error: "Shop has no crypto recipient configured" }, 400);
+    }
+    const usdc = USDC_ADDRESSES[421614 as PaymentChainId];
+    if (!usdc) return c.json({ ok: false, error: "USDC not configured for the spend chain" }, 500);
+
+    const params = await grantParams(shopId, recipient, usdc);
+    return c.json({ ok: true, data: params });
+  } catch (err) {
+    console.error("[shops/grant-params]", err);
+    return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed" }, 500);
+  }
+});
+
+shopsRouter.post("/:id/spend-permission", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const shopId = c.req.param("id");
+  try {
+    const shop = await getShop(shopId);
+    if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
+    if (!shop.payment.cryptoEnabled) {
+      return c.json({ ok: false, error: "Crypto payments are not enabled for this shop" }, 400);
+    }
+    const recipient = shop.payment.recipientAddress;
+    if (!recipient) {
+      return c.json({ ok: false, error: "Shop has no crypto recipient configured" }, 400);
+    }
+
+    const req = (await c.req.json()) as RegisterSpendPermissionRequest;
+    const result = await registerSpendPermission(shopId, parentAddress, recipient, req);
+    if (!result.ok) return c.json({ ok: false, error: result.error }, 400);
+    return c.json({ ok: true, data: result.permission });
+  } catch (err) {
+    console.error("[shops/spend-permission/register]", err);
+    return c.json({ ok: false, error: err instanceof Error ? err.message : "Register failed" }, 500);
+  }
+});
+
+shopsRouter.post("/:id/spend-permission/:permId/revoke", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const result = revokeSpendPermission(c.req.param("permId"), parentAddress);
+  if (!result.ok) return c.json({ ok: false, error: result.error }, result.code ?? 400);
+  return c.json({ ok: true });
+});
+
+shopsRouter.post("/:id/orders/:orderId/pay-spend-permission", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const shopId = c.req.param("id");
+  const orderId = c.req.param("orderId");
+  const lockKey = `${shopId}:${orderId}`;
+
+  if (settlingOrders.has(lockKey)) {
+    return c.json({ ok: false, error: "Order settlement already in progress" }, 409);
+  }
+  settlingOrders.add(lockKey);
+  try {
+    const { permissionId } = (await c.req.json()) as PaySpendPermissionRequest;
+    if (!permissionId) return c.json({ ok: false, error: "permissionId is required" }, 400);
+
+    const shop = await getShop(shopId);
+    if (!shop) return c.json({ ok: false, error: "Shop not found" }, 404);
+    const recipient = shop.payment.recipientAddress;
+    if (!recipient) return c.json({ ok: false, error: "Shop has no crypto recipient configured" }, 400);
+
+    const permission = getSpendPermission(permissionId);
+    if (!permission || permission.shopId !== shopId) {
+      return c.json({ ok: false, error: "Spend permission not found" }, 404);
+    }
+    // Trigger auth: the POS operator (shop owner) OR the granting attendee.
+    const isOwner = shop.ownerAddress.toLowerCase() === parentAddress;
+    const isGrantor = permission.kernelAddress.toLowerCase() === parentAddress;
+    if (!isOwner && !isGrantor) {
+      return c.json({ ok: false, error: "Not authorised to settle this order" }, 403);
+    }
+
+    const order = await getOrder(shopId, orderId);
+    if (!order) return c.json({ ok: false, error: "Order not found" }, 404);
+
+    // Idempotent retry: this permission already settled this order → return ok.
+    if (
+      order.status === "paid" &&
+      order.payment?.rail === "crypto" &&
+      order.payment.spendPermissionId === permissionId
+    ) {
+      return c.json({ ok: true, data: order });
+    }
+    if (order.status !== "pending") {
+      return c.json({ ok: false, error: "Order is not awaiting payment" }, 409);
+    }
+
+    // Amount: fiat→USD→6-dec atomic, identical to the online quote endpoint.
+    const usd = await fiatToUSD(order.total, order.currency);
+    const amountAtomic = parseUnits(usd.toFixed(6), 6).toString();
+    if (BigInt(amountAtomic) <= 0n) {
+      return c.json({ ok: false, error: "Order total must be positive" }, 400);
+    }
+
+    const draw = await drawSpendPermission(permissionId, lockKey, amountAtomic, recipient);
+    if (!draw.ok) {
+      return c.json({ ok: false, error: `Spend draw failed: ${draw.error}` }, draw.code ?? 402);
+    }
+
+    // Replay guard — settlement tx is one-shot globally (mirrors the online rail).
+    if (!checkAndConsumeTxHash(draw.settlementTxHash)) {
+      // Funds moved + spent already incremented; the order flip is the real
+      // one-shot (status check above). Surface but don't double-charge.
+      console.error(
+        `[shops/pay-spend-permission] settlement tx ${draw.settlementTxHash} already consumed`,
+      );
+    }
+
+    const updated = await updateOrder(shopId, orderId, {
+      status: "paid",
+      rail: "crypto",
+      buyerRef: permission.kernelAddress,
+      payment: {
+        rail: "crypto",
+        chainId: permission.chainId,
+        spendPermissionId: permissionId,
+        settlementTxHash: draw.settlementTxHash,
+        cryptoFeeBp: getCryptoFeeConfig().bp,
+      },
+    });
+    if (!updated) {
+      console.error(
+        `[shops/pay-spend-permission] order ${shopId}/${orderId} vanished after draw — tx ${draw.settlementTxHash}`,
+      );
+      return c.json({ ok: false, error: "Order not found" }, 404);
+    }
+    return c.json({ ok: true, data: updated });
+  } catch (err) {
+    console.error("[shops/pay-spend-permission]", err);
+    return c.json({ ok: false, error: err instanceof Error ? err.message : "Payment failed" }, 500);
+  } finally {
+    settlingOrders.delete(lockKey);
   }
 });
 

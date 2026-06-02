@@ -224,11 +224,11 @@ async function loadSessionDeps() {
     { createPublicClient, http },
     { generatePrivateKey, privateKeyToAccount },
     { arbitrumSepolia },
-    { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient },
+    { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient, addressToEmptyAccount },
     { getEntryPoint, KERNEL_V3_1 },
     { toPermissionValidator, serializePermissionAccount, deserializePermissionAccount },
     { toECDSASigner },
-    { toCallPolicy, CallPolicyVersion, toGasPolicy, toTimestampPolicy },
+    { toCallPolicy, CallPolicyVersion, toGasPolicy, toTimestampPolicy, toRateLimitPolicy, ParamCondition },
   ] = await Promise.all([
     import("viem"),
     import("viem/accounts"),
@@ -260,6 +260,7 @@ async function loadSessionDeps() {
     createKernelAccount,
     createKernelAccountClient,
     createZeroDevPaymasterClient,
+    addressToEmptyAccount,
     toPermissionValidator,
     serializePermissionAccount,
     deserializePermissionAccount,
@@ -268,7 +269,121 @@ async function loadSessionDeps() {
     CallPolicyVersion,
     toGasPolicy,
     toTimestampPolicy,
+    toRateLimitPolicy,
+    ParamCondition,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shop spend permission (POS tap-and-go) — grant a capped, time-boxed draw
+// authority to the VENUE's spender. Unlike the registrar session key above
+// (which the user holds and drives themselves), this delegates to a third party
+// the user does NOT hold the key for: the attendee names the spender via
+// `addressToEmptyAccount`, sudo-signs the enable data once, and serializes the
+// approval (no private key). The venue's spender combines that approval with its
+// own key (server-side, today) to draw `USDC.transfer(merchant, amount)` —
+// nothing else. See packages/shared SpendPermissionGrantParams.
+// ---------------------------------------------------------------------------
+
+/** Minimal ABI so the call policy pins the spender to exactly `USDC.transfer`. */
+const ERC20_TRANSFER_ABI = [
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "value", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+export interface ShopSpendGrantArgs {
+  builtKernel: BuiltKernel;
+  /** Venue spender to authorize (from grant-params). */
+  spenderAddress: string;
+  /** USDC token address on the grant chain. */
+  usdcAddress: string;
+  /** Merchant recipient — the ONLY address a draw may pay (pinned in policy). */
+  recipient: string;
+  /** Max single-draw amount, 6-dec atomic (call-policy `value` ceiling). */
+  perDrawCeilingAtomic: string;
+  /** Max number of draws in the window (rate-limit policy). */
+  maxDraws: number;
+  /** Unix seconds — permission expiry (timestamp policy `validUntil`). */
+  validUntil: number;
+}
+
+/**
+ * Build + sudo-sign a spend-permission approval for the venue spender and return
+ * the serialized blob (no private key). ONE passkey ceremony — the sudo signer
+ * is the already-unlocked PRF Kernel, same as createWocoSessionKey.
+ *
+ * On-chain constraints embedded in the approval (the trustless backstop):
+ *  - call policy: target = USDC, fn = transfer, arg `to` EQUAL merchant,
+ *    arg `value` LESS_THAN_OR_EQUAL perDrawCeiling
+ *  - timestamp policy: validUntil (the window)
+ *  - rate-limit policy: at most maxDraws calls (lifetime)
+ *  - gas policy: finite gasless budget (paymaster-sponsored on Arb Sepolia)
+ *
+ * The cumulative cap is NOT an on-chain policy (this ZeroDev version has no
+ * spending-limit policy) — it travels in the register request and is enforced
+ * server-side. The on-chain `to`/ceiling/window/count above still bound a leaked
+ * spender key to bounded, merchant-only, in-window over-charges (refundable),
+ * never an attacker-directed drain.
+ */
+export async function grantShopSpendPermission(args: ShopSpendGrantArgs): Promise<string> {
+  const d = await loadSessionDeps();
+
+  // Empty-account signer: the attendee approves a permission for a key it does
+  // NOT hold — the venue's spender. This is the ERC-7710 delegation primitive.
+  const emptySpender = d.addressToEmptyAccount(args.spenderAddress as Address);
+  const spenderSigner = await d.toECDSASigner({ signer: emptySpender });
+
+  const policies = [
+    d.toCallPolicy({
+      policyVersion: d.CallPolicyVersion.V0_0_5,
+      permissions: [
+        {
+          target: args.usdcAddress as Address,
+          abi: ERC20_TRANSFER_ABI,
+          functionName: "transfer",
+          args: [
+            { condition: d.ParamCondition.EQUAL, value: args.recipient as Address },
+            {
+              condition: d.ParamCondition.LESS_THAN_OR_EQUAL,
+              value: BigInt(args.perDrawCeilingAtomic),
+            },
+          ],
+        },
+      ],
+    }),
+    d.toTimestampPolicy({ validUntil: args.validUntil }),
+    d.toRateLimitPolicy({ count: args.maxDraws }),
+    d.toGasPolicy({ allowed: SESSION_GAS_ALLOWANCE_WEI }),
+  ];
+
+  const permissionPlugin = await d.toPermissionValidator(d.publicClient, {
+    signer: spenderSigner,
+    policies,
+    entryPoint: d.entryPoint,
+    kernelVersion: d.kernelVersion,
+  });
+
+  const sessionAccount = await d.createKernelAccount(d.publicClient, {
+    plugins: {
+      sudo: args.builtKernel.sudo.validator,
+      regular: permissionPlugin,
+    },
+    entryPoint: d.entryPoint,
+    kernelVersion: d.kernelVersion,
+  });
+
+  // No private key argument → the serialized blob is an APPROVAL (sudo-signed
+  // enable data) the venue spender combines with its own key. The attendee
+  // never hands out a spendable key.
+  return d.serializePermissionAccount(sessionAccount);
 }
 
 /**

@@ -158,12 +158,46 @@ already machine-clean (JSON in/out, header auth). Build the agent flow later.
    (`packages/shared/src/shop/{types,topics}.ts`), server service
    (`apps/server/src/lib/shop/service.ts`) + routes (`apps/server/src/routes/shops.ts`,
    mounted `/api/shops`). Builds clean; NOT yet deployed/tested against live bee.
-2. **USDC spend-permission rail** + Stripe parallel — the security-critical core.  *(Opus — NEXT)*
-   Tasks: (a) move `priceOrder` + money helpers to `packages/shared` (client-first); (b) Stripe
-   checkout + webhook → order pending→paid (reuse events' Stripe Connect); (c) USDC: online
-   per-order signed-quote flow, then POS spend-permission (capped, time-boxed) draw; (d) on-chain
-   verification + replay prevention; (e) reserve `shop:manage` session scope. Decide first:
-   test-USDC token on Arb Sepolia; Spend Permission SDK (Coinbase native vs ZeroDev session keys).
+2. **USDC spend-permission rail** + Stripe parallel — the security-critical core.  *(Opus)*
+   - (a) ✅ DONE (237c580) — `priceOrder` + money helpers → `packages/shared/src/shop/pricing.ts`.
+   - (b) ✅ DONE (6fd8c87 + 5d2c4f0) — Stripe card checkout + webhook → order pending→paid.
+   - (c pt1) ✅ DONE (d61a85d server + 0e51e58 client) — USDC online per-order signed-quote flow.
+     `lib/shop/quote.ts` (HMAC one-shot, `woco-shop-quote-v1`, `.data/consumed-shop-quotes.json`);
+     `POST /orders/:orderId/quote` (fiat→USDC, FULL amount to merchant); `api/shop-payment.ts`.
+   - (d) ✅ DONE (d61a85d) — on-chain verify + replay. `POST /orders/:orderId/pay-crypto` reuses
+     events `verifyPayment` (exact amount + recipient + confirmations + tx.from) + tx-registry
+     one-shot. Payer binding = EIP-712 `SHOP_PAYMENT` (anonymous) OR session `parentAddress`
+     (logged-in = 1 prompt). Security-reviewed clean 2026-06-02 (no HIGH/MED findings).
+   - (c pt2) ✅ DONE (Opus, not deployed/tested vs live bee) — POS spend-permission (capped,
+     time-boxed) draw via **ZeroDev Kernel session keys** on Arb Sepolia, gasless via the paymaster.
+     GRANT: attendee names the venue spender via `addressToEmptyAccount` (ERC-7710 delegation),
+     sudo-signs once, `serializePermissionAccount` → approval blob (no private key). DRAW: server
+     holds the per-shop spender (`HMAC(SHOP_SPENDER_SECRET, shopId)`), `deserializePermissionAccount`
+     + gasless `USDC.transfer(merchant, amount)` userOp; verifies the on-chain Transfer log + flips
+     the order. Files: shared `SpendPermissionGrantParams`/`RegisterSpendPermissionRequest`/
+     `ShopSpendPermission`; client `kernel-account.grantShopSpendPermission` + `api/shop-spend-permission.ts`;
+     server `lib/shop/spend-permission.ts` + 4 routes (grant-params/register/pay-spend-permission/revoke).
+     CORRECTIONS vs the original sketch (crypto-reviewed): (1) the draw is `transfer`, NOT
+     `transferFrom` — the session key drives the Kernel's OWN balance (`transferFrom(self,…)` would
+     need a self-allowance); (2) this `@zerodev/permissions@5.6.3` has NO on-chain spending-limit
+     policy, so the cumulative cap is enforced SERVER-SIDE (sole spender + per-permission mutex +
+     `spentAtomic`) with the on-chain policy as the trustless backstop: call-policy `to`==merchant
+     (EQUAL) + `value`<=per-draw ceiling (LTE) + timestamp window + rate-limit count. A leaked
+     spender key can only over-charge the merchant within those bounds (refundable, balance-capped),
+     never redirect funds or spend out-of-window. Cumulative-cap → on-chain is a drop-in when a
+     spending-limit hook lands (same `transfer` shape). Settlement is one-shot per order
+     (`.data/shop-settled-orders.json`) so a Swarm order-write failure can't trigger a re-draw.
+     ENV: `SHOP_SPENDER_SECRET` (stable, protect like FEED_PRIVATE_KEY — rotating it changes every
+     shop's spender address and orphans live approvals) + `ZERODEV_RPC` (server bundler+paymaster).
+     Custody is server-held now but architected for a clean swap to POS-device/per-attendee spender
+     (the approval just names a different address; only `drawSpendPermission` moves). Frontend
+     integrity (omnipin) for the grant UI = noted hook for the World Computer Registry milestone.
+     AGENTIC/x402 hook left: spend-permission + a future `pay-x402` converge on the same verified-
+     transfer→paid terminal (`OrderPayment.x402Header` + rail "x402" already in the schema).
+   - (e) reserve `shop:manage` session-delegation scope (hook only).
+   Crypto fee LOCKED: 0.25% recorded (`CryptoFeeConfig`/`cryptoFeeBp`) but NOT collected on the
+   direct-transfer rail — split moves to a non-custodial `pay(merchant,amount,orderRef)` forwarder
+   (escrow/splitter milestone) which also gives immutable on-chain order binding (0 sign prompts).
 3. **Web shop UI + staff POS skin** — same catalog, two front-ends; tap-and-go on rail.  *(Sonnet — mechanical component build; back to Opus for any signature/funds code)*
 4. **POD loyalty milestones** — listen to spend events, issue badges via aggregator.  *(Opus review on crypto touches)*
 

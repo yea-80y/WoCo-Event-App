@@ -434,3 +434,99 @@ export interface ShopQuoteRequest {
   /** Buyer's paying wallet (optional). When supplied, the quote is bound to it. */
   buyerAddress?: Hex0x;
 }
+
+// ---------------------------------------------------------------------------
+// Crypto (USDC) spend-permission rail — POS tap-and-go (ZeroDev Kernel)
+//
+// The headline festival rail. At entry the attendee's Kernel smart account
+// grants a capped, time-boxed permission to the venue's spender (a ZeroDev
+// session key, ERC-7710-style delegation): "you may make MY Kernel `transfer`
+// USDC, but ONLY to this merchant, ≤ a per-draw ceiling, only before validUntil,
+// at most maxDraws times". Funds stay in the attendee's Kernel until drawn — the
+// venue can never redirect them (call-policy `to` is pinned) and can never spend
+// after the window. Each bar order = the venue's spender pulls the amount via a
+// gasless userOp, no per-round wallet prompt.
+//
+// The clean cumulative "£X" cap is enforced SERVER-SIDE (the server is the sole
+// spender and tracks `spentAtomic`). The on-chain policies are the trustless
+// backstop even if the spender key leaks: merchant-only target, per-draw ceiling,
+// window, bounded count. A future on-chain cumulative spending-limit hook is a
+// drop-in upgrade with the same `transfer` call shape — see docs/WOCO_SHOP_PLAN.md.
+// ---------------------------------------------------------------------------
+
+/**
+ * Server-dictated scope for a spend permission. The client MUST build its
+ * ZeroDev approval embedding EXACTLY these on-chain constraints so the policy
+ * the server later draws against matches what it issued. The attendee chooses
+ * only their cumulative cap (`capAtomic`, server-tracked) on top of this.
+ *
+ * Returned by POST /api/shops/:id/spend-permission/grant-params.
+ */
+export interface SpendPermissionGrantParams {
+  chainId: PaymentChainId;
+  /** USDC token on `chainId` (6-dec). The call policy pins `target` to this. */
+  usdcAddress: Hex0x;
+  /** Merchant recipient (lowercased) — the ONLY address a draw may pay. */
+  recipient: Hex0x;
+  /** The venue spender the attendee authorizes. Today: the server's per-shop
+   *  key; swappable to a POS-device / per-attendee delegate without a schema
+   *  change (the approval just names a different address). */
+  spenderAddress: Hex0x;
+  /** Unix seconds — permission expiry (timestamp policy `validUntil`). */
+  validUntil: number;
+  /** Max single-draw amount, 6-dec atomic (call-policy `value` ceiling). */
+  perDrawCeilingAtomic: string;
+  /** Max number of draws in the window (rate-limit policy `count`). */
+  maxDraws: number;
+}
+
+/**
+ * POST /api/shops/:id/spend-permission — register a granted approval.
+ * Auth-gated: the caller's verified parentAddress MUST equal `kernelAddress`
+ * (you can only grant a permission on a Kernel you control — and the approval
+ * blob is itself sudo-signed by that Kernel, validated on-chain at first draw).
+ */
+export interface RegisterSpendPermissionRequest {
+  chainId: PaymentChainId;
+  /** Attendee Kernel that granted (must equal the authenticated parentAddress). */
+  kernelAddress: Hex0x;
+  /** Cumulative cap, 6-dec atomic — the server-enforced drain ceiling. */
+  capAtomic: string;
+  validUntil: number;
+  spenderAddress: Hex0x;
+  perDrawCeilingAtomic: string;
+  maxDraws: number;
+  /**
+   * Serialized ZeroDev permission approval (enable data only, NO private key).
+   * The server stores this and combines it with its own spender key to draw.
+   */
+  approval: string;
+}
+
+/**
+ * Public view of a registered spend permission. NEVER carries the `approval`
+ * blob or any key material — only the budget state the attendee/merchant needs.
+ */
+export interface ShopSpendPermission {
+  permissionId: string;
+  shopId: string;
+  kernelAddress: Hex0x;
+  chainId: PaymentChainId;
+  recipient: Hex0x;
+  /** Cumulative cap (6-dec atomic). */
+  capAtomic: string;
+  /** Cumulative drawn so far (6-dec atomic). Remaining = cap − spent. */
+  spentAtomic: string;
+  validUntil: number;
+  revoked: boolean;
+  createdAt: string;
+}
+
+/**
+ * POST /api/shops/:id/orders/:orderId/pay-spend-permission — settle an order
+ * by drawing against a registered permission. Auth-gated to the shop owner (the
+ * POS operator); the cap/window/target on-chain policies are the real guards.
+ */
+export interface PaySpendPermissionRequest {
+  permissionId: string;
+}
