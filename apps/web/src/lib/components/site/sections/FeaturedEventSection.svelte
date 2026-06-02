@@ -2,6 +2,7 @@
   import type { FeaturedEventSection as FeaturedEventSectionType, EventFeed } from '@woco/shared';
   import { onMount } from 'svelte';
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
+  import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
 
   interface Props {
     section: FeaturedEventSectionType;
@@ -72,9 +73,7 @@
   }
 
   function imageUrl(ev: EventFeed): string | undefined {
-    if (!ev.imageHash || /^0+$/.test(ev.imageHash)) return undefined;
-    const gw = (typeof window !== 'undefined' && (window.SITE_CONFIG?.contentGatewayUrl || window.SITE_CONFIG?.gatewayUrl)) || gatewayUrl || 'https://gateway.woco-net.com';
-    return `${gw}/bytes/${ev.imageHash}`;
+    return firstImageUrl(ev.imageHash, gatewayUrl);
   }
 </script>
 
@@ -104,7 +103,13 @@
     <div class="featured-card" class:has-image={!!img}>
       {#if img}
         <div class="featured-image-wrap">
-          <img class="featured-image" src={img} alt={event.title} />
+          <img
+            class="featured-image"
+            src={img}
+            alt={event.title}
+            data-image-gateway-index="0"
+            onerror={(e) => useNextImageUrl(e, event.imageHash, gatewayUrl)}
+          />
           <div class="image-overlay" aria-hidden="true"></div>
         </div>
       {/if}

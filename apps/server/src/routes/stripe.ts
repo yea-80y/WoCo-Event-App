@@ -484,10 +484,11 @@ stripe.post("/create-checkout", async (c) => {
     }
   }
 
-  // Success should land on the canonical WoCo app, not a gateway /bzz/{hash}
-  // collection URL from an older deployed frontend. cancelUrl separately
-  // preserves the exact source page for aborted checkouts.
-  const frontendUrl = canonicalSuccessUrl(validateReturnUrl(returnUrl) ?? getFrontendUrl(c));
+  const resolvedFrontendUrl = validateReturnUrl(returnUrl) ?? getFrontendUrl(c);
+  // Platform purchases use the dedicated WoCo success page. Site-originated
+  // purchases must return to the organiser site so the site runtime can show
+  // its own Stripe success banner and keep the buyer in the branded UI.
+  const frontendUrl = siteId ? resolvedFrontendUrl : canonicalSuccessUrl(resolvedFrontendUrl);
 
   // Cancel URL: use the client-supplied full page URL (including hash fragment)
   // so the buyer is returned to exactly where they came from, even on standalone
@@ -506,7 +507,9 @@ stripe.post("/create-checkout", async (c) => {
     return `${frontendUrl}/#/event/${eventId}?${marker}`;
   }
   const stripeCancelUrl = buildCancelUrl("stripe=cancelled");
-  const stripeSuccessUrl = `${frontendUrl}/#/event/${eventId}/purchased?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
+  const stripeSuccessUrl = siteId
+    ? `${frontendUrl}/#/events/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`
+    : `${frontendUrl}/#/event/${eventId}/purchased?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
 
   try {
     const s = getStripe();

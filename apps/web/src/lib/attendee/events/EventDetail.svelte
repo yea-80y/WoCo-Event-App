@@ -11,6 +11,7 @@
   import UserAvatar from "../../components/profile/UserAvatar.svelte";
   import { onMount, onDestroy } from "svelte";
   import { isPastEvent as checkPast } from "../../utils/events.js";
+  import { firstImageUrl, useNextImageUrl } from "../../components/site/image-fallback.js";
 
   interface Props {
     eventId: string;
@@ -105,9 +106,11 @@
   {:else if event}
     {#if event.imageHash}
       <img
-        src="{BEE_GATEWAY}/bytes/{event.imageHash}"
+        src={firstImageUrl(event.imageHash, BEE_GATEWAY)}
         alt={event.title}
         class="hero-image"
+        data-image-gateway-index="0"
+        onerror={(e) => useNextImageUrl(e, event?.imageHash, BEE_GATEWAY)}
       />
     {/if}
 

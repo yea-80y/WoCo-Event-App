@@ -3,6 +3,7 @@
   import type { SiteEventsFull } from '../../../api/sites.js';
   import { onMount } from 'svelte';
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
+  import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
 
   interface Props {
     section: EventsGridSectionType;
@@ -156,12 +157,7 @@
   }
 
   function gatewayImageUrl(imageHash: string | undefined): string | undefined {
-    if (!imageHash || /^0+$/.test(imageHash)) return undefined;
-    // Event images are raw bytes uploads — use /bytes/, not /bzz/ (which is for manifests)
-    // Event images are always on WoCo Bee (uploaded at event creation, not re-uploaded
-    // during site deploy). contentGatewayUrl is injected by the Etherna deploy path.
-    const gw = (typeof window !== 'undefined' && (window.SITE_CONFIG?.contentGatewayUrl || window.SITE_CONFIG?.gatewayUrl)) || 'https://gateway.woco-net.com';
-    return `${gw}/bytes/${imageHash}`;
+    return firstImageUrl(imageHash);
   }
 </script>
 
@@ -192,7 +188,13 @@
           <article class="event-card">
             <div class="card-image" class:has-img={!!imgUrl}>
               {#if imgUrl}
-                <img src={imgUrl} alt={ev.title} loading="lazy" />
+                <img
+                  src={imgUrl}
+                  alt={ev.title}
+                  loading="lazy"
+                  data-image-gateway-index="0"
+                  onerror={(e) => useNextImageUrl(e, ev.imageHash)}
+                />
               {:else}
                 <div class="card-image-fallback" aria-hidden="true"></div>
               {/if}

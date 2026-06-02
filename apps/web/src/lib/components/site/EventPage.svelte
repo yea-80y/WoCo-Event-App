@@ -10,6 +10,7 @@
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
   import TicketSuccess from "../../attendee/events/TicketSuccess.svelte";
   import type { ClaimedTicket } from "@woco/shared";
+  import { firstImageUrl, useNextImageUrl } from "./image-fallback.js";
 
   interface Props {
     eventId: string;
@@ -559,9 +560,11 @@
     {#if event.imageHash}
       <div class="hero-wrap">
         <img
-          src="{BEE_GATEWAY}/bytes/{event.imageHash}"
+          src={firstImageUrl(event.imageHash, BEE_GATEWAY)}
           alt={event.title}
           class="hero-img"
+          data-image-gateway-index="0"
+          onerror={(e) => useNextImageUrl(e, event?.imageHash, BEE_GATEWAY)}
         />
         <div class="hero-fade"></div>
       </div>
