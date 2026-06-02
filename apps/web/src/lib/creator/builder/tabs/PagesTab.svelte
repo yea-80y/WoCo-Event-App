@@ -69,6 +69,7 @@
       case 'image':        return { id, type, ref: '', alt: '', layout: 'contained' };
       case 'eventsGrid':   return { id, type, mode: 'upcoming' };
       case 'featuredEvent':return { id, type, eventId: '' };
+      case 'productGrid':  return { id, type, shopId: '' };
       case 'openingHours': return { id, type, rows: [{ day: 'Mon–Sun', hours: '12:00 – 23:00' }] };
       case 'map':          return { id, type, lat: 51.5074, lng: -0.1278 };
       case 'contactForm':  return { id, type, emailTo: '' };
@@ -128,6 +129,7 @@
     { type: 'gallery',       icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>', label: 'Image gallery',  desc: 'Grid of images from Swarm',            color: '#5c7a9e' },
     { type: 'eventsGrid',    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M1 7h14" stroke="currentColor" stroke-width="1.2"/><path d="M5 1v3M11 1v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="5.5" cy="11" r="1" fill="currentColor"/><circle cx="8" cy="11" r="1" fill="currentColor"/><circle cx="10.5" cy="11" r="1" fill="currentColor"/></svg>', label: 'Events grid',    desc: 'Grid of upcoming / all events',        color: '#c8860a' },
     { type: 'featuredEvent', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.5l1.85 3.74L14 6.1l-3 2.93.71 4.12L8 11l-3.71 2.15.71-4.12L2 6.1l4.15-.86L8 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>', label: 'Featured event', desc: 'Single highlighted event card',        color: '#d04060' },
+    { type: 'productGrid',   icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 5h10l-.8 9.2a1 1 0 01-1 .8H4.8a1 1 0 01-1-.8L3 5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5.5 5V4a2.5 2.5 0 015 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>', label: 'Product grid',   desc: 'Shop catalog from a WoCo shop',         color: '#8a9e2a' },
     { type: 'openingHours',  icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>', label: 'Opening hours',  desc: 'Weekly schedule table',                color: '#20b896' },
     { type: 'map',           icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1C5.79 1 4 2.79 4 5c0 3.5 4 10 4 10s4-6.5 4-10c0-2.21-1.79-4-4-4z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="5" r="1.5" stroke="currentColor" stroke-width="1.2"/></svg>', label: 'Map',            desc: 'Embedded map with pin',                color: '#2090c0' },
     { type: 'contactForm',   icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M1 5.5l7 4.5 7-4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>', label: 'Contact form',   desc: 'Sends enquiries to your email',        color: '#9c6cf0' },
@@ -146,6 +148,7 @@
       case 'gallery':      return `${sec.images.length} image${sec.images.length !== 1 ? 's' : ''}`;
       case 'eventsGrid':   return `Mode: ${sec.mode}${sec.max ? `, max ${sec.max}` : ''}`;
       case 'featuredEvent':return sec.eventId ? `Event: ${sec.eventId.slice(0, 20)}` : '(no event set)';
+      case 'productGrid':  return sec.shopId ? `Shop: ${sec.shopId.slice(0, 16)}${sec.max ? `, max ${sec.max}` : ''}` : '(no shop set)';
       case 'openingHours': return `${sec.rows.length} row${sec.rows.length !== 1 ? 's' : ''}`;
       case 'map':          return `${sec.lat.toFixed(4)}, ${sec.lng.toFixed(4)}`;
       case 'contactForm':  return sec.emailTo || '(no email set)';

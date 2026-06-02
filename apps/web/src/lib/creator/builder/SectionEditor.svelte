@@ -11,8 +11,12 @@
     MapSection,
     ContactFormSection,
     EmbedSection,
+    ProductGridSection,
+    ShopDirectoryEntry,
+    ProductCategory,
   } from "@woco/shared";
   import { uploadSiteImage } from "../../api/sites.js";
+  import { getMyShops, getShop } from "../../api/shops.js";
   import { compressImage, imgPreset } from "../../utils.js";
 
   interface Props {
@@ -26,6 +30,31 @@
   const WOCO_GATEWAY = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
   // Use selected deploy gateway so images uploaded to Etherna preview correctly.
   const GATEWAY_URL = $derived(gatewayUrl || WOCO_GATEWAY);
+
+  // ── productGrid: shop + category pickers ──────────────────────────────────
+  let myShops = $state<ShopDirectoryEntry[]>([]);
+  let shopsLoaded = $state(false);
+  let shopCategories = $state<ProductCategory[]>([]);
+  let loadedCategoriesFor = $state('');
+
+  // Load the merchant's shops once, the first time a productGrid section is edited.
+  $effect(() => {
+    if (section.type === 'productGrid' && !shopsLoaded) {
+      shopsLoaded = true;
+      getMyShops().then((s) => { myShops = s; }).catch(() => {});
+    }
+  });
+
+  // Load the selected shop's categories when its id changes (drives the filter).
+  $effect(() => {
+    if (section.type !== 'productGrid') return;
+    const sid = (section as ProductGridSection).shopId;
+    if (!sid || sid === loadedCategoriesFor) return;
+    loadedCategoriesFor = sid;
+    getShop(sid)
+      .then((shop) => { shopCategories = shop?.categories ?? []; })
+      .catch(() => { shopCategories = []; });
+  });
 
   // ── Gallery upload state ──────────────────────────────────────────────────
   let galleryUploadState = $state<'idle' | 'uploading' | 'error'>('idle');
@@ -300,6 +329,56 @@
         <option value="all">All events</option>
         <option value="featured">Featured only</option>
       </select>
+    </label>
+    <label class="field-row">
+      <span class="field-label">Max cards <span class="optional">(optional)</span></span>
+      <input class="input" type="number" min="1" value={s.max ?? ''}
+        placeholder="Unlimited"
+        oninput={(e) => {
+          const v = (e.currentTarget as HTMLInputElement).value;
+          onpatch({ max: v ? parseInt(v, 10) : undefined });
+        }} />
+    </label>
+
+  {:else if section.type === 'productGrid'}
+    {@const s = section as ProductGridSection}
+    <label class="field-row">
+      <span class="field-label">Section heading <span class="optional">(optional)</span></span>
+      <input class="input" type="text" value={s.title ?? ''} placeholder="e.g. Shop, Merch, Menu"
+        oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
+    </label>
+    {#if myShops.length}
+      <label class="field-row">
+        <span class="field-label">Shop</span>
+        <select class="input select" value={s.shopId}
+          onchange={(e) => onpatch({ shopId: (e.currentTarget as HTMLSelectElement).value })}>
+          <option value="" disabled>Choose a shop…</option>
+          {#each myShops as shop (shop.shopId)}
+            <option value={shop.shopId}>{shop.name}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
+    <label class="field-row">
+      <span class="field-label">{myShops.length ? 'or paste a shop ID' : 'Shop ID'}</span>
+      <input class="input" type="text" value={s.shopId}
+        placeholder="Paste a shop ID from the Shop tab"
+        oninput={(e) => onpatch({ shopId: (e.currentTarget as HTMLInputElement).value })} />
+      <span class="hint">Find it in the Shop tab of your site builder.</span>
+    </label>
+    <label class="field-row">
+      <span class="field-label">Category <span class="optional">(optional)</span></span>
+      <select class="input select" value={s.categoryId ?? ''}
+        disabled={!s.shopId || shopCategories.length === 0}
+        onchange={(e) => onpatch({ categoryId: (e.currentTarget as HTMLSelectElement).value || undefined })}>
+        <option value="">All products</option>
+        {#each shopCategories as cat (cat.id)}
+          <option value={cat.id}>{cat.label}</option>
+        {/each}
+      </select>
+      {#if s.shopId && shopCategories.length === 0}
+        <span class="hint">No categories for this shop — showing all products.</span>
+      {/if}
     </label>
     <label class="field-row">
       <span class="field-label">Max cards <span class="optional">(optional)</span></span>
