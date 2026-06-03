@@ -21,6 +21,7 @@ import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
 import { sitesRouter } from "./routes/sites.js";
 import { shopsRouter } from "./routes/shops.js";
+import { podRouter } from "./routes/pod.js";
 import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
@@ -377,6 +378,9 @@ app.route("/api/sites", sitesRouter);
 
 // Shop: catalog + order CRUD
 app.route("/api/shops", shopsRouter);
+
+// POD layer: creator POD manager + public holdings read
+app.route("/api/pod", podRouter);
 
 // Custom domain routes
 app.route("/api/domains", domains);

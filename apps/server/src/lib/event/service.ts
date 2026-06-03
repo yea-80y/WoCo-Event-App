@@ -5,6 +5,7 @@ import type {
 } from "@woco/shared";
 import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
+import { upsertCreatorPod } from "../pod/directory.js";
 import { PROXY_URL, UPLOAD_SECRET } from "../../config/swarm.js";
 import {
   readFeedPage,
@@ -229,6 +230,28 @@ export async function confirmSeriesOnChain(
 
   await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
   invalidateEventCache(eventId);
+
+  // Surface this series as a `ticket` POD type in the creator's POD directory
+  // (powers the #/creator/pods manager + <PodPicker>). Fire-and-forget: the
+  // on-chain confirmation must not fail if the directory write hiccups. Keyed
+  // by manifestRef, so the upsert also patches onChainEventId on re-confirm.
+  const series = updated.series.find((s) => s.seriesId === seriesId);
+  if (series?.manifestRef) {
+    void upsertCreatorPod(updated.creatorAddress, {
+      manifestRef: series.manifestRef,
+      kind: "ticket",
+      name: series.name,
+      ...(updated.imageHash ? { image: updated.imageHash } : {}),
+      ...(series.description ? { description: series.description } : {}),
+      supply: series.totalSupply,
+      eventId: onChainEventId,
+      createdAt: updated.createdAt,
+      updatedAt: new Date().toISOString(),
+    }).catch((err) =>
+      console.error("[event] POD directory upsert failed (non-critical):", err),
+    );
+  }
+
   return updated;
 }
 

@@ -178,9 +178,13 @@ export interface PodDirectoryEntry {
   supply: number;
   /** How many editions have been issued/claimed so far (best-effort counter). */
   issuedCount?: number;
-  /** ed25519 issuer pubkey (hex, lowercase, no 0x) — mirrors the manifest. */
-  issuer: Hex32;
-  /** Originating event, when this POD type is a `ticket`. */
+  /** ed25519 issuer pubkey (hex, lowercase, no 0x) — mirrors the manifest.
+   *  Optional: not needed for the manager/holdings/gating; populated only where
+   *  a use (e.g. verifying off-event badges) requires it. */
+  issuer?: Hex32;
+  /** On-chain eventId (0x bytes32) the manifest is committed under — the
+   *  holdings reader needs this to read slot ownership. Present once on-chain
+   *  registration confirms; for `ticket` PODs that is `confirmSeriesOnChain`. */
   eventId?: Bytes32Hex;
   createdAt: string;
   updatedAt: string;
