@@ -1,4 +1,4 @@
-import type { PodDirectory, PodCategory, PodHolding } from "@woco/shared";
+import type { PodDirectory, PodCategory, PodHolding, PodDirectoryEntry } from "@woco/shared";
 import { authGet, authPut, get } from "./client.js";
 
 /**
@@ -19,6 +19,24 @@ export async function setPodCategories(categories: PodCategory[]): Promise<PodCa
   const r = await authPut<{ categories: PodCategory[] }>("/api/pod/categories", { categories });
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to save categories");
   return r.data.categories;
+}
+
+/** Patch the mutable display fields of one POD type (name, image, description, categoryId). */
+export async function updatePod(
+  manifestRef: string,
+  patch: {
+    name?: string;
+    description?: string;
+    image?: string;
+    categoryId?: string | null;
+  },
+): Promise<PodDirectoryEntry> {
+  const r = await authPut<PodDirectoryEntry>(
+    `/api/pod/${encodeURIComponent(manifestRef)}`,
+    patch,
+  );
+  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to update POD");
+  return r.data;
 }
 
 /**

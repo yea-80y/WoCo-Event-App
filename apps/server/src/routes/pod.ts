@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import type { PodCategory, Hex0x } from "@woco/shared";
+import type { PodCategory, PodDirectoryEntry, Hex0x } from "@woco/shared";
 import {
   getCreatorPodDirectory,
   setCreatorPodCategories,
+  upsertCreatorPod,
 } from "../lib/pod/directory.js";
 import { getOnChainHolding } from "../lib/pod/holdings.js";
 
@@ -62,6 +63,68 @@ podRouter.put("/categories", requireAuth, async (c) => {
   } catch (err) {
     console.error("[pod] PUT /categories failed:", err);
     return c.json({ ok: false, error: "Failed to write categories" }, 500);
+  }
+});
+
+/**
+ * PUT /api/pod/:manifestRef — patch the mutable display layer of one POD type.
+ * Only updates fields that live in the directory entry (name, image, description,
+ * categoryId) — the signed manifest is never touched, so no re-signing needed.
+ */
+podRouter.put("/:manifestRef", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const manifestRef = c.req.param("manifestRef");
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "Invalid JSON" }, 400);
+  }
+
+  const patch = body as {
+    name?: string;
+    description?: string;
+    image?: string;
+    categoryId?: string | null;
+  };
+
+  let dir;
+  try {
+    dir = await getCreatorPodDirectory(parentAddress);
+  } catch (err) {
+    console.error("[pod] PUT /:manifestRef — directory read failed:", err);
+    return c.json({ ok: false, error: "Failed to read POD directory" }, 500);
+  }
+
+  const existing = dir.pods.find(
+    (p) => p.manifestRef.toLowerCase() === manifestRef.toLowerCase(),
+  );
+  if (!existing) {
+    return c.json({ ok: false, error: "POD not found in your directory" }, 404);
+  }
+
+  const updated: PodDirectoryEntry = {
+    ...existing,
+    ...(typeof patch.name === "string" && patch.name.trim()
+      ? { name: patch.name.trim() }
+      : {}),
+    ...(typeof patch.description === "string"
+      ? { description: patch.description.trim() || undefined }
+      : {}),
+    ...(patch.image !== undefined ? { image: patch.image || undefined } : {}),
+    ...("categoryId" in patch
+      ? { categoryId: patch.categoryId ?? undefined }
+      : {}),
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    await upsertCreatorPod(parentAddress, updated);
+    return c.json({ ok: true, data: updated });
+  } catch (err) {
+    console.error("[pod] PUT /:manifestRef — upsert failed:", err);
+    return c.json({ ok: false, error: "Failed to update POD" }, 500);
   }
 });
 
