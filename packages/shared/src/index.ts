@@ -8,6 +8,7 @@ export * from "./event/types.js";
 export * from "./crypto/index.js";
 export * from "./pod/types.js";
 export * from "./pod/topics.js";
+export * from "./pod/gate.js";
 export * from "./pod/merkle.js";
 export * from "./pod/verify.js";
 export * from "./ticket/canonical.js";

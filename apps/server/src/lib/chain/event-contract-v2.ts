@@ -108,6 +108,38 @@ export async function getSlotDataV2(
 }
 
 /**
+ * All on-chain slot indices currently owned by `owner` for an event — the
+ * TRUSTLESS holdings source for POD gating (§4.4). Reads `SlotClaimed` logs
+ * filtered by the indexed `(eventId, owner)` topics; each log's `slot` is an
+ * owned slot. PODs are soulbound today (no transfer), so a SlotClaimed log is
+ * authoritative for current ownership; when transfer lands this must also
+ * subtract slots transferred away (add a `Transfer`/`SlotTransferred` scan).
+ *
+ * Slots are 0-based allocation order, so the result doubles as the "first-N"
+ * signal (`slot < N`). queryFilter scans full history — fine at current
+ * volumes; add a per-deployment `fromBlock` once events get large.
+ */
+export async function querySlotsOwnedV2(
+  onChainEventId: string,
+  owner: string,
+  contractAddress: string,
+  chainId: number,
+): Promise<number[]> {
+  const contract = new Contract(contractAddress, V2_CLAIM_ABI, getProvider(chainId));
+  // Indexed topics: SlotClaimed(eventId indexed, slot indexed, owner indexed, …)
+  const filter = contract.filters.SlotClaimed(onChainEventId, null, owner);
+  const logs = await contract.queryFilter(filter);
+  const slots = new Set<number>();
+  for (const log of logs) {
+    // queryFilter returns EventLog when the ABI matches; args.slot is the
+    // indexed slot. Guard defensively in case a raw Log slips through.
+    const args = (log as unknown as { args?: { slot?: bigint } }).args;
+    if (args?.slot != null) slots.add(Number(args.slot));
+  }
+  return [...slots].sort((a, b) => a - b);
+}
+
+/**
  * Sponsor-path claim on V2. Same call signature as V1 (`claimFor(bytes32,
  * address, bytes32)`) — V2 reverts if `block.timestamp >= eventEndTs`, so
  * sponsor mints made after the event-end deadline will fail with

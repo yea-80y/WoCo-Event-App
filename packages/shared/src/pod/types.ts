@@ -203,31 +203,40 @@ export interface PodDirectory {
 // ---------------------------------------------------------------------------
 
 /**
- * A holder's stake in a single POD type. `count` is what gates compare against;
- * `editions` lists the specific 1-indexed editions held (for "specific edition"
- * gates and display). Unifies on-chain `slotOwner` ownership with collection-feed
- * membership — see the holdings reader (server) for the merge.
+ * A holder's stake in a single POD type, as read from the TRUSTLESS on-chain
+ * source (`WoCoEventV2` slot ownership) — NOT the platform-written collection
+ * feed, which is spoofable and would undercut the gate (§4.4). `count` is what
+ * most gates compare against; `slots` are the specific owned slot indices.
+ *
+ * Slot indices are **0-based and allocation-order** (the order buyers claimed),
+ * so `slot < N` expresses "one of the first N buyers" — the drop / first-N gate
+ * falls out for free. Email-only (no-wallet) claims aren't on-chain and so are
+ * not gateable by address, which is correct: you can only gate a wallet.
  */
 export interface PodHolding {
   manifestRef: Bytes32Hex;
   count: number;
-  editions: number[];
+  /** Owned on-chain slot indices (0-based, allocation order). */
+  slots: number[];
 }
 
 /**
- * A gate rule: hold ≥`minCount` of `manifestRef`, optionally only specific
- * `editions`, optionally only within a time window. Evaluated by the holdings
- * primitive at claim/order time (v1, server-side) — see §4.3/§4.4. Reused by
- * event gating, product gating, and milestone eligibility.
+ * A gate rule: hold ≥`minCount` of `manifestRef`, optionally only within a slot
+ * range / set, optionally only within a time window. Evaluated by the pure
+ * `evaluatePodGate` against a `PodHolding` at claim/order time (v1, server-side)
+ * — see §4.3/§4.4. Reused by event gating, product gating, milestone eligibility.
  */
 export interface PodGateRule {
   manifestRef: Bytes32Hex;
-  /** Minimum editions held to pass. Default 1. */
+  /** Minimum holdings to pass. Default 1. */
   minCount?: number;
-  /** When set, only these 1-indexed editions count toward `minCount`. */
-  editions?: number[];
-  /** Unix ms — gate inactive before this. */
+  /**
+   * "First-N" gate: only slots with index < this count toward `minCount`
+   * (slots are allocation-order, so this is "first N buyers"). Omit = any slot.
+   */
+  maxSlotExclusive?: number;
+  /** Unix ms — rule does not pass before this (time-limited access). */
   notBefore?: number;
-  /** Unix ms — gate inactive after this (time-limited access). */
+  /** Unix ms — rule does not pass after this (time-limited access). */
   notAfter?: number;
 }
