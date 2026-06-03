@@ -11,6 +11,7 @@
   import Plus from "lucide-svelte/icons/plus";
   import Monitor from "lucide-svelte/icons/monitor";
   import ShoppingBag from "lucide-svelte/icons/shopping-bag";
+  import Layers from "lucide-svelte/icons/layers";
   import ArrowLeft from "lucide-svelte/icons/arrow-left";
 
   interface Props {
@@ -27,6 +28,7 @@
     router.route === "embed-setup"
   );
   const isSites = $derived(router.route === "build" || router.route === "site-builder");
+  const isPods = $derived(router.route === "creator-pods");
   const isProfile = $derived(router.route === "profile");
 
   let createOpen = $state(false);
@@ -104,6 +106,14 @@
       <span class="nav-icon"><Monitor size={20} strokeWidth={2.25} /></span>
       <span class="nav-label">Sites</span>
     </button>
+    <button
+      class="bottom-nav-item"
+      class:active={isPods}
+      onclick={() => navigate("/creator/pods")}
+    >
+      <span class="nav-icon"><Layers size={20} strokeWidth={2.25} /></span>
+      <span class="nav-label">PODs</span>
+    </button>
     {#if auth.isConnected}
       <button
         class="bottom-nav-item profile-nav-item"
@@ -133,6 +143,10 @@
       <button class="create-opt" role="menuitem" onclick={() => create("/creator/sites")}>
         <span class="opt-ic"><Monitor size={16} strokeWidth={2.25} /></span>
         <span class="opt-text"><strong>New website</strong><small>Multi-page site builder</small></span>
+      </button>
+      <button class="create-opt" role="menuitem" onclick={() => create("/creator/pods")}>
+        <span class="opt-ic"><Layers size={16} strokeWidth={2.25} /></span>
+        <span class="opt-text"><strong>New POD</strong><small>Badge, drop, or collectible</small></span>
       </button>
     </div>
   {/if}

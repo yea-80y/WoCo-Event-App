@@ -14,9 +14,10 @@
    */
   import type { PodDirectoryEntry, PodCategory, PodKind } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { getMyPods } from "../../api/pod.js";
+  import { getMyPods, setPodCategories } from "../../api/pod.js";
   import { onMount } from "svelte";
   import PodCard from "./PodCard.svelte";
+  import PodEditDrawer from "./PodEditDrawer.svelte";
 
   type Phase = "loading" | "ready" | "unauth" | "error";
   let phase = $state<Phase>("loading");
@@ -74,18 +75,89 @@
     }
   }
 
-  // Seams for Sonnet — wire the create modal + detail drawer here.
-  function onCreate() {
-    // TODO(sonnet): open the create-POD modal (badge/collectible).
-    console.info("[pod] create — modal pending (Sonnet handover)");
-  }
+  // ── detail drawer ────────────────────────────────────────────────────────────
+  let selectedPod = $state<PodDirectoryEntry | null>(null);
+
   function onSelect(pod: PodDirectoryEntry) {
-    // TODO(sonnet): open the POD detail/edit drawer.
-    console.info("[pod] select", pod.manifestRef);
+    selectedPod = pod;
+  }
+  function closeDrawer() {
+    selectedPod = null;
+  }
+  function onDrawerSaved(updated: PodDirectoryEntry) {
+    pods = pods.map((p) => (p.manifestRef === updated.manifestRef ? updated : p));
+  }
+
+  // ── category editor ───────────────────────────────────────────────────────
+  let catEditorOpen = $state(false);
+  let catDraft = $state<PodCategory[]>([]);
+  let catSaving = $state(false);
+  let catError = $state("");
+
+  function openCatEditor() {
+    catDraft = categories.map((c) => ({ ...c }));
+    catError = "";
+    catEditorOpen = true;
+  }
+  function closeCatEditor() {
+    catEditorOpen = false;
+    catError = "";
+  }
+
+  function addCategory() {
+    const id = crypto.randomUUID();
+    catDraft = [...catDraft, { id, label: "", sortIndex: catDraft.length }];
+  }
+
+  function removeCategory(id: string) {
+    catDraft = catDraft.filter((c) => c.id !== id);
+  }
+
+  function moveCat(idx: number, dir: -1 | 1) {
+    const next = [...catDraft];
+    const swap = idx + dir;
+    if (swap < 0 || swap >= next.length) return;
+    [next[idx], next[swap]] = [next[swap], next[idx]];
+    catDraft = next.map((c, i) => ({ ...c, sortIndex: i }));
+  }
+
+  async function saveCategories() {
+    const valid = catDraft.filter((c) => c.label.trim());
+    if (valid.length !== catDraft.length) {
+      catError = "Every category needs a name.";
+      return;
+    }
+    catSaving = true;
+    catError = "";
+    try {
+      const saved = await setPodCategories(valid.map((c, i) => ({ ...c, sortIndex: i })));
+      categories = saved;
+      const dir = await getMyPods();
+      pods = dir.pods;
+      categories = dir.categories;
+      catEditorOpen = false;
+    } catch (e) {
+      catError = e instanceof Error ? e.message : "Failed to save categories";
+    } finally {
+      catSaving = false;
+    }
+  }
+
+  // ── create POD (Opus-reserved) ────────────────────────────────────────────
+  function onCreate() {
+    // TODO(opus): create-badge/collectible modal — ed25519 manifest sign + on-chain enrol.
+    console.info("[pod] create — Opus-reserved (Step 3 loyalty / issuance service)");
   }
 
   onMount(load);
 </script>
+
+<PodEditDrawer
+  pod={selectedPod}
+  {categories}
+  onclose={closeDrawer}
+  onsaved={onDrawerSaved}
+/>
 
 <div class="pod-manager">
   <div class="page-head">
@@ -102,38 +174,92 @@
   </div>
 
   {#if phase === "ready" && pods.length > 0}
-    <div class="filters" role="tablist" aria-label="Filter PODs by category">
-      <button
-        class="fchip"
-        class:active={activeFilter === "all"}
-        role="tab"
-        aria-selected={activeFilter === "all"}
-        onclick={() => (activeFilter = "all")}
-      >
-        All <span class="fcount">{pods.length}</span>
+    <div class="filter-row">
+      <div class="filters" role="tablist" aria-label="Filter PODs by category">
+        <button
+          class="fchip"
+          class:active={activeFilter === "all"}
+          role="tab"
+          aria-selected={activeFilter === "all"}
+          onclick={() => (activeFilter = "all")}
+        >
+          All <span class="fcount">{pods.length}</span>
+        </button>
+        {#each sortedCategories as cat (cat.id)}
+          <button
+            class="fchip"
+            class:active={activeFilter === cat.id}
+            role="tab"
+            aria-selected={activeFilter === cat.id}
+            onclick={() => (activeFilter = cat.id)}
+          >
+            {cat.label}
+          </button>
+        {/each}
+        {#if hasUncategorised}
+          <button
+            class="fchip"
+            class:active={activeFilter === "uncat"}
+            role="tab"
+            aria-selected={activeFilter === "uncat"}
+            onclick={() => (activeFilter = "uncat")}
+          >
+            Uncategorised
+          </button>
+        {/if}
+      </div>
+      <button class="btn btn--ghost btn--sm" onclick={openCatEditor} title="Manage categories">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 3h10M1 6h10M1 9h6" /></svg>
+        Categories
       </button>
-      {#each sortedCategories as cat (cat.id)}
-        <button
-          class="fchip"
-          class:active={activeFilter === cat.id}
-          role="tab"
-          aria-selected={activeFilter === cat.id}
-          onclick={() => (activeFilter = cat.id)}
-        >
-          {cat.label}
+    </div>
+  {/if}
+
+  <!-- Category editor panel -->
+  {#if catEditorOpen}
+    <div class="cat-editor">
+      <div class="cat-head">
+        <span class="cat-title">Manage categories</span>
+        <button class="close-btn" onclick={closeCatEditor} aria-label="Close">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M1 1l10 10M11 1L1 11" /></svg>
         </button>
-      {/each}
-      {#if hasUncategorised}
-        <button
-          class="fchip"
-          class:active={activeFilter === "uncat"}
-          role="tab"
-          aria-selected={activeFilter === "uncat"}
-          onclick={() => (activeFilter = "uncat")}
-        >
-          Uncategorised
-        </button>
+      </div>
+      <div class="cat-list">
+        {#each catDraft as cat, i (cat.id)}
+          <div class="cat-row">
+            <div class="cat-arrows">
+              <button class="arr-btn" onclick={() => moveCat(i, -1)} disabled={i === 0} aria-label="Move up">▲</button>
+              <button class="arr-btn" onclick={() => moveCat(i, 1)} disabled={i === catDraft.length - 1} aria-label="Move down">▼</button>
+            </div>
+            <input
+              class="cat-input"
+              type="text"
+              bind:value={cat.label}
+              placeholder="Category name"
+              maxlength={40}
+            />
+            <button class="del-btn" onclick={() => removeCategory(cat.id)} aria-label="Delete category">
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M1 1l9 9M10 1L1 10" /></svg>
+            </button>
+          </div>
+        {/each}
+        {#if catDraft.length === 0}
+          <p class="cat-empty">No categories — add one below.</p>
+        {/if}
+      </div>
+      <button class="btn btn--ghost btn--sm cat-add" onclick={addCategory}>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square"><path d="M5 1v8M1 5h8" /></svg>
+        Add category
+      </button>
+      {#if catError}
+        <p class="cat-err">{catError}</p>
       {/if}
+      <div class="cat-foot">
+        <button class="btn btn--ghost btn--sm" onclick={closeCatEditor} disabled={catSaving}>Cancel</button>
+        <button class="btn btn--primary btn--sm" onclick={saveCategories} disabled={catSaving}>
+          {catSaving ? "Saving…" : "Save"}
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -249,12 +375,23 @@
     background: var(--bg-surface-hover);
   }
 
+  .btn--sm {
+    font-size: 0.78rem;
+    padding: 6px 11px;
+  }
+
   /* ── filter chips ───────────────────────────────────────────────── */
+  .filter-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 18px;
+  }
   .filters {
     display: flex;
     flex-wrap: wrap;
     gap: 7px;
-    margin-bottom: 18px;
+    flex: 1;
   }
   .fchip {
     font-family: var(--font-mono);
@@ -337,6 +474,127 @@
     color: var(--text-dim);
     line-height: 1;
     margin-bottom: 2px;
+  }
+
+  .close-btn {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: border-color var(--transition), color var(--transition);
+    flex-shrink: 0;
+  }
+  .close-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+  }
+
+  /* ── category editor ───────────────────────────────────────────── */
+  .cat-editor {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+    margin-bottom: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .cat-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .cat-title {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .cat-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .cat-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cat-arrows {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .arr-btn {
+    font-size: 0.55rem;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 1px 3px;
+    line-height: 1;
+    transition: color var(--transition);
+  }
+  .arr-btn:hover:not(:disabled) { color: var(--text); }
+  .arr-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .cat-input {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.86rem;
+    padding: 6px 9px;
+    transition: border-color var(--transition);
+  }
+  .cat-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .del-btn {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--error);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color var(--transition), background var(--transition);
+  }
+  .del-btn:hover {
+    border-color: var(--error);
+    background: rgba(255, 80, 60, 0.07);
+  }
+  .cat-empty {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    margin: 0;
+    padding: 8px 0;
+  }
+  .cat-add {
+    align-self: flex-start;
+  }
+  .cat-err {
+    font-size: 0.82rem;
+    color: var(--error);
+    margin: 0;
+  }
+  .cat-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 2px;
   }
 
   @media (max-width: 560px) {
