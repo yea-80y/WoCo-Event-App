@@ -63,6 +63,7 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/creator/events/new") return { route: "create", params: {}, surface: "creator" };
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
   if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
+  if (path === "/creator/pods") return { route: "creator-pods", params: {}, surface: "creator" };
   if (path === "/creator/profile") return { route: "profile", params: {}, surface: "creator" };
 
   const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);

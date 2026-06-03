@@ -111,6 +111,22 @@ export async function authPatch<T>(
   return safeJson<T>(resp);
 }
 
+/** Authenticated PUT request. */
+export async function authPut<T>(
+  path: string,
+  body: Record<string, unknown>,
+  baseUrl?: string,
+): Promise<ApiResponse<T>> {
+  const bodyText = JSON.stringify(body);
+  const authHeaders = await buildAuthHeaders("PUT", path, bodyText);
+  const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: bodyText,
+  });
+  return safeJson<T>(resp);
+}
+
 /** Authenticated DELETE request. */
 export async function authDelete<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
   const authHeaders = await buildAuthHeaders("DELETE", path, "");
