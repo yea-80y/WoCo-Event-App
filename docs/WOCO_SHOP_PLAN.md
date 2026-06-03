@@ -105,18 +105,100 @@ Stock: optional per product. Finite-stock items (limited vinyl, capped merch) re
 - `woco/shop/creator/{ethAddress}[/pN]`    → merchant's shop directory (mirrors sites)
 - Site builder: new `shop`/`productGrid` Section + optional `MenuSection`.
 
-## 4. Loyalty (POD badges)
+## 4. POD layer — loyalty, drops, access, authenticity (LOCKED 2026-06-03)
 
-- A POD is issued **to a wallet**, at **milestones** — threshold- or item-triggered.
-  e.g. "cumulative spend £50 → Festival Regular"; "bought limited vinyl → Collector".
-  NOT one per purchase.
-- **Progress between milestones is derived, not stored.** Every crypto spend is an
-  on-chain USDC transfer, so cumulative (customer, merchant) spend is chain-readable.
-  No separate balance ledger to trust/corrupt.
-- **Aggregator**: the planned Stylus aggregator sums spend and gates POD issuance at
-  thresholds. Card (Stripe) spend isn't on-chain → accrues via a server-signed
-  attestation feeding the same aggregator (two input sources, one tally).
-- POD issuance reuses existing rails (`woco.manifest.v1` ed25519 + Merkle batch).
+Step 4 grew from "loyalty badges" into PODs as a **general ownable-asset layer** with
+four jobs. Design discussion + sign-off: this session. Build is **creator-first** (the
+attendee/collector app is later — see [[project_attendee_no_mytickets]]).
+
+### 4.0 POD taxonomy — 4 kinds, one schema
+
+A `kind` discriminator on the manifest. All four are PODs (mint rarely → batch
+manifest/Merkle/on-chain cost is fine). The **point itself is never a POD** (§4.1).
+
+| kind | soulbound | issued at | notes |
+|------|-----------|-----------|-------|
+| `ticket` | yes | claim | what exists today |
+| `badge` | yes | spend/engagement milestone | loyalty |
+| `collectible` | yes (opt-in NFT mirror later) | purchase / first-N cap | drops, memento |
+| `authenticity` | **no — transferable** | sale of a physical good | **STUB this stage** |
+
+### 4.1 Loyalty points — derive, don't store
+
+A POD-per-point is wrong on compute AND semantics (a point is a *decrementing
+redeemable balance*; a POD is *immutable*). So:
+
+- **points = `floor(Σ order.total × earnRate) − Σ redemptions`** — a pure function of the
+  order feed (`woco/shop/{shopId}/orders`) that already exists. No points token, no
+  per-point write. Redemptions are order events (a "redeem" line).
+- **Crypto (USDC) spend is also on-chain** → trustlessly summable by the Stylus
+  aggregator for *portable, cross-merchant* reputation. Card spend stays in the
+  (merchant-trusted) order feed — correct, since points are a merchant liability, not a
+  trustless asset.
+- **Optional** `woco/shop/{shopId}/loyalty-events` append-only feed ONLY for
+  non-purchase awards (check-in, referral, review). Default path needs nothing new.
+- **Badges (PODs) mint only at milestones** (`LoyaltyConfig.spendThresholds`). Rare, durable.
+
+### 4.2 NFTs — used in exactly one place
+
+PODs are the default everywhere (soulbound, batch-cheap, private on Swarm, no
+speculation surface). **ERC-721 appears only for `authenticity`** — transferable,
+trustless, outlives-the-platform ownership is *the* definition of an NFT, and resale
+provenance genuinely needs it. There the POD is the signed *certificate*; the NFT
+tokenId carries *ownership + transfer*. `collectible` may offer an **opt-in** "mint to
+NFT" later for collectors who want to trade — never the default.
+
+### 4.3 Gating (events + products)
+
+Gate a claim/purchase on POD holdings (count-based, specific manifest, or time-limited).
+
+- **Primitive already exists on-chain:** `WoCoEventV2.dropGate` + `_runGate()` →
+  `IWoCoDropGate.check(...)`. A POD-holdings gate contract slots straight in.
+- **Holdings primitive** (the one new shared util): `holdsAtLeast(addr, manifestRef, n)` /
+  `getHoldings(addr, manifestRef)`, unifying on-chain `slotOwner` + the collection feed.
+  Built ONCE, reused by event gate, product gate, and milestone eligibility.
+- Product gating has no on-chain claim, so it's a server holdings check at order time.
+
+### 4.4 Decentralization ladder (the gate is server-mediated in v1 — by necessity, with an exit)
+
+The holdings **read is already decentralized** (`slotOwner` is public on-chain; the
+collection feed reads from the Swarm gateway). Only *enforcement at issuance* is
+server-mediated, and only because **issuance already is** (feed-signing key + postage —
+the existing client-first carve-out). The gate adds NO new centralization; it rides a
+trust boundary that already exists.
+
+1. **v1 — server-side check** at issuance. Rides existing issuance trust.
+2. **trustless events** — deploy a POD-holdings `dropGate` contract; point the event's
+   `dropGate` slot at it → crypto-claim path needs no server in the gate.
+3. **full client-side** — when client-side feed signing lands
+   ([[signing_role_architecture]]), holdings read + gate move client-side; server = relay.
+
+### 4.5 Artwork + management
+
+- POD `metadata` is already free-form `Record<string, unknown>` → standardize a
+  convention `{ name, image: Hex64, description }`. **No schema migration.** Tickets start
+  writing the event image hash into `metadata.image` so the manager has a visual.
+- **Creator POD manager** `#/creator/pods`: grid of POD-type cards (artwork, name, kind
+  chip, supply/issued, category), create-badge/collectible flow, category management
+  (reuse `ProductCategory` shape verbatim — no new taxonomy concept).
+- Reusable `<PodPicker>` drops into the event creator, product editor, milestone config.
+
+### 4.6 Build order (Step 4, creator-first)
+
+1. **POD manager + holdings primitive** ← starting here.
+   - schema: `kind` + metadata convention + `PodDirectoryEntry`/`PodDirectory` +
+     `pod/topics.ts` (`woco/pod/creator/{addr}`, mirrors `ShopDirectory`). Categorisation
+     + display metadata live in the **directory entry, not the signed manifest** (re-cat
+     never re-signs).
+   - server: pod-directory service + `GET /api/pod/mine` + holdings endpoint; wire event
+     manifest creation to upsert a `kind:"ticket"` entry (fire-and-forget, no backfill).
+   - frontend: `#/creator/pods` manager + `<PodPicker>` (frontend-design).
+2. **Gating** — wire `<PodPicker>` into event creator + product editor; server holdings check.
+3. **Loyalty milestones** — `earnRate` + derived points + badge issuance at thresholds.
+4. **authenticity / NFT provenance** — separate product bet; schema stub only this stage.
+
+Out of scope this stage (scope-creep guard): authenticity transfer mechanism, NFC/
+physical-digital binding, resale marketplace, opt-in collectible→NFT mint.
 
 ## 4b. Decentralization posture (client-first)
 
@@ -213,7 +295,8 @@ already machine-clean (JSON in/out, header auth). Build the agent flow later.
    throughout. Sonnet TO BUILD (see handover): Storefront grid, `ProductGridSection` site section,
    Checkout (mirror ClaimButton + reuse api/shop-payment), builder shop/product editor tabs, POS
    shell/routing + grant ("Tap to pay") flow wiring.
-4. **POD loyalty milestones** — listen to spend events, issue badges via aggregator.  *(Opus review on crypto touches)*
+4. **POD layer** (loyalty + drops + gating + authenticity-stub) — expanded & locked
+   2026-06-03, see §4. Creator-first; sub-steps in §4.6.  *(Opus review on crypto touches)*
 
 ### Model split (token economy)
 Opus through steps 1–2 (data model + signature/funds protocol — expensive to get wrong,

@@ -12,6 +12,8 @@
  * consumer code that ships in v1 — DO NOT change without a format bump.
  */
 
+import type { Hex64, Hex0x } from "../types.js";
+
 /** Hex-encoded ed25519 public key (32 bytes, lowercase, no 0x prefix). */
 export type Hex32 = string;
 
@@ -101,4 +103,131 @@ export interface MerkleProofV1 {
   leaf: Bytes32Hex;
   /** Sibling hashes from leaf up to root, each 0x-prefixed bytes32. */
   proof: Bytes32Hex[];
+}
+
+// ===========================================================================
+// POD layer — kinds, display metadata, creator directory (Step 4, 2026-06-03)
+//
+// A POD *type* is a manifest. Its cryptographic surface (ManifestV1Body) is
+// LOCKED and untouched here. Everything in this section is the MUTABLE,
+// creator-facing classification + display layer that lives in the directory
+// entry — so re-categorising or renaming a POD never requires re-signing the
+// manifest. See docs/WOCO_SHOP_PLAN.md §4.
+// ===========================================================================
+
+/**
+ * What a POD is *for*. A directory-level classification only — it is NOT bound
+ * into the signed manifest (gating keys on a specific `manifestRef`, never on
+ * kind). Drives grouping/affordances in the creator POD manager.
+ * - `ticket`        — event admission (today's flow).
+ * - `badge`         — loyalty/achievement, issued at a milestone. Soulbound.
+ * - `collectible`   — drop / first-N / memento. Soulbound (opt-in NFT mirror later).
+ * - `authenticity`  — provenance for a physical good. TRANSFERABLE — STUB this
+ *                     stage; the transfer mechanism (ERC-721 ownership) is a
+ *                     separate product bet, deliberately unbuilt (§4.2/§4.6).
+ */
+export type PodKind = "ticket" | "badge" | "collectible" | "authenticity";
+
+/**
+ * Conventional shape of a POD's free-form `metadata` for DISPLAY. The POD body
+ * keeps `metadata: Record<string, unknown>` (no schema change); this interface
+ * documents the keys the manager + pickers read so producers populate them
+ * consistently. Tickets begin writing `image` = the event image hash so every
+ * POD type has a visual in the manager.
+ */
+export interface PodDisplayMetadata {
+  /** Human-readable POD-type name (e.g. "Festival Regular"). */
+  name?: string;
+  /** Primary artwork — Swarm content ref (no 0x prefix). */
+  image?: Hex64;
+  description?: string;
+  /** Allow extra producer-defined keys without losing the typed ones above. */
+  [key: string]: unknown;
+}
+
+/**
+ * A grouping a creator defines to organise their POD types (e.g. "Loyalty",
+ * "Limited drops"). Same shape as the shop's `ProductCategory` by design —
+ * one taxonomy concept across the platform, no new model.
+ */
+export interface PodCategory {
+  /** Stable slug/ULID — survives renames, referenced as a POD's `categoryId`. */
+  id: string;
+  label: string;
+  /** Display order; lower first. */
+  sortIndex: number;
+}
+
+/**
+ * Compact entry in a creator's POD directory — one per POD type (manifest).
+ * Carries the mutable classification/display layer keyed to the immutable
+ * `manifestRef`. Mirrors `SiteDirectoryEntry` / `ShopDirectoryEntry`.
+ */
+export interface PodDirectoryEntry {
+  /** 0x-prefixed bytes32 — the on-chain/manifest commitment. Stable identity. */
+  manifestRef: Bytes32Hex;
+  kind: PodKind;
+  /** Display name (snapshot of the manifest's podTemplate name / metadata name). */
+  name: string;
+  /** Primary artwork (Swarm ref, no 0x). Event image hash for `ticket` PODs. */
+  image?: Hex64;
+  description?: string;
+  /** Creator-local grouping; references a `PodCategory.id`. */
+  categoryId?: string;
+  /** Total editions the manifest commits to. */
+  supply: number;
+  /** How many editions have been issued/claimed so far (best-effort counter). */
+  issuedCount?: number;
+  /** ed25519 issuer pubkey (hex, lowercase, no 0x) — mirrors the manifest. */
+  issuer: Hex32;
+  /** Originating event, when this POD type is a `ticket`. */
+  eventId?: Bytes32Hex;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Paged on-feed directory of a creator's POD types at `woco/pod/creator/{ethAddress}`. */
+export interface PodDirectory {
+  v: 1;
+  owner: Hex0x;
+  pods: PodDirectoryEntry[];
+  /** Creator-defined groupings (page 0 only). */
+  categories: PodCategory[];
+  updatedAt: string;
+  /** Number of overflow pages (1..N) beyond page 0. Page 0 only. */
+  pages?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Holdings — the one new shared primitive that powers gating + milestones
+// ---------------------------------------------------------------------------
+
+/**
+ * A holder's stake in a single POD type. `count` is what gates compare against;
+ * `editions` lists the specific 1-indexed editions held (for "specific edition"
+ * gates and display). Unifies on-chain `slotOwner` ownership with collection-feed
+ * membership — see the holdings reader (server) for the merge.
+ */
+export interface PodHolding {
+  manifestRef: Bytes32Hex;
+  count: number;
+  editions: number[];
+}
+
+/**
+ * A gate rule: hold ≥`minCount` of `manifestRef`, optionally only specific
+ * `editions`, optionally only within a time window. Evaluated by the holdings
+ * primitive at claim/order time (v1, server-side) — see §4.3/§4.4. Reused by
+ * event gating, product gating, and milestone eligibility.
+ */
+export interface PodGateRule {
+  manifestRef: Bytes32Hex;
+  /** Minimum editions held to pass. Default 1. */
+  minCount?: number;
+  /** When set, only these 1-indexed editions count toward `minCount`. */
+  editions?: number[];
+  /** Unix ms — gate inactive before this. */
+  notBefore?: number;
+  /** Unix ms — gate inactive after this (time-limited access). */
+  notAfter?: number;
 }
