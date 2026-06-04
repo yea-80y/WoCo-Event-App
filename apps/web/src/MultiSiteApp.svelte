@@ -3,6 +3,7 @@
   import type { Site, SiteRuntimeConfig, NavStyleId } from '@woco/shared';
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
   import EventPage from './lib/components/site/EventPage.svelte';
+  import ShopOrderScreen from './lib/attendee/shop/ShopOrderScreen.svelte';
   // Try to get config from localStorage (same-origin case).
   // Returns null if nothing is found — postMessage handler will fill it in.
   function getInitialConfig(): SiteRuntimeConfig | null {
@@ -35,7 +36,8 @@
 
   type Route =
     | { type: 'page'; slug: string }
-    | { type: 'event'; eventId: string };
+    | { type: 'event'; eventId: string }
+    | { type: 'shop-order'; shopId: string; code: string };
 
   let route      = $state<Route>({ type: 'page', slug: '/' });
   let menuOpen   = $state(false);
@@ -46,8 +48,10 @@
   function parseHash(): Route {
     const raw = window.location.hash.replace(/^#/, '') || '/';
     const h = raw.split('?')[0];
-    const m = h.match(/^\/events\/([^/]+)$/);
-    if (m) return { type: 'event', eventId: m[1] };
+    const eventM = h.match(/^\/events\/([^/]+)$/);
+    if (eventM) return { type: 'event', eventId: eventM[1] };
+    const orderM = h.match(/^\/shop\/([^/]+)\/order\/([^/]+)$/);
+    if (orderM) return { type: 'shop-order', shopId: orderM[1], code: orderM[2] };
     return { type: 'page', slug: h || '/' };
   }
 
@@ -334,8 +338,12 @@
     </nav>
   {/if}
 
-  <!-- ── Page / event content ──────────────────────────────────────── -->
-  {#if route.type === 'event'}
+  <!-- ── Page / event / shop-order content ───────────────────────── -->
+  {#if route.type === 'shop-order'}
+    <main>
+      <ShopOrderScreen shopId={route.shopId} code={route.code} />
+    </main>
+  {:else if route.type === 'event'}
     <main>
       <EventPage eventId={route.eventId} {apiUrl} onback={() => history.back()} />
     </main>

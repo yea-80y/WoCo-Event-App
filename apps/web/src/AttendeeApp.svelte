@@ -11,6 +11,7 @@
   import { getExternalEventApi } from "./lib/api/event-api-registry.js";
   import ComingSoon from "./lib/attendee/coming-soon/ComingSoon.svelte";
   import ShopTapScreen from "./lib/attendee/shop/ShopTapScreen.svelte";
+  import ShopOrderScreen from "./lib/attendee/shop/ShopOrderScreen.svelte";
 </script>
 
 <AttendeeShell>
@@ -42,5 +43,7 @@
     <ComingSoon feature={router.params.feature} />
   {:else if router.route === "shop-tap"}
     <ShopTapScreen shopId={router.params.shopId} />
+  {:else if router.route === "shop-order"}
+    <ShopOrderScreen shopId={router.params.shopId} code={router.params.code} />
   {/if}
 </AttendeeShell>

@@ -32,7 +32,8 @@ import { sendTicketEmail } from "./tickets.js";
 import { getSiteTheme } from "../lib/site/service.js";
 import { getReservation, consume as consumeReservation } from "../lib/event/reservation-store.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
-import { updateOrder as updateShopOrder, getOrder as getShopOrder } from "../lib/shop/service.js";
+import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } from "../lib/shop/service.js";
+import { sendShopOrderEmail } from "../lib/email/shop-receipt.js";
 
 const stripe = new Hono<AppEnv>();
 
@@ -745,6 +746,19 @@ async function handleShopOrderPaid(
     `[stripe-webhook] Shop order ${updated ? "paid" : "update-failed"}: ` +
     `shop=${shopId.slice(0, 8)} order=${orderId.slice(0, 8)} total=${order.total} ${order.currency}`,
   );
+
+  if (buyerEmail && updated) {
+    void (async () => {
+      try {
+        const shop = await getShop(shopId);
+        if (!shop) return;
+        await sendShopOrderEmail({ to: buyerEmail, shopName: shop.name, order: updated });
+        console.log(`[stripe-webhook] Shop receipt sent: order=${orderId.slice(0, 8)} to=${buyerEmail.slice(0, 8)}…`);
+      } catch (err) {
+        console.error("[stripe-webhook] Shop receipt email failed (non-fatal):", err);
+      }
+    })();
+  }
 }
 
 /**

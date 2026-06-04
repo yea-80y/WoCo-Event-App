@@ -13,6 +13,7 @@
  *     /verify                      verify
  *     /profile, /profile/:addr     profile
  *     /shops/:id/tap               shop-tap (tap-to-pay activation)
+ *     /shop/:shopId/order/:code    shop-order (Stripe return — success/cancel)
  *
  *   CREATOR surface
  *     /creator                          creator-home  (studio dashboard)
@@ -94,6 +95,9 @@ function matchRoute(pathWithQuery: string): Match {
 
   const shopTapMatch = path.match(/^\/shops\/([^/]+)\/tap$/);
   if (shopTapMatch) return { route: "shop-tap", params: { shopId: shopTapMatch[1] }, surface: "attendee" };
+
+  const shopOrderMatch = path.match(/^\/shop\/([^/]+)\/order\/([^/]+)$/);
+  if (shopOrderMatch) return { route: "shop-order", params: { shopId: shopOrderMatch[1], code: shopOrderMatch[2] }, surface: "attendee" };
 
   const profileMatch = path.match(/^\/profile\/(0x[a-fA-F0-9]{40})$/);
   if (profileMatch) return { route: "profile", params: { address: profileMatch[1] }, surface: "attendee" };
