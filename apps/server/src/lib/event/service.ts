@@ -7,6 +7,7 @@ import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from
 import { uploadToBytes } from "../swarm/bytes.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
+import { validatePodGate } from "../pod/gate-check.js";
 import { upsertCreatorPod } from "../pod/directory.js";
 import {
   readFeedPage,
@@ -89,6 +90,13 @@ export async function createEventV2(opts: {
     const { root } = buildPodTree(s.podBodies);
     if (root.toLowerCase() !== s.signedManifest.body.metadataRoot.toLowerCase()) {
       throw new Error(`Series ${s.seriesId}: Merkle root mismatch — pod bodies don't match manifest`);
+    }
+    // Chain-validate any POD gate at the write boundary so enforcement can trust
+    // the stored gate (manifestRef↔eventId binding verified on-chain). See
+    // validatePodGate — closes the silent-wrong-POD gap.
+    if (s.gate) {
+      const v = await validatePodGate(s.gate);
+      if (!v.ok) throw new Error(`Series ${s.seriesId}: invalid POD gate — ${v.error}`);
     }
   }
 

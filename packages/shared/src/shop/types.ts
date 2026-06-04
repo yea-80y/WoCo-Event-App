@@ -13,6 +13,7 @@
 
 import type { Hex64, Hex0x } from "../types.js";
 import type { PaymentConfig, FiatCurrency, PaymentChainId } from "../event/types.js";
+import type { PodGate } from "../pod/types.js";
 
 // ---------------------------------------------------------------------------
 // Shop + catalog
@@ -121,6 +122,12 @@ export interface Product {
   channels?: SalesChannel[];
   /** Loyalty badges awarded when this specific item is bought. */
   podRewards?: PodRewardRule[];
+  /** POD-holdings gate — when set, the buyer's wallet must hold the gating POD
+   *  on-chain. Enforced at every payment rail that binds a wallet (crypto +
+   *  spend-permission); the card rail cannot satisfy a wallet gate, so gated
+   *  products are wallet-purchase-only. The stored gate is chain-validated at
+   *  write time (manifestRef↔eventId), so enforcement trusts it. */
+  gate?: PodGate;
   active: boolean;
   /** Display order within its category. */
   sortIndex: number;
@@ -334,6 +341,8 @@ export interface UpsertProductRequest {
   stock?: number;
   channels?: SalesChannel[];
   podRewards?: PodRewardRule[];
+  /** POD-holdings gate (wallet-purchase-only when set). Chain-validated server-side. */
+  gate?: PodGate;
   active?: boolean;
   sortIndex?: number;
 }

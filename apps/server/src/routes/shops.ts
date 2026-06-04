@@ -19,6 +19,7 @@ import {
   upsertCreatorShop,
 } from "../lib/shop/service.js";
 import { signShopQuote, verifyShopQuote, consumeShopQuote } from "../lib/shop/quote.js";
+import { validatePodGate, checkProductGates, firstGatedProduct } from "../lib/pod/gate-check.js";
 import { getCryptoFeeConfig } from "../lib/shop/fees.js";
 import {
   grantParams,
@@ -301,6 +302,14 @@ shopsRouter.post("/:id/products", requireAuth, async (c) => {
       return c.json({ ok: false, error: "name and price are required" }, 400);
     }
 
+    // Chain-validate the gate at the write boundary (manifestRef↔eventId), so
+    // enforcement at payment can trust the stored gate. Reject an invalid gate
+    // rather than silently persisting an unenforceable / wrong-POD one.
+    if (body.gate) {
+      const v = await validatePodGate(body.gate);
+      if (!v.ok) return c.json({ ok: false, error: `Invalid POD gate: ${v.error}` }, 400);
+    }
+
     const now = new Date().toISOString();
     const productId = body.productId ?? randomUUID();
     const prior = body.productId
@@ -322,6 +331,7 @@ shopsRouter.post("/:id/products", requireAuth, async (c) => {
       stock: body.stock,
       channels: body.channels,
       podRewards: body.podRewards,
+      ...(body.gate ? { gate: body.gate } : {}),
       active: body.active ?? true,
       sortIndex: body.sortIndex ?? prior?.sortIndex ?? 0,
       createdAt: prior?.createdAt ?? now,
@@ -443,6 +453,18 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
       return c.json({ ok: false, error: "Card payments are not enabled for this shop" }, 400);
     }
 
+    // POD gate is a WALLET-holdings check — a card buyer has no wallet, so a
+    // gated product is unsatisfiable by card. Reject BEFORE creating the Stripe
+    // session (no charge), steering the buyer to the crypto/USDC rail.
+    const gateProducts = await getProducts(shopId);
+    const gatedName = firstGatedProduct(gateProducts, order.lines);
+    if (gatedName) {
+      return c.json(
+        { ok: false, gated: true, error: `"${gatedName}" requires holding a POD in your wallet — pay with crypto/USDC instead of card.` },
+        403,
+      );
+    }
+
     const merchant = getStripeAccount(shop.ownerAddress.toLowerCase());
     if (!merchant?.onboardingComplete) {
       return c.json({ ok: false, error: "Shop owner has not completed Stripe onboarding" }, 400);
@@ -532,7 +554,36 @@ shopsRouter.post("/:id/orders/:orderId/quote", async (c) => {
       return c.json({ ok: false, error: "Order is not awaiting payment" }, 409);
     }
 
-    const body = (await c.req.json().catch(() => ({}))) as ShopQuoteRequest;
+    // Read the raw body ONCE — tryVerifyAuth must hash the exact bytes the client
+    // signed in the canonical session challenge.
+    const rawBody = await c.req.text().catch(() => "");
+    let body: ShopQuoteRequest;
+    try {
+      body = rawBody ? (JSON.parse(rawBody) as ShopQuoteRequest) : ({} as ShopQuoteRequest);
+    } catch {
+      return c.json({ ok: false, error: "Invalid JSON body" }, 400);
+    }
+
+    // POD gate (online USDC rail): refuse to sign a PAYABLE quote for a gated
+    // order unless a verified wallet passes the gate. This stops payment BEFORE
+    // funds move (no valid quote → can't pay the committed amount), so the buyer
+    // can never "pay then get rejected" on this rail. Gated products are
+    // wallet-session-only (anonymous EIP-712 binding can't be gate-checked here).
+    const products = await getProducts(shopId);
+    const gatedName = firstGatedProduct(products, order.lines);
+    if (gatedName) {
+      const auth = await tryVerifyAuth(c, rawBody);
+      if (!auth) {
+        return c.json(
+          { ok: false, gated: true, error: `"${gatedName}" is gated — sign in with the wallet that holds the required POD to pay by crypto.` },
+          401,
+        );
+      }
+      if (!auth.ok) return c.json({ ok: false, error: auth.error }, 403);
+      const decision = await checkProductGates(products, order.lines, auth.parentAddress);
+      if (!decision.ok) return c.json({ ok: false, gated: true, error: decision.reason }, 403);
+    }
+
     const chainId = body?.chainId as PaymentChainId | undefined;
     if (!chainId) return c.json({ ok: false, error: "chainId is required" }, 400);
     if (!shop.payment.acceptedChains.includes(chainId)) {
@@ -697,6 +748,15 @@ shopsRouter.post("/:id/orders/:orderId/pay-crypto", async (c) => {
     // If the quote was bound to a payer at quote time, enforce it.
     if (quote.boundTo && quote.boundTo.toLowerCase() !== expectedFrom.toLowerCase()) {
       return c.json({ ok: false, error: "Quote is bound to a different payer" }, 403);
+    }
+
+    // POD gate — defense-in-depth against the verified payer (the /quote step
+    // already blocks gated orders pre-payment; this backstops a forged/forced
+    // payment that skipped quoting). Fails closed.
+    const gateProducts = await getProducts(shopId);
+    const gateDecision = await checkProductGates(gateProducts, order.lines, expectedFrom);
+    if (!gateDecision.ok) {
+      return c.json({ ok: false, gated: true, error: gateDecision.reason }, 403);
     }
 
     // 3. Verify the on-chain USDC transfer — exact amount, recipient, confirmations, tx.from.
@@ -867,6 +927,15 @@ shopsRouter.post("/:id/orders/:orderId/pay-spend-permission", requireAuth, async
     }
     if (order.status !== "pending") {
       return c.json({ ok: false, error: "Order is not awaiting payment" }, 409);
+    }
+
+    // POD gate — checked BEFORE the draw (funds haven't moved), so a gated-out
+    // buyer is never charged. Holder = the granting Kernel wallet (the attendee
+    // whose balance the spender pulls from), NOT the POS operator. Fails closed.
+    const gateProducts = await getProducts(shopId);
+    const gateDecision = await checkProductGates(gateProducts, order.lines, permission.kernelAddress);
+    if (!gateDecision.ok) {
+      return c.json({ ok: false, gated: true, error: gateDecision.reason }, 403);
     }
 
     // Amount: fiat→USD→6-dec atomic, identical to the online quote endpoint.

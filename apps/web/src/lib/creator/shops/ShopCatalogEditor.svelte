@@ -13,9 +13,11 @@
     FiatCurrency,
     SalesChannel,
     UpsertProductRequest,
+    PodGate,
   } from "@woco/shared";
   import { onMount } from "svelte";
   import { updateShop, upsertProduct, deleteProduct, getProducts } from "../../api/shops.js";
+  import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
 
   function uid() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
 
@@ -39,6 +41,7 @@
   let pCategory = $state("");
   let pChannels = $state<"both" | "web" | "pos">("both");
   let pActive = $state(true);
+  let pGate = $state<PodGate | undefined>(undefined);
   let productSaving = $state(false);
   let productError = $state("");
 
@@ -82,6 +85,7 @@
   function openAddProduct() {
     editingProduct = null;
     pName = ""; pDesc = ""; pPrice = ""; pCompareAt = ""; pCategory = ""; pChannels = "both"; pActive = true;
+    pGate = undefined;
     productFormOpen = true; productError = "";
   }
 
@@ -90,7 +94,7 @@
     pName = p.name; pDesc = p.description ?? ""; pPrice = p.price;
     pCompareAt = p.compareAtPrice ?? ""; pCategory = p.categoryId ?? "";
     pChannels = !p.channels ? "both" : p.channels.length === 2 ? "both" : (p.channels[0] as "web" | "pos");
-    pActive = p.active; productFormOpen = true; productError = "";
+    pActive = p.active; pGate = p.gate; productFormOpen = true; productError = "";
   }
 
   async function handleSaveProduct() {
@@ -105,6 +109,7 @@
         compareAtPrice: pCompareAt.trim() || undefined,
         categoryId: pCategory || undefined,
         channels: pChannels === "both" ? undefined : [pChannels as SalesChannel],
+        ...(pGate ? { gate: pGate } : {}),
         active: pActive,
         sortIndex: editingProduct?.sortIndex ?? products.length,
       };
@@ -216,6 +221,11 @@
         <input type="checkbox" bind:checked={pActive} />
         <span>Active (visible to customers)</span>
       </label>
+
+      <!-- POD-holdings gate (optional). Wallet-purchase-only when set; card buyers
+           are steered to crypto. Server chain-validates on save. -->
+      <PodGateEditor gate={pGate} onChange={(g) => { pGate = g; }} />
+
       {#if productError}<div class="err-box mono">{productError}</div>{/if}
       <div class="pf-actions">
         <button class="btn btn--ghost btn--sm" onclick={() => { productFormOpen = false; }}>Cancel</button>

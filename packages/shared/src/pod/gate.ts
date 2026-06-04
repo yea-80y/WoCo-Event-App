@@ -39,3 +39,34 @@ export function evaluatePodGate(
 
   return qualifying >= min;
 }
+
+/**
+ * Pure write-boundary validation for a stored `PodGate`: shape + the
+ * security-critical binding that `onChainEventId` actually commits the gate's
+ * `manifestRef` on-chain.
+ *
+ * The CHAIN READ is environment-specific (server chain lib today; the client's
+ * own reader when feed signing moves client-side per [[signing_role_architecture]]),
+ * so the caller reads `events[onChainEventId].manifestRef` and passes it in
+ * (`null` when the event is unregistered). Keeping the comparison here means the
+ * server and a future client signer validate gates with ONE implementation — the
+ * gate stays verifiable by anyone, with no server secret.
+ */
+export function verifyPodGateBinding(
+  gate: { manifestRef: string; onChainEventId?: string; chainId?: number; minCount?: number },
+  onChainManifestRef: string | null,
+): { ok: boolean; error?: string } {
+  if (!gate?.manifestRef || !gate.onChainEventId || !Number.isFinite(gate.chainId as number)) {
+    return { ok: false, error: "gate must have manifestRef, onChainEventId and chainId" };
+  }
+  if (gate.minCount != null && (!Number.isInteger(gate.minCount) || gate.minCount < 1)) {
+    return { ok: false, error: "gate minCount must be a positive integer" };
+  }
+  if (!onChainManifestRef) {
+    return { ok: false, error: "gate references an unregistered on-chain event" };
+  }
+  if (onChainManifestRef.toLowerCase() !== gate.manifestRef.toLowerCase()) {
+    return { ok: false, error: "gate manifestRef does not match the on-chain event commitment" };
+  }
+  return { ok: true };
+}
