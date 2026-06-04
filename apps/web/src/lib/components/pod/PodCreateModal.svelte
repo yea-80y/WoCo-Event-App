@@ -83,7 +83,7 @@
         const res = await uploadSiteImage(reader.result as string);
         if (!res.ok || !res.data) throw new Error(res.error ?? "Upload failed");
         image = res.data.imageRef;
-        previewSrc = `${BEE_GATEWAY}/bzz/${image}/`;
+        previewSrc = `${BEE_GATEWAY}/bytes/${image}`;
       } catch (err) {
         error = err instanceof Error ? err.message : "Image upload failed";
       } finally {

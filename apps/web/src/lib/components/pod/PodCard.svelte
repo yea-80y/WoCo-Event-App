@@ -37,7 +37,7 @@
     authenticity: "AUTHENTIC",
   };
 
-  const imageUrl = $derived(pod.image ? `${BEE_GATEWAY}/bzz/${pod.image}/` : null);
+  const imageUrl = $derived(pod.image ? `${BEE_GATEWAY}/bytes/${pod.image}` : null);
   const issued = $derived(pod.issuedCount ?? 0);
   /** Claimed fraction of the cap, 0..1 — drives the allocation hairline width. */
   const fillPct = $derived(pod.supply > 0 ? Math.min(100, (issued / pod.supply) * 100) : 0);
