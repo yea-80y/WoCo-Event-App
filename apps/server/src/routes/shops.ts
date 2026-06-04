@@ -20,6 +20,7 @@ import {
 } from "../lib/shop/service.js";
 import { signShopQuote, verifyShopQuote, consumeShopQuote } from "../lib/shop/quote.js";
 import { validatePodGate, checkProductGates, firstGatedProduct } from "../lib/pod/gate-check.js";
+import { awardSpendMilestones } from "../lib/shop/loyalty.js";
 import { getCryptoFeeConfig } from "../lib/shop/fees.js";
 import {
   grantParams,
@@ -797,6 +798,11 @@ shopsRouter.post("/:id/orders/:orderId/pay-crypto", async (c) => {
       );
       return c.json({ ok: false, error: "Order not found" }, 404);
     }
+    // Loyalty: mint any milestone badges this payment unlocked (fire-and-forget;
+    // a badge hiccup must not fail a settled order). Holder = the verified payer.
+    void awardSpendMilestones(shop, updated, expectedFrom).catch((e) =>
+      console.error("[shops/pay-crypto] loyalty award failed (non-critical):", e),
+    );
     return c.json({ ok: true, data: updated });
   } catch (err) {
     console.error("[shops/pay-crypto]", err);
@@ -977,6 +983,11 @@ shopsRouter.post("/:id/orders/:orderId/pay-spend-permission", requireAuth, async
       );
       return c.json({ ok: false, error: "Order not found" }, 404);
     }
+    // Loyalty: mint milestone badges (fire-and-forget). Holder = the granting
+    // Kernel wallet whose balance funded the draw (the attendee, not the operator).
+    void awardSpendMilestones(shop, updated, permission.kernelAddress).catch((e) =>
+      console.error("[shops/pay-spend-permission] loyalty award failed (non-critical):", e),
+    );
     return c.json({ ok: true, data: updated });
   } catch (err) {
     console.error("[shops/pay-spend-permission]", err);

@@ -243,11 +243,24 @@ export interface PodRewardRule {
   trigger: "purchase";
 }
 
-/** A POD badge awarded at a cumulative-spend milestone for the shop. */
+/**
+ * A POD badge awarded at a cumulative-spend milestone for the shop. Carries the
+ * badge POD's RESOLVED on-chain coordinates (self-describing, mirrors PodGate)
+ * so the server can mint an edition to the buyer's wallet at the threshold —
+ * no global manifestRef→eventId index needed. Snapshotted from the badge POD's
+ * directory entry when the merchant configures the milestone.
+ */
 export interface SpendThresholdReward {
-  /** Cumulative spend (decimal string, shop currency) at which the badge issues. */
+  /** Cumulative paid spend (decimal string, shop currency) at which the badge issues. */
   threshold: string;
-  badgeId: string;
+  /** Badge POD type to award (0x bytes32 manifestRef). */
+  badgeManifestRef: string;
+  /** On-chain eventId committing the badge manifest (mint target). */
+  badgeEventId: string;
+  /** Chain the badge POD lives on (must be the active mint chain). */
+  chainId: number;
+  /** Display snapshot of the badge name (UI + award log only). */
+  badgeName?: string;
 }
 
 /**
@@ -257,6 +270,10 @@ export interface SpendThresholdReward {
  */
 export interface LoyaltyConfig {
   enabled: boolean;
+  /** Points awarded per 1 unit of shop currency spent (display layer only —
+   *  e.g. 10 = "10 pts per £1"). Points are DERIVED from the order feed, never
+   *  stored. Milestone badges trigger on cumulative SPEND, not points. */
+  earnRate?: number;
   spendThresholds?: SpendThresholdReward[];
 }
 

@@ -19,6 +19,7 @@
   import { GATEWAYS } from "../builder/gateways.js";
   import { newSiteFromShop } from "@woco/shared";
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
+  import ShopLoyaltyEditor from "./ShopLoyaltyEditor.svelte";
 
   const API_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "http://localhost:3001";
   const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? "https://woco.eth.limo";
@@ -30,7 +31,7 @@
 
   const isNew = $derived(shopId === "new");
 
-  type Tab = "catalog" | "payments" | "surfaces" | "orders";
+  type Tab = "catalog" | "payments" | "loyalty" | "surfaces" | "orders";
   let tab = $state<Tab>("catalog");
 
   let phase = $state<"loading" | "create" | "ready" | "error">("loading");
@@ -275,7 +276,7 @@
     </header>
 
     <nav class="tabs" role="tablist">
-      {#each [["catalog","Catalog"],["payments","Payments"],["surfaces","Surfaces"],["orders","Orders"]] as [id, label] (id)}
+      {#each [["catalog","Catalog"],["payments","Payments"],["loyalty","Loyalty"],["surfaces","Surfaces"],["orders","Orders"]] as [id, label] (id)}
         <button class="tab" class:active={tab === id} role="tab" aria-selected={tab === id} onclick={() => { tab = id as Tab; }}>
           {label}
         </button>
@@ -314,6 +315,9 @@
             {saving ? "Saving…" : "Save payments"}
           </button>
         </div>
+
+      {:else if tab === "loyalty"}
+        <ShopLoyaltyEditor {shop} onShopUpdate={(s) => { shop = s; }} />
 
       {:else if tab === "surfaces"}
         <div class="pane surfaces">
