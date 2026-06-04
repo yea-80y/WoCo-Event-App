@@ -58,7 +58,7 @@ export async function createEventV2(opts: {
     saleStart?: string;
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
-    gate?: import("@woco/shared").PodGate;
+    gate?: import("@woco/shared").PodGate | import("@woco/shared").PodGateGroup;
   }>;
   encryptionKey?: string;
   orderFields?: OrderField[];

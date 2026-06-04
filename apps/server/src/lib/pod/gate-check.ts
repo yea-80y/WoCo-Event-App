@@ -9,8 +9,8 @@
 // rejection, never a pass — a flaky holdings read must not open a gate.
 // ---------------------------------------------------------------------------
 
-import type { PodGate, Hex0x } from "@woco/shared";
-import { evaluatePodGate, verifyPodGateBinding } from "@woco/shared";
+import type { PodGate, PodGateGroup, Hex0x } from "@woco/shared";
+import { evaluatePodGateGroup, normalizeGate, verifyPodGateBinding } from "@woco/shared";
 import { getOnChainHolding } from "./holdings.js";
 import { getOnChainEvent } from "../chain/event-contract.js";
 
@@ -35,44 +35,80 @@ export interface GateDecision {
  * platform-signed Swarm feed (tamper-proof to buyers). If gates ever move to
  * untrusted client-side storage, enforcement MUST re-validate per check.
  */
-export async function validatePodGate(gate: PodGate): Promise<{ ok: boolean; error?: string }> {
+export async function validatePodGate(
+  gate: PodGate | PodGateGroup,
+): Promise<{ ok: boolean; error?: string }> {
   if (!gate || typeof gate !== "object") return { ok: false, error: "gate missing" };
-  // Shape must be valid before we can read the chain (need eventId + chainId).
-  if (!gate.manifestRef || !gate.onChainEventId || !Number.isFinite(gate.chainId)) {
-    return { ok: false, error: "gate must have manifestRef, onChainEventId and chainId" };
+  const group = normalizeGate(gate);
+  if (group.gates.length === 0) return { ok: false, error: "gate group must have at least one gate" };
+  // Validate each gate's shape and on-chain binding independently.
+  for (const g of group.gates) {
+    if (!g.manifestRef || !g.onChainEventId || !Number.isFinite(g.chainId)) {
+      return { ok: false, error: "gate must have manifestRef, onChainEventId and chainId" };
+    }
+    let ev;
+    try {
+      ev = await getOnChainEvent(g.onChainEventId, g.chainId);
+    } catch (err) {
+      return { ok: false, error: `gate chain read failed: ${(err as Error).message}` };
+    }
+    const binding = verifyPodGateBinding(g, ev?.manifestRef ?? null);
+    if (!binding.ok) return binding;
   }
-  let ev;
-  try {
-    ev = await getOnChainEvent(gate.onChainEventId, gate.chainId);
-  } catch (err) {
-    return { ok: false, error: `gate chain read failed: ${(err as Error).message}` };
-  }
-  // Single-sourced binding check (shared, client-reusable) — environment reads
-  // the chain, shared logic decides pass/fail.
-  return verifyPodGateBinding(gate, ev?.manifestRef ?? null);
+  return { ok: true };
 }
 
 /**
  * Does `holder` (a wallet address) satisfy `gate`? `holder` MUST be the
  * server-verified claimer/payer address, never one from the request body.
+ * Accepts a single `PodGate` (legacy) or a `PodGateGroup`; normalises
+ * internally so both paths use the same evaluator.
  */
-export async function checkPodGate(gate: PodGate, holder: string): Promise<GateDecision> {
-  const label = gate.podName ? `"${gate.podName}"` : "the required POD";
-  try {
-    const holding = await getOnChainHolding({
-      holder: holder.toLowerCase() as Hex0x,
-      onChainEventId: gate.onChainEventId,
-      chainId: gate.chainId,
-      manifestRef: gate.manifestRef,
-    });
-    if (evaluatePodGate(holding, gate)) return { ok: true };
+export async function checkPodGate(
+  gate: PodGate | PodGateGroup,
+  holder: string,
+): Promise<GateDecision> {
+  const group = normalizeGate(gate);
+  const holderLc = holder.toLowerCase() as Hex0x;
 
-    const need = gate.minCount ?? 1;
-    const qty = need > 1 ? `${need}× ` : "";
-    return { ok: false, reason: `This requires holding ${qty}${label}. You currently hold ${holding.count}.` };
+  // Build a human-readable label for error messages.
+  const nameList = group.gates.map((g) => g.podName ? `"${g.podName}"` : "a required POD");
+  const label =
+    nameList.length === 1
+      ? nameList[0]
+      : group.mode === "any"
+        ? `any of: ${nameList.join(", ")}`
+        : `all of: ${nameList.join(", ")}`;
+
+  try {
+    // Read every distinct gate's holding in parallel (fail-closed on error).
+    const seen = new Set<string>();
+    const holdingPromises = group.gates
+      .filter((g) => {
+        if (seen.has(g.manifestRef.toLowerCase())) return false;
+        seen.add(g.manifestRef.toLowerCase());
+        return true;
+      })
+      .map((g) =>
+        getOnChainHolding({
+          holder: holderLc,
+          onChainEventId: g.onChainEventId,
+          chainId: g.chainId,
+          manifestRef: g.manifestRef,
+        }),
+      );
+
+    const holdings = await Promise.all(holdingPromises);
+    if (evaluatePodGateGroup(holdings, group)) return { ok: true };
+
+    const totalHeld = holdings.reduce((s, h) => s + h.count, 0);
+    return {
+      ok: false,
+      reason: `This requires holding ${label}. You currently hold ${totalHeld > 0 ? totalHeld : "none"}.`,
+    };
   } catch (err) {
     console.error("[pod] gate check failed (fail-closed):", err);
-    return { ok: false, reason: `Could not verify your ${label} holdings right now — please try again.` };
+    return { ok: false, reason: `Could not verify your holdings right now — please try again.` };
   }
 }
 
@@ -84,7 +120,7 @@ export async function checkPodGate(gate: PodGate, holder: string): Promise<GateD
  * via `checkPodGate`.
  */
 export async function checkProductGates(
-  products: { productId: string; name: string; gate?: PodGate }[],
+  products: { productId: string; name: string; gate?: PodGate | PodGateGroup }[],
   lines: { productId: string }[],
   holder: string,
 ): Promise<GateDecision> {
@@ -104,7 +140,7 @@ export async function checkProductGates(
  *  which has no wallet and so must reject gated products outright (a wallet gate
  *  is unsatisfiable by card). Returns the first gated product's name. */
 export function firstGatedProduct(
-  products: { productId: string; name: string; gate?: PodGate }[],
+  products: { productId: string; name: string; gate?: PodGate | PodGateGroup }[],
   lines: { productId: string }[],
 ): string | null {
   for (const line of lines) {

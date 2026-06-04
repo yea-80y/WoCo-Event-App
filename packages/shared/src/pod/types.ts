@@ -283,3 +283,26 @@ export interface PodGate {
   /** Unix ms — gate closed after this. */
   notAfter?: number;
 }
+
+/**
+ * Time / slot window for a `PodGateGroup`. Phase 1 ships `always` + `time`;
+ * `firstN` and `reserved` are defined here for schema completeness but not yet
+ * enforced (Phase 2 — needs claim-count reads; see docs/WOCO_SHOP_PLAN.md §4).
+ */
+export type GateWindow =
+  | { kind: "always" }
+  | { kind: "time"; notBefore?: number; notAfter?: number }
+  | { kind: "firstN"; n: number }
+  | { kind: "reserved"; reserved: number };
+
+/**
+ * Multi-POD gate group. Organiser chooses ANY (hold at least one of the listed
+ * PODs) or ALL (hold every listed POD). An optional group-level `window` further
+ * restricts when the gate is active. Supersedes a bare `PodGate` stored on a
+ * series or product — use `normalizeGate()` to upcast old single-gate records.
+ */
+export interface PodGateGroup {
+  mode: "any" | "all";
+  gates: PodGate[];
+  window?: GateWindow;
+}

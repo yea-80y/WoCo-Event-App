@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { PaymentConfig, PaymentChainId, Hex0x, PodGate } from "@woco/shared";
+  import type { PaymentConfig, PaymentChainId, Hex0x, PodGate, PodGateGroup } from "@woco/shared";
   import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
   import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -43,7 +43,7 @@
     /** Organiser-set buyer-pays fee % (≥ BUYER_FEE_FLOOR_PCT). Default BUYER_FEE_DEFAULT_PCT. */
     buyerFeePercent: number;
     /** Optional POD-holdings gate — applies to every wave in this tier. */
-    gate?: PodGate;
+    gate?: PodGate | PodGateGroup;
   }
 
   interface SeriesDraft {
@@ -56,7 +56,7 @@
     saleStart?: string;
     saleEnd?: string;
     payment?: PaymentConfig;
-    gate?: PodGate;
+    gate?: PodGate | PodGateGroup;
   }
 
   interface Props {

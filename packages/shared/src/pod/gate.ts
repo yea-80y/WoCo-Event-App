@@ -7,7 +7,7 @@
 // claim/order time). See docs/WOCO_SHOP_PLAN.md §4.3.
 // ---------------------------------------------------------------------------
 
-import type { PodHolding, PodGateRule } from "./types.js";
+import type { PodHolding, PodGateRule, PodGate, PodGateGroup } from "./types.js";
 
 /**
  * Does `holding` satisfy `rule` at time `now` (Unix ms)?
@@ -38,6 +38,51 @@ export function evaluatePodGate(
       : holding.count;
 
   return qualifying >= min;
+}
+
+/**
+ * Upcast a stored `PodGate | PodGateGroup` to a `PodGateGroup` so enforcement
+ * code has a single shape to work with. Old single-gate records become a
+ * `{ mode:"any", gates:[gate], window:{kind:"always"} }` group transparently.
+ */
+export function normalizeGate(g: PodGate | PodGateGroup): PodGateGroup {
+  if ("gates" in g) return g as PodGateGroup;
+  return { mode: "any", gates: [g as PodGate], window: { kind: "always" } };
+}
+
+/**
+ * Evaluate a `PodGateGroup` against a set of holdings (one per gate in the group)
+ * at time `now`.
+ *
+ * Phase 1: `always` and `time` windows enforced. `firstN` / `reserved` are
+ * treated as open (Phase 2 — needs claim-count reads).
+ *
+ * `holdings` must be pre-fetched by the caller (one holding per unique `manifestRef`
+ * in `group.gates`); pass an empty array when a holding is absent (fail-closed
+ * for the relevant gate — count 0, no slots).
+ */
+export function evaluatePodGateGroup(
+  holdings: PodHolding[],
+  group: PodGateGroup,
+  now: number = Date.now(),
+): boolean {
+  const win = group.window ?? { kind: "always" };
+  if (win.kind === "time") {
+    if (win.notBefore != null && now < win.notBefore) return false;
+    if (win.notAfter != null && now > win.notAfter) return false;
+  }
+  // firstN / reserved not enforced until Phase 2 (treat as always-active).
+
+  if (group.gates.length === 0) return false;
+
+  const results = group.gates.map((gate) => {
+    const holding = holdings.find(
+      (h) => h.manifestRef.toLowerCase() === gate.manifestRef.toLowerCase(),
+    ) ?? { manifestRef: gate.manifestRef, count: 0, slots: [] };
+    return evaluatePodGate(holding, gate, now);
+  });
+
+  return group.mode === "any" ? results.some(Boolean) : results.every(Boolean);
 }
 
 /**

@@ -14,6 +14,7 @@
     SalesChannel,
     UpsertProductRequest,
     PodGate,
+    PodGateGroup,
   } from "@woco/shared";
   import { onMount } from "svelte";
   import { updateShop, upsertProduct, deleteProduct, getProducts } from "../../api/shops.js";
@@ -44,7 +45,7 @@
   let pCategory = $state("");
   let pChannels = $state<"both" | "web" | "pos">("both");
   let pActive = $state(true);
-  let pGate = $state<PodGate | undefined>(undefined);
+  let pGate = $state<PodGate | PodGateGroup | undefined>(undefined);
   let pImageRef = $state<string | undefined>(undefined);
   let pImageUploading = $state(false);
   let productSaving = $state(false);
