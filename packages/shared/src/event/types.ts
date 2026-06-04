@@ -1,6 +1,6 @@
 import type { Hex64, Hex0x } from "../types.js";
 import type { OrderField, SealedBox } from "../crypto/types.js";
-import type { SignedManifestV1, PodV2Body } from "../pod/types.js";
+import type { SignedManifestV1, PodV2Body, PodGate } from "../pod/types.js";
 
 /** How attendees can claim tickets for an event */
 export type ClaimMode = "wallet" | "email" | "both";
@@ -214,6 +214,9 @@ export interface SeriesSummary {
   manifestRef?: string;
   /** Swarm ref to SeriesManifestBlob (SignedManifestV1 + podRefs array) */
   swarmManifestRef?: Hex64;
+  /** POD-holdings gate — when set, the claim route requires the claimer's wallet
+   *  to hold the gating POD on-chain (see PodGate / evaluatePodGate). Omit = open. */
+  gate?: PodGate;
 }
 
 /**
@@ -253,6 +256,8 @@ export interface CreateEventV2Request {
     saleStart?: string;
     saleEnd?: string;
     payment?: PaymentConfig;
+    /** POD-holdings gate for this series (server-enforced at claim). */
+    gate?: PodGate;
   }>;
   image: string;
   creatorAddress: Hex0x;

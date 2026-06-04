@@ -6,6 +6,7 @@ import type {
 import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
+import { getActiveChainId } from "../chain/event-contract.js";
 import { upsertCreatorPod } from "../pod/directory.js";
 import {
   readFeedPage,
@@ -56,6 +57,7 @@ export async function createEventV2(opts: {
     saleStart?: string;
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
+    gate?: import("@woco/shared").PodGate;
   }>;
   encryptionKey?: string;
   orderFields?: OrderField[];
@@ -153,6 +155,7 @@ export async function createEventV2(opts: {
         ...(s.saleStart ? { saleStart: s.saleStart } : {}),
         ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
         ...(s.payment ? { payment: s.payment } : {}),
+        ...(s.gate ? { gate: s.gate } : {}),
       } as SeriesSummary;
     }),
   );
@@ -229,6 +232,7 @@ export async function confirmSeriesOnChain(
       ...(series.description ? { description: series.description } : {}),
       supply: series.totalSupply,
       eventId: onChainEventId,
+      chainId: getActiveChainId(),
       createdAt: updated.createdAt,
       updatedAt: new Date().toISOString(),
     }).catch((err) =>

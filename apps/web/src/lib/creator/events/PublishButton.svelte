@@ -18,6 +18,7 @@
     saleStart?: string;
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
+    gate?: import("@woco/shared").PodGate;
   }
 
   interface Props {
@@ -187,6 +188,7 @@
             ...(s.saleStart ? { saleStart: s.saleStart } : {}),
             ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
             ...(s.payment ? { payment: s.payment } : {}),
+            ...(s.gate ? { gate: s.gate } : {}),
           })),
           image: imageDataUrl!,
           creatorAddress: auth.parent as `0x${string}`,

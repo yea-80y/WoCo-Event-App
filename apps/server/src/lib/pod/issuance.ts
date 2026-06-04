@@ -130,6 +130,7 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
     issuedCount: 0,
     issuer: signedManifest.body.issuerPubkey,
     eventId: onChainEventId,
+    chainId,
     swarmManifestRef,
     createdAt: now,
     updatedAt: now,

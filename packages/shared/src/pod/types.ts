@@ -186,6 +186,9 @@ export interface PodDirectoryEntry {
    *  holdings reader needs this to read slot ownership. Present once on-chain
    *  registration confirms; for `ticket` PODs that is `confirmSeriesOnChain`. */
   eventId?: Bytes32Hex;
+  /** Chain the POD was registered on — the holdings reader / gate config needs
+   *  it to read slot ownership. Set alongside `eventId` at on-chain confirm. */
+  chainId?: number;
   /** Swarm ref to the `SeriesManifestBlob` (signed manifest + pod-body refs).
    *  Immutable/content-addressed — NOT display layer. Present for PODs minted
    *  through standalone issuance (badge/collectible); the issuance-to-holder /
@@ -248,5 +251,35 @@ export interface PodGateRule {
   /** Unix ms — rule does not pass before this (time-limited access). */
   notBefore?: number;
   /** Unix ms — rule does not pass after this (time-limited access). */
+  notAfter?: number;
+}
+
+/**
+ * A STORED, resolved POD gate attached to a ticket series or product. It is a
+ * `PodGateRule` (all those fields) PLUS the two read-coordinates the server
+ * needs to perform the trustless holdings read (`getOnChainHolding`):
+ * `onChainEventId` + `chainId`. There is no global `manifestRef → eventId`
+ * index, so the creator snapshots them from the chosen POD's directory entry at
+ * config time. Because it is a structural superset of `PodGateRule`, a `PodGate`
+ * passes directly to `evaluatePodGate` (the extra fields are ignored).
+ *
+ * `podName` is a display snapshot for the config UI and the gate-failure message
+ * — never authoritative (the cryptographic identity is `manifestRef`).
+ */
+export interface PodGate {
+  manifestRef: Bytes32Hex;
+  /** On-chain eventId committing `manifestRef` — needed to read slot ownership. */
+  onChainEventId: Bytes32Hex;
+  /** Chain the gating POD lives on (holdings read target). */
+  chainId: number;
+  /** Display name of the gating POD at config time (UI + error text only). */
+  podName?: string;
+  /** Minimum holdings to pass. Default 1. */
+  minCount?: number;
+  /** "First-N" gate: only slots with index < this count. Omit = any slot. */
+  maxSlotExclusive?: number;
+  /** Unix ms — gate closed before this. */
+  notBefore?: number;
+  /** Unix ms — gate closed after this. */
   notAfter?: number;
 }

@@ -13,6 +13,7 @@ import type { AppEnv } from "../types.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
+import { checkPodGate } from "../lib/pod/gate-check.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { heldFor } from "../lib/event/reservation-store.js";
 import { verifyPayment } from "../lib/payment/verify.js";
@@ -273,6 +274,22 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) {
     return c.json({ ok: false, error: "Series not found" }, 404);
+  }
+
+  // POD-holdings gate — enforced BEFORE payment so a gated-out buyer is never
+  // asked to pay first. Only a wallet identifier can satisfy a gate (you can
+  // only gate a wallet); email/no-wallet claims on a gated series are rejected.
+  if (series.gate) {
+    if (identifier.type !== "wallet") {
+      return c.json(
+        { ok: false, gated: true, error: "This ticket is gated — connect a wallet that holds the required POD to claim." },
+        403,
+      );
+    }
+    const decision = await checkPodGate(series.gate, identifier.address);
+    if (!decision.ok) {
+      return c.json({ ok: false, gated: true, error: decision.reason }, 403);
+    }
   }
 
   if (series.payment) {
