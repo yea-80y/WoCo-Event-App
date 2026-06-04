@@ -587,7 +587,7 @@ shopsRouter.post("/:id/orders/:orderId/quote", async (c) => {
 
     const chainId = body?.chainId as PaymentChainId | undefined;
     if (!chainId) return c.json({ ok: false, error: "chainId is required" }, 400);
-    if (!shop.payment.acceptedChains.includes(chainId)) {
+    if (!shop.payment.acceptedChains?.includes(chainId)) {
       return c.json({ ok: false, error: `Chain ${chainId} not accepted for this shop` }, 400);
     }
     if (!USDC_ADDRESSES[chainId]) {

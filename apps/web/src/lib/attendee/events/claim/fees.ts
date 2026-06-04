@@ -12,6 +12,8 @@ export interface BuyerFees {
   base: string;
   unit: string;
   fee: string;
+  /** Crypto platform fee (PLATFORM_FEE_BP), formatted — shown on the crypto receipt. */
+  platform: string;
   cardTotal: string | null;
   cryptoTotal: string | null;
 }
@@ -35,6 +37,7 @@ export function calculateBuyerFees(
     base: fmt(subtotal),
     unit: fmt(unit),
     fee: fmt(cardFee),
+    platform: fmt(cryptoPlatformFee),
     cardTotal: payment.stripeEnabled ? fmt(subtotal + cardFee) : null,
     cryptoTotal: payment.cryptoEnabled ? fmt(subtotal + cryptoPlatformFee) : null,
   };

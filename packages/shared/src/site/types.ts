@@ -345,7 +345,10 @@ export interface SiteDirectoryEntry {
   accentColor: string;
   feedHash?: string;
   deployedUrl?: string;
-  publishedAt: number;
+  /** Unix ms — first publish time. Absent on local-only draft cards (My Sites). */
+  publishedAt?: number;
+  /** Unix ms — last builder-side update (My Sites card freshness). */
+  updatedAt?: number;
 }
 
 /** On-feed envelope (mirrors EventDirectory pattern). */

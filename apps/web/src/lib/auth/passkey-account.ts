@@ -33,10 +33,20 @@ function getPasskeyRpId(): string {
 // ---------------------------------------------------------------------------
 
 /** Compute the PRF salt: SHA-256 of the fixed salt input string. */
-async function getPrfSalt(): Promise<Uint8Array> {
+async function getPrfSalt(): Promise<Uint8Array<ArrayBuffer>> {
   const enc = new TextEncoder();
   const hash = await crypto.subtle.digest("SHA-256", enc.encode(PASSKEY_PRF_SALT_INPUT));
   return new Uint8Array(hash);
+}
+
+/**
+ * Coerce a WebAuthn `BufferSource` to a plain `ArrayBuffer`. TS 5.7's lib.dom
+ * widened the PRF result types to `BufferSource`; deriveKey() needs an
+ * `ArrayBuffer`, so normalise (copying out of any view).
+ */
+function toArrayBuffer(src: BufferSource): ArrayBuffer {
+  if (src instanceof ArrayBuffer) return src;
+  return src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength) as ArrayBuffer;
 }
 
 /** Base64url encode a Uint8Array / ArrayBuffer. */
@@ -48,7 +58,7 @@ function toBase64url(buf: ArrayBuffer): string {
 }
 
 /** Decode a base64url string to a Uint8Array. */
-function fromBase64url(str: string): Uint8Array {
+function fromBase64url(str: string): Uint8Array<ArrayBuffer> {
   const padded = str.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
@@ -72,7 +82,7 @@ function extractPrfResult(
   if (!prf?.results?.first) {
     throw new Error("PRF extension did not return a result. Your browser or passkey may not support PRF.");
   }
-  return prf.results.first;
+  return toArrayBuffer(prf.results.first);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +208,7 @@ export async function createPasskeyAccount(): Promise<{
   // In that case, we need to do a get() call to obtain the PRF output.
   let prfOutput: ArrayBuffer;
   if (extensions.prf?.results?.first) {
-    prfOutput = extensions.prf.results.first;
+    prfOutput = toArrayBuffer(extensions.prf.results.first);
   } else if (extensions.prf?.enabled) {
     // PRF supported but result not returned during creation — authenticate to get it
     const credentialId = new Uint8Array(credential.rawId);

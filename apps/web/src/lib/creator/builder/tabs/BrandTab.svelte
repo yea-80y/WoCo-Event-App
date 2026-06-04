@@ -289,7 +289,7 @@
                 class="logo-size-btn"
                 class:active={(site.theme.introLogoSize ?? 'lg') === opt.id}
                 onclick={() => { site.theme.introLogoSize = opt.id; }}
-                title="{opt.label} — ~{opt.introH} screen height"
+                title="{opt.label} — ~{opt.introBarH} screen height"
               >
                 <div class="logo-size-bar logo-size-bar--intro" style="height: {opt.introBarH}px"></div>
                 <span>{opt.label}</span>

@@ -34,7 +34,14 @@ export type FeeMode = "absorb" | "pass";
  * `PaymentConfig` is reused minus its per-item price/currency — the merchant
  * has one recipient and one set of accepted rails for the whole catalog.
  */
-export type ShopPaymentConfig = Omit<PaymentConfig, "price" | "currency"> & {
+export type ShopPaymentConfig = Omit<
+  PaymentConfig,
+  "price" | "currency" | "recipientAddress" | "acceptedChains" | "escrow"
+> & {
+  /** Crypto recipient — optional: a card-only shop has no crypto config. */
+  recipientAddress?: PaymentConfig["recipientAddress"];
+  acceptedChains?: PaymentConfig["acceptedChains"];
+  escrow?: boolean;
   /** Fee bearer. Defaults to "absorb" when omitted. */
   feeMode?: FeeMode;
 };

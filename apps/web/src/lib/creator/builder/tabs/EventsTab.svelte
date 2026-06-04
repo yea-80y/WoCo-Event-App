@@ -16,7 +16,7 @@
 
   type LoadState = "loading" | "ready" | "unauth" | "error";
 
-  let state = $state<LoadState>("loading");
+  let loadState = $state<LoadState>("loading");
   let stateError = $state("");
   let myEvents = $state<EventDirectoryEntry[]>([]);
 
@@ -33,7 +33,7 @@
 
   async function loadEvents() {
     if (!auth.isConnected || !auth.parent) {
-      state = "unauth";
+      loadState = "unauth";
       return;
     }
 
@@ -42,7 +42,7 @@
     // so painting before the session is signed skips the wallet-control proof.
     if (!auth.hasSession) {
       const ok = await auth.ensureSession();
-      if (!ok) { state = "unauth"; return; }
+      if (!ok) { loadState = "unauth"; return; }
     }
 
     const addr = auth.parent.toLowerCase();
@@ -51,9 +51,9 @@
     // Paint from cache instantly if we have it.
     if (swr.cached) {
       applyEventList(swr.cached);
-      state = "ready";
+      loadState = "ready";
     } else {
-      state = "loading";
+      loadState = "loading";
     }
     stateError = "";
 
@@ -63,10 +63,10 @@
     const fresh = await swr.refresh();
     if (fresh && (fresh.length > 0 || !swr.cached)) {
       applyEventList(fresh);
-      state = "ready";
+      loadState = "ready";
     } else if (!swr.cached && !fresh) {
       // No cache to fall back on AND refresh failed.
-      state = "error";
+      loadState = "error";
       stateError = "Could not load events";
     }
   }
@@ -132,19 +132,19 @@
   <!-- URL import: stashes preview + navigates to /creator/events/new -->
   <ImportUrlPanel applyLabel="Create event from this →" onapply={createFromImport} />
 
-  {#if state === "loading"}
+  {#if loadState === "loading"}
     <div class="state-box">
       <div class="spinner"></div>
       <p>Loading your events…</p>
     </div>
 
-  {:else if state === "unauth"}
+  {:else if loadState === "unauth"}
     <div class="state-box warn">
       <span class="state-icon">🔒</span>
       <p>Sign in to see your events and manage this site's event list.</p>
     </div>
 
-  {:else if state === "error"}
+  {:else if loadState === "error"}
     <div class="state-box warn">
       <span class="state-icon">⚠</span>
       <p>Failed to load events: {stateError}</p>

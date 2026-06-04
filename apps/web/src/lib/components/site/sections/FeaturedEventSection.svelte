@@ -108,7 +108,7 @@
             src={img}
             alt={event.title}
             data-image-gateway-index="0"
-            onerror={(e) => useNextImageUrl(e, event.imageHash, gatewayUrl)}
+            onerror={(e) => useNextImageUrl(e, event?.imageHash, gatewayUrl)}
           />
           <div class="image-overlay" aria-hidden="true"></div>
         </div>
