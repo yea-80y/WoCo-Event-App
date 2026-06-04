@@ -17,7 +17,10 @@
   } from "@woco/shared";
   import { onMount } from "svelte";
   import { updateShop, upsertProduct, deleteProduct, getProducts } from "../../api/shops.js";
+  import { uploadSiteImage } from "../../api/sites.js";
   import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
+
+  const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
   function uid() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
 
@@ -42,6 +45,8 @@
   let pChannels = $state<"both" | "web" | "pos">("both");
   let pActive = $state(true);
   let pGate = $state<PodGate | undefined>(undefined);
+  let pImageRef = $state<string | undefined>(undefined);
+  let pImageUploading = $state(false);
   let productSaving = $state(false);
   let productError = $state("");
 
@@ -85,7 +90,7 @@
   function openAddProduct() {
     editingProduct = null;
     pName = ""; pDesc = ""; pPrice = ""; pCompareAt = ""; pCategory = ""; pChannels = "both"; pActive = true;
-    pGate = undefined;
+    pGate = undefined; pImageRef = undefined;
     productFormOpen = true; productError = "";
   }
 
@@ -94,7 +99,27 @@
     pName = p.name; pDesc = p.description ?? ""; pPrice = p.price;
     pCompareAt = p.compareAtPrice ?? ""; pCategory = p.categoryId ?? "";
     pChannels = !p.channels ? "both" : p.channels.length === 2 ? "both" : (p.channels[0] as "web" | "pos");
-    pActive = p.active; pGate = p.gate; productFormOpen = true; productError = "";
+    pActive = p.active; pGate = p.gate; pImageRef = p.imageRef; productFormOpen = true; productError = "";
+  }
+
+  async function pickProductImage(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      pImageUploading = true;
+      productError = "";
+      try {
+        const res = await uploadSiteImage(reader.result as string);
+        if (!res.ok || !res.data) throw new Error(res.error ?? "Upload failed");
+        pImageRef = res.data.imageRef;
+      } catch (err) {
+        productError = err instanceof Error ? err.message : "Image upload failed";
+      } finally {
+        pImageUploading = false;
+      }
+    };
+    reader.readAsDataURL(file);
   }
 
   async function handleSaveProduct() {
@@ -110,6 +135,7 @@
         categoryId: pCategory || undefined,
         channels: pChannels === "both" ? undefined : [pChannels as SalesChannel],
         ...(pGate ? { gate: pGate } : {}),
+        ...(pImageRef ? { imageRef: pImageRef } : {}),
         active: pActive,
         sortIndex: editingProduct?.sortIndex ?? products.length,
       };
@@ -222,6 +248,33 @@
         <span>Active (visible to customers)</span>
       </label>
 
+      <!-- Product image (optional) -->
+      <div class="field">
+        <span class="f-label kicker--plain">Product image</span>
+        <div class="img-upload">
+          {#if pImageRef}
+            <img class="img-thumb" src="{BEE_GATEWAY}/bytes/{pImageRef}" alt="Product" />
+            <div class="img-actions">
+              <label class="btn btn--ghost btn--sm img-btn" aria-label="Replace image">
+                {pImageUploading ? "Uploading…" : "Replace"}
+                <input type="file" accept="image/*" class="sr-only" onchange={pickProductImage} disabled={pImageUploading} />
+              </label>
+              <button class="btn btn--ghost btn--sm img-btn img-btn--del" onclick={() => { pImageRef = undefined; }} aria-label="Remove image">Remove</button>
+            </div>
+          {:else}
+            <label class="img-zone" aria-label="Upload product image">
+              {#if pImageUploading}
+                <span class="img-zone-text">Uploading…</span>
+              {:else}
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square"><path d="M8 1v10M3 6l5-5 5 5"/><path d="M1 14h14"/></svg>
+                <span class="img-zone-text">Upload image</span>
+              {/if}
+              <input type="file" accept="image/*" class="sr-only" onchange={pickProductImage} disabled={pImageUploading} />
+            </label>
+          {/if}
+        </div>
+      </div>
+
       <!-- POD-holdings gate (optional). Wallet-purchase-only when set; card buyers
            are steered to crypto. Server chain-validates on save. -->
       <PodGateEditor gate={pGate} onChange={(g) => { pGate = g; }} />
@@ -248,6 +301,11 @@
     <ul class="product-list">
       {#each products as p (p.productId)}
         <li class:inactive={!p.active}>
+          {#if p.imageRef}
+            <img class="pl-img" src="{BEE_GATEWAY}/bytes/{p.imageRef}" alt="" loading="lazy" />
+          {:else}
+            <div class="pl-img pl-img--empty" aria-hidden="true"></div>
+          {/if}
           <div class="pl-info">
             <span class="pl-name">{p.name}</span>
             {#if !p.active}<span class="kicker pl-status">hidden</span>{/if}
@@ -325,7 +383,7 @@
 
   .product-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
   .product-list li {
-    display: grid; grid-template-columns: 1fr auto auto;
+    display: grid; grid-template-columns: 28px 1fr auto auto;
     align-items: center; gap: 0.5rem;
     padding: 0.4375rem 0.5rem;
     background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -343,4 +401,23 @@
   .act-btn--del:hover { color: var(--error); }
 
   .empty-hint { color: var(--text-muted); font-size: 0.8125rem; margin: 0; padding: 0.5rem 0; }
+
+  .img-upload { display: flex; align-items: center; gap: 0.625rem; }
+  .img-thumb { width: 52px; height: 52px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--border); flex-shrink: 0; }
+  .img-actions { display: flex; flex-direction: column; gap: 0.25rem; }
+  .img-btn { cursor: pointer; text-align: center; }
+  .img-btn--del:hover { color: var(--error); border-color: var(--error); }
+
+  .img-zone {
+    display: flex; align-items: center; gap: 0.375rem; cursor: pointer;
+    padding: 0.5rem 0.75rem;
+    border: 1px dashed var(--border); border-radius: var(--radius-sm);
+    color: var(--text-muted); transition: border-color 0.1s, color 0.1s;
+  }
+  .img-zone:hover { border-color: var(--accent); color: var(--text-secondary); }
+  .img-zone-text { font-size: 0.75rem; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+  .pl-img { width: 28px; height: 28px; object-fit: cover; border-radius: 3px; border: 1px solid var(--border); }
+  .pl-img--empty { background: var(--bg-surface); }
 </style>
