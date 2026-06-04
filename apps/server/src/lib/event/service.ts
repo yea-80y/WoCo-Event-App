@@ -5,8 +5,8 @@ import type {
 } from "@woco/shared";
 import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
+import { whitelistHashes } from "../swarm/whitelist.js";
 import { upsertCreatorPod } from "../pod/directory.js";
-import { PROXY_URL, UPLOAD_SECRET } from "../../config/swarm.js";
 import {
   readFeedPage,
   readFeedPageStrict,
@@ -20,22 +20,6 @@ import {
   topicCreatorDirectory,
   topicEvent,
 } from "../swarm/topics.js";
-
-// Fire-and-forget: tell the WoCo gateway proxy to allow public reads of this
-// hash. Event images are rendered from the WoCo app, deployed sites, and
-// emails — all of which fetch via the proxy, which 403s unwhitelisted hashes.
-async function whitelistImageHash(imageHash: Hex64): Promise<void> {
-  if (!PROXY_URL || !UPLOAD_SECRET) return;
-  const resp = await fetch(`${PROXY_URL}/admin/whitelist`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-upload-secret": UPLOAD_SECRET },
-    body: JSON.stringify({ hashes: [imageHash] }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!resp.ok) {
-    throw new Error(`whitelist responded ${resp.status}`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Create event (v2 — manifest-based, on-chain)
@@ -134,7 +118,7 @@ export async function createEventV2(opts: {
 
   const imageHash = await imagePromise;
   emit("image", 1, 1, "Image uploaded");
-  void whitelistImageHash(imageHash).catch((err) =>
+  void whitelistHashes([imageHash]).catch((err) =>
     console.warn("[event] image whitelist failed (non-critical):", err),
   );
 

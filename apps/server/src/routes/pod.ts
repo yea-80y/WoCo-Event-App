@@ -1,13 +1,20 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import type { PodCategory, PodDirectoryEntry, Hex0x } from "@woco/shared";
+import type {
+  PodCategory, PodDirectoryEntry, Hex0x, Hex64, SignedManifestV1, PodV2Body,
+} from "@woco/shared";
 import {
   getCreatorPodDirectory,
   setCreatorPodCategories,
   upsertCreatorPod,
 } from "../lib/pod/directory.js";
 import { getOnChainHolding } from "../lib/pod/holdings.js";
+import { issuePodType, type IssuablePodKind } from "../lib/pod/issuance.js";
+
+/** Upper bound on directly-minted POD supply — one on-chain registration covers
+ *  the whole batch, but each pod body is a Swarm upload, so cap the burst. */
+const MAX_POD_SUPPLY = 10_000;
 
 /**
  * POD layer routes (Step 4) — the creator POD manager + the public holdings
@@ -27,6 +34,81 @@ podRouter.get("/mine", requireAuth, async (c) => {
   } catch (err) {
     console.error("[pod] GET /mine failed:", err);
     return c.json({ ok: false, error: "Failed to read POD directory" }, 500);
+  }
+});
+
+/**
+ * POST /api/pod — mint a standalone `badge`/`collectible` POD type.
+ *
+ * The client builds + ed25519-signs the manifest (creator's POD key) and uploads
+ * the artwork, then posts the signed manifest + pod bodies. The server validates
+ * the manifest, uploads the bodies, sponsor-registers on-chain, and writes the
+ * directory entry. Owner is the verified parentAddress (never from the body).
+ */
+podRouter.post("/", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase() as Hex0x;
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "Invalid JSON" }, 400);
+  }
+
+  const b = body as {
+    kind?: unknown;
+    name?: unknown;
+    description?: unknown;
+    categoryId?: unknown;
+    supply?: unknown;
+    signedManifest?: unknown;
+    podBodies?: unknown;
+    image?: unknown;
+  };
+
+  if (b.kind !== "badge" && b.kind !== "collectible") {
+    return c.json({ ok: false, error: "kind must be 'badge' or 'collectible'" }, 400);
+  }
+  const name = typeof b.name === "string" ? b.name.trim() : "";
+  if (!name) {
+    return c.json({ ok: false, error: "name is required" }, 400);
+  }
+  if (
+    typeof b.supply !== "number" ||
+    !Number.isInteger(b.supply) ||
+    b.supply < 1 ||
+    b.supply > MAX_POD_SUPPLY
+  ) {
+    return c.json({ ok: false, error: `supply must be an integer 1..${MAX_POD_SUPPLY}` }, 400);
+  }
+  if (!b.signedManifest || typeof b.signedManifest !== "object") {
+    return c.json({ ok: false, error: "signedManifest is required" }, 400);
+  }
+  if (!Array.isArray(b.podBodies)) {
+    return c.json({ ok: false, error: "podBodies must be an array" }, 400);
+  }
+  if (b.image !== undefined && typeof b.image !== "string") {
+    return c.json({ ok: false, error: "image must be a Swarm ref string" }, 400);
+  }
+
+  try {
+    const entry = await issuePodType({
+      creatorAddress: parentAddress,
+      kind: b.kind as IssuablePodKind,
+      name: name.slice(0, 120),
+      ...(typeof b.description === "string" && b.description.trim()
+        ? { description: b.description.trim().slice(0, 400) }
+        : {}),
+      ...(typeof b.categoryId === "string" && b.categoryId ? { categoryId: b.categoryId } : {}),
+      supply: b.supply,
+      signedManifest: b.signedManifest as SignedManifestV1,
+      podBodies: b.podBodies as PodV2Body[],
+      ...(b.image ? { image: b.image as Hex64 } : {}),
+    });
+    return c.json({ ok: true, data: entry });
+  } catch (err) {
+    console.error("[pod] POST / (mint) failed:", err);
+    return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 

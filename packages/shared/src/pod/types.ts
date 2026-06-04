@@ -186,6 +186,12 @@ export interface PodDirectoryEntry {
    *  holdings reader needs this to read slot ownership. Present once on-chain
    *  registration confirms; for `ticket` PODs that is `confirmSeriesOnChain`. */
   eventId?: Bytes32Hex;
+  /** Swarm ref to the `SeriesManifestBlob` (signed manifest + pod-body refs).
+   *  Immutable/content-addressed — NOT display layer. Present for PODs minted
+   *  through standalone issuance (badge/collectible); the issuance-to-holder /
+   *  verification path needs it to fetch the pod bodies + Merkle proofs. Ticket
+   *  PODs keep this on the event's `SeriesSummary` instead. */
+  swarmManifestRef?: Hex64;
   createdAt: string;
   updatedAt: string;
 }

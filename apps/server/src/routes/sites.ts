@@ -20,8 +20,6 @@ import {
   getPlatformSigner,
   getPlatformOwner,
   BEE_URL,
-  PROXY_URL,
-  UPLOAD_SECRET,
   POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
@@ -37,6 +35,7 @@ import {
 import type { Site, Page, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
+import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { getLabelOwner, updateSubEnsContenthash } from "../lib/chain/sub-ens-contract.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 
@@ -656,12 +655,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       }
       const writer = bee.makeFeedWriter(topic, signer);
       try {
-        await fetch(`${PROXY_URL}/admin/whitelist`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-upload-secret": UPLOAD_SECRET },
-          body: JSON.stringify({ hashes: [contentHash] }),
-          signal: AbortSignal.timeout(10_000),
-        });
+        await whitelistHashes([contentHash]).catch(() => {});
         const chunkRes = await fetch(`${BEE_URL}/chunks/${contentHash}`, {
           signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
         });
@@ -710,11 +704,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Whitelist BZZ hash, feed manifest, and all image refs on the gateway.
     // Fire-and-forget — whitelist failure must not block the deploy response.
     const hashesToWhitelist = [contentHash, feedManifestHash, ...imageRefs].filter(Boolean);
-    fetch(`${PROXY_URL}/admin/whitelist`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-upload-secret": UPLOAD_SECRET },
-      body: JSON.stringify({ hashes: hashesToWhitelist }),
-    }).catch((e) => console.warn("[sites/deploy] whitelist call failed:", e));
+    void whitelistHashes(hashesToWhitelist).catch((e) =>
+      console.warn("[sites/deploy] whitelist call failed:", e),
+    );
 
     const siteUrl = `${gatewayUrl}/bzz/${contentHash}/`;
 

@@ -18,6 +18,7 @@
   import { onMount } from "svelte";
   import PodCard from "./PodCard.svelte";
   import PodEditDrawer from "./PodEditDrawer.svelte";
+  import PodCreateModal from "./PodCreateModal.svelte";
 
   type Phase = "loading" | "ready" | "unauth" | "error";
   let phase = $state<Phase>("loading");
@@ -143,10 +144,16 @@
     }
   }
 
-  // ── create POD (Opus-reserved) ────────────────────────────────────────────
+  // ── create POD ────────────────────────────────────────────────────────────
+  let createOpen = $state(false);
+
   function onCreate() {
-    // TODO(opus): create-badge/collectible modal — ed25519 manifest sign + on-chain enrol.
-    console.info("[pod] create — Opus-reserved (Step 3 loyalty / issuance service)");
+    createOpen = true;
+  }
+  function onCreated(entry: PodDirectoryEntry) {
+    // The directory is most-recently-updated first; mirror that locally so the
+    // new POD appears at the head without a refetch.
+    pods = [entry, ...pods.filter((p) => p.manifestRef !== entry.manifestRef)];
   }
 
   onMount(load);
@@ -157,6 +164,13 @@
   {categories}
   onclose={closeDrawer}
   onsaved={onDrawerSaved}
+/>
+
+<PodCreateModal
+  open={createOpen}
+  {categories}
+  onclose={() => (createOpen = false)}
+  oncreated={onCreated}
 />
 
 <div class="pod-manager">

@@ -1,5 +1,8 @@
-import type { PodDirectory, PodCategory, PodHolding, PodDirectoryEntry } from "@woco/shared";
-import { authGet, authPut, get } from "./client.js";
+import type {
+  PodDirectory, PodCategory, PodHolding, PodDirectoryEntry,
+  SignedManifestV1, PodV2Body,
+} from "@woco/shared";
+import { authGet, authPut, authPost, get } from "./client.js";
 
 /**
  * POD layer API client (Step 4). Reads/writes the creator POD directory + the
@@ -19,6 +22,35 @@ export async function setPodCategories(categories: PodCategory[]): Promise<PodCa
   const r = await authPut<{ categories: PodCategory[] }>("/api/pod/categories", { categories });
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to save categories");
   return r.data.categories;
+}
+
+/** Request body for minting a standalone POD type (badge/collectible). */
+export interface CreatePodRequest {
+  kind: "badge" | "collectible";
+  name: string;
+  description?: string;
+  categoryId?: string;
+  supply: number;
+  /** Client-built, ed25519-signed by the creator's POD key. */
+  signedManifest: SignedManifestV1;
+  /** The `supply` pre-signed pod bodies committed to by the manifest. */
+  podBodies: PodV2Body[];
+  /** Display artwork — Swarm ref (no 0x) from uploadSiteImage. */
+  image?: string;
+}
+
+/**
+ * Mint a standalone POD type. The server validates the signed manifest, uploads
+ * the pod bodies, sponsor-registers on-chain, and writes the directory entry —
+ * returning the new entry. Throws on error.
+ */
+export async function createPod(req: CreatePodRequest): Promise<PodDirectoryEntry> {
+  const r = await authPost<PodDirectoryEntry>(
+    "/api/pod",
+    req as unknown as Record<string, unknown>,
+  );
+  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to create POD");
+  return r.data;
 }
 
 /** Patch the mutable display fields of one POD type (name, image, description, categoryId). */
