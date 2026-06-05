@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { EventFeed } from "@woco/shared";
+  import type { EventFeed, Hex0x } from "@woco/shared";
+  import { SubjectType } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
   import ClaimButton from "./ClaimButton.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -9,6 +10,7 @@
   import { getProfile } from "../../api/profiles.js";
   import type { UserProfile } from "@woco/shared";
   import UserAvatar from "../../components/profile/UserAvatar.svelte";
+  import LikeButton from "../../components/likes/LikeButton.svelte";
   import { onMount, onDestroy } from "svelte";
   import { isPastEvent as checkPast } from "../../utils/events.js";
   import { firstImageUrl, useNextImageUrl } from "../../components/site/image-fallback.js";
@@ -47,6 +49,12 @@
   let clockTimer: ReturnType<typeof setInterval>;
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
+
+  const eventSubject = $derived((() => {
+    const eid = event?.series.find(s => s.onChainEventId)?.onChainEventId;
+    if (!eid) return null;
+    return { type: SubjectType.Event, id: eid.toLowerCase() as Hex0x };
+  })());
 
   const isPastEvent = $derived(!!event && checkPast(event, now));
 
@@ -152,6 +160,12 @@
         </span>
       </div>
     </div>
+
+    {#if eventSubject}
+      <div class="social-actions">
+        <LikeButton subject={eventSubject} />
+      </div>
+    {/if}
 
     {#if event.description}
       <p class="description">{event.description}</p>
@@ -370,6 +384,13 @@
 
   .creator-section:hover .creator-name {
     color: var(--accent-text);
+  }
+
+  .social-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.25rem 0 1rem;
   }
 
   .description {

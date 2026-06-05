@@ -1,17 +1,20 @@
 <script lang="ts">
-  import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
+  import type { UserProfile, EventDirectoryEntry, LikeSubject } from "@woco/shared";
+  import { SubjectType } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, invalidateProfileCache } from "../../api/profiles.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { setExternalEventApi } from "../../api/event-api-registry.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
+  import { getFollowing, getTrending } from "../../api/likes.js";
+  import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
   import WalletTab from "./WalletTab.svelte";
   import SpendingWallet from "../../attendee/shop/SpendingWallet.svelte";
   import EventCard from "../../attendee/events/EventCard.svelte";
 
-  type ProfileTab = "profile" | "wallet" | "events";
+  type ProfileTab = "profile" | "wallet" | "events" | "following";
 
   interface Props {
     address?: string;
@@ -32,6 +35,10 @@
   let events = $state<EventDirectoryEntry[]>([]);
   let eventsLoaded = $state(false);
   let eventsLoading = $state(false);
+  let following = $state<LikeSubject[]>([]);
+  let followingLoaded = $state(false);
+  let followingLoading = $state(false);
+  let trending = $state<TrendingSubject[]>([]);
   let activeTab = $state<ProfileTab>("profile");
   let addressCopied = $state(false);
   let revokingAll = $state(false);
@@ -213,9 +220,24 @@
     finally { eventsLoading = false; eventsLoaded = true; }
   }
 
+  async function loadFollowing() {
+    if (followingLoaded || followingLoading || !viewAddress) return;
+    followingLoading = true;
+    try {
+      const [f, t] = await Promise.all([
+        getFollowing(viewAddress),
+        getTrending(undefined, 10),
+      ]);
+      if (f) following = f;
+      if (t) trending = t;
+    } catch { /* silent */ }
+    finally { followingLoading = false; followingLoaded = true; }
+  }
+
   function switchTab(tab: ProfileTab) {
     activeTab = tab;
     if (tab === "events" && !eventsLoaded) loadEvents();
+    if (tab === "following" && !followingLoaded) loadFollowing();
   }
 
   // Reset on address/auth change
@@ -224,7 +246,9 @@
     const v = viewAddress;
     if (v === _prevView) return;
     _prevView = v;
-    profile = null; events = []; eventsLoaded = false; eventsLoading = false; avatarPreviewUrl = null;
+    profile = null; events = []; eventsLoaded = false; eventsLoading = false;
+    following = []; followingLoaded = false; followingLoading = false;
+    trending = []; avatarPreviewUrl = null;
     if (!v) {
       loading = false;
       if (!auth.isConnected) loginRequest.request().then(ok => { if (!ok) navigate("/"); });
@@ -370,6 +394,13 @@
         role="tab"
         aria-selected={activeTab === "events"}
       >Events</button>
+      <button
+        class="tab-btn"
+        class:tab-active={activeTab === "following"}
+        onclick={() => switchTab("following")}
+        role="tab"
+        aria-selected={activeTab === "following"}
+      >Following</button>
     </nav>
   {/if}
 
@@ -571,6 +602,107 @@
               }} />
             {/each}
           </div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if activeTab === "following"}
+      <div class="tab-body">
+        {#if followingLoading}
+          <div class="events-loading">
+            <span class="spin-md"></span>
+            <span>Loading…</span>
+          </div>
+        {:else}
+          {@const followedEvents = following.filter(s => s.type === SubjectType.Event)}
+          {@const followedProfiles = following.filter(s => s.type === SubjectType.Profile)}
+
+          {#if following.length === 0}
+            <div class="events-empty">
+              <div class="empty-icon">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 21L3.5 12.5C1.5 10.5 1.5 7.2 3.5 5.2C5.5 3.2 8.8 3.2 10.8 5.2L12 6.4L13.2 5.2C15.2 3.2 18.5 3.2 20.5 5.2C22.5 7.2 22.5 10.5 20.5 12.5L12 21Z"/>
+                </svg>
+              </div>
+              <p class="empty-title">Nothing liked yet</p>
+              <p class="empty-sub">Like events to build your on-chain social graph.</p>
+            </div>
+          {:else}
+            {#if followedEvents.length > 0}
+              <div class="follow-section">
+                <h3 class="follow-heading">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+                    <line x1="3" y1="10" x2="21" y2="10"/>
+                  </svg>
+                  Events <span class="follow-count">{followedEvents.length}</span>
+                </h3>
+                <div class="follow-list">
+                  {#each followedEvents as s}
+                    <div class="follow-item">
+                      <span class="follow-type-dot ev-dot"></span>
+                      <a
+                        class="follow-id"
+                        href="https://sepolia.arbiscan.io/address/{s.id}"
+                        target="_blank"
+                        rel="noopener"
+                        title={s.id}
+                      >{s.id.slice(0, 10)}…{s.id.slice(-8)}</a>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            {#if followedProfiles.length > 0}
+              <div class="follow-section">
+                <h3 class="follow-heading">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                    <circle cx="12" cy="7" r="4"/>
+                  </svg>
+                  Profiles <span class="follow-count">{followedProfiles.length}</span>
+                </h3>
+                <div class="follow-list">
+                  {#each followedProfiles as s}
+                    <div class="follow-item">
+                      <span class="follow-type-dot pr-dot"></span>
+                      <span class="follow-id" title={s.id}>{s.id.slice(0, 10)}…{s.id.slice(-8)}</span>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          {/if}
+
+          {#if followingLoaded && trending.length > 0}
+            <div class="follow-section trending-section">
+              <h3 class="follow-heading">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+                  <polyline points="16 7 22 7 22 13"/>
+                </svg>
+                Trending
+              </h3>
+              <div class="trending-list">
+                {#each trending as t, i}
+                  <div class="trending-row">
+                    <span class="trending-rank">#{i + 1}</span>
+                    <span class="trending-type-dot" class:ev-dot={t.subjectType === SubjectType.Event} class:pr-dot={t.subjectType === SubjectType.Profile}></span>
+                    <span class="trending-label">{t.subjectType === SubjectType.Event ? "Event" : "Profile"}</span>
+                    <span class="trending-id" title={t.subject}>{t.subject.slice(0, 8)}…{t.subject.slice(-6)}</span>
+                    <span class="trending-count">
+                      <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+                        <path d="M12 21L3.5 12.5C1.5 10.5 1.5 7.2 3.5 5.2C5.5 3.2 8.8 3.2 10.8 5.2L12 6.4L13.2 5.2C15.2 3.2 18.5 3.2 20.5 5.2C22.5 7.2 22.5 10.5 20.5 12.5L12 21Z"/>
+                      </svg>
+                      {t.count}
+                    </span>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
         {/if}
       </div>
     {/if}
@@ -1163,6 +1295,135 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.8; } }
+
+  /* ── Following tab ───────────────────────────────────────── */
+  .follow-section {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1.125rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .follow-heading {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .follow-count {
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    color: var(--text-dim);
+  }
+
+  .follow-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .follow-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+
+  .follow-type-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .ev-dot { background: var(--accent); }
+  .pr-dot { background: var(--text-muted); }
+
+  .follow-id {
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    transition: color 0.15s ease;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  a.follow-id:hover { color: var(--accent); }
+
+  .trending-section { margin-top: 0.5rem; }
+
+  .trending-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .trending-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .trending-rank {
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    font-size: 0.625rem;
+    color: var(--text-dim);
+    min-width: 1.25rem;
+  }
+
+  .trending-type-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .trending-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    min-width: 2.5rem;
+  }
+
+  .trending-id {
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .trending-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
 
   /* ── Responsive ──────────────────────────────────────────── */
   @media (max-width: 480px) {
