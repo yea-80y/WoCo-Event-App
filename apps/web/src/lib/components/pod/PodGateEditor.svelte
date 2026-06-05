@@ -35,8 +35,10 @@
   let enabled = $state(!!gate);
   let selectedRefs = $state<string[]>(initGroup?.gates.map((g) => g.manifestRef) ?? []);
   let mode = $state<"any" | "all">(initGroup?.mode ?? "any");
-  let windowKind = $state<"always" | "time">(
-    initGroup?.window?.kind === "time" ? "time" : "always",
+  let windowKind = $state<"always" | "time" | "firstN">(
+    initGroup?.window?.kind === "time" || initGroup?.window?.kind === "firstN"
+      ? initGroup.window.kind
+      : "always",
   );
   let winNotBefore = $state<string>(
     initGroup?.window?.kind === "time" && initGroup.window.notBefore
@@ -47,6 +49,9 @@
     initGroup?.window?.kind === "time" && initGroup.window.notAfter
       ? new Date(initGroup.window.notAfter).toISOString().slice(0, 16)
       : "",
+  );
+  let winFirstN = $state<number>(
+    initGroup?.window?.kind === "firstN" ? initGroup.window.n : 50,
   );
 
   async function load() {
@@ -65,6 +70,10 @@
   }
 
   function buildWindow(): PodGateGroup["window"] {
+    if (windowKind === "firstN") {
+      const n = Math.max(1, Math.floor(winFirstN) || 1);
+      return { kind: "firstN", n };
+    }
     if (windowKind !== "time") return { kind: "always" };
     const nb = winNotBefore ? new Date(winNotBefore).getTime() : undefined;
     const na = winNotAfter ? new Date(winNotAfter).getTime() : undefined;
@@ -117,7 +126,7 @@
   <label class="gate-toggle">
     <input type="checkbox" checked={enabled} onchange={toggleEnabled} />
     <span class="gate-label">Require holding a POD</span>
-    <span class="gate-hint">Only wallets that hold the chosen POD(s) on-chain can claim this tier.</span>
+    <span class="gate-hint">Buyers must be signed in with a wallet that holds the chosen POD(s) on-chain. They can still pay any way you accept — card or crypto.</span>
   </label>
 
   {#if enabled}
@@ -180,6 +189,12 @@
               class:active={windowKind === "time"}
               onclick={() => { windowKind = "time"; emit(); }}
             >time window</button>
+            <button
+              type="button"
+              class="mode-btn"
+              class:active={windowKind === "firstN"}
+              onclick={() => { windowKind = "firstN"; emit(); }}
+            >early access</button>
           </div>
         </div>
 
@@ -203,6 +218,24 @@
                 onchange={emit}
               />
             </label>
+          </div>
+        {:else if windowKind === "firstN"}
+          <div class="firstn-row">
+            <label class="time-field firstn-field">
+              <span class="time-label">First</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                class="time-input firstn-input"
+                bind:value={winFirstN}
+                onchange={emit}
+              />
+            </label>
+            <span class="firstn-hint">
+              tickets are POD-holder only; after {Math.max(1, Math.floor(winFirstN) || 1)} are
+              claimed it opens to everyone (any payment method).
+            </span>
           </div>
         {/if}
       {/if}
@@ -288,4 +321,14 @@
     padding: 0.375rem 0.5rem; font-size: 0.75rem; font-family: inherit;
   }
   .time-input:focus { outline: none; border-color: var(--accent); }
+
+  .firstn-row {
+    display: flex; align-items: flex-end; gap: 0.625rem; flex-wrap: wrap;
+  }
+  .firstn-field { flex-shrink: 0; }
+  .firstn-input { width: 5rem; }
+  .firstn-hint {
+    font-size: 0.72rem; color: var(--text-muted); line-height: 1.3;
+    flex: 1; min-width: 12rem; padding-bottom: 0.375rem;
+  }
 </style>

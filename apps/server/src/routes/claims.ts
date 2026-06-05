@@ -13,7 +13,7 @@ import type { AppEnv } from "../types.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
-import { checkPodGate } from "../lib/pod/gate-check.js";
+import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { heldFor } from "../lib/event/reservation-store.js";
 import { verifyPayment } from "../lib/payment/verify.js";
@@ -277,19 +277,37 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   }
 
   // POD-holdings gate — enforced BEFORE payment so a gated-out buyer is never
-  // asked to pay first. Only a wallet identifier can satisfy a gate (you can
-  // only gate a wallet); email/no-wallet claims on a gated series are rejected.
+  // asked to pay first. The gate binds to the ACCOUNT (the verified wallet's
+  // on-chain POD holdings), not to the payment rail. The window phase decides
+  // who may claim right now:
+  //   holders-only → a wallet that passes the gate (any rail can pay)
+  //   open         → anyone, including email/no-wallet (firstN early access over)
+  //   closed       → nobody right now (a time window not open / ended)
   if (series.gate) {
-    if (identifier.type !== "wallet") {
+    // firstN needs the committed claim count of THIS series; other windows don't.
+    const tierClaimed = gateNeedsClaimCount(series.gate)
+      ? (await getClaimStatus(seriesId)).claimed
+      : undefined;
+    const phase = gatePhase(series.gate, { tierClaimed });
+    if (phase === "closed") {
       return c.json(
-        { ok: false, gated: true, error: "This ticket is gated — connect a wallet that holds the required POD to claim." },
+        { ok: false, gated: true, error: "This ticket is not currently available." },
         403,
       );
     }
-    const decision = await checkPodGate(series.gate, identifier.address);
-    if (!decision.ok) {
-      return c.json({ ok: false, gated: true, error: decision.reason }, 403);
+    if (phase === "holders-only") {
+      if (identifier.type !== "wallet") {
+        return c.json(
+          { ok: false, gated: true, error: "This ticket is gated — connect a wallet that holds the required POD to claim." },
+          403,
+        );
+      }
+      const decision = await checkPodGate(series.gate, identifier.address, { tierClaimed });
+      if (!decision.ok) {
+        return c.json({ ok: false, gated: true, error: decision.reason }, 403);
+      }
     }
+    // phase === "open": no holdings/wallet requirement.
   }
 
   if (series.payment) {

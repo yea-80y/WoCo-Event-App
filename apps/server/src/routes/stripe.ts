@@ -18,6 +18,7 @@ import {
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { queueSeriesClaim } from "./claims.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
 import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
@@ -430,6 +431,41 @@ stripe.post("/create-checkout", async (c) => {
     if (statusResult.userEdition != null && series.approvalRequired) {
       return c.json({ ok: false, error: "You already have a ticket for this series" }, 409);
     }
+  }
+
+  // POD-holdings gate on the CARD rail. The gate is a property of the buyer's
+  // ACCOUNT (the verified wallet's on-chain holdings), NOT the payment method —
+  // so a gated series is still payable by card, provided the authenticated
+  // account passes the gate. We bind the resulting claim to `verifiedAddress`
+  // (stamped into metadata.claimerAddress → the webhook claims to that wallet),
+  // keeping "server uses the VERIFIED holder address only". Enforce BEFORE any
+  // Stripe session is created so a gated-out buyer is never charged.
+  if (series.gate) {
+    // firstN needs this series' committed claim count. Reuse the pre-flight
+    // status read when present; only fetch separately if it was skipped.
+    let tierClaimed: number | undefined;
+    if (gateNeedsClaimCount(series.gate)) {
+      tierClaimed = statusResult
+        ? statusResult.claimed
+        : await getClaimStatus(seriesId).then((s) => s.claimed).catch(() => undefined);
+    }
+    const phase = gatePhase(series.gate, { tierClaimed });
+    if (phase === "closed") {
+      return c.json({ ok: false, gated: true, error: "This ticket is not currently available." }, 403);
+    }
+    if (phase === "holders-only") {
+      if (!verifiedAddress) {
+        return c.json(
+          { ok: false, gated: true, error: "This ticket is gated — sign in with the wallet that holds the required POD, then pay by card." },
+          401,
+        );
+      }
+      const decision = await checkPodGate(series.gate, verifiedAddress, { tierClaimed });
+      if (!decision.ok) {
+        return c.json({ ok: false, gated: true, error: decision.reason }, 403);
+      }
+    }
+    // phase === "open": no holdings requirement — card/email buyer proceeds.
   }
 
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"

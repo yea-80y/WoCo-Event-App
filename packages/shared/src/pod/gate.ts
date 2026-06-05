@@ -7,7 +7,7 @@
 // claim/order time). See docs/WOCO_SHOP_PLAN.md §4.3.
 // ---------------------------------------------------------------------------
 
-import type { PodHolding, PodGateRule, PodGate, PodGateGroup } from "./types.js";
+import type { PodHolding, PodGateRule, PodGate, PodGateGroup, GateWindow } from "./types.js";
 
 /**
  * Does `holding` satisfy `rule` at time `now` (Unix ms)?
@@ -51,11 +51,78 @@ export function normalizeGate(g: PodGate | PodGateGroup): PodGateGroup {
 }
 
 /**
- * Evaluate a `PodGateGroup` against a set of holdings (one per gate in the group)
- * at time `now`.
+ * Read-coordinates a `PodGateGroup` evaluation needs beyond the holdings: the
+ * clock and (for count-based windows) how many editions of the GATED tier have
+ * been claimed so far. Pure data — the caller reads `tierClaimed` from the
+ * series/edition feed it already loads at claim time.
+ */
+export interface GateEvalContext {
+  /** Evaluation clock (Unix ms). Default `Date.now()`. */
+  now?: number;
+  /**
+   * Committed claims of the gated tier (the series/product carrying the gate)
+   * so far. Required for `firstN`. Omit for windows that don't need a count.
+   * Reservations are deliberately NOT counted — only committed claims advance
+   * the phase, which keeps the boundary monotonic (a held-but-unpaid seat can
+   * never retreat the gate from open back to holders-only).
+   */
+  tierClaimed?: number;
+}
+
+/**
+ * The access phase a `PodGateGroup`'s window puts the gated tier in RIGHT NOW.
+ * Decouples "what does out-of-window mean" — which differs per window kind —
+ * from the holdings check:
+ * - `holders-only` — claimable, but only by an account passing the gate set.
+ * - `open`         — claimable by ANYONE (the gate has lapsed; e.g. first-N
+ *                    early access is over). No wallet/holdings required.
+ * - `closed`       — not claimable by anyone right now (e.g. a time window that
+ *                    has not opened / has ended).
+ */
+export type GatePhase = "holders-only" | "open" | "closed";
+
+/**
+ * Pure: which phase is `group`'s window in at `ctx.now`?
  *
- * Phase 1: `always` and `time` windows enforced. `firstN` / `reserved` are
- * treated as open (Phase 2 — needs claim-count reads).
+ * - `always`  → holders-only (the gate always restricts).
+ * - `time`    → holders-only inside [notBefore, notAfter]; `closed` outside.
+ * - `firstN`  → holders-only while `tierClaimed < n` (holder-only early access);
+ *               `open` once `tierClaimed ≥ n`. If `tierClaimed` is unknown,
+ *               fail-safe to holders-only (never silently open a gate).
+ * - `reserved`→ DEFERRED (Phase 2b): treated as holders-only so it is safe but
+ *               unenforced until holder/non-holder claim accounting exists.
+ */
+export function computeGatePhase(
+  window: GateWindow | undefined,
+  ctx: GateEvalContext = {},
+): GatePhase {
+  const win = window ?? { kind: "always" };
+  const now = ctx.now ?? Date.now();
+  switch (win.kind) {
+    case "always":
+      return "holders-only";
+    case "time": {
+      if (win.notBefore != null && now < win.notBefore) return "closed";
+      if (win.notAfter != null && now > win.notAfter) return "closed";
+      return "holders-only";
+    }
+    case "firstN": {
+      if (ctx.tierClaimed == null) return "holders-only"; // fail-safe
+      return ctx.tierClaimed >= win.n ? "open" : "holders-only";
+    }
+    case "reserved":
+      return "holders-only"; // Phase 2b not built — fail-safe to holder-required
+    default:
+      return "holders-only";
+  }
+}
+
+/**
+ * Evaluate a `PodGateGroup` against a set of holdings (one per gate in the group).
+ *
+ * Resolves the window phase first (`computeGatePhase`): `open` passes for
+ * everyone, `closed` fails for everyone, `holders-only` falls through to the
+ * any/all holdings check against `group.gates`.
  *
  * `holdings` must be pre-fetched by the caller (one holding per unique `manifestRef`
  * in `group.gates`); pass an empty array when a holding is absent (fail-closed
@@ -64,17 +131,15 @@ export function normalizeGate(g: PodGate | PodGateGroup): PodGateGroup {
 export function evaluatePodGateGroup(
   holdings: PodHolding[],
   group: PodGateGroup,
-  now: number = Date.now(),
+  ctx: GateEvalContext = {},
 ): boolean {
-  const win = group.window ?? { kind: "always" };
-  if (win.kind === "time") {
-    if (win.notBefore != null && now < win.notBefore) return false;
-    if (win.notAfter != null && now > win.notAfter) return false;
-  }
-  // firstN / reserved not enforced until Phase 2 (treat as always-active).
+  const phase = computeGatePhase(group.window, ctx);
+  if (phase === "open") return true;
+  if (phase === "closed") return false;
 
   if (group.gates.length === 0) return false;
 
+  const now = ctx.now ?? Date.now();
   const results = group.gates.map((gate) => {
     const holding = holdings.find(
       (h) => h.manifestRef.toLowerCase() === gate.manifestRef.toLowerCase(),

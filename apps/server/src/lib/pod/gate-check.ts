@@ -9,8 +9,8 @@
 // rejection, never a pass — a flaky holdings read must not open a gate.
 // ---------------------------------------------------------------------------
 
-import type { PodGate, PodGateGroup, Hex0x } from "@woco/shared";
-import { evaluatePodGateGroup, normalizeGate, verifyPodGateBinding } from "@woco/shared";
+import type { PodGate, PodGateGroup, Hex0x, GateEvalContext, GatePhase } from "@woco/shared";
+import { evaluatePodGateGroup, computeGatePhase, normalizeGate, verifyPodGateBinding } from "@woco/shared";
 import { getOnChainHolding } from "./holdings.js";
 import { getOnChainEvent } from "../chain/event-contract.js";
 
@@ -18,6 +18,34 @@ export interface GateDecision {
   ok: boolean;
   /** Human-readable rejection reason (surfaced to the claimer). */
   reason?: string;
+}
+
+/**
+ * Resolve the current access phase of a stored gate (`holders-only`/`open`/
+ * `closed`). Pure pass-through to the shared `computeGatePhase` — exposed here
+ * so route handlers branch on the SAME phase the evaluator uses (e.g. allow
+ * email/card in the `open` phase, demand a wallet only when `holders-only`).
+ *
+ * `ctx.tierClaimed` (committed claims of the gated tier) is required for a
+ * `firstN` window and is read by the caller from the series feed it already
+ * loads. Mirrors the shape a future client-side feed signer will use — this is
+ * pure and chain-free (see [[signing_role_architecture]]).
+ */
+export function gatePhase(
+  gate: PodGate | PodGateGroup,
+  ctx: GateEvalContext = {},
+): GatePhase {
+  return computeGatePhase(normalizeGate(gate).window, ctx);
+}
+
+/**
+ * Does this gate's window need the gated tier's committed claim count to resolve
+ * its phase? Only `firstN` does today (`reserved` is deferred/fail-safe and
+ * `always`/`time` are count-independent). Lets the claim/checkout paths skip an
+ * extra feed read for the common case.
+ */
+export function gateNeedsClaimCount(gate: PodGate | PodGateGroup): boolean {
+  return normalizeGate(gate).window?.kind === "firstN";
 }
 
 /**
@@ -59,14 +87,19 @@ export async function validatePodGate(
 }
 
 /**
- * Does `holder` (a wallet address) satisfy `gate`? `holder` MUST be the
- * server-verified claimer/payer address, never one from the request body.
- * Accepts a single `PodGate` (legacy) or a `PodGateGroup`; normalises
- * internally so both paths use the same evaluator.
+ * Does `holder` (a wallet address) satisfy `gate` right now? `holder` MUST be
+ * the server-verified claimer/payer address, never one from the request body.
+ * Accepts a single `PodGate` (legacy) or a `PodGateGroup`; normalises internally
+ * so both paths use the same evaluator.
+ *
+ * `ctx` carries the evaluation clock + the gated tier's committed claim count
+ * (for `firstN`). Threaded straight into the pure `evaluatePodGateGroup` so the
+ * holdings read and the window phase resolve against one consistent snapshot.
  */
 export async function checkPodGate(
   gate: PodGate | PodGateGroup,
   holder: string,
+  ctx: GateEvalContext = {},
 ): Promise<GateDecision> {
   const group = normalizeGate(gate);
   const holderLc = holder.toLowerCase() as Hex0x;
@@ -99,7 +132,7 @@ export async function checkPodGate(
       );
 
     const holdings = await Promise.all(holdingPromises);
-    if (evaluatePodGateGroup(holdings, group)) return { ok: true };
+    if (evaluatePodGateGroup(holdings, group, ctx)) return { ok: true };
 
     const totalHeld = holdings.reduce((s, h) => s + h.count, 0);
     return {
