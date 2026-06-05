@@ -18,3 +18,4 @@ export * from "./shop/types.js";
 export * from "./shop/topics.js";
 export * from "./shop/pricing.js";
 export * from "./shop/loyalty.js";
+export * from "./likes/index.js";

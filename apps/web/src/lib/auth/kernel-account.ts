@@ -26,7 +26,8 @@ import type { Address, Hex } from "viem";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
-import { StorageKeys } from "@woco/shared";
+import { StorageKeys, EAS_ADDRESS } from "@woco/shared";
+import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -413,6 +414,21 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
           target: WOCO_REGISTRAR_ADDRESS as Address,
           abi: REGISTRAR_PERMIT_ABI,
           functionName: "registerWithPermit",
+        },
+        // EAS likes (#4): the passkey Kernel attests/revokes gaslessly. Scoped
+        // to the EAS contract + these two selectors only (no ETH value) — same
+        // tight call-policy posture as registerWithPermit. NOTE: existing
+        // session keys predate this and must be re-minted to gain the EAS
+        // grant (OK in dev — clearWocoSessionKey + ensureWocoSessionKey).
+        {
+          target: EAS_ADDRESS as Address,
+          abi: EAS_SESSION_ABI,
+          functionName: "attest",
+        },
+        {
+          target: EAS_ADDRESS as Address,
+          abi: EAS_SESSION_ABI,
+          functionName: "revoke",
         },
       ],
     }),
