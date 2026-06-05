@@ -248,88 +248,26 @@ STRIPE PAYMENTS (Card via Stripe Connect):
 - Auto-refund on claim failure for unrecoverable reasons (Already claimed,
   No tickets available, Series not found); transient failures skipped
 
-STRIPE UX — PHASE 2 (2026-04-24, latency pass for email-only claims):
-- `/create-checkout` accepts optional raw `encryptedOrder`; when no pre-uploaded
-  `orderRef` is passed, the SealedBox upload to Swarm runs in parallel with
-  `getEvent` + `getClaimStatus` via `Promise.all` so Swarm latency hides behind
-  the pre-flight reads. Client pre-upload still takes priority.
-- Client pre-uploads the SealedBox to `/prepare-order` 700ms (debounced) after
-  the form becomes valid — `pendingOrderRef` is passed on Pay click making the
-  redirect near-instant. Orphan refs on field edits are harmless (encrypted,
-  unreachable, one postage slot each).
-- Order form opens ⇒ `$effect` refreshes availability immediately. Amber
-  "Only N left" pill when ≤5, red sold-out / quantity-shortfall banner
-  disables the Pay button before the user commits.
-- Pay button shows a 2px hairline shimmer while pre-upload is mid-flight;
-  button stays clickable — create-checkout falls back to inline upload.
-- Optimistic success card on Stripe return: shows "Payment confirmed — Your
-  ticket is on its way to X@Y.com" immediately, no polling, no spinner, no
-  QR, no edition number, no MyTickets reference. Persisted to
-  sessionStorage so page refresh within the tab keeps it visible.
-- Designed for standalone ENS site-builder events where users are email-only
-  (no wallet, no POD identity, no MyTickets account) — the email IS the
-  delivery channel, so the UI matches that mental model.
-
-STRIPE UX — PHASE 3 (2026-04-25, slot reservations + composite ticket card):
-- Slot reservation: order-form open POSTs `/api/reservations/reserve`
-  (~10min TTL); Pay passes `reservationId` to `/create-checkout`; webhook
-  consumes it. File-backed `.data/reservations.json`, per-series mutex.
-  Frontend countdown pill, quantity-change re-issues, `pagehide` fires
-  `navigator.sendBeacon` for release. No Swarm writes.
-- Pre-upload widened: 250ms → 1500ms idle, with Pay-button hover/focus
-  accelerator (`onpointerenter`/`onfocus`/`ontouchstart` → upload now).
-- Composite ticket card replaces basic QR PNG + slow eth.limo verify link.
-  Two new user-facing routes (no `/api` prefix):
-    GET /t/{eventId}/{seriesId}/{edition}/{sig}[.png]
-  PNG route uses Hono regex `:sig{.+\\.png}` BEFORE the HTML catch-all.
-  `?n=` / `?e=` are display-only; cryptographic guarantee is the path sig.
-- Renderer: `lib/ticket/render-card.ts` builds SVG → 800×1100 PNG via
-  `@resvg/resvg-js` (pure WASM). QR drawn as `<rect>` matrix (no image-href).
-  `loadSystemFonts: true` + DejaVu Sans (installed on Arch + Ubuntu).
-- Email attaches PNG via `cid:woco-card-N` and links the HTML page.
-  Stripe webhook passes `session.customer_details?.name` as `buyerName`.
-- `PUBLIC_API_BASE` env required for absolute email URLs.
-
-STRIPE UX — PHASE 3 HARDENING (2026-04-28, reservation hardening + earlier trigger):
-- Per-browser dedup: `X-Client-Key` header (UUID from localStorage); on every
-  /reserve, the store atomically releases this browser's other active holds on
-  the same series before allocating. Closes the stale-hold window after tab
-  close / sessionStorage loss. Header CORS-allowed in `apps/server/src/index.ts`.
-- Per-IP cap: `RESERVATION_MAX_SEATS_PER_IP=30` across all series; route-level
-  rate limit 30/min/IP. Bounds floods that clientKey rotation could otherwise
-  bypass.
-- Late-consume in webhook: `consumeReservation()` runs AFTER all per-batch
-  claims commit, not at webhook entry. Reason: claiming N tickets is sequential
-  through the per-series mutex, each claim is a slow Swarm write; consuming
-  up front would drop heldFor() to 0 mid-batch and let concurrent buyers
-  reserve the same physical slots. Hold persists for the full webhook duration.
-- Partial refund: if some tickets in a batch claimed but the rest hit an
-  unrecoverable error, refund only the unfilled portion pro-rata against
-  `amount_total`. Zero-claimed batches still refund the full intent. Prevents
-  clawing back tickets the buyer already received.
-- Earlier trigger for email-only events: `claimMode === "email"` (site-builder /
-  standalone-ENS path) fires the reservation on ClaimButton mount — i.e. when
-  the buyer clicks "Get tickets" and the fees box renders, before the order
-  form opens. `claimMode === "both"` keeps the deferred trigger (form-open
-  with `stripeAfterForm=true`) so wallet-path buyers don't hold a Stripe seat.
-  Pill + error banner moved above the if/else cascade in ClaimButton so the
-  hold is visible in both pre-form fees view and the open form.
-- Same-clientKey return-existing: re-issuing /reserve from the same browser
-  with the same quantity (no `replaceReservationId`) returns the EXISTING hold
-  unchanged — TTL preserved. Closing + reopening the tab no longer restarts
-  the 10-min countdown, so a buyer can't extend a lock indefinitely.
-- Sold-out vs held-by-other UX: server returns both `available` (effective,
-  may be 0 when others hold all remaining) AND `physicalAvailable` (totalSupply
-  - claimed). Frontend distinguishes "Sold out" from "All remaining held by
-  other buyers — try again in a few minutes" from "Only N available".
-- No release on tab close / unmount: pagehide listener and onDestroy release
-  removed from ClaimButton. Reservation TTL is the buyer's window; closing
-  and reopening should resume the same hold (clientKey lookup), not restart
-  it. Releases still fire on qty→0 and form-close in claimMode==="both".
-- EventPage qty dropdown shows `max(0, available - held)` so other buyers
-  see the hold reflected immediately. Note: subtracts buyer's own held qty
-  too — minor cap on the same buyer increasing their own qty without refresh,
-  acceptable trade-off for clearer cross-buyer UX.
+STRIPE UX — latency + reservations + composite card (Phases 2-3; rationale in
+git history + `project_stripe_ux` memory). Load-bearing facts only:
+- Order pre-upload: SealedBox pushed to `/prepare-order` on idle (Pay passes
+  `pendingOrderRef` → near-instant redirect); `/create-checkout` falls back to
+  inline upload (parallel with getEvent/getClaimStatus). Orphan refs harmless.
+- Optimistic success card on Stripe return (email-only events): "ticket on its
+  way to X" immediately, no polling/QR/MyTickets; persisted to sessionStorage.
+- Slot reservations: `/api/reservations/reserve` (~10min TTL, `.data/reservations.json`,
+  per-series mutex, no Swarm writes). `X-Client-Key` header (CORS-allowed) dedups
+  a browser's holds; `RESERVATION_MAX_SEATS_PER_IP=30` + 30/min/IP rate limit.
+  Webhook late-consumes AFTER all batch claims commit (else heldFor→0 mid-batch
+  lets others grab the slots). Partial refund = unfilled portion pro-rata.
+  Same-clientKey re-reserve returns existing hold (TTL preserved — can't extend
+  a lock by reopening). Server returns `available` (effective) + `physicalAvailable`
+  so UI splits "sold out" vs "held by others". No release on tab close (TTL is the window).
+- Composite ticket card: user-facing `GET /t/{eventId}/{seriesId}/{edition}/{sig}[.png]`
+  (no /api prefix). PNG regex route `:sig{.+\\.png}` MUST precede the HTML catch-all;
+  `?n=`/`?e=` display-only, path sig is the crypto guarantee. Renderer
+  `lib/ticket/render-card.ts` = SVG→800×1100 PNG via `@resvg/resvg-js` (QR as
+  `<rect>` matrix). Email attaches PNG `cid:woco-card-N`. `PUBLIC_API_BASE` env required.
 
 ============================================================================
 EAS LIKES / SOCIAL GRAPH (#4, Arbitrum buildathon)
