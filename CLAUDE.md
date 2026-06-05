@@ -332,6 +332,31 @@ STRIPE UX — PHASE 3 HARDENING (2026-04-28, reservation hardening + earlier tri
   acceptable trade-off for clearer cross-buyer UX.
 
 ============================================================================
+EAS LIKES / SOCIAL GRAPH (#4, Arbitrum buildathon)
+============================================================================
+
+A "like" is an EAS attestation on Arb Sepolia (NOT an NFT, NOT a POD — three
+tools/jobs: NFT=identity/name, EAS=likes/follows/attendance, POD=tickets/gates).
+Full design + abuse model: `docs/EAS_LIKES_HANDOVER.md`.
+
+- Subject (`bytes32`): profile = sub-ENS namehash (`computeLabelNode`), event =
+  `onChainEventId`. `subjectType` 0=profile/1=event. Per-entity, independently
+  rankable; owner resolved LIVE from chain, never aggregated at parent.
+- Attester = user's own account (Option 1, user-attested). like=`attest`,
+  unlike=`revoke(uid)`. Schema `bytes32 subject,uint8 subjectType` (revocable),
+  UID `0x62c5b546…dda64` (registered+verified Arb Sepolia, also `EAS_SCHEMA_UID` env).
+- Parent IS the attester here (unlike feeds): web3 = parent EOA signs own-gas;
+  passkey = Kernel attests gasless via scoped session key (call policy widened
+  for EAS attest+revoke — existing keys must be re-minted). Both: attester==parent.
+- Server is a CACHE not truth: `/api/likes/record` verifies on-chain
+  (`getVerifiedLike` — attester==authed parent is the linchpin) then writes
+  `.data/likes-index.json`. Projection is rebuildable from logs
+  (`reconcileFromChain`) — the seam for dropping the server later. Reads:
+  GET `/api/likes/:subjectType/:id`, `/following/:address`, `/trending`.
+- TODO (not built): gate gasless SPONSORSHIP on paid-ticket/host history;
+  LikeButton + Following/trending UI (Sonnet); Stylus trending aggregator (#5).
+
+============================================================================
 MULTI-PAGE SITE BUILDER
 ============================================================================
 
@@ -442,6 +467,14 @@ CLAIMS / EVENTS / PAYMENTS:
   apps/server/src/lib/event/service.ts                # event creation
   apps/server/src/lib/event/reservation-store.ts      # file-backed slot reservation (.data/reservations.json)
   apps/server/src/lib/ticket/render-card.ts           # SVG → 800×1100 composite PNG via resvg-js
+
+EAS LIKES (#4):
+  apps/web/src/lib/eas/{eas-abi,attest}.ts            # attestLike/revokeLike (passkey gasless + web3 own-gas)
+  apps/web/src/lib/auth/ensure-action.ts              # requireAccountForAction() sign-in-to-act gate
+  apps/server/src/routes/likes.ts                     # /api/likes/* — verify-on-chain record + reads
+  apps/server/src/lib/likes/eas-onchain.ts            # getVerifiedLike (linchpin) + reconcileFromChain backstop
+  apps/server/src/lib/likes/index-store.ts            # .data/likes-index.json projection (cache, not truth)
+  packages/shared/src/likes/types.ts                  # schema, SubjectType, EAS addresses + EAS_SCHEMA_UID
   apps/server/src/lib/swarm/topics.ts                 # feed topic derivation
   apps/server/src/lib/payment/verify.ts               # on-chain ETH + USDC verification (waitForTransaction)
   apps/server/src/lib/payment/eth-price.ts            # fiat→USD→ETH conversion (forex + CoinGecko)

@@ -27,6 +27,7 @@ import { reservations } from "./routes/reservations.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
+import { likesRoutes } from "./routes/likes.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
@@ -393,6 +394,9 @@ app.route("/api/etherna", ethernaRoutes);
 
 // Sub-ENS on Arbitrum — check/claim/update label.woco.eth names
 app.route("/api/sub-ens", subEnsRoutes);
+
+// EAS likes (#4) — verify-on-chain record + projection reads
+app.route("/api/likes", likesRoutes);
 
 // Profile routes
 app.route("/api/profile", profiles);
