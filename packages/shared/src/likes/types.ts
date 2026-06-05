@@ -62,6 +62,9 @@ export interface LikeCount {
   subjectType: SubjectType;
   count: number; // non-revoked attestations, deduped by attester
   likedByViewer: boolean;
+  /** The viewer's own attestation UID when likedByViewer — needed to revoke
+   *  (unlike) without client-side bookkeeping. Absent when not liked. */
+  viewerUid?: Hex0x;
 }
 
 /** A trending entry — top subjects by like count (server projection; Stylus #5 later). */

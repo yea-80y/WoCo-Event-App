@@ -152,11 +152,13 @@ export function getLikeCount(subject: string, viewer?: string): LikeCount {
       subjectType = l.subjectType;
     }
   }
+  const viewerUid = viewer ? getLikeUid(subject, viewer) : null;
   return {
     subject: lower(subject),
     subjectType,
     count,
-    likedByViewer: viewer ? hasActiveLike(subject, viewer) : false,
+    likedByViewer: !!viewerUid,
+    ...(viewerUid ? { viewerUid } : {}),
   };
 }
 
