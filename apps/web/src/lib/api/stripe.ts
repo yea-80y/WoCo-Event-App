@@ -136,8 +136,8 @@ export async function createCheckoutSession(params: {
 
   if (auth.isConnected) {
     const resp = await authPost<{ url: string }>("/api/stripe/create-checkout", body);
-    const data = resp as { ok: boolean; url?: string; error?: string };
-    if (!data.ok || !data.url) throw new Error(data.error || "Failed to create checkout session");
+    const data = resp as { ok: boolean; url?: string; error?: string; gated?: boolean };
+    if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
     return { url: data.url };
   }
 
@@ -146,9 +146,24 @@ export async function createCheckoutSession(params: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await resp.json() as { ok: boolean; url?: string; error?: string };
-  if (!data.ok || !data.url) throw new Error(data.error || "Failed to create checkout session");
+  const data = await resp.json() as { ok: boolean; url?: string; error?: string; gated?: boolean };
+  if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
   return { url: data.url };
+}
+
+/**
+ * Checkout failure that preserves the server's `gated` flag (POD-holdings gate).
+ * Lets the caller distinguish "must sign in / hold a POD" from a generic error so
+ * the shared sign-in-to-act prompt (built with the like button) can hook it —
+ * the gate binds to the ACCOUNT, the payment rail is independent.
+ */
+export class CheckoutError extends Error {
+  gated: boolean;
+  constructor(message: string, gated: boolean) {
+    super(message);
+    this.name = "CheckoutError";
+    this.gated = gated;
+  }
 }
 
 /** Stripe card checkout for a shop order. The order must already exist (pending). */
