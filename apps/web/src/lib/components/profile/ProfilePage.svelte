@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { UserProfile, EventDirectoryEntry, LikeSubject } from "@woco/shared";
-  import { SubjectType } from "@woco/shared";
+  import { SubjectType, profileLikeSubject } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, invalidateProfileCache } from "../../api/profiles.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -11,6 +11,8 @@
   import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
   import WalletTab from "./WalletTab.svelte";
+  import SubENSPicker from "../../creator/builder/SubENSPicker.svelte";
+  import LikeButton from "../likes/LikeButton.svelte";
   import SpendingWallet from "../../attendee/shop/SpendingWallet.svelte";
   import EventCard from "../../attendee/events/EventCard.svelte";
 
@@ -119,6 +121,21 @@
       console.error("Failed to save profile:", err);
     } finally {
       saving = false;
+    }
+  }
+
+  // The picker mints `{label}.woco.eth` on-chain before firing this, so the
+  // server's ownership check passes. Binding it to the profile makes the
+  // profile a followable like-subject (its namehash — see profileLikeSubject).
+  async function handleSubEnsClaim(label: string) {
+    try {
+      const updated = await updateProfile({ subEnsLabel: label });
+      if (updated) {
+        profile = updated;
+        invalidateProfileCache(viewAddress);
+      }
+    } catch (err) {
+      console.error("Failed to bind sub-ENS to profile:", err);
     }
   }
 
@@ -329,7 +346,20 @@
               style="--dot:{authKindColor[auth.kind] ?? 'var(--text-muted)'}"
             >{authKindLabel[auth.kind] ?? auth.kind}</span>
           {/if}
+          {#if !isOwner && profile?.subEnsLabel}
+            <LikeButton subject={profileLikeSubject(profile.subEnsLabel)} />
+          {/if}
         </div>
+
+        {#if profile?.subEnsLabel}
+          <span class="ens-chip" title="{profile.subEnsLabel}.woco.eth — on-chain identity">
+            <svg width="11" height="11" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+              <path d="M7.5 1L9.5 5.5H14.5L10.5 8.5L12 13.5L7.5 10.5L3 13.5L4.5 8.5L0.5 5.5H5.5L7.5 1Z"
+                    fill="var(--accent)" opacity="0.14" stroke="var(--accent)" stroke-width="1.1" stroke-linejoin="round"/>
+            </svg>
+            {profile.subEnsLabel}.woco.eth
+          </span>
+        {/if}
 
         <button class="addr-btn" onclick={copyAddress} title={viewAddress}>
           <span class="addr-text">{shortAddr}</span>
@@ -489,6 +519,17 @@
               Save changes
             {/if}
           </button>
+        </section>
+
+        <!-- Web3 identity (sub-ENS) — claiming a name makes this profile a
+             followable on-chain subject. -->
+        <section class="settings-card">
+          <h2 class="card-title">Web3 identity</h2>
+          <p class="card-hint">
+            Claim a permanent <code>.woco.eth</code> name for your profile. People
+            can follow it on-chain, and it doubles as your payment address.
+          </p>
+          <SubENSPicker claimedLabel={profile?.subEnsLabel} onclaim={handleSubEnsClaim} />
         </section>
 
         <!-- Account info -->
@@ -872,6 +913,23 @@
     border-radius: 50%;
     background: var(--dot);
     flex-shrink: 0;
+  }
+
+  .ens-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    width: fit-content;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    border-radius: 100px;
+    padding: 0.1875rem 0.5625rem 0.1875rem 0.4375rem;
+    margin-bottom: 0.5rem;
+    white-space: nowrap;
   }
 
   .addr-btn {

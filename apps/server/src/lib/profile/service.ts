@@ -68,6 +68,8 @@ export async function updateProfile(
     website: updates.website ?? existing?.website,
     twitterHandle: updates.twitterHandle ?? existing?.twitterHandle,
     farcasterHandle: updates.farcasterHandle ?? existing?.farcasterHandle,
+    // Carry forward so a later display-name edit doesn't wipe the bound name.
+    subEnsLabel: updates.subEnsLabel ?? existing?.subEnsLabel,
     updatedAt: new Date().toISOString(),
   };
 

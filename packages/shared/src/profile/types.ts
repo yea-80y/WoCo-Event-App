@@ -10,6 +10,10 @@ export interface UserProfile {
   twitterHandle?: string;
   farcasterHandle?: string;
   avatarRef?: string;
+  /** Claimed sub-ENS label (e.g. "punkpub" for punkpub.woco.eth). Makes the
+   *  profile a likeable/followable subject — its namehash is the like subject
+   *  (see `profileSubject`). Written client-side after a successful claim. */
+  subEnsLabel?: string;
   updatedAt: string;
 }
 
@@ -20,6 +24,9 @@ export interface UpdateProfileRequest {
   website?: string;
   twitterHandle?: string;
   farcasterHandle?: string;
+  /** Sub-ENS label to bind to this profile. The server verifies the caller
+   *  owns `{label}.woco.eth` on-chain before persisting (see profiles route). */
+  subEnsLabel?: string;
 }
 
 /** Request body for POST /api/profile/avatar */

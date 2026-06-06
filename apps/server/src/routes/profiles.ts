@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getProfile, updateProfile, uploadAvatar } from "../lib/profile/service.js";
+import { getLabelOwner } from "../lib/chain/sub-ens-contract.js";
+import type { UpdateProfileRequest } from "@woco/shared";
 
 export const profiles = new Hono<AppEnv>();
 
@@ -29,7 +31,7 @@ profiles.post("/", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
   const body = c.get("body") as Record<string, unknown>;
 
-  const updates = {
+  const updates: UpdateProfileRequest = {
     displayName: body.displayName as string | undefined,
     bio: body.bio as string | undefined,
     website: body.website as string | undefined,
@@ -43,6 +45,27 @@ profiles.post("/", requireAuth, async (c) => {
   }
   if (updates.bio && updates.bio.length > 280) {
     return c.json({ ok: false, error: "Bio too long (max 280)" }, 400);
+  }
+
+  // Binding a sub-ENS name to the profile makes it a like-subject (its namehash).
+  // Only persist a label the caller actually owns on-chain — a profile must not
+  // advertise a name it doesn't control. (The likes themselves stay safe either
+  // way: the subject is the namehash and the owner is resolved live from chain.)
+  if (body.subEnsLabel !== undefined && body.subEnsLabel !== null) {
+    const label = String(body.subEnsLabel).toLowerCase().trim();
+    if (label) {
+      let owner: string | null;
+      try {
+        owner = await getLabelOwner(label);
+      } catch (err) {
+        console.error("[api] profile subEnsLabel ownership check failed:", err);
+        return c.json({ ok: false, error: "Could not verify name ownership — try again" }, 502);
+      }
+      if (owner !== parentAddress.toLowerCase()) {
+        return c.json({ ok: false, error: "You do not own that name" }, 403);
+      }
+      updates.subEnsLabel = label;
+    }
   }
 
   try {
