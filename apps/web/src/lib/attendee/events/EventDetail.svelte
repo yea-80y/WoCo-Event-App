@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { EventFeed, Hex0x } from "@woco/shared";
-  import { SubjectType } from "@woco/shared";
+  import { SubjectType, profileLikeSubject } from "@woco/shared";
+  import { rememberLabel } from "../../likes/label-cache.js";
   import { getEvent } from "../../api/events.js";
   import ClaimButton from "./ClaimButton.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -88,7 +89,10 @@
           console.log(`[EventDetail] series "${s.name}" payment:`, s.payment ?? "FREE");
         }
         // Fetch creator profile
-        getProfile(fresh.creatorAddress).then((p) => { creatorProfile = p; });
+        getProfile(fresh.creatorAddress).then((p) => {
+          creatorProfile = p;
+          rememberLabel(p?.subEnsLabel); // so Following/Trending can show the name
+        });
       })
       .catch((e) => {
         if (_cached === null) {
@@ -159,9 +163,17 @@
           {creatorProfile?.displayName || `${event.creatorAddress.slice(0, 6)}...${event.creatorAddress.slice(-4)}`}
         </span>
       </div>
+      <!-- Follow the organiser by NAME (sub-ENS namehash) — only when they've
+           claimed one (a name is what a follow attaches to). Not your own. -->
+      {#if creatorProfile?.subEnsLabel && auth.parent?.toLowerCase() !== event.creatorAddress.toLowerCase()}
+        <div class="creator-follow">
+          <LikeButton subject={profileLikeSubject(creatorProfile.subEnsLabel)} variant="follow" />
+        </div>
+      {/if}
     </div>
 
     {#if eventSubject}
+      <!-- Like the HAPPENING (on-chain event id) — distinct from following the name. -->
       <div class="social-actions">
         <LikeButton subject={eventSubject} />
       </div>
@@ -384,6 +396,11 @@
 
   .creator-section:hover .creator-name {
     color: var(--accent-text);
+  }
+
+  .creator-follow {
+    margin-left: auto;
+    flex-shrink: 0;
   }
 
   .social-actions {

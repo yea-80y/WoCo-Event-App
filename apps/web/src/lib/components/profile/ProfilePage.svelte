@@ -8,6 +8,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
   import { getFollowing, getTrending } from "../../api/likes.js";
+  import { rememberLabel, nameForSubject } from "../../likes/label-cache.js";
   import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
   import WalletTab from "./WalletTab.svelte";
@@ -213,7 +214,7 @@
 
   async function loadProfile() {
     if (!viewAddress) { loading = false; return; }
-    try { profile = await getProfile(viewAddress); }
+    try { profile = await getProfile(viewAddress); rememberLabel(profile?.subEnsLabel); }
     catch { /* no profile yet */ }
     finally { loading = false; }
   }
@@ -347,7 +348,7 @@
             >{authKindLabel[auth.kind] ?? auth.kind}</span>
           {/if}
           {#if !isOwner && profile?.subEnsLabel}
-            <LikeButton subject={profileLikeSubject(profile.subEnsLabel)} />
+            <LikeButton subject={profileLikeSubject(profile.subEnsLabel)} variant="follow" />
           {/if}
         </div>
 
@@ -707,9 +708,14 @@
                 </h3>
                 <div class="follow-list">
                   {#each followedProfiles as s}
+                    {@const name = nameForSubject(s.id)}
                     <div class="follow-item">
                       <span class="follow-type-dot pr-dot"></span>
-                      <span class="follow-id" title={s.id}>{s.id.slice(0, 10)}…{s.id.slice(-8)}</span>
+                      {#if name}
+                        <span class="follow-name" title={s.id}>{name}</span>
+                      {:else}
+                        <span class="follow-id" title={s.id}>{s.id.slice(0, 10)}…{s.id.slice(-8)}</span>
+                      {/if}
                     </div>
                   {/each}
                 </div>
@@ -728,11 +734,16 @@
               </h3>
               <div class="trending-list">
                 {#each trending as t, i}
+                  {@const tName = t.subjectType === SubjectType.Profile ? nameForSubject(t.subject) : null}
                   <div class="trending-row">
                     <span class="trending-rank">#{i + 1}</span>
                     <span class="trending-type-dot" class:ev-dot={t.subjectType === SubjectType.Event} class:pr-dot={t.subjectType === SubjectType.Profile}></span>
                     <span class="trending-label">{t.subjectType === SubjectType.Event ? "Event" : "Profile"}</span>
-                    <span class="trending-id" title={t.subject}>{t.subject.slice(0, 8)}…{t.subject.slice(-6)}</span>
+                    {#if tName}
+                      <span class="trending-name" title={t.subject}>{tName}</span>
+                    {:else}
+                      <span class="trending-id" title={t.subject}>{t.subject.slice(0, 8)}…{t.subject.slice(-6)}</span>
+                    {/if}
                     <span class="trending-count">
                       <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
                         <path d="M12 21L3.5 12.5C1.5 10.5 1.5 7.2 3.5 5.2C5.5 3.2 8.8 3.2 10.8 5.2L12 6.4L13.2 5.2C15.2 3.2 18.5 3.2 20.5 5.2C22.5 7.2 22.5 10.5 20.5 12.5L12 21Z"/>
@@ -1420,6 +1431,25 @@
   }
 
   a.follow-id:hover { color: var(--accent); }
+
+  .follow-name {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .trending-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .trending-section { margin-top: 0.5rem; }
 
