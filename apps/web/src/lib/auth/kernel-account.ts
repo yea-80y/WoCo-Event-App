@@ -26,8 +26,7 @@ import type { Address, Hex } from "viem";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
-import { StorageKeys, EAS_ADDRESS } from "@woco/shared";
-import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
+import { StorageKeys } from "@woco/shared";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -415,21 +414,12 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
           abi: REGISTRAR_PERMIT_ABI,
           functionName: "registerWithPermit",
         },
-        // EAS likes (#4): the passkey Kernel attests/revokes gaslessly. Scoped
-        // to the EAS contract + these two selectors only (no ETH value) — same
-        // tight call-policy posture as registerWithPermit. NOTE: existing
-        // session keys predate this and must be re-minted to gain the EAS
-        // grant (OK in dev — clearWocoSessionKey + ensureWocoSessionKey).
-        {
-          target: EAS_ADDRESS as Address,
-          abi: EAS_SESSION_ABI,
-          functionName: "attest",
-        },
-        {
-          target: EAS_ADDRESS as Address,
-          abi: EAS_SESSION_ABI,
-          functionName: "revoke",
-        },
+        // NOTE: EAS attest/revoke permissions were briefly added here (#4 likes)
+        // but their deeply-nested-tuple ABI, baked into this key's enable-data,
+        // made ZeroDev's paymaster fail to estimate the account (verificationGas
+        // = 0 → AA34 / bundler reject), breaking sub-ENS claim too. EAS likes
+        // need a separate session key (or selector-only pinning) — tracked
+        // separately. Keep this key minimal: registerWithPermit only.
       ],
     }),
     // `allowed` is the TOTAL gas budget (wei) this session key may consume —
@@ -525,6 +515,24 @@ export async function getWocoSessionClient(
   });
 }
 
+/**
+ * Send a gasless userOp through a WoCo session-key Kernel client — the single
+ * choke point every session-key action shares (sub-ENS claim, EAS like/follow),
+ * so send + receipt handling lives in one place. Returns the userOp hash + full
+ * receipt (callers read txHash; EAS reads logs for the attestation UID).
+ */
+export async function sendSessionUserOp(
+  client: KernelAccountClient,
+  calls: { to: Address; data: Hex; value?: bigint }[],
+): Promise<{
+  userOpHash: Hex;
+  receipt: Awaited<ReturnType<KernelAccountClient["waitForUserOperationReceipt"]>>;
+}> {
+  const userOpHash = await client.sendUserOperation({ calls });
+  const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
+  return { userOpHash, receipt };
+}
+
 export interface SubEnsPermitArgs {
   /** Kernel address that owns the session key AND is the permit's `owner`. */
   kernelAddress: string;
@@ -584,10 +592,8 @@ export async function registerSubEnsViaPermit(
     ],
   });
 
-  const userOpHash = await client.sendUserOperation({
-    calls: [{ to: WOCO_REGISTRAR_ADDRESS as Address, data }],
-  });
-  const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
-
+  const { userOpHash, receipt } = await sendSessionUserOp(client, [
+    { to: WOCO_REGISTRAR_ADDRESS as Address, data },
+  ]);
   return { userOpHash, txHash: receipt.receipt.transactionHash };
 }
