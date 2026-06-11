@@ -26,7 +26,8 @@ import type { Address, Hex } from "viem";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
-import { StorageKeys } from "@woco/shared";
+import { StorageKeys, EAS_ADDRESS } from "@woco/shared";
+import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -414,12 +415,12 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
           abi: REGISTRAR_PERMIT_ABI,
           functionName: "registerWithPermit",
         },
-        // NOTE: EAS attest/revoke permissions were briefly added here (#4 likes)
-        // but their deeply-nested-tuple ABI, baked into this key's enable-data,
-        // made ZeroDev's paymaster fail to estimate the account (verificationGas
-        // = 0 → AA34 / bundler reject), breaking sub-ENS claim too. EAS likes
-        // need a separate session key (or selector-only pinning) — tracked
-        // separately. Keep this key minimal: registerWithPermit only.
+        // INVARIANT: this key is registerWithPermit-ONLY. EAS attest/revoke
+        // were briefly added here (#4 likes); their deeply-nested-tuple ABI,
+        // baked into this key's enable-data, made the paymaster fail to estimate
+        // the account (verificationGas=0 → AA34 / bundler reject) and poisoned
+        // sub-ENS claims too. EAS likes now have their OWN key with selector-only
+        // pinning — see createEasSessionKey below. Never re-add EAS perms here.
       ],
     }),
     // `allowed` is the TOTAL gas budget (wei) this session key may consume —
@@ -489,6 +490,129 @@ export async function getWocoSessionClient(
   const serialized = await decrypt<string>(
     deviceKey,
     AAD.WOCO_AA_SESSION(kernelAddress),
+    blob,
+  );
+
+  const sessionAccount = await d.deserializePermissionAccount(
+    d.publicClient,
+    d.entryPoint,
+    d.kernelVersion,
+    serialized,
+  );
+
+  const paymaster = d.createZeroDevPaymasterClient({
+    chain: d.arbitrumSepolia,
+    transport: d.http(d.rpcUrl),
+  });
+
+  return d.createKernelAccountClient({
+    account: sessionAccount,
+    chain: d.arbitrumSepolia,
+    bundlerTransport: d.http(d.rpcUrl),
+    client: d.publicClient,
+    paymaster: {
+      getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// EAS likes/following session key (#4) — a SECOND scoped session key, fully
+// independent of the sub-ENS key above. Pinned to EAS attest + revoke by
+// 4-byte SELECTOR (not the deeply-nested AttestationRequest ABI) — the nested
+// tuple in enable-data is exactly what broke paymaster gas estimation and
+// poisoned the shared key. Selector-only keeps the enable-data flat. Stored in
+// its own slot (WOCO_AA_EAS_SESSION) with its own AAD so the two keys can never
+// interfere with each other's estimation again.
+// ---------------------------------------------------------------------------
+
+/** 4-byte selectors for EAS attest/revoke, derived from the canonical ABI. */
+async function easSelectors(): Promise<{ attest: Hex; revoke: Hex }> {
+  const { toFunctionSelector } = await import("viem");
+  const attest = EAS_SESSION_ABI.find((i) => i.type === "function" && i.name === "attest");
+  const revoke = EAS_SESSION_ABI.find((i) => i.type === "function" && i.name === "revoke");
+  if (!attest || !revoke) throw new Error("EAS_SESSION_ABI missing attest/revoke");
+  return {
+    attest: toFunctionSelector(attest),
+    revoke: toFunctionSelector(revoke),
+  };
+}
+
+/**
+ * Mint a fresh EAS session key for the Kernel — selector-scoped to EAS
+ * attest+revoke only — serialize, encrypt (AAD-bound to the Kernel), and persist
+ * to its own IndexedDB slot. Same single-passkey-ceremony model as
+ * createWocoSessionKey (the in-memory PRF sudo signs the enable data).
+ */
+export async function createEasSessionKey(builtKernel: BuiltKernel): Promise<string> {
+  const d = await loadSessionDeps();
+  const sel = await easSelectors();
+
+  const sessionPk = d.generatePrivateKey();
+  const sessionSigner = await d.toECDSASigner({ signer: d.privateKeyToAccount(sessionPk) });
+  const validUntil = Math.floor(Date.now() / 1000) + SESSION_KEY_TTL_SECONDS;
+
+  const policies = [
+    d.toCallPolicy({
+      policyVersion: d.CallPolicyVersion.V0_0_5,
+      // Selector-only (PermissionManual): target + 4-byte selector, NO abi —
+      // keeps the nested AttestationRequest tuple out of enable-data.
+      permissions: [
+        { target: EAS_ADDRESS as Address, selector: sel.attest },
+        { target: EAS_ADDRESS as Address, selector: sel.revoke },
+      ],
+    }),
+    d.toGasPolicy({ allowed: SESSION_GAS_ALLOWANCE_WEI }),
+    d.toTimestampPolicy({ validUntil }),
+  ];
+
+  const permissionPlugin = await d.toPermissionValidator(d.publicClient, {
+    signer: sessionSigner,
+    policies,
+    entryPoint: d.entryPoint,
+    kernelVersion: d.kernelVersion,
+  });
+
+  const sessionAccount = await d.createKernelAccount(d.publicClient, {
+    plugins: { sudo: builtKernel.sudo.validator, regular: permissionPlugin },
+    entryPoint: d.entryPoint,
+    kernelVersion: d.kernelVersion,
+  });
+
+  const serialized = await d.serializePermissionAccount(sessionAccount, sessionPk);
+  const deviceKey = await ensureDeviceKey();
+  const blob = await encrypt(deviceKey, AAD.WOCO_AA_EAS_SESSION(builtKernel.address), serialized);
+  await putKV(StorageKeys.WOCO_AA_EAS_SESSION, blob);
+
+  return sessionAccount.address.toLowerCase();
+}
+
+/** True if an EAS session key is persisted for this device. */
+export async function hasEasSessionKey(): Promise<boolean> {
+  return (await getKV(StorageKeys.WOCO_AA_EAS_SESSION)) != null;
+}
+
+/** Drop the persisted EAS session key (logout / identity switch). */
+export async function clearEasSessionKey(): Promise<void> {
+  await delKV(StorageKeys.WOCO_AA_EAS_SESSION);
+}
+
+/**
+ * Rebuild a gasless Kernel client backed by the stored EAS session key — no
+ * passkey prompt. Returns null when none is stored. Decryption is AAD-bound to
+ * `kernelAddress` (same guard as getWocoSessionClient).
+ */
+export async function getEasSessionClient(
+  kernelAddress: string,
+): Promise<KernelAccountClient | null> {
+  const blob = await getKV<import("@woco/shared").EncryptedBlob>(StorageKeys.WOCO_AA_EAS_SESSION);
+  if (!blob) return null;
+
+  const d = await loadSessionDeps();
+  const deviceKey = await ensureDeviceKey();
+  const serialized = await decrypt<string>(
+    deviceKey,
+    AAD.WOCO_AA_EAS_SESSION(kernelAddress),
     blob,
   );
 

@@ -135,7 +135,8 @@
       const updated = await updateProfile({ subEnsLabel: label });
       if (updated) {
         profile = updated;
-        invalidateProfileCache(viewAddress);
+        // updateProfile already wrote the fresh profile to cache — don't
+        // invalidate here or the next Swarm read races against feed propagation.
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to save name to profile';

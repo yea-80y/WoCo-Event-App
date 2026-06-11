@@ -218,6 +218,10 @@ export interface WriteFeedPageOptions {
    *  and writes directly at index 0 — saves the lookup-then-404 round-trip
    *  on every fresh-feed write (event creation, new editions pages). */
   fresh?: boolean;
+  /** When true (default), Bee queues the upload in the background and returns
+   *  immediately. Set to false for writes that must be readable on the next
+   *  request — e.g. profile updates where the client reads back straight away. */
+  deferred?: boolean;
 }
 
 export async function writeFeedPage(
@@ -263,7 +267,7 @@ async function doWriteFeedPage(
         // the network in the background. Without this, the upload blocks
         // until the chunk has been pushed to neighbourhood peers, which
         // turns every feed write into a wait for network sync.
-        deferred: true,
+        deferred: options.deferred ?? true,
       };
       if (nextIndex !== undefined) {
         uploadOpts.index = FeedIndex.fromBigInt(nextIndex);

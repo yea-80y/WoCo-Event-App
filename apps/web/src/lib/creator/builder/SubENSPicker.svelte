@@ -62,7 +62,7 @@
 
   // ── Input state ──────────────────────────────────────────────────────────────
   let rawInput  = $state(claimedLabel ?? '');
-  let checkPhase = $state<'idle' | 'checking' | 'ok' | 'taken' | 'invalid'>('idle');
+  let checkPhase = $state<'idle' | 'checking' | 'ok' | 'taken' | 'owned' | 'invalid'>('idle');
   let checkMsg  = $state('');
 
   // Profile fields shown once the label is confirmed available
@@ -106,6 +106,9 @@
       }
       if (res.data!.available) {
         checkPhase = 'ok';
+        checkMsg = '';
+      } else if (res.data!.owner && res.data!.owner === auth.parent?.toLowerCase()) {
+        checkPhase = 'owned';
         checkMsg = '';
       } else {
         checkPhase = 'taken';
@@ -159,6 +162,21 @@
       onclaim?.(res.data!.label);
     } catch {
       claimError = 'Network error — try again';
+    } finally {
+      claiming = false;
+    }
+  }
+
+  // Re-link: name already owned on-chain, just update the profile pointer
+  async function doRelink() {
+    if (claiming) return;
+    claiming = true;
+    claimError = '';
+    const label = rawInput.toLowerCase().trim();
+    try {
+      claimedLabel = label;
+      renaming = false;
+      onclaim?.(label);
     } finally {
       claiming = false;
     }
@@ -371,6 +389,13 @@
         </svg>
         Available — <code class="preview-code">{previewEns}</code>
       </p>
+    {:else if checkPhase === 'owned'}
+      <p class="avail-msg avail-msg--ok">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M2 6.2l2.8 2.8L10 4" stroke="#C7F23A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        You own this name — re-link it to your profile
+      </p>
     {:else if checkPhase === 'taken'}
       <p class="avail-msg avail-msg--bad">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -415,6 +440,17 @@
     <!-- Error -->
     {#if claimError}
       <p class="claim-error">{claimError}</p>
+    {/if}
+
+    <!-- Re-link button (owned name) -->
+    {#if checkPhase === 'owned'}
+      <button class="claim-btn" onclick={doRelink} disabled={claiming}>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M5 7h4M7 5v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        Use {previewLabel}.woco.eth
+      </button>
     {/if}
 
     <!-- Claim button -->

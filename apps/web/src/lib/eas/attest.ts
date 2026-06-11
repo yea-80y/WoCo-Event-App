@@ -22,7 +22,7 @@ import {
   EAS_ADDRESS, EAS_SCHEMA_UID, EAS_CHAIN_ID,
 } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
-import { getWocoSessionClient, sendSessionUserOp } from "../auth/kernel-account.js";
+import { getEasSessionClient, sendSessionUserOp } from "../auth/kernel-account.js";
 import { switchChain } from "../payment/chains.js";
 import { requireProvider } from "../wallet/provider.js";
 import { EAS_SESSION_ABI, EAS_EVENTS_ABI } from "./eas-abi.js";
@@ -100,9 +100,9 @@ async function uidFromLogs(
 // ---------------------------------------------------------------------------
 
 async function passkeySend(data: Hex0x): Promise<{ uid: Hex0x | null; txHash: string }> {
-  const kernelAddress = await auth.ensureWocoSessionKey(); // mints on first use
-  const client = await getWocoSessionClient(kernelAddress);
-  if (!client) throw new Error("No WoCo session key on this device for the Kernel.");
+  const kernelAddress = await auth.ensureEasSessionKey(); // mints the EAS-scoped key on first use
+  const client = await getEasSessionClient(kernelAddress);
+  if (!client) throw new Error("No EAS session key on this device for the Kernel.");
 
   const { receipt } = await sendSessionUserOp(client, [{ to: EAS_ADDRESS, data }]);
   const logs = (receipt.logs ?? []) as never;

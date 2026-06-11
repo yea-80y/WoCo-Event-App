@@ -8,6 +8,7 @@ const BASE =
 export interface SubEnsCheckResult {
   available: boolean;
   reason?: string;
+  owner?: string;
 }
 
 export interface SubEnsClaimResult {
@@ -37,6 +38,20 @@ interface SubEnsPermitResponse {
   expiry: number;
   chainId: number;
   registrarAddress: string;
+}
+
+function isAccountAbstractionFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return [
+    "AA",
+    "User Operation",
+    "UserOperation",
+    "verificationGasLimit",
+    "paymaster",
+    "bundler",
+    "sponsorUserOperation",
+    "signature error",
+  ].some((needle) => msg.toLowerCase().includes(needle.toLowerCase()));
 }
 
 /**
@@ -81,6 +96,19 @@ export async function claimSubEnsViaPermit(opts: {
     });
     return { ok: true, data: { label: permit.data.label, ensName: permit.data.ensName, txHash } };
   } catch (err) {
+    if (isAccountAbstractionFailure(err)) {
+      // Deliberate stopgap while the Kernel session-key paymaster rail is down:
+      // the server-sponsored path mints the SAME name to the SAME owner
+      // (parentAddress), so ownership is identical — only the gas payer/sender
+      // differs. Gasless stays the primary path and runs first; this only fires
+      // on a paymaster/AA failure. Remove once the paymaster is confirmed fixed.
+      console.warn("[sub-ens] gasless claim failed; falling back to server-sponsored claim:", err);
+      return claimSubEnsLabel({
+        label: opts.label,
+        description: opts.description,
+        avatar: opts.avatar,
+      });
+    }
     return { ok: false, error: err instanceof Error ? err.message : "on-chain registration failed" };
   }
 }

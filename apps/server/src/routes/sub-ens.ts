@@ -44,7 +44,10 @@ subEnsRoutes.get("/check/:label", async (c) => {
 
   try {
     const available = await isLabelAvailable(label);
-    return c.json({ ok: true, data: { available } });
+    if (available) return c.json({ ok: true, data: { available: true } });
+    // Return the owner so the client can detect "taken by me" and offer re-link.
+    const owner = await getLabelOwner(label);
+    return c.json({ ok: true, data: { available: false, owner: owner ?? undefined } });
   } catch (err) {
     console.error("[sub-ens] availability check failed:", err);
     return c.json({ ok: false, error: "availability check failed" }, 500);

@@ -73,8 +73,14 @@ export async function updateProfile(
     updatedAt: new Date().toISOString(),
   };
 
-  // Write to Swarm feed
-  await writeFeedPage(topicProfileData(addr), encodeJsonFeed(profile));
+  // Synchronous upload — profile reads happen immediately after writes
+  // (user navigates away and back), so deferred propagation causes stale reads.
+  await writeFeedPage(topicProfileData(addr), encodeJsonFeed(profile), { deferred: false });
+  console.log(`[profile] wrote feed for ${addr}, subEnsLabel=${profile.subEnsLabel ?? 'none'}`);
+
+  // Verify the write is immediately readable
+  const verify = await readFeedPage(topicProfileData(addr));
+  console.log(`[profile] read-back after write: ${verify ? `${verify.length} bytes` : 'NULL'}`);
 
   // Merge avatar ref from existing data (not stored in this feed)
   if (existing?.avatarRef) {

@@ -55,6 +55,10 @@ export const AAD = {
   // decrypted by a different Kernel on the same device.
   WOCO_AA_SESSION: (kernel: string) =>
     `woco/device/aa-session/v1:${kernel.toLowerCase()}`,
+  // EAS likes session key, bound to the same Kernel address. Separate AAD from
+  // WOCO_AA_SESSION so the two scoped keys are cryptographically distinct blobs.
+  WOCO_AA_EAS_SESSION: (kernel: string) =>
+    `woco/device/aa-eas-session/v1:${kernel.toLowerCase()}`,
 } as const;
 
 /** Any string is accepted at the encrypt/decrypt boundary; AAD constructors

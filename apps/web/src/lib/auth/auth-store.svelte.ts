@@ -643,6 +643,25 @@ async function ensureWocoSessionKey(): Promise<string> {
   return _kernel.address;
 }
 
+/**
+ * Ensure a scoped EAS session key exists for the passkey Kernel, minting one on
+ * first use. Independent of ensureWocoSessionKey: EAS likes get their OWN key
+ * (selector-scoped to attest/revoke) so they can never poison the sub-ENS key's
+ * gas estimation. Returns the Kernel address that owns the key. Passkey-only.
+ */
+async function ensureEasSessionKey(): Promise<string> {
+  if (_kind !== "passkey") {
+    throw new Error("ensureEasSessionKey: only available for passkey logins");
+  }
+  await _ensureKernel();
+  if (!_kernel) throw new Error("Kernel unavailable — cannot mint EAS session key");
+  const { hasEasSessionKey, createEasSessionKey } = await import("./kernel-account.js");
+  if (!(await hasEasSessionKey())) {
+    await createEasSessionKey(_kernel);
+  }
+  return _kernel.address;
+}
+
 // ---------------------------------------------------------------------------
 // Shop spend-permission grant (passkey/Kernel only)
 // ---------------------------------------------------------------------------
@@ -786,8 +805,9 @@ async function clearAllAuth(): Promise<void> {
   await delKV(StorageKeys.AUTH_KIND);
   await delKV(StorageKeys.PARENT_ADDRESS);
   await delKV(StorageKeys.POD_ADDRESS);
-  // Drop the scoped ZeroDev session key (Phase 3). Re-login mints a fresh one.
+  // Drop both scoped ZeroDev session keys (sub-ENS + EAS). Re-login mints fresh.
   await delKV(StorageKeys.WOCO_AA_SESSION);
+  await delKV(StorageKeys.WOCO_AA_EAS_SESSION);
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   cacheClearByPrefix(USER_SCOPED_PREFIXES);
   _kind = "none";
@@ -860,6 +880,7 @@ export const auth = {
   logout,
   ensurePodIdentity,
   ensureWocoSessionKey,
+  ensureEasSessionKey,
   grantSpendPermission,
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass

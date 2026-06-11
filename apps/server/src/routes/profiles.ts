@@ -30,6 +30,7 @@ profiles.get("/:address", async (c) => {
 profiles.post("/", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
   const body = c.get("body") as Record<string, unknown>;
+  console.log(`[api] POST /api/profile parent=${parentAddress} keys=${Object.keys(body).join(",")}`);
 
   const updates: UpdateProfileRequest = {
     displayName: body.displayName as string | undefined,
@@ -61,6 +62,7 @@ profiles.post("/", requireAuth, async (c) => {
         console.error("[api] profile subEnsLabel ownership check failed:", err);
         return c.json({ ok: false, error: "Could not verify name ownership — try again" }, 502);
       }
+      console.log(`[api] profile subEnsLabel check label=${label} owner=${owner} parent=${parentAddress.toLowerCase()} match=${owner === parentAddress.toLowerCase()}`);
       if (owner !== parentAddress.toLowerCase()) {
         return c.json({ ok: false, error: "You do not own that name" }, 403);
       }
