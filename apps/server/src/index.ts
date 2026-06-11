@@ -28,6 +28,8 @@ import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { likesRoutes } from "./routes/likes.js";
+import { agentRouter } from "./routes/agent.js";
+import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
@@ -397,6 +399,13 @@ app.route("/api/sub-ens", subEnsRoutes);
 
 // EAS likes (#4) — verify-on-chain record + projection reads
 app.route("/api/likes", likesRoutes);
+
+// Agent commerce surface (#Tier-2) — discover events + buy tickets from a bounded
+// non-custodial spend permission. Unauthenticated by design (on-chain draw is the
+// authorization). Discovery docs served at the well-known path + OpenAPI.
+app.route("/api/agent", agentRouter);
+app.get("/.well-known/agent.json", (c) => c.json(agentCard(agentBaseUrl())));
+app.get("/api/agent/openapi.json", (c) => c.json(agentOpenApi(agentBaseUrl())));
 
 // Profile routes
 app.route("/api/profile", profiles);

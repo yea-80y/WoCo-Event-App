@@ -7,17 +7,19 @@
     "dev": "node scripts/dev-with-tunnel.mjs",
     "dev:notunnel": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node --import tsx src/index.ts"
+    "start": "node --import tsx src/index.ts",
+    "agent:demo": "node --import tsx scripts/agent/demo.ts",
+    "agent:mcp": "node --import tsx scripts/agent/mcp.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^11.0.0",
     "@hono/node-server": "^1.14.0",
     "@resvg/resvg-js": "^2.6.2",
     "@woco/shared": "*",
-    "@zerodev/permissions": "^5.6.3",
-    "@zerodev/sdk": "^5.5.10",
     "@x402/core": "^2.7.0",
     "@x402/hono": "^2.7.0",
+    "@zerodev/permissions": "^5.6.3",
+    "@zerodev/sdk": "^5.5.10",
     "dotenv": "^17.3.1",
     "ethers": "^6.13.0",
     "hono": "^4.7.0",
@@ -27,6 +29,7 @@
     "viem": "^2.51.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^24.10.1",
     "@types/qrcode": "^1.5.5",
     "tsx": "^4.19.0",

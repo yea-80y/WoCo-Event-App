@@ -21,6 +21,7 @@ All chain work below: **Arbitrum Sepolia (421614)** unless stated.
 | 2026-06-05 | #4 EAS like schema registered + verified | UID `0x62c5b546e61c567163dcb1af412ddd3b6f3a75dbb0da944e89ca2fbeb01dda64` |
 | 2026-06-11 | #4 verified on-chain E2E (passkey gasless attest+revoke, attester = user Kernel) | attest `0x7ae3ee1c…` *(prefix)*, revoke `0xbfd9a5ca…` *(prefix)* |
 | 2026-06-11 | #5 Stylus LikeAggregator deployed + activated + E2E + prod-wired | `0x7dbf8d3a58bebb642fa1a478bbffba4675f1ba20` |
+| 2026-06-12 | Tier-2 agent commerce surface built (server green; demo + MCP ready) | `docs/AGENT_COMMERCE_SURFACE.md` |
 
 ## #1 / #1b — On-chain ticketing + passkey smart wallet
 - WoCoEventV2: USDC escrow, per-event supply, sponsor-gated `claimFor`/`batchClaimFor`
@@ -69,6 +70,36 @@ All chain work below: **Arbitrum Sepolia (421614)** unless stated.
   fallback only). ABI + address in `packages/shared` → clients can read via any public
   RPC (server phase-out by design). Full record: `docs/STYLUS_AGGREGATOR_HANDOVER.md`.
 
+## #1c — Coinbase Smart Wallet (CSW) login + multi-chain signature verify
+- CSW is a supported **user login** (smart-account identity on Base), alongside the ZeroDev
+  Kernel passkey wallet. Client: `apps/web/src/lib/auth/coinbase-account.ts`,
+  `auth/signers/coinbase-signer.ts`, `components/auth/CoinbaseLogin.svelte`.
+- CSW signs the `AuthorizeSession` EIP-712 as an ERC-1271 / ERC-6492 signature; the server
+  verifies it via viem's universal validator. Two CSW-specific invariants we hit + fixed:
+  - **CSW signs on Base regardless of `appChainIds`** — server `SMART_WALLET_VERIFY_CHAIN` is
+    pinned to base/base-sepolia, not whatever the app lists.
+  - **Connect + sign must be two separate user gestures** (CSW SDK v4 rejects in-flight popup
+    listeners → 4001 race); the UI is a two-step Connect → Authorize.
+- **Signature verification is multi-chain by design** (`apps/server/src/lib/auth/verify-delegation.ts`,
+  `lib/auth/smart-wallet-client.ts`): the server verifies 1271/6492 across every smart-account
+  home chain — **Base for CSW + Arbitrum Sepolia for the Kernel wallet** — because a single-chain
+  pin previously 403'd all passkey requests (fix `da59a83`). This is what lets the Arbitrum Kernel
+  wallet and the Base CSW coexist as first-class identities.
+
+## Tier-2 — Agent commerce surface (bounded non-custodial agent wallet)
+- An AI agent discovers a WoCo event and buys a ticket autonomously, paying USDC on Arb Sepolia
+  from a **spend permission the user granted to the agent's OWN key** — recipient-pinned,
+  per-draw ceiling, expiry, draw count, all enforced on-chain by the user's ZeroDev Kernel.
+  The agent never holds funds or an unbounded key; the WoCo server never holds either (read-only
+  on-chain verify + mint). Built on the same Kernel/EAS/Stylus primitives — **no Alchemy**.
+- Surface: `/api/agent/*` (discover / grant-params / quote / x402-style buy) +
+  `/.well-known/agent.json` + OpenAPI 3.1 + a **stdio MCP server** (Claude drives the buy) + an
+  **E2E demo** that mints a ticket and shows a wrong-recipient draw rejected on-chain.
+- Security review of the new surface found + fixed two server-side authz gaps before ship: POD
+  gate enforcement on `/buy`, and a one-time purchase-intent + block-timestamp freshness binding
+  (stops replaying arbitrary matching USDC transfers). Full design + verified-tx table:
+  `docs/AGENT_COMMERCE_SURFACE.md`.
+
 ## Honest-state caveats (do not overclaim in submission)
 - WoCoEventV2 + LikeAggregator are NOT source-verified on Arbiscan yet (V2: missing
   ARBISCAN key; #5: deployed `--no-verify` — reproducible verify is optional follow-up).
@@ -76,12 +107,13 @@ All chain work below: **Arbitrum Sepolia (421614)** unless stated.
   disabled pending escrow changes + audit.
 - Frontend Swarm deploy of the likes UI is pending (user-run `npm run deploy`).
 - Trending/Following UI not built yet — trending is currently API/contract-level.
-- Tier-2 items not built: Aave yield, Coinbase Onramp, **Agent/MCP surface** (OpenAPI +
-  `.well-known/agent.json` + MCP server + demo agent — design in
-  `docs/ARBITRUM_BUILDATHON_PLAN.md` §4), V2 register-path frontend wiring.
+- Agent commerce surface is **built + server-green**, but the E2E demo has not been *run* live
+  yet (needs a funded test user Kernel + a USDC/direct-transfer demo event on 421614). The
+  verified-tx table in `docs/AGENT_COMMERCE_SURFACE.md` is still to be filled from a live run.
+- Other Tier-2 items not built: Aave yield, Coinbase Onramp, V2 register-path frontend wiring.
 
 ## Remaining before Sun 2026-06-15 23:00
-1. Submission docs + demo script (this file is the source).
-2. Agent/MCP surface attempt (Tier 2 — see plan §4; agentic-wallet details from
-   Alchemy to be supplied, NOT yet in repo).
+1. Run the agent demo live (fund a test Kernel + point at a USDC demo event) and paste the
+   tx hashes into `docs/AGENT_COMMERCE_SURFACE.md`; optionally record a Claude-Desktop-over-MCP buy.
+2. Submission docs (this file + `docs/AGENT_COMMERCE_SURFACE.md` are the source).
 3. Frontend deploy (user) + optional Arbiscan verification passes.
