@@ -22,6 +22,7 @@ import { getVerifiedLike } from "../lib/likes/eas-onchain.js";
 import {
   recordLike, removeLike, getLikeCount, getFollowing, getTrending,
 } from "../lib/likes/index-store.js";
+import { pokeAggregator, getTrendingOnChain } from "../lib/likes/stylus-aggregator.js";
 
 export const likesRoutes = new Hono<AppEnv>();
 
@@ -102,18 +103,27 @@ likesRoutes.post("/record", requireAuth, async (c) => {
     await removeLike(like.subject, like.attester);
   }
 
+  // #5: push the chain-verified UID into the Stylus aggregator (fire-and-forget
+  // keeper duty — record is idempotent and permissionlessly resubmittable).
+  pokeAggregator(like.uid);
+
   return c.json({ ok: true, data: getLikeCount(like.subject, parent) });
 });
 
-/** GET /api/likes/trending?subjectType=&limit= — top subjects by count. */
-likesRoutes.get("/trending", (c) => {
+/**
+ * GET /api/likes/trending?subjectType=&limit= — top subjects by count.
+ * Primary read is the Stylus aggregator (#5, trustless); the server projection
+ * is only the fallback when the contract is unconfigured or the RPC fails.
+ */
+likesRoutes.get("/trending", async (c) => {
   const stRaw = c.req.query("subjectType");
   const subjectType = stRaw === undefined ? undefined : Number(stRaw);
   if (subjectType !== undefined && !isSubjectType(subjectType)) {
     return c.json({ ok: false, error: "Invalid subjectType" }, 400);
   }
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 20), 1), 100);
-  return c.json({ ok: true, data: getTrending(subjectType, limit) });
+  const onChain = await getTrendingOnChain(subjectType, limit);
+  return c.json({ ok: true, data: onChain ?? getTrending(subjectType, limit) });
 });
 
 /** GET /api/likes/following/:address — subjects an address likes. */

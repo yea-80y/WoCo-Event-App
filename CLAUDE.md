@@ -62,7 +62,7 @@ SERVER DEPLOY (Hetzner — much simpler than the old kill-and-restart laptop flo
 STEP 1 — server code update:
     rsync -az --exclude=node_modules --exclude=.git --exclude=dist \
       --exclude=apps/web/dist-site --exclude=apps/web/dist-multisite \
-      --exclude=packages/embed/dist \
+      --exclude=packages/embed/dist --exclude=contracts-stylus/like-aggregator/target \
       ~/projects/woco_app/ root@46.225.174.72:/opt/woco/repo/
     ssh root@46.225.174.72 'cd /opt/woco && docker compose up -d --build server'
 
@@ -291,8 +291,15 @@ Full design + abuse model: `docs/EAS_LIKES_HANDOVER.md`.
   `.data/likes-index.json`. Projection is rebuildable from logs
   (`reconcileFromChain`) — the seam for dropping the server later. Reads:
   GET `/api/likes/:subjectType/:id`, `/following/:address`, `/trending`.
+- Stylus aggregator (#5, SHIPPED 2026-06-11): `contracts-stylus/like-aggregator/`
+  on Arb Sepolia `0x7dbf8d3a58bebb642fa1a478bbffba4675f1ba20` — pull-based (anyone
+  submits UIDs, contract verifies vs EAS), dedup by attester, weight seam for
+  unique-paid-payer. Server keeper-pokes on /record; /trending reads contract first,
+  projection fallback. ABI+address: packages/shared likes/types.ts. GOTCHA: Stylus
+  multi-value returns = ONE ABI tuple — fragments need `returns (tuple(...))`.
+  Full detail: docs/STYLUS_AGGREGATOR_HANDOVER.md.
 - TODO (not built): gate gasless SPONSORSHIP on paid-ticket/host history;
-  LikeButton + Following/trending UI (Sonnet); Stylus trending aggregator (#5).
+  LikeButton + Following/trending UI (Sonnet).
 
 ============================================================================
 MULTI-PAGE SITE BUILDER

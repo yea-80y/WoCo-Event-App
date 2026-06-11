@@ -94,3 +94,32 @@ export const SCHEMA_REGISTRY_ADDRESS: Hex0x = "0x45CB6Fa0870a8Af06796Ac15915619a
  */
 export const EAS_SCHEMA_UID: Hex0x =
   "0x62c5b546e61c567163dcb1af412ddd3b6f3a75dbb0da944e89ca2fbeb01dda64";
+
+// ---------------------------------------------------------------------------
+// Stylus LikeAggregator (#5) — trustless trending. Deployed + activated on Arb
+// Sepolia 2026-06-11 (tx 0x0b928da0…). PULL model: the contract verifies every
+// submitted UID against EAS itself, so submissions are permissionless and reads
+// are free view calls — clients can hit any public RPC directly; the server is
+// only a convenience keeper/cache. Source: contracts-stylus/like-aggregator.
+// ---------------------------------------------------------------------------
+
+export const STYLUS_LIKE_AGGREGATOR_ADDRESS: Hex0x =
+  "0x7dbf8d3a58bebb642fa1a478bbffba4675f1ba20";
+
+/**
+ * Read/keeper ABI (ethers human-readable). NB: Stylus 0.9 encodes the
+ * multi-value `getTrending` return as ONE ABI tuple (extra outer offset), so
+ * the fragment MUST declare `tuple(...)` — `returns (bytes32[], uint64[])`
+ * fails to decode. Static-only tuples (getSubjectAt) are unaffected.
+ */
+export const STYLUS_LIKE_AGGREGATOR_ABI = [
+  "function record(bytes32 uid) returns (bool)",
+  "function recordBatch(bytes32[] uids) returns (uint32)",
+  "function getCount(bytes32 subject) view returns (uint64)",
+  "function getActiveUid(bytes32 subject, address attester) view returns (bytes32)",
+  "function totalSubjects() view returns (uint256)",
+  "function getSubjectAt(uint256 index) view returns (bytes32, uint8, uint64)",
+  "function getTrending(uint8 subjectType, uint32 limit) view returns (tuple(bytes32[] subjects, uint64[] counts))",
+  "event LikeCounted(bytes32 indexed subject, uint8 subjectType, address indexed attester, bytes32 uid, uint64 weight)",
+  "event LikeUncounted(bytes32 indexed subject, address indexed attester, bytes32 uid, uint64 weight)",
+] as const;
