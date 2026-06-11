@@ -13,9 +13,15 @@
     stripeConnected?: boolean;
     /** If parent manages the Stripe modal lifecycle, provide this callback. */
     onstripesetup?: () => void;
+    /**
+     * Profile mode: one personal name per user. Shows "Your name: X · Change"
+     * affordance instead of the terminal brand-claimed state.
+     * EventForm + MultiSiteBuilder must NOT set this — they stay unlimited.
+     */
+    singleName?: boolean;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, stripeConnected, onstripesetup }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, stripeConnected, onstripesetup, singleName = false }: Props = $props();
 
   // ── Stripe gate ──────────────────────────────────────────────────────────────
   // null = loading/unknown, false = not connected, true = connected+complete
@@ -66,6 +72,8 @@
   // Claiming
   let claiming   = $state(false);
   let claimError = $state('');
+  // Rename mode (singleName only): hides claimed view, re-shows claim form
+  let renaming   = $state(false);
 
   // Success state — either already had a label or just claimed one
   let claimed = $derived(!!claimedLabel);
@@ -147,6 +155,7 @@
         return;
       }
       claimedLabel = res.data!.label;
+      renaming = false;
       onclaim?.(res.data!.label);
     } catch {
       claimError = 'Network error — try again';
@@ -225,54 +234,78 @@
     <StripeConnectModal bind:open={stripeModalOpen} onconnected={onStripeConnected} />
   {/if}
 
-{:else if claimed}
-  <!-- ── Success / Already claimed ──────────────────────────────────────── -->
-  <div class="picker picker--claimed">
-    <div class="claimed-header">
-      <span class="claimed-icon" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-          <path d="M9 1L11.5 6.5H17L12.5 10L14.5 16L9 12.5L3.5 16L5.5 10L1 6.5H6.5L9 1Z" fill="#C7F23A" opacity="0.18" stroke="#C7F23A" stroke-width="1.4" stroke-linejoin="round"/>
-          <path d="M6.5 9l1.8 1.8L12 7" stroke="#C7F23A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </span>
-      <div class="claimed-title">
-        <span class="claimed-headline">{ensName}</span>
-        <span class="claimed-sub">is yours</span>
+{:else if claimed && !renaming}
+  {#if singleName}
+    <!-- ── Profile: one name + Change affordance ──────────────────────────── -->
+    <div class="picker picker--claimed picker--profile-name">
+      <div class="profile-name-row">
+        <span class="claimed-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M9 1L11.5 6.5H17L12.5 10L14.5 16L9 12.5L3.5 16L5.5 10L1 6.5H6.5L9 1Z" fill="#C7F23A" opacity="0.18" stroke="#C7F23A" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M6.5 9l1.8 1.8L12 7" stroke="#C7F23A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <div class="profile-name-text">
+          <span class="profile-name-label">Your name</span>
+          <span class="claimed-headline">{ensName}</span>
+        </div>
+        <button
+          class="action-btn action-btn--change"
+          onclick={() => { renaming = true; rawInput = ''; checkPhase = 'idle'; claimError = ''; }}
+        >
+          Change
+        </button>
       </div>
     </div>
+  {:else}
+    <!-- ── Brand: terminal claimed state ─────────────────────────────────── -->
+    <div class="picker picker--claimed">
+      <div class="claimed-header">
+        <span class="claimed-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M9 1L11.5 6.5H17L12.5 10L14.5 16L9 12.5L3.5 16L5.5 10L1 6.5H6.5L9 1Z" fill="#C7F23A" opacity="0.18" stroke="#C7F23A" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M6.5 9l1.8 1.8L12 7" stroke="#C7F23A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <div class="claimed-title">
+          <span class="claimed-headline">{ensName}</span>
+          <span class="claimed-sub">is yours</span>
+        </div>
+      </div>
 
-    <div class="claimed-url-row">
-      <span class="claimed-url">{ensUrl}</span>
-      <button class="action-btn action-btn--copy" onclick={copyUrl}>
-        {copied ? '✓ Copied' : 'Copy'}
-      </button>
-      <span class="action-btn action-btn--soon" title="Goes live once woco.eth's mainnet ENS resolver points to the Arbitrum registry">
-        <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-          <circle cx="5.5" cy="5.5" r="4.2" stroke="currentColor" stroke-width="1.2"/>
-          <path d="M5.5 3.4V5.5l1.5 .9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        Live soon
-      </span>
+      <div class="claimed-url-row">
+        <span class="claimed-url">{ensUrl}</span>
+        <button class="action-btn action-btn--copy" onclick={copyUrl}>
+          {copied ? '✓ Copied' : 'Copy'}
+        </button>
+        <span class="action-btn action-btn--soon" title="Goes live once woco.eth's mainnet ENS resolver points to the Arbitrum registry">
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+            <circle cx="5.5" cy="5.5" r="4.2" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M5.5 3.4V5.5l1.5 .9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Live soon
+        </span>
+      </div>
+
+      {#if deployedHash}
+        <p class="claimed-note">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="flex-shrink:0">
+            <path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+          </svg>
+          Linked to your site — updates automatically when you publish.
+        </p>
+      {:else}
+        <p class="claimed-note">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="flex-shrink:0">
+            <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M6 4v3.5M6 9v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+          </svg>
+          Publish your site to link it to this address.
+        </p>
+      {/if}
     </div>
-
-    {#if deployedHash}
-      <p class="claimed-note">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="flex-shrink:0">
-          <path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-        </svg>
-        Linked to your site — updates automatically when you publish.
-      </p>
-    {:else}
-      <p class="claimed-note">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="flex-shrink:0">
-          <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/>
-          <path d="M6 4v3.5M6 9v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-        </svg>
-        Publish your site to link it to this address.
-      </p>
-    {/if}
-  </div>
+  {/if}
 
 {:else}
   <!-- ── Claim form ──────────────────────────────────────────────────────── -->
@@ -899,5 +932,41 @@
     font-size: 0.8125rem;
     color: var(--text-muted);
     line-height: 1.4;
+  }
+
+  /* ── Profile single-name row ────────────────────────────────────────────── */
+  .picker--profile-name {
+    padding: 0.625rem 0.875rem;
+  }
+
+  .profile-name-row {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+  }
+
+  .profile-name-text {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .profile-name-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .action-btn--change {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .action-btn--change:hover {
+    border-color: var(--text-muted);
+    color: var(--text);
   }
 </style>

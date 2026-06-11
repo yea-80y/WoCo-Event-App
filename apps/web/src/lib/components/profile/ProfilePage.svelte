@@ -33,6 +33,7 @@
   let profile = $state<UserProfile | null>(null);
   let loading = $state(true);
   let saving = $state(false);
+  let ensBindError = $state('');
   let uploadingAvatar = $state(false);
   let avatarPreviewUrl = $state<string | null>(null);
   let events = $state<EventDirectoryEntry[]>([]);
@@ -129,6 +130,7 @@
   // server's ownership check passes. Binding it to the profile makes the
   // profile a followable like-subject (its namehash — see profileLikeSubject).
   async function handleSubEnsClaim(label: string) {
+    ensBindError = '';
     try {
       const updated = await updateProfile({ subEnsLabel: label });
       if (updated) {
@@ -136,6 +138,8 @@
         invalidateProfileCache(viewAddress);
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save name to profile';
+      ensBindError = msg;
       console.error("Failed to bind sub-ENS to profile:", err);
     }
   }
@@ -530,7 +534,14 @@
             Claim a permanent <code>.woco.eth</code> name for your profile. People
             can follow it on-chain, and it doubles as your payment address.
           </p>
-          <SubENSPicker claimedLabel={profile?.subEnsLabel} onclaim={handleSubEnsClaim} />
+          <SubENSPicker
+            claimedLabel={profile?.subEnsLabel}
+            onclaim={handleSubEnsClaim}
+            singleName={true}
+          />
+          {#if ensBindError}
+            <p class="ens-bind-error">{ensBindError} — name is registered on-chain, try again to link it to your profile.</p>
+          {/if}
         </section>
 
         <!-- Account info -->
@@ -1059,6 +1070,13 @@
     font-size: 0.8125rem;
     color: var(--text-muted);
     line-height: 1.55;
+  }
+
+  .ens-bind-error {
+    margin: 0.5rem 0 0;
+    font-size: 0.8125rem;
+    color: #ef4444;
+    line-height: 1.45;
   }
 
   /* Form fields */
