@@ -9,6 +9,7 @@ import {
   updateSubEnsContenthash,
   signSubEnsPermit,
 } from "../lib/chain/sub-ens-contract.js";
+import { stampEventSubEns } from "../lib/event/service.js";
 import type { AppEnv } from "../types.js";
 
 // Preview links resolve through the WoCo gateway (eth.limo .woco.eth resolution is
@@ -206,6 +207,44 @@ subEnsRoutes.post("/permit", requireAuth, async (c) => {
   } catch (err) {
     console.error("[sub-ens] permit signing failed:", err);
     return c.json({ ok: false, error: "permit signing failed" }, 500);
+  }
+});
+
+/**
+ * POST /api/sub-ens/stamp-event
+ * Auth required. Records label.woco.eth on an event feed as a display hint,
+ * after verifying ON-CHAIN that the authenticated organiser owns the label.
+ * One endpoint covers every claim path (server mint, gasless permit, repoint) —
+ * the client calls it once its claim/repoint has succeeded.
+ *
+ * Body: { label: string, eventId: string }
+ */
+subEnsRoutes.post("/stamp-event", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = await c.req.json<{ label?: string; eventId?: string }>();
+
+  const label = body.label?.toLowerCase()?.trim() ?? "";
+  const eventId = body.eventId?.trim() ?? "";
+  if (!label) return c.json({ ok: false, error: "label is required" }, 400);
+  if (!eventId) return c.json({ ok: false, error: "eventId is required" }, 400);
+  const validationError = validateLabel(label);
+  if (validationError) return c.json({ ok: false, error: validationError }, 400);
+
+  // Same IDOR guard as set-contenthash: chain ownership is the authority.
+  const owner = await getLabelOwner(label);
+  if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
+  if (owner !== parentAddress) {
+    return c.json({ ok: false, error: "not authorised for this label" }, 403);
+  }
+
+  try {
+    await stampEventSubEns(eventId, label, parentAddress);
+    return c.json({ ok: true, data: { label, eventId } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "stamp failed";
+    const status = msg === "Event not found" ? 404 : msg === "Not the event creator" ? 403 : 500;
+    if (status === 500) console.error("[sub-ens] stamp-event failed:", err);
+    return c.json({ ok: false, error: msg }, status);
   }
 });
 

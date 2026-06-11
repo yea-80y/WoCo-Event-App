@@ -67,6 +67,8 @@ function recordLike(input: {
 export interface ToggleResult {
   liked: boolean;
   count: number;
+  /** The viewer's attestation UID after a like (needed for a later unlike). */
+  viewerUid?: Hex0x;
 }
 
 /**
@@ -90,7 +92,9 @@ export async function toggleLike(
     const { uid } = await attestLike(subject);
     const res = await recordLike({ subject: subject.id, subjectType: subject.type, uid, action: "like" });
     if (!res.ok || !res.data) throw new Error(res.error ?? "Failed to record like");
-    return { liked: true, count: res.data.count };
+    // The server's LikeCount carries viewerUid for the authed parent; fall back
+    // to the on-chain uid we just minted if the projection lags.
+    return { liked: true, count: res.data.count, viewerUid: res.data.viewerUid ?? uid };
   }
 
   if (!viewerUid) throw new Error("Missing attestation UID — cannot unlike.");

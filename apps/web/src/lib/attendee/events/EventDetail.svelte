@@ -172,10 +172,23 @@
       {/if}
     </div>
 
-    {#if eventSubject}
-      <!-- Like the HAPPENING (on-chain event id) — distinct from following the name. -->
+    {#if eventSubject || event.subEnsLabel}
+      <!-- Social row: the event's .woco.eth identity (display — ownership lives
+           on-chain) + like on the HAPPENING (keyed to the immutable on-chain
+           event id, so likes survive a name repoint). -->
       <div class="social-actions">
-        <LikeButton subject={eventSubject} />
+        {#if event.subEnsLabel}
+          <span class="ens-plate" title="This event's permanent web3 address">
+            <svg class="ens-mark" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M6 0.5L7.6 4.4L11.5 6L7.6 7.6L6 11.5L4.4 7.6L0.5 6L4.4 4.4Z"
+                    fill="currentColor" opacity="0.85"/>
+            </svg>
+            <span class="ens-label">{event.subEnsLabel}</span><span class="ens-tld">.woco.eth</span>
+          </span>
+        {/if}
+        {#if eventSubject}
+          <LikeButton subject={eventSubject} />
+        {/if}
       </div>
     {/if}
 
@@ -406,9 +419,33 @@
   .social-actions {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.5rem;
     margin: 0.25rem 0 1rem;
   }
+
+  /* The event's claimed .woco.eth name — a mono plate with an acid spark.
+     Display only: the like alongside it is keyed to the on-chain event id. */
+  .ens-plate {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.3125rem 0.625rem 0.3125rem 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1;
+    color: var(--accent-text);
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+
+  .ens-mark { color: var(--accent); flex-shrink: 0; }
+
+  .ens-tld { color: var(--text-muted); font-weight: 500; }
 
   .description {
     color: var(--text-secondary);

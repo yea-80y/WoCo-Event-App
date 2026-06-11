@@ -20,19 +20,52 @@
   let viewerUid = $state<Hex0x | undefined>(undefined);
   let inFlight = $state(false);
   let loaded = $state(false);
+  let errMsg = $state<string | null>(null);
+  let errTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Monotonic token: any state-setting fetch must still hold the latest token
+  // when it resolves. Guards against the login-popup race — completing sign-in
+  // mid-click changes auth.parent, which re-runs the $effect; without the token
+  // its stale response would clobber the optimistic toggle state.
+  let fetchToken = 0;
+
+  // Only show the loading dot for a subject we haven't displayed yet — silent
+  // refresh otherwise (post-toggle reconcile, login state change).
+  let lastLoadedId: string | null = null;
 
   $effect(() => {
     const viewer = auth.parent?.toLowerCase();
     const { type, id } = subject;
-    loaded = false;
+    if (inFlight) return; // re-runs when the toggle settles (inFlight is a dep)
+    const token = ++fetchToken;
+    if (lastLoadedId !== id) loaded = false;
     getLikeCount(type, id, viewer).then((res) => {
+      if (token !== fetchToken) return;
       if (!res) { loaded = true; return; }
       count = res.count;
       liked = res.likedByViewer;
       viewerUid = res.viewerUid;
+      lastLoadedId = id;
       loaded = true;
     });
   });
+
+  function friendlyError(err: unknown): string {
+    const m = err instanceof Error ? err.message : String(err);
+    if (/reject|denied|cancel/i.test(m)) return "Cancelled";
+    if (/paymaster|sponsor|userOperation|user operation|bundler|aa[0-9]{2}/i.test(m)) {
+      return "Couldn't sponsor the transaction — try again";
+    }
+    if (/not available for/i.test(m)) return m; // unsupported account kind — show as-is
+    return "Not saved — tap to retry";
+  }
+
+  function showError(err: unknown) {
+    console.error("[LikeButton]", err);
+    errMsg = friendlyError(err);
+    clearTimeout(errTimer);
+    errTimer = setTimeout(() => { errMsg = null; }, 5000);
+  }
 
   async function handleClick(e: MouseEvent) {
     // Stop the click bubbling — this button often lives inside a clickable
@@ -40,31 +73,32 @@
     e.stopPropagation();
     if (inFlight || !loaded) return;
     inFlight = true;
+    errMsg = null;
+    fetchToken++; // invalidate any read still in the air
 
     const prevLiked = liked;
     const prevCount = count;
     const prevUid = viewerUid;
     liked = !prevLiked;
-    count = prevLiked ? prevCount - 1 : prevCount + 1;
+    count = prevLiked ? Math.max(0, prevCount - 1) : prevCount + 1;
 
     try {
       const r = await toggleLike(subject, prevLiked, prevUid);
       if (r === null) {
+        // User dismissed the sign-in popup — quiet revert, not an error.
         liked = prevLiked;
         count = prevCount;
         viewerUid = prevUid;
       } else {
         liked = r.liked;
         count = r.count;
-        const viewer = auth.parent?.toLowerCase();
-        const fresh = await getLikeCount(subject.type, subject.id, viewer);
-        if (fresh) viewerUid = fresh.viewerUid;
+        viewerUid = r.viewerUid;
       }
     } catch (err) {
-      console.error("[LikeButton]", err);
       liked = prevLiked;
       count = prevCount;
       viewerUid = prevUid;
+      showError(err);
     } finally {
       inFlight = false;
     }
@@ -76,6 +110,7 @@
     class="follow-btn"
     class:following={liked}
     class:loading={!loaded}
+    class:failed={!!errMsg}
     onclick={handleClick}
     disabled={inFlight}
     aria-label={liked ? "Unfollow" : "Follow"}
@@ -95,11 +130,13 @@
     </span>
     {#if loaded && count > 0}<span class="follow-count">{count}</span>{/if}
   </button>
+  {#if errMsg}<span class="like-err" role="status">{errMsg}</span>{/if}
 {:else}
   <button
     class="like-btn"
     class:liked
     class:loading={!loaded}
+    class:failed={!!errMsg}
     onclick={handleClick}
     disabled={inFlight}
     aria-label={liked ? "Unlike" : "Like"}
@@ -118,6 +155,7 @@
       {#if !loaded}·{:else}{count > 0 ? count : ""}{/if}
     </span>
   </button>
+  {#if errMsg}<span class="like-err" role="status">{errMsg}</span>{/if}
 {/if}
 
 <style>
@@ -167,6 +205,39 @@
 
   .count { min-width: 0.625rem; }
   .count.zero { opacity: 0; }
+
+  /* ── Failure micro-state: shake + transient mono chip ─────────── */
+  .like-btn.failed, .follow-btn.failed {
+    animation: like-shake 0.34s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+  }
+
+  .like-err {
+    display: inline-block;
+    margin-left: 0.375rem;
+    padding: 0.1875rem 0.4375rem;
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: 1.3;
+    color: var(--error, #ef4444);
+    background: color-mix(in srgb, var(--error, #ef4444) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--error, #ef4444) 28%, transparent);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    animation: like-err-in 0.18s ease-out;
+  }
+
+  @keyframes like-shake {
+    10%, 90% { transform: translateX(-1px); }
+    30%, 70% { transform: translateX(2px); }
+    50% { transform: translateX(-2px); }
+  }
+
+  @keyframes like-err-in {
+    from { opacity: 0; transform: translateX(-3px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
 
   /* ── Follow variant: name-follow pill ─────────────────────── */
   .follow-btn {

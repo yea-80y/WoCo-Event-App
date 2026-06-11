@@ -251,6 +251,29 @@ export async function confirmSeriesOnChain(
   return updated;
 }
 
+/**
+ * Stamp a sub-ENS label onto an event feed as a display hint. The label's
+ * on-chain ownership MUST be verified by the caller (route) before this runs —
+ * the feed field is presentation only; chain stays authoritative.
+ */
+export async function stampEventSubEns(
+  eventId: string,
+  label: string,
+  parentAddress: string,
+): Promise<EventFeed> {
+  const feed = await getEvent(eventId);
+  if (!feed) throw new Error("Event not found");
+  if (feed.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
+    throw new Error("Not the event creator");
+  }
+  if (feed.subEnsLabel === label) return feed; // idempotent
+
+  const updated: EventFeed = { ...feed, subEnsLabel: label };
+  await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+  invalidateEventCache(eventId);
+  return updated;
+}
+
 // ---------------------------------------------------------------------------
 // Read events
 // ---------------------------------------------------------------------------

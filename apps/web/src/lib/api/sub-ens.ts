@@ -52,6 +52,13 @@ export async function setSubEnsContenthash(label: string, swarmHash: string) {
   return authPost<{ label: string; txHash: string }>("/api/sub-ens/set-contenthash", { label, swarmHash });
 }
 
+/** Record an owned label on an event feed as a display hint (server verifies
+ *  on-chain label ownership + event creatorship). Call after a successful
+ *  claim/repoint so event pages can show the name. */
+export async function stampEventSubEns(label: string, eventId: string) {
+  return authPost<{ label: string; eventId: string }>("/api/sub-ens/stamp-event", { label, eventId });
+}
+
 interface SubEnsPermitResponse {
   label: string;
   ensName: string;

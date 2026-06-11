@@ -12,7 +12,7 @@
   import SiteSelector from "./builder/SiteSelector.svelte";
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
   import { addSiteEvent } from "../api/sites.js";
-  import { claimSubEnsLabel, claimSubEnsViaPermit, setSubEnsContenthash } from "../api/sub-ens.js";
+  import { claimSubEnsLabel, claimSubEnsViaPermit, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
@@ -218,6 +218,13 @@
       } else {
         const res = await setSubEnsContenthash(intent.label, contentHash);
         if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not update the name"; return; }
+      }
+      // Display hint on the event feed (event pages show the name + social row).
+      // Non-fatal: chain ownership is authoritative; a missed stamp just hides the badge.
+      if (createdEventId) {
+        stampEventSubEns(intent.label, createdEventId).catch((err) =>
+          console.warn("[sub-ens] stamp-event failed (non-fatal):", err),
+        );
       }
       subEnsPhase = "done";
     } catch (e) {

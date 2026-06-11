@@ -188,6 +188,9 @@ export interface EventFeed {
   orderFields?: OrderField[];
   /** How attendees can claim tickets (default: "wallet") */
   claimMode?: "wallet" | "email" | "both";
+  /** Sub-ENS label pointed at this event's page (display hint — ownership and
+   *  contenthash are authoritative on-chain; stamped via /api/sub-ens/stamp-event). */
+  subEnsLabel?: string;
 }
 
 /** Ticket series summary (stored within event feed) */
