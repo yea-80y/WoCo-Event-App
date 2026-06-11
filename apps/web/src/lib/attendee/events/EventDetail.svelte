@@ -164,10 +164,15 @@
         </span>
       </div>
       <!-- Follow the organiser by NAME (sub-ENS namehash) — only when they've
-           claimed one (a name is what a follow attaches to). Not your own. -->
-      {#if creatorProfile?.subEnsLabel && auth.parent?.toLowerCase() !== event.creatorAddress.toLowerCase()}
+           claimed one (a name is what a follow attaches to). Your own event
+           shows the follower count read-only instead of an actionable follow. -->
+      {#if creatorProfile?.subEnsLabel}
         <div class="creator-follow">
-          <LikeButton subject={profileLikeSubject(creatorProfile.subEnsLabel)} variant="follow" />
+          <LikeButton
+            subject={profileLikeSubject(creatorProfile.subEnsLabel)}
+            variant="follow"
+            readonly={auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
+          />
         </div>
       {/if}
     </div>
@@ -187,7 +192,7 @@
           </span>
         {/if}
         {#if eventSubject}
-          <LikeButton subject={eventSubject} />
+          <LikeButton subject={eventSubject} caption="event" />
         {/if}
       </div>
     {/if}

@@ -645,6 +645,28 @@ export async function getEasSessionClient(
  * so send + receipt handling lives in one place. Returns the userOp hash + full
  * receipt (callers read txHash; EAS reads logs for the attestation UID).
  */
+/**
+ * ZeroDev incident workaround (2026-06): their RPC intermittently returns a
+ * stub verificationGasLimit of 1 from gas estimation, which their own bundler
+ * then rejects ("verificationGasLimit must be at least 10000"). An explicitly
+ * provided value bypasses the broken estimate — viem only fills MISSING gas
+ * fields — and the paymaster signs over the op we actually send, so the
+ * sponsorship stays valid. Conservative ceiling: Kernel v3 permission-validator
+ * verification (incl. session-key enable path) fits comfortably; unused gas is
+ * refunded post-execution.
+ */
+const VERIFICATION_GAS_FALLBACK = 800_000n;
+
+function isStubVerificationGasError(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let e = err; e && typeof e === "object" && !seen.has(e); e = (e as { cause?: unknown }).cause) {
+    seen.add(e);
+    const msg = (e as { message?: string }).message ?? "";
+    if (/verificationGasLimit must be at least/i.test(msg)) return true;
+  }
+  return false;
+}
+
 export async function sendSessionUserOp(
   client: KernelAccountClient,
   calls: { to: Address; data: Hex; value?: bigint }[],
@@ -652,7 +674,20 @@ export async function sendSessionUserOp(
   userOpHash: Hex;
   receipt: Awaited<ReturnType<KernelAccountClient["waitForUserOperationReceipt"]>>;
 }> {
-  const userOpHash = await client.sendUserOperation({ calls });
+  let userOpHash: Hex;
+  try {
+    userOpHash = await client.sendUserOperation({ calls });
+  } catch (err) {
+    if (!isStubVerificationGasError(err)) throw err;
+    console.warn(
+      "[kernel] bundler returned stub verificationGasLimit — retrying with explicit",
+      VERIFICATION_GAS_FALLBACK,
+    );
+    userOpHash = await client.sendUserOperation({
+      calls,
+      verificationGasLimit: VERIFICATION_GAS_FALLBACK,
+    });
+  }
   const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
   return { userOpHash, receipt };
 }

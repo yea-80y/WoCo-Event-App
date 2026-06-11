@@ -11,9 +11,14 @@
      * Same EAS attest/revoke mechanism underneath — only the framing differs.
      */
     variant?: "heart" | "follow";
+    /** Names WHAT is being liked (e.g. "event") — shown as a muted mono caption
+     *  so the target is unambiguous when hearts and follows share a page. */
+    caption?: string;
+    /** Count-only view (e.g. your own follower count) — no action, no toggle. */
+    readonly?: boolean;
   }
 
-  let { subject, variant = "heart" }: Props = $props();
+  let { subject, variant = "heart", caption, readonly = false }: Props = $props();
 
   let count = $state(0);
   let liked = $state(false);
@@ -71,7 +76,7 @@
     // Stop the click bubbling — this button often lives inside a clickable
     // event card; a like/follow must not also open the card.
     e.stopPropagation();
-    if (inFlight || !loaded) return;
+    if (readonly || inFlight || !loaded) return;
     inFlight = true;
     errMsg = null;
     fetchToken++; // invalidate any read still in the air
@@ -105,7 +110,17 @@
   }
 </script>
 
-{#if variant === "follow"}
+{#if variant === "follow" && readonly}
+  <!-- Self-view: the count is public information; the action isn't yours to take. -->
+  <span class="follow-stat" title="Followers">
+    <svg class="follow-ico" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="8" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M5 19.5c1.4-3.1 4-4.7 7-4.7s5.6 1.6 7 4.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    {#if !loaded}·{:else}{count}{/if}
+    <span class="stat-label">{count === 1 ? "follower" : "followers"}</span>
+  </span>
+{:else if variant === "follow"}
   <button
     class="follow-btn"
     class:following={liked}
@@ -154,6 +169,7 @@
     <span class="count" class:zero={count === 0 && !liked}>
       {#if !loaded}·{:else}{count > 0 ? count : ""}{/if}
     </span>
+    {#if caption}<span class="caption">{caption}</span>{/if}
   </button>
   {#if errMsg}<span class="like-err" role="status">{errMsg}</span>{/if}
 {/if}
@@ -283,5 +299,40 @@
     border-left: 1px solid var(--accent-subtle);
     color: var(--text-muted);
     font-weight: 500;
+  }
+
+  /* Heart caption — names the like target ("event") in muted mono */
+  .caption {
+    color: var(--text-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.5625rem;
+    opacity: 0.8;
+  }
+
+  /* Read-only follower stat (self-view) — same plate language, no affordance */
+  .follow-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    padding: 0.25rem 0.625rem 0.25rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .stat-label {
+    color: var(--text-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.5625rem;
   }
 </style>
