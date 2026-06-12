@@ -50,6 +50,25 @@ export const SPEND_MAX_CAP_ATOMIC = "2000000000";
 /** Max draws over the window (rate-limit policy). */
 export const SPEND_MAX_DRAWS = 300;
 
+/**
+ * Explicit gas budget for a POS draw. The first draw against an attendee's Kernel
+ * is an *enable-mode* userOp that installs the spend-permission validator AND
+ * validates the transfer; this rail's call policy matches `USDC.transfer`'s ABI
+ * args (merchant EQUAL + value LE ceiling) plus timestamp/rate-limit/gas policies,
+ * so validation is gas-heavy. Under the bundler's (unreliable, ZeroDev-stub)
+ * estimate the account's `validateUserOp` runs out of gas and reverts with empty
+ * data → `AA23 reverted 0x`. Verified on the identical agent rail: 800k OOMs, 3M
+ * succeeds. Sponsored + Arb gas is ~free, so provision generously (the bundler
+ * still meters actual usage). Keep in sync with the agent rail's DRAW_GAS_OVERRIDES.
+ */
+const SHOP_DRAW_GAS_OVERRIDES = {
+  verificationGasLimit: 3_000_000n,
+  callGasLimit: 1_000_000n,
+  preVerificationGas: 1_000_000n,
+  paymasterVerificationGasLimit: 1_000_000n,
+  paymasterPostOpGasLimit: 500_000n,
+} as const;
+
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "shop-spend-permissions.json");
 /** Durable per-order settlement ledger (orderKey → settlementTxHash). Makes a
@@ -465,6 +484,7 @@ export function drawSpendPermission(
     try {
       userOpHash = await kernelClient.sendUserOperation({
         calls: [{ to: rec.usdcAddress as Hex0x, data }],
+        ...SHOP_DRAW_GAS_OVERRIDES,
       });
       const opReceipt = await kernelClient.waitForUserOperationReceipt({
         hash: userOpHash as Hex0x,

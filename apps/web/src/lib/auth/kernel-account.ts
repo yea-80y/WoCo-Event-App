@@ -361,7 +361,15 @@ export async function grantShopSpendPermission(args: ShopSpendGrantArgs): Promis
       ],
     }),
     d.toTimestampPolicy({ validUntil: args.validUntil }),
-    d.toRateLimitPolicy({ count: args.maxDraws }),
+    // `interval` MUST be non-zero: the on-chain RateLimitPolicy does time-bucket
+    // math with it, and interval=0 (the lib default when only `count` is passed)
+    // is a footgun. Set it to the permission's remaining lifetime so the window
+    // never refills before expiry → `count` is an effective LIFETIME cap of
+    // maxDraws. (Same fix as the agent rail's buildAgentSpendGrant.)
+    d.toRateLimitPolicy({
+      count: args.maxDraws,
+      interval: Math.max(args.validUntil - Math.floor(Date.now() / 1000), 1),
+    }),
     d.toGasPolicy({ allowed: SESSION_GAS_ALLOWANCE_WEI }),
   ];
 
