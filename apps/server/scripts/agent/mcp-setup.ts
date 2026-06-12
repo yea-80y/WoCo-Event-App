@@ -21,7 +21,7 @@
 import { fileURLToPath } from "url";
 import { dirname, resolve, join } from "path";
 import { homedir } from "os";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, chmodSync } from "fs";
 import { generatePrivateKey } from "viem/accounts";
 import type { Address } from "viem";
 import {
@@ -100,8 +100,12 @@ async function main() {
   // — re-running clobbers the whole file.
   const cfgDir = join(homedir(), ".config", "Claude");
   const cfgPath = join(cfgDir, "claude_desktop_config.json");
-  mkdirSync(cfgDir, { recursive: true });
-  writeFileSync(cfgPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  // 0600/0700 — the file embeds the agent private key + approval. `mode` on
+  // writeFileSync only applies on CREATE, so chmod after to also tighten a
+  // pre-existing file left world-readable by an earlier run.
+  mkdirSync(cfgDir, { recursive: true, mode: 0o700 });
+  writeFileSync(cfgPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+  chmodSync(cfgPath, 0o600);
   console.log(`\n━━━ Wrote ${cfgPath} ━━━`);
   console.log(JSON.stringify(config, null, 2));
   console.log(`\nRestart Claude Desktop, then ask: "buy me a ticket to the WoCo demo event".`);
