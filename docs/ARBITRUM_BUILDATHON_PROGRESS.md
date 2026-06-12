@@ -21,7 +21,7 @@ All chain work below: **Arbitrum Sepolia (421614)** unless stated.
 | 2026-06-05 | #4 EAS like schema registered + verified | UID `0x62c5b546e61c567163dcb1af412ddd3b6f3a75dbb0da944e89ca2fbeb01dda64` |
 | 2026-06-11 | #4 verified on-chain E2E (passkey gasless attest+revoke, attester = user Kernel) | attest `0x7ae3ee1c…` *(prefix)*, revoke `0xbfd9a5ca…` *(prefix)* |
 | 2026-06-11 | #5 Stylus LikeAggregator deployed + activated + E2E + prod-wired | `0x7dbf8d3a58bebb642fa1a478bbffba4675f1ba20` |
-| 2026-06-12 | Tier-2 agent commerce surface built (server green; demo + MCP ready) | `docs/AGENT_COMMERCE_SURFACE.md` |
+| 2026-06-12 | Tier-2 agent commerce surface — E2E demo GREEN on-chain (draw + mint + off-policy reject) | draw `0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1` |
 
 ## #1 / #1b — On-chain ticketing + passkey smart wallet
 - WoCoEventV2: USDC escrow, per-event supply, sponsor-gated `claimFor`/`batchClaimFor`
@@ -107,13 +107,15 @@ All chain work below: **Arbitrum Sepolia (421614)** unless stated.
   disabled pending escrow changes + audit.
 - Frontend Swarm deploy of the likes UI is pending (user-run `npm run deploy`).
 - Trending/Following UI not built yet — trending is currently API/contract-level.
-- Agent commerce surface is **built + server-green**, but the E2E demo has not been *run* live
-  yet (needs a funded test user Kernel + a USDC/direct-transfer demo event on 421614). The
-  verified-tx table in `docs/AGENT_COMMERCE_SURFACE.md` is still to be filled from a live run.
+- Agent commerce surface E2E demo is now **run + GREEN on-chain** (2026-06-12): draw
+  `0x0e8e688f…`, ticket edition #1 minted to the user Kernel, wrong-recipient draw rejected by the
+  call policy. Verified-tx table filled in `docs/AGENT_COMMERCE_SURFACE.md`. (AA23 debugging notes +
+  a latent shop-rail gas gotcha are recorded there too.) A Claude-Desktop-over-MCP buy recording is
+  still an optional nice-to-have.
 - Other Tier-2 items not built: Aave yield, Coinbase Onramp, V2 register-path frontend wiring.
 
 ## Remaining before Sun 2026-06-15 23:00
-1. Run the agent demo live (fund a test Kernel + point at a USDC demo event) and paste the
-   tx hashes into `docs/AGENT_COMMERCE_SURFACE.md`; optionally record a Claude-Desktop-over-MCP buy.
-2. Submission docs (this file + `docs/AGENT_COMMERCE_SURFACE.md` are the source).
+1. ~~Run the agent demo live~~ ✅ done 2026-06-12 (tx above). Optional: record a Claude-Desktop-over-MCP buy.
+2. Submission docs — see `docs/BUILDATHON_SUBMISSION.md` (judge-facing), built from this file +
+   `docs/AGENT_COMMERCE_SURFACE.md`.
 3. Frontend deploy (user) + optional Arbiscan verification passes.

@@ -29,6 +29,7 @@ import { arbitrumSepolia } from "viem/chains";
 import { generatePrivateKey } from "viem/accounts";
 import {
   buildKernelFromPrivateKey,
+  ensureKernelDeployed,
   buildAgentSpendGrant,
   agentDrawTransfer,
   addressFromPrivateKey,
@@ -82,7 +83,18 @@ async function main() {
 
   // 1. Build the user's Kernel + check it holds USDC.
   const user = await buildKernelFromPrivateKey(userPk);
-  console.log(`User Kernel: ${user.address}   (funds source + ticket recipient)\n`);
+  console.log(`User Kernel: ${user.address}   (funds source + ticket recipient)`);
+
+  // Deploy the user Kernel first if it has never been used. A first-ever userOp
+  // that deploys + enables the agent's permission + draws in one op over-runs
+  // validation gas (AA23); one cheap sudo deploy makes the later draw enable-mode
+  // only. No-op once the Kernel exists on-chain (the real-world case).
+  const deployed = await ensureKernelDeployed(user);
+  console.log(
+    deployed
+      ? "  (deployed the user Kernel with a one-time gasless sudo op)\n"
+      : "  (user Kernel already deployed)\n",
+  );
 
   // 2. Server-dictated bounds for the grant (recipient resolved from the event).
   const gp = await api("/api/agent/grant-params", { agentAddress, eventId });

@@ -123,17 +123,48 @@ bounds bite). Prints every tx (Arbiscan links) + remaining budget.
 - Env per `apps/server/.env.example` (agent section): `AGENT_DEMO_USER_PK`, `AGENT_DEMO_EVENT_ID`,
   `AGENT_DEMO_SERIES_ID` (+ optional `AGENT_DEMO_AGENT_PK`).
 
-## Verified on-chain (fill after the live run)
+## Verified on-chain (Arbitrum Sepolia, 2026-06-12)
+
+End-to-end demo run green: bounded grant → agent self-key draw → mint → off-policy draw rejected.
 
 | Item | Value |
 |---|---|
-| Demo event / series | `…` / `…` |
-| User Kernel (funder + recipient) | `…` |
-| Agent address (own key) | `…` |
-| Spend-permission bounds | recipient `…`, ceiling `$…`, expiry `…` |
-| Draw tx (USDC userKernel→organiser) | `https://sepolia.arbiscan.io/tx/…` |
-| Minted ticket | series `…`, edition `…` |
-| Rejected wrong-recipient draw | (policy revert / bundler reject) |
+| Demo event / series | `agent-demo-event-01` / `agent-demo-series-01` |
+| User Kernel (funder + recipient) | `0x7D135b15D6a07FB6012CF96212053b2F243bCb99` |
+| Agent address (own key) | per-run ephemeral (e.g. `0x969524c6e2b206e937cf2dec963ad420b7e5f763`) |
+| Spend-permission bounds | recipient `0x7b318c46a6fdc544212ebd83335f6b7414a97925`, ceiling `$100`, max 20 draws, 24h expiry |
+| Draw tx (USDC userKernel→organiser) | `https://sepolia.arbiscan.io/tx/0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1` |
+| Minted ticket | series `Agent Demo Ticket`, edition `#1`, to the user Kernel |
+| Rejected wrong-recipient draw | call policy `to == organiser` mismatch → bundler rejects at validation (HTTP 400) |
+
+### Debug notes (AA23 root cause + fixes)
+
+The first E2E attempts reverted with `AA23 reverted 0x` (empty revert data). After isolating it
+empirically (a policy-matrix probe, since deleted), the cause was **out-of-gas inside the account's
+`validateUserOp` during the agent's enable-mode draw** — *not* the policies, the no-key approval, the
+nonce, or deployment. This grant's call policy matches `USDC.transfer`'s ABI args (`to` EQUAL recipient,
+`value` LE ceiling) plus timestamp + rate-limit + gas policies — far heavier to validate than the EAS
+likes path's flat selector-only policy, so the EAS path's `800k` verificationGasLimit fallback is
+insufficient here (verified: 800k OOMs, 3M succeeds). Three fixes, all in `scripts/agent/zerodev.ts`:
+
+1. **Generous explicit gas for the draw** (`DRAW_GAS_OVERRIDES`, verificationGasLimit 3M) — skips the
+   unreliable bundler estimate; the lever that actually fixed AA23. Sponsored + Arb gas is ~free and
+   the bundler still meters real usage, so over-provisioning the limit is harmless.
+2. **Deploy the user Kernel first** (`ensureKernelDeployed`) — a fresh raw-key Kernel is undeployed, so
+   the draw would otherwise deploy + enable + validate in one first-ever op. A cheap sudo deploy makes
+   the draw enable-only (no initCode). No-op once the Kernel has code (the real-world case).
+3. **Non-zero rate-limit `interval`** — `toRateLimitPolicy` defaults `interval=0` (a footgun: the
+   on-chain policy does time-bucket math); set to the permission's remaining lifetime so `count` is an
+   effective lifetime cap of `maxDraws`.
+
+> ⚠ **Latent in the shop POS rail** (`lib/shop/spend-permission.ts` + browser `grantShopSpendPermission`):
+> it uses the *same* heavy ABI call policy + rate-limit(interval=0) + no-key approval. Its first draw
+> against a freshly-deployed attendee Kernel will hit the *same* `800k`-too-low OOM and the `interval=0`
+> footgun. Port fixes 1 + 3 there before relying on it end-to-end.
+
+The demo's series must have a seeded **editions feed** for the legacy `claimTicket` path to mint — see
+`scripts/agent/seed-demo-editions.ts` (run once after `setup-demo-event.ts`). Real organiser publishes
+build signed editions client-side; the seeder mirrors that with a throwaway POD key.
 
 ## File map
 

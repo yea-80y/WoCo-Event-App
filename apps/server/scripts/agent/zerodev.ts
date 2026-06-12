@@ -43,8 +43,27 @@ const ENTRY_POINT = getEntryPoint("0.7");
 const KERNEL_VERSION = KERNEL_V3_1;
 /** Finite gasless budget (wei) — generous on Arb Sepolia; bounds a leaked key. */
 const GAS_ALLOWANCE_WEI = 200000000000000000n; // 0.2 ETH
+/**
+ * Explicit gas budget for the agent's enable-mode draw. The bundler's own
+ * estimate is unreliable here on two counts: (1) the ZeroDev June-2026 RPC
+ * incident returns a stub verificationGasLimit, and (2) this draw enables a
+ * permission validator whose call policy matches USDC.transfer's ABI args
+ * (recipient EQUAL + value LE ceiling) plus timestamp/rate-limit/gas policies —
+ * far heavier to validate than the EAS path's flat selector-only policy. With a
+ * too-low verificationGasLimit the account's validateUserOp runs out of gas and
+ * reverts with EMPTY data, surfacing as `AA23 reverted 0x`. Verified on-chain:
+ * 800k OOM-reverts, 3M succeeds. Sponsored + Arb gas is ~free, so we provision
+ * generously (the bundler still meters actual usage). */
+const DRAW_GAS_OVERRIDES = {
+  verificationGasLimit: 3_000_000n,
+  callGasLimit: 1_000_000n,
+  preVerificationGas: 1_000_000n,
+  paymasterVerificationGasLimit: 1_000_000n,
+  paymasterPostOpGasLimit: 500_000n,
+} as const;
 /** ZeroDev incident workaround (2026-06): explicit verificationGasLimit when the
- *  RPC returns a stub estimate the bundler then rejects. Matches sendSessionUserOp. */
+ *  RPC returns a stub estimate the bundler then rejects (used for the simple
+ *  deploy op, which otherwise relies on bundler estimation). */
 const VERIFICATION_GAS_FALLBACK = 800_000n;
 
 /** Minimal ABI so the call policy pins the spender to exactly `USDC.transfer`. */
@@ -73,6 +92,39 @@ function publicClient() {
 
 function paymaster() {
   return createZeroDevPaymasterClient({ chain: arbitrumSepolia, transport: http(rpcUrl()) });
+}
+
+/**
+ * Send a gasless userOp, retrying once with an explicit verificationGasLimit when
+ * the ZeroDev RPC returns a stub estimate the bundler then rejects (2026-06
+ * incident — same workaround as the browser sendSessionUserOp). Waits for the
+ * receipt and throws on an on-chain revert.
+ */
+async function sendUserOp(
+  kernelClient: KernelAccountClient,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  calls: any[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  gasOverrides?: Record<string, bigint>,
+): Promise<{ userOpHash: string; txHash: string }> {
+  let userOpHash: Hex;
+  if (gasOverrides) {
+    // Explicit gas — skip the (unreliable) bundler estimate entirely.
+    userOpHash = await kernelClient.sendUserOperation({ calls, ...gasOverrides });
+  } else {
+    try {
+      userOpHash = await kernelClient.sendUserOperation({ calls });
+    } catch (err) {
+      if (!/verificationGasLimit must be at least/i.test((err as Error)?.message ?? "")) throw err;
+      userOpHash = await kernelClient.sendUserOperation({
+        calls,
+        verificationGasLimit: VERIFICATION_GAS_FALLBACK,
+      });
+    }
+  }
+  const receipt = await kernelClient.waitForUserOperationReceipt({ hash: userOpHash });
+  if (!receipt.success) throw new Error("userOp reverted on-chain");
+  return { userOpHash, txHash: receipt.receipt.transactionHash };
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +163,29 @@ export async function buildKernelFromPrivateKey(privateKey: string): Promise<Bui
     paymaster: { getPaymasterData: (userOperation) => pm.sponsorUserOperation({ userOperation }) },
   });
   return { address: account.address.toLowerCase(), account, sudoValidator, kernelClient };
+}
+
+/**
+ * Ensure the user Kernel is DEPLOYED on-chain before the agent's first draw.
+ *
+ * WHY (root cause of the original AA23): the agent draws via a `regular`
+ * permission plugin in ZeroDev "enable mode". On an UNDEPLOYED account that one
+ * userOp must deploy the account (initCode), enable the permission validator,
+ * AND validate the transfer — all in the first-ever op, which over-runs
+ * validation gas and reverts with AA23 (empty data). The proven shop POS rail
+ * never hits this because attendee Kernels are already deployed by the time a
+ * draw happens; we reproduce that precondition with one cheap, well-estimated
+ * sudo userOp (a 0-value self-call). After this, the enable-mode draw carries no
+ * initCode and validates within budget. No-op if the account already has code.
+ */
+export async function ensureKernelDeployed(built: BuiltKernel): Promise<boolean> {
+  const pub = publicClient();
+  const code = await pub.getCode({ address: built.account.address as Address });
+  if (code && code !== "0x") return false;
+  await sendUserOp(built.kernelClient, [
+    { to: built.account.address as Address, value: 0n, data: "0x" as Hex },
+  ]);
+  return true;
 }
 
 export interface AgentGrantArgs {
@@ -154,7 +229,15 @@ export async function buildAgentSpendGrant(args: AgentGrantArgs): Promise<string
       ],
     }),
     toTimestampPolicy({ validUntil: args.validUntil }),
-    toRateLimitPolicy({ count: args.maxDraws }),
+    // `interval` MUST be non-zero: the on-chain RateLimitPolicy does time-bucket
+    // arithmetic with it, and interval=0 (the lib default when only `count` is
+    // passed) is a footgun. Set it to the permission's remaining lifetime so the
+    // window never refills before expiry → `count` is an effective LIFETIME cap
+    // of maxDraws draws (matches the server's intended bound).
+    toRateLimitPolicy({
+      count: args.maxDraws,
+      interval: Math.max(args.validUntil - Math.floor(Date.now() / 1000), 1),
+    }),
     toGasPolicy({ allowed: GAS_ALLOWANCE_WEI }),
   ];
 
@@ -232,19 +315,9 @@ export async function agentDrawTransfer(
   });
   const calls = [{ to: args.usdcAddress as Address, data }];
 
-  let userOpHash: Hex;
-  try {
-    userOpHash = await kernelClient.sendUserOperation({ calls });
-  } catch (err) {
-    if (!/verificationGasLimit must be at least/i.test((err as Error)?.message ?? "")) throw err;
-    userOpHash = await kernelClient.sendUserOperation({
-      calls,
-      verificationGasLimit: VERIFICATION_GAS_FALLBACK,
-    });
-  }
-  const receipt = await kernelClient.waitForUserOperationReceipt({ hash: userOpHash });
-  if (!receipt.success) throw new Error("Draw userOp reverted on-chain");
-  return { userOpHash, txHash: receipt.receipt.transactionHash };
+  // Explicit, generous gas — the enable-mode draw OOMs validation under the
+  // bundler's stub estimate (see DRAW_GAS_OVERRIDES).
+  return sendUserOp(kernelClient, calls, { ...DRAW_GAS_OVERRIDES });
 }
 
 /** Derive an address from a private key (helper for the demo's agent identity). */
