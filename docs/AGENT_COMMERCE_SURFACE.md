@@ -1,6 +1,6 @@
 # WoCo Agent Commerce Surface — Bounded, Non-Custodial Agent Wallet
 
-Status: **built, server typecheck-green, E2E demo + MCP ready to run** (2026-06-12).
+Status: **built + E2E demo verified on-chain; MCP server ready** (2026-06-12).
 Chain: **Arbitrum Sepolia (421614)**. Part of the Arbitrum buildathon (Tier-2 agent surface).
 
 ## The one-line pitch
@@ -120,8 +120,8 @@ bounds bite). Prints every tx (Arbiscan links) + remaining budget.
 - `ZERODEV_RPC` set (already required for the POS rail).
 - A published event with a **USDC / direct-transfer** series (no escrow) on chain 421614.
 - A test user Kernel funded with Arb Sepolia test USDC.
-- Env per `apps/server/.env.example` (agent section): `AGENT_DEMO_USER_PK`, `AGENT_DEMO_EVENT_ID`,
-  `AGENT_DEMO_SERIES_ID` (+ optional `AGENT_DEMO_AGENT_PK`).
+- Demo env per the agent section of `apps/server/.env.example` (a funded test user key + the demo
+  event/series ids; an optional dedicated agent key). No production secrets are involved.
 
 ## Verified on-chain (Arbitrum Sepolia, 2026-06-12)
 
@@ -157,10 +157,11 @@ insufficient here (verified: 800k OOMs, 3M succeeds). Three fixes, all in `scrip
    on-chain policy does time-bucket math); set to the permission's remaining lifetime so `count` is an
    effective lifetime cap of `maxDraws`.
 
-> ⚠ **Latent in the shop POS rail** (`lib/shop/spend-permission.ts` + browser `grantShopSpendPermission`):
-> it uses the *same* heavy ABI call policy + rate-limit(interval=0) + no-key approval. Its first draw
-> against a freshly-deployed attendee Kernel will hit the *same* `800k`-too-low OOM and the `interval=0`
-> footgun. Port fixes 1 + 3 there before relying on it end-to-end.
+> ✅ **Ported to the shop POS rail** (`lib/shop/spend-permission.ts` + browser `grantShopSpendPermission`):
+> it shared the *same* heavy ABI call policy + rate-limit + no-key enable-mode draw, so the same
+> `800k`-too-low OOM and `interval=0` footgun applied. Fixes 1 + 3 were ported there in commit
+> `11ee3ba` (`SHOP_DRAW_GAS_OVERRIDES`, verificationGasLimit 3M, applied on the draw). The shop crypto
+> rail still needs a live on-chain E2E settle to confirm end-to-end (the agent rail is the verified one).
 
 The demo's series must have a seeded **editions feed** for the legacy `claimTicket` path to mint — see
 `scripts/agent/seed-demo-editions.ts` (run once after `setup-demo-event.ts`). Real organiser publishes
