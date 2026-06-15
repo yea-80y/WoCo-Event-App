@@ -173,9 +173,14 @@ curl https://events-api.woco-net.com/.well-known/agent.json   # agent capability
 - `WoCoEventV2`, the sub-ENS registrar, and the Durin L2Registry are **source-verified on Arbiscan**
   (read the code at the address). The Stylus `LikeAggregator` is **not** yet (deployed `--no-verify`;
   reproducible Stylus verification is a follow-up), and V1 is superseded by V2.
-- **Stripe is the only fully-live payment rail.** The direct USDC ticket/shop payment code and the
-  spend-permission rails are built and reviewed; `WoCoEscrow` is disabled pending changes + an audit.
-  (The agent rail and shop rail use a *direct* USDC transfer, not escrow.)
+- **Two payment rails — card (Stripe) and direct USDC on Arbitrum — not Stripe alone.** Stripe is the
+  rail we run for paying customers today. The **direct USDC rail is built and verified on-chain** — the
+  agent-commerce draw settles real USDC end-to-end (see the [demo](DEMO.md) + draw tx), and the same
+  USDC settle backs on-chain ticketing and the shop. Before we enable crypto for real customers it
+  needs **(a) a security audit** (not yet done — deliberately gated) **and (b) the frontend Swarm
+  deploy** of the pay-in-USDC UI. So crypto is proven and demonstrable, but intentionally not
+  customer-live yet. `WoCoEscrow` (the optional escrow variant) is separately disabled pending changes
+  + that audit — the agent and shop rails use a *direct* USDC transfer, not escrow.
 - The **agent commerce E2E is verified on-chain**; the **shop** spend-permission rail has the same
   fixes ported but still needs a live on-chain settle to confirm end-to-end.
 - The likes/following/trending **API + on-chain path are live**; the frontend like UI's Swarm deploy
