@@ -25,7 +25,14 @@ smart-account login methods that make every user action gasless. Companion to
 - **Fee bound on-chain** — the platform fee is a per-event value (default 1.5%), and the contract
   **rejects any fee above 10%** at registration (`FeeTooHigh`).
 
-V1 (`0x172031E6a8428617B05F2002e0e278bb8fb3Ed8A`) is the earlier deploy and remains live.
+### V1 → V2 was a buildathon refactor
+
+V1 (`WoCoEvent`, `0x172031E6a8428617B05F2002e0e278bb8fb3Ed8A`) was a **minimal on-chain slot
+registry**, authored 2026-05-09 (before the buildathon). During the buildathon we **firmed the
+contract up into V2** (`WoCoEventV2`, deployed 2026-05-26): the USDC-escrow rewrite above added
+per-event pricing, time-locked organiser payout, `claimRefund` + cancel/dispute hooks, and the
+on-chain fee cap — then we ran the [§4 security review](#4-security-review-summary) over it. V1
+remains live but is **superseded by V2**.
 
 Register + claim were smoke-tested end-to-end against the production stack on 2026-05-29.
 

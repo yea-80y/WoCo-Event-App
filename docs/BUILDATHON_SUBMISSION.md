@@ -48,6 +48,12 @@ We deliberately built on what's distinctive about Arbitrum rather than generic E
 
 ## 3. On-chain ticketing + smart wallets (#1, #1b, #1c)
 
+**During the buildathon we moved the ticketing contract from V1 to V2.** V1 (`WoCoEvent`,
+`0x172031E6…`, authored pre-buildathon) was a minimal on-chain slot registry. V2 (`WoCoEventV2`,
+deployed 2026-05-26) is a USDC-escrow refactor that firmed it up — adding per-event pricing,
+time-locked organiser payout, `claimRefund` + cancel/dispute hooks, and an on-chain fee cap — and we
+ran a security review over the result.
+
 `WoCoEventV2` is USDC ticketing with per-event supply, a 1.5% platform fee (capped on-chain at 10%),
 time-locked organiser payout, and refunds. **Sponsor-gated `claimFor`/`batchClaimFor`** means a card
 buyer who never touches a wallet still gets an on-chain ticket — the Stripe webhook drives the mint.
