@@ -103,7 +103,7 @@ issuance already is (the platform feed-signing key + postage). The gate adds no 
 - Card (Stripe) is the live *card* rail for paying customers today; the USDC quote and
   spend-permission rails are built and **verified on-chain** (the standalone agent rail settles real
   USDC E2E — the agent/USDC path never touches Stripe), with the spend-permission cumulative cap
-  enforced server-side as described above. Crypto is intentionally **not customer-live yet** — gated on
-  a security audit + the frontend deploy.
+  enforced server-side as described above. Crypto is intentionally **held back from real customers
+  until a security audit** (not yet done).
 - The agentic (x402) purchasing hook converges on the same verified-transfer settlement; the
   standalone agent rail is verified on-chain (see [`WOCO_AGENT_ARCHITECTURE.md`](./WOCO_AGENT_ARCHITECTURE.md)).

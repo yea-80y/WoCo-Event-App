@@ -36,7 +36,7 @@ pay by card or in USDC.
   platform fee).
 - **Crypto** — ETH/USDC with a signed-quote flow + on-chain verification (on-chain ticketing + USDC
   shop rails; see the buildathon docs). Built and **verified on-chain** (the agent draw settles real
-  USDC), but intentionally **not customer-live yet** — gated on a security audit + the frontend deploy.
+  USDC), but intentionally **held back from real customers until a security audit** (not yet done).
 
 **Identity & login**
 - Web3 wallet (MetaMask / WalletConnect), **passkey smart wallet** (ZeroDev Kernel), **Coinbase Smart

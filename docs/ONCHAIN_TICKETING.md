@@ -98,6 +98,6 @@ rotate the dispute authority, and source-verify on Arbiscan.
 - **Two rails: card (Stripe) and direct USDC — not Stripe alone.** Stripe is the *card* rail we run
   for paying customers today. The direct USDC ticket-payment rail is built and **verified on-chain**
   (the agent draw settles real USDC E2E — the agent surface is USDC-only and never touches Stripe),
-  but intentionally **not customer-live yet** — gated on a security audit (not yet done) + the frontend
-  Swarm deploy. The escrow contract (`WoCoEscrow.sol`) is separately disabled pending changes + that
-  audit.
+  but intentionally **held back from real customers until a security audit** (not yet done) — the audit
+  is the gate, not the frontend deploy. The escrow contract (`WoCoEscrow.sol`) is separately disabled
+  pending changes + that same audit.

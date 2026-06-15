@@ -508,8 +508,9 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const digestBytes = manifestDigest(blob.signedManifest.body);
   const manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
 
-  // V2 (USDC-escrow) register params. Stripe is the only live payment path, so
-  // priceBaseUnits=0 keeps the on-chain escrow dormant; the organiser is the
+  // V2 (USDC-escrow) register params. The live website ticket flow settles outside
+  // this escrow (Stripe card, or direct-USDC verify), so priceBaseUnits=0 keeps the
+  // on-chain escrow dormant; the organiser is the
   // payout recipient; dropGate is open FIFO. eventEndTs is the event's real end
   // (Unix secs) but floored at now+1h so past-dated test events still satisfy
   // the contract's `eventEndTs > block.timestamp` guard. It doubles as the
