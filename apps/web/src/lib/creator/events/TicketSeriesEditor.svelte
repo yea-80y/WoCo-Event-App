@@ -68,6 +68,14 @@
      */
     cryptoRecipientMissing?: boolean;
     /**
+     * True when a paid tier has card payments enabled but the organiser's Stripe
+     * account isn't verified yet. Bound to the parent so the publish button can
+     * block UP FRONT — mirrors the server's live charges_enabled gate so the
+     * organiser isn't told to verify only after filling the whole form + clicking
+     * publish.
+     */
+    stripeVerificationMissing?: boolean;
+    /**
      * One-shot trigger: when set to a non-empty array, replaces the current
      * tier groups with imported tiers (Skiddle/Fatsoma/Eventbrite). The editor
      * resets this back to `null` after applying, so re-import works.
@@ -78,6 +86,7 @@
   let {
     series = $bindable(),
     cryptoRecipientMissing = $bindable(false),
+    stripeVerificationMissing = $bindable(false),
     importedTiers = $bindable(null),
   }: Props = $props();
 
@@ -113,25 +122,41 @@
   }
 
   function handleStripeToggle(tier: TierGroup, checked: boolean) {
-    if (checked) {
-      // Opening the modal — don't enable yet, wait for connection
-      stripeModalTierId = tier.id;
-      stripeModalOpen = true;
-    } else {
+    if (!checked) {
       tier.stripeEnabled = false;
+      return;
     }
+    // Already verified → enable straight away, no modal needed.
+    if (stripeStatus?.onboardingComplete) {
+      tier.stripeEnabled = true;
+      return;
+    }
+    // Not yet verified → open the connect/verify modal. The checkbox reflects
+    // intent immediately; the status row beneath it shows the real account state.
+    tier.stripeEnabled = true;
+    stripeModalTierId = tier.id;
+    stripeModalOpen = true;
   }
 
-  function handleStripeConnected() {
+  async function handleStripeConnected() {
     if (stripeModalTierId) {
       const tier = tierGroups.find(t => t.id === stripeModalTierId);
       if (tier) tier.stripeEnabled = true;
     }
-    // Mark locally so the status pill updates immediately without a refetch
-    stripeStatus = { ok: true, connected: true, onboardingComplete: true };
-    stripeStatusLoading = false;
     stripeModalOpen = false;
     stripeModalTierId = null;
+    // Re-fetch the REAL status rather than assuming completion — connecting an
+    // account is not the same as finishing identity verification, and claiming
+    // "connected" prematurely is exactly the bug we're fixing.
+    stripeStatusLoading = true;
+    try {
+      const resp = await getStripeAccountStatus();
+      if (resp.ok) stripeStatus = resp;
+    } catch {
+      // non-fatal — the publish gate enforces the real check server-side.
+    } finally {
+      stripeStatusLoading = false;
+    }
   }
 
   function handleStripeModalClose() {
@@ -163,9 +188,9 @@
       isPaid: !FEATURES.freeEventsAllowed,
       price: "",
       currency: "GBP",
-      cryptoEnabled: FEATURES.cryptoPaymentsAllowed,
+      cryptoEnabled: false,
       acceptedChains: [8453] as PaymentChainId[],
-      stripeEnabled: !FEATURES.cryptoPaymentsAllowed,
+      stripeEnabled: true,
       feePassedToCustomer: true,
       buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
       waves: [{
@@ -204,9 +229,9 @@
         isPaid,
         price: importedPaid ? priceStr : "",
         currency,
-        cryptoEnabled: FEATURES.cryptoPaymentsAllowed && isPaid,
+        cryptoEnabled: false,
         acceptedChains: [8453] as PaymentChainId[],
-        stripeEnabled: !FEATURES.cryptoPaymentsAllowed && isPaid,
+        stripeEnabled: isPaid,
         feePassedToCustomer: true,
         buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
         waves: [{
@@ -228,6 +253,22 @@
   // Push the missing-recipient state up to the parent so PublishButton can disable.
   $effect(() => {
     cryptoRecipientMissing = anyCryptoEnabled && !cryptoRecipientAddress;
+  });
+
+  /**
+   * True when a paid tier wants card payments but Stripe isn't verified. Only
+   * asserted once the real status has loaded — while loading we don't block
+   * (avoids a flash-disabled button), and the server's live charges_enabled
+   * check is the authoritative backstop either way. Mirrors the server gate so
+   * the organiser learns up front, not after filling the whole form.
+   */
+  const anyStripeUnverified = $derived(
+    !stripeStatusLoading &&
+    stripeStatus?.onboardingComplete !== true &&
+    tierGroups.some((t) => t.isPaid && t.stripeEnabled),
+  );
+  $effect(() => {
+    stripeVerificationMissing = anyStripeUnverified;
   });
 
   onMount(async () => {
@@ -557,13 +598,42 @@
                 </button>
               {/if}
               {#if FEATURES.cryptoPaymentsAllowed && tier.stripeEnabled}
-                <div class="stripe-connected-badge">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <circle cx="7" cy="7" r="6" fill="var(--success)" opacity="0.15"/>
-                    <path d="M4 7.5L6 9.5L10 5" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                  <span>Stripe connected</span>
-                </div>
+                <!-- Truthful Stripe status: driven by the real account state
+                     (stripeStatus), NOT by the checkbox. Clickable to open the
+                     connect/verify modal unless already verified. -->
+                <button
+                  type="button"
+                  class="stripe-verify-row"
+                  onclick={() => handleStripeToggle(tier, true)}
+                  disabled={stripeStatusLoading || stripeStatus?.onboardingComplete === true}
+                >
+                  {#if stripeStatusLoading}
+                    <span class="card-payments-status card-payments-status--loading">
+                      <span class="stripe-status-spinner"></span>
+                      Checking Stripe status…
+                    </span>
+                  {:else if stripeStatus?.onboardingComplete}
+                    <span class="card-payments-status card-payments-status--ok">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <circle cx="7" cy="7" r="6" fill="var(--success)" opacity="0.15"/>
+                        <path d="M4 7.5L6 9.5L10 5" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      Stripe connected
+                    </span>
+                  {:else if stripeStatus?.connected}
+                    <span class="card-payments-status card-payments-status--warn">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <circle cx="7" cy="7" r="6" stroke="var(--warning)" stroke-width="1.2" fill="none" opacity="0.6"/>
+                        <path d="M7 4.5V7.5M7 9.5V10" stroke="var(--warning)" stroke-width="1.3" stroke-linecap="round"/>
+                      </svg>
+                      Finish Stripe verification →
+                    </span>
+                  {:else}
+                    <span class="card-payments-status card-payments-status--cta">
+                      Connect Stripe to accept cards →
+                    </span>
+                  {/if}
+                </button>
               {/if}
             </div>
 
@@ -1367,18 +1437,21 @@
     line-height: 1.4;
   }
 
-  .stripe-connected-badge {
+  /* Truthful Stripe status row (crypto-allowed mode) — a bare button so the
+     whole status is clickable to open the connect/verify modal when not yet
+     verified; disabled (no pointer) once verified or while loading. */
+  .stripe-verify-row {
     display: inline-flex;
     align-items: center;
-    gap: 0.375rem;
     margin-left: 1.5rem;
-    padding: 0.25rem 0.625rem;
-    background: color-mix(in srgb, var(--success) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--success) 20%, var(--border));
-    border-radius: 9999px;
-    font-size: 0.6875rem;
-    font-weight: 500;
-    color: var(--success);
+    padding: 0.25rem 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
+  .stripe-verify-row:disabled {
+    cursor: default;
   }
 
   /* ── Crypto recipient prompt ── */

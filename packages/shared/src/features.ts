@@ -5,7 +5,7 @@
  */
 export const FEATURES = {
   freeEventsAllowed: false,
-  cryptoPaymentsAllowed: false,
+  cryptoPaymentsAllowed: true,
 } as const;
 
 /** Minimum buyer-pays fee % (3% Stripe + 1.5% WoCo). UI snaps below this back up. */

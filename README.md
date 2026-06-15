@@ -86,6 +86,13 @@ Server configuration lives in `apps/server/.env` (see `apps/server/.env.example`
 keys — Bee node, postage, feed signer, payment/Stripe, and chain RPC settings). **Never commit a
 populated `.env`.**
 
+**To use the full app (event creation, ticketing, shop), set up a Stripe test account first.** Card
+payments are on by default for a ticket tier, and the server live-checks Stripe `charges_enabled`
+before allowing publish — so connect and verify a Stripe Connect account via **Dashboard → Payments**
+(a Stripe **test-mode** account with test identity is fine). To publish without Stripe, untick **Card
+payments** on the tier. This gate applies only to card payments — likes/follows and sub-ENS identity
+need no Stripe.
+
 ## Documentation
 
 | Doc | Contents |

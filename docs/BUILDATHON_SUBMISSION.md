@@ -189,6 +189,17 @@ curl https://events-api.woco-net.com/.well-known/agent.json   # agent capability
   un-shipped to customers until audited. `WoCoEscrow` (the optional escrow variant) is separately
   disabled pending changes + that same audit — the agent and shop rails use a *direct* USDC transfer,
   not escrow.
+- **Trying it yourself — set up a Stripe *test-mode* account first.** To exercise the full platform
+  (event creation, ticketing, the shop) you need a **connected, verified Stripe account**. Card
+  payments are on by default for a ticket tier and the server live-checks `charges_enabled`, so
+  publishing an event is blocked — and now disabled up front with "Verify your Stripe account, or turn
+  off card payments, to publish" — until Stripe is verified. **No real business or banking details
+  are needed:** with Stripe in **test mode**, go to **Dashboard → Payments**, start Connect
+  onboarding, and use Stripe's built-in **"Use test data" / "Skip"** buttons on each step — they
+  auto-fill fake business + identity info and take the account straight to a verified
+  (`charges_enabled`) state. To skip Stripe entirely, untick **Card payments** on the tier before
+  publishing. This is a payments gate only — it does **not** apply to likes/follows or sub-ENS, which
+  need no Stripe.
 - The **agent commerce E2E is verified on-chain**; the **shop** spend-permission rail has the same
   fixes ported but still needs a live on-chain settle to confirm end-to-end.
 - The likes/following/trending **API + on-chain path are live**; the frontend like UI's Swarm deploy

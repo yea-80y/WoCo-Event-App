@@ -659,11 +659,17 @@ export async function getEasSessionClient(
  * then rejects ("verificationGasLimit must be at least 10000"). An explicitly
  * provided value bypasses the broken estimate — viem only fills MISSING gas
  * fields — and the paymaster signs over the op we actually send, so the
- * sponsorship stays valid. Conservative ceiling: Kernel v3 permission-validator
- * verification (incl. session-key enable path) fits comfortably; unused gas is
- * refunded post-execution.
+ * sponsorship stays valid.
+ *
+ * Ceiling sized for the WORST case: a brand-new account's FIRST userOp, which
+ * deploys the Kernel AND runs session-key enable-mode validation with the heavy
+ * EAS call policy in a single simulateValidation. That path measured ~3M; 800k
+ * (fine for already-deployed "use mode" ops) reverted with AA26 over
+ * verificationGasLimit on first like/follow. Same latent ceiling as the agent
+ * commerce / shop rail (project_agent_commerce_aa23). Sponsored + only the limit,
+ * not the spend — unused verification gas is not charged.
  */
-const VERIFICATION_GAS_FALLBACK = 800_000n;
+const VERIFICATION_GAS_FALLBACK = 3_000_000n;
 
 function isStubVerificationGasError(err: unknown): boolean {
   const seen = new Set<unknown>();

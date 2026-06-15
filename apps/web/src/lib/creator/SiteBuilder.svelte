@@ -47,6 +47,7 @@
   let collectEmail = $state(true);
   let collectInfo = $state(false);
   let cryptoRecipientMissing = $state(false);
+  let stripeVerificationMissing = $state(false);
   let createdEventId = $state<string | null>(null);
   let importedTiers = $state<ImportTier[] | null>(null);
 
@@ -358,6 +359,7 @@
             bind:collectEmail
             bind:collectInfo
             bind:cryptoRecipientMissing
+            bind:stripeVerificationMissing
             bind:importedTiers
           />
 
@@ -375,8 +377,12 @@
             {apiUrl}
             skipAutoList
             label="Create event →"
-            disabled={cryptoRecipientMissing}
-            disabledReason={cryptoRecipientMissing ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers." : undefined}
+            disabled={cryptoRecipientMissing || stripeVerificationMissing}
+            disabledReason={cryptoRecipientMissing
+              ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
+              : stripeVerificationMissing
+                ? "Verify your Stripe account above, or turn off card payments, to publish."
+                : undefined}
             onpublished={onEventPublished}
           />
         </div>

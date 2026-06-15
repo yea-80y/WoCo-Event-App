@@ -26,6 +26,14 @@ const REVOKED_TOPIC = keccakId("Revoked(address,address,bytes32,bytes32)");
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 
+// Bounded retry for the read-after-write race in getVerifiedLike (server RPC
+// replica lagging the bundler that just mined the attestation). ~6 attempts ×
+// 1s ≈ 6s ceiling — long enough to outlast typical L2 replica skew, short
+// enough that a forged UID is still rejected promptly.
+const ATTESTATION_READ_ATTEMPTS = 6;
+const ATTESTATION_READ_DELAY_MS = 1000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 let _provider: JsonRpcProvider | null = null;
 function provider(): JsonRpcProvider {
   if (!_provider) _provider = new JsonRpcProvider(getChainRpcUrl(EAS_CHAIN_ID), EAS_CHAIN_ID);
@@ -59,11 +67,24 @@ export async function getVerifiedLike(uid: string): Promise<
   { ok: true; like: OnChainLike } | { ok: false; error: string }
 > {
   const eas = new Contract(EAS_ADDRESS, EAS_ABI, provider());
-  let att: any;
-  try {
-    att = await eas.getAttestation(uid);
-  } catch {
-    return { ok: false, error: "Failed to read attestation on-chain" };
+
+  // Read-after-write race: the client extracted this UID from the just-mined tx
+  // receipt's `Attested` log, so the attestation provably exists on-chain — but
+  // the server's RPC replica can lag a block behind the bundler that mined it,
+  // returning the zero struct → a false "AttestationNotFound". Retry the read a
+  // few times before trusting an empty result (same head-skew class as the
+  // payment-verify path). A non-empty result — including revoked or mismatched —
+  // is final and breaks immediately; only the empty/error case is retried, so a
+  // genuinely forged UID is rejected after a bounded wait, not indefinitely.
+  let att: any = null;
+  for (let attempt = 0; attempt < ATTESTATION_READ_ATTEMPTS; attempt++) {
+    try {
+      att = await eas.getAttestation(uid);
+    } catch {
+      att = null;
+    }
+    if (att && att.attester !== ZERO_ADDR) break;
+    if (attempt < ATTESTATION_READ_ATTEMPTS - 1) await sleep(ATTESTATION_READ_DELAY_MS);
   }
   if (!att || att.attester === ZERO_ADDR) return { ok: false, error: "AttestationNotFound" };
   if ((att.schema as string).toLowerCase() !== schemaUid().toLowerCase()) {

@@ -25,6 +25,7 @@
   let imageDataUrl = $state<string | null>(null);
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
   let cryptoRecipientMissing = $state(false);
+  let stripeVerificationMissing = $state(false);
   let claimMode = $state<ClaimMode>("email");
   let collectEmail = $state(true);
   let collectInfo = $state(false);
@@ -71,6 +72,7 @@
     bind:collectEmail
     bind:collectInfo
     bind:cryptoRecipientMissing
+    bind:stripeVerificationMissing
     bind:importedTiers
   />
 
@@ -87,8 +89,12 @@
     {series}
     orderFields={collectInfo ? orderFields : undefined}
     {claimMode}
-    disabled={cryptoRecipientMissing}
-    disabledReason={cryptoRecipientMissing ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers." : undefined}
+    disabled={cryptoRecipientMissing || stripeVerificationMissing}
+    disabledReason={cryptoRecipientMissing
+      ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
+      : stripeVerificationMissing
+        ? "Verify your Stripe account above, or turn off card payments, to publish."
+        : undefined}
     {onpublished}
   />
 </div>
