@@ -12,6 +12,10 @@ pay by card or in USDC.
 > with on-chain loyalty, and a bounded non-custodial **AI-agent commerce** surface) is documented in
 > **[docs/BUILDATHON_SUBMISSION.md](docs/BUILDATHON_SUBMISSION.md)** — start there.
 
+## Demo
+
+**▶ [Watch the agent-commerce demo (~1 min)](https://github.com/yea-80y/WoCo-Event-App/releases/tag/v0.1-buildathon)** — an AI agent autonomously buys an event ticket in USDC from a **bounded, non-custodial spend permission**: the user's funds never leave their wallet and the agent can't exceed its on-chain cap. On-chain proof: [Arbiscan draw tx](https://sepolia.arbiscan.io/tx/0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1). More: [docs/DEMO.md](docs/DEMO.md).
+
 ---
 
 ## What's in the platform

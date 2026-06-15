@@ -8,6 +8,7 @@ companion doc.
 
 - **Chain:** Arbitrum Sepolia (`421614`) for all contract work below.
 - **Live API:** `https://events-api.woco-net.com`  ·  **Frontend:** `woco.eth.limo` (ENS → Swarm)
+- **▶ Demo video — autonomous agent buys a ticket:** [watch (~1 min)](https://github.com/yea-80y/WoCo-Event-App/releases/tag/v0.1-buildathon) · on-chain draw: [Arbiscan](https://sepolia.arbiscan.io/tx/0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1) · details in [docs/DEMO.md](DEMO.md)
 - **Honest caveats:** collected in [§9](#9-honest-state).
 
 ---
