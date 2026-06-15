@@ -24,7 +24,7 @@ wrong recipient) are rejected by the account's call policy.
 
 ## Verify on-chain
 
-- **Draw tx:** [`0x0e8e688f…`](https://sepolia.arbiscan.io/tx/0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1)
+- **Draw tx (shown in the video):** [`0x3f21a886…`](https://sepolia.arbiscan.io/tx/0x3f21a88674ede7979ed7359a876f9537eafd211d0684359abb559bd218b2813d) — ticket edition #9, 1 USDC drawn from the bounded permission
 - Full design + verified-tx table: [AGENT_COMMERCE_SURFACE.md](AGENT_COMMERCE_SURFACE.md)
 
 ## Stack

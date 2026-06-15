@@ -14,7 +14,7 @@ pay by card or in USDC.
 
 ## Demo
 
-**▶ [Watch the agent-commerce demo (~1 min)](https://github.com/yea-80y/WoCo-Event-App/releases/tag/v0.1-buildathon)** — an AI agent autonomously buys an event ticket in USDC from a **bounded, non-custodial spend permission**: the user's funds never leave their wallet and the agent can't exceed its on-chain cap. On-chain proof: [Arbiscan draw tx](https://sepolia.arbiscan.io/tx/0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1). More: [docs/DEMO.md](docs/DEMO.md).
+**▶ [Watch the agent-commerce demo (~1 min)](https://github.com/yea-80y/WoCo-Event-App/releases/tag/v0.1-buildathon)** — an AI agent autonomously buys an event ticket in USDC from a **bounded, non-custodial spend permission**: the user's funds never leave their wallet and the agent can't exceed its on-chain cap. On-chain proof: [Arbiscan draw tx](https://sepolia.arbiscan.io/tx/0x3f21a88674ede7979ed7359a876f9537eafd211d0684359abb559bd218b2813d). More: [docs/DEMO.md](docs/DEMO.md).
 
 ---
 
