@@ -100,7 +100,10 @@ issuance already is (the platform feed-signing key + postage). The gate adds no 
 - The **0.25% crypto fee is recorded but not yet collected** on the direct-transfer rail — splitting
   a single ERC-20 transfer non-custodially needs a forwarder/splitter (a later milestone); funds go
   in full to the merchant today rather than break the non-custodial model to collect a fee.
-- Card (Stripe) is the fully-live rail; the USDC quote and spend-permission rails are built and
-  reviewed, with the spend-permission cumulative cap enforced server-side as described above.
+- Card (Stripe) is the live *card* rail for paying customers today; the USDC quote and
+  spend-permission rails are built and **verified on-chain** (the standalone agent rail settles real
+  USDC E2E — the agent/USDC path never touches Stripe), with the spend-permission cumulative cap
+  enforced server-side as described above. Crypto is intentionally **not customer-live yet** — gated on
+  a security audit + the frontend deploy.
 - The agentic (x402) purchasing hook converges on the same verified-transfer settlement; the
   standalone agent rail is verified on-chain (see [`WOCO_AGENT_ARCHITECTURE.md`](./WOCO_AGENT_ARCHITECTURE.md)).
