@@ -770,3 +770,273 @@ export async function registerSubEnsViaPermit(
   ]);
   return { userOpHash, txHash: receipt.receipt.transactionHash };
 }
+
+// ---------------------------------------------------------------------------
+// Account recovery (docs/PASSKEY_RECOVERY_PLAN.md) — guardian-gated signer
+// rotation, so a passkey Kernel can safely HOLD funds. The sudo signer (ECDSA
+// over PRF) is unchanged for daily use; recovery is a SEPARATE escape path.
+//
+// DEPLOYED-account model (the realistic WoCo case — sub-ENS / likes already
+// deploy these Kernels), verified end-to-end on Arb Sepolia by
+// scripts/recovery-spike-caller-hook.ts (recovery tx 0x17f0622…, address
+// preserved, old key dead): install the recovery ACTION as a fallback module
+// (type 3) + a CALLER HOOK that pins the permitted guardian account address; a
+// SEPARATE guardian account *calls* target.doRecovery(...), authorised by the
+// hook on msg.sender. (The alternative — bolting a weighted validator onto the
+// deployed account as its OWN recovery validator — reverts AA23 InvalidValidator;
+// it works only baked-in at genesis. See recovery-spike-deployed.ts.)
+//
+// M-of-N is preserved by making the GUARDIAN account itself a weighted-ECDSA
+// Kernel: "backup EOA" = 1 signer @ threshold 1 (v1), "social 2-of-3" = same
+// mechanism with more signers. So who can recover is set entirely by the
+// guardian account's config, not by this install.
+//
+// Both action + hook are cross-chain singletons live on Arb Sepolia.
+// Client-first: install + rotation are sponsored userOps, no server secret.
+// ---------------------------------------------------------------------------
+
+const RECOVERY_ACTION_ADDRESS = "0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E" as const;
+const RECOVERY_CALLER_HOOK = "0x990a9FC8189D96d59E3cE98bd87F42135a24a30E" as const;
+/** ERC-7579 fallback module — the recovery action is a selector-routed fallback. */
+const RECOVERY_FALLBACK_MODULE_TYPE = 3n;
+const RECOVERY_EXECUTOR_FN = "function doRecovery(address _validator, bytes calldata _data)";
+const INSTALL_MODULE_FN =
+  "function installModule(uint256 _type, address _module, bytes calldata _initData)";
+
+/**
+ * Guardian set for the weighted-ECDSA guardian ACCOUNT. v1 = a single backup EOA
+ * (one signer, weight 100, threshold 100). Social recovery = more signers + an
+ * M-of-N threshold — SAME shape, no rewrite.
+ */
+export interface GuardianConfig {
+  signers: { address: Address; weight: number }[];
+  threshold: number;
+}
+
+/** ZeroDev/viem runtime for the recovery path (lazy-loaded, off the hot path). */
+async function loadRecoveryDeps() {
+  const [
+    { createPublicClient, http, encodeFunctionData, toFunctionSelector, parseAbi, parseAbiParameters, encodeAbiParameters, concat, erc20Abi },
+    { arbitrumSepolia },
+    { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient, addressToEmptyAccount },
+    { getEntryPoint, KERNEL_V3_1 },
+    { getValidatorAddress },
+    { createWeightedECDSAValidator },
+  ] = await Promise.all([
+    import("viem"),
+    import("viem/chains"),
+    import("@zerodev/sdk"),
+    import("@zerodev/sdk/constants"),
+    import("@zerodev/ecdsa-validator"),
+    import("@zerodev/weighted-ecdsa-validator"),
+  ]);
+
+  const rpcUrl = getRpcUrl();
+  const entryPoint = getEntryPoint("0.7");
+  const kernelVersion = KERNEL_V3_1;
+  const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(rpcUrl) });
+
+  return {
+    rpcUrl, entryPoint, kernelVersion, publicClient, arbitrumSepolia, http,
+    encodeFunctionData, toFunctionSelector, parseAbi, parseAbiParameters, encodeAbiParameters, concat, erc20Abi,
+    createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient, addressToEmptyAccount,
+    getValidatorAddress, createWeightedECDSAValidator,
+  };
+}
+
+type RecoveryDeps = Awaited<ReturnType<typeof loadRecoveryDeps>>;
+
+function recoverySponsor(d: RecoveryDeps) {
+  const paymaster = d.createZeroDevPaymasterClient({ chain: d.arbitrumSepolia, transport: d.http(d.rpcUrl) });
+  return {
+    getPaymasterData: (userOperation: Parameters<typeof paymaster.sponsorUserOperation>[0]["userOperation"]) =>
+      paymaster.sponsorUserOperation({ userOperation }),
+  };
+}
+
+/**
+ * Build the weighted-ECDSA guardian Kernel account. The address is a pure
+ * function of `config` (signer addresses + weights + threshold), so passing
+ * placeholder signers (setup) and real signers (recovery) yields the SAME
+ * address — which is exactly the value pinned in the caller hook.
+ */
+async function buildGuardianAccount(
+  d: RecoveryDeps,
+  config: GuardianConfig,
+  signers: unknown[],
+) {
+  const validator = await d.createWeightedECDSAValidator(d.publicClient, {
+    entryPoint: d.entryPoint,
+    kernelVersion: d.kernelVersion,
+    config: { threshold: config.threshold, signers: config.signers },
+    signers: signers as Parameters<typeof d.createWeightedECDSAValidator>[1]["signers"],
+  });
+  return d.createKernelAccount(d.publicClient, {
+    entryPoint: d.entryPoint,
+    kernelVersion: d.kernelVersion,
+    plugins: { sudo: validator },
+  });
+}
+
+/**
+ * Deterministic address of the guardian account for a given config — the value
+ * registered in the caller hook. Computed with placeholder (empty-account)
+ * signers; signing capability is irrelevant to the CREATE2 address.
+ */
+export async function deriveGuardianAddress(config: GuardianConfig): Promise<string> {
+  const d = await loadRecoveryDeps();
+  const signers = config.signers.map((s) => d.addressToEmptyAccount(s.address));
+  const account = await buildGuardianAccount(d, config, signers);
+  return account.address.toLowerCase();
+}
+
+/** installModule(type=3) init data: selector + caller hook + abi(delegatecall, 0xff-flagged guardian list). */
+function buildRegisterGuardianCallData(d: RecoveryDeps, guardianAddress: Address): Hex {
+  return d.encodeFunctionData({
+    abi: d.parseAbi([INSTALL_MODULE_FN]),
+    functionName: "installModule",
+    args: [
+      RECOVERY_FALLBACK_MODULE_TYPE,
+      RECOVERY_ACTION_ADDRESS,
+      d.concat([
+        d.toFunctionSelector(d.parseAbi([RECOVERY_EXECUTOR_FN])[0]),
+        RECOVERY_CALLER_HOOK,
+        d.encodeAbiParameters(d.parseAbiParameters("bytes selectorData, bytes hookData"), [
+          "0xff", // selectorData: route via delegatecall
+          d.concat([
+            "0xff", // flag: install the caller hook
+            d.encodeAbiParameters(d.parseAbiParameters("address[] guardians"), [[guardianAddress]]),
+          ]),
+        ]),
+      ]),
+    ],
+  });
+}
+
+/** Send a sudo-signed userOp through the built Kernel, with the same stub-verificationGas retry as sendSessionUserOp. */
+async function sendSudoUserOp(
+  client: KernelAccountClient,
+  op: { callData?: Hex; calls?: { to: Address; data: Hex; value?: bigint }[]; callGasLimit?: bigint },
+): Promise<{ userOpHash: Hex; txHash: string }> {
+  let userOpHash: Hex;
+  try {
+    userOpHash = await client.sendUserOperation(op as Parameters<typeof client.sendUserOperation>[0]);
+  } catch (err) {
+    if (!isStubVerificationGasError(err)) throw err;
+    console.warn("[kernel] recovery op got stub verificationGasLimit — retrying with explicit", VERIFICATION_GAS_FALLBACK);
+    userOpHash = await client.sendUserOperation({
+      ...op,
+      verificationGasLimit: VERIFICATION_GAS_FALLBACK,
+    } as Parameters<typeof client.sendUserOperation>[0]);
+  }
+  const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
+  return { userOpHash, txHash: receipt.receipt.transactionHash };
+}
+
+/**
+ * "Set up account recovery" ceremony — ONE sudo-signed (passkey) userOp on the
+ * user's OWN Kernel that installs the recovery action + caller hook pinning
+ * `guardianAddress` (derive it with deriveGuardianAddress). Deploys the Kernel
+ * if still counterfactual. Sponsored; no server secret. After this, the live
+ * passkey still controls the account exactly as before — only an extra recovery
+ * route exists.
+ */
+export async function setupRecovery(
+  builtKernel: BuiltKernel,
+  guardianAddress: string,
+): Promise<{ userOpHash: string; txHash: string }> {
+  const d = await loadRecoveryDeps();
+  const callData = buildRegisterGuardianCallData(d, guardianAddress as Address);
+  return sendSudoUserOp(builtKernel.kernelClient, { callData });
+}
+
+export interface RecoverAccountArgs {
+  /** The locked-out user's Kernel address to recover. */
+  targetAddress: string;
+  /** Guardian set used at setup — MUST reproduce the registered guardian address. */
+  guardianConfig: GuardianConfig;
+  /** Live guardian signers (viem accounts) meeting the threshold. */
+  guardianSigners: unknown[];
+  /** New owner the sudo signer is rotated to (a freshly-registered passkey's
+   *  PRF-EOA address, or a self-custodied EOA). Same address ⇒ funds intact. */
+  newOwnerAddress: string;
+}
+
+/**
+ * Perform recovery: the guardian account (weighted-ECDSA Kernel) calls
+ * target.doRecovery, rotating the target's sudo ECDSA owner to `newOwnerAddress`.
+ * The caller hook authorises by msg.sender == the registered guardian account.
+ * Guardians can ONLY rotate the signer — never spend. Kernel address preserved.
+ *
+ * Run from the recovery portal where the guardian factor(s) are present
+ * (e.g. the user's backup EOA). Sponsored (the locked-out user has no gas).
+ */
+export async function recoverAccount(args: RecoverAccountArgs): Promise<{ userOpHash: string; txHash: string }> {
+  const d = await loadRecoveryDeps();
+  const guardianAccount = await buildGuardianAccount(d, args.guardianConfig, args.guardianSigners);
+  const guardianClient = d.createKernelAccountClient({
+    account: guardianAccount,
+    chain: d.arbitrumSepolia,
+    bundlerTransport: d.http(d.rpcUrl),
+    client: d.publicClient,
+    paymaster: recoverySponsor(d),
+  });
+
+  // doRecovery(validatorModule, ownerEnableData): ECDSA enable data IS the raw
+  // 20-byte owner address (matches recovery-spike.ts, PASS). The validator
+  // module address is the chain-wide ECDSA validator singleton.
+  const data = d.encodeFunctionData({
+    abi: d.parseAbi([RECOVERY_EXECUTOR_FN]),
+    functionName: "doRecovery",
+    args: [d.getValidatorAddress(d.entryPoint, d.kernelVersion), args.newOwnerAddress as Hex],
+  });
+
+  return sendSudoUserOp(guardianClient, {
+    calls: [{ to: args.targetAddress as Address, data }],
+    callGasLimit: 1_000_000n,
+  });
+}
+
+/**
+ * Escape hatch — sweep funds OUT of the Kernel to a self-custodied external
+ * address while the passkey still works (so funds are never structurally
+ * trapped, independent of recovery being configured). Sudo-signed, sponsored.
+ * Sweeps native ETH (full balance — gas is paymaster-paid) and any listed ERC-20s
+ * (full balanceOf) in a single userOp. No-op (throws) if nothing to move.
+ */
+export async function sweepToExternal(
+  builtKernel: BuiltKernel,
+  args: { to: string; erc20Tokens?: string[] },
+): Promise<{ userOpHash: string; txHash: string }> {
+  const d = await loadRecoveryDeps();
+  const account = builtKernel.address as Address;
+  const to = args.to as Address;
+
+  const calls: { to: Address; data: Hex; value?: bigint }[] = [];
+
+  const nativeBalance = await d.publicClient.getBalance({ address: account });
+  if (nativeBalance > 0n) {
+    calls.push({ to, value: nativeBalance, data: "0x" });
+  }
+
+  for (const token of args.erc20Tokens ?? []) {
+    const bal = (await d.publicClient.readContract({
+      address: token as Address,
+      abi: d.erc20Abi,
+      functionName: "balanceOf",
+      args: [account],
+    })) as bigint;
+    if (bal > 0n) {
+      calls.push({
+        to: token as Address,
+        value: 0n,
+        data: d.encodeFunctionData({ abi: d.erc20Abi, functionName: "transfer", args: [to, bal] }),
+      });
+    }
+  }
+
+  if (calls.length === 0) throw new Error("sweepToExternal: nothing to sweep (no native or token balance).");
+
+  const callData = await builtKernel.account.encodeCalls(calls);
+  return sendSudoUserOp(builtKernel.kernelClient, { callData });
+}

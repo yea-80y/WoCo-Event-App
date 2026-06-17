@@ -1,10 +1,44 @@
 # Passkey Account Recovery — Design / Build Plan
 
-**Status:** Phase 0 spike DONE + PASSING on Arb Sepolia (2026-06-17). Phase 1 has ONE open
-design decision (deployed-account install path) — see "Phase 0 results" below before building.
+**Status:** Phase 0 spike DONE + PASSING (2026-06-17). **Phase 1 entry verified + MVP landed
+(2026-06-17):** the deployed-account caller-hook flow is PROVEN end-to-end on Arb Sepolia and
+the `setupRecovery` / `recoverAccount` / `sweepToExternal` primitives are implemented behind
+the `KernelSudoValidator` seam (typechecks clean; recovery-portal UX still TODO). The open
+deployed-account design decision is RESOLVED — see "Phase 1 progress" + "Phase 0 results".
 **Owner intent (2026-06-17):** let ZeroDev Kernel passkey accounts safely *hold/receive
 funds* by adding a recovery path, instead of the current blanket "passkey accounts can't
 receive funds" rule.
+
+---
+
+## PHASE 1 PROGRESS (2026-06-17)
+
+**✅ Step 1 — caller-hook flow VERIFIED on a DEPLOYED Arb Sepolia account.** New spike
+`apps/web/scripts/recovery-spike-caller-hook.ts` = **PASS**: deploy a sudo-only Kernel →
+sudo-signed `installModule(type=3, recoveryAction, initData)` installs the recovery action +
+caller hook pinning a guardian account → a SEPARATE guardian account (itself a weighted-ECDSA
+Kernel, M-of-N seam) *calls* `target.doRecovery(validator, newOwner)` → **same address
+preserved, new signer controls, OLD KEY DEAD**. Recovery tx `0x17f062219243521acde9545fa7af1851a8bbbd51fab9a23a286ed8869d9d2f3f`,
+target `0x8DEF5755D288f452837E3337b5799C19718a1922`. This is the realistic WoCo path (most
+passkey Kernels are already deployed) and clears the AA23 `InvalidValidator` dead-end from
+`recovery-spike-deployed.ts`. Install init-data shape verified verbatim against
+zerodev-examples `guardians/recovery_call.ts`.
+
+**✅ Step 2 — MVP primitives implemented** in `apps/web/src/lib/auth/kernel-account.ts`
+(behind the `KernelSudoValidator` seam, client-first, paymaster-sponsored):
+- `deriveGuardianAddress(config)` — deterministic guardian-account address from a
+  `GuardianConfig` (signers+weights+threshold); the value pinned in the caller hook.
+- `setupRecovery(builtKernel, guardianAddress)` — one sudo (passkey) userOp; installs the
+  recovery action + caller hook. Deploys the Kernel if counterfactual.
+- `recoverAccount({ targetAddress, guardianConfig, guardianSigners, newOwnerAddress })` —
+  guardian account calls `doRecovery`, rotating sudo to the new owner.
+- `sweepToExternal(builtKernel, { to, erc20Tokens? })` — escape hatch: sudo-signed sweep of
+  native ETH + listed ERC-20s to a self-custodied address (funds never structurally trapped).
+
+**Remaining for Phase 1 → 2:** recovery-portal UX (guardian connect + co-sign), setup UI,
+funds-policy wiring in `TicketSeriesEditor`, timelock+cancel, 2nd-passkey guardian, and
+**escrow-grade test/review before enabling organiser-payout-to-passkey.** Counterfactual
+accounts MAY use the simpler baked-in Path A (`recovery-spike.ts`).
 
 ---
 
