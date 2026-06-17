@@ -27,8 +27,12 @@
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
   let cryptoRecipientMissing = $state(false);
   // null = still checking · false = not verified · true = Stripe charges_enabled.
-  // At this stage a verified Stripe account gates publishing ANY event.
+  // Only gates publish when the event actually takes card payments (below).
   let stripeVerified = $state<boolean | null>(null);
+  // Card payments settle through Stripe → Stripe verification is required only
+  // for events that have card on. Crypto-only events are NOT gated on Stripe
+  // (their anti-abuse gate is separate — see docs/EVENT_CREATION_ANTI_ABUSE.md).
+  const anyCardEnabled = $derived(series.some((s) => s.payment?.stripeEnabled === true));
   let claimMode = $state<ClaimMode>("email");
   let collectEmail = $state(true);
   let collectInfo = $state(false);
@@ -59,7 +63,9 @@
 <div class="event-form">
   <h2>Create Event</h2>
 
-  <StripeVerifyGate bind:verified={stripeVerified} />
+  {#if anyCardEnabled}
+    <StripeVerifyGate bind:verified={stripeVerified} />
+  {/if}
 
   <ImportUrlPanel onapply={applyImport} />
 
@@ -93,9 +99,9 @@
     {series}
     orderFields={collectInfo ? orderFields : undefined}
     {claimMode}
-    disabled={cryptoRecipientMissing || stripeVerified !== true}
-    disabledReason={stripeVerified !== true
-      ? "Verify your Stripe account above to publish — required for all events for now."
+    disabled={cryptoRecipientMissing || (anyCardEnabled && stripeVerified !== true)}
+    disabledReason={anyCardEnabled && stripeVerified !== true
+      ? "Verify your Stripe account above to accept card payments — or turn card payments off."
       : cryptoRecipientMissing
         ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
         : undefined}

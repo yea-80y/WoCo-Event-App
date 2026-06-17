@@ -1,10 +1,11 @@
 <script lang="ts">
   /**
-   * Up-front Stripe verification prompt for the event-creation flow. WoCo routes
-   * ticket payments through Stripe, so at this stage an organiser needs a
-   * connected + verified (`charges_enabled`) account to publish ANY event —
-   * card OR crypto-only. (Crypto-only will get its own gate — staking etc. —
-   * later; until then Stripe is the universal identity/verification gate.)
+   * Up-front Stripe verification prompt for the event-creation flow. Card
+   * payments settle through Stripe, so an organiser needs a connected + verified
+   * (`charges_enabled`) account to publish an event that has card payments on.
+   * The host renders this ONLY when a tier has card payments enabled — crypto-only
+   * events are NOT gated on Stripe (anti-abuse for those is a separate future gate:
+   * stake / proof-of-humanity — see docs/EVENT_CREATION_ANTI_ABUSE.md).
    *
    * Rendered at the TOP of the create flow so the organiser is prompted before
    * filling the form, not told via a disabled button afterwards. Binds `verified`
@@ -65,15 +66,16 @@
         </svg>
       </span>
       <div class="gate-text">
-        <p class="gate-title">Verify Stripe to publish events</p>
+        <p class="gate-title">Verify Stripe to accept card payments</p>
         <p class="gate-sub">
           {#if !auth.isConnected}
-            Sign in, then connect Stripe — ticket payments run through it.
+            Sign in, then connect Stripe — card payments run through it.
           {:else}
-            WoCo settles ticket payments through Stripe, so a verified account is
-            required to publish — for now this includes crypto-only events. In
-            test mode it takes ~2 minutes (use Stripe's “Use test data” / “Skip”
-            buttons — no real business details needed).
+            Card payments settle through Stripe, so you need a connected, verified
+            account to publish an event with card payments on. In test mode it
+            takes ~2 minutes (use Stripe's “Use test data” / “Skip” buttons — no
+            real business details needed). Crypto-only? Turn off card payments on
+            the tier and publish without Stripe.
           {/if}
         </p>
       </div>
