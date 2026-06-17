@@ -1,9 +1,71 @@
 # Passkey Account Recovery — Design / Build Plan
 
-**Status:** design, not started. Build in a fresh chat from this doc.
+**Status:** Phase 0 spike DONE + PASSING on Arb Sepolia (2026-06-17). Phase 1 has ONE open
+design decision (deployed-account install path) — see "Phase 0 results" below before building.
 **Owner intent (2026-06-17):** let ZeroDev Kernel passkey accounts safely *hold/receive
 funds* by adding a recovery path, instead of the current blanket "passkey accounts can't
 receive funds" rule.
+
+---
+
+## PHASE 0 RESULTS (verified on Arb Sepolia 421614, sponsored, 2026-06-17)
+
+**Package (verified vs `zerodevapp/zerodev-examples` for Kernel v3.1):**
+`@zerodev/weighted-ecdsa-validator@5.4.4` — peers `viem ^2.28` (have 2.51.3) + `@zerodev/sdk
+^5.4` (have 5.5.10). Installed in `apps/web`. Exports `createWeightedECDSAValidator`,
+`getRecoveryAction`, `getValidatorAddress`, `getUpdateConfigCall`, `getCurrentSigners`.
+
+**Mechanism (recovery.ts design — the primitive, PROVEN):** guardian = weighted-ECDSA
+validator mounted as `plugins.regular`, plus `plugins.action: getRecoveryAction("0.7")`. A
+guardian-signed userOp calls `doRecovery(ecdsaValidatorAddr, newOwnerEnableData)` which
+rotates the **sudo ECDSA validator's owner** to a new key. Guardian can ONLY call doRecovery
+(scoped by the action), never spend.
+
+**Recovery action is a cross-chain singleton, live on Arb Sepolia:**
+`0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E`, selector `0xac39fd0f`. Same address in BOTH
+example designs. Confirmed working — our recovery userOp executed against it on 421614.
+
+**Spike `apps/web/scripts/recovery-spike.ts` — PASS.** Counterfactual account, guardian baked
+in at creation. Result: rotation works · Kernel address preserved (0xE55dC51a…75A4dD before
+and after) · new signer controls account · OLD signer DEAD ("Signature … invalid").
+
+**KEY FINDING — address derives from the SUDO ROOT VALIDATOR ONLY.** Adding the guardian
+(regular) + recovery action does NOT change the CREATE2 address (verified: identical address
+sudo-only vs sudo+guardian+action). So existing accounts keep their address whether the
+guardian is baked in (counterfactual) or installed post-deploy. Recovery is non-destructive
+to identity/funds. ✅
+
+**DECISION (owner, 2026-06-17): Path A — weighted-ECDSA validator.** It IS a multisig (signer
+set + weights + threshold): "backup EOA" = 1 signer @ threshold 1; "social 2-of-3" = same
+mechanism, more signers — so it scales to the owner's multi-method / social-recovery vision
+with NO rewrite. v1 guardian = a single backup EOA (1-of-1). Path B (caller-hook) is ~1-of-N
+and would need re-architecting for M-of-N → rejected as the base.
+
+**PARTIALLY PROVEN — install on an ALREADY-DEPLOYED account (the realistic WoCo case).** Most
+passkey Kernels are `{ sudo: ecdsaValidator }` only and already deployed (sub-ENS / like
+deploys them). `account.encodeModuleInstallCallData()` is **EP0.6-only**. The v0.7 path is
+`installValidations` (via `createKernelAccount({ pluginMigrations })`). Spike
+`recovery-spike-deployed.ts` progress on Arb Sepolia:
+- ✓ deploy sudo-only Kernel
+- ✓ install the weighted guardian validator post-deploy (sudo-signed userOp lands)
+- ✓ install the `doRecovery` executor ROUTE — REQUIRED FIX: the migration helper
+  `getValidatorPluginInstallModuleData` truncates `selectorData` to the 4-byte selector, so no
+  executor route exists → `doRecovery` reverts `0x7352d91c`. Hand-building `selectorData` as
+  `selector(4) + executor(20=0xe884…) + actionHook(20) + abi(selectorInitData=0xFF
+  delegatecall, hookInitData)` — i.e. the SDK's own `getEncodedPluginsData` format — installs
+  the route and clears that revert.
+- ✗ guardian recovery userOp fails VALIDATION: **AA23 reverted `0x682a6e7c`**. The weighted
+  validator's per-account signer config is not initialized by the hand-built
+  `installValidations` enable data (it works baked-in at genesis — `recovery-spike.ts` PASS).
+
+**Phase 1 first task:** finish the weighted validator's post-deploy on-install initialization
+(likely an SDK encoding gap in the `pluginMigrations`/`installValidations` path; consider
+ZeroDev support — funds-critical) so `0x682a6e7c` clears. Until then, recovery setup is proven
+for *counterfactual* accounts and the rotation primitive itself is fully proven; deployed-
+account setup is one bounded encoding fix away.
+
+Spike artifacts: `apps/web/scripts/recovery-spike.ts` (PASS — counterfactual), 
+`recovery-spike-deployed.ts` (deployed: install OK, recovery validation AA23 — resume point).
 
 ---
 
