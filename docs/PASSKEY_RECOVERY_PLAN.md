@@ -41,31 +41,43 @@ mechanism, more signers — so it scales to the owner's multi-method / social-re
 with NO rewrite. v1 guardian = a single backup EOA (1-of-1). Path B (caller-hook) is ~1-of-N
 and would need re-architecting for M-of-N → rejected as the base.
 
-**PARTIALLY PROVEN — install on an ALREADY-DEPLOYED account (the realistic WoCo case).** Most
-passkey Kernels are `{ sudo: ecdsaValidator }` only and already deployed (sub-ENS / like
-deploys them). `account.encodeModuleInstallCallData()` is **EP0.6-only**. The v0.7 path is
-`installValidations` (via `createKernelAccount({ pluginMigrations })`). Spike
-`recovery-spike-deployed.ts` progress on Arb Sepolia:
-- ✓ deploy sudo-only Kernel
-- ✓ install the weighted guardian validator post-deploy (sudo-signed userOp lands)
-- ✓ install the `doRecovery` executor ROUTE — REQUIRED FIX: the migration helper
-  `getValidatorPluginInstallModuleData` truncates `selectorData` to the 4-byte selector, so no
-  executor route exists → `doRecovery` reverts `0x7352d91c`. Hand-building `selectorData` as
-  `selector(4) + executor(20=0xe884…) + actionHook(20) + abi(selectorInitData=0xFF
-  delegatecall, hookInitData)` — i.e. the SDK's own `getEncodedPluginsData` format — installs
-  the route and clears that revert.
-- ✗ guardian recovery userOp fails VALIDATION: **AA23 reverted `0x682a6e7c`**. The weighted
-  validator's per-account signer config is not initialized by the hand-built
-  `installValidations` enable data (it works baked-in at genesis — `recovery-spike.ts` PASS).
+**ALREADY-DEPLOYED accounts (the realistic WoCo case) — use the CALLER-HOOK model, NOT
+install-weighted-validator-as-the-target's-own-validator.** Most passkey Kernels are
+`{ sudo: ecdsaValidator }` only and already deployed (sub-ENS / like deploys them).
+`account.encodeModuleInstallCallData()` is EP0.6-only. I tried the v0.7 `installValidations`
+(`pluginMigrations`) route to bolt a weighted guardian validator onto a deployed account and
+use it as that account's own recovery validator. Findings (`recovery-spike-deployed.ts`, Arb
+Sepolia):
+- ✓ deploy sudo-only Kernel; ✓ install weighted guardian (sudo-signed userOp lands);
+  `getCurrentSigners` confirms the signer config IS stored; `isInitialized(account)` = true.
+- ✓ install the `doRecovery` executor ROUTE — REQUIRED FIX vs the SDK migration helper
+  `getValidatorPluginInstallModuleData`, which truncates `selectorData` to the 4-byte selector
+  → no executor route → `doRecovery` reverts `0x7352d91c` (= `InvalidSelector()`). Hand-build
+  `selectorData = selector(4) + executor(0xe884…,20) + actionHook(20) + abi(selectorInitData=
+  0xFF delegatecall, hookInitData)` (the SDK's own `getEncodedPluginsData` format) → route OK.
+- ✗ guardian recovery userOp then fails validation: **AA23 `0x682a6e7c` = `InvalidValidator()`**
+  even though the validator is initialized and the SDK selects use-mode. Conclusion: a
+  post-deploy-installed weighted validator validating the target's OWN recovery userOp is not a
+  supported Kernel v3.1 flow. (It only works baked-in at genesis — `recovery-spike.ts` PASS.)
 
-**Phase 1 first task:** finish the weighted validator's post-deploy on-install initialization
-(likely an SDK encoding gap in the `pluginMigrations`/`installValidations` path; consider
-ZeroDev support — funds-critical) so `0x682a6e7c` clears. Until then, recovery setup is proven
-for *counterfactual* accounts and the rotation primitive itself is fully proven; deployed-
-account setup is one bounded encoding fix away.
+**→ For deployed accounts adopt ZeroDev's actual deployed-recovery flow (`recovery_call.ts`):**
+install the recovery action as a **fallback (module type 3)** + a **caller hook** that holds
+the permitted guardian address(es); recovery is performed by a SEPARATE guardian account that
+**calls** `target.doRecovery(newValidator, enableData)`. Both required singletons are **LIVE on
+Arb Sepolia**: recovery action `0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E` and caller hook
+`0x990a9FC8189D96d59E3cE98bd87F42135a24a30E`. **M-of-N is preserved** by making the guardian
+account itself a weighted-ECDSA multisig (backup EOA = 1-of-1; social = N signers, M threshold)
+— so Path A's multisig value survives, just relocated to the guardian account.
 
-Spike artifacts: `apps/web/scripts/recovery-spike.ts` (PASS — counterfactual), 
-`recovery-spike-deployed.ts` (deployed: install OK, recovery validation AA23 — resume point).
+**Phase 1 entry point:** verify the `recovery_call.ts` caller-hook flow end-to-end on a
+*deployed* Arb Sepolia account (install fallback+hook via sudo userOp → guardian account calls
+doRecovery → address preserved, old key dead), with the guardian as a weighted-ECDSA Kernel for
+the M-of-N seam. Counterfactual accounts can still use the simpler baked-in Path A
+(`recovery-spike.ts`). The rotation primitive + address-preservation are fully PROVEN.
+
+Spike artifacts: `apps/web/scripts/recovery-spike.ts` (PASS — counterfactual baked-in),
+`recovery-spike-deployed.ts` (deployed install-as-validator route: install OK, recovery
+`InvalidValidator` — documents why we pivot to the caller-hook model).
 
 ---
 

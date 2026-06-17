@@ -25,15 +25,21 @@
  *     The migration helper getValidatorPluginInstallModuleData truncates
  *     selectorData to the 4-byte selector → no executor route.
  *   ✗ step 3 the guardian recovery userOp fails VALIDATION: AA23 reverted
- *     0x682a6e7c. The weighted validator's per-account signer config is not
- *     initialized by this hand-built installValidations enable data (it works
- *     baked-in at genesis — see recovery-spike.ts, PASS).
+ *     0x682a6e7c = InvalidValidator(). The validator IS initialized
+ *     (getCurrentSigners + isInitialized(account)=true) and the SDK selects
+ *     use-mode — so this is NOT an enable/init gap. CONCLUSION: a
+ *     post-deploy-installed weighted validator validating the target's OWN
+ *     recovery userOp is not a supported Kernel v3.1 flow (works only baked-in
+ *     at genesis — see recovery-spike.ts, PASS).
  *
- * REMAINING (Phase 1): finish the weighted validator's post-deploy on-install
- * initialization (likely an SDK encoding gap), OR adopt Path B (recovery_call.ts:
- * recovery action as a type-3 fallback + caller hook holding guardians — no
- * weighted validator, but 1-of-N not M-of-N). The COUNTERFACTUAL path
- * (recovery-spike.ts) + the rotation primitive are fully PROVEN regardless.
+ * PIVOT (Phase 1): for deployed accounts use ZeroDev's actual deployed-recovery
+ * flow (zerodev-examples recovery_call.ts): install the recovery action as a
+ * FALLBACK (module type 3) + a caller hook holding the guardian address(es); a
+ * SEPARATE guardian account calls target.doRecovery(...). Both singletons are
+ * LIVE on Arb Sepolia (action 0xe884…, caller hook 0x990a9FC8…). Keep M-of-N by
+ * making the guardian account itself a weighted-ECDSA multisig. The COUNTERFACTUAL
+ * path (recovery-spike.ts) + the rotation primitive are fully PROVEN regardless.
+ * This file is kept as the record of WHY we pivoted (the InvalidValidator dead-end).
  *
  * Run: node --env-file=apps/web/.env --import tsx apps/web/scripts/recovery-spike-deployed.ts
  */
