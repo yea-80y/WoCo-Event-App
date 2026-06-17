@@ -33,7 +33,6 @@
     collectEmail: boolean;
     collectInfo: boolean;
     cryptoRecipientMissing: boolean;
-    stripeVerificationMissing: boolean;
     importedTiers?: ImportTier[] | null;
   }
 
@@ -51,7 +50,6 @@
     collectEmail = $bindable(),
     collectInfo = $bindable(),
     cryptoRecipientMissing = $bindable(),
-    stripeVerificationMissing = $bindable(),
     importedTiers = $bindable(null),
   }: Props = $props();
 
@@ -117,7 +115,7 @@
   </label>
 </div>
 
-<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:stripeVerificationMissing bind:importedTiers />
+<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers />
 
 {#if FEATURES.cryptoPaymentsAllowed}
   <fieldset class="claim-mode-section">

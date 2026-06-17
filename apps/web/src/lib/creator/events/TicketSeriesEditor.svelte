@@ -68,14 +68,6 @@
      */
     cryptoRecipientMissing?: boolean;
     /**
-     * True when a paid tier has card payments enabled but the organiser's Stripe
-     * account isn't verified yet. Bound to the parent so the publish button can
-     * block UP FRONT — mirrors the server's live charges_enabled gate so the
-     * organiser isn't told to verify only after filling the whole form + clicking
-     * publish.
-     */
-    stripeVerificationMissing?: boolean;
-    /**
      * One-shot trigger: when set to a non-empty array, replaces the current
      * tier groups with imported tiers (Skiddle/Fatsoma/Eventbrite). The editor
      * resets this back to `null` after applying, so re-import works.
@@ -86,7 +78,6 @@
   let {
     series = $bindable(),
     cryptoRecipientMissing = $bindable(false),
-    stripeVerificationMissing = $bindable(false),
     importedTiers = $bindable(null),
   }: Props = $props();
 
@@ -253,22 +244,6 @@
   // Push the missing-recipient state up to the parent so PublishButton can disable.
   $effect(() => {
     cryptoRecipientMissing = anyCryptoEnabled && !cryptoRecipientAddress;
-  });
-
-  /**
-   * True when a paid tier wants card payments but Stripe isn't verified. Only
-   * asserted once the real status has loaded — while loading we don't block
-   * (avoids a flash-disabled button), and the server's live charges_enabled
-   * check is the authoritative backstop either way. Mirrors the server gate so
-   * the organiser learns up front, not after filling the whole form.
-   */
-  const anyStripeUnverified = $derived(
-    !stripeStatusLoading &&
-    stripeStatus?.onboardingComplete !== true &&
-    tierGroups.some((t) => t.isPaid && t.stripeEnabled),
-  );
-  $effect(() => {
-    stripeVerificationMissing = anyStripeUnverified;
   });
 
   onMount(async () => {

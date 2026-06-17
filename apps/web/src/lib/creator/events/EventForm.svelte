@@ -2,6 +2,7 @@
   import type { OrderField, ClaimMode, PaymentConfig } from "@woco/shared";
   import EventEditor from "./EventEditor.svelte";
   import PublishButton from "./PublishButton.svelte";
+  import StripeVerifyGate from "./StripeVerifyGate.svelte";
   import SubENSPicker from "../builder/SubENSPicker.svelte";
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./ImportUrlPanel.svelte";
   import { localInputFromNow } from "./date.js";
@@ -25,7 +26,9 @@
   let imageDataUrl = $state<string | null>(null);
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
   let cryptoRecipientMissing = $state(false);
-  let stripeVerificationMissing = $state(false);
+  // null = still checking · false = not verified · true = Stripe charges_enabled.
+  // At this stage a verified Stripe account gates publishing ANY event.
+  let stripeVerified = $state<boolean | null>(null);
   let claimMode = $state<ClaimMode>("email");
   let collectEmail = $state(true);
   let collectInfo = $state(false);
@@ -56,6 +59,8 @@
 <div class="event-form">
   <h2>Create Event</h2>
 
+  <StripeVerifyGate bind:verified={stripeVerified} />
+
   <ImportUrlPanel onapply={applyImport} />
 
   <EventEditor
@@ -72,7 +77,6 @@
     bind:collectEmail
     bind:collectInfo
     bind:cryptoRecipientMissing
-    bind:stripeVerificationMissing
     bind:importedTiers
   />
 
@@ -89,11 +93,11 @@
     {series}
     orderFields={collectInfo ? orderFields : undefined}
     {claimMode}
-    disabled={cryptoRecipientMissing || stripeVerificationMissing}
-    disabledReason={cryptoRecipientMissing
-      ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
-      : stripeVerificationMissing
-        ? "Verify your Stripe account above, or turn off card payments, to publish."
+    disabled={cryptoRecipientMissing || stripeVerified !== true}
+    disabledReason={stripeVerified !== true
+      ? "Verify your Stripe account above to publish — required for all events for now."
+      : cryptoRecipientMissing
+        ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
         : undefined}
     {onpublished}
   />

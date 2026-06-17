@@ -6,6 +6,7 @@
   import { router } from "../router/router.svelte.js";
   import EventEditor from "./events/EventEditor.svelte";
   import PublishButton from "./events/PublishButton.svelte";
+  import StripeVerifyGate from "./events/StripeVerifyGate.svelte";
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./events/ImportUrlPanel.svelte";
   import GatewayPicker from "./builder/GatewayPicker.svelte";
   import AdvancedSetup from "./builder/AdvancedSetup.svelte";
@@ -47,7 +48,9 @@
   let collectEmail = $state(true);
   let collectInfo = $state(false);
   let cryptoRecipientMissing = $state(false);
-  let stripeVerificationMissing = $state(false);
+  // null = checking · false = unverified · true = Stripe charges_enabled. Gates
+  // publishing any event at this stage (card or crypto-only).
+  let stripeVerified = $state<boolean | null>(null);
   let createdEventId = $state<string | null>(null);
   let importedTiers = $state<ImportTier[] | null>(null);
 
@@ -343,6 +346,8 @@
             </p>
           </div>
 
+          <StripeVerifyGate bind:verified={stripeVerified} />
+
           <ImportUrlPanel onapply={applyImport} />
 
           <EventEditor
@@ -359,7 +364,6 @@
             bind:collectEmail
             bind:collectInfo
             bind:cryptoRecipientMissing
-            bind:stripeVerificationMissing
             bind:importedTiers
           />
 
@@ -377,11 +381,11 @@
             {apiUrl}
             skipAutoList
             label="Create event →"
-            disabled={cryptoRecipientMissing || stripeVerificationMissing}
-            disabledReason={cryptoRecipientMissing
-              ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
-              : stripeVerificationMissing
-                ? "Verify your Stripe account above, or turn off card payments, to publish."
+            disabled={cryptoRecipientMissing || stripeVerified !== true}
+            disabledReason={stripeVerified !== true
+              ? "Verify your Stripe account above to create events — required for all events for now."
+              : cryptoRecipientMissing
+                ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
                 : undefined}
             onpublished={onEventPublished}
           />
