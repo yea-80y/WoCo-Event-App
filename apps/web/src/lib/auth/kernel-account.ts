@@ -119,8 +119,20 @@ function getRpcUrl(): string {
  * Build the Kernel smart account from a raw secp256k1 private key (the PRF key).
  * The Kernel address is deterministic, so it is stable across reloads for the
  * same passkey.
+ *
+ * `opts.address` OVERRIDES the counterfactual CREATE2 address. This is required
+ * only on the recovery path: after `recoverAccount` rotates the deployed Kernel's
+ * sudo owner to a fresh passkey, the new PRF key would otherwise derive a *different*
+ * counterfactual address (CREATE2 mixes the original owner). Passing the original,
+ * deployed Kernel address pins the account object to the recovered account so the
+ * new owner controls the SAME address (matches recovery-spike-caller-hook.ts step
+ * [4], PASS). NEVER pass this on the normal login path — divergence there is a bug
+ * the `_ensureKernel` guard must still catch.
  */
-export async function buildKernelFromPrivateKey(privateKey: string): Promise<BuiltKernel> {
+export async function buildKernelFromPrivateKey(
+  privateKey: string,
+  opts?: { address?: string },
+): Promise<BuiltKernel> {
   const [
     { createPublicClient, http },
     { privateKeyToAccount },
@@ -159,6 +171,7 @@ export async function buildKernelFromPrivateKey(privateKey: string): Promise<Bui
     plugins: { sudo: ecdsaValidator },
     entryPoint,
     kernelVersion,
+    ...(opts?.address ? { address: opts.address as Address } : {}),
   });
 
   const paymaster = createZeroDevPaymasterClient({

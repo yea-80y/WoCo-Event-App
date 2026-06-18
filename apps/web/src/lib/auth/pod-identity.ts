@@ -103,6 +103,21 @@ export async function getPodKeypair(parentAddress: string): Promise<{
   return deriveKeypair(seed);
 }
 
+/**
+ * Persist a POD seed under a parent address — the recovery-path counterpart of
+ * `requestPodIdentity` (which derives + stores in one step). After account
+ * recovery the original POD seed comes from the decrypted escrow bundle, not a
+ * fresh signature, so it must be re-stored under the recovered (new) identity's
+ * parent address: the Kernel address is preserved by recovery, but the POD_ADDRESS
+ * AAD key is the new passkey's PRF-EOA, so the blob is bound to that. Same
+ * encrypt + AAD + key as `requestPodIdentity` so `restorePodSeed` reads it back.
+ */
+export async function storePodSeed(parentAddress: string, seed: string): Promise<void> {
+  const deviceKey = await ensureDeviceKey();
+  const encSeed = await encrypt(deviceKey, AAD.POD_SEED(parentAddress), { seed });
+  await putKV(StorageKeys.POD_SEED, encSeed);
+}
+
 export async function clearPodIdentity(): Promise<void> {
   await delKV(StorageKeys.POD_SEED);
 }
