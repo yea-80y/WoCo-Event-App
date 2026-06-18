@@ -10,6 +10,7 @@ import {
 import {
   requestPodIdentity,
   restorePodSeed,
+  storePodSeed,
   getPodKeypair,
   clearPodIdentity,
 } from "./pod-identity.js";
@@ -26,6 +27,7 @@ import {
 import {
   authenticatePasskey,
   restorePasskeyAccount,
+  createPasskeyAccount,
   hasStoredPasskeyCredential,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
@@ -709,12 +711,20 @@ async function grantSpendPermission(args: {
 async function setupAccountRecovery(backup: {
   address: string;
   signTypedData: import("@woco/shared").EIP712Signer;
+  recoveryReady?: boolean;
 }): Promise<{ guardianAddress: string; txHash: string }> {
   if (_kind !== "passkey") {
     throw new Error("Account recovery is only available for passkey accounts");
   }
+  // Refuse to install a backup we could never recover FROM (e.g. a provider that
+  // can derive the escrow key but cannot sign the guardian userOp). Installing it
+  // would trap the user with an unrecoverable account.
+  if (backup.recoveryReady === false) {
+    throw new Error("This backup can't be used for recovery yet. Pick a wallet that can sign on Arbitrum.");
+  }
   await _ensureKernel();
   if (!_kernel) throw new Error("Account unavailable — please sign in again");
+  const kernelAddress = _kernel.address;
 
   // The POD seed must exist to escrow it; derive it now if this is the first action.
   await ensurePodIdentity();
@@ -723,6 +733,34 @@ async function setupAccountRecovery(backup: {
   const seed = await restorePodSeed(podAddr);
   if (!seed) throw new Error("Could not access your identity key — open your dashboard once, then retry");
 
+  const { deriveGuardianEncryptionKeypair, sealRecoveryBundle, openRecoveryBundle } = await import(
+    "./recovery-escrow.js"
+  );
+
+  // Seal the escrow FIRST and verify it round-trips BEFORE the irreversible
+  // on-chain install — so a non-deterministic backup signature (which would make
+  // the bundle permanently un-openable) is caught here, with nothing committed.
+  const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
+  const envelope = await sealRecoveryBundle({
+    bundle: { version: 1, secrets: { podSeed: seed } },
+    kernelAddress,
+    guardianPublicKeysHex: [gk.publicKeyHex],
+  });
+
+  // Determinism self-check (sec-review note #1): re-derive the escrow key from a
+  // SECOND signature and confirm it opens the bundle to the EXACT seed. If the
+  // backup's typed-data signature is non-deterministic, the second key differs and
+  // this throws — failing loudly at setup instead of silently at recovery time.
+  const gk2 = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
+  const check = await openRecoveryBundle({ envelope, kernelAddress, guardianKeypair: gk2 });
+  if (check.secrets.podSeed !== seed) {
+    throw new Error(
+      "Your backup wallet's signature isn't reproducible, so recovery couldn't be guaranteed. " +
+        "Try a different backup wallet.",
+    );
+  }
+
+  // Escrow proven recoverable → now do the irreversible on-chain install.
   const { deriveGuardianAddress, setupRecovery } = await import("./kernel-account.js");
   // v1 = single backup (1-of-1): one signer at full weight. Social M-of-N reuses
   // this shape with more signers + a higher threshold (no rewrite).
@@ -730,18 +768,105 @@ async function setupAccountRecovery(backup: {
   const guardianAddress = await deriveGuardianAddress(guardianConfig);
   const { txHash } = await setupRecovery(_kernel, guardianAddress);
 
-  const { deriveGuardianEncryptionKeypair, sealRecoveryBundle } = await import("./recovery-escrow.js");
-  const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
-  const envelope = await sealRecoveryBundle({
-    bundle: { version: 1, secrets: { podSeed: seed } },
-    kernelAddress: _kernel.address,
-    guardianPublicKeysHex: [gk.publicKeyHex],
-  });
   const { putRecoveryEnvelope } = await import("../api/recovery.js");
   const res = await putRecoveryEnvelope(envelope);
   if (!res.ok) throw new Error(res.error || "Could not save your backup — please try again");
 
   return { guardianAddress, txHash };
+}
+
+/**
+ * "Recover my account" — the irreversible portal ceremony (PASSKEY_RECOVERY_PLAN
+ * §11.6). The locked-out user is on a NEW device with no session; they have only
+ * their backup wallet and the lost account's address. This:
+ *
+ *  1. Mints a FRESH passkey on this device (its PRF-EOA = the new sudo owner).
+ *  2. Has the backup-wallet guardian call `target.doRecovery` — rotating the
+ *     deployed Kernel's sudo owner to the new passkey. IRREVERSIBLE; the old
+ *     device's passkey is retired (proven: recovery-spike-caller-hook.ts).
+ *  3. Rebuilds the Kernel at the OLD address with the NEW owner (address override)
+ *     — same address ⇒ funds + on-chain identity intact.
+ *  4. Decrypts the POD escrow with the backup's derived X25519 key and re-stores
+ *     the ORIGINAL ed25519 seed under the new identity → tickets + dashboard
+ *     decryption survive (funds recovery alone cannot restore them; §11.1).
+ *  5. Logs the user in as the recovered account.
+ *
+ * Funds-critical + irreversible: callers MUST confirm intent first. The guardian
+ * config is reconstructed from the backup address (v1 = 1-of-1) and MUST match
+ * what was registered at setup, or step 2 reverts at the caller hook.
+ */
+async function recoverAndRekey(args: {
+  backup: import("../wallet/backup-signer.js").BackupWallet;
+  targetAddress: string;
+}): Promise<{ recoveredAddress: string; txHash: string }> {
+  const { backup, targetAddress } = args;
+  if (_busy) throw new Error("Please wait — another operation is in progress");
+  if (!backup.recoveryReady || !backup.getGuardianSigner) {
+    throw new Error("This backup wallet can't complete a recovery. Connect a wallet that can sign on Arbitrum.");
+  }
+  const target = targetAddress.toLowerCase();
+
+  // Fetch the escrow up front: if there's nothing to restore, recovery would
+  // strand the POD identity — refuse before touching the chain.
+  const { fetchRecoveryEnvelope } = await import("../api/recovery.js");
+  const envelope = await fetchRecoveryEnvelope(target);
+  if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
+
+  _busy = true;
+  try {
+    // (1) Fresh passkey on this device → its PRF-EOA is the new sudo owner.
+    const fresh = await createPasskeyAccount();
+    const newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
+
+    // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
+    const guardianSigner = await backup.getGuardianSigner();
+    const guardianConfig = {
+      signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
+      threshold: 100,
+    };
+    const { recoverAccount } = await import("./kernel-account.js");
+    const { txHash } = await recoverAccount({
+      targetAddress: target,
+      guardianConfig,
+      guardianSigners: [guardianSigner],
+      newOwnerAddress,
+    });
+
+    // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
+    const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+    const kernel = await buildKernelFromPrivateKey(fresh.privateKey, { address: target });
+    if (kernel.address !== target) {
+      throw new Error("Recovery produced a divergent account address — aborting.");
+    }
+
+    // (4) Decrypt the escrow → the ORIGINAL POD seed.
+    const { deriveGuardianEncryptionKeypair, openRecoveryBundle } = await import("./recovery-escrow.js");
+    const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
+    const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk });
+    const podSeed = bundle.secrets.podSeed;
+    if (!podSeed) throw new Error("Backup was found but did not contain your identity key.");
+
+    // (5) Establish the session as the recovered account (mirrors loginPasskey,
+    // but pinned to the preserved address with the escrow-restored POD seed).
+    // Clear any stale auth on this device FIRST — `_clearStaleAuthForSwitch`
+    // calls `clearPodIdentity()`, so the recovered seed must be stored AFTER it.
+    await _clearStaleAuthForSwitch(target);
+    await storePodSeed(fresh.address, podSeed);
+    await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+    await putKV(StorageKeys.PARENT_ADDRESS, target);
+    await putKV(StorageKeys.POD_ADDRESS, fresh.address);
+    _kind = "passkey";
+    _parent = target;
+    _passkeyPrivateKey = fresh.privateKey;
+    _podAddress = fresh.address;
+    _kernel = kernel;
+    _localPrivateKey = null;
+    await _restoreCachedAuth();
+
+    return { recoveredAddress: target, txHash };
+  } finally {
+    _busy = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -937,6 +1062,7 @@ export const auth = {
   ensureEasSessionKey,
   grantSpendPermission,
   setupAccountRecovery,
+  recoverAndRekey,
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass
   // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel
