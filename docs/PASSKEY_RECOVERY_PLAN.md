@@ -152,11 +152,11 @@ a sweep escape-hatch ship, keep organiser crypto payouts requiring an external w
   trapped even before/independent of recovery.
 
 **Non-goals (call out explicitly)**
-- **POD identity recovery is OUT OF SCOPE.** The ed25519 POD identity (ticket signing /
-  encryption) is derived from the **raw PRF key**, not from the Kernel (invariant #1).
-  Rotating the Kernel's signer restores control of the *smart account / funds*, NOT the
-  POD-derived ticket-signing identity. Losing the passkey still loses POD identity. That is
-  a separate problem (e.g. POD key escrow / re-issue) — note it, don't solve it here.
+- **POD identity recovery — NOW IN SCOPE (design in §11).** Earlier this was deferred. The
+  ed25519 POD identity (ticket signing / encryption) is derived from the **raw PRF key**, not
+  the Kernel (invariant #1), so a Kernel signer rotation restores funds but NOT the original
+  POD identity. Owner pulled this in scope (2026-06-18) — see §11 for the escrow + on-chain
+  authority design and the auditor assessment.
 - Not changing the daily signing model (no forced multisig on every op).
 - Not building assisted/custodial recovery in v1.
 
@@ -330,3 +330,97 @@ Phase 1 (+ sweep) lands.
 - New: recovery setup UI + recovery portal route; optional `sweep` action.
 - Plan refs: `docs/ZERODEV_PASSKEY_INTEGRATION_PLAN.md` (invariants),
   `project_signing_role_architecture`, `project_zerodev_passkey`.
+
+---
+
+## 11. POD identity & client-secret recovery (escrow + on-chain authority) — DESIGN
+
+**Status:** design (2026-06-18), not built. Pulled in scope after the Phase-1 spike confirmed
+funds recovery works but does NOT restore POD identity. Funds-critical → escrow-grade review.
+
+### 11.1 Why a rotated Kernel cannot re-derive the same ed25519 key (settled)
+POD = `ed25519 = f(deterministic EIP-712 signature by a secret key)` (`pod-identity.ts`:
+`keccak256(getBytes(sig))` → ed25519 seed, fixed nonce). Determinism means **the identity IS
+the secret**. For a passkey account the signer is the **raw PRF-EOA** (not the Kernel —
+smart-account sigs aren't deterministic; invariant #1). After recovery the only thing
+unchanged is the **Kernel address, which is PUBLIC** — and you cannot deterministically derive
+a *secret* from a *public* value. The secret that changed (the PRF key) is the one that's gone.
+**Conclusion: "same key, re-derived" is impossible.** The key can only be RECOVERED (escrow) or
+made-not-to-matter (rotation + on-chain authority). Not a limitation we can engineer around.
+
+### 11.2 POD has two jobs that recover differently
+- **Signing** tickets/editions — **rotatable.** Anchor verification to the stable **Kernel
+  address** + an on-chain (or attested) **POD-key authorization log** ("Kernel K authorizes POD
+  pubkey X"). After recovery the recovered Kernel authorizes a NEW POD pubkey; verifiers accept
+  a ticket signed by X iff the chain says K authorized X. Old editions stay valid; a different
+  key each rotation is FINE — the Kernel is the durable identity, the ed25519 key is a
+  rotatable credential. **No escrow needed.** Hang off WoCoEventV2's on-chain anchor.
+- **Decryption** (organiser dashboard decrypts claim data encrypted to the POD-derived key) —
+  **NOT rotatable.** Existing ciphertext only opens with the *original* private key; on-chain
+  authority does nothing for data at rest. **Requires the identical key back → escrow.**
+
+### 11.3 Escrow design (the part that needs the actual key back)
+Encrypted **recovery bundle** = `{ podSeed, feedSignerPrivKey, … }`, recovered in the SAME
+ceremony as the Kernel signer rotation (one threshold, one ceremony). Construction (the parts
+that make it cryptographically sound):
+- **Envelope:** random per-bundle DEK (XChaCha20-Poly1305 / AES-256-GCM) encrypts the bundle;
+  only the DEK is wrapped to recovery factors.
+- **Separate encryption keys from signing keys.** Do NOT ECIES to a guardian's secp256k1
+  *signing* key (footgun-prone in JS). Each guardian derives a dedicated **X25519** encryption
+  keypair (deterministically, like POD) and publishes the pubkey; wrap the DEK with libsodium
+  `crypto_box`.
+- **M-of-N:** **verifiable** secret sharing (Feldman/Pedersen) over the DEK — plain Shamir has
+  no integrity check (a corrupt share is unattributable).
+- **WoCo never holds plaintext or a sufficient share set** (keeps it non-custodial).
+- **Versioned envelope format**; re-wrap + rotate the DEK on any guardian change (old shares
+  stay valid for whoever cached them — standard escrow caveat).
+
+### 11.4 Auditor assessment — sound + robust, with one unavoidable tradeoff
+Same mechanism class as social-recovery / MPC wallets; sound given §11.3. Honest caveats:
+- **Recoverability NECESSARILY creates an at-rest copy** whose confidentiality equals the
+  **recovery-threshold strength**, not "only the lost device could produce it." For a 1-of-1
+  backup EOA, POD confidentiality reduces to that EOA's security. Inherent to ALL recovery —
+  must be a conscious choice, not a bug.
+- **A timelock protects funds-rotation, NOT escrow confidentiality.** Once an attacker meets
+  the unwrap threshold the plaintext is theirs immediately; there is no "cancel" for a
+  decryption already performed. Funds and secrets have different protections.
+- **Minimize what is escrowed** (smaller blast radius): escrow only what must be the identical
+  key (decryption key, feed signer); let the signing identity rotate via §11.2's on-chain
+  authority (no escrow). Defense-in-depth: signing survives even if escrow is unavailable.
+
+### 11.5 Swarm feed signer — same envelope, cleaner fit
+The feed signer is a secret secp256k1 key → identical escrow. And it motivates escrow MORE
+cleanly than POD: Swarm feeds are **owner-addressed** (topic/owner embeds the signer address),
+so rotating the signer **orphans every existing feed**. Continuity ⇒ same key back ⇒ escrow,
+never rotate. Today all feeds use the server's single `FEED_PRIVATE_KEY` (centralised); this
+becomes load-bearing when feed signing moves client-side / per-user
+(`project_signing_role_architecture`). Fold `feedSignerPrivKey` into the §11.3 bundle.
+
+### 11.6 Build order (decided 2026-06-18 — POD-first, escrow-only, feed-signer slot reserved)
+**Principle:** build a GENERIC versioned `RecoveryBundle = { version, secrets: Record<name,
+secret> }` encrypted as ONE envelope — NOT a POD-specific blob. v1 ships `secrets: { podSeed }`;
+adding `feedSignerPrivKey` later is a content change in an already-defined format (same
+threshold, same ceremony, NO new crypto). Reserves the feed-signer slot at zero cost without
+implementing client-side feed signing now.
+
+**Key simplification:** escrowing the POD seed returns the EXACT SAME ed25519 key, which
+recovers BOTH jobs at once — keep signing (verifiers already trust the key → NO verifier/ticket
+change) AND decrypt old data. So §11.2's on-chain authorization log is NOT needed for v1; it
+only earns its keep for rotate-without-escrow or compromise-response. **Escrow-only is the
+minimal robust path.**
+
+1. **Now — POD recovery, escrow-only, 1-of-1 backup EOA.** Generic bundle `{ podSeed }`;
+   DEK (AEAD) wrapped to the guardian's dedicated **X25519** key. Guardian derives that X25519
+   key deterministically by signing a fixed message (the SAME deterministic-EIP-712 trick
+   `requestPodIdentity` already relies on in prod) → no device-bound storage. Store ciphertext
+   on a **Swarm feed `woco/recovery/{kernelAddress}`** (survives device loss; encrypted-to-
+   guardian so public is fine; server feed signer writes ciphertext only, never plaintext).
+   AAD-bind to the Kernel address (no transplant). Unwrap step in the recovery portal AFTER
+   `recoverAccount` rotates the Kernel signer.
+2. **Later — VSS M-of-N** (Feldman/Pedersen) over the same DEK for social recovery.
+3. **When client-side feed signing lands** — add `feedSignerPrivKey` to the bundle (re-wrap).
+   Feeds are owner-addressed so this is escrow-not-rotate (§11.5). No mechanism change.
+4. **Optional, separate track — on-chain POD-key authorization log** (§11.2) for rotation
+   hygiene / compromise response. Independent of 1–3.
+- Re-key/re-wrap the DEK on any guardian change. Libs: libsodium (`crypto_box`, AEAD) + a
+  vetted VSS impl — do NOT hand-roll ECIES or SSS.
