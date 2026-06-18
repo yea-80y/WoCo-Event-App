@@ -46,6 +46,27 @@ export const POD_IDENTITY_TYPES = {
 } as const;
 
 /**
+ * Domain for the deterministic signature a guardian signs to derive its X25519
+ * recovery-escrow encryption keypair (PASSKEY_RECOVERY_PLAN §11.6). Distinct
+ * salt from POD so the two derivations can never collide — a guardian's escrow
+ * key and a POD signing key are different roles even off the same EOA.
+ */
+export const RECOVERY_ENC_DOMAIN = {
+  name: "WoCo Recovery Encryption",
+  version: "1",
+  salt: "0x7647dc11f8e77fbd6f190de7b59f8373a46165f670f178763a43b541fa988a20",
+} as const;
+
+/** EIP-712 types for DeriveRecoveryEncryptionKey */
+export const RECOVERY_ENC_TYPES = {
+  DeriveRecoveryEncryptionKey: [
+    { name: "purpose", type: "string" },
+    { name: "address", type: "address" },
+    { name: "nonce", type: "string" },
+  ],
+} as const;
+
+/**
  * Domain for ticket-claim signatures (passkey + embed wallet-signed paths).
  * Replaces the legacy EIP-191 personal_sign challenge `woco:claim:<eventId>:<seriesId>:<timestamp>`
  * with a structured EIP-712 envelope, so wallets display each field to the

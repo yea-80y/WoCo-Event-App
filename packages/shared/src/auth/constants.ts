@@ -39,6 +39,9 @@ export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
 /** Fixed nonce for deterministic POD identity derivation */
 export const POD_IDENTITY_NONCE = "WOCO-POD-IDENTITY-V1";
 
+/** Fixed nonce for deterministic guardian recovery-escrow X25519 key derivation */
+export const RECOVERY_ENC_NONCE = "WOCO-RECOVERY-ENC-V1";
+
 /** Session delegation expiry duration (30 days in ms) */
 export const SESSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 
