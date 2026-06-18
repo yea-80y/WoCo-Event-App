@@ -42,6 +42,63 @@ accounts MAY use the simpler baked-in Path A (`recovery-spike.ts`).
 
 ---
 
+## PHASE 1 PROGRESS (2026-06-19) — escrow crypto + setup UI
+
+**✅ §11.6 step 1 — POD escrow crypto shipped + spike-verified** (commit `f9d48f2`):
+- `packages/shared/src/recovery/types.ts` — `RecoveryEnvelope` (ciphertext-only wire type)
+  + `RECOVERY_ENVELOPE_VERSION`. `RECOVERY_ENC_DOMAIN/TYPES/NONCE` (fresh salt) in
+  `packages/shared/src/auth/`.
+- `apps/web/src/lib/auth/recovery-escrow.ts` — generic versioned `RecoveryBundle`
+  (`{version, secrets}`; v1 = `{ podSeed }`). **Crypto stack changed from the §11.3 plan:
+  HPKE / RFC 9180 (`@hpke/core`, DHKEM-X25519 + HKDF-SHA256 + AES-256-GCM) wraps the DEK;
+  `@noble/ciphers` XChaCha20-Poly1305 encrypts the bundle, AAD-bound to the Kernel address.**
+  Rationale: `libsodium-wrappers@0.7.15` ships broken ESM (imports a missing `./libsodium.mjs`)
+  that fails Node + Vite — unacceptable in a funds-critical path. HPKE is a STRONGER
+  "don't hand-roll ECIES" answer (an IETF standard with composed `seal`/`open`), clean ESM,
+  and noble is already the crypto family under viem/ZeroDev. Guardian X25519 key derived
+  deterministically from a fixed EIP-712 signature (same trick as `requestPodIdentity`).
+- `apps/web/scripts/recovery-escrow-spike.ts` = **PASS** (pure crypto, no chain): round-trip,
+  deterministic re-derivation, AAD-transplant + wrong-guardian + ciphertext-tamper all rejected.
+- **Security review: no HIGH/MEDIUM findings.** Two notes: (1) recovery correctness depends on
+  deterministic ECDSA from the backup (same assumption POD already relies on — add a setup-time
+  round-trip self-check); (2) 1-of-1 escrow confidentiality == backup-EOA key strength (by design,
+  §11.4 — surface it to the user). Both are availability/disclosure, not exploitable flaws.
+
+**✅ Server escrow persistence:** `POST /api/recovery/escrow` (auth; envelope AEAD-bound +
+required to match the verified Kernel parent → can't overwrite a victim's blob) + public
+`GET /api/recovery/escrow/:kernelAddress` (locked-out user can't auth; ciphertext is safe to
+read). Feed `woco/recovery/{kernelAddress}`, ciphertext only (non-custodial). Files:
+`apps/server/src/{routes/recovery.ts, lib/recovery/service.ts}`, topic in `lib/swarm/topics.ts`,
+client `apps/web/src/lib/api/recovery.ts`.
+
+**✅ Setup UI ("Protect your account") — DONE, all crypto hidden** (route `#/protect`,
+attendee surface): `apps/web/src/lib/components/recovery/AccountRecoverySetup.svelte`. One
+"add a backup" action → `auth.setupAccountRecovery(backup)` (new wrapper) installs the on-chain
+recovery route + escrows the POD seed in one ceremony. Backup connector
+`apps/web/src/lib/wallet/backup-signer.ts` (`connectBackupWallet`, injected wallet for now).
+
+**🟡 Recovery portal ("Recover my account") — UI to verify-stage** (route `#/recover`):
+`AccountRecoverPortal.svelte`. Connect backup + confirm a protected account exists (via
+`fetchRecoveryEnvelope`) are LIVE; the final irreversible step (on-chain signer rotation +
+re-key to a fresh passkey + restoring the POD seed) is intentionally gated ("coming soon")
+**pending in-browser escrow-grade verification** — that ceremony is irreversible and must be
+proven live before it touches funds.
+
+### Backup-factor decision (2026-06-19): EMAIL-FIRST via Para (the easy non-technical path)
+The backup is just "an account with a stable address that can sign" — nothing is MetaMask-specific.
+**Para (email) is the default backup for non-technical users**, plus social / 2nd-passkey, combinable
+as M-of-N (the weighted-ECDSA guardian already scales there). Para satisfies both roles: stable
+address (funds-rotation signer) + deterministic EIP-712 sig (escrow key — Para already backs POD
+identity in prod, so determinism holds; **confirm in the browser-verification pass**). Boundary: the
+backup must be a wallet the USER controls (non-custodial); WoCo may be ONE-of-N, never unilateral
+(model 3 / custody line). NOT YET BUILT — `connectBackupWallet` must become a chooser (Email via Para
+/ another wallet); both resolve the same `{ address, signTypedData }` seam. `ParaLogin.svelte` can't be
+reused (it calls `auth.loginPara`, hijacking the session) — a backup must not change the logged-in
+identity; build a backup-specific email→iframe flow + `createParaSigner`. Batch this WITH the portal's
+irreversible ceremony in the browser-verified pass (both hinge on the same gate).
+
+---
+
 ## PHASE 0 RESULTS (verified on Arb Sepolia 421614, sponsored, 2026-06-17)
 
 **Package (verified vs `zerodevapp/zerodev-examples` for Kernel v3.1):**

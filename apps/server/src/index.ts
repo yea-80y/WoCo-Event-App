@@ -16,6 +16,7 @@ import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
+import { recovery } from "./routes/recovery.js";
 import { broadcast } from "./routes/broadcast.js";
 import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
@@ -409,6 +410,10 @@ app.get("/api/agent/openapi.json", (c) => c.json(agentOpenApi(agentBaseUrl())));
 
 // Profile routes
 app.route("/api/profile", profiles);
+
+// Passkey-account recovery escrow (sealed POD-seed bundle) — see
+// docs/PASSKEY_RECOVERY_PLAN.md §11.6.
+app.route("/api/recovery", recovery);
 
 // Ticket actions (send email, etc.)
 app.route("/api/tickets", tickets);

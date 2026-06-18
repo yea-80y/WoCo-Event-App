@@ -691,6 +691,60 @@ async function grantSpendPermission(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Account recovery setup (passkey/Kernel only) — see docs/PASSKEY_RECOVERY_PLAN.md
+// ---------------------------------------------------------------------------
+
+/**
+ * One-shot "protect this account" ceremony for a passkey user:
+ *  1. install the on-chain recovery route pinned to a guardian derived from the
+ *     backup wallet (sudo/passkey userOp, sponsored),
+ *  2. escrow the POD seed — sealed to an X25519 key the backup wallet derives by
+ *     signing a fixed message — so a recovered account also restores ticket
+ *     decryption (funds recovery alone cannot; §11.1).
+ *
+ * The backup wallet is an EXTERNAL signer the UI connects (a normal wallet the
+ * user already controls). It only ever SIGNS here — it never sends a tx. We hide
+ * all of this behind "add a backup" in the UI.
+ */
+async function setupAccountRecovery(backup: {
+  address: string;
+  signTypedData: import("@woco/shared").EIP712Signer;
+}): Promise<{ guardianAddress: string; txHash: string }> {
+  if (_kind !== "passkey") {
+    throw new Error("Account recovery is only available for passkey accounts");
+  }
+  await _ensureKernel();
+  if (!_kernel) throw new Error("Account unavailable — please sign in again");
+
+  // The POD seed must exist to escrow it; derive it now if this is the first action.
+  await ensurePodIdentity();
+  const podAddr = _getPodAddress();
+  if (!podAddr) throw new Error("Could not access your identity key");
+  const seed = await restorePodSeed(podAddr);
+  if (!seed) throw new Error("Could not access your identity key — open your dashboard once, then retry");
+
+  const { deriveGuardianAddress, setupRecovery } = await import("./kernel-account.js");
+  // v1 = single backup (1-of-1): one signer at full weight. Social M-of-N reuses
+  // this shape with more signers + a higher threshold (no rewrite).
+  const guardianConfig = { signers: [{ address: backup.address as `0x${string}`, weight: 100 }], threshold: 100 };
+  const guardianAddress = await deriveGuardianAddress(guardianConfig);
+  const { txHash } = await setupRecovery(_kernel, guardianAddress);
+
+  const { deriveGuardianEncryptionKeypair, sealRecoveryBundle } = await import("./recovery-escrow.js");
+  const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
+  const envelope = await sealRecoveryBundle({
+    bundle: { version: 1, secrets: { podSeed: seed } },
+    kernelAddress: _kernel.address,
+    guardianPublicKeysHex: [gk.publicKeyHex],
+  });
+  const { putRecoveryEnvelope } = await import("../api/recovery.js");
+  const res = await putRecoveryEnvelope(envelope);
+  if (!res.ok) throw new Error(res.error || "Could not save your backup — please try again");
+
+  return { guardianAddress, txHash };
+}
+
+// ---------------------------------------------------------------------------
 // API request signing
 // ---------------------------------------------------------------------------
 
@@ -882,6 +936,7 @@ export const auth = {
   ensureWocoSessionKey,
   ensureEasSessionKey,
   grantSpendPermission,
+  setupAccountRecovery,
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass
   // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel

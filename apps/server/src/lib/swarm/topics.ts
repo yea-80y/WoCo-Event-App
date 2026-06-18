@@ -85,6 +85,17 @@ export const topicProfileAvatar = (ethAddress: string) =>
   Topic.fromString(`${PROFILE_NS}/avatar/${ethAddress.toLowerCase()}`);
 
 // ---------------------------------------------------------------------------
+// Recovery escrow (PASSKEY_RECOVERY_PLAN §11.6). One sealed RecoveryEnvelope
+// per Kernel account. Ciphertext only — encrypted to the guardian's X25519 key
+// (the server feed signer never sees plaintext), so the feed being public is
+// fine and the locked-out user can read it during recovery without auth.
+// ---------------------------------------------------------------------------
+const RECOVERY_NS = "woco/recovery";
+
+export const topicRecovery = (kernelAddress: string) =>
+  Topic.fromString(`${RECOVERY_NS}/${kernelAddress.toLowerCase()}`);
+
+// ---------------------------------------------------------------------------
 // Pagination helpers
 // ---------------------------------------------------------------------------
 

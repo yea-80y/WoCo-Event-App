@@ -89,6 +89,8 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
   if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };
+  if (path === "/protect") return { route: "protect", params: {}, surface: "attendee" };
+  if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
   const soonMatch = path.match(/^\/soon\/(.+)$/);
   if (soonMatch) return { route: "soon", params: { feature: soonMatch[1] }, surface: "attendee" };

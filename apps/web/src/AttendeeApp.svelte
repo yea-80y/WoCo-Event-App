@@ -12,6 +12,8 @@
   import ComingSoon from "./lib/attendee/coming-soon/ComingSoon.svelte";
   import ShopTapScreen from "./lib/attendee/shop/ShopTapScreen.svelte";
   import ShopOrderScreen from "./lib/attendee/shop/ShopOrderScreen.svelte";
+  import AccountRecoverySetup from "./lib/components/recovery/AccountRecoverySetup.svelte";
+  import AccountRecoverPortal from "./lib/components/recovery/AccountRecoverPortal.svelte";
 </script>
 
 <AttendeeShell>
@@ -45,5 +47,9 @@
     <ShopTapScreen shopId={router.params.shopId} />
   {:else if router.route === "shop-order"}
     <ShopOrderScreen shopId={router.params.shopId} code={router.params.code} />
+  {:else if router.route === "protect"}
+    <AccountRecoverySetup />
+  {:else if router.route === "recover"}
+    <AccountRecoverPortal />
   {/if}
 </AttendeeShell>
