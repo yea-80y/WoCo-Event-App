@@ -7,10 +7,33 @@ WoCo lets organisers create events, sell tickets, and run a shop — with **no t
 payments, and social layer. Attendees claim tickets with a wallet, a passkey, or just an email, and
 pay by card or in USDC.
 
-> **Arbitrum Buildathon submission:** the on-chain work (on-chain ticketing, passkey + Coinbase smart
-> wallets, sub-ENS identity, an EAS social graph, a **Rust/WASM Stylus** trending engine, a USDC shop
-> with on-chain loyalty, and a bounded non-custodial **AI-agent commerce** surface) is documented in
-> **[docs/BUILDATHON_SUBMISSION.md](docs/BUILDATHON_SUBMISSION.md)** — start there.
+---
+
+## 🚀 Arbitrum Buildathon Judges — Start Here
+
+**One link to read first → [docs/BUILDATHON_SUBMISSION.md](docs/BUILDATHON_SUBMISSION.md)** — the
+judge-facing summary with every contract address, transaction-hash evidence, and links to all spoke
+docs below.
+
+**▶ [Watch the 1-minute demo](https://github.com/yea-80y/WoCo-Event-App/releases/tag/v0.1-buildathon)** — an
+AI agent autonomously buys a ticket in USDC from a bounded, non-custodial spend permission. On-chain
+proof: [Arbiscan draw tx](https://sepolia.arbiscan.io/tx/0x3f21a88674ede7979ed7359a876f9537eafd211d0684359abb559bd218b2813d).
+
+All on-chain work is **Arbitrum Sepolia (`421614`)**. This is a single **monorepo** — every contract
+lives here (`contracts/` Solidity, `contracts-stylus/` Rust/WASM), no other repos to hunt through.
+
+| Doc | Contents |
+|---|---|
+| [docs/BUILDATHON_SUBMISSION.md](docs/BUILDATHON_SUBMISSION.md) | **Start here** — addresses, tx evidence, links to all spokes |
+| [docs/ONCHAIN_TICKETING.md](docs/ONCHAIN_TICKETING.md) | On-chain ticketing (`WoCoEventV2`, USDC) + smart wallets |
+| [docs/PASSKEY_SMART_WALLET.md](docs/PASSKEY_SMART_WALLET.md) | Passkey smart wallet (ZeroDev Kernel) + gasless scoped session keys |
+| [docs/SUBENS_IDENTITY.md](docs/SUBENS_IDENTITY.md) | Sub-ENS identity (Durin L2Registry) |
+| [docs/EAS_SOCIAL_GRAPH.md](docs/EAS_SOCIAL_GRAPH.md) | EAS likes & follows |
+| [docs/STYLUS_AGGREGATOR.md](docs/STYLUS_AGGREGATOR.md) | Stylus (Rust/WASM) trending engine |
+| [docs/SHOP_AND_LOYALTY.md](docs/SHOP_AND_LOYALTY.md) | USDC shop, spend-permission rail, POD loyalty |
+| [docs/WOCO_AGENT_ARCHITECTURE.md](docs/WOCO_AGENT_ARCHITECTURE.md) | Bounded non-custodial agent commerce |
+
+---
 
 ## Demo
 
@@ -95,12 +118,6 @@ need no Stripe.
 
 ## Documentation
 
-| Doc | Contents |
-|---|---|
-| [docs/BUILDATHON_SUBMISSION.md](docs/BUILDATHON_SUBMISSION.md) | **Arbitrum Buildathon submission** — start here (addresses, tx evidence, links to all spokes) |
-| [docs/ONCHAIN_TICKETING.md](docs/ONCHAIN_TICKETING.md) | On-chain ticketing + smart wallets |
-| [docs/SUBENS_IDENTITY.md](docs/SUBENS_IDENTITY.md) | Sub-ENS identity (Durin L2Registry) |
-| [docs/EAS_SOCIAL_GRAPH.md](docs/EAS_SOCIAL_GRAPH.md) | EAS likes & follows |
-| [docs/STYLUS_AGGREGATOR.md](docs/STYLUS_AGGREGATOR.md) | Stylus (Rust/WASM) trending engine |
-| [docs/SHOP_AND_LOYALTY.md](docs/SHOP_AND_LOYALTY.md) | USDC shop, spend-permission rail, POD loyalty |
-| [docs/WOCO_AGENT_ARCHITECTURE.md](docs/WOCO_AGENT_ARCHITECTURE.md) | Bounded non-custodial agent commerce |
+The full buildathon doc index is in **[🚀 Judges — Start Here](#-arbitrum-buildathon-judges--start-here)**
+above (submission summary + one spoke doc per component). Start with
+[docs/BUILDATHON_SUBMISSION.md](docs/BUILDATHON_SUBMISSION.md).
