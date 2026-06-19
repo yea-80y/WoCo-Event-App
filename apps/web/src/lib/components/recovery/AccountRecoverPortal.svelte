@@ -5,22 +5,33 @@
    * wallet they added during setup, we confirm a protected account exists, then
    * re-key it to this device.
    *
-   * STATUS: the connect + verify stages are live. The final irreversible step
-   * (on-chain signer rotation + re-key to a fresh passkey + restoring the
-   * identity key) is gated here pending in-browser verification of the full
-   * ceremony — docs/PASSKEY_RECOVERY_PLAN.md mandates escrow-grade verification
-   * before this can run against accounts that hold funds. The button below makes
-   * that explicit rather than performing an unverified irreversible action.
+   * The final step is IRREVERSIBLE (on-chain signer rotation + a fresh passkey on
+   * this device + restoring the identity key from escrow), so it runs only after
+   * an explicit confirmation. The on-chain rotation is proven on Arb Sepolia
+   * (recovery-spike-caller-hook.ts) and the escrow round-trip by
+   * recovery-escrow-spike.ts; docs/PASSKEY_RECOVERY_PLAN.md still gates ADVERTISING
+   * this for funds-holding accounts on the owner's own live end-to-end test.
    */
-  import { connectBackupWallet } from "../../wallet/backup-signer.js";
+  import { auth } from "../../auth/auth-store.svelte.js";
+  import { connectBackupWallet, type BackupWallet } from "../../wallet/backup-signer.js";
   import { fetchRecoveryEnvelope } from "../../api/recovery.js";
 
-  type Phase = "intro" | "connecting" | "checking" | "found" | "none" | "error";
+  type Phase =
+    | "intro"
+    | "connecting"
+    | "checking"
+    | "found"
+    | "none"
+    | "restoring"
+    | "recovered"
+    | "error";
   let phase = $state<Phase>("intro");
-  let backupAddress = $state<string | null>(null);
+  let backup = $state<BackupWallet | null>(null);
   let account = $state("");
   let errorMsg = $state("");
+  let restoreStep = $state("");
 
+  const backupAddress = $derived(backup?.address ?? null);
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const validAccount = $derived(/^0x[a-fA-F0-9]{40}$/.test(account.trim()));
 
@@ -28,8 +39,7 @@
     phase = "connecting";
     errorMsg = "";
     try {
-      const backup = await connectBackupWallet();
-      backupAddress = backup.address;
+      backup = await connectBackupWallet();
       phase = "intro";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Couldn't connect your wallet";
@@ -49,6 +59,25 @@
       phase = "error";
     }
   }
+
+  async function restore() {
+    if (!backup) return;
+    phase = "restoring";
+    errorMsg = "";
+    try {
+      restoreStep = "Create a new passkey on this device…";
+      // recoverAndRekey runs the full ceremony; the new-passkey prompt fires inside.
+      await auth.recoverAndRekey({ backup, targetAddress: account.trim() });
+      phase = "recovered";
+    } catch (e) {
+      errorMsg = e instanceof Error ? e.message : "Recovery couldn't be completed — please try again";
+      phase = "error";
+    }
+  }
+
+  function goToAccount() {
+    window.location.hash = "#/";
+  }
 </script>
 
 <section class="wrap">
@@ -60,75 +89,93 @@
       </svg>
     </div>
 
-    <p class="kicker">Account recovery</p>
-    <h1>Get back into your account</h1>
-    <p class="lede">
-      Lost your device? Connect the backup wallet you saved earlier and we'll restore
-      your access — with your tickets and history.
-    </p>
+    {#if phase === "recovered"}
+      <p class="kicker kicker--hi">You're back in</p>
+      <h1>Account recovered</h1>
+      <p class="lede">
+        <code>{short(account.trim())}</code> now belongs to this device — with your tickets
+        and history intact. Your old device can no longer access it.
+      </p>
+      <button class="btn btn--primary btn--lg cta" onclick={goToAccount}>Go to my account</button>
+    {:else}
+      <p class="kicker">Account recovery</p>
+      <h1>Get back into your account</h1>
+      <p class="lede">
+        Lost your device? Connect the backup wallet you saved earlier and we'll restore
+        your access — with your tickets and history.
+      </p>
 
-    <!-- Step 1: backup wallet -->
-    <div class="step" class:done={!!backupAddress}>
-      <span class="num">{backupAddress ? "✓" : "1"}</span>
-      <div class="step-body">
-        <p class="step-title">Connect your backup wallet</p>
-        {#if backupAddress}
-          <code class="addr">{short(backupAddress)}</code>
-        {:else}
-          <button class="btn btn--ghost" onclick={connect} disabled={phase === "connecting"}>
-            {#if phase === "connecting"}<span class="spinner"></span>Connecting…{:else}Connect wallet{/if}
-          </button>
-        {/if}
-      </div>
-    </div>
-
-    <!-- Step 2: account -->
-    <div class="step" class:muted={!backupAddress}>
-      <span class="num">{phase === "found" ? "✓" : "2"}</span>
-      <div class="step-body">
-        <p class="step-title">Which account?</p>
-        <p class="step-hint">Paste your account address (it starts with 0x).</p>
-        <div class="row">
-          <input
-            class="input"
-            placeholder="0x…"
-            bind:value={account}
-            disabled={!backupAddress || phase === "checking"}
-            spellcheck="false"
-          />
-          <button
-            class="btn btn--primary"
-            onclick={check}
-            disabled={!backupAddress || !validAccount || phase === "checking"}
-          >
-            {#if phase === "checking"}<span class="spinner spinner--ink"></span>{:else}Find{/if}
-          </button>
+      <!-- Step 1: backup wallet -->
+      <div class="step" class:done={!!backupAddress}>
+        <span class="num">{backupAddress ? "✓" : "1"}</span>
+        <div class="step-body">
+          <p class="step-title">Connect your backup wallet</p>
+          {#if backupAddress}
+            <code class="addr">{short(backupAddress)}</code>
+          {:else}
+            <button class="btn btn--ghost" onclick={connect} disabled={phase === "connecting"}>
+              {#if phase === "connecting"}<span class="spinner"></span>Connecting…{:else}Connect wallet{/if}
+            </button>
+          {/if}
         </div>
       </div>
-    </div>
 
-    {#if phase === "error"}
-      <p class="error" role="alert">{errorMsg}</p>
-    {/if}
+      <!-- Step 2: account -->
+      <div class="step" class:muted={!backupAddress}>
+        <span class="num">{phase === "found" ? "✓" : "2"}</span>
+        <div class="step-body">
+          <p class="step-title">Which account?</p>
+          <p class="step-hint">Paste your account address (it starts with 0x).</p>
+          <div class="row">
+            <input
+              class="input"
+              placeholder="0x…"
+              bind:value={account}
+              disabled={!backupAddress || phase === "checking" || phase === "restoring"}
+              spellcheck="false"
+            />
+            <button
+              class="btn btn--primary"
+              onclick={check}
+              disabled={!backupAddress || !validAccount || phase === "checking" || phase === "restoring"}
+            >
+              {#if phase === "checking"}<span class="spinner spinner--ink"></span>{:else}Find{/if}
+            </button>
+          </div>
+        </div>
+      </div>
 
-    {#if phase === "found"}
-      <div class="result result--ok">
-        <p class="result-title">Protected account found ✓</p>
-        <p class="result-body">
-          We can restore <code>{short(account.trim())}</code> to this device using your
-          backup. We're putting the final restore step through security checks and will
-          enable it shortly — your backup is safe in the meantime.
-        </p>
-        <button class="btn btn--primary btn--lg" disabled>Restore my account — coming soon</button>
-      </div>
-    {:else if phase === "none"}
-      <div class="result">
-        <p class="result-title">No backup found for that account</p>
-        <p class="result-body">
-          Double-check the address, or make sure you set up a backup on your old device.
-          If you never added one, recovery isn't possible for this account.
-        </p>
-      </div>
+      {#if phase === "error"}
+        <p class="error" role="alert">{errorMsg}</p>
+      {/if}
+
+      {#if phase === "found" || phase === "restoring"}
+        <div class="result result--ok">
+          <p class="result-title">Protected account found ✓</p>
+          <p class="result-body">
+            We can restore <code>{short(account.trim())}</code> to this device using your backup.
+          </p>
+          <p class="warn">
+            This is permanent: you'll create a new passkey on <strong>this</strong> device and your
+            <strong>old device's</strong> passkey will stop working for this account.
+          </p>
+          <button class="btn btn--primary btn--lg" onclick={restore} disabled={phase === "restoring"}>
+            {#if phase === "restoring"}
+              <span class="spinner"></span>{restoreStep || "Restoring…"}
+            {:else}
+              Restore my account
+            {/if}
+          </button>
+        </div>
+      {:else if phase === "none"}
+        <div class="result">
+          <p class="result-title">No backup found for that account</p>
+          <p class="result-body">
+            Double-check the address, or make sure you set up a backup on your old device.
+            If you never added one, recovery isn't possible for this account.
+          </p>
+        </div>
+      {/if}
     {/if}
   </div>
 </section>
@@ -210,7 +257,23 @@
   .result-title { margin: 0 0 0.4rem; font-weight: 600; }
   .result-body { margin: 0 0 1rem; font-size: 0.88rem; color: var(--text-secondary); line-height: 1.5; }
   .result-body code, .result code { font-family: var(--font-mono); color: var(--text); }
-  .result .btn { width: 100%; justify-content: center; }
+  .result .btn { width: 100%; justify-content: center; gap: 0.5rem; }
+
+  .warn {
+    text-align: left;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+    border-radius: var(--radius-md);
+    padding: 0.6rem 0.8rem;
+    margin: 0 0 1rem;
+  }
+  .warn strong { color: var(--text); }
+
+  .kicker--hi { color: var(--accent-text); }
+  .cta { width: 100%; justify-content: center; }
 
   .error {
     color: var(--error);
