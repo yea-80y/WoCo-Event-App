@@ -99,6 +99,53 @@ irreversible ceremony in the browser-verified pass (both hinge on the same gate)
 
 ---
 
+## PHASE 1 PROGRESS (2026-06-19b) — irreversible portal ceremony WIRED (injected backup)
+
+**Decision shift:** Para is likely being PHASED OUT for another email provider, so we did
+NOT build Para-specific viem wiring (would be ripped out). Instead the backup abstraction is
+now **provider-agnostic** and the proven **injected-wallet** path is wired end to end; any
+future email provider drops in by supplying a viem signer.
+
+**Key finding (changes the recorded `{address, signTypedData}` seam):** `recoverAccount`
+needs the backup to sign the **guardian userOp** as a viem/EIP-1193 `Signer`
+(`OneOf<EIP1193Provider | WalletClient | LocalAccount | SmartAccount>`) — MORE than the
+typed-data signer the escrow-key derivation uses. Injected wallets give this for free (viem
+`WalletClient`, no new dep). Para would need `@getpara/viem-v2-integration@3.3.0` (a MAJOR
+ahead of installed Para 2.12.0 — compat risk) → deferred with Para.
+
+**✅ Shipped this session (commits `b1d0615`, `6d84670`, `83f09d4`; typecheck clean):**
+- `buildKernelFromPrivateKey(pk, { address })` — CREATE2 address override so a fresh passkey
+  controls the SAME deployed Kernel after rotation. Proven by caller-hook spike step [4].
+- `storePodSeed(parent, seed)` in pod-identity.ts — re-store the escrow-recovered ed25519
+  seed under the recovered identity (POD_ADDRESS AAD = new passkey PRF-EOA).
+- `BackupWallet` (backup-signer.ts) now provider-agnostic: `{ address, signTypedData,
+  getGuardianSigner?, recoveryReady }`. Injected → viem `WalletClient` guardian signer,
+  `recoveryReady: true`. A backup that can derive the escrow key but NOT sign the guardian
+  userOp is refused at setup (no trapped accounts).
+- `auth.recoverAndRekey({ backup, targetAddress })` — full irreversible ceremony: mint fresh
+  passkey → guardian `doRecovery` (rotate sudo to it) → rebuild Kernel at OLD address →
+  decrypt escrow → `storePodSeed` under new identity → log in. Ordering fix: clear stale auth
+  (which calls `clearPodIdentity`) BEFORE storing the recovered seed.
+- `setupAccountRecovery` now: refuses non-`recoveryReady` backups; runs a **determinism
+  round-trip self-check** (re-derive escrow key from a 2nd signature, confirm the bundle
+  opens to the exact seed) BEFORE the irreversible on-chain install (sec-review note #1). Costs
+  a second backup signature at setup.
+- Portal `AccountRecoverPortal.svelte` — gated button replaced with the live flow: explicit
+  irreversibility warning → `recoverAndRekey` → "Account recovered" success → into app.
+
+**🔴 STILL REQUIRED before this is safe for funds / before relaxing the organiser payout gate
+(`TicketSeriesEditor` `hasNativeWallet`):** the owner's OWN live end-to-end browser test on a
+throwaway Arb Sepolia account — set up recovery with an injected backup, then recover on a
+"fresh" device (clear IndexedDB), confirm: same Kernel address, new passkey controls it, old
+passkey dead, tickets/dashboard decrypt (POD seed restored). The on-chain rotation and escrow
+round-trip are spike-proven *individually*; the full wired path is not browser-verified.
+
+**Not built (next):** funds-policy wiring in `TicketSeriesEditor` (tier relaxation once
+verified), timelock + cancel window, social M-of-N (VSS), the replacement email-provider
+backup branch, feed-signer secret folded into the bundle when client-side feed signing lands.
+
+---
+
 ## PHASE 0 RESULTS (verified on Arb Sepolia 421614, sponsored, 2026-06-17)
 
 **Package (verified vs `zerodevapp/zerodev-examples` for Kernel v3.1):**
