@@ -9,6 +9,7 @@
    * Passkey accounts only: other login kinds already have an external key.
    */
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
   import { connectBackupWallet } from "../../wallet/backup-signer.js";
 
   type Phase = "intro" | "working" | "done" | "error";
@@ -18,7 +19,14 @@
   let step = $state("");
 
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+  // Don't decide "passkey vs already-covered" until auth has finished restoring —
+  // otherwise a logged-in passkey user briefly sees the wrong screen on load.
+  const signedIn = $derived(auth.isConnected);
   const isPasskey = $derived(auth.kind === "passkey");
+
+  function signIn() {
+    loginRequest.request({ context: "attendee" });
+  }
 
   async function protect() {
     phase = "working";
@@ -65,6 +73,13 @@
         <code>{backupAddress ? short(backupAddress) : ""}</code>
       </div>
       <p class="footnote">Keep that wallet safe. It's the key to getting back in.</p>
+    {:else if !signedIn}
+      <p class="kicker">Account safety</p>
+      <h1>Protect your account</h1>
+      <p class="lede">
+        Sign in first, then add a backup so you can get back in if you ever lose this device.
+      </p>
+      <button class="btn btn--primary btn--lg cta" onclick={signIn}>Sign in</button>
     {:else if !isPasskey}
       <p class="kicker">Account safety</p>
       <h1>You're already covered</h1>
@@ -92,7 +107,7 @@
 
       <button class="btn btn--primary btn--lg cta" onclick={protect} disabled={phase === "working"}>
         {#if phase === "working"}
-          <span class="spinner"></span>{step || "Working…"}
+          <span class="spinner"></span>Working…
         {:else if phase === "error"}
           Try again
         {:else}
@@ -100,7 +115,9 @@
         {/if}
       </button>
 
-      {#if phase !== "working"}
+      {#if phase === "working"}
+        <p class="step" aria-live="polite">{step || "Working…"}</p>
+      {:else}
         <p class="footnote">You'll confirm with your passkey, then approve once in your backup wallet.</p>
       {/if}
     {/if}
@@ -226,7 +243,15 @@
     margin-top: 0.1rem;
   }
 
-  .cta { width: 100%; justify-content: center; gap: 0.5rem; }
+  .cta { width: 100%; justify-content: center; gap: 0.5rem; white-space: nowrap; }
+
+  .step {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    margin: 0.8rem auto 0;
+    max-width: 22rem;
+  }
 
   .backup-chip {
     display: inline-flex;

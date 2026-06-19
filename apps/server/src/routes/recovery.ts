@@ -3,12 +3,20 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import type { RecoveryEnvelope } from "@woco/shared";
 import { RECOVERY_ENVELOPE_VERSION } from "@woco/shared";
-import { getRecoveryEnvelope, putRecoveryEnvelope } from "../lib/recovery/service.js";
+import {
+  getRecoveryEnvelope,
+  putRecoveryEnvelope,
+  getRecoveryByGuardian,
+  putRecoveryByGuardian,
+} from "../lib/recovery/service.js";
 
 export const recovery = new Hono<AppEnv>();
 
 const ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
 const HEX_RE = /^[0-9a-f]+$/;
+// Sub-ENS label charset (a single DNS-ish label, no dot/suffix): bounds what we
+// persist as the human-readable display hint in the guardian index.
+const LABEL_RE = /^[a-z0-9-]{1,63}$/;
 // Generous bounds so a v1 (1-of-1) or small M-of-N envelope fits the 4096-byte
 // feed page while rejecting anything that is obviously not our envelope.
 const MAX_GUARDIANS = 10;
@@ -65,11 +73,48 @@ recovery.post("/escrow", requireAuth, async (c) => {
 
   try {
     await putRecoveryEnvelope(parentAddress, parsed);
+
+    // Best-effort reverse-lookup hint so the user's backup wallet can auto-find
+    // this account at recovery time. NON-FATAL: the escrow above is the truth;
+    // the index is an untrusted convenience (see RecoveryGuardianIndex SECURITY).
+    // We DON'T verify guardianAddress against the kernel here — a poisoned hit is
+    // harmless because recovery decrypts the envelope (sealed to the real
+    // guardian key) before any on-chain action.
+    const body = (c.get("body") ?? {}) as { guardianAddress?: unknown; label?: unknown };
+    if (typeof body.guardianAddress === "string" && ADDR_RE.test(body.guardianAddress)) {
+      const label =
+        typeof body.label === "string" && LABEL_RE.test(body.label.toLowerCase())
+          ? body.label.toLowerCase()
+          : undefined;
+      try {
+        await putRecoveryByGuardian(body.guardianAddress, { kernelAddress: parentAddress, label });
+      } catch (err) {
+        console.error("[api] putRecoveryByGuardian (non-fatal):", err);
+      }
+    }
+
     return c.json({ ok: true, data: { kernelAddress: parentAddress } });
   } catch (err) {
     console.error("[api] putRecoveryEnvelope error:", err);
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ ok: false, error: `Failed to store recovery envelope: ${msg}` }, 500);
+  }
+});
+
+// GET /api/recovery/by-guardian/:guardianAddress — PUBLIC. Returns the account a
+// guardian protects (RecoveryGuardianIndex), so a connected backup wallet can
+// auto-find it. Convenience hint only; the escrow decrypt is the real guard.
+recovery.get("/by-guardian/:guardianAddress", async (c) => {
+  const guardianAddress = c.req.param("guardianAddress");
+  if (!ADDR_RE.test(guardianAddress)) {
+    return c.json({ ok: false, error: "Invalid guardianAddress" }, 400);
+  }
+  try {
+    const index = await getRecoveryByGuardian(guardianAddress);
+    return c.json({ ok: true, data: index });
+  } catch (err) {
+    console.error("[api] getRecoveryByGuardian error:", err);
+    return c.json({ ok: false, error: "Failed to load recovery index" }, 500);
   }
 });
 

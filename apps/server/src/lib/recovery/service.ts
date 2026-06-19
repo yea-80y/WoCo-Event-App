@@ -1,6 +1,6 @@
-import type { RecoveryEnvelope } from "@woco/shared";
+import type { RecoveryEnvelope, RecoveryGuardianIndex } from "@woco/shared";
 import { readFeedPage, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
-import { topicRecovery } from "../swarm/topics.js";
+import { topicRecovery, topicRecoveryGuardian } from "../swarm/topics.js";
 
 /**
  * Recovery-escrow persistence (PASSKEY_RECOVERY_PLAN §11.6 step 1).
@@ -24,4 +24,24 @@ export async function putRecoveryEnvelope(
 ): Promise<void> {
   // Synchronous upload — setup reads back the envelope immediately to confirm.
   await writeFeedPage(topicRecovery(kernelAddress), encodeJsonFeed(envelope), { deferred: false });
+}
+
+/**
+ * Guardian → account reverse-lookup hint (RecoveryGuardianIndex). Convenience
+ * only: confidentiality and authorisation rest on the sealed envelope, not here.
+ * Public read — the guardian↔account link is already on-chain.
+ */
+export async function getRecoveryByGuardian(
+  guardianAddress: string,
+): Promise<RecoveryGuardianIndex | null> {
+  const page = await readFeedPage(topicRecoveryGuardian(guardianAddress));
+  if (!page) return null;
+  return decodeJsonFeed<RecoveryGuardianIndex>(page);
+}
+
+export async function putRecoveryByGuardian(
+  guardianAddress: string,
+  index: RecoveryGuardianIndex,
+): Promise<void> {
+  await writeFeedPage(topicRecoveryGuardian(guardianAddress), encodeJsonFeed(index), { deferred: false });
 }

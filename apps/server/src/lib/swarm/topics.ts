@@ -95,6 +95,13 @@ const RECOVERY_NS = "woco/recovery";
 export const topicRecovery = (kernelAddress: string) =>
   Topic.fromString(`${RECOVERY_NS}/${kernelAddress.toLowerCase()}`);
 
+// Reverse lookup: guardian address → account it protects. Lets a connected
+// backup wallet auto-find the account at recovery time (RecoveryGuardianIndex).
+// Untrusted convenience hint — see the type's SECURITY note; the escrow decrypt
+// is the authoritative guard.
+export const topicRecoveryGuardian = (guardianAddress: string) =>
+  Topic.fromString(`${RECOVERY_NS}/by-guardian/${guardianAddress.toLowerCase()}`);
+
 // ---------------------------------------------------------------------------
 // Pagination helpers
 // ---------------------------------------------------------------------------

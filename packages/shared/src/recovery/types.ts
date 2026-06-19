@@ -34,3 +34,25 @@ export interface RecoveryEnvelope {
    */
   wrappedDeks: string[];
 }
+
+/**
+ * Reverse lookup written at setup so a connected backup wallet can AUTO-FIND the
+ * account it protects — sparing a locked-out user from recalling a hex address.
+ *
+ * Keyed on the guardian address, whose guardian↔account link is ALREADY public
+ * on-chain (the Kernel's recovery config), so this index discloses nothing new.
+ *
+ * SECURITY: this is an untrusted CONVENIENCE HINT, never an authorisation. The
+ * guardian address derives from a public backup address, so the index is
+ * poisonable (anyone can claim a guardian maps to their own account). It cannot
+ * cause harm: recovery decrypts the escrow envelope FIRST, and only the genuine
+ * account's envelope is sealed to the real guardian's X25519 key (from an
+ * unforgeable backup-wallet signature). A wrong/poisoned hit fails to decrypt and
+ * aborts before any on-chain action. The manual name/address entry is the fallback.
+ */
+export interface RecoveryGuardianIndex {
+  /** Lowercased Kernel address this guardian can recover. */
+  kernelAddress: string;
+  /** Optional sub-ENS label ({label}.woco.eth) for a human-readable confirmation. */
+  label?: string;
+}

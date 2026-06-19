@@ -14,7 +14,8 @@
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { connectBackupWallet, type BackupWallet } from "../../wallet/backup-signer.js";
-  import { fetchRecoveryEnvelope } from "../../api/recovery.js";
+  import { fetchRecoveryEnvelope, fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { resolveSubEnsAddress } from "../../api/sub-ens.js";
 
   type Phase =
     | "intro"
@@ -27,13 +28,18 @@
     | "error";
   let phase = $state<Phase>("intro");
   let backup = $state<BackupWallet | null>(null);
+  // `account` is always the resolved hex address (what check/restore need).
+  // `manualInput` is the raw text the user types — a WoCo name OR a 0x address.
   let account = $state("");
+  let manualInput = $state("");
+  let manualOpen = $state(false);
+  let displayName = $state<string | null>(null);
   let errorMsg = $state("");
   let restoreStep = $state("");
 
   const backupAddress = $derived(backup?.address ?? null);
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
-  const validAccount = $derived(/^0x[a-fA-F0-9]{40}$/.test(account.trim()));
+  const manualReady = $derived(manualInput.trim().length > 0);
 
   async function connect() {
     phase = "connecting";
@@ -41,18 +47,72 @@
     try {
       backup = await connectBackupWallet();
       phase = "intro";
+      // Auto-find the account this backup protects — nothing to type or recall.
+      await autoFind();
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Couldn't connect your wallet";
       phase = "error";
     }
   }
 
-  async function check() {
-    if (!validAccount) return;
+  // Derive the guardian address from the connected backup (same deterministic
+  // config as setup) and look up the account it protects. Best-effort: if the
+  // hint is missing/poisoned the user falls back to manual entry, and recovery's
+  // escrow-decrypt guard means a wrong hit can never cause harm.
+  async function autoFind() {
+    if (!backup) return;
+    try {
+      const { deriveGuardianAddress } = await import("../../auth/kernel-account.js");
+      const guardian = await deriveGuardianAddress({
+        signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
+        threshold: 100,
+      });
+      const hit = await fetchRecoveryByGuardian(guardian);
+      if (hit?.kernelAddress) {
+        displayName = hit.label ? `${hit.label}.woco.eth` : null;
+        await checkAddress(hit.kernelAddress.toLowerCase());
+        return;
+      }
+    } catch {
+      /* auto-find is a convenience; fall through to manual entry */
+    }
+    manualOpen = true; // nothing auto-found → reveal the manual box
+  }
+
+  // Manual fallback: accept a WoCo name (resolve via sub-ENS) or a raw address.
+  async function findManually() {
+    const raw = manualInput.trim();
+    if (!raw) return;
     phase = "checking";
     errorMsg = "";
     try {
-      const env = await fetchRecoveryEnvelope(account.trim());
+      let addr: string | null = null;
+      let name: string | null = null;
+      if (/^0x[a-fA-F0-9]{40}$/.test(raw)) {
+        addr = raw.toLowerCase();
+      } else {
+        addr = await resolveSubEnsAddress(raw);
+        if (addr) name = raw.toLowerCase().endsWith(".woco.eth") ? raw.toLowerCase() : `${raw.toLowerCase()}.woco.eth`;
+      }
+      if (!addr) {
+        phase = "none";
+        return;
+      }
+      displayName = name;
+      await checkAddress(addr);
+    } catch (e) {
+      errorMsg = e instanceof Error ? e.message : "Couldn't check that account";
+      phase = "error";
+    }
+  }
+
+  // Confirm a recovery envelope exists for `addr` and move to the found/none state.
+  async function checkAddress(addr: string) {
+    account = addr;
+    phase = "checking";
+    errorMsg = "";
+    try {
+      const env = await fetchRecoveryEnvelope(addr);
       phase = env ? "found" : "none";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Couldn't check that account";
@@ -120,28 +180,45 @@
         </div>
       </div>
 
-      <!-- Step 2: account -->
+      <!-- Step 2: account — auto-found from the backup wallet, with manual fallback -->
       <div class="step" class:muted={!backupAddress}>
         <span class="num">{phase === "found" ? "✓" : "2"}</span>
         <div class="step-body">
           <p class="step-title">Which account?</p>
-          <p class="step-hint">Paste your account address (it starts with 0x).</p>
-          <div class="row">
-            <input
-              class="input"
-              placeholder="0x…"
-              bind:value={account}
-              disabled={!backupAddress || phase === "checking" || phase === "restoring"}
-              spellcheck="false"
-            />
+          {#if account && !manualOpen}
+            <p class="found-hint">
+              {#if displayName}
+                <strong>{displayName}</strong> · <code class="addr">{short(account)}</code>
+              {:else}
+                <code class="addr">{short(account)}</code>
+              {/if}
+            </p>
             <button
-              class="btn btn--primary"
-              onclick={check}
-              disabled={!backupAddress || !validAccount || phase === "checking" || phase === "restoring"}
+              type="button"
+              class="linkish"
+              onclick={() => { manualOpen = true; account = ""; displayName = null; phase = "intro"; }}
             >
-              {#if phase === "checking"}<span class="spinner spinner--ink"></span>{:else}Find{/if}
+              Not your account? Enter it manually
             </button>
-          </div>
+          {:else}
+            <p class="step-hint">Enter your WoCo name (e.g. you.woco.eth) or your account address.</p>
+            <div class="row">
+              <input
+                class="input"
+                placeholder="you.woco.eth or 0x…"
+                bind:value={manualInput}
+                disabled={!backupAddress || phase === "checking" || phase === "restoring"}
+                spellcheck="false"
+              />
+              <button
+                class="btn btn--primary"
+                onclick={findManually}
+                disabled={!backupAddress || !manualReady || phase === "checking" || phase === "restoring"}
+              >
+                {#if phase === "checking"}<span class="spinner spinner--ink"></span>{:else}Find{/if}
+              </button>
+            </div>
+          {/if}
         </div>
       </div>
 
@@ -153,25 +230,30 @@
         <div class="result result--ok">
           <p class="result-title">Protected account found ✓</p>
           <p class="result-body">
-            We can restore <code>{short(account.trim())}</code> to this device using your backup.
+            We can restore
+            {#if displayName}<strong>{displayName}</strong> (<code>{short(account)}</code>){:else}<code>{short(account)}</code>{/if}
+            to this device using your backup.
           </p>
           <p class="warn">
             This is permanent: you'll create a new passkey on <strong>this</strong> device and your
             <strong>old device's</strong> passkey will stop working for this account.
           </p>
-          <button class="btn btn--primary btn--lg" onclick={restore} disabled={phase === "restoring"}>
+          <button class="btn btn--primary btn--lg restore-cta" onclick={restore} disabled={phase === "restoring"}>
             {#if phase === "restoring"}
-              <span class="spinner"></span>{restoreStep || "Restoring…"}
+              <span class="spinner"></span>Restoring…
             {:else}
               Restore my account
             {/if}
           </button>
+          {#if phase === "restoring"}
+            <p class="restore-step" aria-live="polite">{restoreStep || "Restoring…"}</p>
+          {/if}
         </div>
       {:else if phase === "none"}
         <div class="result">
           <p class="result-title">No backup found for that account</p>
           <p class="result-body">
-            Double-check the address, or make sure you set up a backup on your old device.
+            Double-check the name or address, or make sure you set up a backup on your old device.
             If you never added one, recovery isn't possible for this account.
           </p>
         </div>
@@ -281,6 +363,21 @@
     border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
     border-radius: var(--radius-md);
     padding: 0.6rem 0.8rem; font-size: 0.88rem; margin: 0.25rem 0 0;
+  }
+
+  .found-hint { margin: 0 0 0.4rem; font-size: 0.9rem; color: var(--text-secondary); }
+  .found-hint strong { color: var(--text); }
+  .linkish {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font-size: 0.8rem; color: var(--text-muted); text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .linkish:hover { color: var(--text-secondary); }
+
+  .restore-cta { white-space: nowrap; }
+  .restore-step {
+    font-size: 0.85rem; color: var(--text-secondary); line-height: 1.45;
+    margin: 0.7rem 0 0; text-align: center;
   }
 
   .spinner {

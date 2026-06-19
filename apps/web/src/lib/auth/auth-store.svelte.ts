@@ -768,8 +768,21 @@ async function setupAccountRecovery(backup: {
   const guardianAddress = await deriveGuardianAddress(guardianConfig);
   const { txHash } = await setupRecovery(_kernel, guardianAddress);
 
+  // Best-effort: record the user's sub-ENS label so recovery can show a
+  // human-readable name ("nabil.woco.eth") instead of a hex address. Non-fatal —
+  // a user with no name still recovers fine (auto-find shows the address).
+  let label: string | undefined;
+  try {
+    const { getOwnedSubEns } = await import("../api/sub-ens.js");
+    const owned = await getOwnedSubEns();
+    label = owned.ok ? owned.data?.names?.[0]?.label : undefined;
+  } catch {
+    /* name lookup is a display nicety, never block setup on it */
+  }
+
+  // Store the sealed envelope + the guardian→account auto-find hint together.
   const { putRecoveryEnvelope } = await import("../api/recovery.js");
-  const res = await putRecoveryEnvelope(envelope);
+  const res = await putRecoveryEnvelope(envelope, { guardianAddress, label });
   if (!res.ok) throw new Error(res.error || "Could not save your backup — please try again");
 
   return { guardianAddress, txHash };
@@ -780,15 +793,21 @@ async function setupAccountRecovery(backup: {
  * §11.6). The locked-out user is on a NEW device with no session; they have only
  * their backup wallet and the lost account's address. This:
  *
+ *  0. PRE-FLIGHT: decrypts the POD escrow with the backup's derived X25519 key
+ *     BEFORE any irreversible step. Only the genuine account's envelope is sealed
+ *     to this guardian (the seal key comes from an unforgeable backup signature),
+ *     so a failed decrypt — wrong address typed, or a poisoned auto-find hint —
+ *     aborts HERE: no passkey minted, no on-chain rotation. This decrypt is the
+ *     authoritative ownership proof; the guardian-index lookup is only a hint.
  *  1. Mints a FRESH passkey on this device (its PRF-EOA = the new sudo owner).
  *  2. Has the backup-wallet guardian call `target.doRecovery` — rotating the
  *     deployed Kernel's sudo owner to the new passkey. IRREVERSIBLE; the old
  *     device's passkey is retired (proven: recovery-spike-caller-hook.ts).
  *  3. Rebuilds the Kernel at the OLD address with the NEW owner (address override)
  *     — same address ⇒ funds + on-chain identity intact.
- *  4. Decrypts the POD escrow with the backup's derived X25519 key and re-stores
- *     the ORIGINAL ed25519 seed under the new identity → tickets + dashboard
- *     decryption survive (funds recovery alone cannot restore them; §11.1).
+ *  4. Re-stores the ORIGINAL ed25519 seed (recovered in step 0) under the new
+ *     identity → tickets + dashboard decryption survive (funds recovery alone
+ *     cannot restore them; §11.1).
  *  5. Logs the user in as the recovered account.
  *
  * Funds-critical + irreversible: callers MUST confirm intent first. The guardian
@@ -814,6 +833,25 @@ async function recoverAndRekey(args: {
 
   _busy = true;
   try {
+    // (0) PRE-FLIGHT ownership proof: decrypt the escrow BEFORE any irreversible
+    // step. The seal key derives from the backup wallet's (deterministic)
+    // signature, so only the true guardian of THIS account can open it. A wrong
+    // address or a poisoned auto-find hint fails here — before a passkey is minted
+    // or the on-chain owner is rotated. This is the security linchpin of recovery.
+    const { deriveGuardianEncryptionKeypair, openRecoveryBundle } = await import("./recovery-escrow.js");
+    const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
+    let podSeed: string;
+    try {
+      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk });
+      if (!bundle.secrets.podSeed) throw new Error("missing podSeed");
+      podSeed = bundle.secrets.podSeed;
+    } catch {
+      // Don't leak whether it was a wrong account vs a corrupt blob.
+      throw new Error(
+        "That backup wallet can't unlock this account. Check you connected the right backup wallet and chose the right account.",
+      );
+    }
+
     // (1) Fresh passkey on this device → its PRF-EOA is the new sudo owner.
     const fresh = await createPasskeyAccount();
     const newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
@@ -839,14 +877,7 @@ async function recoverAndRekey(args: {
       throw new Error("Recovery produced a divergent account address — aborting.");
     }
 
-    // (4) Decrypt the escrow → the ORIGINAL POD seed.
-    const { deriveGuardianEncryptionKeypair, openRecoveryBundle } = await import("./recovery-escrow.js");
-    const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
-    const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk });
-    const podSeed = bundle.secrets.podSeed;
-    if (!podSeed) throw new Error("Backup was found but did not contain your identity key.");
-
-    // (5) Establish the session as the recovered account (mirrors loginPasskey,
+    // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored POD seed).
     // Clear any stale auth on this device FIRST — `_clearStaleAuthForSwitch`
     // calls `clearPodIdentity()`, so the recovered seed must be stored AFTER it.
