@@ -18,8 +18,8 @@ companion doc.
 | # | Component | What it is | On-chain anchor |
 |---|---|---|---|
 | 1 | **On-chain ticketing** | `WoCoEventV2` — USDC, per-event supply, sponsor-gated `claimFor` / `batchClaimFor` | `0x351070Aff6dECa449506a6eA6dC6cB84D13cAedf` |
-| 1b | **Passkey smart wallet** | ZeroDev Kernel on Arbitrum: ECDSA-over-PRF root + scoped gasless session keys | live-proven via #4 + the agent rail |
-| 1c | **Coinbase Smart Wallet** | CSW login as a first-class identity; multi-chain 1271/6492 verify | `lib/auth/coinbase-account.ts` |
+| 1b | **Passkey smart wallet** | ZeroDev Kernel on Arbitrum: ECDSA-over-PRF root + scoped gasless session keys | [deep-dive →](./PASSKEY_SMART_WALLET.md) |
+| 1c | **Coinbase Smart Wallet** | CSW login as a first-class identity; multi-chain 1271/6492 verify | [signs on Base →](./ONCHAIN_TICKETING.md#3-coinbase-smart-wallet-login) |
 | 3 | **Sub-ENS identity** | `label.woco.eth` sub-names via Durin L2Registry (ERC-721, transferable) | Registrar `0x7c0DE55a1713e6C1a53Db50314C7CB608179aAf1` |
 | 4 | **EAS social graph** | likes (events) + follows (profiles) as revocable EAS attestations | schema UID `0x62c5b546…dda64` |
 | 5 | **Stylus trending** | **Rust → WASM** `LikeAggregator`, pull-based, verifies each UID against EAS | `0x7dbf8d3a58bebb642fa1a478bbffba4675f1ba20` |
@@ -36,7 +36,7 @@ graph trustlessly; and an agent can transact within cryptographic bounds the use
 We deliberately built on what's distinctive about Arbitrum rather than generic EVM glue:
 
 - **Stylus (Arbitrum's Rust/WASM contracts)** for the compute-heavy, verification-heavy trending
-  engine — see [#5](#5-stylus-trending-engine-5) below. This is the headline Arbitrum-native piece.
+  engine — see [#5](#6-stylus-trending-engine-5) below. This is the headline Arbitrum-native piece.
 - **ZeroDev Kernel (ERC-4337) on Arbitrum** as the account-abstraction layer for passkey wallets,
   gasless session keys, and the agent/shop spend-permission rails — **no Alchemy / no second custody
   stack**; the primitives we already run *are* the agent wallet.
@@ -60,12 +60,13 @@ buyer who never touches a wallet still gets an on-chain ticket — the Stripe we
 
 Two smart-account logins make everything gasless and seedless:
 - **Passkey wallet (ZeroDev Kernel):** root key is ECDSA derived from the passkey PRF (off the hot
-  path); scoped **session keys** sign gasless userOps, each bounded by on-chain call/timestamp/
-  rate-limit/gas policies.
+  path); scoped **session keys** sign gasless userOps, each bounded by on-chain call + timestamp + gas
+  policies (the shop/agent spend-permission keys add a per-draw ceiling + draw-count limit on top).
 - **Coinbase Smart Wallet:** signs `AuthorizeSession` as an ERC-1271/6492 signature; the server
   verifies **multi-chain by design** (Base for CSW, Arbitrum Sepolia for the Kernel) so both coexist.
 
-→ Detail + security review: [`ONCHAIN_TICKETING.md`](./ONCHAIN_TICKETING.md).
+→ Detail + security review: [`ONCHAIN_TICKETING.md`](./ONCHAIN_TICKETING.md). Passkey Kernel deep-dive
+(scoped session keys, POD invariant, multi-chain verify): [`PASSKEY_SMART_WALLET.md`](./PASSKEY_SMART_WALLET.md).
 
 ## 4. Sub-ENS identity (#3)
 
@@ -212,6 +213,7 @@ curl https://events-api.woco-net.com/.well-known/agent.json   # agent capability
 | Doc | Contents |
 |---|---|
 | [`ONCHAIN_TICKETING.md`](./ONCHAIN_TICKETING.md) | `WoCoEventV2` + passkey Kernel + CSW + security review |
+| [`PASSKEY_SMART_WALLET.md`](./PASSKEY_SMART_WALLET.md) | Passkey smart wallet (ZeroDev Kernel): scoped session keys, POD invariant, multi-chain verify |
 | [`SUBENS_IDENTITY.md`](./SUBENS_IDENTITY.md) | Durin L2Registry sub-ENS identity layer |
 | [`EAS_SOCIAL_GRAPH.md`](./EAS_SOCIAL_GRAPH.md) | EAS schema, attester model, abuse/sybil analysis |
 | [`STYLUS_AGGREGATOR.md`](./STYLUS_AGGREGATOR.md) | Stylus (Rust/WASM) trending contract + on-chain E2E |

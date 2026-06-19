@@ -54,8 +54,9 @@ A user can log in with a **passkey** and get a full ERC-4337 smart account with 
 - The account's **root key is an ECDSA key derived from the passkey's PRF extension** — it is
   never on the hot path of day-to-day actions.
 - Day-to-day actions are signed by **scoped session keys**, each pinned by on-chain policies
-  (which contract + function it may call, a timestamp window, a rate limit, and a gas budget). A
-  leaked session key can only do what its policies allow.
+  (which contract + function it may call, a timestamp window, and a gas budget; the shop/agent
+  spend-permission keys add a per-draw amount ceiling and a draw-count limit). A leaked session key
+  can only do what its policies allow.
 - Session keys send **gasless** userOps via a paymaster. This is the engine behind gasless
   sub-ENS claims, gasless EAS likes, and the bounded agent draw.
 
