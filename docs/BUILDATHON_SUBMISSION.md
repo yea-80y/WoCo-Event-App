@@ -198,9 +198,10 @@ curl https://events-api.woco-net.com/.well-known/agent.json   # agent capability
   are needed:** with Stripe in **test mode**, go to **Dashboard → Payments**, start Connect
   onboarding, and use Stripe's built-in **"Use test data" / "Skip"** buttons on each step — they
   auto-fill fake business + identity info and take the account straight to a verified
-  (`charges_enabled`) state. To skip Stripe entirely, untick **Card payments** on the tier before
-  publishing. This is a payments gate only — it does **not** apply to likes/follows or sub-ENS, which
-  need no Stripe.
+  (`charges_enabled`) state. **Easiest path for reviewers:** skip Stripe entirely — untick **Card
+  payments** and enable **crypto** on the tier, and you can publish a crypto-only event with no Stripe
+  onboarding at all. This is a payments gate only — it does **not** apply to likes/follows or sub-ENS,
+  which need no Stripe.
 - The **agent commerce E2E is verified on-chain**; the **shop** spend-permission rail has the same
   fixes ported but still needs a live on-chain settle to confirm end-to-end.
 - The likes/following/trending **API + on-chain path are live**; the frontend like UI's Swarm deploy
