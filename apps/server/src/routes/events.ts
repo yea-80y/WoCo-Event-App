@@ -144,13 +144,15 @@ events.post("/", requireAuth, async (c) => {
       return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or podBodies` }, 400);
     }
     // Defence-in-depth — mirror FEATURES gates so an old client (or direct API
-    // hit) can't bypass the UI and ship a free / crypto-only event.
+    // hit) can't bypass the UI and ship a free event. A paid series must set a
+    // price and enable at least one payment rail; Stripe is no longer mandatory
+    // (crypto-only events are allowed — see docs/EVENT_CREATION_ANTI_ABUSE.md).
     if (!FEATURES.freeEventsAllowed) {
       if (!s.payment || !s.payment.price || parseFloat(s.payment.price) <= 0) {
         return c.json({ ok: false, error: `Series ${s.seriesId}: free events are not allowed — set a price` }, 400);
       }
-      if (!s.payment.stripeEnabled) {
-        return c.json({ ok: false, error: `Series ${s.seriesId}: Stripe must be enabled` }, 400);
+      if (!s.payment.stripeEnabled && !s.payment.cryptoEnabled) {
+        return c.json({ ok: false, error: `Series ${s.seriesId}: enable a payment method (card or crypto)` }, 400);
       }
     }
     if (!FEATURES.cryptoPaymentsAllowed && s.payment?.cryptoEnabled) {
