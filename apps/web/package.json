@@ -11,6 +11,7 @@
     "dev:multisite": "vite --config vite.multisite.config.ts",
     "build:multisite": "vite build --config vite.multisite.config.ts",
     "preview": "vite preview",
+    "test": "node --import tsx --test test/*.test.ts",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
   },
   "dependencies": {

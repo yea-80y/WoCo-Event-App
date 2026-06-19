@@ -606,12 +606,30 @@ async function ensurePodIdentity(): Promise<string | null> {
   _busy = true;
   _podInFlight = (async () => {
     try {
-      // POD uses the deterministic PRF-EOA signer + PRF-EOA address for passkey
-      // (invariant #1), the parent for every other kind. _getPodSigner() runs
-      // _ensurePasskeyKey() internally, so _podAddress is populated before read.
-      const signer = await _getPodSigner();
+      // POD is keyed by the PRF-EOA address for passkey (invariant #1), the
+      // parent for every other kind. _getPodAddress() reads the cached value;
+      // restorePodSeed below needs no signer, so resolve the address first.
       const podAddr = _getPodAddress();
       if (!podAddr) return null;
+
+      // Prefer an already-stored seed over re-deriving from a fresh signature.
+      // CRITICAL after recovery: the passkey credential (PRF-EOA) has rotated, so
+      // a fresh requestPodIdentity() would derive a DIVERGENT seed and clobber the
+      // escrow-restored original — permanently breaking decryption of historical
+      // encrypted data. Reusing the stored seed (escrow-restored, or a prior
+      // derivation) also spares the user a redundant signature each session. For a
+      // non-rotated credential the re-derived seed would be identical anyway, so
+      // this never changes the identity — it only avoids the clobber + the prompt.
+      const existing = await getPodKeypair(podAddr);
+      if (existing) {
+        _podPublicKeyHex = existing.publicKeyHex;
+        return _podPublicKeyHex;
+      }
+
+      // No stored seed (first login on this device, or post-migration) → derive it
+      // with the deterministic PRF-EOA signer (passkey) / parent signer (others).
+      // _getPodSigner() runs _ensurePasskeyKey() internally, so _podAddress is set.
+      const signer = await _getPodSigner();
       const { podPublicKeyHex } = await requestPodIdentity(podAddr, signer);
       _podPublicKeyHex = podPublicKeyHex;
       return podPublicKeyHex;
@@ -817,8 +835,12 @@ async function setupAccountRecovery(backup: {
 async function recoverAndRekey(args: {
   backup: import("../wallet/backup-signer.js").BackupWallet;
   targetAddress: string;
+  /** Progress messages for the UI — emitted right before each wallet prompt so
+   *  the user knows what they're approving (the guardian userOp signs an opaque
+   *  hash that the wallet can't describe). */
+  onProgress?: (msg: string) => void;
 }): Promise<{ recoveredAddress: string; txHash: string }> {
-  const { backup, targetAddress } = args;
+  const { backup, targetAddress, onProgress } = args;
   if (_busy) throw new Error("Please wait — another operation is in progress");
   if (!backup.recoveryReady || !backup.getGuardianSigner) {
     throw new Error("This backup wallet can't complete a recovery. Connect a wallet that can sign on Arbitrum.");
@@ -838,6 +860,7 @@ async function recoverAndRekey(args: {
     // signature, so only the true guardian of THIS account can open it. A wrong
     // address or a poisoned auto-find hint fails here — before a passkey is minted
     // or the on-chain owner is rotated. This is the security linchpin of recovery.
+    onProgress?.("Confirm the signature in your backup wallet to unlock this account's data");
     const { deriveGuardianEncryptionKeypair, openRecoveryBundle } = await import("./recovery-escrow.js");
     const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
     let podSeed: string;
@@ -853,10 +876,12 @@ async function recoverAndRekey(args: {
     }
 
     // (1) Fresh passkey on this device → its PRF-EOA is the new sudo owner.
+    onProgress?.("Create a new passkey on this device…");
     const fresh = await createPasskeyAccount();
     const newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
 
     // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
+    onProgress?.("Approve in your backup wallet to move this account to your new passkey…");
     const guardianSigner = await backup.getGuardianSigner();
     const guardianConfig = {
       signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
@@ -881,6 +906,7 @@ async function recoverAndRekey(args: {
     // but pinned to the preserved address with the escrow-restored POD seed).
     // Clear any stale auth on this device FIRST — `_clearStaleAuthForSwitch`
     // calls `clearPodIdentity()`, so the recovered seed must be stored AFTER it.
+    onProgress?.("Restoring your tickets and history…");
     await _clearStaleAuthForSwitch(target);
     await storePodSeed(fresh.address, podSeed);
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
@@ -892,6 +918,11 @@ async function recoverAndRekey(args: {
     _podAddress = fresh.address;
     _kernel = kernel;
     _localPrivateKey = null;
+    // Cache the POD public key from the escrow-restored seed so the dashboard
+    // decrypts immediately and ensurePodIdentity short-circuits (never re-derives
+    // a divergent seed from the rotated passkey credential).
+    const restoredPod = await getPodKeypair(fresh.address);
+    _podPublicKeyHex = restoredPod?.publicKeyHex ?? null;
     await _restoreCachedAuth();
 
     return { recoveredAddress: target, txHash };

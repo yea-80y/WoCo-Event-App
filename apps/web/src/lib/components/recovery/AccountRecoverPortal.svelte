@@ -125,9 +125,14 @@
     phase = "restoring";
     errorMsg = "";
     try {
-      restoreStep = "Create a new passkey on this device…";
-      // recoverAndRekey runs the full ceremony; the new-passkey prompt fires inside.
-      await auth.recoverAndRekey({ backup, targetAddress: account.trim() });
+      restoreStep = "Starting recovery…";
+      // recoverAndRekey emits a message right before each wallet prompt so the
+      // user knows what they're approving (the guardian signature is an opaque hash).
+      await auth.recoverAndRekey({
+        backup,
+        targetAddress: account.trim(),
+        onProgress: (m) => { restoreStep = m; },
+      });
       phase = "recovered";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Recovery couldn't be completed — please try again";
@@ -237,6 +242,10 @@
           <p class="warn">
             This is permanent: you'll create a new passkey on <strong>this</strong> device and your
             <strong>old device's</strong> passkey will stop working for this account.
+          </p>
+          <p class="restore-note">
+            You'll approve <strong>two prompts in your backup wallet</strong>: one to unlock your data,
+            then one to authorise moving the account to this device.
           </p>
           <button class="btn btn--primary btn--lg restore-cta" onclick={restore} disabled={phase === "restoring"}>
             {#if phase === "restoring"}
@@ -373,6 +382,12 @@
     text-underline-offset: 2px;
   }
   .linkish:hover { color: var(--text-secondary); }
+
+  .restore-note {
+    font-size: 0.82rem; color: var(--text-muted); line-height: 1.45;
+    margin: 0 0 0.9rem; text-align: left;
+  }
+  .restore-note strong { color: var(--text-secondary); }
 
   .restore-cta { white-space: nowrap; }
   .restore-step {
