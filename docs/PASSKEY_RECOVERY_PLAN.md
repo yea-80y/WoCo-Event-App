@@ -163,9 +163,31 @@ guardians = 1-of-N (contained, gated) vs M-of-N (VSS, deferred); see §12.2.
 **🔴 NEXT GATES (in order):**
 1. Confirm Web3Auth email path LIVE on a real https domain (hCaptcha blocks localhost — see
    DEV-TEST FINDINGS in §2026-06-20c). One login, confirm address returned + sig deterministic.
-   The chooser makes this directly testable on the #/protect page.
-2. Para → Web3Auth primary-login migration (replace Para login path).
-3. AAGUID / WebAuthn BE-BS prompting for device factor (design first).
+   Test BOTH primary login (`LoginModal` → "Continue with Email") AND backup (`#/protect` → Email).
+2. AAGUID / WebAuthn BE-BS prompting for device factor (design first).
+
+---
+
+## PHASE 1 PROGRESS (2026-06-20e) — Para → Web3Auth primary login SHIPPED
+
+**✅ Shipped (Sonnet, commit `07999aa`, build clean):**
+- `AuthKind`: `"para"` → `"web3auth"` (`packages/shared/src/auth/types.ts`).
+- `apps/web/src/lib/auth/web3auth-account.ts` — module-level singleton instance:
+  `loginWithWeb3Auth()` (opens PnP modal, keeps session active), `restoreWeb3AuthSession()`
+  (silent restore on page reload via `web3auth.connected`), `logoutWeb3Auth()`.
+- `auth-store.svelte.ts`: `_web3authPrivateKey` in memory (same pattern as `_localPrivateKey`);
+  `loginWeb3Auth()` (opens modal → extracts key → stores kind+address → `createLocalSigner`);
+  restore branch `"web3auth"` → `restoreWeb3AuthSession()`; logout branch calls `logoutWeb3Auth()`;
+  `clearAllAuth()` wipes `_web3authPrivateKey`; exports `loginWeb3Auth` (removed `loginPara`).
+- `Web3AuthLogin.svelte` replaces `ParaLogin.svelte` — single button, Web3Auth modal handles everything.
+- `LoginModal.svelte`: `<ParaLogin>` → `<Web3AuthLogin>`.
+- Independence guard in `AccountRecoverySetup.svelte`: Email card greyed-out + message when
+  `auth.kind === "web3auth"` (user's primary IS their email — can't be their sole guardian).
+- **Deleted**: `para-account.ts`, `para-client.ts`, `signers/para-signer.ts`, `ParaLogin.svelte`.
+
+**Remaining gates:**
+1. 🔴 Web3Auth LIVE https test (deploy frontend first — hCaptcha won't work on localhost).
+2. AAGUID / WebAuthn BE-BS prompting (design only, doesn't block anything).
 
 ---
 
