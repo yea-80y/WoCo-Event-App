@@ -1,7 +1,7 @@
 /**
  * Web3Auth PnP primary-login helpers — the replacement for para-account.ts.
  * Web3Auth reconstructs a standard secp256k1 key client-side (device + network
- * shares) and exposes it via `eth_private_key`. We hold it in memory for the
+ * shares) and exposes it via `private_key`. We hold it in memory for the
  * session; Web3Auth's own localStorage keeps the session alive across page loads.
  *
  * A module-level singleton is kept so `restoreWeb3AuthSession` (called during
@@ -18,12 +18,36 @@ async function _getInstance() {
 
   if (_instance) return _instance;
 
-  const { Web3Auth, WEB3AUTH_NETWORK } = await import("@web3auth/modal");
+  const { Web3Auth, WEB3AUTH_NETWORK, CHAIN_NAMESPACES } = await import("@web3auth/modal");
   const networkEnv = (import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined) ?? "sapphire_devnet";
   const web3AuthNetwork =
     networkEnv === "sapphire_mainnet" ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET : WEB3AUTH_NETWORK.SAPPHIRE_DEVNET;
 
-  const w = new Web3Auth({ clientId, web3AuthNetwork, multiInjectedProviderDiscovery: false });
+  // We need the raw secp256k1 key (recovery signer), not a wallet. In v10 an
+  // EIP155/SOLANA chain routes the provider through ws-embed (a remote-signing
+  // embedded wallet that does NOT expose the key — `eth_private_key` 404s on its
+  // Torus controller). A chain with namespace OTHER instead binds the provider to
+  // CommonPrivateKeyProvider, which serves `private_key`. The derived key is the
+  // same app-scoped key either way, so this changes only how it's exposed, not
+  // its value. The chain fields are unused for OTHER but required by the type.
+  const recoveryKeyChain = {
+    chainNamespace: CHAIN_NAMESPACES.OTHER,
+    chainId: "0x1",
+    rpcTarget: "",
+    displayName: "WoCo recovery key",
+    blockExplorerUrl: "",
+    ticker: "ETH",
+    tickerName: "Ethereum",
+    logo: "",
+  };
+
+  const w = new Web3Auth({
+    clientId,
+    web3AuthNetwork,
+    multiInjectedProviderDiscovery: false,
+    chains: [recoveryKeyChain],
+    defaultChainId: recoveryKeyChain.chainId,
+  });
   await w.init();
   _instance = w as typeof _instance;
   return _instance;
@@ -31,7 +55,7 @@ async function _getInstance() {
 
 async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ address: string; privateKey: `0x${string}` }> {
   const { privateKeyToAccount } = await import("viem/accounts");
-  const raw = (await provider.request({ method: "eth_private_key" })) as string | undefined;
+  const raw = (await provider.request({ method: "private_key" })) as string | undefined;
   if (!raw) throw new Error("Couldn't read the Web3Auth wallet key — try again.");
   const pk = (raw.startsWith("0x") ? raw : `0x${raw}`) as `0x${string}`;
   const account = privateKeyToAccount(pk);
