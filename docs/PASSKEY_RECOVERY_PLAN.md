@@ -142,6 +142,56 @@ recoverability). Added an independence + no-accidental-duplicate guard (rejects 
 account's own key, or a wallet already this account's guardian via the by-guardian hint). Multiple
 guardians = 1-of-N (contained, gated) vs M-of-N (VSS, deferred); see §12.2.
 
+## PHASE 1 PROGRESS (2026-06-20c) — Web3Auth email-backup branch SHIPPED + direction locked
+
+**Shipped (commit `c4ba792`, typecheck clean, built vs the REAL `@web3auth/modal@10.15.0`
+PnP API — init → connect → `eth_private_key`, not guessed):**
+- `apps/web/src/lib/wallet/backup-signer.ts`:
+  - `backupWalletFromPrivateKey(pk)` — shared **signer-source core**: raw secp256k1 key →
+    viem `LocalAccount` serving BOTH roles (RFC6979-deterministic escrow `signTypedData` +
+    guardian signer). Web3Auth uses it now; the device/file factor reuses it verbatim.
+  - `connectWeb3AuthBackup()` — own Web3Auth instance, extract key, **logout** → never touches
+    auth-store (no session hijack), **lazy-imports** the heavy SDK (out of main bundle), **inert**
+    until `VITE_WEB3AUTH_CLIENT_ID` set.
+- `.env`: `VITE_WEB3AUTH_CLIENT_ID` (owner set it 2026-06-20c, sapphire_devnet) + `VITE_WEB3AUTH_NETWORK`.
+  🔴 key = deterministic in (login)×clientId×network → repointing orphans every escrow (FEED_PRIVATE_KEY-class).
+- Vite already has `vite-plugin-node-polyfills` (Buffer+process) — Web3Auth runtime polyfills covered.
+
+**DIRECTION LOCKED THIS SESSION (supersedes the earlier Para-default + device-first notes):**
+- **Email-first; device/file PARKED.** Build order: **Web3Auth email → friends M-of-N (VSS) → device/file.**
+- **ADOPT Web3Auth, RETIRE Para.** No users → safe to migrate; Para's viem integration forces a
+  `@getpara/core-sdk` **2.x→3.x major bump** (dep-tree confirmed), Web3Auth is dep-compat-clean vs
+  viem 2.51.3 / @zerodev/sdk 5.5.10. Web3Auth = primary login (Para replacement) AND email guardian.
+  Use **PnP, not MPC Core Kit**. Web3Auth's OWN recovery = its non-custodial MFA/backup share (prompt to enable).
+- **ONE guardian engine.** Every factor (injected / email / file / friends) is a signer-source on the
+  SAME weighted-ECDSA ceremony + `BackupWallet` seam. Friends = the general **M-of-N** case (needs VSS);
+  email/device = trivial **1-of-1**. So friends-logic subsumes device — build the engine once.
+- **INDEPENDENCE RULE (UI must enforce):** a factor must not be BOTH the primary login AND the sole
+  guardian (fate-sharing). Passkey-primary → email-as-guardian OK; **email-primary → must pick a
+  DIFFERENT guardian** (email can't rescue email).
+- **THREE-CATEGORY LAW (the frame for every future factor debate):** a recovery factor is **HAVE**
+  (device/passkey/hardware key), **KNOW** (passphrase), or **THIRD-PARTY** (vendor MPC / friends).
+  Email is an *identifier, not a secret* → every "email wallet" is category-3 (a vendor holds shares,
+  email gates them). Building our OWN friendly email wallet = becoming a custodian → **rejected** (custody
+  line + hand-rolled-crypto). **Swarm = ciphertext storage only** (storage ≠ custody); it can never be
+  the secret oracle — confidentiality rests 100% on the encryption, 0% on Swarm being private.
+- **Passkey-as-device-factor weakness (why device is parked):** synced platform passkeys follow the
+  **Google/iCloud account, not the device** → two passkeys under one account share fate (availability,
+  not recovery). True device-binding needs **BE=0** (hardware key); read WebAuthn **BE/BS** flags at
+  registration to detect/guide. Owner chose **"support both, default practical"** for when it's built.
+- **DEVICE/FILE design (PARKED, recorded):** fresh secp256k1 key (independent of Google) = recovery key,
+  **PIN-wrapped** (Argon2id + XChaCha20), packaged as a **QR "recovery card" PNG** the user saves
+  (have+know; recover by upload+PIN). Plus a **"Recovery methods" panel** (label + created-date + device
+  hint). Reuses `backupWalletFromPrivateKey`. Don't derive a key FROM a photo (not secret + non-deterministic);
+  packaging AS an image is fine because the QR holds *ciphertext*.
+
+**REMAINING — Sonnet handover (login-flow UI; the crypto seam is done):** guardian **chooser**
+(`connectWeb3AuthBackup` vs `connectBackupWallet`) in `#/protect` setup + `#/recover` portal; the
+**independence guard**; **Para→Web3Auth primary-login migration**; AAGUID/BE-BS prompting (§12.3) +
+bind-time confirm/independence prompt (§2026-06-20b). Then **friends M-of-N (VSS)**; device/file later.
+
+---
+
 ## PHASE 1 PROGRESS (2026-06-19b) — irreversible portal ceremony WIRED (injected backup)
 
 **Decision shift:** Para is likely being PHASED OUT for another email provider, so we did
