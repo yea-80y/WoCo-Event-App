@@ -190,6 +190,24 @@ PnP API — init → connect → `eth_private_key`, not guessed):**
 **independence guard**; **Para→Web3Auth primary-login migration**; AAGUID/BE-BS prompting (§12.3) +
 bind-time confirm/independence prompt (§2026-06-20b). Then **friends M-of-N (VSS)**; device/file later.
 
+**DEV-TEST FINDINGS (2026-06-20c — interactive probe `#/dev-web3auth`, DEV-only, gated):** the
+integration drives Web3Auth all the way into its own login UI (modal opens, OTP delivered, auth
+processed) — OUR code is correct to the SDK handoff. The live key-return could NOT be confirmed on
+`localhost` due to **two Web3Auth-internal walls, both of which vanish on a real https domain**:
+(1) **hCaptcha refuses to issue a token on `localhost`** ("localhost detected, please use a valid
+host") → blocks BOTH email AND Google flows at the captcha gate; no client-side fix. (2)
+**`process.nextTick` crash in Web3Auth Wallet Services** (`WsEmbed.setupWeb3` → readable-stream
+polyfill gap) — a targeted global shim in `connectWeb3AuthBackup` did NOT reach Web3Auth's bundled
+`process` copy. **CTO call: STOP localhost testing; confirm live on a real domain ONCE during the
+Sonnet build** (determinism is spike-proven + true-by-design, so this is low-risk confirmation, not
+a blocker). **Two real fixes for Sonnet to apply + verify on a real https host:** (a) **disable
+Web3Auth Wallet Services** (dashboard toggle / config) — it's the only `process.nextTick` crash
+source and we don't use it (we only extract the key); (b) override the Vite `process` polyfill if
+nextTick is still missing. Dev-env hardening already committed: COOP dev header
+(`same-origin-allow-popups`, vite.config) + `multiInjectedProviderDiscovery:false` (stops MetaMask
+hijacking the popup) + the nextTick shim. Probe left in place (DEV-gated, harmless) for the
+real-domain test. **NEVER test the Web3Auth flow on `localhost`.**
+
 ---
 
 ## PHASE 1 PROGRESS (2026-06-19b) — irreversible portal ceremony WIRED (injected backup)

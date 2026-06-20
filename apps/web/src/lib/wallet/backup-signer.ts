@@ -149,13 +149,28 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
     throw new Error("Email backup isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).");
   }
 
+  // Web3Auth's wallet-services embed pulls in Node `readable-stream`, which calls
+  // process.nextTick. Vite's node polyfill exposes a `process` global but not
+  // always nextTick → "process.nextTick is not a function" crashes the login
+  // (WsEmbed.setupWeb3 → TorusInPageProvider). Shim it (queueMicrotask is the
+  // closest semantics) BEFORE the SDK module evaluates.
+  const proc = (globalThis as { process?: { nextTick?: unknown } }).process;
+  if (proc && typeof proc.nextTick !== "function") {
+    (proc as { nextTick: (cb: (...a: unknown[]) => void, ...a: unknown[]) => void }).nextTick = (cb, ...args) =>
+      queueMicrotask(() => cb(...args));
+  }
+
   // Lazy-load the heavy SDK so it never enters the main bundle.
   const { Web3Auth, WEB3AUTH_NETWORK } = await import("@web3auth/modal");
   const networkEnv = (import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined) ?? "sapphire_devnet";
   const web3AuthNetwork =
     networkEnv === "sapphire_mainnet" ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET : WEB3AUTH_NETWORK.SAPPHIRE_DEVNET;
 
-  const web3auth = new Web3Auth({ clientId, web3AuthNetwork });
+  // multiInjectedProviderDiscovery:false — we only want the email/social key here,
+  // not browser extensions. Leaving it on lets MetaMask's injected provider hook
+  // into Web3Auth's wallet-services embed and crash the login popup handshake
+  // (TorusInPageProvider / process.nextTick errors).
+  const web3auth = new Web3Auth({ clientId, web3AuthNetwork, multiInjectedProviderDiscovery: false });
   await web3auth.init();
 
   // Opens the Web3Auth modal (email + socials). Returns null if the user closes it.

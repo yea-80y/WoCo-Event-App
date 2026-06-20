@@ -91,6 +91,9 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };
   if (path === "/protect") return { route: "protect", params: {}, surface: "attendee" };
   if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
+  // DEV-ONLY throwaway: Web3Auth email-backup determinism probe (remove with the route in AttendeeApp).
+  if (import.meta.env.DEV && path === "/dev-web3auth")
+    return { route: "dev-web3auth", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
   const soonMatch = path.match(/^\/soon\/(.+)$/);
   if (soonMatch) return { route: "soon", params: { feature: soonMatch[1] }, surface: "attendee" };

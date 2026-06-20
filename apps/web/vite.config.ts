@@ -23,6 +23,13 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      // Web3Auth's email login is a popup that posts the auth result back to the
+      // opener; the browser default COOP can sever that handshake (the "would block
+      // the window.closed call" warning) → access_denied. allow-popups keeps the
+      // opener relationship while staying same-origin. Dev-only (server.headers).
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+      },
       proxy: {
         '/api': {
           target: apiTarget,
