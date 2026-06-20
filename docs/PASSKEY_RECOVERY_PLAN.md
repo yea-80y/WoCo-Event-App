@@ -115,7 +115,25 @@ read it (`_bindingAddressFor`) and rebuild AT the preserved address via override
 divergent-account assertion still holds (override == stored parent) so a WRONG passkey is still
 caught. ⚠️ Accounts recovered BEFORE this fix have no binding → re-run a fresh recovery on the
 fixed build (or self-heal via on-chain sudo-owner check = future hardening). Typecheck clean.
-NOT browser-verified — part of the same 🔴 owner funds-safety test.
+
+**OWNER BROWSER TEST — PASSED for the injected-backup path (2026-06-20b).** Owner ran the wired
+ceremony on a throwaway Arb Sepolia account: Replace-with-SAME-EOA worked, and a full
+recover-with-DIFFERENT-EOA worked. ⚠️ "appears to have worked" — to mark funds-safe, formally tick
+`docs/RECOVERY_VERIFICATION_CHECKLIST.md` §4, ESPECIALLY the new **§4.6 reload-persistence**
+(the exact regression this fix addresses) + §4.5 old-passkey-dead + §4.3 decrypt. This clears the
+🔴 funds-safety blocker for the INJECTED backup factor. The remaining gate for the §12 Web3Auth
+BUILD is now ONLY the Web3Auth *interactive* browser confirm (email login + same-key cross-device);
+headless spike + dep-compat already passed (§12.4).
+
+**BIND-TIME "is this the right/independent wallet?" prompt — RECOMMENDED next UX (owner asked).**
+Yes, worth doing, but frame it right: the safety-critical check is *independence from the PRIMARY*
+(a backup == your own controlling key traps you — already a hard block), NOT "same as my existing
+backup" (replacing with the same EOA is a harmless no-op). Recommended bind-time flow: after
+`connectBackupWallet()` and BEFORE the irreversible install, (1) SHOW the connected backup address
+and require an explicit confirm ("this wallet becomes your recovery key"); (2) `fetchRecoveryByGuardian(addr)`
+→ if it already guards THIS account, inform "already your backup, nothing to change" (don't hard-error);
+if it guards ANOTHER account, soft-warn it links the two (independence nudge, §12.3); (3) keep the
+self-key hard block. This is a UI/messaging task → folds into the Sonnet handover (chooser + prompting).
 
 **Setup UX (same session):** `#/protect` now reads the escrow envelope on mount and shows "Backup
 on record" + "Replace backup" when one exists (presence is auth-bound + the LAST setup write, so
