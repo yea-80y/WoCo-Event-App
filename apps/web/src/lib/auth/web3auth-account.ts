@@ -18,12 +18,6 @@ async function _getInstance() {
 
   if (_instance) return _instance;
 
-  const proc = (globalThis as { process?: { nextTick?: unknown } }).process;
-  if (proc && typeof proc.nextTick !== "function") {
-    (proc as { nextTick: (cb: (...a: unknown[]) => void, ...a: unknown[]) => void }).nextTick =
-      (cb, ...args) => queueMicrotask(() => cb(...args));
-  }
-
   const { Web3Auth, WEB3AUTH_NETWORK } = await import("@web3auth/modal");
   const networkEnv = (import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined) ?? "sapphire_devnet";
   const web3AuthNetwork =

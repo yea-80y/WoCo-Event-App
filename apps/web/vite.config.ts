@@ -11,9 +11,24 @@ export default defineConfig(({ mode }) => {
   return {
     base: './',
     plugins: [
-      nodePolyfills({ globals: { Buffer: true, process: true } }),
+      // `process` is excluded here so it is NOT polyfilled as the plugin's
+      // __esModule-namespace shim (which breaks readable-stream's
+      // `require('process').nextTick` — see resolve.alias below). The global
+      // `process` is still injected; the module import resolves via the alias.
+      nodePolyfills({ globals: { Buffer: true, process: true }, exclude: ['process'] }),
       svelte(),
     ],
+    resolve: {
+      // vite-plugin-node-polyfills exposes `process` as an ES-module namespace
+      // ({ default, process, __esModule }). The bundled readable-stream (via
+      // Web3Auth's provider stack) does `require('process').nextTick(...)` and
+      // gets the namespace, so `nextTick` is undefined in the prod rollup build
+      // → setupWeb3 throws "t.nextTick is not a function" (readable-stream #539).
+      // Aliasing bare `process` to the plain CJS `process/browser` shim returns
+      // the process object directly, with nextTick on it. Dev (esbuild interop)
+      // was unaffected. Exact-match regex so `process/browser` itself is untouched.
+      alias: [{ find: /^process$/, replacement: 'process/browser' }],
+    },
     build: {
       rollupOptions: {
         input: {
