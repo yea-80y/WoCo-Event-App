@@ -49,6 +49,7 @@ let _busy = $state(false);
 // In-memory only — never exposed reactively
 let _localPrivateKey: string | null = null;
 let _passkeyPrivateKey: string | null = null;
+let _web3authPrivateKey: string | null = null;
 
 // Passkey (ZeroDev Kernel) only. The Kernel smart-account address is the
 // parent identity; POD identity stays on the raw PRF-EOA address (invariant #1
@@ -102,9 +103,8 @@ async function _getSigner(): Promise<EIP712Signer> {
     const { createKernelTypedDataSigner } = await import("./kernel-account.js");
     return createKernelTypedDataSigner(_kernel.account);
   }
-  if (_kind === "para") {
-    const { createParaSigner } = await import("./signers/para-signer.js");
-    return createParaSigner((info) => signingRequest.request(info));
+  if (_kind === "web3auth" && _web3authPrivateKey) {
+    return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
   }
   if (_kind === "coinbase" && _parent) {
     const { createCoinbaseSigner } = await import("./signers/coinbase-signer.js");
@@ -346,12 +346,13 @@ async function init(): Promise<void> {
         // the Kernel address rather than silently mixing identity layers.
         await clearAllAuth();
       }
-    } else if (kind === "para") {
-      const { restoreParaSession } = await import("./para-account.js");
-      const session = await restoreParaSession();
+    } else if (kind === "web3auth") {
+      const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
+      const session = await restoreWeb3AuthSession();
       if (session) {
-        _kind = "para";
+        _kind = "web3auth";
         _parent = session.address;
+        _web3authPrivateKey = session.privateKey;
         await _restoreCachedAuth();
       } else {
         await clearAllAuth();
@@ -449,20 +450,26 @@ async function loginLocal(): Promise<boolean> {
 }
 
 /**
- * Called by ParaLogin.svelte after Para authentication completes.
- * Para handles wallet creation internally; we just receive the address.
+ * Open the Web3Auth PnP modal (email / social login). Extracts the raw key
+ * client-side and keeps it in memory as the session signer — same pattern as
+ * local account but sourced from Web3Auth's MPC reconstruction instead of
+ * IndexedDB. Web3Auth's stored session enables silent restore on page reload.
  */
-async function loginPara(address: string): Promise<boolean> {
+async function loginWeb3Auth(): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
 
   try {
+    const { loginWithWeb3Auth } = await import("./web3auth-account.js");
+    const { address, privateKey } = await loginWithWeb3Auth();
+
     await _clearStaleAuthForSwitch(address);
 
-    await putKV(StorageKeys.AUTH_KIND, "para" as AuthKind);
+    await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, address);
-    _kind = "para";
+    _kind = "web3auth";
     _parent = address;
+    _web3authPrivateKey = privateKey;
     _localPrivateKey = null;
     _passkeyPrivateKey = null;
 
@@ -473,7 +480,7 @@ async function loginPara(address: string): Promise<boolean> {
 
     return true;
   } catch (e) {
-    console.error("[auth] para login failed:", e);
+    console.error("[auth] web3auth login failed:", e);
     return false;
   } finally {
     _busy = false;
@@ -598,7 +605,6 @@ async function login(method?: "web3" | "local" | "passkey"): Promise<boolean> {
   // No method specified — caller should show LoginModal
   return false;
 }
-// Para login is initiated from ParaLogin.svelte which calls loginPara(address) directly
 
 // ---------------------------------------------------------------------------
 // Deferred signing: ensureSession (lazy EIP-712 session delegation)
@@ -1072,9 +1078,9 @@ async function logout(): Promise<void> {
     const { disconnectWalletConnect } = await import("../wallet/wc-provider.js");
     await disconnectWalletConnect();
   }
-  if (_kind === "para") {
-    const { logoutPara } = await import("./para-account.js");
-    await logoutPara();
+  if (_kind === "web3auth") {
+    const { logoutWeb3Auth } = await import("./web3auth-account.js");
+    await logoutWeb3Auth();
   }
   if (_kind === "coinbase") {
     const { logoutCoinbase } = await import("./coinbase-account.js");
@@ -1105,6 +1111,7 @@ async function clearAllAuth(): Promise<void> {
   _podPublicKeyHex = null;
   _localPrivateKey = null;
   _passkeyPrivateKey = null;
+  _web3authPrivateKey = null;
   _podAddress = null;
   _kernel = null;
   _sessionInFlight = null;
@@ -1162,7 +1169,7 @@ export const auth = {
   loginWeb3,
   loginLocal,
   loginPasskey,
-  loginPara,
+  loginWeb3Auth,
   loginCoinbase,
   prefetchCoinbaseSdk,
   ensureSession,

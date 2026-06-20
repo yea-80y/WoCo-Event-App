@@ -2,7 +2,7 @@
   import WalletLogin from "./WalletLogin.svelte";
   import CoinbaseLogin from "./CoinbaseLogin.svelte";
   import PasskeyLogin from "./PasskeyLogin.svelte";
-  import ParaLogin from "./ParaLogin.svelte";
+  import Web3AuthLogin from "./Web3AuthLogin.svelte";
   import ZupassLogin from "./ZupassLogin.svelte";
   import { loginRequest } from "../../auth/login-request.svelte.js";
 
@@ -69,7 +69,7 @@
 
         <div class="divider"><span>or</span></div>
 
-        <ParaLogin oncomplete={handleComplete} />
+        <Web3AuthLogin oncomplete={handleComplete} />
 
         <div class="divider"><span>or</span></div>
 

@@ -31,6 +31,8 @@
   const addrDisplay = (a: string) => `${a.slice(0, 10)}…${a.slice(-8)}`;
   const signedIn = $derived(auth.isConnected);
   const isPasskey = $derived(auth.kind === "passkey");
+  // Email is the primary login for web3auth users — can't also be their sole guardian.
+  const emailIsAlreadyPrimary = $derived(auth.kind === "web3auth");
 
   $effect(() => {
     if (checkDone || checking) return;
@@ -201,18 +203,32 @@
       <p class="lede">Pick how you'll get back in. Email is easiest for most people.</p>
 
       <div class="method-grid">
-        <button class="method-card" onclick={() => chooseAndConnect("email")}>
-          <span class="method-icon">
-            <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.7"
-                 stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
-              <rect x="1" y="1" width="18" height="14" rx="2.5"/>
-              <polyline points="1,2.5 10,9.5 19,2.5"/>
-            </svg>
-          </span>
-          <strong class="method-name">Email</strong>
-          <span class="method-hint">Log in by email to create a recovery key. Easiest option.</span>
-          <span class="method-badge">Recommended</span>
-        </button>
+        {#if emailIsAlreadyPrimary}
+          <div class="method-card method-card--disabled" aria-disabled="true">
+            <span class="method-icon">
+              <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.7"
+                   stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
+                <rect x="1" y="1" width="18" height="14" rx="2.5"/>
+                <polyline points="1,2.5 10,9.5 19,2.5"/>
+              </svg>
+            </span>
+            <strong class="method-name">Email</strong>
+            <span class="method-hint">Email is your primary login — pick a different backup method.</span>
+          </div>
+        {:else}
+          <button class="method-card" onclick={() => chooseAndConnect("email")}>
+            <span class="method-icon">
+              <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.7"
+                   stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
+                <rect x="1" y="1" width="18" height="14" rx="2.5"/>
+                <polyline points="1,2.5 10,9.5 19,2.5"/>
+              </svg>
+            </span>
+            <strong class="method-name">Email</strong>
+            <span class="method-hint">Log in by email to create a recovery key. Easiest option.</span>
+            <span class="method-badge">Recommended</span>
+          </button>
+        {/if}
 
         <button class="method-card" onclick={() => chooseAndConnect("wallet")}>
           <span class="method-icon">
@@ -385,9 +401,13 @@
     transition: border-color 0.15s, background 0.15s;
     text-align: left;
   }
-  .method-card:hover {
+  .method-card:hover:not(.method-card--disabled) {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 6%, var(--bg-input));
+  }
+  .method-card--disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
   .method-icon {
     color: var(--accent);
