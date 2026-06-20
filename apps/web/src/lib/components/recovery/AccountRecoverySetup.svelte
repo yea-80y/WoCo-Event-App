@@ -11,6 +11,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { connectBackupWallet } from "../../wallet/backup-signer.js";
+  import { fetchRecoveryEnvelope, fetchRecoveryByGuardian } from "../../api/recovery.js";
 
   type Phase = "intro" | "working" | "done" | "error";
   let phase = $state<Phase>("intro");
@@ -18,11 +19,45 @@
   let errorMsg = $state("");
   let step = $state("");
 
+  // "Is a backup already on record?" — read the escrow envelope for this Kernel.
+  // CRYPTO NOTE: presence is a HONEST but BOUNDED signal. The PUT is auth-bound to
+  // the verified Kernel parent (un-forgeable by a third party) and is the LAST step
+  // of setupAccountRecovery (after the irreversible on-chain guardian install), so
+  // an envelope existing ⇒ the owner ran setup to completion. It does NOT re-prove
+  // the on-chain guardian is still current, nor that the backup key still decrypts
+  // — only an actual recovery does (we can't open the ciphertext without a backup
+  // signature). So the copy says "on record", never "guaranteed".
+  let checking = $state(false);
+  let checkDone = $state(false);
+  let alreadyProtected = $state(false);
+
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   // Don't decide "passkey vs already-covered" until auth has finished restoring —
   // otherwise a logged-in passkey user briefly sees the wrong screen on load.
   const signedIn = $derived(auth.isConnected);
   const isPasskey = $derived(auth.kind === "passkey");
+
+  $effect(() => {
+    // Run once, after auth restores and only for passkey accounts. auth.parent is
+    // the Kernel address for passkey (invariant: parent === Kernel addr), which is
+    // the key the envelope is stored under.
+    if (checkDone || checking) return;
+    if (!signedIn || !isPasskey) return;
+    const kernel = auth.parent;
+    if (!kernel) return;
+    checking = true;
+    (async () => {
+      try {
+        const env = await fetchRecoveryEnvelope(kernel);
+        alreadyProtected = !!env;
+      } catch {
+        /* read hiccup — fall through to the add-backup CTA, never block setup */
+      } finally {
+        checking = false;
+        checkDone = true;
+      }
+    })();
+  });
 
   function signIn() {
     loginRequest.request({ context: "attendee" });
@@ -34,9 +69,29 @@
     try {
       step = "Choose your backup wallet…";
       const backup = await connectBackupWallet();
+
+      // INDEPENDENCE + NO-ACCIDENTAL-DUPLICATE guard (§12.3). A backup must be a
+      // DIFFERENT root of trust than the keys that already control this account,
+      // and we refuse to silently re-register a wallet that already guards it.
+      // (Both are fail-safe checks: the reverse-lookup is an untrusted hint, so a
+      // missing index just falls through to the existing behaviour — it never
+      // produces a false block on another account's guardian, whose kernel differs.)
+      const backupLc = backup.address.toLowerCase();
+      const ownKeys = [auth.parent, auth.podAddress].filter(Boolean).map((a) => a!.toLowerCase());
+      if (ownKeys.includes(backupLc)) {
+        throw new Error(
+          "Pick a different wallet — your backup can't be a key that already controls this account.",
+        );
+      }
+      const existing = await fetchRecoveryByGuardian(backup.address).catch(() => null);
+      if (existing && auth.parent && existing.kernelAddress.toLowerCase() === auth.parent.toLowerCase()) {
+        throw new Error("That wallet is already this account's backup — choose a different wallet.");
+      }
+
       step = "Confirm with your passkey, then sign in your backup wallet…";
       await auth.setupAccountRecovery(backup);
       backupAddress = backup.address;
+      alreadyProtected = true;
       phase = "done";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Something went wrong — please try again";
@@ -87,6 +142,56 @@
         This account signs in with your own wallet, so you can always restore it from
         there. Account backups are for passkey sign-ins.
       </p>
+    {:else if phase === "working" || phase === "error"}
+      <!-- An add/replace attempt is in flight (or just failed) — show the action UI. -->
+      <p class="kicker">Account safety</p>
+      <h1>{alreadyProtected ? "Replace your backup" : "Protect your account"}</h1>
+      <p class="lede">
+        {alreadyProtected
+          ? "Connect the wallet you want as your new backup. It replaces the one currently on record."
+          : "Add a backup so you can get back in if you ever lose this device."}
+      </p>
+
+      {#if phase === "error"}
+        <p class="error" role="alert">{errorMsg}</p>
+      {/if}
+
+      <button class="btn btn--primary btn--lg cta" onclick={protect} disabled={phase === "working"}>
+        {#if phase === "working"}
+          <span class="spinner"></span>Working…
+        {:else}
+          Try again
+        {/if}
+      </button>
+
+      {#if phase === "working"}
+        <p class="step" aria-live="polite">{step || "Working…"}</p>
+      {:else}
+        <p class="footnote">You'll confirm with your passkey, then approve once in your backup wallet.</p>
+      {/if}
+    {:else if checking}
+      <p class="kicker">Account safety</p>
+      <h1>Protect your account</h1>
+      <p class="lede step" aria-live="polite">Checking your backup…</p>
+    {:else if alreadyProtected}
+      <!-- A backup is ON RECORD (see the crypto note in <script>): the owner ran
+           setup to completion. Not a proof of live recoverability — that only a
+           real recovery confirms — so we don't over-claim. -->
+      <p class="kicker kicker--hi">Account safety</p>
+      <h1>Backup on record</h1>
+      <p class="lede">
+        You've set up a backup for this account. If you lose this device, your backup
+        wallet can restore it — with your tickets and history intact.
+      </p>
+      <div class="backup-chip">
+        <span class="dot"></span>
+        Backup configured
+      </div>
+      <p class="footnote">
+        The only way to be fully sure is to run a recovery on another device. You can
+        also replace your backup with a different wallet.
+      </p>
+      <button class="btn btn--ghost cta" onclick={protect}>Replace backup wallet</button>
     {:else}
       <p class="kicker">Account safety</p>
       <h1>Protect your account</h1>
@@ -101,25 +206,8 @@
         <li><span class="tick">✓</span> Only your backup wallet can do it — no one else</li>
       </ul>
 
-      {#if phase === "error"}
-        <p class="error" role="alert">{errorMsg}</p>
-      {/if}
-
-      <button class="btn btn--primary btn--lg cta" onclick={protect} disabled={phase === "working"}>
-        {#if phase === "working"}
-          <span class="spinner"></span>Working…
-        {:else if phase === "error"}
-          Try again
-        {:else}
-          Add a backup wallet
-        {/if}
-      </button>
-
-      {#if phase === "working"}
-        <p class="step" aria-live="polite">{step || "Working…"}</p>
-      {:else}
-        <p class="footnote">You'll confirm with your passkey, then approve once in your backup wallet.</p>
-      {/if}
+      <button class="btn btn--primary btn--lg cta" onclick={protect}>Add a backup wallet</button>
+      <p class="footnote">You'll confirm with your passkey, then approve once in your backup wallet.</p>
     {/if}
   </div>
 </section>

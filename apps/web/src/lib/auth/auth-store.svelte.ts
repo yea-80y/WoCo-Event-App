@@ -199,18 +199,49 @@ async function _ensurePasskeyKey(): Promise<void> {
 }
 
 /**
+ * Read the durable recovered-account binding (see StorageKeys.RECOVERED_KERNEL_BINDING).
+ * Present ⇒ this device recovered an account whose Kernel address is PRESERVED
+ * while its sudo owner was rotated to the bound passkey (`pod` = that passkey's
+ * PRF-EOA). Returned only as a hint; callers gate on `pod` matching the live key.
+ */
+async function _getRecoveryBinding(): Promise<{ pod: string; kernel: string } | null> {
+  return (await getKV<{ pod: string; kernel: string }>(StorageKeys.RECOVERED_KERNEL_BINDING)) ?? null;
+}
+
+/** True iff the binding applies to the passkey whose PRF-EOA is `podAddress`. */
+function _bindingAddressFor(
+  binding: { pod: string; kernel: string } | null,
+  podAddress: string | null,
+): `0x${string}` | undefined {
+  if (!binding || !podAddress) return undefined;
+  return binding.pod.toLowerCase() === podAddress.toLowerCase()
+    ? (binding.kernel as `0x${string}`)
+    : undefined;
+}
+
+/**
  * Ensure the ZeroDev Kernel is built and cached in memory. Triggers one PRF
  * ceremony (via _ensurePasskeyKey) on first use of a session, then builds the
  * Kernel from the raw PRF key. The Kernel address is deterministic (CREATE2),
  * so we assert it matches the stored parent — refusing to attach a divergent
  * smart account that would break the user's on-chain + auth identity.
+ *
+ * EXCEPTION — recovered accounts: the address is preserved while the owner was
+ * rotated, so the counterfactual address legitimately diverges. A durable
+ * binding (written at recovery, keyed to this PRF-EOA) tells us to rebuild AT
+ * the preserved address via the override; the assertion below still holds (the
+ * override == the stored parent), so a wrong passkey is still caught.
  */
 async function _ensureKernel(): Promise<void> {
   await _ensurePasskeyKey();
   if (_kernel) return;
   if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const kernel = await buildKernelFromPrivateKey(_passkeyPrivateKey);
+  const override = _bindingAddressFor(await _getRecoveryBinding(), _podAddress);
+  const kernel = await buildKernelFromPrivateKey(
+    _passkeyPrivateKey,
+    override ? { address: override } : undefined,
+  );
   if (_parent && kernel.address !== _parent.toLowerCase()) {
     throw new Error(
       "Kernel address mismatch on restore — refusing to attach a divergent smart account.",
@@ -519,8 +550,15 @@ async function loginPasskey(): Promise<boolean> {
 
     // Build the ZeroDev Kernel; its deterministic address is the parent identity.
     // The raw PRF key remains the POD source + the Kernel's ECDSA sudo signer.
+    // If this passkey is the rotated owner of a RECOVERED account, its Kernel
+    // address was preserved (≠ this key's counterfactual) — honour the durable
+    // binding so we log into the real account, not a fresh counterfactual one.
     const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-    const kernel = await buildKernelFromPrivateKey(account.privateKey);
+    const override = _bindingAddressFor(await _getRecoveryBinding(), account.address);
+    const kernel = await buildKernelFromPrivateKey(
+      account.privateKey,
+      override ? { address: override } : undefined,
+    );
 
     await _clearStaleAuthForSwitch(kernel.address);
 
@@ -912,6 +950,14 @@ async function recoverAndRekey(args: {
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.POD_ADDRESS, fresh.address);
+    // Durable recovered-account binding: the new passkey (PRF-EOA = fresh.address)
+    // controls the Kernel at the PRESERVED address `target`, whose counterfactual
+    // it does NOT match. loginPasskey/_ensureKernel read this to rebuild at the
+    // preserved address on every future session (survives logout — see clearAllAuth).
+    await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, {
+      pod: fresh.address.toLowerCase(),
+      kernel: target,
+    });
     _kind = "passkey";
     _parent = target;
     _passkeyPrivateKey = fresh.privateKey;
@@ -1043,6 +1089,8 @@ async function clearAllAuth(): Promise<void> {
   // NOTE: we intentionally do NOT clear the local account private key.
   // This lets the user re-login with the same local account later.
   // The key stays in IndexedDB; only the session state is wiped.
+  // Same for RECOVERED_KERNEL_BINDING: a recovered passkey MUST re-resolve its
+  // preserved Kernel address on next login, so the binding survives logout too.
   await delKV(StorageKeys.AUTH_KIND);
   await delKV(StorageKeys.PARENT_ADDRESS);
   await delKV(StorageKeys.POD_ADDRESS);

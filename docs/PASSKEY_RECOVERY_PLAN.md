@@ -99,6 +99,31 @@ irreversible ceremony in the browser-verified pass (both hinge on the same gate)
 
 ---
 
+## PHASE 1 PROGRESS (2026-06-20b) — recovered-account reload bug FIXED + setup UX
+
+**🐛 FIXED (funds-critical, found during owner's test): a recovered account bricked on the NEXT
+session.** Root cause: `recoverAndRekey` rebuilds the Kernel at the PRESERVED address via override
+(`buildKernelFromPrivateKey(fresh, { address: target })`) and caches it in memory, but BOTH
+`loginPasskey` and `_ensureKernel` rebuilt **counterfactually** from the rotated passkey. A
+recovered account's address ≠ its new owner's counterfactual, so on reload `_ensureKernel` threw
+"Kernel address mismatch on restore" and `loginPasskey` would have silently logged into a fresh
+EMPTY counterfactual account. Symptom the owner hit: clicking "Replace backup" on `#/protect`
+(which calls `_ensureKernel`) → mismatch error right after the MetaMask pick.
+**Fix:** durable `StorageKeys.RECOVERED_KERNEL_BINDING = { pod, kernel }` written at recovery,
+keyed to the rotated PRF-EOA, surviving logout (like LOCAL_KEY). `loginPasskey` + `_ensureKernel`
+read it (`_bindingAddressFor`) and rebuild AT the preserved address via override; the
+divergent-account assertion still holds (override == stored parent) so a WRONG passkey is still
+caught. ⚠️ Accounts recovered BEFORE this fix have no binding → re-run a fresh recovery on the
+fixed build (or self-heal via on-chain sudo-owner check = future hardening). Typecheck clean.
+NOT browser-verified — part of the same 🔴 owner funds-safety test.
+
+**Setup UX (same session):** `#/protect` now reads the escrow envelope on mount and shows "Backup
+on record" + "Replace backup" when one exists (presence is auth-bound + the LAST setup write, so
+honest but bounded — copy says "on record", not "guaranteed"; only a real recovery proves live
+recoverability). Added an independence + no-accidental-duplicate guard (rejects a backup == the
+account's own key, or a wallet already this account's guardian via the by-guardian hint). Multiple
+guardians = 1-of-N (contained, gated) vs M-of-N (VSS, deferred); see §12.2.
+
 ## PHASE 1 PROGRESS (2026-06-19b) — irreversible portal ceremony WIRED (injected backup)
 
 **Decision shift:** Para is likely being PHASED OUT for another email provider, so we did
@@ -528,3 +553,117 @@ minimal robust path.**
    hygiene / compromise response. Independent of 1–3.
 - Re-key/re-wrap the DEK on any guardian change. Libs: libsodium (`crypto_box`, AEAD) + a
   vetted VSS impl — do NOT hand-roll ECIES or SSS.
+
+---
+
+## 12. Recovery method EXPANSION — v1 spec (user-held-only, 2026-06-20)
+
+**Status:** design (owner-directed this session). Builds on the working injected-backup recovery
+(§2026-06-19b) by adding *friendly, robust* guardian factors. **Build only after** the 🔴
+funds-safety browser test clears. No new on-chain rotation mechanism — all factors are signers
+in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers + the UX.
+
+### 12.1 Hard rules (owner, non-negotiable)
+- **WoCo holds NO key and NO key-share, ever.** Every guardian factor is user-held. Swarm stores
+  only **ciphertext** (already true, §11.6) — storage ≠ custody; the line is *signing/unwrapping*.
+- **PoH (Self/zkPassport) is NOT a recovery factor.** It's a proof of humanity, not a signer; the
+  only shape that made it a recovery signer was WoCo-as-one-of-N (custodial) → rejected. PoH stays
+  a **feature gate only** ([[project_event_anti_abuse]]: event-creation + gasless-like sponsorship).
+- **Driver is data access, not funds.** The load-bearing reason recovery matters even with no
+  funds: organisers must keep decrypting attendee data after device loss → POD-seed escrow (§11)
+  is the core, escrow-not-rotate.
+
+### 12.2 Guardian factors (all user-held, signer-agnostic `BackupWallet` seam)
+1. **Second device / passkey** — register a platform passkey on a laptop/phone via the WebAuthn
+   **hybrid (QR) flow**; biometric (Samsung / Touch ID / Windows Hello) just *unlocks* it — no
+   vendor SDK, it's WebAuthn underneath. Strongest, zero third-party trust. ⚠️ verify the device
+   exposes the **PRF extension** (else availability without a derivable escrow key — open item §9).
+2. **Email embedded wallet (Web3Auth — replaces Para)** — for single-device / non-technical users.
+   Doubles as BOTH a primary login (the "don't-want-passkey" path) AND a guardian factor.
+3. **Self-custodied EOA** (MetaMask etc.) — the existing injected path; for crypto users.
+4. **Friends M-of-N — LATER** (the decentralised option): **VSS** (Feldman/Pedersen) splits the
+   POD decryption key into shares across friends, any **M-of-N** reconstruct; nobody holds the
+   whole key. Bigger crypto lift (§11.6 step 2) — deferred past v1.
+
+**MULTIPLE guardians — two distinct shapes, don't conflate (owner asked 2026-06-20):**
+- **1-of-N (multiple INDEPENDENT backups, any ONE recovers)** — the common "add another backup"
+  ask. **Structurally most of the way there:** the escrow envelope's `wrappedDeks` is ALREADY an
+  array (DEK `crypto_box_seal`ed to each guardian's X25519 pubkey → any guardian opens it), and the
+  weighted-ECDSA validator already takes N signers. Missing only: `setupAccountRecovery` is
+  hardcoded to ONE signer + ONE wrappedDek and the Swarm PUT OVERWRITES. To enable 1-of-N: collect
+  N backups, weighted config with each `weight ≥ threshold` (any one suffices on-chain), seal the
+  DEK to ALL N X25519 keys, write ONE envelope. Contained build, touches the crypto seam (Opus),
+  GATED behind the funds-safety browser test like the rest of §12.
+- **M-of-N threshold (need several TOGETHER — social recovery)** = factor #4 above; needs VSS so no
+  single guardian holds the DEK. Deferred.
+- **v1 reality = strictly 1-of-1.** So the setup UI's second action is **"Replace backup"**, NOT
+  "add another": re-running setup installs a new single guardian and the PUT overwrites the envelope
+  sealed only to the new backup — running it twice does NOT yield two working backups (the old one
+  would lose escrow-decrypt even if a stale on-chain guardian lingers). A read-only **independence +
+  no-accidental-duplicate guard** is wired in `AccountRecoverySetup.svelte` (rejects a backup ==
+  account's own key, or a wallet already registered as THIS account's guardian via the by-guardian
+  reverse hint — fail-safe: a missing hint just falls through).
+
+### 12.3 Primary-method-aware prompting (the "don't suggest the same account" rule)
+- **Reliable signal = the app's own known login method** (passkey / email-wallet / web3 / local),
+  not WebAuthn probing. Drive the offered-guardian list off it.
+- **Independence is the guarantee, not detection:** a guardian must be a *different root of trust*
+  (different factor class, ideally different device/provider) than the primary. So a Google-synced
+  passkey user is never offered a Google-rooted guardian — offer email-wallet / 2nd device / friend.
+- **Best-effort provider hint (soft nudge only):** at passkey registration read **AAGUID**
+  (maintained AAGUID→provider maps) + `authenticatorAttachment`; warn on a likely same-provider
+  collision. Often a zero AAGUID for privacy → never a hard gate.
+- Note: platform sync (Google/iCloud) gives *availability*, NOT *recovery* (§1) — even synced
+  passkey users need an independent guardian.
+
+### 12.4 Web3Auth integration (replaces Para; chosen 2026-06-20 — VERIFY before commit)
+- **Why:** free to **1,000 MAW**, ~$69/mo after (cheapest, longest free runway); documented
+  ZeroDev Kernel signer; non-custodial MPC/TSS (device + network + recovery shares — Web3Auth
+  alone is below threshold, cannot sign). **Independent meter from ZeroDev** (which bills userOps/
+  gas); existing passkey users use device-PRF + ZeroDev and DON'T count against Web3Auth's MAW.
+- **Dual role, one seam:** primary email login (Para replacement) AND guardian factor — both resolve
+  the provider-agnostic `{ address, signTypedData, getGuardianSigner?, recoveryReady }` of
+  `backup-signer.ts`. Build a backup-specific email flow that does NOT hijack the logged-in session
+  (same caveat that ruled out reusing `ParaLogin.svelte`, §2026-06-19).
+- **Build-time verification (the "check first" the owner asked for):**
+  1. **Deterministic EIP-712 sig** for the escrow X25519 key (the setup round-trip self-check,
+     §2026-06-19b, must pass — most ECDSA is RFC6979-deterministic; confirm Web3Auth's signer is).
+  2. **viem-compatible signer** for the guardian userOp (`OneOf<EIP1193Provider | WalletClient |
+     LocalAccount | SmartAccount>`, §2026-06-19b) — confirm Web3Auth gives this without a major
+     dep bump (the compat trap that deferred Para).
+  3. Recovery-share / MFA flow doesn't reintroduce a single-provider custody point.
+  4. Lock-in posture vs the Para→email migration already underway.
+- **⚠️ Use Web3Auth PnP, NOT MPC Core Kit.** PnP reconstructs a standard secp256k1 key
+  client-side (ShareA device + ShareC recovery) and the EVM provider exposes it
+  (`provider.request({ method: "eth_private_key" })`) → we get a RAW KEY → `privateKeyToAccount`
+  → **viem owns determinism (RFC6979)**, not Web3Auth's provider. MPC Core Kit never assembles
+  the key (TSS, determinism not guaranteed) = the WRONG product for the escrow role.
+- **Acquisition note (lock-in item):** Web3Auth was acquired by **Consensys (June 2025)** → now
+  "MetaMask Embedded Wallets", phased integration; SDK still ships as `@web3auth/modal` (latest
+  10.15.0, 2026-06). Same acquisition risk as Privy→Stripe — both candidates were bought.
+
+**SPIKE RESULT — `apps/web/scripts/web3auth-backup-spike.ts` = PASS (2026-06-20, headless).**
+Proves a Web3Auth-shaped raw key satisfies BOTH recovery roles with ZERO new crypto deps (only
+the `@web3auth` login SDK): [1] the fixed RECOVERY_ENC EIP-712 sig is **byte-identical** across
+calls (escrow determinism — the gate — owned by viem); [2] re-derived X25519 escrow key stable;
+[3] real `recovery-escrow.ts` seal/open round-trips; [4] the same key is a viem `LocalAccount`
+that satisfies the `getGuardianSigner` contract (EIP-191 personal_sign for the weighted-ECDSA
+approval) → `recoveryReady: true`. **Architectural gate CLEARED.** The Web3Auth `BackupWallet`
+is then trivial: `eth_private_key` → `privateKeyToAccount` → serves `signTypedData` (escrow) AND
+is itself the guardian signer. **STILL NEEDS BROWSER (batch with the §2026-06-19b funds-safety
+test):** interactive email login; same-user→same-key across devices (true by design — same login
+→ same shares → same key — but verify live).
+
+**DEP-COMPAT CONFIRMED (2026-06-20, `npm install @web3auth/modal@10.15.0 -w apps/web --dry-run`,
+npm 11.16.0, exit 0, no `ERESOLVE`):** resolves against viem 2.51.3 / `@zerodev/sdk` 5.5.10 with
+**NO major bump** — viem and @zerodev/sdk untouched; only two transitive patch/minor changes
+(`@wallet-standard/base` 1.1.0→1.1.1, `@babel/runtime` 7.28.6→7.29.7). The Para compat trap is
+cleared. COST to weigh at build: heavy add (219 pkgs — pulls react/react-dom 19, hcaptcha, a
+DUPLICATE `@noble/curves` 2.2.0 alongside the 1.9.0 viem already uses) and 6 pkgs with install
+scripts (`tiny-secp256k1`, esbuild ×2, bufferutil, utf-8-validate). Dry-run only — NOT installed.
+Remaining browser items: interactive email login + same-user→same-key across devices.
+
+### 12.5 Explicitly OUT of v1
+- WoCo-held guardian / PoH-as-signer (custodial — §12.1).
+- Friends VSS M-of-N (deferred — §12.2 #4).
+- Para-specific viem wiring (Para being phased out — §2026-06-19b).
