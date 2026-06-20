@@ -14,7 +14,6 @@
   import ShopOrderScreen from "./lib/attendee/shop/ShopOrderScreen.svelte";
   import AccountRecoverySetup from "./lib/components/recovery/AccountRecoverySetup.svelte";
   import AccountRecoverPortal from "./lib/components/recovery/AccountRecoverPortal.svelte";
-  import DevWeb3AuthProbe from "./lib/components/recovery/DevWeb3AuthProbe.svelte";
 </script>
 
 <AttendeeShell>
@@ -52,8 +51,5 @@
     <AccountRecoverySetup />
   {:else if router.route === "recover"}
     <AccountRecoverPortal />
-  {:else if router.route === "dev-web3auth"}
-    <!-- DEV-ONLY throwaway probe; route is import.meta.env.DEV-gated. Remove with the chooser. -->
-    <DevWeb3AuthProbe />
   {/if}
 </AttendeeShell>

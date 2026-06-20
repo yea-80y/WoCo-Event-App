@@ -142,6 +142,33 @@ recoverability). Added an independence + no-accidental-duplicate guard (rejects 
 account's own key, or a wallet already this account's guardian via the by-guardian hint). Multiple
 guardians = 1-of-N (contained, gated) vs M-of-N (VSS, deferred); see §12.2.
 
+## PHASE 1 PROGRESS (2026-06-20d) — Guardian chooser + bind-time confirm SHIPPED
+
+**✅ Shipped (Sonnet, typecheck clean, build clean):**
+- **Guardian chooser** in both `#/protect` (AccountRecoverySetup.svelte) and `#/recover`
+  (AccountRecoverPortal.svelte): user picks "Email" (connectWeb3AuthBackup) or "Crypto wallet"
+  (connectBackupWallet). Both resolve to the same `BackupWallet` seam — the rest of the flow
+  is unchanged.
+- **Bind-time confirm + independence guard** (plan §12.3 + §2026-06-20b):
+  - After connection, a "Confirm your backup" screen shows the address before the irreversible
+    install. Requires an explicit "Set as my backup" click.
+  - Hard block: refuses if backup address ∈ own keys (passkey Kernel / POD address).
+  - Guardian-address lookup now uses `deriveGuardianAddress` (fixes the existing inconsistency
+    where the setup used `backup.address` directly instead of the derived guardian Kernel).
+  - "Already your backup" (same guardian → same Kernel) = info screen, not error.
+  - Cross-account guardian = soft warn banner in the confirm screen (independence nudge).
+- **DevWeb3AuthProbe deleted**: `DevWeb3AuthProbe.svelte` + its route in `router.svelte.ts`
+  + the import block in `AttendeeApp.svelte` all removed.
+
+**🔴 NEXT GATES (in order):**
+1. Confirm Web3Auth email path LIVE on a real https domain (hCaptcha blocks localhost — see
+   DEV-TEST FINDINGS in §2026-06-20c). One login, confirm address returned + sig deterministic.
+   The chooser makes this directly testable on the #/protect page.
+2. Para → Web3Auth primary-login migration (replace Para login path).
+3. AAGUID / WebAuthn BE-BS prompting for device factor (design first).
+
+---
+
 ## PHASE 1 PROGRESS (2026-06-20c) — Web3Auth email-backup branch SHIPPED + direction locked
 
 **Shipped (commit `c4ba792`, typecheck clean, built vs the REAL `@web3auth/modal@10.15.0`

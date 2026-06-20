@@ -13,7 +13,7 @@
    * this for funds-holding accounts on the owner's own live end-to-end test.
    */
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { connectBackupWallet, type BackupWallet } from "../../wallet/backup-signer.js";
+  import { connectBackupWallet, connectWeb3AuthBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { fetchRecoveryEnvelope, fetchRecoveryByGuardian } from "../../api/recovery.js";
   import { resolveSubEnsAddress } from "../../api/sub-ens.js";
 
@@ -41,16 +41,17 @@
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const manualReady = $derived(manualInput.trim().length > 0);
 
-  async function connect() {
+  async function connectWith(method: "email" | "wallet") {
     phase = "connecting";
     errorMsg = "";
     try {
-      backup = await connectBackupWallet();
+      backup = method === "email"
+        ? await connectWeb3AuthBackup()
+        : await connectBackupWallet();
       phase = "intro";
-      // Auto-find the account this backup protects — nothing to type or recall.
       await autoFind();
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : "Couldn't connect your wallet";
+      errorMsg = e instanceof Error ? e.message : "Couldn't connect your backup";
       phase = "error";
     }
   }
@@ -170,17 +171,44 @@
         your access — with your tickets and history.
       </p>
 
-      <!-- Step 1: backup wallet -->
+      <!-- Step 1: backup — email or crypto wallet chooser -->
       <div class="step" class:done={!!backupAddress}>
         <span class="num">{backupAddress ? "✓" : "1"}</span>
         <div class="step-body">
-          <p class="step-title">Connect your backup wallet</p>
+          <p class="step-title">Connect your backup</p>
           {#if backupAddress}
             <code class="addr">{short(backupAddress)}</code>
+          {:else if phase === "connecting"}
+            <p class="conn-hint"><span class="spinner"></span> Connecting…</p>
           {:else}
-            <button class="btn btn--ghost" onclick={connect} disabled={phase === "connecting"}>
-              {#if phase === "connecting"}<span class="spinner"></span>Connecting…{:else}Connect wallet{/if}
-            </button>
+            <p class="step-hint">How did you add your backup?</p>
+            <div class="connect-opts">
+              <button
+                class="connect-btn"
+                onclick={() => connectWith("email")}
+                disabled={phase === "connecting" || phase === "restoring"}
+              >
+                <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.6"
+                     stroke-linecap="round" stroke-linejoin="round" width="16" height="13" aria-hidden="true">
+                  <rect x="1" y="1" width="16" height="12" rx="2"/>
+                  <polyline points="1,1.5 9,8.5 17,1.5"/>
+                </svg>
+                Email
+              </button>
+              <button
+                class="connect-btn"
+                onclick={() => connectWith("wallet")}
+                disabled={phase === "connecting" || phase === "restoring"}
+              >
+                <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.6"
+                     stroke-linecap="round" stroke-linejoin="round" width="16" height="13" aria-hidden="true">
+                  <rect x="1" y="4" width="16" height="9" rx="2"/>
+                  <path d="M5 4V3a2 2 0 014 0v1"/>
+                  <circle cx="13" cy="8.5" r="1.4" fill="currentColor" stroke="none"/>
+                </svg>
+                Crypto wallet
+              </button>
+            </div>
           {/if}
         </div>
       </div>
@@ -338,6 +366,34 @@
   .step-title { margin: 0.1rem 0 0.4rem; font-weight: 600; font-size: 0.95rem; }
   .step-hint { margin: 0 0 0.6rem; font-size: 0.83rem; color: var(--text-muted); }
   .addr { font-family: var(--font-mono); color: var(--accent-text); font-size: 0.9rem; }
+
+  .connect-opts {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+  }
+  .connect-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.8rem;
+    font-size: 0.83rem;
+    font-weight: 500;
+    color: var(--text);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: border-color 0.12s, color 0.12s;
+  }
+  .connect-btn svg { color: var(--accent); }
+  .connect-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
+  .connect-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .conn-hint {
+    display: flex; align-items: center; gap: 0.4rem;
+    font-size: 0.84rem; color: var(--text-secondary); margin: 0.25rem 0 0;
+  }
 
   .row { display: flex; gap: 0.5rem; }
   .row .input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 0.85rem; }
