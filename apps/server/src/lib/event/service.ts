@@ -3,8 +3,9 @@ import type {
   OrderField, ClaimMode, SeriesManifestBlob,
   SignedManifestV1, PodV2Body,
 } from "@woco/shared";
-import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from "@woco/shared";
+import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x, contentFeedSocIdentifier, eventContentTopic } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
+import { readSocPayload } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
 import { validatePodGate } from "../pod/gate-check.js";
@@ -64,12 +65,17 @@ export async function createEventV2(opts: {
   orderFields?: OrderField[];
   claimMode?: ClaimMode;
   skipAutoList?: boolean;
+  /** Phase B: organiser's content-feed-signer address (lowercased 0x). Present ⇒
+   *  the detail feed is a client-signed SOC (this fn skips the platform write and
+   *  returns the assembled feed for the client to sign); stamped into the directory
+   *  entries as the discovery carrier. Absent ⇒ legacy platform-signed write. */
+  creatorFeedSigner?: Hex0x;
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
     eventId, title, tagline, description, startDate, endDate, location,
     creatorAddress, creatorPodKey, imageData, series,
-    encryptionKey, orderFields, claimMode, skipAutoList, onProgress,
+    encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, onProgress,
   } = opts;
 
   const emit = (phase: string, current: number, total: number, message: string) =>
@@ -186,16 +192,28 @@ export async function createEventV2(opts: {
     ...(encryptionKey ? { encryptionKey } : {}),
     ...(orderFields?.length ? { orderFields } : {}),
     ...(claimMode && claimMode !== "wallet" ? { claimMode } : {}),
+    ...(creatorFeedSigner ? { creatorFeedSigner } : {}),
   };
 
-  emit("finalize", 0, 1, "Writing event feed...");
-  await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed), { fresh: true });
+  // Phase B: when the organiser owns a content-feed signer, the detail feed is a
+  // client-signed SOC. The server has no key to sign it — it returns the assembled
+  // feed (the route streams it in `done`) for the client to sign + upload via
+  // /api/swarm/soc. Legacy (no signer): platform-signed write as before.
+  if (!creatorFeedSigner) {
+    emit("finalize", 0, 1, "Writing event feed...");
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed), { fresh: true });
+  } else {
+    emit("finalize", 0, 1, "Preparing event feed for signing...");
+  }
   invalidateEventCache(eventId);
 
   // ── Update directories (fire-and-forget) ─────────────────────────────
+  // creatorFeedSigner is the discovery carrier — stamped into BOTH the global and
+  // creator directory entries (platform-signed) so a reader resolves the event SOC
+  // with no global registry.
   const totalTickets = series.reduce((n, s) => n + s.totalSupply, 0);
   addToEventDirectory(
-    { eventId, title, ...(tagline ? { tagline } : {}), imageHash, startDate, endDate, location, creatorAddress, seriesCount: series.length, totalTickets, createdAt },
+    { eventId, title, ...(tagline ? { tagline } : {}), imageHash, startDate, endDate, location, creatorAddress, seriesCount: series.length, totalTickets, createdAt, ...(creatorFeedSigner ? { creatorFeedSigner } : {}) },
     { skipPublicDirectory: !!skipAutoList },
   ).catch((err) => console.error("[event] Directory update failed (non-critical):", err));
 
@@ -286,14 +304,56 @@ export async function stampEventSubEns(
 const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number }>();
 const EVENT_CACHE_TTL_MS = 10 * 60_000;
 
-export async function getEvent(eventId: string): Promise<EventFeed | null> {
+/**
+ * Read a client-owned event detail feed (Phase B) as a SOC owned by `signer`.
+ * The payload is the raw EventFeed JSON the client signed (≤4096 bytes); decode
+ * with the null-tolerant feed decoder. Returns null if the chunk is absent (e.g.
+ * the client's SOC upload hasn't propagated yet) so callers fall back to legacy.
+ */
+async function readEventFeedSoc(eventId: string, signer: string): Promise<EventFeed | null> {
+  const identifier = contentFeedSocIdentifier(eventContentTopic(eventId));
+  const idHex = Buffer.from(identifier).toString("hex");
+  const payload = await readSocPayload(signer.replace(/^0x/, ""), idHex).catch(() => null);
+  if (!payload) return null;
+  return decodeJsonFeed<EventFeed>(payload);
+}
+
+/**
+ * Resolve the organiser's content-feed-signer for an event from the discovery
+ * carrier — the global directory entry. Carrier-based, NOT a registry: the signer
+ * is only known because the event is publicly listed. Returns null for legacy
+ * (platform-signed) events and for events not in the global directory (those are
+ * read by an explicit signer hint or via the legacy path).
+ */
+async function resolveCreatorFeedSigner(eventId: string): Promise<string | null> {
+  try {
+    const entries = await listEvents();
+    return entries.find((e) => e.eventId === eventId)?.creatorFeedSigner ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param signerHint  Phase B discovery carrier — the organiser's content-feed-signer
+ *   address, when the caller already has it (e.g. from the directory entry the user
+ *   navigated from). Avoids a directory round-trip and covers skipAutoList events
+ *   absent from the global directory.
+ */
+export async function getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
   if (cached && cached.expiresAt > now) return cached.feed;
 
-  const page = await readFeedPageWithRetry(topicEvent(eventId));
-  if (!page) return null;
-  const feed = decodeJsonFeed<EventFeed>(page);
+  // Phase B: if the event has a known content-feed signer (hint or directory
+  // carrier), read its client-signed SOC. Fall back to the legacy platform feed
+  // when there is no signer (legacy event) or the SOC hasn't propagated yet.
+  const signer = signerHint ?? (await resolveCreatorFeedSigner(eventId)) ?? undefined;
+  let feed: EventFeed | null = signer ? await readEventFeedSoc(eventId, signer) : null;
+  if (!feed) {
+    const page = await readFeedPageWithRetry(topicEvent(eventId));
+    feed = page ? decodeJsonFeed<EventFeed>(page) : null;
+  }
   if (feed) {
     _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
     for (const s of feed.series) {
@@ -401,6 +461,8 @@ function compactEntry(e: EventDirectoryEntry): EventDirectoryEntry {
   if (e.location) compact.location = e.location;
   if (e.apiUrl) compact.apiUrl = e.apiUrl;
   if (e.tagline) compact.tagline = e.tagline;
+  // Discovery carrier — must survive compaction so readers can resolve the SOC.
+  if (e.creatorFeedSigner) compact.creatorFeedSigner = e.creatorFeedSigner;
   return compact as unknown as EventDirectoryEntry;
 }
 

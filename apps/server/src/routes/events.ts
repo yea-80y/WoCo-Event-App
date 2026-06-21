@@ -112,8 +112,13 @@ events.get("/mine", requireAuth, async (c) => {
 events.get("/:id", async (c) => {
   if (!checkReadRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
   const eventId = c.req.param("id");
+  // Phase B carrier: the caller may pass the organiser's content-feed-signer
+  // (?signer=) when it navigated from a directory/site entry that already has it —
+  // resolves skipAutoList events that aren't in the global directory.
+  const signerHint = c.req.query("signer");
+  const validHint = signerHint && /^0x[0-9a-fA-F]{40}$/.test(signerHint) ? signerHint.toLowerCase() : undefined;
   try {
-    const event = await getEvent(eventId);
+    const event = await getEvent(eventId, validHint);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
     return c.json({ ok: true, data: event });
   } catch (err) {
@@ -128,7 +133,7 @@ events.post("/", requireAuth, async (c) => {
   const body = c.get("body") as unknown as CreateEventV2Request;
   const parentAddress = c.get("parentAddress") as string;
 
-  const { event: ev, series, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList } = body;
+  const { event: ev, series, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner } = body;
 
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
@@ -215,6 +220,18 @@ events.post("/", requireAuth, async (c) => {
 
   const eventId = crypto.randomUUID();
 
+  // Phase B: the client-owned content-feed signer (the user's, derived from their
+  // root login secret). Optional — absent ⇒ legacy platform-signed event feed.
+  // Normalised to lowercase 0x; only a well-formed address is accepted (a bad
+  // value would just make the SOC unresolvable, but reject early for clarity).
+  let feedSigner: Hex0x | undefined;
+  if (creatorFeedSigner) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(creatorFeedSigner)) {
+      return c.json({ ok: false, error: "Invalid creatorFeedSigner address" }, 400);
+    }
+    feedSigner = creatorFeedSigner.toLowerCase() as Hex0x;
+  }
+
   // Escrow enforcement: untrusted organisers must use escrow for paid series.
   const hasPaidSeries = series.some((s) => s.payment);
   if (hasPaidSeries) {
@@ -244,10 +261,17 @@ events.post("/", requireAuth, async (c) => {
         orderFields,
         claimMode,
         skipAutoList: !!skipAutoList,
+        ...(feedSigner ? { creatorFeedSigner: feedSigner } : {}),
         onProgress: (p) => stream.writeln(JSON.stringify(p)),
       });
 
-      stream.writeln(JSON.stringify({ type: "done", ok: true, data: { eventId: result.eventId } }));
+      // Client-signed events: return the assembled feed so the client signs it as
+      // a SOC (the server has no key). Legacy events were already platform-written.
+      stream.writeln(JSON.stringify({
+        type: "done",
+        ok: true,
+        data: { eventId: result.eventId, ...(feedSigner ? { eventFeed: result } : {}) },
+      }));
     } catch (err) {
       console.error("[api] createEventV2 error:", err);
       const message = err instanceof Error ? err.message : "Failed to create event";

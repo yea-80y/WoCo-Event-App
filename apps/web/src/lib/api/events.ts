@@ -12,6 +12,8 @@ import type {
 } from "@woco/shared";
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, buildAuthHeaders } from "./client.js";
+import { eventContentTopic } from "@woco/shared";
+import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 
 export interface PublishProgress {
   type: "progress";
@@ -26,13 +28,24 @@ export interface PublishProgress {
  * Reads NDJSON from the server and calls onProgress for each update.
  *
  * @param baseUrlOverride  Target a different API server (e.g. organiser's self-hosted backend).
+ * @param feedSigner  Phase B: when provided, the event becomes a CLIENT-OWNED feed —
+ *   the server stamps `feedSigner.address` into the directory (discovery carrier) and
+ *   skips the platform write, returning the assembled feed for the client to sign as a
+ *   SOC here. Only valid against the default server (the SOC upload targets apiBase's
+ *   postage batch), so callers MUST pass null when baseUrlOverride is set.
  */
 export async function createEventStreaming(
   req: CreateEventV2Request,
   onProgress?: (p: PublishProgress) => void,
   baseUrlOverride?: string,
+  feedSigner?: ContentFeedSigner | null,
 ): Promise<CreateEventResponse> {
   const base = baseUrlOverride ?? apiBase;
+  // Stamp the signer address into the request so the server carries it into the
+  // directory entry and returns the feed for SOC signing instead of platform-writing.
+  if (feedSigner) {
+    req = { ...req, creatorFeedSigner: feedSigner.address as `0x${string}` };
+  }
   const bodyText = JSON.stringify(req);
   const path = "/api/events";
   const authHeaders = await buildAuthHeaders("POST", path, bodyText);
@@ -56,6 +69,16 @@ export async function createEventStreaming(
   const decoder = new TextDecoder();
   let buffer = "";
   let result: CreateEventResponse = { ok: false, error: "No response" };
+  // Phase B: the client-signed event feed the server hands back in `done`.
+  let pendingFeed: EventFeed | null = null;
+
+  const handleEvent = (ev: any) => {
+    if (ev.type === "progress") onProgress?.(ev as PublishProgress);
+    else if (ev.type === "done") {
+      result = { ok: true, eventId: ev.data?.eventId };
+      if (ev.data?.eventFeed) pendingFeed = ev.data.eventFeed as EventFeed;
+    } else if (ev.type === "error") result = { ok: false, error: ev.error };
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -65,20 +88,28 @@ export async function createEventStreaming(
     buffer = lines.pop()!;
     for (const line of lines) {
       if (!line.trim()) continue;
-      try {
-        const ev = JSON.parse(line);
-        if (ev.type === "progress") onProgress?.(ev as PublishProgress);
-        else if (ev.type === "done") result = { ok: true, eventId: ev.data?.eventId };
-        else if (ev.type === "error") result = { ok: false, error: ev.error };
-      } catch { /* skip unparseable lines */ }
+      try { handleEvent(JSON.parse(line)); } catch { /* skip unparseable lines */ }
     }
   }
   if (buffer.trim()) {
+    try { handleEvent(JSON.parse(buffer)); } catch { /* ignore */ }
+  }
+
+  // Phase B: sign + upload the event detail feed as a client-owned SOC. The server
+  // only stamped the directory carrier; the feed itself is unreadable until this
+  // lands, so a failure here fails the publish (the organiser retries).
+  if (result.ok && feedSigner && pendingFeed) {
     try {
-      const ev = JSON.parse(buffer);
-      if (ev.type === "done") result = { ok: true, eventId: ev.data?.eventId };
-      else if (ev.type === "error") result = { ok: false, error: ev.error };
-    } catch { /* ignore */ }
+      onProgress?.({ type: "progress", phase: "finalize", current: 0, total: 1, message: "Signing event feed..." });
+      await writeContentFeed({
+        signerPrivKey: feedSigner.privKey,
+        topic: eventContentTopic((pendingFeed as EventFeed).eventId),
+        data: pendingFeed,
+      });
+      onProgress?.({ type: "progress", phase: "finalize", current: 1, total: 1, message: "Event feed signed" });
+    } catch (e) {
+      return { ok: false, error: `Failed to sign event feed: ${e instanceof Error ? e.message : String(e)}` };
+    }
   }
 
   return result;
