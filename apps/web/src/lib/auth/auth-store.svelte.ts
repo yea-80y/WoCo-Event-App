@@ -51,13 +51,16 @@ let _localPrivateKey: string | null = null;
 let _passkeyPrivateKey: string | null = null;
 let _web3authPrivateKey: string | null = null;
 
-// Passkey (ZeroDev Kernel) only. The Kernel smart-account address is the
-// parent identity; POD identity stays on the raw PRF-EOA address (invariant #1
-// — deterministic, wallet-independent, survives the future Option 2 swap).
-//  - _podAddress: PRF-EOA address used as the POD EIP-712 address field + AAD.
+// ZeroDev Kernel logins (passkey + web3auth). The Kernel smart-account address
+// is the parent identity; POD identity stays on the raw signer key + its EOA
+// address (invariant #1 — deterministic, wallet-independent).
+//  - _podAddress: passkey PRF-EOA address — POD EIP-712 address field + AAD.
+//  - _web3authPodAddress: Web3Auth EOA address — the web3auth POD address + AAD
+//    (the Kernel parent is NOT the POD key; same invariant #1 as passkey).
 //  - _kernel: the built Kernel (account + client + sudo validator), cached in
-//    memory after the first PRF ceremony of a session. Never persisted.
+//    memory after the first key ceremony of a session. Never persisted.
 let _podAddress: string | null = null;
+let _web3authPodAddress: string | null = null;
 let _kernel: BuiltKernel | null = null;
 
 // Cleanup function for wallet event listeners
@@ -103,8 +106,15 @@ async function _getSigner(): Promise<EIP712Signer> {
     const { createKernelTypedDataSigner } = await import("./kernel-account.js");
     return createKernelTypedDataSigner(_kernel.account);
   }
-  if (_kind === "web3auth" && _web3authPrivateKey) {
-    return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
+  if (_kind === "web3auth") {
+    // web3auth parent is the ZeroDev Kernel (like passkey) — it signs
+    // AuthorizeSession as an ERC-1271/6492 sig (server verify-delegation.ts
+    // accepts it). The raw Web3Auth key is used ONLY for POD (_getPodSigner,
+    // invariant #1), never for request signing.
+    await _ensureKernelForWeb3Auth();
+    if (!_kernel) throw new Error("Kernel unavailable for web3auth signer");
+    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
+    return createKernelTypedDataSigner(_kernel.account);
   }
   if (_kind === "coinbase" && _parent) {
     const { createCoinbaseSigner } = await import("./signers/coinbase-signer.js");
@@ -130,6 +140,13 @@ async function _getPodSigner(): Promise<EIP712Signer> {
       signingRequest.request(info),
     );
   }
+  if (_kind === "web3auth") {
+    // INVARIANT #1: POD derives from the raw Web3Auth secp256k1 key (ethers
+    // Wallet → RFC-6979 deterministic), NOT the Kernel (`_getSigner` returns the
+    // non-deterministic 1271 signer, which would corrupt the ed25519 identity).
+    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for POD signer");
+    return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
+  }
   return _getSigner();
 }
 
@@ -143,6 +160,11 @@ async function _getPodSigner(): Promise<EIP712Signer> {
  */
 function _getPodAddress(): string | null {
   if (_kind === "passkey") return _podAddress ?? _parent;
+  // web3auth POD is keyed by the Web3Auth EOA, NOT the Kernel parent (invariant
+  // #1). `_parent` here is the Kernel address, so it must NEVER be the fallback
+  // for a logged-in web3auth user — `_web3authPodAddress` is loaded at login and
+  // on restore before this is read.
+  if (_kind === "web3auth") return _web3authPodAddress ?? _parent;
   return _parent;
 }
 
@@ -323,6 +345,34 @@ async function _ensureKernel(): Promise<void> {
   _kernel = kernel;
 }
 
+/**
+ * Build + cache the ZeroDev Kernel for a web3auth login. The raw Web3Auth key is
+ * already in memory (no biometric/prompt, unlike passkey's PRF ceremony), so this
+ * is a pure build. The Kernel address is deterministic from that key; assert it
+ * matches the stored parent so a key change (or a stale parent) can never silently
+ * attach a divergent smart account. No recovery binding/override — email recovery
+ * is "log in again" (same login → same key → same Kernel).
+ */
+async function _ensureKernelForWeb3Auth(): Promise<void> {
+  if (_kernel) return;
+  if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
+  const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+  const kernel = await buildKernelFromPrivateKey(_web3authPrivateKey);
+  if (_parent && kernel.address !== _parent.toLowerCase()) {
+    throw new Error(
+      "Kernel address mismatch (web3auth) — refusing to attach a divergent smart account.",
+    );
+  }
+  _kernel = kernel;
+}
+
+/** Build the Kernel for whichever Kernel-backed kind is active (passkey/web3auth). */
+async function _ensureKernelForKind(): Promise<void> {
+  if (_kind === "passkey") return _ensureKernel();
+  if (_kind === "web3auth") return _ensureKernelForWeb3Auth();
+  throw new Error("No Kernel available for auth kind: " + _kind);
+}
+
 // ---------------------------------------------------------------------------
 // Initialisation (call once on app mount)
 // ---------------------------------------------------------------------------
@@ -422,12 +472,24 @@ async function init(): Promise<void> {
     } else if (kind === "web3auth") {
       const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
       const session = await restoreWeb3AuthSession();
-      if (session) {
+      const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
+      const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
+
+      if (session && storedParent && storedPodAddr) {
+        // Connected state only — the Kernel is rebuilt lazily on first use
+        // (deferred-signing), so no eth_call here. storedParent = Kernel address;
+        // storedPodAddr = Web3Auth EOA (loaded BEFORE _restoreCachedAuth so POD
+        // restore uses the EOA AAD, never the Kernel address — invariant #1).
         _kind = "web3auth";
-        _parent = session.address;
+        _parent = storedParent;
         _web3authPrivateKey = session.privateKey;
+        _web3authPodAddress = storedPodAddr;
         await _restoreCachedAuth();
       } else {
+        // Missing POD_ADDRESS = a pre-Kernel-upgrade session (parent was the raw
+        // EOA, not the Kernel). Force a clean re-login so the parent becomes the
+        // Kernel address rather than silently mixing identity layers (mirrors
+        // the passkey pre-Kernel migration guard).
         await clearAllAuth();
       }
     } else if (kind === "coinbase") {
@@ -536,13 +598,25 @@ async function loginWeb3Auth(): Promise<boolean> {
     const { loginWithWeb3Auth } = await import("./web3auth-account.js");
     const { address, privateKey } = await loginWithWeb3Auth();
 
-    await _clearStaleAuthForSwitch(address);
+    // Kernelize: build the ZeroDev Kernel from the raw Web3Auth key. The Kernel
+    // address (not the EOA) becomes the parent identity, so email users get the
+    // gasless on-chain rails (likes/follows) — `attester == parent` holds because
+    // the Kernel is msg.sender. POD stays on the raw EOA key (invariant #1).
+    const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+    const kernel = await buildKernelFromPrivateKey(privateKey);
+
+    await _clearStaleAuthForSwitch(kernel.address);
 
     await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
-    await putKV(StorageKeys.PARENT_ADDRESS, address);
+    await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
+    // Web3Auth EOA persisted as the POD address so POD restores on reload with
+    // the correct AAD (invariant #1) — mirrors passkey's POD_ADDRESS handling.
+    await putKV(StorageKeys.POD_ADDRESS, address);
     _kind = "web3auth";
-    _parent = address;
+    _parent = kernel.address;
     _web3authPrivateKey = privateKey;
+    _web3authPodAddress = address;
+    _kernel = kernel;
     _localPrivateKey = null;
     _passkeyPrivateKey = null;
 
@@ -1218,6 +1292,7 @@ async function clearAllAuth(): Promise<void> {
   _passkeyPrivateKey = null;
   _web3authPrivateKey = null;
   _podAddress = null;
+  _web3authPodAddress = null;
   _kernel = null;
   _sessionInFlight = null;
   _podInFlight = null;
