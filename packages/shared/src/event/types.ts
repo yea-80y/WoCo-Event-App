@@ -191,6 +191,11 @@ export interface EventFeed {
   /** Sub-ENS label pointed at this event's page (display hint — ownership and
    *  contenthash are authoritative on-chain; stamped via /api/sub-ens/stamp-event). */
   subEnsLabel?: string;
+  /** Phase B (client-owned feeds): the organiser's content-feed-signer address
+   *  (lowercased, 0x) that OWNS this event's detail-feed SOC. Self-describing copy;
+   *  the authoritative discovery carrier is the directory entry's same field. Absent
+   *  for legacy platform-signed events. */
+  creatorFeedSigner?: Hex0x;
 }
 
 /** Ticket series summary (stored within event feed) */
@@ -270,6 +275,12 @@ export interface CreateEventV2Request {
   orderFields?: OrderField[];
   claimMode?: ClaimMode;
   skipAutoList?: boolean;
+  /** Phase B: organiser's content-feed-signer address (lowercased 0x). When set,
+   *  the server stamps it into the event feed + directory entries (discovery
+   *  carrier) and SKIPS the platform-signed detail-feed write — returning the
+   *  assembled EventFeed in the stream `done` for the client to sign as a SOC.
+   *  Absent ⇒ legacy platform-signed write (web3/coinbase/cold-restore). */
+  creatorFeedSigner?: Hex0x;
 }
 
 /** Entry in the global event directory feed */
@@ -289,6 +300,11 @@ export interface EventDirectoryEntry {
   /** API base URL of the organiser's self-hosted backend (if deployed via site builder).
    *  When present, WoCo fetches event data and routes claims to this URL. */
   apiUrl?: string;
+  /** Phase B discovery carrier: the organiser's content-feed-signer address
+   *  (lowercased 0x) that OWNS the event's detail-feed SOC. A reader who sees this
+   *  entry can resolve the event SOC with no global registry. Absent for legacy
+   *  platform-signed events. */
+  creatorFeedSigner?: Hex0x;
 }
 
 /** Ticket data fields (before signing) */

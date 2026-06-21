@@ -174,3 +174,16 @@ export const CONTENT_FEED_SIGNER_DOMAIN = "woco/feed-signer/v1";
 export function contentFeedSocIdentifier(topic: string): Uint8Array {
   return keccak_256(utf8ToBytes(topic));
 }
+
+/**
+ * Canonical content-feed topic STRING for an event's detail feed
+ * (`woco/event/{eventId}`). Both the client SOC writer and the server SOC reader
+ * MUST derive `contentFeedSocIdentifier()` from THIS exact string, so it lives in
+ * shared to prevent drift (the server's bee-js `topicEvent` builds the same
+ * string for the legacy platform-signed feed). Phase B: when an organiser owns a
+ * client feed signer, the event detail feed is a SOC at this topic owned by their
+ * signer address (carried in the directory entry — see `creatorFeedSigner`).
+ */
+export function eventContentTopic(eventId: string): string {
+  return `woco/event/${eventId}`;
+}
