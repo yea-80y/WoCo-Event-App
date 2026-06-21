@@ -4,7 +4,7 @@
   import { getProfile, updateProfile, uploadAvatar, invalidateProfileCache } from "../../api/profiles.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { setExternalEventApi } from "../../api/event-api-registry.js";
+  import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
   import { getFollowing, getTrending } from "../../api/likes.js";
@@ -652,6 +652,7 @@
             {#each events as event (event.eventId)}
               <EventCard {event} onclick={() => {
                 if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
+                setEventFeedSigner(event.eventId, event.creatorFeedSigner);
                 navigate(`/event/${event.eventId}`);
               }} />
             {/each}
@@ -785,6 +786,7 @@
           {#each events as event (event.eventId)}
             <EventCard {event} onclick={() => {
               if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
+              setEventFeedSigner(event.eventId, event.creatorFeedSigner);
               navigate(`/event/${event.eventId}`);
             }} />
           {/each}

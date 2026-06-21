@@ -2,7 +2,7 @@
   import type { EventDirectoryEntry } from "@woco/shared";
   import { listEvents } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { setExternalEventApi } from "../../api/event-api-registry.js";
+  import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
   import EventCard from "../events/EventCard.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
@@ -84,6 +84,7 @@
         {#each upcoming as event (event.eventId)}
           <EventCard {event} onclick={() => {
             if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
+            setEventFeedSigner(event.eventId, event.creatorFeedSigner);
             navigate(`/event/${event.eventId}`);
           }} />
         {/each}
@@ -99,6 +100,7 @@
         {#each past as event (event.eventId)}
           <EventCard {event} onclick={() => {
             if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
+            setEventFeedSigner(event.eventId, event.creatorFeedSigner);
             navigate(`/event/${event.eventId}`);
           }} />
         {/each}

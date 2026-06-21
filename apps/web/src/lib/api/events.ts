@@ -167,8 +167,15 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
   return resp.data ?? [];
 }
 
-export async function getEvent(eventId: string, apiUrl?: string): Promise<EventFeed | null> {
-  const resp = await get<EventFeed>(`/api/events/${eventId}`, apiUrl);
+/**
+ * @param signer  Phase B discovery carrier — the organiser's content-feed-signer
+ *   address, when the caller already holds it (e.g. from the directory entry or a
+ *   cached feed). Lets the server read the client SOC as a pure relay, avoiding a
+ *   directory scan. Omit it and the server resolves the carrier itself (cold load).
+ */
+export async function getEvent(eventId: string, apiUrl?: string, signer?: string): Promise<EventFeed | null> {
+  const q = signer ? `?signer=${encodeURIComponent(signer)}` : "";
+  const resp = await get<EventFeed>(`/api/events/${eventId}${q}`, apiUrl);
   return resp.data ?? null;
 }
 

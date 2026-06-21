@@ -7,7 +7,9 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
-  import { getExternalEventApi } from "../../api/event-api-registry.js";
+  import { getExternalEventApi, getEventFeedSigner } from "../../api/event-api-registry.js";
+  import { readContentFeed } from "../../swarm/content-feed.js";
+  import { eventContentTopic } from "@woco/shared";
   import { getProfile } from "../../api/profiles.js";
   import type { UserProfile } from "@woco/shared";
   import UserAvatar from "../../components/profile/UserAvatar.svelte";
@@ -36,6 +38,23 @@
 
   // External API URL — set by home page when navigating to an externally-listed event
   const externalApiUrl = getExternalEventApi(eventId);
+
+  /**
+   * Load the event feed. Phase B: for a CLIENT-OWNED event (we hold the organiser's
+   * content-feed signer, from the listing carrier or a cached feed) on OUR server,
+   * read the SOC straight from the gateway — self-authenticating, computed-address,
+   * no server hop (the server's own read would hit the same gateway). The server
+   * path remains only for legacy platform feeds, federated events, and carrier-less
+   * deep links (where the server resolves the directory carrier).
+   */
+  async function loadEventFeed(): Promise<EventFeed | null> {
+    const signer = getEventFeedSigner(eventId) ?? _cached?.creatorFeedSigner;
+    if (signer && !externalApiUrl) {
+      const direct = await readContentFeed<EventFeed>(signer, eventContentTopic(eventId)).catch(() => null);
+      if (direct) return direct;
+    }
+    return getEvent(eventId, externalApiUrl, signer);
+  }
 
   // Synchronous cache read — before first render, so no loading flash on return visits
   const _KEY = cacheKey.event(eventId);
@@ -72,8 +91,8 @@
 
   onMount(() => {
     clockTimer = setInterval(() => { now = Date.now(); }, 60_000);
-    // Always fetch fresh — silently patches title, dates, series etc. if changed
-    getEvent(eventId, externalApiUrl)
+    // Always fetch fresh — gateway-direct for client-owned feeds (see loadEventFeed).
+    loadEventFeed()
       .then((fresh) => {
         if (!fresh) {
           if (_cached === null) error = "Event not found";
