@@ -92,13 +92,17 @@
 
   /** Whether the current auth identity owns a real EVM wallet. */
   // EOA logins: the auth address is a self-custodied EOA usable on any EVM chain
-  // (web3 = injected wallet, web3auth = MPC key from the email/number login).
-  const isEoaIdentity = $derived(auth.kind === "web3" || auth.kind === "web3auth");
+  // (web3 = injected wallet).
+  const isEoaIdentity = $derived(auth.kind === "web3");
   // Smart-account logins: a real on-chain account that CAN receive funds, but is
   // deployed on its home chain — receipts on another network may need a one-time
-  // counterfactual deploy before withdrawal (passkey Kernel = Arb Sepolia,
-  // coinbase = Base). Still a valid payout address.
-  const isSmartAccountIdentity = $derived(auth.kind === "passkey" || auth.kind === "coinbase");
+  // counterfactual deploy before withdrawal (passkey + web3auth Kernel = Arb
+  // Sepolia, coinbase = Base). Still a valid payout address. web3auth is now
+  // Kernelized (auth.parent = Kernel address, not the raw Web3Auth EOA), so it
+  // belongs here, not with the EOA logins.
+  const isSmartAccountIdentity = $derived(
+    auth.kind === "passkey" || auth.kind === "coinbase" || auth.kind === "web3auth",
+  );
   // Any login whose own auth address can serve as the crypto payout recipient.
   // (Replaces the old `web3 || para` check — `para` is a removed kind, which is
   // why web3auth users were wrongly blocked from crypto payouts.)
