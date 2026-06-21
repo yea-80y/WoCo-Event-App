@@ -112,22 +112,28 @@ export const PORTABILITY_SOC_IDENTIFIER_INPUT = "woco/recovery/portability/v1";
 export const PORTABILITY_SOC_OWNER_DOMAIN = "woco/recovery/portability/soc-owner/v1";
 export const PORTABILITY_HPKE_DOMAIN = "woco/recovery/portability/hpke/v1";
 
-/** Current portability-envelope payload version. */
-export const PORTABILITY_ENVELOPE_VERSION = 1 as const;
+/**
+ * Current portability-envelope payload version.
+ * v2 (2026-06-21) closed the privacy leak: `preservedKernelAddress` moved from
+ * cleartext into the sealed bundle, and the envelope is sealed under the public
+ * PRF-derived `socOwnerAddress` (not the real Kernel) so nothing on the chunk
+ * links the pseudonymous SOC owner to the user's real Kernel account. v1 SOCs no
+ * longer parse → the login back-fill rewrites them (no real users → no migration).
+ */
+export const PORTABILITY_ENVELOPE_VERSION = 2 as const;
 
 /**
  * The plaintext stored (sealed) inside the portability SOC. `envelope` is the
  * SAME audited `RecoveryEnvelope` produced by `recovery-escrow.ts`, sealed to one
- * extra HPKE recipient (a PRF-derived X25519 key). `preservedKernelAddress` is
- * carried alongside so a new device knows which on-chain Kernel to verify before
- * applying the address override. The sealed bundle inside `envelope` carries
- * `{ podSeed[, feedSignerPrivKey] }` — the feed-signer slot is reserved for Phase
- * B as a pure content change (no crypto change).
+ * extra HPKE recipient (a PRF-derived X25519 key) AND bound (AAD + its cleartext
+ * `kernelAddress` field) to the PRF-derived `socOwnerAddress` pseudonym — never
+ * the real Kernel. The sealed bundle inside `envelope` carries
+ * `{ preservedKernelAddress, podSeed[, feedSignerPrivKey] }`: the new device reads
+ * the preserved Kernel post-decrypt and verifies it on-chain before applying any
+ * override. The feed-signer slot is reserved for Phase B as a pure content change.
  */
 export interface PortabilityEnvelope {
   v: typeof PORTABILITY_ENVELOPE_VERSION;
-  /** Lowercased preserved Kernel address (the recovered account). */
-  preservedKernelAddress: string;
   envelope: RecoveryEnvelope;
 }
 

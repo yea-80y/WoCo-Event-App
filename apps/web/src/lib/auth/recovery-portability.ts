@@ -99,20 +99,26 @@ export async function writePortabilityEnvelope(args: {
   const { passkeyPrivKey, preservedKernelAddress, podSeed, feedSignerPrivKey } = args;
   const keys = await derivePortabilityKeys(passkeyPrivKey);
 
-  const secrets: Record<string, string> = { podSeed };
+  // The preserved Kernel goes INSIDE the sealed bundle (v2 privacy fix) — never
+  // cleartext on the chunk, so a reader can't link socOwnerAddress → real Kernel.
+  const secrets: Record<string, string> = {
+    preservedKernelAddress: preservedKernelAddress.toLowerCase(),
+    podSeed,
+  };
   if (feedSignerPrivKey) secrets.feedSignerPrivKey = feedSignerPrivKey;
 
-  // Seal to the PRF-derived recipient. sealRecoveryBundle binds the AAD +
-  // envelope.kernelAddress to the preserved Kernel address (same account).
+  // Bind the AAD + envelope.kernelAddress to the PRF-derived socOwnerAddress
+  // pseudonym (already public — it IS the chunk owner), NOT the real Kernel. The
+  // PRF-derived HPKE recipient key still binds the account, so anti-transplant
+  // holds while nothing on the chunk reveals the preserved Kernel address.
   const envelope = await sealRecoveryBundle({
     bundle: { version: PORTABILITY_ENVELOPE_VERSION, secrets },
-    kernelAddress: preservedKernelAddress,
+    kernelAddress: keys.socOwnerAddress,
     guardianPublicKeysHex: [keys.hpke.publicKeyHex],
   });
 
   const payloadObj: PortabilityEnvelope = {
     v: PORTABILITY_ENVELOPE_VERSION,
-    preservedKernelAddress: preservedKernelAddress.toLowerCase(),
     envelope,
   };
   const payload = new TextEncoder().encode(JSON.stringify(payloadObj));
@@ -151,20 +157,23 @@ export async function readPortabilityEnvelope(args: {
   } catch {
     return null;
   }
-  if (parsed?.v !== PORTABILITY_ENVELOPE_VERSION || !parsed.envelope || !parsed.preservedKernelAddress) {
+  // v1 (cleartext-Kernel) envelopes no longer match → null → back-fill rewrites.
+  if (parsed?.v !== PORTABILITY_ENVELOPE_VERSION || !parsed.envelope) {
     return null;
   }
 
   try {
+    // Sealed under the socOwnerAddress pseudonym (v2), not the real Kernel.
     const bundle = await openRecoveryBundle({
       envelope: parsed.envelope,
-      kernelAddress: parsed.preservedKernelAddress,
+      kernelAddress: keys.socOwnerAddress,
       guardianKeypair: keys.hpke,
     });
+    const preservedKernelAddress = bundle.secrets.preservedKernelAddress;
     const podSeed = bundle.secrets.podSeed;
-    if (!podSeed) return null;
+    if (!preservedKernelAddress || !podSeed) return null;
     return {
-      preservedKernelAddress: parsed.preservedKernelAddress.toLowerCase(),
+      preservedKernelAddress: preservedKernelAddress.toLowerCase(),
       podSeed,
       feedSignerPrivKey: bundle.secrets.feedSignerPrivKey,
     };
