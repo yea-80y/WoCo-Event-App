@@ -168,9 +168,21 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
     const raw = await extractRawPrivateKey(provider);
     return await backupWalletFromPrivateKey(raw);
   } finally {
+    // The modal does NOT auto-close after connect() — it sits on a "connected"
+    // success state. The logout below emits DISCONNECTED, which the modal reacts to
+    // by resetting to its LOGIN page (looks like the flow bounced back to sign-in).
+    // So hide the modal first; then the logout's state change lands on an already
+    // closed modal. Internal field, guarded — a future SDK shape change just falls
+    // back to the prior (cosmetic) behaviour.
+    try {
+      (web3auth as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
+    } catch {
+      /* best effort */
+    }
     // Clear the Web3Auth session: the LocalAccount already holds the key, so the
-    // instance is no longer needed, and a backup factor must not stay connected.
-    // Non-fatal — extraction has already succeeded by here.
+    // instance is no longer needed, and a backup factor must not stay connected
+    // (it shares this clientId with the primary email login). Non-fatal — the key
+    // is already extracted by here.
     try {
       await web3auth.logout({ cleanup: true });
     } catch {
