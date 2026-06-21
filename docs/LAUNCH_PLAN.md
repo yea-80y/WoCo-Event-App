@@ -49,16 +49,19 @@ passkey; POD stays on raw Web3Auth key; parent becomes Kernel addr.
   "feed signer ≠ POD seed" decision (different root). Confirm in step 2.
 
 ### 2. Phase B — client-owned content feeds  (AFTER identity flip)
-Source: CLIENT_FEED_SIGNER_HANDOVER.md Task 2. Migrate events/profile/sites off the
-platform `FEED_PRIVATE_KEY` onto client-owned signing. Single seam = `TODO(swarm-id)`
-in `apps/server/src/lib/swarm/feeds.ts:195` (add optional `signer`, default platform
-for back-compat; thread per-user signer from auth).
-- Per-kind feed-signer source: passkey = PRF-sealed bundle slot (already reserved);
-  **web3auth = derived from Web3Auth key (decided in step 1)**; web3 wallet = derive
-  from a fixed signature OR keep platform-signed initially (decide, don't assume).
-- Event directory / global list STAYS server-side for now (`project_event_directory_scaling`).
+ARCHITECTURE LOCKED — read `CLIENT_FEED_SIGNER_HANDOVER.md` §"PHASE B … LOCKED".
+NOT the stale `feeds.ts:195` TODO (server-held signer contradicts client-first).
+Decided model: CLIENT signs content as fixed-id SOCs (reuse Phase A `/api/swarm/soc`),
+SERVER only stamps. Feed-signer = derived from root login secret under
+`CONTENT_FEED_SIGNER_DOMAIN` (built). Discovery = CARRIER-BASED (signer address
+stamped into events/directory/site entries) — NO global registry (reverted; it was
+more linkable + a privacy leak). Self-reads derive the signer locally.
+- Build order: **events/merchant directory FIRST** → profiles → sites.
+- Already built (kept): shared `contentFeedSocIdentifier` + `CONTENT_FEED_SIGNER_DOMAIN`,
+  client `lib/swarm/content-feed.ts`, `auth.getContentFeedSigner()`.
+- STAYS platform-signed: global directory chunk + claim-path feeds.
 - GOTCHA: owner-addressed feeds → flipping the signer orphans old feeds. No users = OK,
-  but it's a deliberate migration, not an in-place edit.
+  deliberate migration. v1 on-chain binding (gasless, sub-ENS) is a later option.
 
 ### 3. Web3Auth go-live config + frontend deploy  (shared gate)
 Merged from BOTH docs. One frontend deploy unblocks all LIVE web3auth verification.
