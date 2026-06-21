@@ -1,5 +1,11 @@
 # Client-Side Feed Signer + Cross-Device Recovery — Build Handover
 
+> SEQUENCING: see `docs/LAUNCH_PLAN.md` for the merged, ordered launch to-do. The
+> "Security review gate" 🟡 privacy fix is step 0 (do first). Phase B Task 2 (below) is
+> step 2 and MUST run AFTER email-Kernelize (`docs/EMAIL_KERNELIZE_PLAN.md`) — the
+> identity flip changes the web3auth parent address, and Phase B must define the
+> web3auth user's feed-signer source (recommended: derived from the Web3Auth key).
+
 **Status:** PHASE A ✅ CROSS-DEVICE VERIFIED (2026-06-21) — typecheck-green, every
 off-chain + on-chain primitive verified (below), AND the owner's live cross-device
 test PASSED: recovered passkey on laptop → same passkey on mobile → SAME crypto
@@ -225,6 +231,47 @@ auth). Not a vuln (no owner-spoofing, no feed poisoning — platform feeds need
 FEED_PRIVATE_KEY), but add a per-session/per-account write cap before public launch.
 
 ---
+
+## PHASE B — client-owned content feeds (architecture LOCKED 2026-06-21)
+
+Owner intent: **the user owns every content feed with their own signer**; the
+platform only lends postage. Decisions (CTO call, this chat):
+
+- **Ownership model.** Content feeds become client-signed fixed-identifier SOCs:
+  the CLIENT signs (→ SOC owner = the user's content-feed-signer address, forever),
+  the SERVER only stamps+uploads via the platform batch (reuses Phase A
+  `/api/swarm/soc`). No added latency vs today (signing is local; same one
+  client→server POST). Read by computed chunk address (Etherna-safe, never /feeds).
+- **Feed-signer key** = derived from the user's root login secret under its OWN
+  domain `CONTENT_FEED_SIGNER_DOMAIN` ("woco/feed-signer/v1"), independent of POD +
+  funds. web3auth: from the Web3Auth key; passkey: from PRF (the portability
+  bundle's `feedSignerPrivKey` slot stays reserved if we later move to an
+  independent random secret). Recovery = re-derive on re-login, no escrow.
+- **Discovery = identity registry** `woco/identity/{parentAddress}` →
+  `IdentityPointer { feedSignerAddress }`, PLATFORM-signed, keyed by the VERIFIED
+  parent. The SOC owner ≠ parent (secret-derived), so readers resolve parent→signer
+  here, then read content SOCs by computed address. This is the **write-side analog
+  of the gateway whitelist** (server-maintained, mandatory on a shared batch) — it
+  stores only a public address and owns no feed. BUILT: `lib/identity/registry.ts`,
+  `routes/identity.ts` (`POST /feed-signer` authed, `GET /:addr/feed-signer` public),
+  `topicIdentity`, shared `IdentityPointer` + `contentFeedSocIdentifier`.
+- **Abuse bound** = keep `/api/swarm/soc` authz as-is (any authed user, valid sig —
+  can't poison another owner's feed, can't write platform feeds) + the ⚪
+  per-account postage write cap (do in launch hardening). Registry is discovery, not
+  the gate.
+- **Stays platform-signed**: global event directory + all claim-path feeds
+  (editions/claims/claimers/pending/collection — written server-side on behalf of
+  ABSENT claimers, so not client-signable). `project_event_directory_scaling`.
+- **Forward-compat (do not regress):** the stamp step is a swappable transport.
+  Per-user postage batches and browser-Bee/light-client direct upload later drop the
+  server from the write path with ZERO change to signing/ownership. End-state for the
+  directory = on-chain categories/index + user-written Swarm chunks (pending GSOC /
+  multi-writer-chunk SWIP + `window.bee` + light clients). Likes/follows already
+  embody this on EAS (attester == user Kernel) — leave them on-chain, don't feed-ify.
+
+Build order: **profile slice first** (data+avatar, client-SOC write + registry +
+reader resolve) → events → sites. Server reads can resolve registry+SOC internally
+so client read paths stay unchanged.
 
 ## COPY-PASTE KICKOFF PROMPT FOR THE FRESH CHAT
 

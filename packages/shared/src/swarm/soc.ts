@@ -141,3 +141,51 @@ export interface PortabilityEnvelope {
 export function portabilitySocIdentifier(): Uint8Array {
   return keccak_256(utf8ToBytes(PORTABILITY_SOC_IDENTIFIER_INPUT));
 }
+
+// ---------------------------------------------------------------------------
+// Client-owned content feeds (Phase B — CLIENT_FEED_SIGNER_HANDOVER.md Task 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Domain for deriving a user's content-feed SIGNING key from their root login
+ * secret (Web3Auth secp256k1 key / passkey PRF output). Domain-separated from the
+ * POD seed and the recovery/portability keys so the feed signer is an INDEPENDENT
+ * identity: rotating or leaking it never exposes POD, encryption, or funds.
+ *
+ * The derived secp256k1 key's ADDRESS is the OWNER of every content SOC the user
+ * writes (`keccak256(identifier || ownerAddress)`), so the USER — not the platform
+ * — owns the feed. The platform only lends postage (stamps) at write time; this is
+ * a swappable transport (per-user batch / browser-Bee later) that does not touch
+ * ownership. Recovery for the web3auth/passkey kinds is by re-deriving from the
+ * same root secret on re-login — no escrow needed for this key (the recovery
+ * portability bundle still reserves a `feedSignerPrivKey` slot for the passkey kind
+ * if we ever move it to an independent random secret; deriving keeps launch simple).
+ */
+export const CONTENT_FEED_SIGNER_DOMAIN = "woco/feed-signer/v1";
+
+/**
+ * SOC identifier for a content feed addressed by its stable topic string
+ * (e.g. `"woco/profile/data/0xabc…"` or a paged `"…/p1"`). `keccak256(topic)` →
+ * an overwrite-in-place SOC owned by the user's content-feed-signer address, read
+ * by computed chunk address (Etherna-safe — never `/feeds`). Replaces the
+ * sequential bee-js feed index for single-writer content: a SOC at a fixed
+ * (owner, identifier) is mutable in place, so no per-topic index bookkeeping.
+ */
+export function contentFeedSocIdentifier(topic: string): Uint8Array {
+  return keccak_256(utf8ToBytes(topic));
+}
+
+/**
+ * Platform-signed pointer published at `woco/identity/{parentAddress}`. Maps a
+ * user's verified parent (Kernel/EOA) address to the PUBLIC address of the
+ * content-feed signing key they own, so any reader can resolve where that user's
+ * client-owned content SOCs live. Stores only public data; the user keeps the
+ * signing key. Written by the server, keyed by the verified parent — the
+ * discovery + abuse-binding analog of the gateway whitelist.
+ */
+export interface IdentityPointer {
+  v: 1;
+  /** Lowercased content-feed-signer address, `0x`-prefixed (the SOC owner). */
+  feedSignerAddress: string;
+  updatedAt: string;
+}

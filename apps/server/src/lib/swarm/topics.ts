@@ -85,6 +85,20 @@ export const topicProfileAvatar = (ethAddress: string) =>
   Topic.fromString(`${PROFILE_NS}/avatar/${ethAddress.toLowerCase()}`);
 
 // ---------------------------------------------------------------------------
+// Identity registry (Phase B — CLIENT_FEED_SIGNER_HANDOVER.md Task 2).
+// Platform-signed pointer mapping a user's verified parent address → the public
+// address of the content-feed signing key they OWN. This is the discovery layer
+// (readers resolve parent → feedSigner, then read content SOCs by computed chunk
+// address) and operationally the write-side analog of the gateway whitelist: a
+// server-maintained record keyed by the VERIFIED parent. It stores only a public
+// address — never the user's secret, and it does not own any content feed.
+// ---------------------------------------------------------------------------
+const IDENTITY_NS = "woco/identity";
+
+export const topicIdentity = (parentAddress: string) =>
+  Topic.fromString(`${IDENTITY_NS}/${parentAddress.toLowerCase()}`);
+
+// ---------------------------------------------------------------------------
 // Recovery escrow (PASSKEY_RECOVERY_PLAN §11.6). One sealed RecoveryEnvelope
 // per Kernel account. Ciphertext only — encrypted to the guardian's X25519 key
 // (the server feed signer never sees plaintext), so the feed being public is
