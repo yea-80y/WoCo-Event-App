@@ -28,16 +28,19 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
   const web3AuthNetwork =
     networkEnv === "sapphire_mainnet" ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET : WEB3AUTH_NETWORK.SAPPHIRE_DEVNET;
 
-  // Fields other than chainNamespace are unused for OTHER but required by the type.
+  // OTHER namespace = key-only, no chain calls. But modal init still validates the
+  // provider config and rejects an empty rpcTarget ("Please provide rpcTarget inside
+  // chain"), so we give it a real URL. It is never actually called — `private_key`
+  // extraction does no RPC — it only has to be a valid endpoint string.
   const chain = {
     chainNamespace: CHAIN_NAMESPACES.OTHER,
     chainId: "0x1",
-    rpcTarget: "",
+    rpcTarget: "https://rpc.ankr.com/eth",
     displayName: "WoCo recovery key",
-    blockExplorerUrl: "",
+    blockExplorerUrl: "https://etherscan.io",
     ticker: "ETH",
     tickerName: "Ethereum",
-    logo: "",
+    logo: "https://web3auth.io/images/web3authlog.png",
   };
 
   return {
