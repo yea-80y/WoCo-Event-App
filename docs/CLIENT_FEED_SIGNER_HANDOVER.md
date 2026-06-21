@@ -235,43 +235,53 @@ FEED_PRIVATE_KEY), but add a per-session/per-account write cap before public lau
 ## PHASE B — client-owned content feeds (architecture LOCKED 2026-06-21)
 
 Owner intent: **the user owns every content feed with their own signer**; the
-platform only lends postage. Decisions (CTO call, this chat):
+platform only lends postage. Decisions (CTO call):
 
-- **Ownership model.** Content feeds become client-signed fixed-identifier SOCs:
-  the CLIENT signs (→ SOC owner = the user's content-feed-signer address, forever),
-  the SERVER only stamps+uploads via the platform batch (reuses Phase A
-  `/api/swarm/soc`). No added latency vs today (signing is local; same one
-  client→server POST). Read by computed chunk address (Etherna-safe, never /feeds).
-- **Feed-signer key** = derived from the user's root login secret under its OWN
-  domain `CONTENT_FEED_SIGNER_DOMAIN` ("woco/feed-signer/v1"), independent of POD +
-  funds. web3auth: from the Web3Auth key; passkey: from PRF (the portability
-  bundle's `feedSignerPrivKey` slot stays reserved if we later move to an
-  independent random secret). Recovery = re-derive on re-login, no escrow.
-- **Discovery = identity registry** `woco/identity/{parentAddress}` →
-  `IdentityPointer { feedSignerAddress }`, PLATFORM-signed, keyed by the VERIFIED
-  parent. The SOC owner ≠ parent (secret-derived), so readers resolve parent→signer
-  here, then read content SOCs by computed address. This is the **write-side analog
-  of the gateway whitelist** (server-maintained, mandatory on a shared batch) — it
-  stores only a public address and owns no feed. BUILT: `lib/identity/registry.ts`,
-  `routes/identity.ts` (`POST /feed-signer` authed, `GET /:addr/feed-signer` public),
-  `topicIdentity`, shared `IdentityPointer` + `contentFeedSocIdentifier`.
-- **Abuse bound** = keep `/api/swarm/soc` authz as-is (any authed user, valid sig —
-  can't poison another owner's feed, can't write platform feeds) + the ⚪
-  per-account postage write cap (do in launch hardening). Registry is discovery, not
-  the gate.
-- **Stays platform-signed**: global event directory + all claim-path feeds
-  (editions/claims/claimers/pending/collection — written server-side on behalf of
-  ABSENT claimers, so not client-signable). `project_event_directory_scaling`.
-- **Forward-compat (do not regress):** the stamp step is a swappable transport.
-  Per-user postage batches and browser-Bee/light-client direct upload later drop the
-  server from the write path with ZERO change to signing/ownership. End-state for the
-  directory = on-chain categories/index + user-written Swarm chunks (pending GSOC /
-  multi-writer-chunk SWIP + `window.bee` + light clients). Likes/follows already
-  embody this on EAS (attester == user Kernel) — leave them on-chain, don't feed-ify.
+- **Ownership = WRITE-time.** Content feeds become client-signed fixed-identifier
+  SOCs: the CLIENT signs (→ SOC owner = the user's content-feed-signer address), the
+  SERVER only stamps+uploads via the platform batch (reuses Phase A `/api/swarm/soc`).
+  No added latency (signing is local). The server/gateway *relaying* a user-signed
+  chunk does NOT dilute ownership (anyone can verify the sig). Stamp step is a
+  swappable transport → per-user batches / browser-Bee drop the server from writes
+  later with zero change to signing.
+- **Feed-signer key** = derived from the root login secret under its OWN domain
+  `CONTENT_FEED_SIGNER_DOMAIN` ("woco/feed-signer/v1"), independent of POD + funds.
+  web3auth: from the Web3Auth key; passkey: from PRF; local: from the local key.
+  web3/coinbase (external wallet, no raw key) → no client feed signer (platform-signed
+  fallback). Recovery = re-derive on re-login, no escrow. The parent (Kernel) can NEVER
+  own a SOC (contract address, no secp256k1 key that ecrecovers to it) — and Swarm
+  warns against signing feeds with a funds key anyway, so this is correct, not a
+  workaround. BUILT (kept): shared `CONTENT_FEED_SIGNER_DOMAIN` + `contentFeedSocIdentifier`;
+  client `lib/swarm/content-feed.ts` (`deriveContentFeedSigner` / `writeContentFeed` /
+  `readContentFeed`); `auth.getContentFeedSigner()` in auth-store.
+- **Discovery = CARRIER-BASED, no global registry (decided — registry REVERTED).**
+  Reading SOMEONE ELSE's feed needs their secret-derived signer address. Instead of a
+  global `parent→signer` table (more linkable + a privacy leak: it correlates every
+  user's on-chain identity ↔ all their content), carry the owner's feed-signer address
+  INSIDE the data that references them — **stamp it into the events/directory/site
+  entries** at publish time. Reader who sees an event already has the organiser's
+  signer. SELF-reads need no lookup (app derives its own signer). Carrier-based leaks
+  least (signer revealed only alongside content the user chose to publish).
+  - **Residual:** profile-by-raw-address with no carrier (e.g. a follower-list avatar).
+    Defer — stamp signer into the follow record when that screen exists, or small
+    fallback. NOT a launch blocker.
+  - **v1 (later, deliberate):** optional GASLESS on-chain binding (Kernel users have the
+    ZeroDev paymaster → no user gas) as a sub-ENS text record / EAS attestation, bolted
+    onto the existing identity tx, for public identities only, once GSOC / independent
+    discovery makes the permanence worth it. Discovery stays ONE swappable function.
+- **Reads** stay server-mediated for now (JSON via `/api/...`, exactly as today) —
+  gateway-direct buys ~nothing while we run the gateway; flip later in one function.
+- **Stays platform-signed:** global event directory chunk + all claim-path feeds
+  (editions/claims/claimers/pending/collection — written server-side for ABSENT
+  claimers). `project_event_directory_scaling`. Etherna = sites + event PAGES (GET+POST);
+  profile/data stays on our own Bee; SOC-by-computed-address read shape is Etherna-safe.
+- **Abuse bound** = `/api/swarm/soc` authz as-is (any authed user, valid sig — can't
+  poison another owner's feed; can't write platform feeds) + ⚪ per-account postage
+  write cap (launch hardening).
 
-Build order: **profile slice first** (data+avatar, client-SOC write + registry +
-reader resolve) → events → sites. Server reads can resolve registry+SOC internally
-so client read paths stay unchanged.
+Build order: **events/merchant directory FIRST** (stamp creator's content-feed-signer
+address into directory/event entries; organiser signs their own event/profile feed,
+server stamps; readers pick up the signer from the carrier) → profiles → sites.
 
 ## COPY-PASTE KICKOFF PROMPT FOR THE FRESH CHAT
 

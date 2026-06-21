@@ -32,6 +32,7 @@ import {
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
+import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import { signingRequest } from "./signing-request.svelte.js";
 import { cacheClearByPrefix, USER_SCOPED_PREFIXES } from "../cache/cache.js";
 
@@ -166,6 +167,34 @@ function _getPodAddress(): string | null {
   // on restore before this is read.
   if (_kind === "web3auth") return _web3authPodAddress ?? _parent;
   return _parent;
+}
+
+/**
+ * Root secp256k1 secret used to derive the CONTENT-FEED signer (Phase B). Only
+ * kinds that hold a deterministic raw key in memory can own client-signed feeds;
+ * web3/coinbase (external wallet, no raw key) fall back to platform-signed feeds
+ * (caller gets null). Web3Auth's key lives only after a fresh login — a cold
+ * session restore has no key in memory → null → legacy path until next login.
+ */
+async function _getContentFeedRootKey(): Promise<string | null> {
+  if (_kind === "passkey") {
+    await _ensurePasskeyKey();
+    return _passkeyPrivateKey;
+  }
+  if (_kind === "web3auth") return _web3authPrivateKey;
+  if (_kind === "local") return _localPrivateKey;
+  return null;
+}
+
+/**
+ * The user's content-feed signer (Phase B), or null when this kind/state can't
+ * own client-signed feeds. The address is the SOC owner + the registry value.
+ */
+async function _getContentFeedSigner(): Promise<ContentFeedSigner | null> {
+  const root = await _getContentFeedRootKey();
+  if (!root) return null;
+  const { deriveContentFeedSigner } = await import("../swarm/content-feed.js");
+  return deriveContentFeedSigner(root);
 }
 
 /**
@@ -1366,4 +1395,7 @@ export const auth = {
   // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel
   // parent (invariant #1). Returns null when not logged in.
   getPodKeypair: () => { const a = _getPodAddress(); return a ? getPodKeypair(a) : Promise.resolve(null); },
+  // Content-feed signer (Phase B) — the key the user signs their own content
+  // feeds with. null = this kind/state can't own feeds (fall back to platform).
+  getContentFeedSigner: () => _getContentFeedSigner(),
 };

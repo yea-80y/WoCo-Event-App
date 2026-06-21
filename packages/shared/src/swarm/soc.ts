@@ -174,18 +174,3 @@ export const CONTENT_FEED_SIGNER_DOMAIN = "woco/feed-signer/v1";
 export function contentFeedSocIdentifier(topic: string): Uint8Array {
   return keccak_256(utf8ToBytes(topic));
 }
-
-/**
- * Platform-signed pointer published at `woco/identity/{parentAddress}`. Maps a
- * user's verified parent (Kernel/EOA) address to the PUBLIC address of the
- * content-feed signing key they own, so any reader can resolve where that user's
- * client-owned content SOCs live. Stores only public data; the user keeps the
- * signing key. Written by the server, keyed by the verified parent — the
- * discovery + abuse-binding analog of the gateway whitelist.
- */
-export interface IdentityPointer {
-  v: 1;
-  /** Lowercased content-feed-signer address, `0x`-prefixed (the SOC owner). */
-  feedSignerAddress: string;
-  updatedAt: string;
-}
