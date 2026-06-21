@@ -91,7 +91,18 @@
   let stripeStatusLoading = $state(true);
 
   /** Whether the current auth identity owns a real EVM wallet. */
-  const hasNativeWallet = $derived(auth.kind === "web3" || auth.kind === "para");
+  // EOA logins: the auth address is a self-custodied EOA usable on any EVM chain
+  // (web3 = injected wallet, web3auth = MPC key from the email/number login).
+  const isEoaIdentity = $derived(auth.kind === "web3" || auth.kind === "web3auth");
+  // Smart-account logins: a real on-chain account that CAN receive funds, but is
+  // deployed on its home chain — receipts on another network may need a one-time
+  // counterfactual deploy before withdrawal (passkey Kernel = Arb Sepolia,
+  // coinbase = Base). Still a valid payout address.
+  const isSmartAccountIdentity = $derived(auth.kind === "passkey" || auth.kind === "coinbase");
+  // Any login whose own auth address can serve as the crypto payout recipient.
+  // (Replaces the old `web3 || para` check — `para` is a removed kind, which is
+  // why web3auth users were wrongly blocked from crypto payouts.)
+  const canSelfReceiveCrypto = $derived(isEoaIdentity || isSmartAccountIdentity);
 
   /**
    * Crypto payout recipient address — separate from auth identity.
@@ -247,21 +258,21 @@
   });
 
   onMount(async () => {
-    // Native-wallet users: payout goes to their auth address by default.
-    if (hasNativeWallet && auth.parent) {
+    // Any fund-capable login: payout defaults to their own auth address.
+    if (canSelfReceiveCrypto && auth.parent) {
       cryptoRecipientAddress = auth.parent.toLowerCase();
       return;
     }
-    // Passkey/local: see if they already have an external wallet connected
+    // Otherwise (e.g. local browser key): see if an external wallet is connected.
     if (isWalletAvailable()) {
       const addr = await getConnectedAddress();
       if (addr) cryptoRecipientAddress = addr;
     }
   });
 
-  // Keep recipient in sync if auth changes (e.g. user finishes Para login mid-form)
+  // Keep recipient in sync if auth resolves after mount (e.g. login finishes mid-form).
   $effect(() => {
-    if (hasNativeWallet && auth.parent && !cryptoRecipientAddress) {
+    if (canSelfReceiveCrypto && auth.parent && !cryptoRecipientAddress) {
       cryptoRecipientAddress = auth.parent.toLowerCase();
     }
   });
@@ -404,10 +415,13 @@
       <div class="crypto-recipient-header">
         <span class="crypto-recipient-title">Crypto payout address</span>
         <span class="crypto-recipient-sub">
-          {#if hasNativeWallet}
-            Funds from crypto sales are sent to your connected wallet (or escrow until event ends).
+          {#if isEoaIdentity}
+            Funds from crypto sales are sent to your wallet address (or escrow until event ends).
+          {:else if isSmartAccountIdentity}
+            Funds from crypto sales are sent to your WoCo account (or escrow until event ends).
+            Withdrawing on a network other than your account's home chain may need a one-time
+            account deployment there. You can also point payouts at any external wallet.
           {:else}
-            You're signed in with a {auth.kind === "passkey" ? "passkey" : "browser account"}.
             Connect a real EVM wallet to receive crypto payments — your sign-in identity can't hold funds on-chain.
           {/if}
         </span>
@@ -415,11 +429,9 @@
       {#if cryptoRecipientAddress}
         <div class="crypto-recipient-row">
           <span class="crypto-recipient-addr" title={cryptoRecipientAddress}>{truncateAddr(cryptoRecipientAddress)}</span>
-          {#if !hasNativeWallet}
-            <button type="button" class="crypto-recipient-btn-link" onclick={() => walletModalOpen = true}>
-              Change
-            </button>
-          {/if}
+          <button type="button" class="crypto-recipient-btn-link" onclick={() => walletModalOpen = true}>
+            Change
+          </button>
         </div>
       {:else}
         <button type="button" class="crypto-recipient-btn" onclick={() => walletModalOpen = true}>
