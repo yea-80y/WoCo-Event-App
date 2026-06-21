@@ -882,16 +882,17 @@ async function ensureWocoSessionKey(): Promise<string> {
 }
 
 /**
- * Ensure a scoped EAS session key exists for the passkey Kernel, minting one on
- * first use. Independent of ensureWocoSessionKey: EAS likes get their OWN key
+ * Ensure a scoped EAS session key exists for the Kernel, minting one on first
+ * use. Independent of ensureWocoSessionKey: EAS likes get their OWN key
  * (selector-scoped to attest/revoke) so they can never poison the sub-ENS key's
- * gas estimation. Returns the Kernel address that owns the key. Passkey-only.
+ * gas estimation. Returns the Kernel address that owns the key. Available to both
+ * Kernel-backed kinds (passkey + web3auth) — email users like/follow gaslessly.
  */
 async function ensureEasSessionKey(): Promise<string> {
-  if (_kind !== "passkey") {
-    throw new Error("ensureEasSessionKey: only available for passkey logins");
+  if (_kind !== "passkey" && _kind !== "web3auth") {
+    throw new Error("ensureEasSessionKey: only available for passkey/web3auth logins");
   }
-  await _ensureKernel();
+  await _ensureKernelForKind();
   if (!_kernel) throw new Error("Kernel unavailable — cannot mint EAS session key");
   const { hasEasSessionKey, createEasSessionKey } = await import("./kernel-account.js");
   if (!(await hasEasSessionKey())) {

@@ -4,14 +4,14 @@
  * attester** (Option 1, user-attested → trustless graph).
  *
  * Two rails, same calldata, same resulting attester (= `auth.parent`):
- *  - **passkey** → the Kernel smart account attests GASLESS via its scoped
- *    session key + ZeroDev paymaster (reuses the sub-ENS rail).
+ *  - **passkey + web3auth** → the ZeroDev Kernel smart account attests GASLESS
+ *    via its scoped EAS session key + ZeroDev paymaster (reuses the sub-ENS rail).
+ *    Email/social (web3auth) users are Kernelized at login, so they share this
+ *    path — `attester == parent` because the Kernel is msg.sender.
  *  - **web3 (MetaMask/WalletConnect)** → the parent EOA signs + sends the tx
  *    directly (own trivial testnet gas). Unlike Swarm feeds, the parent IS
  *    allowed to sign its own public on-chain claims (see
  *    project_signing_role_architecture).
- *
- * Para/email gasless (universal) is Option 2 (delegated attestation) — future.
  *
  * The caller is responsible for sign-in (requireAccountForAction) before
  * invoking these. Returns the on-chain UID (needed later to revoke).
@@ -96,10 +96,12 @@ async function uidFromLogs(
 }
 
 // ---------------------------------------------------------------------------
-// Passkey (gasless via Kernel session key)
+// Kernel logins (gasless via the EAS-scoped session key) — passkey + web3auth.
+// Both have a ZeroDev Kernel as their parent identity, so the attester (the
+// Kernel = msg.sender) equals auth.parent for both.
 // ---------------------------------------------------------------------------
 
-async function passkeySend(data: Hex0x): Promise<{ uid: Hex0x | null; txHash: string }> {
+async function kernelSend(data: Hex0x): Promise<{ uid: Hex0x | null; txHash: string }> {
   const kernelAddress = await auth.ensureEasSessionKey(); // mints the EAS-scoped key on first use
   const client = await getEasSessionClient(kernelAddress);
   if (!client) throw new Error("No EAS session key on this device for the Kernel.");
@@ -149,12 +151,13 @@ async function web3Send(data: Hex0x): Promise<{ uid: Hex0x | null; txHash: strin
 function send(data: Hex0x): Promise<{ uid: Hex0x | null; txHash: string }> {
   switch (auth.kind) {
     case "passkey":
-      return passkeySend(data);
+    case "web3auth":
+      return kernelSend(data);
     case "web3":
     case "coinbase":
       return web3Send(data);
     default:
-      // Para/email/local: Option 2 (delegated attestation) not built yet.
+      // local: no on-chain identity. (web3auth + passkey go gasless above.)
       throw new Error(`On-chain likes are not available for "${auth.kind}" accounts yet.`);
   }
 }
