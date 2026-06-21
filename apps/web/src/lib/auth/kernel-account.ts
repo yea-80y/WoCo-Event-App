@@ -1053,3 +1053,57 @@ export async function sweepToExternal(
   const callData = await builtKernel.account.encodeCalls(calls);
   return sendSudoUserOp(builtKernel.kernelClient, { callData });
 }
+
+/**
+ * ECDSAValidator singleton (Kernel v3) per-account owner storage getter. The
+ * deployed validator stores `mapping(address account => ECDSAValidatorStorage{
+ * address owner })`, exposed as the public getter `ecdsaValidatorStorage(address)
+ * returns (address owner)`.
+ */
+const ECDSA_VALIDATOR_STORAGE_ABI = [
+  {
+    type: "function",
+    name: "ecdsaValidatorStorage",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "owner", type: "address" }],
+  },
+] as const;
+
+/**
+ * Read the CURRENT on-chain ECDSA sudo owner of a deployed Kernel via a gasless
+ * `eth_call` — the trust backstop for the cross-device portability envelope
+ * (CROSS_DEVICE_RECOVERY.md §3). A recovered account's preserved address is only
+ * honoured on a new device if its Kernel's live owner equals that device's
+ * PRF-EOA, so a stale/forged envelope cannot point at someone else's account.
+ *
+ * Returns the lowercased owner address, or `null` if the Kernel is not deployed
+ * (owner unset / zero) or the read fails. No new on-chain writes; verification
+ * only. The ECDSA validator singleton address is resolved per Kernel version, so
+ * this stays correct if the version constant changes.
+ */
+export async function readKernelEcdsaOwner(kernelAddress: string): Promise<string | null> {
+  const [{ createPublicClient, http, zeroAddress }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }] =
+    await Promise.all([
+      import("viem"),
+      import("viem/chains"),
+      import("@zerodev/sdk/constants"),
+      import("@zerodev/ecdsa-validator"),
+    ]);
+
+  try {
+    const validatorAddress = getValidatorAddress(getEntryPoint("0.7"), KERNEL_V3_1);
+    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const owner = (await publicClient.readContract({
+      address: validatorAddress as Address,
+      abi: ECDSA_VALIDATOR_STORAGE_ABI,
+      functionName: "ecdsaValidatorStorage",
+      args: [kernelAddress as Address],
+    })) as Address;
+    if (!owner || owner.toLowerCase() === zeroAddress.toLowerCase()) return null;
+    return owner.toLowerCase();
+  } catch (e) {
+    console.warn("[kernel] readKernelEcdsaOwner failed:", e);
+    return null;
+  }
+}

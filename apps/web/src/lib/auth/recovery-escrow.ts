@@ -124,6 +124,24 @@ export async function deriveGuardianEncryptionKeypair(
 }
 
 /**
+ * Derive an HPKE (X25519) escrow keypair DIRECTLY from a 32-byte seed, reusing
+ * the same `hpke.kem.deriveKeyPair` construction as the guardian path. Used by
+ * the cross-device portability envelope (CROSS_DEVICE_RECOVERY.md §3): the
+ * recipient key is derived from the passkey PRF secret (domain-separated) rather
+ * than from a guardian signature, so the passkey holder can re-derive it on any
+ * device. The seed is the caller's responsibility to derive + zero; we copy it
+ * into the KEM and do not retain it.
+ */
+export async function deriveEncryptionKeypairFromSeed(
+  seed: Uint8Array,
+): Promise<GuardianEncryptionKeypair> {
+  if (seed.length !== 32) throw new Error("deriveEncryptionKeypairFromSeed: seed must be 32 bytes");
+  const keyPair = await hpke.kem.deriveKeyPair(toArrayBuffer(seed));
+  const pub = new Uint8Array(await hpke.kem.serializePublicKey(keyPair.publicKey));
+  return { keyPair, publicKeyHex: bytesToHex(pub) };
+}
+
+/**
  * Seal a recovery bundle: fresh DEK → XChaCha20-Poly1305 over the bundle (AAD =
  * Kernel address) → HPKE-wrap the DEK to each guardian X25519 pubkey. The
  * returned envelope is safe to store on a public feed. The DEK is zeroed before

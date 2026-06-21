@@ -220,6 +220,79 @@ function _bindingAddressFor(
 }
 
 /**
+ * NEW-DEVICE recovered-passkey check (CROSS_DEVICE_RECOVERY.md §3). When a passkey
+ * logs in with NO local recovery binding, it could still be a recovered account
+ * being opened on a second device. Read the PRF-sealed portability envelope, then
+ * VERIFY ON-CHAIN that the preserved Kernel's current ECDSA owner equals this
+ * device's PRF-EOA before trusting it — the chain, not the blob, is the authority.
+ *
+ * Pure check: returns `{ preserved, podSeed }` to apply, or null. The caller does
+ * the storage writes (storePodSeed + binding) AFTER `_clearStaleAuthForSwitch`,
+ * which would otherwise wipe a freshly-stored seed. The read is unauthenticated,
+ * so this works during login before any session exists.
+ */
+async function _verifyPortabilityEnvelope(
+  passkeyPrivKey: string,
+  podAddress: string,
+): Promise<{ preserved: `0x${string}`; podSeed: string } | null> {
+  try {
+    const { readPortabilityEnvelope } = await import("./recovery-portability.js");
+    const opened = await readPortabilityEnvelope({ passkeyPrivKey });
+    if (!opened) return null;
+
+    // Trust backstop: the override is applied ONLY if the deployed Kernel at the
+    // claimed address currently has THIS PRF-EOA as its ECDSA sudo owner. A
+    // stale/forged envelope pointing elsewhere fails here and is discarded.
+    const { readKernelEcdsaOwner } = await import("./kernel-account.js");
+    const owner = await readKernelEcdsaOwner(opened.preservedKernelAddress);
+    if (!owner || owner.toLowerCase() !== podAddress.toLowerCase()) {
+      console.warn("[auth] portability envelope failed on-chain owner check — ignoring");
+      return null;
+    }
+    return { preserved: opened.preservedKernelAddress as `0x${string}`, podSeed: opened.podSeed };
+  } catch (e) {
+    console.warn("[auth] portability envelope check failed (non-fatal):", e);
+    return null;
+  }
+}
+
+/**
+ * Best-effort write of the cross-device portability envelope for the CURRENT
+ * recovered passkey account. Fire-and-forget from `ensureSession` (needs a
+ * session for the authenticated SOC stamp): the first authenticated action after
+ * a recovery — or after this code ships, for an already-recovered Account #2 —
+ * persists the envelope so the account becomes portable to future devices. Once
+ * written it self-skips (the SOC already exists), so this runs at most once per
+ * account. No-op for non-recovered accounts (no local binding).
+ */
+async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
+  try {
+    if (_kind !== "passkey" || !_passkeyPrivateKey || !_podAddress) return;
+    const override = _bindingAddressFor(await _getRecoveryBinding(), _podAddress);
+    if (!override) return; // only recovered accounts carry a binding
+
+    const { derivePortabilityKeys, writePortabilityEnvelope } = await import("./recovery-portability.js");
+    const { readSoc } = await import("../swarm/client-soc.js");
+    const { portabilitySocIdentifier } = await import("@woco/shared");
+
+    const keys = await derivePortabilityKeys(_passkeyPrivateKey);
+    const existing = await readSoc(keys.socOwnerAddress, portabilitySocIdentifier());
+    if (existing) return; // already portable
+
+    const seed = await restorePodSeed(_podAddress);
+    if (!seed) return;
+    await writePortabilityEnvelope({
+      passkeyPrivKey: _passkeyPrivateKey,
+      preservedKernelAddress: override,
+      podSeed: seed,
+    });
+    console.log("[auth] wrote cross-device recovery portability envelope");
+  } catch (e) {
+    console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
+  }
+}
+
+/**
  * Ensure the ZeroDev Kernel is built and cached in memory. Triggers one PRF
  * ceremony (via _ensurePasskeyKey) on first use of a session, then builds the
  * Kernel from the raw PRF key. The Kernel address is deterministic (CREATE2),
@@ -561,13 +634,35 @@ async function loginPasskey(): Promise<boolean> {
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
     const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-    const override = _bindingAddressFor(await _getRecoveryBinding(), account.address);
+    let override = _bindingAddressFor(await _getRecoveryBinding(), account.address);
+
+    // No LOCAL binding, but this could be a RECOVERED account opened on a SECOND
+    // device. Check the PRF-sealed portability envelope + on-chain owner; if it
+    // verifies, adopt the preserved address and restore the POD seed below
+    // (AFTER _clearStaleAuthForSwitch, which would otherwise wipe it).
+    let portabilityRestore: { preserved: `0x${string}`; podSeed: string } | null = null;
+    if (!override) {
+      portabilityRestore = await _verifyPortabilityEnvelope(account.privateKey, account.address);
+      if (portabilityRestore) override = portabilityRestore.preserved;
+    }
+
     const kernel = await buildKernelFromPrivateKey(
       account.privateKey,
       override ? { address: override } : undefined,
     );
 
     await _clearStaleAuthForSwitch(kernel.address);
+
+    // New-device recovery: persist the escrow-restored POD seed + the durable
+    // binding so future sessions rebuild at the preserved address (mirrors
+    // recoverAndRekey). Order matters — this runs AFTER _clearStaleAuthForSwitch.
+    if (portabilityRestore) {
+      await storePodSeed(account.address, portabilityRestore.podSeed);
+      await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, {
+        pod: account.address.toLowerCase(),
+        kernel: portabilityRestore.preserved,
+      });
+    }
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
@@ -626,6 +721,11 @@ async function ensureSession(): Promise<boolean> {
       const signer = await _getSigner();
       const { sessionAddress } = await requestSessionDelegation(parent, signer);
       _sessionAddress = sessionAddress;
+      // A session now exists — persist the cross-device portability envelope for
+      // a recovered passkey account if it hasn't been written yet (covers device A
+      // right after recovery + an already-recovered Account #2). Fire-and-forget;
+      // never block the session on it.
+      if (_kind === "passkey") void _maybeBackfillPortabilityEnvelope();
       return true;
     } catch (e) {
       console.error("[auth] session delegation failed:", e);
@@ -964,6 +1064,11 @@ async function recoverAndRekey(args: {
       pod: fresh.address.toLowerCase(),
       kernel: target,
     });
+    // Cross-device portability envelope: written by `_maybeBackfillPortabilityEnvelope`
+    // on the first `ensureSession` after this ceremony (the SOC stamp needs a
+    // session). We do NOT force a session mid-recovery — the deferred-signing
+    // invariant holds; the envelope persists as soon as the user takes an
+    // authenticated action, making the recovered account portable to new devices.
     _kind = "passkey";
     _parent = target;
     _passkeyPrivateKey = fresh.privateKey;

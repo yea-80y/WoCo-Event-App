@@ -1,10 +1,55 @@
 # Client-Side Feed Signer + Cross-Device Recovery — Build Handover
 
-**Status:** READY TO BUILD (handover written 2026-06-21). Prereqs done this session:
-payout gate relaxed (`TicketSeriesEditor.svelte`), design docs written
-([`CROSS_DEVICE_RECOVERY.md`](./CROSS_DEVICE_RECOVERY.md),
-[`EMAIL_WEB3AUTH_LOGIN.md`](./EMAIL_WEB3AUTH_LOGIN.md)). Read those two first,
-plus `CLAUDE.md` (AUTH + SWARM sections).
+**Status:** PHASE A ✅ CROSS-DEVICE VERIFIED (2026-06-21) — typecheck-green, every
+off-chain + on-chain primitive verified (below), AND the owner's live cross-device
+test PASSED: recovered passkey on laptop → same passkey on mobile → SAME crypto
+address. Security-reviewed (2026-06-21): no HIGH/MED findings (see "Security review
+gate" below). PHASE B (migrate content feeds off the platform key) NOT started — see
+the handover at the bottom of this doc. Read `CROSS_DEVICE_RECOVERY.md`,
+`EMAIL_WEB3AUTH_LOGIN.md`, `CLAUDE.md` (AUTH + SWARM) first.
+
+## Phase A — BUILT (2026-06-21)
+
+Files:
+- `packages/shared/src/swarm/soc.ts` — BMT/SOC address calc (cross-checked
+  byte-identical vs installed bee-js `chunk/bmt.js`), `PortabilityEnvelope` type,
+  fixed identifier + the two PRF key-derivation domains.
+- `apps/server/src/lib/swarm/soc-upload.ts` + `routes/swarm.ts` —
+  `POST /api/swarm/soc` (auth; re-derives the CAC address, verifies the sig
+  recovers to the claimed owner via bee-js `Signature` BEFORE stamping, raw
+  `/soc/{owner}/{id}?sig=` upload mirroring `etherna/upload.ts`, then whitelists
+  the SOC address on the proxy) and unauth `GET /api/swarm/soc/:owner/:identifier`
+  (read by computed chunk address — availability fallback).
+- `apps/web/src/lib/swarm/client-soc.ts` — `signAndUploadSoc` (bee-js
+  `makeSingleOwnerChunk`, same digest as the proven feed path) + `readSoc`
+  (GATEWAY-FIRST via `makeSOCReader`, server fallback).
+- `apps/web/src/lib/auth/recovery-portability.ts` (+ `recovery-escrow.ts`
+  `deriveEncryptionKeypairFromSeed`) — domain-separated SOC-owner + X25519 keys
+  from the passkey PRF key; seal/write/read the envelope reusing the audited
+  HPKE/XChaCha (one extra recipient).
+- `apps/web/src/lib/auth/kernel-account.ts` `readKernelEcdsaOwner` — gasless
+  `eth_call` on the v3.1 ECDSA validator singleton
+  `0x845ADb2C711129d4f3966735eD98a9F09fC4cE57`, getter
+  `ecdsaValidatorStorage(address)` (selector `0x20709efc`).
+- `apps/web/src/lib/auth/auth-store.svelte.ts` — `loginPasskey` new-device
+  read→on-chain-verify→apply (override + `storePodSeed` AFTER
+  `_clearStaleAuthForSwitch`); `ensureSession` fires `_maybeBackfillPortabilityEnvelope`
+  (writes the envelope on the first authenticated action — recovery does NOT force
+  a session, preserving deferred-signing).
+
+Verified (assume-nothing): BMT/SOC addr == bee-js; SOC sign→server-validate
+round-trips with a bee-js-built chunk; HPKE multi-recipient seal opens with BOTH a
+guardian key and the PRF-derived key (and the reserved `feedSignerPrivKey` slot
+round-trips); whitelisting flips the gateway `403→404` on `/chunks` with CORS `*`;
+`ecdsaValidatorStorage(kernel)` returns the exact owner from the `OwnerRegistered`
+event for a live Arb Sepolia Kernel.
+
+READ trust model (why gateway-first + server fallback is sound): a SOC read is
+self-authenticating (`makeSOCReader` rejects unless the recovered signer == the
+requested owner), the payload is HPKE-sealed, and the final authority is the
+on-chain owner check — so the read SOURCE is untrusted and extra sources add only
+availability, zero trust. The server GET is availability-only and retireable once
+all reads prove out on the gateway.
 
 ## Goal (Phase A only)
 
@@ -153,6 +198,31 @@ the override, (3) the SOC endpoint can't be used to stamp SOCs for owners other 
 the caller's own derived keys (or that doing so is harmless), (4) envelope rollback
 (serving an old SOC) can't downgrade to a wrong address — the on-chain check should
 catch it; add a version/counter if a multi-recovery rollback is a concern.
+
+**Review result (2026-06-21, Opus): no HIGH/MED findings.** All four gate items hold.
+Two follow-ups, both for the Phase B chat (neither blocks the verified Phase A):
+
+🟡 **PRIVACY TODO — do FIRST in Phase B (small, ~2 files, no algorithm change).**
+`preservedKernelAddress` is **cleartext** in the portability SOC payload, so anyone
+who reads the chunk can link the PRF-derived `socOwnerAddress` pseudonym to the user's
+real Kernel account. Fix WITHOUT touching the audited HPKE/XChaCha algorithm:
+  - Pass `socOwnerAddress` (not the real Kernel) as the envelope's AAD context — the
+    PRF-derived HPKE recipient key already binds the account, so anti-transplant holds.
+  - Move `preservedKernelAddress` INSIDE the sealed bundle (`secrets.preservedKernelAddress`);
+    read it back post-decrypt. `PortabilityEnvelope` cleartext → `{ v, envelope }`.
+  - Touches `packages/shared/src/swarm/soc.ts` (type) + `recovery-portability.ts`
+    (seal/read). Version-bump the envelope; the back-fill rewrites the old one on next
+    login (no real users → no migration). Costs ONE cross-device re-test.
+  Why before Phase B: Phase B reuses this SOC+envelope machinery for PUBLIC content
+  feeds — fix the link-leak pattern before it propagates into the content layer.
+  (zk is NOT the right tool here — a symmetric seal + the already-unlinkable
+  `socOwnerAddress` close it. Reserve zk for prove-without-reveal: PoH anti-abuse,
+  selective POD disclosure, a future private per-account SOC-write gate.)
+
+⚪ **HARDENING — per-account postage write cap on `POST /api/swarm/soc`.** Any authed
+user can have arbitrary self-signed SOCs stamped (bounded only by postage cost +
+auth). Not a vuln (no owner-spoofing, no feed poisoning — platform feeds need
+FEED_PRIVATE_KEY), but add a per-session/per-account write cap before public launch.
 
 ---
 

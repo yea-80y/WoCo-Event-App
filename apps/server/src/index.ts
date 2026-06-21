@@ -30,6 +30,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { likesRoutes } from "./routes/likes.js";
 import { agentRouter } from "./routes/agent.js";
+import { swarmRoutes } from "./routes/swarm.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
@@ -400,6 +401,10 @@ app.route("/api/sub-ens", subEnsRoutes);
 
 // EAS likes (#4) — verify-on-chain record + projection reads
 app.route("/api/likes", likesRoutes);
+
+// Client-signed Single-Owner-Chunk write rail (client signs, server stamps).
+// Phase A of the client feed signer / cross-device recovery work.
+app.route("/api/swarm", swarmRoutes);
 
 // Agent commerce surface (#Tier-2) — discover events + buy tickets from a bounded
 // non-custodial spend permission. Unauthenticated by design (on-chain draw is the
