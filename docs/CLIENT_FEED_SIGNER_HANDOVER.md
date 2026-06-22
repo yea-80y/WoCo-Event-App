@@ -245,6 +245,17 @@ owner runs frontend deploy + browser test). Commits f0e6ed9→90f5028. What ship
   directory carrier for internal/claim reads; legacy platform read = fallback.
 - Updates: server NEVER writes the user's feed — the owner re-signs the SOC for
   onChainEventId (PublishButton, once after all paid series) and sub-ENS label.
+- Size: content feeds are MULTI-CHUNK (commit 88b6b81) — a feed >4096 bytes pages
+  across SOCs (`topic/p1…/pN` + a tiny `{_woco_mc,pages,len}` base manifest); small
+  feeds stay a single raw-JSON SOC. No size ceiling, inline-only (Etherna-safe). Built
+  into shared writeContentFeed/readContentFeed + server readContentFeedJson → profiles
+  + sites inherit it. Page split/reassemble verified by a throwaway round-trip test
+  (boundaries 4096/4097, up to 50 KB/13 pages, missing-page⇒null) — all pass.
+- TEST (dev, no deploy): `npm run dev:server` (tunnels to Hetzner bee) + `npm run dev:web`,
+  log in with a LOCAL browser account or PASSKEY (NOT web3auth=localhost-blocked, NOT
+  web3/coinbase=platform-signed fallback), publish a LISTED event. Confirm: Network shows
+  POST /api/swarm/soc after create; event read hits the gateway not /api/events/:id;
+  `curl /api/events` entry has `creatorFeedSigner`. Dev writes hit PROD feeds — unlist after.
 - **Owner guardrails (load-bearing):** server = upload/stamp ONLY; it does NOT sign
   user feeds or on-chain txns (card buyers use a client burner). Claim/payment reads
   use the TRUSTED directory carrier, never a client hint → `skipAutoList` events stay
