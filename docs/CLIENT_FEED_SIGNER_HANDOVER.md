@@ -234,6 +234,24 @@ FEED_PRIVATE_KEY), but add a per-session/per-account write cap before public lau
 
 ## PHASE B — client-owned content feeds (architecture LOCKED 2026-06-21)
 
+**STATUS — EVENTS step BUILT 2026-06-22** (typecheck-green; NOT deployed/LIVE-tested —
+owner runs frontend deploy + browser test). Commits f0e6ed9→90f5028. What shipped:
+- Event detail feed (`woco/event/{id}`) is now a CLIENT-signed SOC owned by the user's
+  content-feed signer; server stamps only (skips the platform write, returns the feed
+  in the create stream `done`). `creatorFeedSigner` stamped into global+creator directory
+  entries (carrier). Shared `eventContentTopic(id)`.
+- Reads: client reads the SOC **gateway-direct** (`readContentFeed`) via the carrier
+  from the listing/cache; server `getEvent(id, signerHint?)` resolves the TRUSTED
+  directory carrier for internal/claim reads; legacy platform read = fallback.
+- Updates: server NEVER writes the user's feed — the owner re-signs the SOC for
+  onChainEventId (PublishButton, once after all paid series) and sub-ENS label.
+- **Owner guardrails (load-bearing):** server = upload/stamp ONLY; it does NOT sign
+  user feeds or on-chain txns (card buyers use a client burner). Claim/payment reads
+  use the TRUSTED directory carrier, never a client hint → `skipAutoList` events stay
+  platform-signed until the sites step gives them a trusted carrier.
+- NEXT: profiles → sites (sites must carry the signer in the server-written
+  SiteEventsIndex so site/skipAutoList events get a trusted carrier).
+
 Owner intent: **the user owns every content feed with their own signer**; the
 platform only lends postage. Decisions (CTO call):
 
