@@ -108,7 +108,7 @@
           console.log(`[EventDetail] series "${s.name}" payment:`, s.payment ?? "FREE");
         }
         // Fetch creator profile
-        getProfile(fresh.creatorAddress).then((p) => {
+        getProfile(fresh.creatorAddress, fresh.creatorFeedSigner).then((p) => {
           creatorProfile = p;
           rememberLabel(p?.subEnsLabel); // so Following/Trending can show the name
         });

@@ -194,7 +194,36 @@ async function _getContentFeedSigner(): Promise<ContentFeedSigner | null> {
   const root = await _getContentFeedRootKey();
   if (!root) return null;
   const { deriveContentFeedSigner } = await import("../swarm/content-feed.js");
-  return deriveContentFeedSigner(root);
+  const signer = deriveContentFeedSigner(root);
+  // Cache the PUBLIC address so passive self-reads resolve the SOC owner without
+  // re-deriving the key (which would prompt for passkey PRF). Fire-and-forget.
+  void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, signer.address);
+  return signer;
+}
+
+/**
+ * The user's content-feed signer ADDRESS for self-reads, resolved WITHOUT a
+ * prompt: the in-memory root key if already present (web3auth/local, or a passkey
+ * whose key is already unlocked), else the address cached at last derivation.
+ * Returns null when the user can't own client feeds (external wallet) or has
+ * never derived one on this device. Never triggers a WebAuthn PRF prompt — so it
+ * is safe to call from passive UI (e.g. rendering your own avatar).
+ */
+async function _getContentFeedSignerAddress(): Promise<string | null> {
+  // Key already in memory (no prompt) → derive directly, freshest value.
+  let inMemoryRoot: string | null = null;
+  if (_kind === "web3auth") inMemoryRoot = _web3authPrivateKey;
+  else if (_kind === "local") inMemoryRoot = _localPrivateKey;
+  else if (_kind === "passkey") inMemoryRoot = _passkeyPrivateKey;
+  if (inMemoryRoot) {
+    const { deriveContentFeedSigner } = await import("../swarm/content-feed.js");
+    const addr = deriveContentFeedSigner(inMemoryRoot).address;
+    void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, addr);
+    return addr;
+  }
+  // External wallet kinds never own a client feed.
+  if (_kind !== "passkey" && _kind !== "web3auth" && _kind !== "local") return null;
+  return (await getKV<string>(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS)) ?? null;
 }
 
 /**
@@ -1398,4 +1427,6 @@ export const auth = {
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).
   getContentFeedSigner: () => _getContentFeedSigner(),
+  // Self-read SOC owner address — no prompt (see _getContentFeedSignerAddress).
+  getContentFeedSignerAddress: () => _getContentFeedSignerAddress(),
 };

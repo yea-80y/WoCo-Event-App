@@ -15,9 +15,11 @@
     compact?: boolean;
     /** Show a Follow pill when this creator has a claimed sub-ENS name. */
     showFollow?: boolean;
+    /** Phase B carrier: the creator's content-feed signer (owns their profile SOC). */
+    signer?: string;
   }
 
-  let { address, compact = false, showFollow = false }: Props = $props();
+  let { address, compact = false, showFollow = false, signer }: Props = $props();
 
   let profile = $state<UserProfile | null>(null);
 
@@ -39,7 +41,7 @@
   }
 
   onMount(() => {
-    getProfile(address).then((p) => {
+    getProfile(address, signer).then((p) => {
       profile = p;
       rememberLabel(p?.subEnsLabel); // feed the client name-resolution cache
     });

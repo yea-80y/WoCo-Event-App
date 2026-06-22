@@ -62,7 +62,7 @@
       <p class="location">{event.location}</p>
     {/if}
     <div class="card-footer">
-      <CreatorChip address={event.creatorAddress} compact={false} showFollow />
+      <CreatorChip address={event.creatorAddress} compact={false} showFollow signer={event.creatorFeedSigner} />
       <span class="tickets">{event.totalTickets} tickets</span>
     </div>
   </div>
