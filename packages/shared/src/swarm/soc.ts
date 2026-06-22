@@ -176,6 +176,41 @@ export function contentFeedSocIdentifier(topic: string): Uint8Array {
 }
 
 /**
+ * Multi-chunk content feeds. A single SOC payload is capped at 4096 bytes, so a
+ * content feed larger than that pages across multiple SOCs (like the directory /
+ * editions feeds). The base SOC (at `topic`) then holds a small MANIFEST instead
+ * of the raw JSON; the data lives at `topic/p1 … /pN`, read by computed address
+ * (inline payloads only — Etherna-safe, never a ref-style SOC). A feed that fits
+ * in one chunk keeps the base SOC = raw JSON, so small feeds are unchanged.
+ */
+export const CONTENT_FEED_MC_MARKER = "_woco_mc" as const;
+
+/** Page-0 manifest for a multi-chunk content feed. Tiny — always fits one chunk. */
+export interface ContentFeedManifest {
+  /** Discriminator (always 1). Distinguishes a manifest from a real feed payload. */
+  [CONTENT_FEED_MC_MARKER]: 1;
+  /** Number of data pages at `{topic}/p1` … `{topic}/pN`. */
+  pages: number;
+  /** Total byte length of the concatenated JSON (integrity check). */
+  len: number;
+}
+
+/** Topic string for data page `page` (1-based) of a multi-chunk content feed. */
+export function contentFeedPageTopic(topic: string, page: number): string {
+  return `${topic}/p${page}`;
+}
+
+/** True if a decoded base-SOC payload is a multi-chunk manifest (vs a real feed). */
+export function isContentFeedManifest(o: unknown): o is ContentFeedManifest {
+  return (
+    !!o && typeof o === "object" &&
+    (o as Record<string, unknown>)[CONTENT_FEED_MC_MARKER] === 1 &&
+    typeof (o as Record<string, unknown>).pages === "number" &&
+    typeof (o as Record<string, unknown>).len === "number"
+  );
+}
+
+/**
  * Canonical content-feed topic STRING for an event's detail feed
  * (`woco/event/{eventId}`). Both the client SOC writer and the server SOC reader
  * MUST derive `contentFeedSocIdentifier()` from THIS exact string, so it lives in

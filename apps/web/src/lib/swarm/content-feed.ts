@@ -16,7 +16,11 @@
 import { keccak256, getBytes, toUtf8Bytes, concat, Wallet } from "ethers";
 import {
   CONTENT_FEED_SIGNER_DOMAIN,
+  CONTENT_FEED_MC_MARKER,
   contentFeedSocIdentifier,
+  contentFeedPageTopic,
+  isContentFeedManifest,
+  type ContentFeedManifest,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
 import { signAndUploadSoc, readSoc } from "./client-soc.js";
@@ -44,31 +48,77 @@ export function deriveContentFeedSigner(rootPrivKey: string): ContentFeedSigner 
 /**
  * Sign + upload a JSON content feed as a client-owned SOC at
  * `contentFeedSocIdentifier(topic)`. Overwrite-in-place (same owner+identifier).
- * Payload is the raw JSON bytes (≤4096) — the server reads it back with the same
- * null-tolerant JSON decoder used for platform feeds.
+ *
+ * A feed that fits one 4096-byte chunk is written as a single base SOC of raw JSON
+ * (unchanged). A larger feed PAGES across SOCs: the data is split over
+ * `topic/p1 … /pN` and the base SOC holds a tiny manifest pointing at them — so
+ * there is no practical size ceiling and the user is never restricted. Inline
+ * payloads only (Etherna-safe). Data pages are uploaded BEFORE the manifest so a
+ * reader never sees a manifest whose pages aren't there yet.
  */
 export async function writeContentFeed(args: {
   signerPrivKey: string;
   topic: string;
   data: unknown;
 }): Promise<void> {
-  const payload = new TextEncoder().encode(JSON.stringify(args.data));
-  if (payload.length < 1 || payload.length > SOC_MAX_PAYLOAD_SIZE) {
-    throw new Error(`content feed payload must be 1..${SOC_MAX_PAYLOAD_SIZE} bytes (got ${payload.length})`);
+  const json = new TextEncoder().encode(JSON.stringify(args.data));
+  if (json.length < 1) throw new Error("content feed payload must be ≥1 byte");
+
+  if (json.length <= SOC_MAX_PAYLOAD_SIZE) {
+    await signAndUploadSoc({
+      signerPrivKey: args.signerPrivKey,
+      identifier: contentFeedSocIdentifier(args.topic),
+      payload: json,
+    });
+    return;
   }
+
+  const pages = Math.ceil(json.length / SOC_MAX_PAYLOAD_SIZE);
+  for (let i = 0; i < pages; i++) {
+    const slice = json.subarray(i * SOC_MAX_PAYLOAD_SIZE, (i + 1) * SOC_MAX_PAYLOAD_SIZE);
+    await signAndUploadSoc({
+      signerPrivKey: args.signerPrivKey,
+      identifier: contentFeedSocIdentifier(contentFeedPageTopic(args.topic, i + 1)),
+      payload: slice,
+    });
+  }
+  const manifest: ContentFeedManifest = { [CONTENT_FEED_MC_MARKER]: 1, pages, len: json.length };
   await signAndUploadSoc({
     signerPrivKey: args.signerPrivKey,
     identifier: contentFeedSocIdentifier(args.topic),
-    payload,
+    payload: new TextEncoder().encode(JSON.stringify(manifest)),
   });
 }
 
-/** Read + JSON-decode a client-owned content feed by owner + topic. */
+/** Read + JSON-decode a client-owned content feed by owner + topic (multi-chunk aware). */
 export async function readContentFeed<T>(ownerAddress: string, topic: string): Promise<T | null> {
   const raw = await readSoc(ownerAddress, contentFeedSocIdentifier(topic));
   if (!raw) return null;
+
+  let head: unknown;
   try {
-    return JSON.parse(new TextDecoder().decode(raw)) as T;
+    head = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return null;
+  }
+
+  // Single-chunk feed: the base SOC IS the JSON.
+  if (!isContentFeedManifest(head)) return head as T;
+  // Bound the fetch loop (256 pages = 1 MB — far beyond any real feed).
+  if (head.pages < 1 || head.pages > 256) return null;
+
+  // Multi-chunk: gather data pages and reassemble.
+  const parts: Uint8Array[] = [];
+  for (let i = 1; i <= head.pages; i++) {
+    const page = await readSoc(ownerAddress, contentFeedSocIdentifier(contentFeedPageTopic(topic, i)));
+    if (!page) return null; // a missing page ⇒ incomplete; treat as not-found
+    parts.push(page);
+  }
+  const full = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) { full.set(p, off); off += p.length; }
+  try {
+    return JSON.parse(new TextDecoder().decode(full)) as T;
   } catch {
     return null;
   }

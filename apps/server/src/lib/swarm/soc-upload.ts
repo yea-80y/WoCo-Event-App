@@ -30,6 +30,9 @@ import {
   calculateSocAddress,
   socSignDigest,
   encodeSpan,
+  contentFeedSocIdentifier,
+  contentFeedPageTopic,
+  isContentFeedManifest,
   SOC_IDENTIFIER_SIZE,
   SOC_SIGNATURE_SIZE,
   SOC_MAX_PAYLOAD_SIZE,
@@ -227,4 +230,37 @@ export async function readSocPayload(ownerHex: string, identifierHex: string): P
     if (msg.includes("not found") || msg.includes("404")) return null;
     throw err;
   }
+}
+
+/**
+ * Read a client-owned content feed by owner + topic STRING, reassembling the
+ * multi-chunk paged form when present (mirrors the client `readContentFeed`).
+ * Returns the raw JSON bytes, or null if absent / a page is missing. The base SOC
+ * is either the raw JSON (single chunk) or a manifest pointing at `topic/p1 … /pN`.
+ */
+export async function readContentFeedJson(ownerHex: string, baseTopic: string): Promise<Uint8Array | null> {
+  const baseIdHex = bytesToHex(contentFeedSocIdentifier(baseTopic));
+  const raw = await readSocPayload(ownerHex, baseIdHex);
+  if (!raw) return null;
+
+  let head: unknown;
+  try {
+    head = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return raw; // not JSON (shouldn't happen for our feeds) — hand back as-is
+  }
+  if (!isContentFeedManifest(head)) return raw; // single-chunk feed
+  if (head.pages < 1 || head.pages > 256) return null; // bound the fetch loop (≤1 MB)
+
+  const parts: Uint8Array[] = [];
+  for (let i = 1; i <= head.pages; i++) {
+    const idHex = bytesToHex(contentFeedSocIdentifier(contentFeedPageTopic(baseTopic, i)));
+    const page = await readSocPayload(ownerHex, idHex);
+    if (!page) return null; // a missing page ⇒ incomplete; treat as not-found
+    parts.push(page);
+  }
+  const full = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) { full.set(p, off); off += p.length; }
+  return full;
 }

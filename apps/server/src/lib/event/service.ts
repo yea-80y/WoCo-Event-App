@@ -3,9 +3,9 @@ import type {
   OrderField, ClaimMode, SeriesManifestBlob,
   SignedManifestV1, PodV2Body,
 } from "@woco/shared";
-import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x, contentFeedSocIdentifier, eventContentTopic } from "@woco/shared";
+import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x, eventContentTopic } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
-import { readSocPayload } from "../swarm/soc-upload.js";
+import { readContentFeedJson } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
 import { validatePodGate } from "../pod/gate-check.js";
@@ -320,9 +320,7 @@ const EVENT_CACHE_TTL_MS = 10 * 60_000;
  * the client's SOC upload hasn't propagated yet) so callers fall back to legacy.
  */
 async function readEventFeedSoc(eventId: string, signer: string): Promise<EventFeed | null> {
-  const identifier = contentFeedSocIdentifier(eventContentTopic(eventId));
-  const idHex = Buffer.from(identifier).toString("hex");
-  const payload = await readSocPayload(signer.replace(/^0x/, ""), idHex).catch(() => null);
+  const payload = await readContentFeedJson(signer.replace(/^0x/, ""), eventContentTopic(eventId)).catch(() => null);
   if (!payload) return null;
   return decodeJsonFeed<EventFeed>(payload);
 }
