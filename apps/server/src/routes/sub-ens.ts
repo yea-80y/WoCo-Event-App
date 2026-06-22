@@ -238,8 +238,11 @@ subEnsRoutes.post("/stamp-event", requireAuth, async (c) => {
   }
 
   try {
-    await stampEventSubEns(eventId, label, parentAddress);
-    return c.json({ ok: true, data: { label, eventId } });
+    const updated = await stampEventSubEns(eventId, label, parentAddress);
+    // Phase B: for a client-owned feed the server skipped the write — hand the
+    // updated feed back so the client re-signs its SOC with the label. Legacy
+    // events were already platform-written; eventFeed is harmless there.
+    return c.json({ ok: true, data: { label, eventId, ...(updated.creatorFeedSigner ? { eventFeed: updated } : {}) } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "stamp failed";
     const status = msg === "Event not found" ? 404 : msg === "Not the event creator" ? 403 : 500;

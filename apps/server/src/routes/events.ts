@@ -501,14 +501,17 @@ events.post("/:id/confirm-chain", requireAuth, async (c) => {
 events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const eventId = c.req.param("id");
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = c.get("body") as { seriesId: string };
+  const body = c.get("body") as { seriesId: string; signer?: string };
   const { seriesId } = body;
 
   if (!seriesId) {
     return c.json({ ok: false, error: "Missing seriesId" }, 400);
   }
 
-  const feed = await getEvent(eventId);
+  // Phase B carrier: the client passes its content-feed-signer so we can read the
+  // just-published client SOC without racing the fire-and-forget directory write.
+  const signerHint = body.signer && /^0x[0-9a-fA-F]{40}$/.test(body.signer) ? body.signer.toLowerCase() : undefined;
+  const feed = await getEvent(eventId, signerHint);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
     return c.json({ ok: false, error: "Only the event creator can register on-chain" }, 403);

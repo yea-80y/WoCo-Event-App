@@ -332,6 +332,9 @@ export interface CreateEventResponse {
   ok: boolean;
   eventId?: string;
   error?: string;
+  /** Phase B: the client-signed event feed (when the user owns it). Returned so the
+   *  publish flow can merge onChainEventId after registration and re-sign the SOC. */
+  eventFeed?: EventFeed;
 }
 
 // ---------------------------------------------------------------------------

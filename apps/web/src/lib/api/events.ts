@@ -24,6 +24,19 @@ export interface PublishProgress {
 }
 
 /**
+ * Sign + upload an event detail feed as the user's client-owned SOC. The server
+ * never writes this feed — the owner does, here. Used on publish and whenever a
+ * server op (on-chain registration, sub-ENS stamp) hands back an updated feed.
+ */
+export async function signEventFeedSoc(feed: EventFeed, signer: ContentFeedSigner): Promise<void> {
+  await writeContentFeed({
+    signerPrivKey: signer.privKey,
+    topic: eventContentTopic(feed.eventId),
+    data: feed,
+  });
+}
+
+/**
  * Create event with streaming progress (v2 — manifest-based).
  * Reads NDJSON from the server and calls onProgress for each update.
  *
@@ -101,12 +114,11 @@ export async function createEventStreaming(
   if (result.ok && feedSigner && pendingFeed) {
     try {
       onProgress?.({ type: "progress", phase: "finalize", current: 0, total: 1, message: "Signing event feed..." });
-      await writeContentFeed({
-        signerPrivKey: feedSigner.privKey,
-        topic: eventContentTopic((pendingFeed as EventFeed).eventId),
-        data: pendingFeed,
-      });
+      await signEventFeedSoc(pendingFeed, feedSigner);
       onProgress?.({ type: "progress", phase: "finalize", current: 1, total: 1, message: "Event feed signed" });
+      // Hand the signed feed back so the caller can merge onChainEventId after
+      // registration and re-sign — the server never touches this feed.
+      result = { ...result, eventFeed: pendingFeed };
     } catch (e) {
       return { ok: false, error: `Failed to sign event feed: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -139,12 +151,16 @@ export async function getOrganiserNonce(address: string): Promise<{
 export async function registerSeriesOnChain(
   eventId: string,
   seriesId: string,
+  signer?: string,
 ): Promise<{ onChainEventId: string; txHash?: string }> {
   // The route returns onChainEventId/txHash at the TOP level (not under .data),
   // so read the raw envelope rather than ApiResponse<T>'s data field.
+  // `signer` is the content-feed carrier so the server can read the just-published
+  // client SOC without waiting for the (fire-and-forget) directory write — closes
+  // the publish→register race for client-owned feeds.
   const resp = (await authPost<unknown>(
     `/api/events/${eventId}/register-on-chain`,
-    { seriesId },
+    { seriesId, ...(signer ? { signer } : {}) },
   )) as { ok: boolean; error?: string; onChainEventId?: string; txHash?: string };
   if (!resp.ok || !resp.onChainEventId) {
     throw new Error(resp.error || "register-on-chain failed");

@@ -228,7 +228,11 @@
       // Display hint on the event feed (event pages show the name + social row).
       // Non-fatal: chain ownership is authoritative; a missed stamp just hides the badge.
       if (createdEventId) {
-        stampEventSubEns(intent.label, createdEventId).catch((err) =>
+        // Pass the content-feed signer so a client-owned event feed can re-sign
+        // the SOC with the label (the server can't write the user's feed).
+        auth.getContentFeedSigner().then((signer) =>
+          stampEventSubEns(intent.label, createdEventId!, signer),
+        ).catch((err) =>
           console.warn("[sub-ens] stamp-event failed (non-fatal):", err),
         );
       }

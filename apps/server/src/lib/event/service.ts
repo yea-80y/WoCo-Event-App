@@ -241,7 +241,12 @@ export async function confirmSeriesOnChain(
     ),
   };
 
-  await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+  // Phase B: the event detail feed is the USER's client-signed SOC — the server has
+  // no key for it and must never write it. The client merges onChainEventId into the
+  // feed it owns and re-signs the SOC (see PublishButton). Legacy events: platform write.
+  if (!feed.creatorFeedSigner) {
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+  }
   invalidateEventCache(eventId);
 
   // Surface this series as a `ticket` POD type in the creator's POD directory
@@ -287,7 +292,11 @@ export async function stampEventSubEns(
   if (feed.subEnsLabel === label) return feed; // idempotent
 
   const updated: EventFeed = { ...feed, subEnsLabel: label };
-  await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+  // Phase B: client-owned feed — the client re-signs the SOC with the label (the
+  // route returns `updated` for that). Legacy events: platform write here.
+  if (!feed.creatorFeedSigner) {
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+  }
   invalidateEventCache(eventId);
   return updated;
 }

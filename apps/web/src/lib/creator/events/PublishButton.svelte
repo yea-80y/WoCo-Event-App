@@ -5,7 +5,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
-  import { createEventStreaming, registerSeriesOnChain, type PublishProgress } from "../../api/events.js";
+  import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
 
   interface SeriesDraft {
@@ -218,19 +218,37 @@
       progress = 90;
 
       // ── On-chain registration (paid series only) ──────────────────────
+      // The server runs the registration tx and returns onChainEventId; it does
+      // NOT write the event feed. For a client-owned feed the OWNER merges each
+      // onChainEventId into the feed it signed and re-signs the SOC once here.
       if (hasPaidSeries) {
         phase = "chain";
+        // The feed we just signed (Phase B); undefined for legacy platform events.
+        const ownedFeed = result.eventFeed;
         for (let i = 0; i < series.length; i++) {
           const s = series[i]!;
           if (!s.payment) continue; // skip free series
 
-          const m = manifests[i]!;
           step = `Registering "${s.name}" on-chain...`;
 
           try {
-            await registerSeriesOnChain(eventId, s.seriesId);
+            const { onChainEventId } = await registerSeriesOnChain(eventId, s.seriesId, feedSigner?.address);
+            if (ownedFeed) {
+              const ss = ownedFeed.series.find((x) => x.seriesId === s.seriesId);
+              if (ss) ss.onChainEventId = onChainEventId;
+            }
           } catch (e) {
             error = `On-chain registration failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
+            return;
+          }
+        }
+        // Persist the merged onChainEventIds by re-signing the owned feed once.
+        if (ownedFeed && feedSigner) {
+          step = "Finalising event feed...";
+          try {
+            await signEventFeedSoc(ownedFeed, feedSigner);
+          } catch (e) {
+            error = `Failed to finalise event feed: ${e instanceof Error ? e.message : String(e)}`;
             return;
           }
         }

@@ -1,4 +1,6 @@
 import { authPost, authGet } from "./client.js";
+import type { EventFeed } from "@woco/shared";
+import type { ContentFeedSigner } from "../swarm/content-feed.js";
 
 const BASE =
   (typeof window !== "undefined" && (window as unknown as { SITE_CONFIG?: { apiUrl?: string } }).SITE_CONFIG?.apiUrl) ||
@@ -69,9 +71,20 @@ export async function setSubEnsContenthash(label: string, swarmHash: string) {
 
 /** Record an owned label on an event feed as a display hint (server verifies
  *  on-chain label ownership + event creatorship). Call after a successful
- *  claim/repoint so event pages can show the name. */
-export async function stampEventSubEns(label: string, eventId: string) {
-  return authPost<{ label: string; eventId: string }>("/api/sub-ens/stamp-event", { label, eventId });
+ *  claim/repoint so event pages can show the name.
+ *
+ *  Phase B: for a client-owned event feed the server can't write the label —
+ *  it returns the updated feed and the OWNER re-signs the SOC here. Pass the
+ *  organiser's content-feed signer so the label persists. */
+export async function stampEventSubEns(label: string, eventId: string, signer?: ContentFeedSigner | null) {
+  const resp = await authPost<{ label: string; eventId: string; eventFeed?: EventFeed }>(
+    "/api/sub-ens/stamp-event", { label, eventId },
+  );
+  if (resp.ok && resp.data?.eventFeed && signer) {
+    const { signEventFeedSoc } = await import("./events.js");
+    await signEventFeedSoc(resp.data.eventFeed, signer);
+  }
+  return resp;
 }
 
 interface SubEnsPermitResponse {
