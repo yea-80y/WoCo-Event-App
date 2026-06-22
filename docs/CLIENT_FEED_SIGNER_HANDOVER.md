@@ -263,6 +263,31 @@ owner runs frontend deploy + browser test). Commits f0e6ed9→90f5028. What ship
 - NEXT: profiles → sites (sites must carry the signer in the server-written
   SiteEventsIndex so site/skipAutoList events get a trusted carrier).
 
+**STATUS — PROFILES step BUILT 2026-06-23** (typecheck-green; NOT deployed/LIVE-tested).
+What shipped:
+- `woco/profile/data/{addr}` + `woco/profile/avatar/{addr}` are now CLIENT-signed
+  SOCs owned by the user's content-feed signer (server stamps only). Shared
+  `profileDataContentTopic`/`profileAvatarContentTopic` (byte-match the bee-js
+  `topicProfileData`/`topicProfileAvatar` strings).
+- Write (client owns a signer): `api/profiles.ts updateProfile` self-reads the
+  existing data feed, merges, signs+uploads via `writeContentFeed`. `uploadAvatar`
+  posts the image bytes to `/api/profile/avatar` (server stamps bytes, skips its
+  feed write when `clientOwned:true`) then signs the avatar SOC. Sub-ENS label
+  still server-gated: `POST /api/profile/verify-label` checks on-chain ownership
+  and returns the label; the client bakes it into the SOC it signs. Legacy users
+  (external wallet, no signer) keep the old server-write path unchanged.
+- Read: self resolves the signer NO-PROMPT via `auth.getContentFeedSignerAddress()`
+  (cached public address — reads never trigger passkey PRF; key derived only on
+  writes). Others resolve via a CARRIER: `getProfile(address, signerHint?)` reads
+  gateway-direct with the hint. Carriers wired = `EventDetail` (event's
+  `creatorFeedSigner`) and `EventCard→CreatorChip signer={event.creatorFeedSigner}`
+  — the SAME signer owns the creator's event AND profile feeds. No-carrier
+  raw-address reads (follower-list avatar) fall back to the legacy server read
+  (null for client-owned) — DEFERRED per the locked decision, not a blocker.
+- Server never signs/writes a client-owned profile feed; `GET /api/profile/:addr`
+  stays the legacy/fallback read.
+- NEXT: sites.
+
 Owner intent: **the user owns every content feed with their own signer**; the
 platform only lends postage. Decisions (CTO call):
 
