@@ -177,7 +177,10 @@
       // raw key (passkey/web3auth/local) can sign; web3/coinbase fall back to the
       // platform-signed feed (signer null). Self-hosted (apiUrl) events stay
       // platform-signed — the SOC stamp must hit the same server's postage batch.
-      const feedSigner = apiUrl ? null : await auth.getContentFeedSigner();
+      // skipAutoList events stay platform-signed too: the global directory is the
+      // server's TRUSTED carrier for the claim/payment read, and skipAutoList events
+      // aren't in it. Site events get a trusted carrier in the later sites step.
+      const feedSigner = (apiUrl || skipAutoList) ? null : await auth.getContentFeedSigner();
 
       const result = await createEventStreaming(
         {
