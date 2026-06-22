@@ -97,15 +97,21 @@ export async function updateProfile(
 export async function uploadAvatar(
   address: string,
   imageData: Uint8Array,
+  opts: { writeFeed?: boolean } = {},
 ): Promise<string> {
   const addr = address.toLowerCase();
 
-  // Upload image bytes to Swarm
+  // Upload image bytes to Swarm (the server lends postage either way).
   const avatarRef = await uploadToBytes(imageData);
 
-  // Write avatar reference to its own feed
-  const avatarDoc = { v: 1, avatarRef };
-  await writeFeedPage(topicProfileAvatar(addr), encodeJsonFeed(avatarDoc));
+  // Phase B: a client-owned profile signs its own avatar feed SOC — the server
+  // has no key for it and must NOT write the platform feed. The route passes
+  // writeFeed:false in that case and the client writes the SOC. Legacy users
+  // (no client feed signer): platform-signed write here as before.
+  if (opts.writeFeed !== false) {
+    const avatarDoc = { v: 1, avatarRef };
+    await writeFeedPage(topicProfileAvatar(addr), encodeJsonFeed(avatarDoc));
+  }
 
   return avatarRef;
 }

@@ -80,7 +80,36 @@ profiles.post("/", requireAuth, async (c) => {
   }
 });
 
-// POST /api/profile/avatar — authenticated, uploads avatar image
+// POST /api/profile/verify-label — authenticated. Verifies the caller owns
+// {label}.woco.eth on-chain and returns the normalized label. Phase B: a
+// client-owned profile signs its own data feed SOC, so the server no longer
+// gates the write — but the sub-ENS binding stays server-verified here so a
+// profile cannot advertise a name it doesn't control. The client includes the
+// returned label in the feed it signs. (Likes stay safe regardless: the subject
+// is the namehash and the owner is resolved live from chain.)
+profiles.post("/verify-label", requireAuth, async (c) => {
+  const parentAddress = c.get("parentAddress") as string;
+  const body = c.get("body") as Record<string, unknown>;
+
+  const label = String(body.subEnsLabel ?? "").toLowerCase().trim();
+  if (!label) return c.json({ ok: false, error: "Missing label" }, 400);
+
+  let owner: string | null;
+  try {
+    owner = await getLabelOwner(label);
+  } catch (err) {
+    console.error("[api] verify-label ownership check failed:", err);
+    return c.json({ ok: false, error: "Could not verify name ownership — try again" }, 502);
+  }
+  if (owner !== parentAddress.toLowerCase()) {
+    return c.json({ ok: false, error: "You do not own that name" }, 403);
+  }
+  return c.json({ ok: true, data: { label } });
+});
+
+// POST /api/profile/avatar — authenticated, uploads avatar image. Phase B: when
+// the client owns its profile feed (clientOwned:true) the server only stamps the
+// image bytes and returns the ref — the client signs the avatar feed SOC itself.
 profiles.post("/avatar", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
   const body = c.get("body") as Record<string, unknown>;
@@ -100,7 +129,7 @@ profiles.post("/avatar", requireAuth, async (c) => {
   }
 
   try {
-    const avatarRef = await uploadAvatar(parentAddress, bytes);
+    const avatarRef = await uploadAvatar(parentAddress, bytes, { writeFeed: body.clientOwned !== true });
     return c.json({ ok: true, data: { avatarRef } });
   } catch (err) {
     console.error("[api] uploadAvatar error:", err);

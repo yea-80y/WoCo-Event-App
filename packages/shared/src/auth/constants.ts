@@ -40,6 +40,13 @@ export const StorageKeys = {
   // no nested-tuple ABI in enable-data). Kept SEPARATE from WOCO_AA_SESSION so a
   // change to one can never poison the other's gas estimation.
   WOCO_AA_EAS_SESSION: "woco:auth:aa-eas-session:v1",
+  // Phase B content-feed signer ADDRESS (public — the SOC owner of the user's
+  // own content feeds). Cached so self-reads (e.g. their own profile/avatar)
+  // resolve the owner WITHOUT re-deriving the key — which for passkey would
+  // trigger a WebAuthn PRF prompt. Writes still derive the private key on demand
+  // (an explicit user action where a prompt is acceptable). Address only, never
+  // the key.
+  CONTENT_FEED_SIGNER_ADDRESS: "woco:auth:content-feed-signer",
 } as const;
 
 /** Fixed salt input for passkey PRF → secp256k1 key derivation */

@@ -222,3 +222,22 @@ export function isContentFeedManifest(o: unknown): o is ContentFeedManifest {
 export function eventContentTopic(eventId: string): string {
   return `woco/event/${eventId}`;
 }
+
+/**
+ * Canonical content-feed topic STRINGS for a user's profile feeds
+ * (`woco/profile/data/{address}` and `woco/profile/avatar/{address}`). Phase B:
+ * when a user owns a content-feed signer, these become SOCs at these topics owned
+ * by their signer address. The feed is keyed by the user's IDENTITY address (so
+ * the topic is derivable from the address alone), but SIGNED by their derived
+ * content-feed signer (the SOC owner) — readers resolve the signer from a carrier
+ * (e.g. an event's `creatorFeedSigner`, which is the SAME signer that owns this
+ * user's profile). MUST byte-match the server's bee-js `topicProfileData` /
+ * `topicProfileAvatar` strings so both ends address the same chunk.
+ */
+export function profileDataContentTopic(address: string): string {
+  return `woco/profile/data/${address.toLowerCase()}`;
+}
+
+export function profileAvatarContentTopic(address: string): string {
+  return `woco/profile/avatar/${address.toLowerCase()}`;
+}
