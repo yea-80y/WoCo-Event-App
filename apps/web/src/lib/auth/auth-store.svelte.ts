@@ -99,25 +99,23 @@ async function _getSigner(): Promise<EIP712Signer> {
     );
   }
   if (_kind === "passkey") {
-    // Sign session delegations with the PRF-EOA private key directly.
-    // Kernel ERC-1271 fails for counterfactual accounts and when the deployed
-    // Kernel's ECDSA owner ≠ current PRF credential (e.g. cross-device / RP-ID
-    // mismatch in dev). The PRF-EOA IS the Kernel's sudo signer — a standard
-    // 65-byte ECDSA sig verifies via ecrecover without any RPC call.
-    await _ensurePasskeyKey();
-    if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable");
-    const { Wallet } = await import("ethers");
-    const _wallet = new Wallet(_passkeyPrivateKey);
-    return (domain, types, value) =>
-      _wallet.signTypedData(domain as Parameters<typeof _wallet.signTypedData>[0], types, value);
+    // Passkey parent is the ZeroDev Kernel — it signs AuthorizeSession as an
+    // ERC-1271/6492 signature (server verify-delegation.ts handles it). NOT the
+    // raw PRF key. POD uses _getPodSigner() instead (invariant #1).
+    await _ensureKernel();
+    if (!_kernel) throw new Error("Kernel unavailable for passkey signer");
+    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
+    return createKernelTypedDataSigner(_kernel.account);
   }
   if (_kind === "web3auth") {
-    // Same reasoning as passkey — use raw Web3Auth EOA key for session signing.
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable");
-    const { Wallet } = await import("ethers");
-    const _wallet = new Wallet(_web3authPrivateKey);
-    return (domain, types, value) =>
-      _wallet.signTypedData(domain as Parameters<typeof _wallet.signTypedData>[0], types, value);
+    // web3auth parent is the ZeroDev Kernel (like passkey) — it signs
+    // AuthorizeSession as an ERC-1271/6492 sig (server verify-delegation.ts
+    // accepts it). The raw Web3Auth key is used ONLY for POD (_getPodSigner,
+    // invariant #1), never for request signing.
+    await _ensureKernelForWeb3Auth();
+    if (!_kernel) throw new Error("Kernel unavailable for web3auth signer");
+    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
+    return createKernelTypedDataSigner(_kernel.account);
   }
   if (_kind === "coinbase" && _parent) {
     const { createCoinbaseSigner } = await import("./signers/coinbase-signer.js");
@@ -397,22 +395,33 @@ async function _ensureKernel(): Promise<void> {
     _passkeyPrivateKey,
     override ? { address: override } : undefined,
   );
-  // _parent is the PRF-EOA address (not the Kernel), so don't assert equality.
-  // Wrong-passkey detection is handled by _clearStaleAuthForSwitch in loginPasskey.
+  if (_parent && kernel.address !== _parent.toLowerCase()) {
+    throw new Error(
+      "Kernel address mismatch on restore — refusing to attach a divergent smart account.",
+    );
+  }
   _kernel = kernel;
 }
 
 /**
  * Build + cache the ZeroDev Kernel for a web3auth login. The raw Web3Auth key is
  * already in memory (no biometric/prompt, unlike passkey's PRF ceremony), so this
- * is a pure build. No recovery binding/override — email recovery is "log in again"
- * (same login → same key → same Kernel).
+ * is a pure build. The Kernel address is deterministic from that key; assert it
+ * matches the stored parent so a key change (or a stale parent) can never silently
+ * attach a divergent smart account. No recovery binding/override — email recovery
+ * is "log in again" (same login → same key → same Kernel).
  */
 async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
   if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  _kernel = await buildKernelFromPrivateKey(_web3authPrivateKey);
+  const kernel = await buildKernelFromPrivateKey(_web3authPrivateKey);
+  if (_parent && kernel.address !== _parent.toLowerCase()) {
+    throw new Error(
+      "Kernel address mismatch (web3auth) — refusing to attach a divergent smart account.",
+    );
+  }
+  _kernel = kernel;
 }
 
 /** Build the Kernel for whichever Kernel-backed kind is active (passkey/web3auth). */
@@ -654,15 +663,15 @@ async function loginWeb3Auth(): Promise<boolean> {
     const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
     const kernel = await buildKernelFromPrivateKey(privateKey);
 
-    await _clearStaleAuthForSwitch(address);
+    await _clearStaleAuthForSwitch(kernel.address);
 
     await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
-    // Parent is the raw Web3Auth EOA — session delegation signs with the EOA key
-    // directly, so ecrecover resolves without any smart-contract RPC.
-    await putKV(StorageKeys.PARENT_ADDRESS, address);
+    await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
+    // Web3Auth EOA persisted as the POD address so POD restores on reload with
+    // the correct AAD (invariant #1) — mirrors passkey's POD_ADDRESS handling.
     await putKV(StorageKeys.POD_ADDRESS, address);
     _kind = "web3auth";
-    _parent = address;
+    _parent = kernel.address;
     _web3authPrivateKey = privateKey;
     _web3authPodAddress = address;
     _kernel = kernel;
@@ -774,7 +783,7 @@ async function loginPasskey(): Promise<boolean> {
       override ? { address: override } : undefined,
     );
 
-    await _clearStaleAuthForSwitch(account.address);
+    await _clearStaleAuthForSwitch(kernel.address);
 
     // New-device recovery: persist the escrow-restored POD seed + the durable
     // binding so future sessions rebuild at the preserved address (mirrors
@@ -788,12 +797,12 @@ async function loginPasskey(): Promise<boolean> {
     }
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
-    // Parent is the PRF-EOA address — session delegation signs with the PRF key
-    // directly, so ecrecover resolves without any smart-contract RPC.
-    await putKV(StorageKeys.PARENT_ADDRESS, account.address);
+    await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
+    // PRF-EOA address persisted so POD restores on reload without a biometric
+    // and with the correct AAD (invariant #1).
     await putKV(StorageKeys.POD_ADDRESS, account.address);
     _kind = "passkey";
-    _parent = account.address;
+    _parent = kernel.address;
     _passkeyPrivateKey = account.privateKey;
     _podAddress = account.address;
     _kernel = kernel;
