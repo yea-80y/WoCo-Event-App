@@ -1,4 +1,4 @@
-import type { Hex64 } from "../types.js";
+import type { Hex64, Hex0x } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Site schema — shared between builder UI, server, and deployed site runtime
@@ -324,6 +324,16 @@ export interface SiteEventEntry {
   featured?: boolean;
   /** Unix ms — when this event was added to the site. */
   addedAt: number;
+  /**
+   * Phase B discovery carrier (CLIENT_FEED_SIGNER_HANDOVER.md). The event's
+   * content-feed-signer address, STAMPED SERVER-SIDE from its own trusted
+   * `getEvent` read when the event is added to the site — never a client hint.
+   * The SiteEventsIndex is a server-written, owner-gated feed, so this is a
+   * trusted carrier: it lets the site keep reading a CLIENT-OWNED event's SOC
+   * even after the global directory carrier disappears (e.g. the organiser
+   * unlists it). Absent for legacy platform-signed events.
+   */
+  creatorFeedSigner?: Hex0x;
 }
 
 export interface SiteEventsIndex {

@@ -71,6 +71,31 @@ async function readSiteConfig(siteId: string): Promise<Site | null> {
   return site;
 }
 
+/**
+ * Phase B: stamp each site event entry with its organiser's content-feed-signer
+ * address (the discovery carrier) by resolving it from the server's OWN trusted
+ * `getEvent` read — never a client-supplied value. For LISTED client-owned events
+ * getEvent resolves the signer from the global directory; for legacy
+ * platform-signed events it returns undefined and the entry stays uncarried
+ * (legacy read path). A transient read failure carries the prior value forward so
+ * a re-publish never wipes a known signer. This makes a site's client-owned
+ * events survive the organiser later UNLISTING them (the global-directory carrier
+ * disappears, this one persists).
+ */
+async function stampEventSigners(events: SiteEventEntry[]): Promise<SiteEventEntry[]> {
+  return Promise.all(
+    events.map(async (entry) => {
+      try {
+        const feed = await getEvent(entry.eventId);
+        const signer = feed?.creatorFeedSigner ?? entry.creatorFeedSigner;
+        return signer ? { ...entry, creatorFeedSigner: signer } : entry;
+      } catch {
+        return entry; // keep whatever the entry already carried
+      }
+    }),
+  );
+}
+
 function spawnPromise(cmd: string, args: string[]): Promise<void> {
   return new Promise((res, rej) => {
     const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -202,7 +227,7 @@ sitesRouter.post("/", requireAuth, async (c) => {
     const eventsIndex: SiteEventsIndex = {
       siteId: site.siteId,
       schemaVersion: SITE_SCHEMA_VERSION,
-      events,
+      events: await stampEventSigners(events),
       updatedAt: now,
     };
 
@@ -322,8 +347,11 @@ sitesRouter.get("/:id/events-full", async (c) => {
     const index = decodeJsonFeed<SiteEventsIndex>(page);
     if (!index) return c.json({ ok: false, error: "Corrupt events index" }, 500);
 
+    // Phase B: pass the carried content-feed signer so a CLIENT-OWNED event
+    // resolves even when it's no longer in the global directory (e.g. unlisted).
+    // Trusted carrier: this index was server-written + owner-gated.
     const results = await Promise.allSettled(
-      index.events.map((entry) => getEvent(entry.eventId))
+      index.events.map((entry) => getEvent(entry.eventId, entry.creatorFeedSigner))
     );
 
     const events: EventFeed[] = results
@@ -364,11 +392,12 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
       : { siteId, schemaVersion: SITE_SCHEMA_VERSION, events: [], updatedAt: 0 };
 
     if (!index.events.find((e) => e.eventId === body.eventId)) {
-      index.events.push({
+      const [entry] = await stampEventSigners([{
         eventId: body.eventId!,
         featured: body.featured ?? false,
         addedAt: Date.now(),
-      });
+      }]);
+      index.events.push(entry);
     }
     index.updatedAt = Date.now();
 
