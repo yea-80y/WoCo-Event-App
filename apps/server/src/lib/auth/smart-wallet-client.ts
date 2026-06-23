@@ -57,7 +57,6 @@ function buildClients() {
   return resolveChainNames().map((name) => {
     const chain = CHAINS_BY_NAME[name];
     const rpcUrl = RPC_BY_NAME[name];
-    console.error(`[smart-wallet-client] verify candidate chain=${chain.name} id=${chain.id} rpc=${rpcUrl ?? "default"}`);
     return createPublicClient({ chain, transport: http(rpcUrl) });
   });
 }
@@ -90,25 +89,16 @@ export async function verifySmartWalletTypedData(
   params: VerifyTypedDataParams,
 ): Promise<boolean> {
   let lastErr: unknown = null;
-  const sig = params.signature as string;
-  console.error("[smart-wallet-client] verify address=%s sigLen=%d", params.address, sig?.length ?? 0);
   for (const client of getSmartWalletClients()) {
     try {
-      // Check whether the account is deployed before verifying — distinguishes
-      // "counterfactual Kernel (no code)" from "deployed but wrong sig".
-      const code = await client.getCode({ address: params.address as `0x${string}` });
-      const deployed = code && code !== "0x" && code.length > 2;
-      console.error("[smart-wallet-client] chain=%s deployed=%s", client.chain?.name, deployed);
       const ok = await client.verifyTypedData(params);
-      console.error("[smart-wallet-client] chain=%s result=%s", client.chain?.name, ok);
       if (ok) return true;
     } catch (e) {
-      console.error("[smart-wallet-client] chain=%s error: %s", client.chain?.name, (e as Error)?.message ?? e);
       lastErr = e;
     }
   }
   if (lastErr) {
-    console.error("[smart-wallet-client] all candidate chains failed/errored:", (lastErr as Error)?.message ?? lastErr);
+    console.error("[smart-wallet-client] all candidate chains errored:", (lastErr as Error)?.message ?? lastErr);
   }
   return false;
 }

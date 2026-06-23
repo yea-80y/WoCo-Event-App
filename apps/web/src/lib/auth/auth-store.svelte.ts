@@ -765,8 +765,23 @@ async function loginPasskey(): Promise<boolean> {
     // If this passkey is the rotated owner of a RECOVERED account, its Kernel
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
-    const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+    const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
     let override = _bindingAddressFor(await _getRecoveryBinding(), account.address);
+
+    // Guard: verify the local binding's Kernel still has this PRF-EOA as its
+    // on-chain ECDSA owner before trusting it. A stale binding (recovery tx
+    // written to IndexedDB but never confirmed, or owner later rotated away)
+    // would otherwise lock the user out — the Kernel's isValidSignature returns
+    // false for a key it doesn't own. Mirror: _verifyPortabilityEnvelope already
+    // does this guard for the portability path.
+    if (override) {
+      const onChainOwner = await readKernelEcdsaOwner(override);
+      if (onChainOwner !== null && onChainOwner.toLowerCase() !== account.address.toLowerCase()) {
+        console.warn("[auth] local recovery binding stale — on-chain owner is", onChainOwner, "not PRF-EOA", account.address, "— clearing");
+        await delKV(StorageKeys.RECOVERED_KERNEL_BINDING);
+        override = undefined;
+      }
+    }
 
     // No LOCAL binding, but this could be a RECOVERED account opened on a SECOND
     // device. Check the PRF-sealed portability envelope + on-chain owner; if it
