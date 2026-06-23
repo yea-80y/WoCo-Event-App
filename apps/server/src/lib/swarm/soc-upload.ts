@@ -228,6 +228,11 @@ export async function readSocPayload(ownerHex: string, identifierHex: string): P
     if (status === 404) return null;
     const msg = String((err as Error)?.message ?? "").toLowerCase();
     if (msg.includes("not found") || msg.includes("404")) return null;
+    // Bee returns 500 "read chunk failed" for chunks that don't exist yet
+    const bodyMsg = String(
+      (err as { responseBody?: Buffer })?.responseBody?.toString() ?? "",
+    ).toLowerCase();
+    if (status === 500 && bodyMsg.includes("read chunk failed")) return null;
     throw err;
   }
 }
