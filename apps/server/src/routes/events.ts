@@ -4,7 +4,7 @@ import type { Hex0x, CreateEventV2Request, EventDirectoryEntry } from "@woco/sha
 import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
@@ -118,7 +118,9 @@ events.get("/:id", async (c) => {
   const signerHint = c.req.query("signer");
   const validHint = signerHint && /^0x[0-9a-fA-F]{40}$/.test(signerHint) ? signerHint.toLowerCase() : undefined;
   try {
-    const event = await getEvent(eventId, validHint);
+    // Client-supplied signer ⇒ display-only, non-caching read (never poisons the
+    // money-path cache). Trusted resolution (directory) still takes precedence.
+    const event = await getEventForDisplay(eventId, validHint);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
     return c.json({ ok: true, data: event });
   } catch (err) {
@@ -510,8 +512,10 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
 
   // Phase B carrier: the client passes its content-feed-signer so we can read the
   // just-published client SOC without racing the fire-and-forget directory write.
+  // Client-supplied ⇒ display-only, non-caching read (the ownership check below is
+  // the gate; a forged signer can't poison the money-path cache).
   const signerHint = body.signer && /^0x[0-9a-fA-F]{40}$/.test(body.signer) ? body.signer.toLowerCase() : undefined;
-  const feed = await getEvent(eventId, signerHint);
+  const feed = await getEventForDisplay(eventId, signerHint);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
     return c.json({ ok: false, error: "Only the event creator can register on-chain" }, 403);

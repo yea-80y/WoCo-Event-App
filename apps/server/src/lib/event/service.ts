@@ -342,10 +342,16 @@ async function resolveCreatorFeedSigner(eventId: string): Promise<string | null>
 }
 
 /**
- * @param signerHint  Phase B discovery carrier — the organiser's content-feed-signer
- *   address, when the caller already has it (e.g. from the directory entry the user
- *   navigated from). Avoids a directory round-trip and covers skipAutoList events
- *   absent from the global directory.
+ * Money-path-safe event read. The result is CACHED by eventId and shared with the
+ * claim/payment path, so `signerHint` MUST be a TRUSTED, server-resolved carrier
+ * (the global directory, or a server-written `SiteEventsIndex` entry) — NEVER a
+ * signer supplied in a client request. A client-supplied address must go through
+ * {@link getEventForDisplay} instead, which never writes the cache. Passing an
+ * untrusted hint here would let an attacker sign a fake event SOC under their own
+ * key, prime this cache via the hint, and have a no-hint claim read serve the
+ * forged price/recipient.
+ *
+ * @param signerHint  TRUSTED Phase B discovery carrier (directory / SiteEventsIndex).
  */
 export async function getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null> {
   const now = Date.now();
@@ -368,6 +374,26 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
     }
   }
   return feed;
+}
+
+/**
+ * Display-only event read that MAY use an UNTRUSTED, client-supplied signer.
+ * Tries the trusted/cached {@link getEvent} first (global directory + legacy
+ * platform feed); only if that misses AND a client hint is supplied does it read
+ * that SOC directly — WITHOUT writing the shared cache. So a forged hint can never
+ * reach the money path: it can only shape this one display response. Use this for
+ * any read whose signer originates in a client request (public `?signer=`,
+ * a creator passing their own just-published signer, etc.).
+ */
+export async function getEventForDisplay(
+  eventId: string,
+  untrustedSigner?: string,
+): Promise<EventFeed | null> {
+  const trusted = await getEvent(eventId);
+  if (trusted) return trusted;
+  if (!untrustedSigner) return null;
+  // Untrusted read — bypasses the cache entirely (no read-stale risk, no poison).
+  return readEventFeedSoc(eventId, untrustedSigner);
 }
 
 /** Invalidate the event cache after a publish/update so the next read is fresh. */
