@@ -286,7 +286,35 @@ What shipped:
   (null for client-owned) — DEFERRED per the locked decision, not a blocker.
 - Server never signs/writes a client-owned profile feed; `GET /api/profile/:addr`
   stays the legacy/fallback read.
-- NEXT: sites.
+
+**STATUS — SITES step (carrier plumbing) BUILT 2026-06-23** (typecheck-green; NOT
+deployed). Scope = the trusted carrier the events step asked for, nothing on the
+money path:
+- shared `SiteEventEntry.creatorFeedSigner` (optional). Server `stampEventSigners()`
+  resolves each site event's signer from its OWN trusted `getEvent` read (NEVER a
+  client value) on publish + add-event, carrying a prior value forward on a transient
+  miss; `events-full` passes `entry.creatorFeedSigner` back into `getEvent`. Effect: a
+  site keeps reading a CLIENT-OWNED event's SOC after the organiser UNLISTS it (the
+  global-directory carrier disappears, this server-written one persists).
+- skipAutoList events STILL platform-signed. Flipping them to client-owned needs the
+  CLAIM/Stripe path to thread the carrier (claims.ts/stripe.ts call `getEvent(eventId)`
+  with no hint) — a money-path change requiring the owner's live test. NOT done.
+- Site CONFIG/pages/creator-directory feeds STILL platform-signed (read by the server
+  for owner-gating; deployed site bakes config at deploy). Owner's direction: ultimately
+  a sub-ENS / client owns the page; phase out the platform signer wherever client-side
+  is possible. Path = give those feeds a trusted carrier + move owner-gating off the
+  platform-signed read. Deferred, deliberate.
+
+**SECURITY FIX 2026-06-23 (commit 93ea980) — money-path cache poisoning.** Pre-existing
+from the EVENTS step: `getEvent()` caches by eventId (shared with the claim path) and
+two routes (`GET /:id?signer=`, `register-on-chain`) fed it a CLIENT-supplied signer
+with precedence over the trusted directory ⇒ an attacker could sign a fake event SOC
+under their own key, prime the cache via the hint, and have a no-hint claim read serve
+a forged price/recipient. Fix: `getEvent(signerHint)` is now TRUSTED-only (directory /
+server-written SiteEventsIndex) and the ONLY writer of the shared cache; new
+`getEventForDisplay(untrustedSigner)` does a NON-CACHING read for any client-supplied
+signer. Bounded impact today (Stripe-only; crypto not live) — closed before crypto.
+RULE: never pass a client-request signer into `getEvent`; use `getEventForDisplay`.
 
 Owner intent: **the user owns every content feed with their own signer**; the
 platform only lends postage. Decisions (CTO call):
