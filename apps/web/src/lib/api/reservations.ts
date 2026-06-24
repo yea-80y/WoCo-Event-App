@@ -12,7 +12,7 @@
  * survives even when the page is unloading.
  */
 
-import { apiBase } from "./client.js";
+import { apiBase, currentSiteId } from "./client.js";
 
 export interface ReservationData {
   reservationId: string;
@@ -64,14 +64,17 @@ export async function reserveSlots(
   const clientKey = getClientKey();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (clientKey) headers["X-Client-Key"] = clientKey;
+  const siteId = currentSiteId();
   const resp = await fetch(
     `${apiBase}/api/events/${eventId}/series/${seriesId}/reserve`,
     {
       method: "POST",
       headers,
-      body: JSON.stringify(
-        replaceReservationId ? { quantity, replaceReservationId } : { quantity },
-      ),
+      body: JSON.stringify({
+        quantity,
+        ...(replaceReservationId ? { replaceReservationId } : {}),
+        ...(siteId ? { siteId } : {}),
+      }),
     },
   );
   const json = await resp.json() as

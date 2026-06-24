@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
+import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getClaimStatus } from "../lib/event/claim-service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import {
@@ -99,8 +100,11 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
       ? headerClientKey
       : undefined;
 
-  // Validate the event/series exist before touching the store.
-  const event = await getEvent(eventId).catch(() => null);
+  // Validate the event/series exist before touching the store. Site carrier (see
+  // claims.ts) resolves a client-signed, not-WoCo-listed event's authentic SOC.
+  const siteId = typeof body.siteId === "string" ? body.siteId : undefined;
+  const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
+  const event = await getEvent(eventId, siteSigner ?? undefined).catch(() => null);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);

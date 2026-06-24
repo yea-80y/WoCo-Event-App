@@ -11,7 +11,7 @@ import type {
   OrderEntry,
 } from "@woco/shared";
 export type { OrderEntry };
-import { authPost, authGet, get, apiBase, buildAuthHeaders } from "./client.js";
+import { authPost, authGet, get, apiBase, buildAuthHeaders, currentSiteId } from "./client.js";
 import { eventContentTopic } from "@woco/shared";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 
@@ -204,9 +204,10 @@ export async function claimTicket(
   paymentProof?: import("@woco/shared").PaymentProof,
 ): Promise<ClaimTicketResponse> {
   // Wallet claims require session delegation (proves address ownership)
+  const siteId = currentSiteId();
   const json = await authPost<ClaimTicketResponse>(
     `/api/events/${eventId}/series/${seriesId}/claim`,
-    { mode: "wallet", walletAddress, encryptedOrder, ...(paymentProof ? { paymentProof } : {}) },
+    { mode: "wallet", walletAddress, encryptedOrder, ...(paymentProof ? { paymentProof } : {}), ...(siteId ? { siteId } : {}) },
     apiUrl,
   );
   return {
@@ -227,10 +228,11 @@ export async function claimTicketByEmail(
   apiUrl?: string,
   paymentProof?: import("@woco/shared").PaymentProof,
 ): Promise<ClaimTicketResponse> {
+  const siteId = currentSiteId();
   const resp = await fetch(`${apiUrl ?? apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "email", email, encryptedOrder, ...(paymentProof ? { paymentProof } : {}) }),
+    body: JSON.stringify({ mode: "email", email, encryptedOrder, ...(paymentProof ? { paymentProof } : {}), ...(siteId ? { siteId } : {}) }),
   });
   const json = await resp.json();
   return {
@@ -253,6 +255,8 @@ export async function getClaimStatus(
   const params = new URLSearchParams();
   if (userAddress) params.set("address", userAddress);
   if (userEmailHash) params.set("emailHash", userEmailHash);
+  const siteId = currentSiteId();
+  if (siteId) params.set("siteId", siteId);
   const query = params.toString() ? `?${params}` : "";
   const resp = await get<SeriesClaimStatus>(
     `/api/events/${eventId}/series/${seriesId}/claim-status${query}`,

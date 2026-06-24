@@ -11,6 +11,19 @@ const BASE =
 export const apiBase = BASE;
 
 /**
+ * The siteId of the deployed organiser site this app is running inside, or
+ * undefined when running in the main WoCo app. Sent with claim/reservation
+ * requests so the server can resolve the event's content-feed signer from that
+ * site's server-written SiteEventsIndex (the trusted money-path carrier) — which
+ * lets a client-signed, not-WoCo-listed event resolve. It is only a POINTER;
+ * the server derives trust from the index it selects, never from this value.
+ */
+export function currentSiteId(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.SITE_CONFIG?.site?.siteId;
+}
+
+/**
  * Read a response body as JSON, falling back to a typed `{ ok: false, error }`
  * envelope when the server returns a non-JSON body (e.g. Hono's plain-text
  * "404 Not Found" or an upstream HTML error page). Without this, callers

@@ -50,6 +50,11 @@ export async function resolveSiteEventSigner(
   siteId: string,
   eventId: string,
 ): Promise<string | null> {
+  // Bounded format guard on the caller-supplied pointer: a malformed/oversized
+  // siteId can never resolve a real index, so reject it before doing a Swarm read
+  // (avoids wasted reads on garbage input). Matches the siteId shape accepted at
+  // checkout (stripe.ts) — ULID-ish, conservative charset + length.
+  if (!/^[0-9a-zA-Z_-]{8,64}$/.test(siteId)) return null;
   try {
     const page = await readFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)));
     if (!page) return null;

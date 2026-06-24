@@ -13,6 +13,7 @@ import type { AppEnv } from "../types.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import type { ClaimResult } from "../lib/event/claim-service.js";
 import { getEvent } from "../lib/event/service.js";
+import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { heldFor } from "../lib/event/reservation-store.js";
@@ -267,7 +268,15 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   // Payment verification — if series requires payment, validate proof
   // ---------------------------------------------------------------------------
   const eventId = c.req.param("eventId");
-  const event = await getEvent(eventId);
+  // Phase B money path: when the claim comes from a deployed organiser site, the
+  // request carries that siteId. Resolve the event's content-feed signer from the
+  // site's server-written SiteEventsIndex (trusted carrier) so a client-signed,
+  // not-WoCo-listed event reads its authentic SOC — including series.payment used
+  // below for crypto payment verification. siteId is only a pointer; trust comes
+  // from the server-written index, never from this request value.
+  const siteId = typeof rawBody.siteId === "string" ? rawBody.siteId : undefined;
+  const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
+  const event = await getEvent(eventId, siteSigner ?? undefined);
   if (!event) {
     return c.json({ ok: false, error: "Event not found" }, 404);
   }
@@ -513,10 +522,14 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
   const seriesId = c.req.param("seriesId");
   const userAddress = c.req.query("address");
   const userEmailHash = c.req.query("emailHash");
+  // Site carrier (see the claim route) — lets a client-signed, not-WoCo-listed
+  // event resolve so the UI can read its availability/claim state.
+  const siteId = c.req.query("siteId");
 
   try {
     // v2 on-chain events: read availability from contract, not Swarm feeds
-    const event = await getEvent(eventId).catch(() => null);
+    const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
+    const event = await getEvent(eventId, siteSigner ?? undefined).catch(() => null);
     const series = event?.series.find((s) => s.seriesId === seriesId);
     if (series?.onChainEventId) {
       const chainId = getActiveChainId();
