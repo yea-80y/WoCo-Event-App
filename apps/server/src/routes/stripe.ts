@@ -30,7 +30,7 @@ import { topicClaimers } from "../lib/swarm/topics.js";
 import type { ClaimersFeed } from "@woco/shared";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { sendTicketEmail } from "./tickets.js";
-import { getSiteTheme } from "../lib/site/service.js";
+import { getSiteTheme, resolveSiteEventSigner } from "../lib/site/service.js";
 import { getReservation, consume as consumeReservation } from "../lib/event/reservation-store.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
 import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } from "../lib/shop/service.js";
@@ -383,7 +383,15 @@ stripe.post("/create-checkout", async (c) => {
   const tSwarm = performance.now();
   const skipAvailability = !!reservationId;
   const [event, statusResult, inlineUploadedRef] = await Promise.all([
-    getEvent(eventId),
+    // Phase B money path: when claiming from a deployed site, resolve the event's
+    // signer from that site's server-written SiteEventsIndex (trusted carrier) so a
+    // client-signed, not-WoCo-listed event reads its authentic SOC — this read feeds
+    // the Stripe destination (creatorAddress→Connect) + amount, so it must be the
+    // real one. siteId is only a pointer; trust is the server-written index. The
+    // resolve runs inside this Promise.all slot, hidden behind the parallel reads.
+    siteId
+      ? resolveSiteEventSigner(siteId, eventId).then((s) => getEvent(eventId, s ?? undefined))
+      : getEvent(eventId),
     skipAvailability
       ? Promise.resolve(null)
       : getClaimStatus(seriesId, verifiedAddress, userEmailHash).catch((err) => {
@@ -868,7 +876,10 @@ async function handleSuccessfulPayment(
   let v2SwarmManifestRef = "";
 
   try {
-    const ev = await getEvent(eventId);
+    // Phase B: thread the site carrier (from checkout metadata) so the issued
+    // ticket's title/date + v2 manifest come from the authentic client-signed SOC.
+    const siteSigner = metaSiteId ? await resolveSiteEventSigner(metaSiteId, eventId) : null;
+    const ev = await getEvent(eventId, siteSigner ?? undefined);
     if (ev) {
       eventTitle = ev.title;
       eventDate = ev.startDate;
