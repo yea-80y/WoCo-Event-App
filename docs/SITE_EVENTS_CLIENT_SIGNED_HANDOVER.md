@@ -3,6 +3,48 @@
 > Fresh-chat handover, 2026-06-24. Read `docs/CLIENT_FEED_SIGNER_HANDOVER.md`
 > (Phase B) and the AUTH + SWARM sections of `CLAUDE.md` first.
 
+## STATUS 2026-06-24 — Path A CODE-COMPLETE (committed, NOT pushed, NOT deployed)
+
+Owner confirmed the model: a client-signed event is claimable once it's on the
+organiser's DEPLOYED site (the site's server-written `SiteEventsIndex` is the
+trusted carrier) — WoCo-listing NOT required. Crypto trustless path = separate
+deferred work in `docs/CRYPTO_CLIENT_VERIFIABLE_PAYMENTS_PLAN.md` (Path B).
+
+Commits (oldest→newest), each typecheck/build-clean:
+- `62a8883` PublishButton: client-sign site events (drop skipAutoList from signing).
+- `e1ffb11` `resolveSiteEventSigner(siteId,eventId)` — trusted carrier resolver
+  (reads server-written `SiteEventsIndex`; bounded siteId guard added in `744f9fa`).
+- `fcfaace` Stripe path: thread carrier into create-checkout (money: creatorAddress→
+  Connect dest + amount) + webhook (issued-ticket metadata).
+- `744f9fa` Direct-claim/reservation path: `currentSiteId()` (SITE_CONFIG) on claim/
+  claim-status/reserve; server resolves carrier before `getEvent`. siteId rides the
+  canonical-signed wallet-claim body (no signing-model change).
+- `9098810` **SECURITY**: `stampEventSigners` resolves signer ONLY from server-trusted
+  sources (owner's creator dir → global dir → prior index), never the client
+  `entry.creatorFeedSigner`. Airtight: eventId is server-generated
+  (`crypto.randomUUID`, events.ts:223) so an attacker can't map a victim's eventId
+  to their own signer.
+
+RULE preserved everywhere: siteId is only a POINTER selecting a server-written
+index; trust is the index, never the request value (93ea980).
+
+### REMAINING — step 5 (deploy + live test)
+1. **Server deploy** (Claude owns): rsync + `docker compose up -d --build server`
+   (CLAUDE.md STEP 1). Required before any live test — owner's frontend runs in dev
+   against PROD events-api.
+2. **Stripe live test is possible after the server deploy alone** — the deployed-site
+   bundle ALREADY sends siteId on create-checkout (api/stripe.ts pre-existed); only the
+   server needed to consume it (`fcfaace`).
+3. **Direct-claim (free/email) from a site** needs the NEW multisite bundle so the
+   deployed-site bundle sends siteId on the claim/reserve calls → run STEP 1b
+   (`build:multisite` + rsync dist-multisite) AND organisers re-publish. NOT needed for
+   the card test.
+4. Owner runs a LIVE card payment on a client-signed, deployed (not WoCo-listed) site
+   event end-to-end before calling it done.
+
+---
+
+
 ## THE TASK (headline)
 
 SiteBuilder events must be **client-signed** (the organiser owns the event-detail
