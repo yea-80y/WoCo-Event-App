@@ -294,7 +294,7 @@
       {:else if phase === "uploading"}
         Uploading to Swarm ({progress}%)
       {:else if phase === "chain"}
-        Registering on-chain...
+        Registering your event on-chain — this can take a few seconds…
       {:else}
         Done!
       {/if}

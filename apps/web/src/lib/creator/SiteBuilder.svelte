@@ -173,16 +173,21 @@
     if (!createdEventId) return;
     listingOnWoco = true;
     wocoListError = null;
+    // Right after publish the event can briefly not be readable by /list (its
+    // verify-creator read races feed propagation → 400). Retry with backoff before
+    // surfacing an error, so the organiser doesn't have to click retry by hand.
     try {
-      const result = await authPost<{ eventId: string }>(
-        `/api/events/${createdEventId}/list`,
-        { sourceApiUrl: apiUrl },
-      );
-      if (result.ok) {
-        wocoListed = true;
-      } else {
-        wocoListError = (result as { error?: string }).error || "WoCo listing failed";
+      let lastErr = "";
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const result = await authPost<{ eventId: string }>(
+          `/api/events/${createdEventId}/list`,
+          { sourceApiUrl: apiUrl },
+        );
+        if (result.ok) { wocoListed = true; return; }
+        lastErr = (result as { error?: string }).error || "WoCo listing failed";
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
       }
+      wocoListError = lastErr;
     } catch (e) {
       wocoListError = e instanceof Error ? e.message : "WoCo listing failed";
     } finally {
