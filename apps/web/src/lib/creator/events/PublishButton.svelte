@@ -177,10 +177,13 @@
       // raw key (passkey/web3auth/local) can sign; web3/coinbase fall back to the
       // platform-signed feed (signer null). Self-hosted (apiUrl) events stay
       // platform-signed — the SOC stamp must hit the same server's postage batch.
-      // skipAutoList events stay platform-signed too: the global directory is the
-      // server's TRUSTED carrier for the claim/payment read, and skipAutoList events
-      // aren't in it. Site events get a trusted carrier in the later sites step.
-      const feedSigner = (apiUrl || skipAutoList) ? null : await auth.getContentFeedSigner();
+      //
+      // skipAutoList (the SiteBuilder "don't list on WoCo" opt-out) is the DIRECTORY
+      // model, NOT the signing model — they were previously conflated. A site event
+      // is client-signed like any other; its trusted carrier for the claim/payment
+      // read is the server-written SiteEventsIndex (deployed site), not the global
+      // directory. So signing no longer depends on skipAutoList.
+      const feedSigner = apiUrl ? null : await auth.getContentFeedSigner();
 
       const result = await createEventStreaming(
         {
