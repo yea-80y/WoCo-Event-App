@@ -6,7 +6,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEvent, getCreatorEvents } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite } from "../lib/site/service.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
@@ -32,7 +32,7 @@ import {
   siteEventsIndexTopic,
   SITE_SCHEMA_VERSION,
 } from "@woco/shared";
-import type { Site, Page, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed } from "@woco/shared";
+import type { Site, Page, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed, EventDirectoryEntry, Hex0x } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
@@ -73,25 +73,57 @@ async function readSiteConfig(siteId: string): Promise<Site | null> {
 
 /**
  * Phase B: stamp each site event entry with its organiser's content-feed-signer
- * address (the discovery carrier) by resolving it from the server's OWN trusted
- * `getEvent` read — never a client-supplied value. For LISTED client-owned events
- * getEvent resolves the signer from the global directory; for legacy
- * platform-signed events it returns undefined and the entry stays uncarried
- * (legacy read path). A transient read failure carries the prior value forward so
- * a re-publish never wipes a known signer. This makes a site's client-owned
- * events survive the organiser later UNLISTING them (the global-directory carrier
- * disappears, this one persists).
+ * address (the money-path discovery carrier). This index is read on the
+ * claim/payment path, so the signer MUST come from a server-trusted source — a
+ * client-supplied `entry.creatorFeedSigner` is IGNORED and stripped (otherwise a
+ * site owner could publish a site referencing someone else's eventId with a forged
+ * signer and poison that event's price/recipient read — the 93ea980 class of bug).
+ *
+ * Trusted sources, in order (all server-written, never the request body):
+ *  1. the OWNER's own creator directory (`getCreatorEvents`) — keyed by the
+ *     authenticated creator; covers the owner's UNLISTED (skipAutoList) events,
+ *     which is the whole point (a site is the carrier for not-WoCo-listed events);
+ *  2. the GLOBAL event directory via `getEvent` — covers a featured event owned by
+ *     ANOTHER creator that is publicly listed (its signer is server-stamped there);
+ *  3. the prior value already in the server-written index (`priorSigners`) — carries
+ *     a known-good signer forward across a transient source read failure so a
+ *     re-publish never wipes a carrier (and never resurrects a client value).
+ *
+ * Legacy platform-signed events resolve to no signer and stay uncarried (legacy
+ * read path). This also makes a site keep reading a client-owned event after the
+ * organiser UNLISTS it (the global-directory carrier disappears; source 1 persists).
+ *
+ * @param ownerAddress  the AUTHENTICATED site owner (c.get("parentAddress")).
+ * @param priorSigners  eventId → signer from the existing server-written index.
  */
-async function stampEventSigners(events: SiteEventEntry[]): Promise<SiteEventEntry[]> {
+async function stampEventSigners(
+  events: SiteEventEntry[],
+  ownerAddress: string,
+  priorSigners?: Map<string, Hex0x>,
+): Promise<SiteEventEntry[]> {
+  // One cached read (5-min memo) of the owner's directory — covers the common case
+  // (a site features the owner's own events) with zero per-event Swarm reads.
+  const ownerDir = await getCreatorEvents(ownerAddress).catch(() => [] as EventDirectoryEntry[]);
+  const ownerSigner = new Map<string, Hex0x>();
+  for (const e of ownerDir) if (e.creatorFeedSigner) ownerSigner.set(e.eventId, e.creatorFeedSigner);
+
   return Promise.all(
     events.map(async (entry) => {
-      try {
-        const feed = await getEvent(entry.eventId);
-        const signer = feed?.creatorFeedSigner ?? entry.creatorFeedSigner;
-        return signer ? { ...entry, creatorFeedSigner: signer } : entry;
-      } catch {
-        return entry; // keep whatever the entry already carried
+      // Resolve the trusted signer; the client entry value is never consulted.
+      let signer: Hex0x | undefined = ownerSigner.get(entry.eventId);
+      if (!signer) {
+        // Foreign (non-owner) event: trust only the global-directory carrier.
+        try {
+          signer = (await getEvent(entry.eventId))?.creatorFeedSigner;
+        } catch {
+          /* transient — fall through to the prior server-written value */
+        }
       }
+      if (!signer) signer = priorSigners?.get(entry.eventId);
+
+      // Strip any client-supplied signer; only a server-trusted value may carry.
+      const { creatorFeedSigner: _ignored, ...rest } = entry;
+      return signer ? { ...rest, creatorFeedSigner: signer } : rest;
     }),
   );
 }
@@ -224,10 +256,17 @@ sitesRouter.post("/", requireAuth, async (c) => {
 
     const { pages, ...siteShell } = siteToWrite;
 
+    // Prior server-written signers (trusted) — carried forward if a source read
+    // transiently fails so a re-publish never wipes a known carrier.
+    const priorPage = await readFeedPage(eventsTopic).catch(() => null);
+    const priorIndex = priorPage ? decodeJsonFeed<SiteEventsIndex>(priorPage) : null;
+    const priorSigners = new Map<string, Hex0x>();
+    for (const e of priorIndex?.events ?? []) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
+
     const eventsIndex: SiteEventsIndex = {
       siteId: site.siteId,
       schemaVersion: SITE_SCHEMA_VERSION,
-      events: await stampEventSigners(events),
+      events: await stampEventSigners(events, parentAddress, priorSigners),
       updatedAt: now,
     };
 
@@ -392,11 +431,13 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
       : { siteId, schemaVersion: SITE_SCHEMA_VERSION, events: [], updatedAt: 0 };
 
     if (!index.events.find((e) => e.eventId === body.eventId)) {
+      const priorSigners = new Map<string, Hex0x>();
+      for (const e of index.events) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
       const [entry] = await stampEventSigners([{
         eventId: body.eventId!,
         featured: body.featured ?? false,
         addedAt: Date.now(),
-      }]);
+      }], parentAddress, priorSigners);
       index.events.push(entry);
     }
     index.updatedAt = Date.now();
