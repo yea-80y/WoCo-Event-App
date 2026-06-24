@@ -159,6 +159,14 @@ export async function uploadSignedSoc(input: SignedSocInput): Promise<SocReferen
             headers: {
               "Content-Type": "application/octet-stream",
               "Swarm-Postage-Batch-Id": requirePostageBatch(),
+              // Buffer locally + push in the BACKGROUND, returning immediately —
+              // exactly like the legacy feed/bytes writes (bytes.ts, feeds.ts).
+              // Without this, Bee defaults to a SYNCHRONOUS upload that blocks
+              // until the chunk is pushed to the network (~25-30s observed),
+              // which was the entire publish-step-1→2 regression. The chunk is
+              // readable from this node immediately, so server-side reads
+              // (register-on-chain) and the whitelisted gateway read still work.
+              "Swarm-Deferred-Upload": "true",
             },
             body,
           }),
