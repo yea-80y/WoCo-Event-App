@@ -7,6 +7,7 @@ import {
   decodeJsonFeed,
 } from "../swarm/feeds.js";
 import { topicProfileData, topicProfileAvatar } from "../swarm/topics.js";
+import { whitelistHashes } from "../swarm/whitelist.js";
 
 // ---------------------------------------------------------------------------
 // Read profile
@@ -103,6 +104,16 @@ export async function uploadAvatar(
 
   // Upload image bytes to Swarm (the server lends postage either way).
   const avatarRef = await uploadToBytes(imageData);
+
+  // The proxy 403s unwhitelisted content, and UserAvatar reads the image
+  // gateway-direct (/bytes/{avatarRef}) — so the gateway can't serve it unless
+  // we whitelist the ref. Awaited (not fire-and-forget) because the client
+  // re-reads the avatar immediately after this returns. Mirrors event/POD images.
+  try {
+    await whitelistHashes([avatarRef]);
+  } catch (err) {
+    console.warn("[profile] avatar whitelist failed (non-fatal):", err);
+  }
 
   // Phase B: a client-owned profile signs its own avatar feed SOC — the server
   // has no key for it and must NOT write the platform feed. The route passes
