@@ -74,14 +74,20 @@ export async function writeContentFeed(args: {
   }
 
   const pages = Math.ceil(json.length / SOC_MAX_PAYLOAD_SIZE);
-  for (let i = 0; i < pages; i++) {
-    const slice = json.subarray(i * SOC_MAX_PAYLOAD_SIZE, (i + 1) * SOC_MAX_PAYLOAD_SIZE);
-    await signAndUploadSoc({
-      signerPrivKey: args.signerPrivKey,
-      identifier: contentFeedSocIdentifier(contentFeedPageTopic(args.topic, i + 1)),
-      payload: slice,
-    });
-  }
+  // Pages are independent SOCs — upload them CONCURRENTLY (was sequential, which
+  // cost one browser→server round-trip per page and dominated publish latency for
+  // large feeds). The manifest is still written only AFTER all pages resolve, so a
+  // reader never sees a manifest whose pages aren't there yet.
+  await Promise.all(
+    Array.from({ length: pages }, (_, i) => {
+      const slice = json.subarray(i * SOC_MAX_PAYLOAD_SIZE, (i + 1) * SOC_MAX_PAYLOAD_SIZE);
+      return signAndUploadSoc({
+        signerPrivKey: args.signerPrivKey,
+        identifier: contentFeedSocIdentifier(contentFeedPageTopic(args.topic, i + 1)),
+        payload: slice,
+      });
+    }),
+  );
   const manifest: ContentFeedManifest = { [CONTENT_FEED_MC_MARKER]: 1, pages, len: json.length };
   await signAndUploadSoc({
     signerPrivKey: args.signerPrivKey,
