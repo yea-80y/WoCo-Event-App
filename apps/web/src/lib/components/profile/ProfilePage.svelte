@@ -36,6 +36,9 @@
   let ensBindError = $state('');
   let uploadingAvatar = $state(false);
   let avatarPreviewUrl = $state<string | null>(null);
+  // A picked-but-not-yet-saved avatar (resized data URL). Staged on file-select,
+  // uploaded to Swarm only when the user clicks Save — like the text fields.
+  let pendingAvatarDataUrl = $state<string | null>(null);
   let events = $state<EventDirectoryEntry[]>([]);
   let eventsLoaded = $state(false);
   let eventsLoading = $state(false);
@@ -97,32 +100,53 @@
     formDirty = false;
   }
 
-  // Sync form when profile loads or changes
+  // Re-sync the form from a freshly LOADED profile, but never while the user is
+  // mid-edit (formDirty) — otherwise staging an avatar (which touches `profile`)
+  // would wipe a name they've typed but not yet saved.
   $effect(() => {
-    if (profile) initForm();
+    if (profile && !formDirty) initForm();
   });
 
   async function saveProfile() {
-    if (!formDirty || saving) return;
+    if ((!formDirty && !pendingAvatarDataUrl) || saving) return;
     saving = true;
     try {
       await auth.ensureSession();
-      const updated = await updateProfile({
-        displayName: editName || undefined,
-        bio: editBio || undefined,
-        website: editWebsite || undefined,
-        twitterHandle: editTwitter || undefined,
-        farcasterHandle: editFarcaster || undefined,
-      });
-      if (updated) {
-        profile = updated;
-        // updateProfile already wrote the fresh profile to cache — don't
-        // invalidate, or the next read races feed propagation and blanks it.
+      const prevAvatarRef = profile?.avatarRef;
+      let merged: UserProfile | null = profile;
+
+      // Text fields — only write the data feed when the user actually edited them.
+      if (formDirty) {
+        const updated = await updateProfile({
+          displayName: editName || undefined,
+          bio: editBio || undefined,
+          website: editWebsite || undefined,
+          twitterHandle: editTwitter || undefined,
+          farcasterHandle: editFarcaster || undefined,
+        });
+        // updateProfile already cached the fresh profile — don't invalidate, or the
+        // next read races feed propagation and blanks it. Carry the avatar forward
+        // (the data feed doesn't store avatarRef — it lives in a separate feed).
+        if (updated) merged = { ...updated, avatarRef: updated.avatarRef ?? prevAvatarRef };
       }
+
+      // Avatar — upload the STAGED image now (on Save), not on file-select.
+      if (pendingAvatarDataUrl) {
+        uploadingAvatar = true;
+        const avatarRef = await uploadAvatar(pendingAvatarDataUrl);
+        merged = merged
+          ? { ...merged, avatarRef }
+          : { v: 1, address: viewAddress as `0x${string}`, avatarRef, updatedAt: new Date().toISOString() };
+      }
+
+      if (merged) profile = merged;
+      pendingAvatarDataUrl = null;
+      avatarPreviewUrl = null;
       formDirty = false;
     } catch (err) {
       console.error("Failed to save profile:", err);
     } finally {
+      uploadingAvatar = false;
       saving = false;
     }
   }
@@ -153,29 +177,22 @@
     const file = input.files?.[0];
     if (!file || !file.type.startsWith("image/")) return;
 
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-
-    avatarPreviewUrl = dataUrl;
-    uploadingAvatar = true;
     try {
-      await auth.ensureSession();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      // STAGE only — show the preview and hold the resized image; it's uploaded to
+      // Swarm when the user clicks Save (never on file-select). Does NOT touch
+      // `profile`, so it can't wipe a name the user is typing.
       const resized = await resizeImage(dataUrl, 400);
-      const avatarRef = await uploadAvatar(resized);
-      profile = profile
-        ? { ...profile, avatarRef }
-        : { v: 1, address: viewAddress as `0x${string}`, avatarRef, updatedAt: new Date().toISOString() };
-      // uploadAvatar patched the cache with the new ref — don't invalidate, or
-      // the next read races feed propagation and blanks the avatar.
-      avatarPreviewUrl = null;
+      avatarPreviewUrl = resized;
+      pendingAvatarDataUrl = resized;
     } catch (err) {
-      console.error("Avatar upload failed:", err);
+      console.error("Avatar staging failed:", err);
     } finally {
-      uploadingAvatar = false;
       input.value = "";
     }
   }
@@ -273,7 +290,7 @@
     _prevView = v;
     profile = null; events = []; eventsLoaded = false; eventsLoading = false;
     following = []; followingLoaded = false; followingLoading = false;
-    trending = []; avatarPreviewUrl = null;
+    trending = []; avatarPreviewUrl = null; pendingAvatarDataUrl = null;
     if (!v) {
       loading = false;
       if (!auth.isConnected) loginRequest.request().then(ok => { if (!ok) navigate("/"); });
@@ -519,7 +536,7 @@
           <button
             class="save-btn"
             onclick={saveProfile}
-            disabled={!formDirty || saving}
+            disabled={(!formDirty && !pendingAvatarDataUrl) || saving}
           >
             {#if saving}
               <span class="spin-xs"></span> Saving...
