@@ -195,5 +195,15 @@ export async function uploadAvatar(imageDataUrl: string): Promise<string> {
     data: { v: 1, avatarRef },
   });
 
+  // Patch the cache with the new ref so navigating back doesn't trigger a
+  // gateway re-read before the SOC has propagated (which would blank the avatar).
+  const cached = cacheHit(parent);
+  cacheStore(
+    parent,
+    cached
+      ? { ...cached, avatarRef }
+      : { v: 1, address: parent as UserProfile["address"], avatarRef, updatedAt: new Date().toISOString() },
+  );
+
   return avatarRef;
 }

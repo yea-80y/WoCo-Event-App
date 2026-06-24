@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { UserProfile, EventDirectoryEntry, LikeSubject } from "@woco/shared";
   import { SubjectType, profileLikeSubject } from "@woco/shared";
-  import { getProfile, updateProfile, uploadAvatar, invalidateProfileCache } from "../../api/profiles.js";
+  import { getProfile, updateProfile, uploadAvatar } from "../../api/profiles.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
@@ -116,7 +116,8 @@
       });
       if (updated) {
         profile = updated;
-        invalidateProfileCache(viewAddress);
+        // updateProfile already wrote the fresh profile to cache — don't
+        // invalidate, or the next read races feed propagation and blanks it.
       }
       formDirty = false;
     } catch (err) {
@@ -168,7 +169,8 @@
       profile = profile
         ? { ...profile, avatarRef }
         : { v: 1, address: viewAddress as `0x${string}`, avatarRef, updatedAt: new Date().toISOString() };
-      invalidateProfileCache(viewAddress);
+      // uploadAvatar patched the cache with the new ref — don't invalidate, or
+      // the next read races feed propagation and blanks the avatar.
       avatarPreviewUrl = null;
     } catch (err) {
       console.error("Avatar upload failed:", err);
