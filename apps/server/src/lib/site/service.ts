@@ -1,6 +1,6 @@
 import { Topic } from "@ethersphere/bee-js";
-import { siteCreatorDirectoryTopic, siteConfigTopic } from "@woco/shared";
-import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette } from "@woco/shared";
+import { siteCreatorDirectoryTopic, siteConfigTopic, siteEventsIndexTopic } from "@woco/shared";
+import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex } from "@woco/shared";
 import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
 
 const DIR_PAGE_LIMIT = 4096;
@@ -28,6 +28,34 @@ export async function getSiteTheme(siteId: string): Promise<{ palette: SitePalet
     const site = decodeJsonFeed<Site>(page);
     if (!site?.theme?.palette) return null;
     return { palette: site.theme.palette, brandName: site.theme.brandName };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the TRUSTED content-feed signer for one event from a site's
+ * server-written `SiteEventsIndex` (the money-path carrier). The index is
+ * written + owner-gated by the server (`stampEventSigners` stamps each entry's
+ * `creatorFeedSigner` from a trusted read), so the signer it carries is safe to
+ * pass into `getEvent(eventId, signerHint)` on the claim/payment path — unlike a
+ * signer taken from a client request (see the `getEvent` doc + commit 93ea980).
+ *
+ * `siteId` is only a POINTER chosen by the caller; the trust comes from the
+ * server-written index it selects, never from the request. Returns null when the
+ * site/index/entry is absent or the event has no carried signer (legacy
+ * platform-signed event → caller falls back to the legacy read).
+ */
+export async function resolveSiteEventSigner(
+  siteId: string,
+  eventId: string,
+): Promise<string | null> {
+  try {
+    const page = await readFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)));
+    if (!page) return null;
+    const index = decodeJsonFeed<SiteEventsIndex>(page);
+    const entry = index?.events.find((e) => e.eventId === eventId);
+    return entry?.creatorFeedSigner ?? null;
   } catch {
     return null;
   }
