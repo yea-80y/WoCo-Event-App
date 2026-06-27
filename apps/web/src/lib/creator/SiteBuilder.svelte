@@ -392,6 +392,7 @@
             orderFields={collectInfo ? eventOrderFields : undefined}
             {claimMode}
             {apiUrl}
+            {gatewayUrl}
             skipAutoList
             label="Create event →"
             disabled={cryptoRecipientMissing || (anyCardEnabled && stripeVerified !== true)}

@@ -5,6 +5,7 @@ import type {
 } from "@woco/shared";
 import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x, eventContentTopic } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
+import { batchForDeploy } from "../etherna/batch-router.js";
 import { readContentFeedJson } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
@@ -70,13 +71,26 @@ export async function createEventV2(opts: {
    *  returns the assembled feed for the client to sign); stamped into the directory
    *  entries as the discovery carrier. Absent ⇒ legacy platform-signed write. */
   creatorFeedSigner?: Hex0x;
+  /** Builder's selected gateway (the builder IS the event creator). Etherna ⇒
+   *  event content (image, pods, manifests) is stamped on the organiser's Etherna
+   *  batch; otherwise the WoCo bee. The global directory always stays on WoCo. */
+  gatewayUrl?: string;
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
     eventId, title, tagline, description, startDate, endDate, location,
     creatorAddress, creatorPodKey, imageData, series,
-    encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, onProgress,
+    encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
+
+  // Route all event-content uploads to the selected gateway's batch (events never
+  // trigger a batch purchase — batchForDeploy falls back to the platform Etherna
+  // batch when the organiser has none).
+  const batchSelection = batchForDeploy({
+    ownerAddress: creatorAddress,
+    gatewayUrl: gatewayUrl ?? "",
+    deployType: "event",
+  });
 
   const emit = (phase: string, current: number, total: number, message: string) =>
     onProgress?.({ type: "progress", phase, current, total, message });
@@ -108,7 +122,7 @@ export async function createEventV2(opts: {
 
   // ── Phase 1: Upload image (start immediately) ─────────────────────────
   emit("image", 0, 1, "Uploading event image...");
-  const imagePromise = uploadToBytes(imageData);
+  const imagePromise = uploadToBytes(imageData, batchSelection);
   // Real rejection is re-thrown at the awaited consumer below; the noop
   // catch only prevents Node from crashing as unhandledRejection if an
   // earlier phase throws before we reach the await.
@@ -124,7 +138,7 @@ export async function createEventV2(opts: {
     const refs: Hex64[] = [];
     for (let i = 0; i < s.podBodies.length; i += BATCH) {
       const batch = s.podBodies.slice(i, i + BATCH);
-      const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p))));
+      const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p), batchSelection)));
       refs.push(...batchRefs);
       podsUploaded += batchRefs.length;
       emit("pods", podsUploaded, totalPods, `Uploading pods: ${podsUploaded}/${totalPods}`);
@@ -153,7 +167,7 @@ export async function createEventV2(opts: {
         podRefs,
         manifestDigestHex,
       };
-      const swarmManifestRef = await uploadToBytes(JSON.stringify(blob));
+      const swarmManifestRef = await uploadToBytes(JSON.stringify(blob), batchSelection);
       emit("manifests", i + 1, series.length, `Manifests: ${i + 1}/${series.length}`);
 
       return {
@@ -230,8 +244,14 @@ export async function confirmSeriesOnChain(
   eventId: string,
   seriesId: string,
   onChainEventId: string,
+  signerHint?: string,
 ): Promise<EventFeed> {
-  const feed = await getEvent(eventId);
+  // Same as the register read (Fix B): a freshly client-signed event has no platform
+  // feed and its directory carrier hasn't propagated, so getEvent() would stall on the
+  // whole-directory lookup and then return null → throw. Read the client SOC directly
+  // when the creator hands us their signer; fall back to the legacy read otherwise.
+  let feed = signerHint ? await readEventFeedSoc(eventId, signerHint) : null;
+  if (!feed) feed = await getEvent(eventId);
   if (!feed) throw new Error("Event not found");
 
   const updated: EventFeed = {
@@ -319,7 +339,7 @@ const EVENT_CACHE_TTL_MS = 10 * 60_000;
  * with the null-tolerant feed decoder. Returns null if the chunk is absent (e.g.
  * the client's SOC upload hasn't propagated yet) so callers fall back to legacy.
  */
-async function readEventFeedSoc(eventId: string, signer: string): Promise<EventFeed | null> {
+export async function readEventFeedSoc(eventId: string, signer: string): Promise<EventFeed | null> {
   const payload = await readContentFeedJson(signer.replace(/^0x/, ""), eventContentTopic(eventId)).catch(() => null);
   if (!payload) return null;
   return decodeJsonFeed<EventFeed>(payload);

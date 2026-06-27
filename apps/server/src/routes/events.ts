@@ -4,7 +4,7 @@ import type { Hex0x, CreateEventV2Request, EventDirectoryEntry } from "@woco/sha
 import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
@@ -135,7 +135,7 @@ events.post("/", requireAuth, async (c) => {
   const body = c.get("body") as unknown as CreateEventV2Request;
   const parentAddress = c.get("parentAddress") as string;
 
-  const { event: ev, series, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner } = body;
+  const { event: ev, series, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
 
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
@@ -264,6 +264,7 @@ events.post("/", requireAuth, async (c) => {
         claimMode,
         skipAutoList: !!skipAutoList,
         ...(feedSigner ? { creatorFeedSigner: feedSigner } : {}),
+        ...(typeof gatewayUrl === "string" ? { gatewayUrl } : {}),
         onProgress: (p) => stream.writeln(JSON.stringify(p)),
       });
 
@@ -515,7 +516,13 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   // Client-supplied ⇒ display-only, non-caching read (the ownership check below is
   // the gate; a forged signer can't poison the money-path cache).
   const signerHint = body.signer && /^0x[0-9a-fA-F]{40}$/.test(body.signer) ? body.signer.toLowerCase() : undefined;
-  const feed = await getEventForDisplay(eventId, signerHint);
+  // Fix B: when the authenticated creator hands us their own feed signer, read the
+  // client SOC DIRECTLY — skips the whole-directory `resolveCreatorFeedSigner` lookup
+  // (the ~32s publish→register stall). Safe here: this read is non-caching (can't
+  // poison the money cache) and the creator-ownership check below is the real gate.
+  // Falls back to the directory/legacy read only if there's no hint or the SOC misses.
+  let feed = signerHint ? await readEventFeedSoc(eventId, signerHint) : null;
+  if (!feed) feed = await getEventForDisplay(eventId, signerHint);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
     return c.json({ ok: false, error: "Only the event creator can register on-chain" }, 403);
@@ -570,7 +577,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   }
 
   try {
-    await confirmSeriesOnChain(eventId, seriesId, onChainEventId);
+    await confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint);
   } catch (err) {
     console.error("[api] register-on-chain confirm error:", err);
     // Feed update failed but tx is on-chain — return the eventId so client can retry confirm

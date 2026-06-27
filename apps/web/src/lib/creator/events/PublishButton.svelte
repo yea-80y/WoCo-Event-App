@@ -37,6 +37,9 @@
     apiUrl?: string;
     skipAutoList?: boolean;
     label?: string;
+    /** Builder's selected gateway — routes event content to the Etherna batch
+     *  when Etherna is chosen (the builder IS the event creator). */
+    gatewayUrl?: string;
     onpublished?: (eventId: string) => void;
   }
 
@@ -44,7 +47,7 @@
     title, tagline, description, startDate, endDate, location,
     imageDataUrl, series, orderFields, claimMode,
     disabled = false, disabledReason,
-    apiUrl, skipAutoList = false, label,
+    apiUrl, skipAutoList = false, label, gatewayUrl,
     onpublished,
   }: Props = $props();
 
@@ -173,17 +176,14 @@
       step = "Publishing to Swarm...";
       progress = 20;
 
-      // Phase B: client-owned event feed. Only the kinds that hold a deterministic
-      // raw key (passkey/web3auth/local) can sign; web3/coinbase fall back to the
-      // platform-signed feed (signer null). Self-hosted (apiUrl) events stay
-      // platform-signed — the SOC stamp must hit the same server's postage batch.
-      //
-      // skipAutoList (the SiteBuilder "don't list on WoCo" opt-out) is the DIRECTORY
-      // model, NOT the signing model — they were previously conflated. A site event
-      // is client-signed like any other; its trusted carrier for the claim/payment
-      // read is the server-written SiteEventsIndex (deployed site), not the global
-      // directory. So signing no longer depends on skipAutoList.
-      const feedSigner = apiUrl ? null : await auth.getContentFeedSigner();
+      // Phase B: the event feed is ALWAYS client-owned. We never platform-sign an
+      // event feed — the platform signer's only job now is the WoCo directory entry.
+      // `apiUrl` (the same default API the server stamps against) and `skipAutoList`
+      // (the "don't list on WoCo" opt-out) are DIRECTORY concerns, not signing ones;
+      // neither must gate signing. Only kinds holding a deterministic raw key
+      // (passkey/web3auth/local) return a signer today; web3/coinbase return null
+      // until they get a feed-signer path, and the server legacy-writes those.
+      const feedSigner = await auth.getContentFeedSigner();
 
       const result = await createEventStreaming(
         {
@@ -209,6 +209,7 @@
           orderFields: orderFields?.length ? orderFields : undefined,
           claimMode: claimMode && claimMode !== "wallet" ? claimMode : undefined,
           ...(skipAutoList ? { skipAutoList: true } : {}),
+          ...(gatewayUrl ? { gatewayUrl } : {}),
         },
         handleProgress,
         apiUrl,

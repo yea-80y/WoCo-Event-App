@@ -281,6 +281,9 @@ export interface CreateEventV2Request {
    *  assembled EventFeed in the stream `done` for the client to sign as a SOC.
    *  Absent ⇒ legacy platform-signed write (web3/coinbase/cold-restore). */
   creatorFeedSigner?: Hex0x;
+  /** Builder's selected gateway. Etherna ⇒ event content is stamped on the
+   *  organiser's Etherna batch; otherwise the WoCo bee. Directory stays on WoCo. */
+  gatewayUrl?: string;
 }
 
 /** Entry in the global event directory feed */

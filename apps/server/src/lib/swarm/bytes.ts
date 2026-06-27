@@ -1,7 +1,41 @@
 import { getBee, requirePostageBatch } from "../../config/swarm.js";
-import { ensureEthernaToken } from "../etherna/auth.js";
+import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
+import { registerEthernaOffer } from "../etherna/upload.js";
+import type { BatchSelection } from "../etherna/batch-router.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import type { Hex64 } from "@woco/shared";
+
+const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+
+/**
+ * Upload raw bytes to Etherna /bytes with bearer auth + register an offer so the
+ * ref is anonymously readable. Raw fetch (not bee-js): bee-js@11 onRequest copies
+ * headers, so the Authorization header never reaches Etherna — same reason the
+ * site image upload uses raw fetch (routes/sites.ts).
+ */
+async function uploadBytesToEtherna(bytes: Uint8Array, batchId: string): Promise<Hex64> {
+  await ensureEthernaToken();
+  const token = getCachedEthernaToken();
+  if (!token) throw new Error("Etherna token unavailable (ETHERNA_API_KEY missing or ETHERNA_ENABLED off)");
+  const resp = await fetch(`${ETHERNA_GW}/bytes`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Swarm-Postage-Batch-Id": batchId,
+      Authorization: `Bearer ${token}`,
+    },
+    // @ts-ignore — Node fetch doesn't expose duplex in type defs
+    duplex: "half",
+    body: bytes as unknown as BodyInit,
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
+  }
+  const { reference } = await resp.json() as { reference: string };
+  await registerEthernaOffer(reference);
+  return reference.toLowerCase().replace(/^0x/, "") as Hex64;
+}
 
 /** Delay helper */
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -27,10 +61,22 @@ function isTransientSwarmError(err: unknown): boolean {
   return false;
 }
 
-/** Upload data to Swarm /bytes with retry on transient errors (429, 5xx, socket hang up). */
-export async function uploadToBytes(data: string | Uint8Array): Promise<Hex64> {
+/**
+ * Upload data to Swarm /bytes with retry on transient errors (429, 5xx, socket
+ * hang up). `selection` routes the write: `target:"etherna"` stamps with the
+ * caller's Etherna batch on the Etherna gateway; otherwise (or when omitted) the
+ * WoCo bee + platform batch. The builder is the event creator, so an event created
+ * with the Etherna gateway selected MUST land on the Etherna batch — only the
+ * global directory stays on the WoCo bee.
+ */
+export async function uploadToBytes(data: string | Uint8Array, selection?: BatchSelection): Promise<Hex64> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
   await ensureEthernaToken();
+
+  if (selection?.target === "etherna") {
+    return uploadBytesToEtherna(bytes, selection.batchId);
+  }
+  const batchId = selection?.batchId ?? requirePostageBatch();
 
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -43,7 +89,7 @@ export async function uploadToBytes(data: string | Uint8Array): Promise<Hex64> {
       let result;
       try {
         result = await withTimeout(
-          getBee().uploadData(requirePostageBatch(), bytes, { deferred: true }),
+          getBee().uploadData(batchId, bytes, { deferred: true }),
           BEE_CALL_TIMEOUT_MS,
           "bytes upload",
         );
