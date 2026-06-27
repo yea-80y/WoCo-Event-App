@@ -115,52 +115,80 @@ export async function uploadToBytes(data: string | Uint8Array, selection?: Batch
   throw new Error("Upload failed after retries");
 }
 
-/** Download data from Swarm /bytes as string, with retry on transient errors. */
+/** Decode a bee-js downloadData result (Uint8Array or Bytes-like) to a string. */
+async function decodeDownload(result: unknown): Promise<string> {
+  if (result instanceof Uint8Array) return new TextDecoder().decode(result);
+  if (typeof result === "object" && result !== null) {
+    const r = result as Record<string, unknown>;
+    if (typeof r["toUtf8"] === "function") return (r["toUtf8"] as () => string)();
+    if (typeof r["toText"] === "function") return (r["toText"] as () => string)();
+    if (typeof r["text"] === "function") {
+      const t = (r["text"] as () => string | Promise<string>)();
+      return t instanceof Promise ? await t : t;
+    }
+    if (r["data"] instanceof Uint8Array) return new TextDecoder().decode(r["data"] as Uint8Array);
+    if (r["bytes"] instanceof Uint8Array) return new TextDecoder().decode(r["bytes"] as Uint8Array);
+    const payload = r["payload"];
+    if (payload instanceof Uint8Array) return new TextDecoder().decode(payload);
+    if (payload && typeof payload === "object") {
+      const p = payload as Record<string, unknown>;
+      if (typeof p["toUtf8"] === "function") return (p["toUtf8"] as () => string)();
+    }
+    throw new Error(`Unexpected downloadData format: ${Object.keys(r).join(", ")}`);
+  }
+  throw new Error(`Unexpected downloadData type: ${typeof result}`);
+}
+
+/** Read a ref from the WoCo bee (timeout-bounded so a miss can't hang 60s alone). */
+async function downloadFromWocoBee(ref: string): Promise<string> {
+  const result = await withTimeout(getBee().downloadData(ref), BEE_CALL_TIMEOUT_MS, "bytes download");
+  return decodeDownload(result);
+}
+
+/** Read a ref from Etherna /bytes. Bearer-authed (we own the batch), so it works
+ *  even before the anonymous offer propagates. */
+async function downloadFromEthernaBytes(ref: string): Promise<string> {
+  const token = getCachedEthernaToken();
+  const resp = await withTimeout(
+    fetch(`${ETHERNA_GW}/bytes/${ref}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
+    BEE_CALL_TIMEOUT_MS,
+    "etherna bytes download",
+  );
+  if (!resp.ok) throw new Error(`Etherna /bytes ${resp.status}`);
+  return await resp.text();
+}
+
+/**
+ * Download data from Swarm /bytes as string, with retry on transient errors.
+ * Content may live on the WoCo bee OR the organiser's Etherna batch (the builder's
+ * gateway choice routes the WRITE; this read does not carry that choice). RACE both
+ * sources and take whichever has it — a WoCo-bee read of Etherna-only content would
+ * otherwise block for the full 60s timeout. ETHERNA_ENABLED gates the extra read.
+ */
 export async function downloadFromBytes(ref: string): Promise<string> {
   await ensureEthernaToken();
+
   let delay = 500;
+  let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
+    const sources = [downloadFromWocoBee(ref)];
+    if (process.env.ETHERNA_ENABLED === "true") sources.push(downloadFromEthernaBytes(ref));
     try {
-      const result = await getBee().downloadData(ref);
-
-      if (result instanceof Uint8Array) {
-        return new TextDecoder().decode(result);
-      }
-
-      if (typeof result === "object" && result !== null) {
-        const r = result as unknown as Record<string, unknown>;
-
-        if (typeof r["toUtf8"] === "function") return (r["toUtf8"] as () => string)();
-        if (typeof r["toText"] === "function") return (r["toText"] as () => string)();
-        if (typeof r["text"] === "function") {
-          const t = (r["text"] as () => string | Promise<string>)();
-          return t instanceof Promise ? await t : t;
-        }
-        if (r["data"] instanceof Uint8Array) return new TextDecoder().decode(r["data"] as Uint8Array);
-        if (r["bytes"] instanceof Uint8Array) return new TextDecoder().decode(r["bytes"] as Uint8Array);
-
-        const payload = r["payload"];
-        if (payload instanceof Uint8Array) return new TextDecoder().decode(payload);
-        if (payload && typeof payload === "object") {
-          const p = payload as Record<string, unknown>;
-          if (typeof p["toUtf8"] === "function") return (p["toUtf8"] as () => string)();
-        }
-
-        throw new Error(`Unexpected downloadData format: ${Object.keys(r).join(", ")}`);
-      }
-
-      throw new Error(`Unexpected downloadData type: ${typeof result}`);
+      return await Promise.any(sources);
     } catch (err: unknown) {
-      if (isTransientSwarmError(err) && attempt < 4) {
-        const reason = (err as any)?.message ?? (err as any)?.code ?? (err as any)?.status;
+      // Promise.any → AggregateError when ALL sources reject; classify the last.
+      const inner = err instanceof AggregateError ? err.errors[err.errors.length - 1] : err;
+      lastErr = inner;
+      if (isTransientSwarmError(inner) && attempt < 4) {
+        const reason = (inner as any)?.message ?? (inner as any)?.code ?? (inner as any)?.status;
         console.log(`[swarm] Download transient error (${reason}), retrying in ${delay}ms (attempt ${attempt + 1}/5)...`);
         await wait(delay);
         delay = Math.min(delay * 2, 5000);
         continue;
       }
-      throw err;
+      throw inner;
     }
   }
 
-  throw new Error("Download failed after retries");
+  throw lastErr ?? new Error("Download failed after retries");
 }
