@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { EventFeed, SeriesSummary, ClaimedTicket } from "@woco/shared";
   import { onMount, onDestroy } from "svelte";
+  import { firstImageUrl, useNextImageUrl, imageUrlCandidates } from "../../components/site/image-fallback.js";
 
   interface Props {
     event: EventFeed;
@@ -99,6 +100,17 @@
     });
   }
 
+  // Try each gateway candidate in turn (WoCo + Etherna) so an event image stamped
+  // on the organiser's Etherna batch still loads for the composite card.
+  async function loadImageFromCandidates(imageHash: string): Promise<HTMLImageElement> {
+    const candidates = imageUrlCandidates(imageHash, BEE_GATEWAY);
+    let lastErr: unknown;
+    for (const url of candidates) {
+      try { return await loadImage(url); } catch (e) { lastErr = e; }
+    }
+    throw lastErr ?? new Error("no image candidates");
+  }
+
   function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
     const words = text.split(" ");
     const lines: string[] = [];
@@ -152,7 +164,7 @@
     const MARGIN = 22;
     if (event.imageHash) {
       try {
-        const img = await loadImage(`${BEE_GATEWAY}/bytes/${event.imageHash}`);
+        const img = await loadImageFromCandidates(event.imageHash);
         ctx.save();
         roundRect(ctx, MARGIN, MARGIN, IMG_W, H - MARGIN * 2, 10);
         ctx.clip();
@@ -393,10 +405,12 @@
         {#if event.imageHash}
           <div class="ticket-art">
             <img
-              src="{BEE_GATEWAY}/bytes/{event.imageHash}"
+              src={firstImageUrl(event.imageHash, BEE_GATEWAY)}
               alt=""
               class="ticket-art-img"
               aria-hidden="true"
+              data-image-gateway-index="0"
+              onerror={(e) => useNextImageUrl(e, event.imageHash, BEE_GATEWAY)}
             />
             <div class="ticket-art-mask"></div>
           </div>
