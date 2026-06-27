@@ -191,10 +191,34 @@ async function _getContentFeedRootKey(): Promise<string | null> {
  * own client-signed feeds. The address is the SOC owner + the registry value.
  */
 async function _getContentFeedSigner(): Promise<ContentFeedSigner | null> {
+  const parent = _parent;
+  const { contentFeedSignerFromPrivKey, deriveContentFeedSigner } = await import("../swarm/content-feed.js");
+
+  // (1) An established key wins: the feed signer is a STORED secret (escrowed for
+  // recovery), never re-derived once set — a rotated passkey credential would
+  // derive a divergent key and orphan the user's feeds (CROSS_DEVICE_RECOVERY §4).
+  if (parent) {
+    const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
+    const stored = await restoreContentFeedSigner(parent);
+    if (stored) {
+      const signer = contentFeedSignerFromPrivKey(stored);
+      void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, signer.address);
+      return signer;
+    }
+  }
+
+  // (2) No stored key yet → SEED it from the legacy derivation so any feeds this
+  // account already wrote under the derived address stay owned, then PERSIST it.
+  // From here the key is a stored secret. (Step 1a migration; later steps escrow
+  // it + restore it on new devices, and brand-new accounts switch to a random
+  // independent key once escrow guarantees cross-device delivery.)
   const root = await _getContentFeedRootKey();
   if (!root) return null;
-  const { deriveContentFeedSigner } = await import("../swarm/content-feed.js");
   const signer = deriveContentFeedSigner(root);
+  if (parent) {
+    const { storeContentFeedSigner } = await import("./feed-signer-store.js");
+    await storeContentFeedSigner(parent, signer.privKey);
+  }
   // Cache the PUBLIC address so passive self-reads resolve the SOC owner without
   // re-deriving the key (which would prompt for passkey PRF). Fire-and-forget.
   void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, signer.address);
@@ -263,6 +287,8 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
   if (priorParent && priorParent.toLowerCase() !== address.toLowerCase()) {
     await clearSession();
     await clearPodIdentity();
+    const { clearContentFeedSigner } = await import("./feed-signer-store.js");
+    await clearContentFeedSigner();
   }
 }
 
@@ -314,7 +340,7 @@ function _bindingAddressFor(
 async function _verifyPortabilityEnvelope(
   passkeyPrivKey: string,
   podAddress: string,
-): Promise<{ preserved: `0x${string}`; podSeed: string } | null> {
+): Promise<{ preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string } | null> {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
     const opened = await readPortabilityEnvelope({ passkeyPrivKey });
@@ -329,7 +355,11 @@ async function _verifyPortabilityEnvelope(
       console.warn("[auth] portability envelope failed on-chain owner check — ignoring");
       return null;
     }
-    return { preserved: opened.preservedKernelAddress as `0x${string}`, podSeed: opened.podSeed };
+    return {
+      preserved: opened.preservedKernelAddress as `0x${string}`,
+      podSeed: opened.podSeed,
+      feedSignerPrivKey: opened.feedSignerPrivKey,
+    };
   } catch (e) {
     console.warn("[auth] portability envelope check failed (non-fatal):", e);
     return null;
@@ -361,10 +391,14 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
 
     const seed = await restorePodSeed(_podAddress);
     if (!seed) return;
+    // Carry the feed signer too, so a recovered account's FURTHER devices restore
+    // it (same role the guardian escrow plays on the recovery device itself).
+    const feedSigner = await _getContentFeedSigner();
     await writePortabilityEnvelope({
       passkeyPrivKey: _passkeyPrivateKey,
       preservedKernelAddress: override,
       podSeed: seed,
+      feedSignerPrivKey: feedSigner?.privKey,
     });
     console.log("[auth] wrote cross-device recovery portability envelope");
   } catch (e) {
@@ -787,7 +821,9 @@ async function loginPasskey(): Promise<boolean> {
     // device. Check the PRF-sealed portability envelope + on-chain owner; if it
     // verifies, adopt the preserved address and restore the POD seed below
     // (AFTER _clearStaleAuthForSwitch, which would otherwise wipe it).
-    let portabilityRestore: { preserved: `0x${string}`; podSeed: string } | null = null;
+    let portabilityRestore:
+      | { preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string }
+      | null = null;
     if (!override) {
       portabilityRestore = await _verifyPortabilityEnvelope(account.privateKey, account.address);
       if (portabilityRestore) override = portabilityRestore.preserved;
@@ -805,6 +841,12 @@ async function loginPasskey(): Promise<boolean> {
     // recoverAndRekey). Order matters — this runs AFTER _clearStaleAuthForSwitch.
     if (portabilityRestore) {
       await storePodSeed(account.address, portabilityRestore.podSeed);
+      // Restore the feed signer under the PRESERVED parent address so this device
+      // owns the recovered account's existing content feeds (mirrors recoverAndRekey).
+      if (portabilityRestore.feedSignerPrivKey) {
+        const { storeContentFeedSigner } = await import("./feed-signer-store.js");
+        await storeContentFeedSigner(portabilityRestore.preserved, portabilityRestore.feedSignerPrivKey);
+      }
       await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, {
         pod: account.address.toLowerCase(),
         kernel: portabilityRestore.preserved,
@@ -1050,9 +1092,17 @@ async function setupAccountRecovery(backup: {
   // Seal the escrow FIRST and verify it round-trips BEFORE the irreversible
   // on-chain install — so a non-deterministic backup signature (which would make
   // the bundle permanently un-openable) is caught here, with nothing committed.
+  // Escrow the content-feed signer ALONGSIDE the POD seed (same guardian bundle):
+  // both are root-derived secrets that a rotated passkey credential cannot
+  // re-derive, so recovery must restore them verbatim. Establishing it here also
+  // ensures the key exists before it is sealed. Non-fatal if absent.
+  const feedSigner = await _getContentFeedSigner();
+  const secrets: Record<string, string> = { podSeed: seed };
+  if (feedSigner) secrets.feedSignerPrivKey = feedSigner.privKey;
+
   const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
   const envelope = await sealRecoveryBundle({
-    bundle: { version: 1, secrets: { podSeed: seed } },
+    bundle: { version: 1, secrets },
     kernelAddress,
     guardianPublicKeysHex: [gk.publicKeyHex],
   });
@@ -1063,7 +1113,7 @@ async function setupAccountRecovery(backup: {
   // this throws — failing loudly at setup instead of silently at recovery time.
   const gk2 = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
   const check = await openRecoveryBundle({ envelope, kernelAddress, guardianKeypair: gk2 });
-  if (check.secrets.podSeed !== seed) {
+  if (check.secrets.podSeed !== seed || check.secrets.feedSignerPrivKey !== secrets.feedSignerPrivKey) {
     throw new Error(
       "Your backup wallet's signature isn't reproducible, so recovery couldn't be guaranteed. " +
         "Try a different backup wallet.",
@@ -1156,10 +1206,14 @@ async function recoverAndRekey(args: {
     const { deriveGuardianEncryptionKeypair, openRecoveryBundle } = await import("./recovery-escrow.js");
     const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
     let podSeed: string;
+    let feedSignerPrivKey: string | undefined;
     try {
       const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk });
       if (!bundle.secrets.podSeed) throw new Error("missing podSeed");
       podSeed = bundle.secrets.podSeed;
+      // Restored verbatim (not re-derived) so the recovered account keeps owning
+      // the feeds it wrote under the original feed-signer address.
+      feedSignerPrivKey = bundle.secrets.feedSignerPrivKey;
     } catch {
       // Don't leak whether it was a wrong account vs a corrupt blob.
       throw new Error(
@@ -1201,6 +1255,14 @@ async function recoverAndRekey(args: {
     onProgress?.("Restoring your tickets and history…");
     await _clearStaleAuthForSwitch(target);
     await storePodSeed(fresh.address, podSeed);
+    // Restore the original feed signer under the PRESERVED parent address (the
+    // AAD key `_getContentFeedSigner` reads), so the recovered account keeps
+    // ownership of its existing content feeds instead of deriving a new address
+    // from the rotated passkey. AFTER _clearStaleAuthForSwitch, which clears it.
+    if (feedSignerPrivKey) {
+      const { storeContentFeedSigner } = await import("./feed-signer-store.js");
+      await storeContentFeedSigner(target, feedSignerPrivKey);
+    }
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.POD_ADDRESS, fresh.address);
@@ -1345,6 +1407,11 @@ async function logout(): Promise<void> {
 async function clearAllAuth(): Promise<void> {
   await clearSession();
   await clearPodIdentity();
+  // Drop the feed-signer secret on logout (parity with the POD seed). It is
+  // restorable from escrow on next login; the on-device copy should not outlive
+  // the session on a shared device.
+  const { clearContentFeedSigner } = await import("./feed-signer-store.js");
+  await clearContentFeedSigner();
   // NOTE: we intentionally do NOT clear the local account private key.
   // This lets the user re-login with the same local account later.
   // The key stays in IndexedDB; only the session state is wiped.

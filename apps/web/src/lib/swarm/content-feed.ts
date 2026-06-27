@@ -46,6 +46,17 @@ export function deriveContentFeedSigner(rootPrivKey: string): ContentFeedSigner 
 }
 
 /**
+ * Build a `ContentFeedSigner` from a STORED/escrowed private key (the independent
+ * feed-signer secret). Unlike `deriveContentFeedSigner` this performs no
+ * derivation — the key is the established secret, restored verbatim from local
+ * storage or escrow; we only recover its address.
+ */
+export function contentFeedSignerFromPrivKey(privKey: string): ContentFeedSigner {
+  const key = privKey.startsWith("0x") ? privKey : `0x${privKey}`;
+  return { privKey: key, address: new Wallet(key).address.toLowerCase() };
+}
+
+/**
  * Sign + upload a JSON content feed as a client-owned SOC at
  * `contentFeedSocIdentifier(topic)`. Overwrite-in-place (same owner+identifier).
  *

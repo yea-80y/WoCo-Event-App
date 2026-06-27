@@ -47,6 +47,14 @@ export const StorageKeys = {
   // (an explicit user action where a prompt is acceptable). Address only, never
   // the key.
   CONTENT_FEED_SIGNER_ADDRESS: "woco:auth:content-feed-signer",
+  // Phase B content-feed signer PRIVATE KEY — the user's INDEPENDENT, escrowed
+  // feed-signer secret (encrypted at rest, AAD-bound to the parent address, same
+  // as POD_SEED). Established once per account, then ESCROWED + restored on any
+  // device — NEVER re-derived (recovery-stability requires escrow, not
+  // derivation; a rotated passkey credential would derive a divergent key and
+  // orphan the user's feeds). Distinct from CONTENT_FEED_SIGNER_ADDRESS, which
+  // holds only the public address for no-prompt self-reads.
+  CONTENT_FEED_SIGNER_KEY: "woco:auth:content-feed-signer-key",
 } as const;
 
 /** Fixed salt input for passkey PRF → secp256k1 key derivation */

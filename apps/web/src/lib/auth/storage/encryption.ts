@@ -59,6 +59,11 @@ export const AAD = {
   // WOCO_AA_SESSION so the two scoped keys are cryptographically distinct blobs.
   WOCO_AA_EAS_SESSION: (kernel: string) =>
     `woco/device/aa-eas-session/v1:${kernel.toLowerCase()}`,
+  // Content-feed signer private key, bound to the account's PARENT address
+  // (preserved across recovery), so a stale blob left by a different identity on
+  // the same browser cannot be decrypted into this account's feed signer.
+  CONTENT_FEED_SIGNER: (parent: string) =>
+    `woco/device/content-feed-signer/v1:${parent.toLowerCase()}`,
 } as const;
 
 /** Any string is accepted at the encrypt/decrypt boundary; AAD constructors
