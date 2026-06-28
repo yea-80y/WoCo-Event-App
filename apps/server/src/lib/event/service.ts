@@ -396,27 +396,40 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
   return feed;
 }
 
+/** Max time to wait for the (slow, cold) global-directory carrier lookup before
+ *  falling back to the client hint. Bounds latency for unlisted/cold reads while
+ *  keeping the trusted carrier authoritative whenever the directory is responsive. */
+const TRUSTED_CARRIER_TIMEOUT_MS = 4000;
+
 /**
  * Display-only event read that MAY use an UNTRUSTED, client-supplied signer.
- * Tries the trusted/cached {@link getEvent} first (global directory + legacy
- * platform feed); only if that misses AND a client hint is supplied does it read
- * that SOC directly — WITHOUT writing the shared cache. So a forged hint can never
- * reach the money path: it can only shape this one display response. Use this for
- * any read whose signer originates in a client request (public `?signer=`,
- * a creator passing their own just-published signer, etc.).
+ *
+ * SECURITY (trust boundary): the TRUSTED global-directory carrier ALWAYS takes
+ * precedence over the client hint — a forged `?signer=` must not spoof the
+ * displayed content of a LISTED event. We resolve that carrier but BOUND the read
+ * (the global directory can be slow/cold), and read the SOC with the trusted
+ * carrier when present. The client hint is used ONLY when the event has no trusted
+ * carrier (a skipAutoList/unlisted client event — the hint is then the sole way to
+ * read it) or the directory lookup times out. Either way this is NON-CACHING, so a
+ * forged hint can never reach the money path — every money read uses the trusted
+ * {@link getEvent}, never this.
  */
 export async function getEventForDisplay(
   eventId: string,
   untrustedSigner?: string,
 ): Promise<EventFeed | null> {
   if (untrustedSigner) {
-    // A client hint reads the SOC DIRECTLY — fast, display-only, NON-CACHING. This
-    // avoids the slow global-directory resolution (`listEvents`) for skipAutoList
-    // client events, so `/list`'s federated read stays inside its timeout. A forged
-    // hint only shapes THIS one response; it never writes the money-path cache, and
-    // every money read uses the trusted `getEvent` instead. SOC miss → trusted
-    // resolution below (legacy/platform events have no hint anyway).
-    const soc = await readEventFeedSoc(eventId, untrustedSigner);
+    let trustedCarrier: string | null = null;
+    try {
+      trustedCarrier = await Promise.race([
+        resolveCreatorFeedSigner(eventId),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), TRUSTED_CARRIER_TIMEOUT_MS)),
+      ]);
+    } catch {
+      trustedCarrier = null;
+    }
+    // Trusted carrier wins; the hint is the fallback only when there is none.
+    const soc = await readEventFeedSoc(eventId, trustedCarrier ?? untrustedSigner);
     if (soc) return soc;
   }
   return getEvent(eventId);
