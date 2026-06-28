@@ -173,6 +173,10 @@
     if (!createdEventId) return;
     listingOnWoco = true;
     wocoListError = null;
+    // Carrier for a client-signed event: pass our own content-feed-signer address
+    // so /list can READ the client SOC (a skipAutoList event isn't in the global
+    // directory, so the server can't otherwise resolve the carrier). No-prompt.
+    const feedSigner = await auth.getContentFeedSignerAddress();
     // Right after publish the event can briefly not be readable by /list (its
     // verify-creator read races feed propagation → 400). Retry with backoff before
     // surfacing an error, so the organiser doesn't have to click retry by hand.
@@ -181,7 +185,7 @@
       for (let attempt = 0; attempt < 4; attempt++) {
         const result = await authPost<{ eventId: string }>(
           `/api/events/${createdEventId}/list`,
-          { sourceApiUrl: apiUrl },
+          { sourceApiUrl: apiUrl, ...(feedSigner ? { signer: feedSigner } : {}) },
         );
         if (result.ok) { wocoListed = true; return; }
         lastErr = (result as { error?: string }).error || "WoCo listing failed";

@@ -340,14 +340,21 @@ events.post("/discover", requireAuth, async (c) => {
 events.post("/:id/list", requireAuth, async (c) => {
   const eventId = c.req.param("id");
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = c.get("body") as { sourceApiUrl?: string };
+  const body = c.get("body") as { sourceApiUrl?: string; signer?: string };
+  // Carrier for a client-signed event: a skipAutoList event isn't in the global
+  // directory, so the server can't resolve its content-feed signer to read the
+  // client SOC. The authenticated creator passes their own signer; it's used ONLY
+  // to READ (display-only, non-caching) — the creatorAddress==parent check below is
+  // the real gate, so a forged signer can't list someone else's event.
+  const carrier = body.signer && /^0x[0-9a-fA-F]{40}$/.test(body.signer) ? body.signer.toLowerCase() : undefined;
 
   let eventFeed: import("@woco/shared").EventFeed | null = null;
 
   if (body.sourceApiUrl) {
     const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+    const q = carrier ? `?signer=${carrier}` : "";
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events/${eventId}${q}`, { signal: AbortSignal.timeout(15000) });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed; error?: string };
       if (!json.ok || !json.data) return c.json({ ok: false, error: json.error || "Event not found on source server" }, 404);
@@ -357,7 +364,7 @@ events.post("/:id/list", requireAuth, async (c) => {
       return c.json({ ok: false, error: `Could not reach source server: ${msg}` }, 400);
     }
   } else {
-    eventFeed = await getEvent(eventId);
+    eventFeed = await getEventForDisplay(eventId, carrier);
   }
 
   if (!eventFeed) return c.json({ ok: false, error: "Event not found" }, 404);
@@ -380,6 +387,10 @@ events.post("/:id/list", requireAuth, async (c) => {
       totalTickets: eventFeed.series.reduce((sum, s) => sum + s.totalSupply, 0),
       createdAt: eventFeed.createdAt,
       ...(directoryApiUrl ? { apiUrl: directoryApiUrl } : {}),
+      // Carry the content-feed signer into the global directory so a later no-hint
+      // getEvent (deployed site, WoCo app) can resolve the client SOC — this is what
+      // makes the event PAGE load, not just the listing succeed.
+      ...(eventFeed.creatorFeedSigner ? { creatorFeedSigner: eventFeed.creatorFeedSigner } : {}),
     });
 
   } catch (err) {

@@ -409,6 +409,19 @@ export async function getEventForDisplay(
   eventId: string,
   untrustedSigner?: string,
 ): Promise<EventFeed | null> {
+  if (untrustedSigner) {
+    // Honour the client hint ONLY for events with NO trusted directory carrier
+    // (skipAutoList client events) — a forged hint must never override a listed
+    // event's display. resolveCreatorFeedSigner reads the CACHED global directory
+    // (fast), so this also SHORT-CIRCUITS the slow platform-feed retry inside
+    // getEvent for client events that have no platform feed (the /list + event-page
+    // path). Non-caching: this hint read never writes the money-path cache.
+    const trustedCarrier = await resolveCreatorFeedSigner(eventId);
+    if (!trustedCarrier) {
+      const soc = await readEventFeedSoc(eventId, untrustedSigner);
+      if (soc) return soc;
+    }
+  }
   const trusted = await getEvent(eventId);
   if (trusted) return trusted;
   if (!untrustedSigner) return null;
