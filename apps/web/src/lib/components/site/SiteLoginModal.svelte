@@ -1,6 +1,8 @@
 <script lang="ts">
   import WalletLogin from "../auth/WalletLogin.svelte";
-  import ParaLogin from "../auth/ParaLogin.svelte";
+  // NOTE: ParaLogin was removed project-wide; the deployed event page currently
+  // offers wallet login only. Email/social login here (Web3Auth) is a follow-up —
+  // it does not block event loading. Restoring the dead import broke `build:site`.
   import { loginRequest } from "../../auth/login-request.svelte.js";
 
   const visible = $derived(loginRequest.pending);
@@ -37,10 +39,6 @@
 
       <div class="options">
         <WalletLogin oncomplete={handleComplete} />
-
-        <div class="divider"><span>or</span></div>
-
-        <ParaLogin oncomplete={handleComplete} />
       </div>
     </div>
   </div>
