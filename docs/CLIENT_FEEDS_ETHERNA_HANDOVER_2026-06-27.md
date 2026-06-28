@@ -31,17 +31,31 @@ the event creator — one surface, never "two paths".
 - Re-test: create event w/ Etherna selected → logs show `[batch-router] event deploy →
   etherna … batch`; register-on-chain should pass.
 
-## ✅ BLOCKER (mostly FIXED 2026-06-28) — skipAutoList client-signed events 404
+## ✅ BLOCKER (FIXED + SECURED 2026-06-28) — skipAutoList client-signed events 404
 
-STATUS: server side FIXED + VERIFIED LIVE (`GET /:id?signer=<carrier>` = 0.37s,
-ok:true; was 29s+timeout). Commits `13691af`,`18577ed`. Remaining: (a) USER runs
-`npm run deploy` so `SiteBuilder.createWocoListing` sends the carrier; then re-list
-(or re-create) the event → page loads. (b) OPTIONAL fast deployed-site event page:
-the multisite runtime reads `GET /api/events/:id` with NO `?signer=`, so it resolves
-via the SLOW global directory (~29s first load, cached after — the directory-scaling
-issue). To make it fast, have the deployed-site event-detail pass the carrier it
-already holds from the SiteEventsIndex (`?signer=`) — multisite runtime change →
-STEP 1b + re-publish. NOT done.
+STATUS: server side FIXED + VERIFIED LIVE. Commits `13691af` (carrier-threading
+through /list), `18577ed`→`27ccfc6` (getEventForDisplay perf + the SECURITY fix
+below). `GET /:id?signer=<carrier>` = ok:true (~4.5s unlisted: bounded trusted-
+directory check; fast once listed/warm).
+
+SECURITY (review-flagged, FIXED `27ccfc6`): getEventForDisplay must resolve the
+TRUSTED global-directory carrier BEFORE honouring a client `?signer=` hint, else a
+forged hint spoofs a LISTED event's displayed content (display-only/non-caching —
+money paths use trusted getEvent — but a phishing vector). The trusted lookup is
+bounded (`TRUSTED_CARRIER_TIMEOUT_MS=4000`) so the slow/cold global directory can't
+hang; the hint is used ONLY for unlisted events or on timeout. Do NOT re-flip to
+hint-first.
+
+REMAINING:
+(a) USER runs `npm run deploy` (frontend) so `SiteBuilder.createWocoListing` sends
+    the carrier to /list; then re-list (or re-create) the event → page loads. (The
+    user is testing via `npm run dev` first — HMR picks up the SiteBuilder change.)
+(b) OPTIONAL fast deployed-site event page: the MULTISITE runtime (`MultiSiteApp`,
+    the website-deployer output) reads `GET /api/events/:id` with NO `?signer=`, so
+    it resolves via the SLOW global directory (directory-scaling issue, ~slow first
+    load, cached). To make it fast, have the deployed-site event-detail pass the
+    carrier it already holds from the SiteEventsIndex (`?signer=`) → STEP 1b +
+    organisers re-publish. NOT done.
 
 Original diagnosis (kept for context):
 
