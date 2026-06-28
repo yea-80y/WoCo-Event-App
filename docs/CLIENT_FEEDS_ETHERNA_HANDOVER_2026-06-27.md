@@ -31,7 +31,21 @@ the event creator — one surface, never "two paths".
 - Re-test: create event w/ Etherna selected → logs show `[batch-router] event deploy →
   etherna … batch`; register-on-chain should pass.
 
-## ⛔ BLOCKER found in testing (do FIRST) — skipAutoList client-signed events 404
+## ✅ BLOCKER (mostly FIXED 2026-06-28) — skipAutoList client-signed events 404
+
+STATUS: server side FIXED + VERIFIED LIVE (`GET /:id?signer=<carrier>` = 0.37s,
+ok:true; was 29s+timeout). Commits `13691af`,`18577ed`. Remaining: (a) USER runs
+`npm run deploy` so `SiteBuilder.createWocoListing` sends the carrier; then re-list
+(or re-create) the event → page loads. (b) OPTIONAL fast deployed-site event page:
+the multisite runtime reads `GET /api/events/:id` with NO `?signer=`, so it resolves
+via the SLOW global directory (~29s first load, cached after — the directory-scaling
+issue). To make it fast, have the deployed-site event-detail pass the carrier it
+already holds from the SiteEventsIndex (`?signer=`) — multisite runtime change →
+STEP 1b + re-publish. NOT done.
+
+Original diagnosis (kept for context):
+
+## ⛔ skipAutoList client-signed events 404 — root cause
 
 Symptom: passkey login → create event via builder → event PAGE 404s
 (`GET /api/events/:id`, no `?signer=`) AND `/list` returns "Source server returned
