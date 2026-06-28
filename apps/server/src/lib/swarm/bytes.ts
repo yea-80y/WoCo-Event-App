@@ -7,14 +7,26 @@ import type { Hex64 } from "@woco/shared";
 
 const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
 
+/** Error that carries an HTTP status so isTransientSwarmError can classify a raw
+ *  (non-bee-js) fetch failure — bee-js surfaces status on the error, raw fetch
+ *  does not, so we attach it explicitly. */
+class HttpStatusError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "HttpStatusError";
+  }
+}
+
 /**
  * Upload raw bytes to Etherna /bytes with bearer auth + register an offer so the
  * ref is anonymously readable. Raw fetch (not bee-js): bee-js@11 onRequest copies
  * headers, so the Authorization header never reaches Etherna — same reason the
- * site image upload uses raw fetch (routes/sites.ts).
+ * site image upload uses raw fetch (routes/sites.ts). Deferred upload mirrors the
+ * WoCo path's `deferred:true` (Bee buffers + background-pushes, so /bytes doesn't
+ * block on network sync). On non-2xx throws HttpStatusError so the shared retry
+ * loop in uploadToBytes can back off + retry transient stamp locks (423) / 429 / 5xx.
  */
 async function uploadBytesToEtherna(bytes: Uint8Array, batchId: string): Promise<Hex64> {
-  await ensureEthernaToken();
   const token = getCachedEthernaToken();
   if (!token) throw new Error("Etherna token unavailable (ETHERNA_API_KEY missing or ETHERNA_ENABLED off)");
   const resp = await fetch(`${ETHERNA_GW}/bytes`, {
@@ -22,6 +34,7 @@ async function uploadBytesToEtherna(bytes: Uint8Array, batchId: string): Promise
     headers: {
       "Content-Type": "application/octet-stream",
       "Swarm-Postage-Batch-Id": batchId,
+      "Swarm-Deferred-Upload": "true",
       Authorization: `Bearer ${token}`,
     },
     // @ts-ignore — Node fetch doesn't expose duplex in type defs
@@ -30,7 +43,7 @@ async function uploadBytesToEtherna(bytes: Uint8Array, batchId: string): Promise
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
+    throw new HttpStatusError(resp.status, `Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
   }
   const { reference } = await resp.json() as { reference: string };
   await registerEthernaOffer(reference);
@@ -45,12 +58,16 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * retrying. Bee's chain-RPC backpressure (free-tier dRPC throttling, brief
  * peer churn) shows up as TCP-level resets — `socket hang up`, `ECONNRESET`,
  * `ETIMEDOUT` — surfaced by axios with no HTTP `status`. Treat 5xx the same
- * way; only 4xx other than 429 are real client errors.
+ * way; only 4xx other than 429/423 are real client errors.
+ *
+ * 423 Locked = Bee's per-bucket postage-stamp lock held by a concurrent write to
+ * the same batch (event create stamps image + N edition pages + manifest at once).
+ * It clears once the contending write releases — retry after backoff, same as 429.
  */
 function isTransientSwarmError(err: unknown): boolean {
   const e = err as any;
   const status: number | undefined = e?.status ?? e?.response?.status;
-  if (status === 429) return true;
+  if (status === 429 || status === 423) return true;
   if (status && status >= 500) return true;
   if (status === undefined) {
     const msg = String(e?.message ?? "").toLowerCase();
@@ -73,33 +90,42 @@ export async function uploadToBytes(data: string | Uint8Array, selection?: Batch
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
   await ensureEthernaToken();
 
-  if (selection?.target === "etherna") {
-    return uploadBytesToEtherna(bytes, selection.batchId);
-  }
-  const batchId = selection?.batchId ?? requirePostageBatch();
+  const toEtherna = selection?.target === "etherna";
+  // Etherna selections always carry a batchId (platform or user batch, see
+  // batch-router); the WoCo path falls back to the configured platform batch.
+  const batchId = toEtherna ? selection!.batchId : (selection?.batchId ?? requirePostageBatch());
 
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      // `deferred: true` — Bee buffers the chunk locally and pushes to the
-      // network in the background. Without it, /bytes blocks until the
-      // chunk has propagated to neighbourhood peers, turning every upload
-      // into a wait for network sync.
+      // Serialise BOTH targets through the same semaphore: concurrent writes to
+      // one postage batch contend on Bee's per-bucket stamp lock (429 on the WoCo
+      // bee, 423 on Etherna). Event create fires the image + N edition pages +
+      // manifest at once, so without this they collide. `deferred: true` (and the
+      // Etherna Swarm-Deferred-Upload header) keeps /bytes from blocking on
+      // network sync. The semaphore is released before the retry backoff sleep so
+      // a throttled slot doesn't block other callers during the wait.
       const release = await beeUploadSem.acquire();
-      let result;
       try {
-        result = await withTimeout(
+        if (toEtherna) {
+          return await withTimeout(
+            uploadBytesToEtherna(bytes, batchId),
+            BEE_CALL_TIMEOUT_MS,
+            "etherna bytes upload",
+          );
+        }
+        const result = await withTimeout(
           getBee().uploadData(batchId, bytes, { deferred: true }),
           BEE_CALL_TIMEOUT_MS,
           "bytes upload",
         );
+        const ref = typeof result.reference === "string"
+          ? result.reference
+          : result.reference.toString();
+        return ref.toLowerCase().replace(/^0x/, "") as Hex64;
       } finally {
         release();
       }
-      const ref = typeof result.reference === "string"
-        ? result.reference
-        : result.reference.toString();
-      return ref.toLowerCase().replace(/^0x/, "") as Hex64;
     } catch (err: unknown) {
       if (isTransientSwarmError(err) && attempt < 4) {
         const reason = (err as any)?.message ?? (err as any)?.code ?? (err as any)?.status;
