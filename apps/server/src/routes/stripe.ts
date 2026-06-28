@@ -382,19 +382,19 @@ stripe.post("/create-checkout", async (c) => {
   const userEmailHash = claimerEmail ? hashEmail(claimerEmail) : undefined;
   const tSwarm = performance.now();
   const skipAvailability = !!reservationId;
+  // Phase B money path: when claiming from a deployed site, resolve the event's
+  // signer from that site's server-written SiteEventsIndex (trusted carrier) so a
+  // client-signed, not-WoCo-listed event reads its authentic SOC — this read feeds
+  // the Stripe destination (creatorAddress→Connect) + amount AND the carrier-owned
+  // editions feed the availability pre-check reads. siteId is only a pointer; trust
+  // is the server-written index, never the request. Hoisted out of the parallel
+  // reads below so the same carrier threads into both getEvent and getClaimStatus.
+  const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
   const [event, statusResult, inlineUploadedRef] = await Promise.all([
-    // Phase B money path: when claiming from a deployed site, resolve the event's
-    // signer from that site's server-written SiteEventsIndex (trusted carrier) so a
-    // client-signed, not-WoCo-listed event reads its authentic SOC — this read feeds
-    // the Stripe destination (creatorAddress→Connect) + amount, so it must be the
-    // real one. siteId is only a pointer; trust is the server-written index. The
-    // resolve runs inside this Promise.all slot, hidden behind the parallel reads.
-    siteId
-      ? resolveSiteEventSigner(siteId, eventId).then((s) => getEvent(eventId, s ?? undefined))
-      : getEvent(eventId),
+    getEvent(eventId, siteSigner ?? undefined),
     skipAvailability
       ? Promise.resolve(null)
-      : getClaimStatus(seriesId, verifiedAddress, userEmailHash).catch((err) => {
+      : getClaimStatus(seriesId, verifiedAddress, userEmailHash, siteSigner ?? undefined).catch((err) => {
           // Swarm read failure — non-fatal; webhook will re-check on claim.
           console.warn("[stripe/create-checkout] Availability pre-check failed (continuing):", err);
           return null;
@@ -455,7 +455,7 @@ stripe.post("/create-checkout", async (c) => {
     if (gateNeedsClaimCount(series.gate)) {
       tierClaimed = statusResult
         ? statusResult.claimed
-        : await getClaimStatus(seriesId).then((s) => s.claimed).catch(() => undefined);
+        : await getClaimStatus(seriesId, undefined, undefined, siteSigner ?? undefined).then((s) => s.claimed).catch(() => undefined);
     }
     const phase = gatePhase(series.gate, { tierClaimed });
     if (phase === "closed") {
@@ -874,6 +874,9 @@ async function handleSuccessfulPayment(
   let isV2 = false;
   let v2OnChainEventId = "";
   let v2SwarmManifestRef = "";
+  // Carrier-owned editions SOC owner — resolved from the trusted event feed below
+  // and threaded into the v1 claimTicket so it reads the client-owned editions.
+  let editionsCarrier: string | undefined;
 
   try {
     // Phase B: thread the site carrier (from checkout metadata) so the issued
@@ -881,6 +884,7 @@ async function handleSuccessfulPayment(
     const siteSigner = metaSiteId ? await resolveSiteEventSigner(metaSiteId, eventId) : null;
     const ev = await getEvent(eventId, siteSigner ?? undefined);
     if (ev) {
+      editionsCarrier = ev.creatorFeedSigner;
       eventTitle = ev.title;
       eventDate = ev.startDate;
       eventLocation = ev.location ?? "";
@@ -1011,6 +1015,7 @@ async function handleSuccessfulPayment(
             via: "stripe",
             paid: true,
             claimedAt,
+            ...(editionsCarrier ? { carrier: editionsCarrier } : {}),
             ...(prefetchedOrderRef
               ? { orderRef: prefetchedOrderRef }
               : { encryptedOrder }),

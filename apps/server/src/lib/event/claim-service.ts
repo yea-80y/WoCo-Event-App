@@ -12,8 +12,9 @@ import type {
   PendingClaimEntry,
   PendingClaimsFeed,
 } from "@woco/shared";
-import { verifyTicketSignature } from "@woco/shared";
+import { verifyTicketSignature, contentFeedSocIdentifier, editionsContentTopic } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
+import { readSocPayload } from "../swarm/soc-upload.js";
 import {
   pack4096,
   decode4096,
@@ -38,6 +39,62 @@ import { heldFor } from "./reservation-store.js";
 
 /** Internal result type — `_pendingId` is stripped before returning to clients */
 export type ClaimResult = ClaimedTicket & { _pendingId?: string };
+
+// ---------------------------------------------------------------------------
+// Editions feed reads (carrier-owned SOC | legacy platform feed)
+// ---------------------------------------------------------------------------
+//
+// Phase B: a client-owned event's editions feed is a Single-Owner Chunk owned by
+// the organiser's content-feed signer (the `carrier` — a public ADDRESS, resolved
+// server-side from the trusted event feed, NEVER from a client request). The
+// server holds no key for it; it can only READ. When no carrier is known we fall
+// back to the legacy platform-signed feed (older events). The 4096-byte `pack4096`
+// page is the SOC's inline payload — same bytes the legacy feed held, so every
+// decode below (`decode4096`, slot-0 metaRef) is unchanged.
+
+function bytesToHexStr(b: Uint8Array): string {
+  let s = "";
+  for (const x of b) s += x.toString(16).padStart(2, "0");
+  return s;
+}
+
+function editionsSocIdHex(seriesId: string, page: number): string {
+  return bytesToHexStr(contentFeedSocIdentifier(editionsContentTopic(seriesId, page)));
+}
+
+/** Read one editions page — carrier-owned SOC when a carrier is known, else the
+ *  legacy platform feed. Returns the raw 4096-byte page or null if absent. */
+async function readEditionsPage(
+  seriesId: string,
+  page: number,
+  carrier?: string,
+): Promise<Uint8Array | null> {
+  if (carrier) {
+    return readSocPayload(carrier, editionsSocIdHex(seriesId, page)).catch(() => null);
+  }
+  return readFeedPage(topicEditions(seriesId, page));
+}
+
+/** Page-0 read with retry — first claim after publish may race SOC/feed
+ *  propagation. Mirrors `readFeedPageWithRetry` for the carrier path. */
+async function readEditionsPage0WithRetry(
+  seriesId: string,
+  carrier?: string,
+  maxRetries = 5,
+  initialDelayMs = 1000,
+): Promise<Uint8Array | null> {
+  if (!carrier) return readFeedPageWithRetry(topicEditions(seriesId, 0));
+  let delay = initialDelayMs;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await readEditionsPage(seriesId, 0, carrier);
+    if (result) return result;
+    if (attempt < maxRetries) {
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 1.5, 5000);
+    }
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Claim identifier (wallet or email)
@@ -104,8 +161,12 @@ export async function claimTicket(opts: {
   paid?: boolean;
   /** Override the claim timestamp (ISO string). Defaults to now. Used by Stripe webhook to record payment time. */
   claimedAt?: string;
+  /** Phase B: organiser's content-feed signer ADDRESS (the editions SOC owner).
+   *  Resolved server-side from the trusted event feed (`creatorFeedSigner`), never
+   *  from the request body. Absent ⇒ legacy platform-signed editions feed. */
+  carrier?: string;
 }): Promise<ClaimResult> {
-  const { seriesId, identifier, encryptedOrder, orderRef: prefetchedOrderRef, via, paid, claimedAt: claimedAtOverride } = opts;
+  const { seriesId, identifier, encryptedOrder, orderRef: prefetchedOrderRef, via, paid, claimedAt: claimedAtOverride, carrier } = opts;
 
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
@@ -163,7 +224,7 @@ export async function claimTicket(opts: {
   //    a process-lifetime cache is safe and saves 2 Swarm round-trips per
   //    claim after the first one — these dominated the measured per-claim
   //    latency.
-  const cachedMeta = await loadSeriesMeta(seriesId);
+  const cachedMeta = await loadSeriesMeta(seriesId, carrier);
   timings.metaRead = lap();
 
   const editionsPage0 = cachedMeta.editionsPage0;
@@ -192,7 +253,7 @@ export async function claimTicket(opts: {
     Array.from({ length: pageCount }, (_, p) =>
       Promise.all([
         readFeedPage(topicClaims(seriesId, p)),
-        p === 0 ? Promise.resolve(editionsPage0) : readFeedPage(topicEditions(seriesId, p)),
+        p === 0 ? Promise.resolve(editionsPage0) : readEditionsPage(seriesId, p, carrier),
       ]),
     ),
   );
@@ -377,14 +438,19 @@ type CachedSeriesMeta = {
 
 const seriesMetaCache = new Map<string, CachedSeriesMeta>();
 
-async function loadSeriesMeta(seriesId: string): Promise<CachedSeriesMeta> {
-  const cached = seriesMetaCache.get(seriesId);
+async function loadSeriesMeta(seriesId: string, carrier?: string): Promise<CachedSeriesMeta> {
+  // Cache key includes the carrier: a client-owned event and a legacy event
+  // could (in theory) collide on seriesId, and an early no-carrier miss must not
+  // pin a wrong entry for a later carrier-aware read. Editions are immutable, so
+  // the (seriesId, carrier) entry is safe for the process lifetime.
+  const cacheKey = carrier ? `${seriesId}|${carrier.toLowerCase()}` : seriesId;
+  const cached = seriesMetaCache.get(cacheKey);
   if (cached) return cached;
 
-  // Use the retry variant — first-time load may race with feed propagation
+  // Use the retry variant — first-time load may race with feed/SOC propagation
   // right after series creation. Subsequent calls hit the cache so retry
   // cost is paid at most once.
-  const editionsPage0 = await readFeedPageWithRetry(topicEditions(seriesId, 0));
+  const editionsPage0 = await readEditionsPage0WithRetry(seriesId, carrier);
   if (!editionsPage0) throw new Error("Series not found");
   const refs = decode4096(editionsPage0);
   if (refs.length === 0) throw new Error("Series has no metadata");
@@ -401,7 +467,7 @@ async function loadSeriesMeta(seriesId: string): Promise<CachedSeriesMeta> {
     approvalRequired: !!parsed.approvalRequired,
     editionsPage0,
   };
-  seriesMetaCache.set(seriesId, meta);
+  seriesMetaCache.set(cacheKey, meta);
   return meta;
 }
 
@@ -409,8 +475,9 @@ export async function getClaimStatus(
   seriesId: string,
   userAddress?: string,
   userEmailHash?: string,
+  carrier?: string,
 ): Promise<SeriesClaimStatus> {
-  const meta = await loadSeriesMeta(seriesId);
+  const meta = await loadSeriesMeta(seriesId, carrier);
   const pageCount = meta.pageCount;
 
   // Fan out reads: all claim pages + (when needed) pending-claims feed in

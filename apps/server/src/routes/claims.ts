@@ -295,7 +295,7 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   if (series.gate) {
     // firstN needs the committed claim count of THIS series; other windows don't.
     const tierClaimed = gateNeedsClaimCount(series.gate)
-      ? (await getClaimStatus(seriesId)).claimed
+      ? (await getClaimStatus(seriesId, undefined, undefined, event.creatorFeedSigner)).claimed
       : undefined;
     const phase = gatePhase(series.gate, { tierClaimed });
     if (phase === "closed") {
@@ -495,7 +495,7 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       && parseFloat(series.payment.price) > 0
       && !series.approvalRequired;
     const ticket: ClaimResult = await queueSeriesClaim(seriesId, () =>
-      claimTicket({ seriesId, identifier, encryptedOrder, via, paid }),
+      claimTicket({ seriesId, identifier, encryptedOrder, via, paid, carrier: event.creatorFeedSigner }),
     );
 
     // Approval flow: strip internal _pendingId and return pending state
@@ -551,7 +551,7 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
     }
 
     // v1 Swarm-backed events
-    const status = await getClaimStatus(seriesId, userAddress || undefined, userEmailHash || undefined);
+    const status = await getClaimStatus(seriesId, userAddress || undefined, userEmailHash || undefined, event?.creatorFeedSigner);
     return c.json({ ok: true, data: status });
   } catch (err) {
     console.error("[api] getClaimStatus error:", err);

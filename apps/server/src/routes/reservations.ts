@@ -118,7 +118,7 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
       if (!onChainData) return 0;
       return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
     }
-    const status = await getClaimStatus(seriesId);
+    const status = await getClaimStatus(seriesId, undefined, undefined, event.creatorFeedSigner);
     return Math.max(0, status.available);
   };
 
