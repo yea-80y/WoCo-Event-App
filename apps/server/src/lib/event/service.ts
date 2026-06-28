@@ -410,23 +410,16 @@ export async function getEventForDisplay(
   untrustedSigner?: string,
 ): Promise<EventFeed | null> {
   if (untrustedSigner) {
-    // Honour the client hint ONLY for events with NO trusted directory carrier
-    // (skipAutoList client events) — a forged hint must never override a listed
-    // event's display. resolveCreatorFeedSigner reads the CACHED global directory
-    // (fast), so this also SHORT-CIRCUITS the slow platform-feed retry inside
-    // getEvent for client events that have no platform feed (the /list + event-page
-    // path). Non-caching: this hint read never writes the money-path cache.
-    const trustedCarrier = await resolveCreatorFeedSigner(eventId);
-    if (!trustedCarrier) {
-      const soc = await readEventFeedSoc(eventId, untrustedSigner);
-      if (soc) return soc;
-    }
+    // A client hint reads the SOC DIRECTLY — fast, display-only, NON-CACHING. This
+    // avoids the slow global-directory resolution (`listEvents`) for skipAutoList
+    // client events, so `/list`'s federated read stays inside its timeout. A forged
+    // hint only shapes THIS one response; it never writes the money-path cache, and
+    // every money read uses the trusted `getEvent` instead. SOC miss → trusted
+    // resolution below (legacy/platform events have no hint anyway).
+    const soc = await readEventFeedSoc(eventId, untrustedSigner);
+    if (soc) return soc;
   }
-  const trusted = await getEvent(eventId);
-  if (trusted) return trusted;
-  if (!untrustedSigner) return null;
-  // Untrusted read — bypasses the cache entirely (no read-stale risk, no poison).
-  return readEventFeedSoc(eventId, untrustedSigner);
+  return getEvent(eventId);
 }
 
 /** Invalidate the event cache after a publish/update so the next read is fresh. */
