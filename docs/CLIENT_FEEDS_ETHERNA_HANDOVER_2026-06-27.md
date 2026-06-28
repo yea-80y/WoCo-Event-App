@@ -31,6 +31,34 @@ the event creator — one surface, never "two paths".
 - Re-test: create event w/ Etherna selected → logs show `[batch-router] event deploy →
   etherna … batch`; register-on-chain should pass.
 
+## ⛔ BLOCKER found in testing (do FIRST) — skipAutoList client-signed events 404
+
+Symptom: create event via builder → event PAGE 404s (`GET /api/events/:id`) AND
+`/list` returns "Source server returned HTTP 404". Same root cause.
+
+Root cause (verified, file:line): the builder creates with `skipAutoList` →
+`addToEventDirectory(..., {skipPublicDirectory:true})` (`service.ts:231,630`) writes
+the CREATOR directory (carrier present) but SKIPS the global directory.
+`getEvent(id)` resolves the carrier ONLY via the global directory
+(`resolveCreatorFeedSigner` → `listEvents()`, `service.ts:357`) → null → falls back
+to the legacy PLATFORM feed (`service.ts:387`) → EMPTY because Fix A made the event
+client-signed. → 404. `/list` calls `getEvent` to verify → same 404.
+
+This is a Fix A regression: it flipped ALL events to client-signed but never threaded
+the carrier for skipAutoList/site events (the prior handover explicitly left this "NOT
+done"). NOT the Etherna work.
+
+Fix (carrier-threading — NO global registry, that was deliberately reverted): the
+CLIENT supplies its `creatorFeedSigner` (it has it post-create) when adding the event
+to a SITE and when calling `/list`; the server stamps it into the SiteEventsIndex
+(`stampEventSigners`/EventsTab → deployed-site event page) and the global directory
+(`/list` → `addEventToDirectory`), verifying `creatorAddress == parent` by reading the
+SOC with that signer via `getEventForDisplay` (NEVER the cached `getEvent`). Touch
+points: `SiteBuilder.createWocoListing` (send `signer`), `/list` route (use
+`getEventForDisplay(id, signer)` + pass carrier to `addEventToDirectory`), the
+site-add path (`routes/sites.ts` `stampEventSigners`), `EventsTab`. Existing
+skipAutoList test events are unrecoverable (carrier never threaded) — re-create.
+
 ## OPEN follow-ups (pick up here)
 1. **Event detail-feed SOC → Etherna.** Still stamps on WoCo via `/api/swarm/soc`
    (`soc-upload.ts` hard-codes `getBee`). Routing it needs the READ path too
