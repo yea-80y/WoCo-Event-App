@@ -36,15 +36,20 @@ the event creator — one surface, never "two paths".
 Symptom: passkey login → create event via builder → event PAGE 404s
 (`GET /api/events/:id`, no `?signer=`) AND `/list` returns "Source server returned
 HTTP 404". Same root cause. Reproduced on event `5ddc4c0a-…` (creator
-`0x90ccc0ba…`). CONFIRMED CLIENT-SIGNED (passkey → `getContentFeedSigner()` returns a
-signer). NOT external-wallet/platform-signed (an earlier guess — WRONG, ignore).
+`0x90ccc0ba…`).
 
-Verified evidence: event is NOT in the global directory; no-hint `getEvent(id)`
-mostly MISSES with slow `readFeedPageWithRetry` retries; rare hits are
-`_eventCache` artifacts from hint-based reads. (Confirm the client SOC actually
-uploaded — no `/api/swarm/soc` line was seen in logs for this event; if it never
-uploaded, re-create; needs the frontend `npm run deploy`'d so the client-sign step
-runs.)
+CONFIRMED FROM DATA (in-container, not inference):
+- CLIENT-SIGNED: `getCreatorEvents(0x90ccc0ba…)` → entry `5ddc4c0a` has
+  `creatorFeedSigner = 0x3db6c160cbe120fd202c066e32c22978f94ac2b8`.
+- SOC UPLOADED + READABLE: `readEventFeedSoc("5ddc4c0a…","0x3db6c160…")` returns the
+  full feed ("Etherna test 2"). So the event is RECOVERABLE — NOT lost; do NOT
+  re-create. The reproduce-it command:
+  `docker compose exec -T server node --import tsx -e 'import("/app/apps/server/src/lib/event/service.ts").then(m=>m.readEventFeedSoc("<id>","<signer>")).then(f=>console.log(!!f, f?.title))'`
+- NOT in the global directory (skipAutoList). No-hint `getEvent(id)` misses; a read
+  WITH `?signer=0x3db6c160…` works but is SLOW (getEventForDisplay runs the slow
+  `getEvent` platform-fallback retries BEFORE the SOC read → ~20s; curl timed out at
+  25s — that's a timeout, not SOC-absent). Consider trying the SOC before the slow
+  platform fallback in getEventForDisplay.
 
 Root cause (file:line): builder creates `skipAutoList` →
 `addToEventDirectory(...,{skipPublicDirectory:true})` (`service.ts:231,630`) writes
@@ -69,6 +74,8 @@ they could:
      (`addEventToDirectory` — `EventDirectoryEntry` already has `creatorFeedSigner`).
 NO global registry (deliberately reverted) — only thread the carrier the caller
 already holds. NOT the Etherna work; a Fix A carrier-threading gap left "NOT done".
+The SOC + carrier already exist (proven above), so the fix makes existing events
+work — no data migration, no re-create.
 
 NOTE: no-hint `getEvent` reads are SLOW for these events (retry backoff) — budget for
 it when diagnosing; prefer reading WITH `?signer=<creatorFeedSigner>` to verify the
