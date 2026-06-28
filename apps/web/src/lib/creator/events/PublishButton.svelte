@@ -5,6 +5,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
+  import { publishEditions } from "../../pod/editions-publisher.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
 
@@ -223,6 +224,40 @@
 
       const eventId = result.eventId!;
       progress = 90;
+
+      // ── Publish client-owned editions feed ────────────────────────────
+      // The editions feed (woco/pod/editions/{seriesId}) is what reserve / claim /
+      // Stripe read to allocate a ticket slot. It is a SOC OWNED BY THE CARRIER —
+      // this browser builds + signs it; the server holds no key for it. Without it
+      // every claim path throws "Series not found" (reserve + Stripe checkout +
+      // email claim all break). Critical path: a failure here fails the publish.
+      // Only the client-owned (feedSigner) path applies; legacy platform events
+      // (web3/coinbase, no feedSigner) fall back to their existing behaviour.
+      if (feedSigner && result.eventFeed) {
+        phase = "uploading";
+        step = "Publishing tickets...";
+        try {
+          await publishEditions({
+            eventId,
+            imageHash: result.eventFeed.imageHash,
+            creatorAddress: result.eventFeed.creatorAddress,
+            podPrivateKey: keypair.privateKey,
+            podPublicKeyHex: keypair.publicKeyHex,
+            feedSigner,
+            ...(gatewayUrl ? { gatewayUrl } : {}),
+            series: series.map((s) => ({
+              seriesId: s.seriesId,
+              name: s.name,
+              totalSupply: s.totalSupply,
+              ...(s.approvalRequired ? { approvalRequired: true } : {}),
+            })),
+            onProgress: (done, total) => { step = `Publishing tickets ${done}/${total}...`; },
+          });
+        } catch (e) {
+          error = `Failed to publish tickets: ${e instanceof Error ? e.message : String(e)}`;
+          return;
+        }
+      }
 
       // ── On-chain registration (paid series only) ──────────────────────
       // The server runs the registration tx and returns onChainEventId; it does
