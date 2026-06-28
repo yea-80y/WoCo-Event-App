@@ -33,31 +33,46 @@ the event creator — one surface, never "two paths".
 
 ## ⛔ BLOCKER found in testing (do FIRST) — skipAutoList client-signed events 404
 
-Symptom: create event via builder → event PAGE 404s (`GET /api/events/:id`) AND
-`/list` returns "Source server returned HTTP 404". Same root cause.
+Symptom: passkey login → create event via builder → event PAGE 404s
+(`GET /api/events/:id`, no `?signer=`) AND `/list` returns "Source server returned
+HTTP 404". Same root cause. Reproduced on event `5ddc4c0a-…` (creator
+`0x90ccc0ba…`). CONFIRMED CLIENT-SIGNED (passkey → `getContentFeedSigner()` returns a
+signer). NOT external-wallet/platform-signed (an earlier guess — WRONG, ignore).
 
-Root cause (verified, file:line): the builder creates with `skipAutoList` →
-`addToEventDirectory(..., {skipPublicDirectory:true})` (`service.ts:231,630`) writes
+Verified evidence: event is NOT in the global directory; no-hint `getEvent(id)`
+mostly MISSES with slow `readFeedPageWithRetry` retries; rare hits are
+`_eventCache` artifacts from hint-based reads. (Confirm the client SOC actually
+uploaded — no `/api/swarm/soc` line was seen in logs for this event; if it never
+uploaded, re-create; needs the frontend `npm run deploy`'d so the client-sign step
+runs.)
+
+Root cause (file:line): builder creates `skipAutoList` →
+`addToEventDirectory(...,{skipPublicDirectory:true})` (`service.ts:231,630`) writes
 the CREATOR directory (carrier present) but SKIPS the global directory.
-`getEvent(id)` resolves the carrier ONLY via the global directory
-(`resolveCreatorFeedSigner` → `listEvents()`, `service.ts:357`) → null → falls back
-to the legacy PLATFORM feed (`service.ts:387`) → EMPTY because Fix A made the event
-client-signed. → 404. `/list` calls `getEvent` to verify → same 404.
+`getEvent(id)` (no hint) resolves the carrier ONLY via the global directory
+(`resolveCreatorFeedSigner`→`listEvents()`, `service.ts:357`) → null → falls back to
+the legacy PLATFORM feed (`service.ts:387`) → EMPTY (client-signed) → 404. `/list`
+calls `getEvent` to verify → same 404.
 
-This is a Fix A regression: it flipped ALL events to client-signed but never threaded
-the carrier for skipAutoList/site events (the prior handover explicitly left this "NOT
-done"). NOT the Etherna work.
+IMPORTANT nuance: `stampEventSigners` (`routes/sites.ts:99`) ALREADY resolves the
+OWNER's carriers from `getCreatorEvents` (the creator directory, which HAS the
+carrier). So the deployed site's events-full / SiteEventsIndex DOES carry the signer
+for owner events. The gaps are CALLER-SIDE — two reads that don't pass the carrier
+they could:
+  1. Deployed-site event-DETAIL read calls `GET /api/events/:id` WITHOUT `?signer=`
+     — must pass the carrier it already has from the SiteEventsIndex (multisite
+     runtime — `MultiSiteApp`/site EventDetail; needs STEP 1b rebuild + re-publish).
+  2. `/list` calls `getEvent(id)` with no signer — `SiteBuilder.createWocoListing`
+     must send the creator's `creatorFeedSigner`; `/list` reads via
+     `getEventForDisplay(id, signer)` (NEVER cached `getEvent`), verifies
+     `creatorAddress==parent`, then stamps the carrier into the global directory
+     (`addEventToDirectory` — `EventDirectoryEntry` already has `creatorFeedSigner`).
+NO global registry (deliberately reverted) — only thread the carrier the caller
+already holds. NOT the Etherna work; a Fix A carrier-threading gap left "NOT done".
 
-Fix (carrier-threading — NO global registry, that was deliberately reverted): the
-CLIENT supplies its `creatorFeedSigner` (it has it post-create) when adding the event
-to a SITE and when calling `/list`; the server stamps it into the SiteEventsIndex
-(`stampEventSigners`/EventsTab → deployed-site event page) and the global directory
-(`/list` → `addEventToDirectory`), verifying `creatorAddress == parent` by reading the
-SOC with that signer via `getEventForDisplay` (NEVER the cached `getEvent`). Touch
-points: `SiteBuilder.createWocoListing` (send `signer`), `/list` route (use
-`getEventForDisplay(id, signer)` + pass carrier to `addEventToDirectory`), the
-site-add path (`routes/sites.ts` `stampEventSigners`), `EventsTab`. Existing
-skipAutoList test events are unrecoverable (carrier never threaded) — re-create.
+NOTE: no-hint `getEvent` reads are SLOW for these events (retry backoff) — budget for
+it when diagnosing; prefer reading WITH `?signer=<creatorFeedSigner>` to verify the
+SOC exists.
 
 ## OPEN follow-ups (pick up here)
 1. **Event detail-feed SOC → Etherna.** Still stamps on WoCo via `/api/swarm/soc`
