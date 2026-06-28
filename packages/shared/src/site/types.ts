@@ -382,6 +382,11 @@ export interface SiteRuntimeConfig {
   site?: Site;
   /** Legacy single-event id — present in v1 single-event bundles. */
   eventId?: string;
+  /** Phase B discovery carrier: the event's content-feed signer address. Baked in
+   *  at deploy time so the page reads GET /api/events/:id?signer=… and the server
+   *  resolves the client-signed SOC directly — required for unlisted (skipAutoList)
+   *  events, which aren't in the global directory. Absent for legacy/platform feeds. */
+  eventSigner?: string;
   /** Bee gateway URL for fetching feeds + image refs at runtime. */
   gatewayUrl: string;
   /** API base URL for contactForm POSTs and event reads. */

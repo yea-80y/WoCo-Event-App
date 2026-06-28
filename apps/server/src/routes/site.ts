@@ -8,6 +8,7 @@ import {
   BEE_URL,
 } from "../config/swarm.js";
 import { requireAuth } from "../middleware/auth.js";
+import { getCreatorEvents } from "../lib/event/service.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
@@ -106,6 +107,19 @@ site.post("/deploy", requireAuth, async (c) => {
     const siteHtmlPath = join(DIST_SITE_PATH, "site.html");
     const siteHtml = await fs.readFile(siteHtmlPath, "utf-8");
 
+    // Phase B carrier: bake the event's content-feed signer into SITE_CONFIG so the
+    // deployed page reads GET /api/events/:id?signer=… and the server reads the
+    // client-signed SOC directly. Without it an unlisted (skipAutoList) event can't
+    // be resolved — it isn't in the global directory — and the page fails to load.
+    // The deployer IS the owner, so their creator directory holds the carrier.
+    let eventSigner: string | undefined;
+    try {
+      const creatorEvents = await getCreatorEvents(parentAddress);
+      eventSigner = creatorEvents.find((e) => e.eventId === eventId)?.creatorFeedSigner;
+    } catch {
+      // Non-fatal: legacy/platform-signed events have no carrier and resolve via the directory.
+    }
+
     const config = {
       apiUrl,
       gatewayUrl: gatewayUrl?.trim() || "https://gateway.woco-net.com",
@@ -113,6 +127,7 @@ site.post("/deploy", requireAuth, async (c) => {
       // be fetched from the WoCo gateway, regardless of where the site is hosted.
       contentGatewayUrl: "https://gateway.woco-net.com",
       eventId,
+      ...(eventSigner ? { eventSigner } : {}),
       ...(paraApiKey?.trim() ? { paraApiKey: paraApiKey.trim() } : {}),
     };
     const configScript = `<script>window.SITE_CONFIG=${JSON.stringify(config)};</script>`;

@@ -492,7 +492,12 @@
       }
     }
 
-    getEvent(eventId, apiUrl)
+    // Phase B carrier baked into SITE_CONFIG at deploy time: lets the server read
+    // this event's client-signed SOC directly. Required for unlisted (skipAutoList)
+    // events — they aren't in the global directory, so a no-signer read can't
+    // resolve the carrier and 404s. Also skips the slow directory scan when listed.
+    const eventSigner = (typeof window !== "undefined" && window.SITE_CONFIG?.eventSigner) || undefined;
+    getEvent(eventId, apiUrl, eventSigner)
       .then((fresh) => {
         if (!fresh) {
           if (_cached === null) error = "Event not found";
