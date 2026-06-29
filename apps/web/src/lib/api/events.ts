@@ -152,7 +152,7 @@ export async function registerSeriesOnChain(
   eventId: string,
   seriesId: string,
   signer?: string,
-): Promise<{ onChainEventId: string; txHash?: string }> {
+): Promise<{ onChainEventId: string; txHash?: string; eventFeed?: EventFeed }> {
   // The route returns onChainEventId/txHash at the TOP level (not under .data),
   // so read the raw envelope rather than ApiResponse<T>'s data field.
   // `signer` is the content-feed carrier so the server can read the just-published
@@ -161,11 +161,11 @@ export async function registerSeriesOnChain(
   const resp = (await authPost<unknown>(
     `/api/events/${eventId}/register-on-chain`,
     { seriesId, ...(signer ? { signer } : {}) },
-  )) as { ok: boolean; error?: string; onChainEventId?: string; txHash?: string };
+  )) as { ok: boolean; error?: string; onChainEventId?: string; txHash?: string; eventFeed?: EventFeed };
   if (!resp.ok || !resp.onChainEventId) {
     throw new Error(resp.error || "register-on-chain failed");
   }
-  return { onChainEventId: resp.onChainEventId, txHash: resp.txHash };
+  return { onChainEventId: resp.onChainEventId, txHash: resp.txHash, eventFeed: resp.eventFeed };
 }
 
 /** Confirm on-chain registration for a series after the organiser's registerEvent tx. */

@@ -46,7 +46,15 @@ async function uploadBytesToEtherna(bytes: Uint8Array, batchId: string): Promise
     throw new HttpStatusError(resp.status, `Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
   }
   const { reference } = await resp.json() as { reference: string };
-  await registerEthernaOffer(reference);
+  // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g. the
+  // event image). The server's own claim/reserve reads are bearer-authed
+  // (downloadFromEthernaBytes), so they resolve before the offer propagates.
+  // Awaiting it added a remote round-trip to EVERY upload — the dominant publish
+  // cost once B1 added N per-edition ticket bodies on top of the pods. A missed
+  // offer only delays anonymous reads until something re-registers, never a claim.
+  void registerEthernaOffer(reference).catch((err) =>
+    console.warn(`[etherna] offer-register failed (non-fatal) for ${reference}: ${(err as Error)?.message}`),
+  );
   return reference.toLowerCase().replace(/^0x/, "") as Hex64;
 }
 

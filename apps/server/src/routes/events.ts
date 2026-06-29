@@ -587,15 +587,21 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     return c.json({ ok: false, error: message }, 500);
   }
 
+  let updatedFeed: Awaited<ReturnType<typeof confirmSeriesOnChain>>;
   try {
-    await confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint);
+    updatedFeed = await confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint);
   } catch (err) {
     console.error("[api] register-on-chain confirm error:", err);
     // Feed update failed but tx is on-chain — return the eventId so client can retry confirm
     return c.json({ ok: false, error: "Tx confirmed but feed update failed — retry", onChainEventId, txHash }, 500);
   }
 
-  return c.json({ ok: true, onChainEventId, txHash });
+  return c.json({
+    ok: true,
+    onChainEventId,
+    txHash,
+    ...(feed.creatorFeedSigner ? { eventFeed: updatedFeed } : {}),
+  });
 });
 
 // ── RA.co GraphQL bypass ─────────────────────────────────────────────────────

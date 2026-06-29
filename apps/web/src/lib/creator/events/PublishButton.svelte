@@ -5,7 +5,6 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
-  import { publishEditions } from "../../pod/editions-publisher.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
 
@@ -225,48 +224,24 @@
       const eventId = result.eventId!;
       progress = 90;
 
-      // ── Publish client-owned editions feed ────────────────────────────
-      // The editions feed (woco/pod/editions/{seriesId}) is what reserve / claim /
-      // Stripe read to allocate a ticket slot. It is a SOC OWNED BY THE CARRIER —
-      // this browser builds + signs it; the server holds no key for it. Without it
-      // every claim path throws "Series not found" (reserve + Stripe checkout +
-      // email claim all break). Critical path: a failure here fails the publish.
-      // Only the client-owned (feedSigner) path applies; legacy platform events
-      // (web3/coinbase, no feedSigner) fall back to their existing behaviour.
-      if (feedSigner && result.eventFeed) {
-        phase = "uploading";
-        step = "Publishing tickets...";
-        try {
-          await publishEditions({
-            eventId,
-            imageHash: result.eventFeed.imageHash,
-            creatorAddress: result.eventFeed.creatorAddress,
-            podPrivateKey: keypair.privateKey,
-            podPublicKeyHex: keypair.publicKeyHex,
-            feedSigner,
-            ...(gatewayUrl ? { gatewayUrl } : {}),
-            series: series.map((s) => ({
-              seriesId: s.seriesId,
-              name: s.name,
-              totalSupply: s.totalSupply,
-              ...(s.approvalRequired ? { approvalRequired: true } : {}),
-            })),
-            onProgress: (done, total) => { step = `Publishing tickets ${done}/${total}...`; },
-          });
-        } catch (e) {
-          error = `Failed to publish tickets: ${e instanceof Error ? e.message : String(e)}`;
-          return;
-        }
-      }
+      // No separate editions feed is published. Each per-edition ticket body is
+      // already uploaded by createEventV2 (server) and committed in the
+      // on-chain-anchored SeriesManifestBlob.podRefs; on-chain registration below
+      // makes the contract the supply/allocation ledger. Reserve, claim-status and
+      // the Stripe mint webhook all read the contract + manifest (the v2 path) —
+      // they never touch a Swarm editions index. Publishing one here only added a
+      // redundant browser re-upload of bodies that already exist, and a failure mode
+      // that blocked the on-chain registration step below.
 
       // ── On-chain registration (paid series only) ──────────────────────
       // The server runs the registration tx and returns onChainEventId; it does
-      // NOT write the event feed. For a client-owned feed the OWNER merges each
-      // onChainEventId into the feed it signed and re-signs the SOC once here.
+      // NOT write the client-owned event feed. It returns the server-verified
+      // updated feed, and the OWNER signs that exact feed once here. Do not rely
+      // on local mutation alone: if the final SOC misses onChainEventId, Stripe
+      // falls back to the legacy Swarm claim path.
+      let ownedFeed = result.eventFeed;
       if (hasPaidSeries) {
         phase = "chain";
-        // The feed we just signed (Phase B); undefined for legacy platform events.
-        const ownedFeed = result.eventFeed;
         for (let i = 0; i < series.length; i++) {
           const s = series[i]!;
           if (!s.payment) continue; // skip free series
@@ -274,8 +249,10 @@
           step = `Registering "${s.name}" on-chain...`;
 
           try {
-            const { onChainEventId } = await registerSeriesOnChain(eventId, s.seriesId, feedSigner?.address);
-            if (ownedFeed) {
+            const { onChainEventId, eventFeed } = await registerSeriesOnChain(eventId, s.seriesId, feedSigner?.address);
+            if (eventFeed) {
+              ownedFeed = eventFeed;
+            } else if (ownedFeed) {
               const ss = ownedFeed.series.find((x) => x.seriesId === s.seriesId);
               if (ss) ss.onChainEventId = onChainEventId;
             }
