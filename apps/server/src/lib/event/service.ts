@@ -386,7 +386,7 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
   // applyOnChainEventIds fills a series' onChainEventId from the server's chain
   // receipt when the signed feed lacks it (client SOC not re-signed). Applied on the
   // cache hit too so a feed cached BEFORE registration still flips to v2.
-  if (cached && cached.expiresAt > now) return applyOnChainEventIds(cached.feed);
+  if (cached && cached.expiresAt > now) return await applyOnChainEventIds(cached.feed);
 
   // Phase B: if the event has a known content-feed signer (hint or directory
   // carrier), read its client-signed SOC. Fall back to the legacy platform feed
@@ -399,7 +399,7 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
   }
   if (feed) {
     _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
-    applyOnChainEventIds(feed);
+    await applyOnChainEventIds(feed);
     for (const s of feed.series) {
       console.log(`[event] Read series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
     }
