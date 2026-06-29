@@ -1,36 +1,42 @@
 /**
- * On-chain event-id resolver — CHAIN is the source of truth; this holds only an
- * in-memory cache (NO persistent file).
+ * On-chain event-id resolver. The CHAIN is the source of truth; this is a
+ * rebuildable CACHE (not authoritative state) with three speed tiers:
  *
- * `WoCoEventV2.registerEvent` sets `eventId = keccak256(abi.encode(msg.sender,
- * organiserNonce[msg.sender]++))` — a function of the SPONSOR WALLET's nonce, not
- * recomputable from the manifest. The money path detects a v2 (on-chain) series via
- * `swarmManifestRef && onChainEventId`, but reading `onChainEventId` only from the
- * organiser's client-signed event SOC is fragile (the browser re-sign silently fails),
- * which made every paid purchase fall to the dead v1 path → "Series not found" → refund.
+ *   1. in-memory map  — hot path, filled at registration → zero I/O on create→buy.
+ *   2. .data cache    — write-through JSON, loaded on startup so a RESTART/DEPLOY
+ *                       does NOT pay a chain rebuild. Pure cache: deletable, always
+ *                       reconstructable from the chain.
+ *   3. chain reconcile — slower fallback for a truly-cold miss (entry in neither
+ *                       tier), then persisted so it's paid at most once.
  *
- * So the server resolves `onChainEventId` from the CHAIN and caches it in memory:
- *   - HOT PATH: populated at registration time (`recordOnChainEventId`, called from
- *     confirmSeriesOnChain) → zero chain calls during normal create→buy.
- *   - COLD MISS (e.g. after a restart): rebuild from chain by enumerating the sponsor's
- *     registrations (`organiserNonce` + the deterministic eventId derivation + `getEvent`),
- *     matching each on-chain `manifestRef` to the series' `manifestRef`. Throttled + cached.
- *
- * No `.data` file: the cache is a pure, rebuildable projection of the chain (same
- * philosophy as the likes projection). The server owns no authoritative state here and
- * never signs the user's event feed — it only remembers an id the contract assigned.
+ * Why this exists: the money path detects a v2 (on-chain) series via
+ * `swarmManifestRef && onChainEventId`. `WoCoEventV2.registerEvent` sets
+ * `eventId = keccak256(abi.encode(msg.sender, organiserNonce[msg.sender]++))` — a
+ * function of the SPONSOR WALLET's nonce, not recomputable from the manifest. Reading
+ * `onChainEventId` only from the organiser's client-signed event SOC is fragile (the
+ * browser re-sign silently fails), which made every paid purchase fall to the dead v1
+ * path → "Series not found" → refund. So the server resolves it from the chain and
+ * caches it. The server owns no truth here and never signs the user's feed — same
+ * "cache, not truth" philosophy as the likes projection.
  */
 
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { AbiCoder, keccak256 } from "ethers";
 import type { EventFeed } from "@woco/shared";
 import { getActiveChainId, getDeployedContract, getOnChainEvent } from "../chain/event-contract.js";
 import { getSponsorAddress } from "../chain/sponsor-wallet.js";
 
-/** `${eventId}|${seriesId}` → onChainEventId — the fast path, filled at registration. */
+const DATA_DIR = join(process.cwd(), ".data");
+const CACHE_FILE = join(DATA_DIR, "onchain-events.json");
+
+/** `${eventId}|${seriesId}` → onChainEventId — the persisted hot-path cache. */
 const byEventSeries = new Map<string, string>();
-/** lowercased on-chain manifestRef → onChainEventId — the chain projection (rebuilt). */
+/** lowercased on-chain manifestRef → onChainEventId — transient chain projection. */
 const byManifestRef = new Map<string, string>();
 
+let loaded = false;
+let dirty = false;
 let lastReconcileAt = 0;
 let reconcileInFlight: Promise<void> | null = null;
 const RECONCILE_THROTTLE_MS = 15_000;
@@ -39,9 +45,37 @@ function key(eventId: string, seriesId: string): string {
   return `${eventId}|${seriesId}`;
 }
 
+function ensureLoaded(): void {
+  if (loaded) return;
+  loaded = true;
+  try {
+    const obj = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as Record<string, string>;
+    for (const [k, v] of Object.entries(obj)) byEventSeries.set(k, v);
+    console.log(`[onchain-cache] Loaded ${byEventSeries.size} on-chain event ids from cache`);
+  } catch {
+    // No cache yet — it rebuilds from chain on demand.
+  }
+}
+
+function persist(): void {
+  if (!dirty) return;
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(byEventSeries)), "utf-8");
+    dirty = false;
+  } catch (err) {
+    console.error("[onchain-cache] Failed to persist:", err);
+  }
+}
+
 /** Record the id the contract assigned to a series (called right after the tx). */
 export function recordOnChainEventId(eventId: string, seriesId: string, onChainEventId: string): void {
-  byEventSeries.set(key(eventId, seriesId), onChainEventId);
+  ensureLoaded();
+  const k = key(eventId, seriesId);
+  if (byEventSeries.get(k) === onChainEventId) return;
+  byEventSeries.set(k, onChainEventId);
+  dirty = true;
+  persist();
 }
 
 /** Deterministic eventId for the sponsor's nth registration — mirrors the contract. */
@@ -51,8 +85,8 @@ function deriveEventId(sponsor: string, nonce: number): string {
 
 /**
  * Rebuild `byManifestRef` from the chain by walking the sponsor's registrations.
- * Bounded by `organiserNonce` (exact count), batched, throttled. One-time after a
- * restart in practice — the hot path is filled by recordOnChainEventId.
+ * Bounded by `organiserNonce` (exact count), batched, throttled. The fallback tier —
+ * the hot path + .data cache mean this rarely runs (cold/uncached series only).
  */
 async function reconcileFromChain(): Promise<void> {
   if (reconcileInFlight) return reconcileInFlight;
@@ -77,9 +111,9 @@ async function reconcileFromChain(): Promise<void> {
           if (ev?.manifestRef) byManifestRef.set(ev.manifestRef.toLowerCase(), ids[i]);
         }
       }
-      console.log(`[onchain-resolver] reconciled ${byManifestRef.size} on-chain events from chain`);
+      console.log(`[onchain-cache] reconciled ${byManifestRef.size} on-chain events from chain`);
     } catch (err) {
-      console.error("[onchain-resolver] reconcile failed:", err);
+      console.error("[onchain-cache] reconcile failed:", err);
     } finally {
       lastReconcileAt = Date.now();
       reconcileInFlight = null;
@@ -89,24 +123,25 @@ async function reconcileFromChain(): Promise<void> {
 }
 
 /**
- * Fill each series' `onChainEventId` from the chain projection when the signed feed
- * lacks it. Only fills when ABSENT — never overrides a value already in the feed.
- * Hot path (registration-cached) does NO chain work; a cold miss triggers ONE throttled
- * reconcile. Mutates and returns `feed`.
+ * Fill each series' `onChainEventId` from cache/chain when the signed feed lacks it.
+ * Only fills when ABSENT — never overrides a value already in the feed. Hot path
+ * (cache hit) does NO chain work; a cold miss triggers ONE throttled reconcile whose
+ * result is persisted. Mutates and returns `feed`.
  */
 export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> {
   const missing = feed.series.filter((s) => !s.onChainEventId && s.manifestRef);
   if (missing.length === 0) return feed;
+  ensureLoaded();
 
-  // Fast path: per-(event,series) cache filled at registration.
+  // Tier 1/2: per-(event,series) cache (in-memory, backed by .data).
   for (const s of missing) {
     const cached = byEventSeries.get(key(feed.eventId, s.seriesId));
     if (cached) s.onChainEventId = cached as typeof s.onChainEventId;
   }
-  let stillMissing = missing.filter((s) => !s.onChainEventId);
+  const stillMissing = missing.filter((s) => !s.onChainEventId);
   if (stillMissing.length === 0) return feed;
 
-  // Cold path: rebuild from chain, then match by manifestRef.
+  // Tier 3: rebuild from chain, then match by manifestRef + promote to the cache.
   const allKnown = stillMissing.every((s) => byManifestRef.has(s.manifestRef!.toLowerCase()));
   if (!allKnown) await reconcileFromChain();
 
@@ -114,8 +149,10 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
     const id = byManifestRef.get(s.manifestRef!.toLowerCase());
     if (id) {
       s.onChainEventId = id as typeof s.onChainEventId;
-      byEventSeries.set(key(feed.eventId, s.seriesId), id); // promote to fast path
+      byEventSeries.set(key(feed.eventId, s.seriesId), id);
+      dirty = true;
     }
   }
+  persist();
   return feed;
 }
