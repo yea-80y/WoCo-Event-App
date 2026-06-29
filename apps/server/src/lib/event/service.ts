@@ -1,5 +1,5 @@
 import type {
-  Hex64, Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary,
+  Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary,
   OrderField, ClaimMode, SeriesManifestBlob,
   SignedManifestV1, PodV2Body,
 } from "@woco/shared";
@@ -129,24 +129,17 @@ export async function createEventV2(opts: {
   // earlier phase throws before we reach the await.
   imagePromise.catch(() => {});
 
-  // ── Phase 2: Upload pod bodies for all series ─────────────────────────
-  emit("pods", 0, totalPods, "Uploading pod bodies...");
-  let podsUploaded = 0;
-  const BATCH = 40;
-
-  const podRefsBySeries = new Map<string, Hex64[]>();
-  for (const s of series) {
-    const refs: Hex64[] = [];
-    for (let i = 0; i < s.podBodies.length; i += BATCH) {
-      const batch = s.podBodies.slice(i, i + BATCH);
-      const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p), batchSelection)));
-      refs.push(...batchRefs);
-      podsUploaded += batchRefs.length;
-      emit("pods", podsUploaded, totalPods, `Uploading pods: ${podsUploaded}/${totalPods}`);
-    }
-    podRefsBySeries.set(s.seriesId, refs);
-  }
-
+  // ── Phase 2: image upload (pod bodies are NOT uploaded) ───────────────
+  // The per-edition pod bodies are never fetched by the claim/payment/order
+  // paths — those read `blob.signedManifest` and recompute the on-chain digest
+  // from `signedManifest.body` (events.ts, stripe.ts, orders.ts); none read
+  // `podRefs`. The on-chain anchor is the manifest digest (over the Merkle
+  // `metadataRoot`, already validated in-memory above via buildPodTree), so
+  // uploading N copies of near-identical bodies was pure cost (the dominant
+  // create-step latency, ~N serialised /bytes writes). podRefs is left empty;
+  // a future Merkle-inclusion claim path (B2) can rebuild refs from the bodies
+  // the client already holds. See EDITIONS_PUBLISH_SPEED handover.
+  emit("pods", totalPods, totalPods, "Tickets prepared");
   const imageHash = await imagePromise;
   emit("image", 1, 1, "Image uploaded");
   void whitelistHashes([imageHash]).catch((err) =>
@@ -158,14 +151,13 @@ export async function createEventV2(opts: {
 
   const seriesSummaries: SeriesSummary[] = await Promise.all(
     series.map(async (s, i) => {
-      const podRefs = podRefsBySeries.get(s.seriesId)!;
       const digestBytes = manifestDigest(s.signedManifest.body);
       const manifestDigestHex = bytesToHex0x(digestBytes);
 
       const blob: SeriesManifestBlob = {
         v: 2,
         signedManifest: s.signedManifest,
-        podRefs,
+        podRefs: [],
         manifestDigestHex,
       };
       const swarmManifestRef = await uploadToBytes(JSON.stringify(blob), batchSelection);
@@ -220,7 +212,10 @@ export async function createEventV2(opts: {
   } else {
     emit("finalize", 0, 1, "Preparing event feed for signing...");
   }
-  invalidateEventCache(eventId);
+  // Seed the money-path cache with the just-built feed so an immediate reserve/claim
+  // resolves it before the fire-and-forget directory carrier below has propagated
+  // (Phase B events have no platform feed to fall back to). See primeEventCache.
+  primeEventCache(eventId, eventFeed);
 
   // ── Update directories (fire-and-forget) ─────────────────────────────
   // creatorFeedSigner is the discovery carrier — stamped into BOTH the global and
@@ -253,12 +248,14 @@ export async function confirmSeriesOnChain(
   // if the organiser's SOC re-sign never lands. The chain stays authoritative.
   recordOnChainEventId(eventId, seriesId, onChainEventId);
 
-  // Same as the register read (Fix B): a freshly client-signed event has no platform
-  // feed and its directory carrier hasn't propagated, so getEvent() would stall on the
-  // whole-directory lookup and then return null → throw. Read the client SOC directly
-  // when the creator hands us their signer; fall back to the legacy read otherwise.
-  let feed = signerHint ? await readEventFeedSoc(eventId, signerHint) : null;
-  if (!feed) feed = await getEvent(eventId);
+  // The client's event SOC is uploaded AFTER registration completes, so a signerHint
+  // read here stalls on a not-yet-existent chunk (Bee network retrieval) — a hidden
+  // cost in the on-chain step. createEventV2 primed the cache moments ago, so resolve
+  // from it first (recordOnChainEventId above keeps the chain authoritative regardless).
+  // The signerHint SOC read stays as the cold-cache fallback (e.g. a retried confirm
+  // after a restart, once the client SOC does exist).
+  let feed = await getEvent(eventId);
+  if (!feed && signerHint) feed = await readEventFeedSoc(eventId, signerHint);
   if (!feed) throw new Error("Event not found");
 
   const updated: EventFeed = {
@@ -274,7 +271,10 @@ export async function confirmSeriesOnChain(
   if (!feed.creatorFeedSigner) {
     await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
   }
-  invalidateEventCache(eventId);
+  // Re-seed (not just invalidate) with the onChainEventId-merged feed so the test
+  // purchase's reserve/claim immediately after registration reads the v2 event from
+  // cache instead of racing the still-propagating directory carrier (Problem 2).
+  primeEventCache(eventId, updated);
 
   // Surface this series as a `ticket` POD type in the creator's POD directory
   // (powers the #/creator/pods manager + <PodPicker>). Fire-and-forget: the
@@ -449,6 +449,19 @@ export async function getEventForDisplay(
 /** Invalidate the event cache after a publish/update so the next read is fresh. */
 export function invalidateEventCache(eventId: string): void {
   _eventCache.delete(eventId);
+}
+
+/**
+ * Prime the event cache with a server-AUTHORED feed (create / chain-confirm). The
+ * server built this feed, so it is the most-trusted source possible — safe to seed
+ * the money-path cache directly. This bridges the discovery-carrier propagation gap:
+ * right after publish the global-directory entry that resolveCreatorFeedSigner needs
+ * hasn't propagated, and a Phase B event has no platform feed to fall back to, so an
+ * immediate reserve/claim would 404 "Event not found" until a refresh. Seeding the
+ * cache lets that first read succeed; the carrier is authoritative again after TTL.
+ */
+export function primeEventCache(eventId: string, feed: EventFeed): void {
+  _eventCache.set(eventId, { feed, expiresAt: Date.now() + EVENT_CACHE_TTL_MS });
 }
 
 interface EventDirectory {

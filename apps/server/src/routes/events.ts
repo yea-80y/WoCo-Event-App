@@ -513,6 +513,7 @@ events.post("/:id/confirm-chain", requireAuth, async (c) => {
 // Calls registerEvent via the sponsor wallet (no EOA needed for the organiser).
 // Verifies ownership, sends the tx, then writes onChainEventId back to the Swarm feed.
 events.post("/:id/register-on-chain", requireAuth, async (c) => {
+  const tStart = Date.now();
   const eventId = c.req.param("id");
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { seriesId: string; signer?: string };
@@ -527,12 +528,14 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   // Client-supplied ⇒ display-only, non-caching read (the ownership check below is
   // the gate; a forged signer can't poison the money-path cache).
   const signerHint = body.signer && /^0x[0-9a-fA-F]{40}$/.test(body.signer) ? body.signer.toLowerCase() : undefined;
-  // Fix B: when the authenticated creator hands us their own feed signer, read the
-  // client SOC DIRECTLY — skips the whole-directory `resolveCreatorFeedSigner` lookup
-  // (the ~32s publish→register stall). Safe here: this read is non-caching (can't
-  // poison the money cache) and the creator-ownership check below is the real gate.
-  // Falls back to the directory/legacy read only if there's no hint or the SOC misses.
-  let feed = signerHint ? await readEventFeedSoc(eventId, signerHint) : null;
+  // The client uploads its event SOC AFTER this registration returns (see
+  // PublishButton: signEventFeedSoc runs post-register), so reading that SOC here
+  // hits a not-yet-existent chunk and STALLS on Bee network retrieval — the real
+  // cost behind a "slow on-chain step". createEventV2 primed the money-path cache
+  // moments ago (same process), so resolve from it first. The signerHint SOC read
+  // (Fix B, avoids the ~32s whole-directory lookup) stays as the cold-cache fallback.
+  let feed = await getEvent(eventId);
+  if (!feed) feed = signerHint ? await readEventFeedSoc(eventId, signerHint) : null;
   if (!feed) feed = await getEventForDisplay(eventId, signerHint);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
@@ -572,6 +575,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const endSec = Math.floor(new Date(feed.endDate).getTime() / 1000);
   const eventEndTs = Math.max(Number.isFinite(endSec) ? endSec : 0, nowSec + 3600);
 
+  const tReg = Date.now();
   let onChainEventId: string;
   let txHash: string;
   try {
@@ -586,6 +590,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     const message = err instanceof Error ? err.message : "registerEvent tx failed";
     return c.json({ ok: false, error: message }, 500);
   }
+  const tTx = Date.now();
 
   let updatedFeed: Awaited<ReturnType<typeof confirmSeriesOnChain>>;
   try {
@@ -596,6 +601,9 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Tx confirmed but feed update failed — retry", onChainEventId, txHash }, 500);
   }
 
+  console.log(
+    `[api] register-on-chain timing: feedRead=${tReg - tStart}ms tx=${tTx - tReg}ms confirm=${Date.now() - tTx}ms total=${Date.now() - tStart}ms`,
+  );
   return c.json({
     ok: true,
     onChainEventId,

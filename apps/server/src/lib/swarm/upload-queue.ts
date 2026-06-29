@@ -11,7 +11,12 @@
  * callers aren't blocked by each other's back-off wait.
  */
 
-const MAX_CONCURRENT = 2;
+// Raised 2→6: the per-chunk Etherna offer-register await was removed (bytes.ts is
+// now fire-and-forget), so an upload is a single /bytes POST. 423 Locked (per-bucket
+// stamp contention) and 429 are already caught + backed-off by the retry loop in
+// bytes.ts/feeds.ts, so a wider pipe is self-protecting — worst case is a retried
+// 423, not a failure. Overridable via UPLOAD_CONCURRENCY for quick prod tuning.
+const MAX_CONCURRENT = Number(process.env.UPLOAD_CONCURRENCY) || 6;
 
 /**
  * Per-call timeout for a single Bee HTTP request (NOT including retry backoff).
