@@ -11,6 +11,7 @@ import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
 import { validatePodGate } from "../pod/gate-check.js";
 import { upsertCreatorPod } from "../pod/directory.js";
+import { recordOnChainEventId, applyOnChainEventIds } from "./onchain-registry.js";
 import {
   readFeedPage,
   readFeedPageStrict,
@@ -246,6 +247,12 @@ export async function confirmSeriesOnChain(
   onChainEventId: string,
   signerHint?: string,
 ): Promise<EventFeed> {
+  // Persist the chain receipt FIRST — independent of whether the client re-signs its
+  // SOC with onChainEventId. This is what makes the money path's v2 detection robust:
+  // getEvent() merges this in, so reserve/claim-status/Stripe see the on-chain id even
+  // if the organiser's SOC re-sign never lands. The chain stays authoritative.
+  recordOnChainEventId(eventId, seriesId, onChainEventId);
+
   // Same as the register read (Fix B): a freshly client-signed event has no platform
   // feed and its directory carrier hasn't propagated, so getEvent() would stall on the
   // whole-directory lookup and then return null → throw. Read the client SOC directly
@@ -376,7 +383,10 @@ async function resolveCreatorFeedSigner(eventId: string): Promise<string | null>
 export async function getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
-  if (cached && cached.expiresAt > now) return cached.feed;
+  // applyOnChainEventIds fills a series' onChainEventId from the server's chain
+  // receipt when the signed feed lacks it (client SOC not re-signed). Applied on the
+  // cache hit too so a feed cached BEFORE registration still flips to v2.
+  if (cached && cached.expiresAt > now) return applyOnChainEventIds(cached.feed);
 
   // Phase B: if the event has a known content-feed signer (hint or directory
   // carrier), read its client-signed SOC. Fall back to the legacy platform feed
@@ -389,6 +399,7 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
   }
   if (feed) {
     _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
+    applyOnChainEventIds(feed);
     for (const s of feed.series) {
       console.log(`[event] Read series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
     }
