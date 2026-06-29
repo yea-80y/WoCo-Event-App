@@ -551,16 +551,23 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     return c.json({ ok: true, onChainEventId: series.onChainEventId, alreadyRegistered: true });
   }
 
-  let blob: SeriesManifestBlob;
-  try {
-    const raw = await downloadFromBytes(series.swarmManifestRef);
-    blob = JSON.parse(raw) as SeriesManifestBlob;
-  } catch {
-    return c.json({ ok: false, error: "Failed to fetch manifest from Swarm" }, 500);
+  // The on-chain manifestRef is the manifest digest, which createEventV2 already
+  // stamped into the feed as `series.manifestRef` — no need to re-download the
+  // SeriesManifestBlob from Swarm just to recompute it (that was ~1.3s of feedRead).
+  // The trusted feed (cache, server-built) carries it; confirm-chain re-verifies the
+  // digest against the stored blob + chain separately. Fall back to the blob only if
+  // a legacy feed lacks the field.
+  let manifestRef = series.manifestRef as Hex0x | undefined;
+  if (!manifestRef) {
+    try {
+      const raw = await downloadFromBytes(series.swarmManifestRef);
+      const blob = JSON.parse(raw) as SeriesManifestBlob;
+      const digestBytes = manifestDigest(blob.signedManifest.body);
+      manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
+    } catch {
+      return c.json({ ok: false, error: "Failed to fetch manifest from Swarm" }, 500);
+    }
   }
-
-  const digestBytes = manifestDigest(blob.signedManifest.body);
-  const manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
 
   // V2 (USDC-escrow) register params. The live website ticket flow settles outside
   // this escrow (Stripe card, or direct-USDC verify), so priceBaseUnits=0 keeps the

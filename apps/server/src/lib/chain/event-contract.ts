@@ -85,6 +85,10 @@ function getProvider(chainId: number): JsonRpcProvider {
   if (!p) {
     const url = getChainRpcUrl(chainId);
     p = new JsonRpcProvider(url);
+    // ethers v6 defaults pollingInterval to 4000ms, so tx.wait(1) can't resolve
+    // faster than ~4s even on an L2 that mines sub-second. Poll tighter — the
+    // dominant cost in the on-chain register/claim step was this, not the chain.
+    p.pollingInterval = 500;
     _providers.set(chainId, p);
   }
   return p;

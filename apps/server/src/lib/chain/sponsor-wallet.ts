@@ -47,6 +47,9 @@ function getSponsorWallet(): Wallet {
   const chainId = getActiveChainId();
   const url = getChainRpcUrl(chainId);
   const provider = new JsonRpcProvider(url);
+  // Tighten tx.wait(1) polling — ethers v6 defaults to 4000ms, which was most of
+  // the registerEvent/batchClaim latency on a sub-second L2. See event-contract.ts.
+  provider.pollingInterval = 500;
   _wallet = new Wallet(pk, provider);
   return _wallet;
 }
