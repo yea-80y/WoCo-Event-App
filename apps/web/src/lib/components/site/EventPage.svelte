@@ -649,14 +649,12 @@
         {#each event.series as s, i}
           {@const sale = saleStatus(s)}
           {@const ss = getSeriesStatus(s)}
-          {@const physRemaining = ss?.available ?? 10}
-          {@const heldByOthers = ss?.held ?? 0}
-          {@const effectiveRemaining = Math.max(0, physRemaining - heldByOthers)}
+          {@const physRemaining = ss?.available ?? s.totalSupply}
           {@const soldOut = ss != null && ss.available === 0}
           {@const isUnavailable = eventIsPast || sale !== "active" || soldOut}
           {@const isPaid = s.payment && parseFloat(s.payment.price) > 0}
           {@const qty = ticketQty[s.seriesId] ?? 0}
-          {@const maxQty = isUnavailable ? 0 : Math.min(effectiveRemaining, 10)}
+          {@const maxQty = isUnavailable ? 0 : Math.min(physRemaining, 10)}
 
           {#if i > 0}
             <div class="ticket-divider"></div>
@@ -747,7 +745,7 @@
               <span class="wave-badge">{selectedSeries.wave}</span>
             {/if}
           </h3>
-          <button class="claim-panel-close" onclick={() => { claimOpen = false; }}>
+          <button class="claim-panel-close" aria-label="Close checkout panel" onclick={() => { claimOpen = false; }}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>

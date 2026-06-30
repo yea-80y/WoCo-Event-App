@@ -544,7 +544,10 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
           seriesId,
           totalSupply,
           claimed,
-          available: Math.max(0, physicalAvailable - held),
+          // Keep the SeriesClaimStatus contract identical to the Swarm-backed
+          // path: available is physical remaining. /reserve subtracts held
+          // seats atomically when allocating a checkout hold.
+          available: physicalAvailable,
           held,
         },
       });
