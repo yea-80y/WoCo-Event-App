@@ -35,8 +35,12 @@ export interface ContentFeedSigner {
 /**
  * Derive the content-feed signer from a root secp256k1 key (passkey PRF key /
  * Web3Auth key / local key). `keccak256(domain || rootKey)` → a valid secp256k1
- * key whose address owns the user's content SOCs. Deterministic ⇒ recovery is
- * re-login, no escrow.
+ * key whose address owns the user's content SOCs.
+ *
+ * Used only to SEED a NEW signer (`_getContentFeedSigner` then persists + escrows
+ * it). Recovery does NOT re-derive: a rotated passkey credential yields a divergent
+ * root, so the established key is restored verbatim from escrow/portability and the
+ * stored copy always wins. See `feed-signer-store.ts` + `recovery-portability.ts`.
  */
 export function deriveContentFeedSigner(rootPrivKey: string): ContentFeedSigner {
   const rootBytes = getBytes(rootPrivKey.startsWith("0x") ? rootPrivKey : `0x${rootPrivKey}`);

@@ -130,7 +130,7 @@ export const PORTABILITY_ENVELOPE_VERSION = 2 as const;
  * the real Kernel. The sealed bundle inside `envelope` carries
  * `{ preservedKernelAddress, podSeed[, feedSignerPrivKey] }`: the new device reads
  * the preserved Kernel post-decrypt and verifies it on-chain before applying any
- * override. The feed-signer slot is reserved for Phase B as a pure content change.
+ * override. The optional `feedSignerPrivKey` rides the same sealed bundle.
  */
 export interface PortabilityEnvelope {
   v: typeof PORTABILITY_ENVELOPE_VERSION;
@@ -156,10 +156,10 @@ export function portabilitySocIdentifier(): Uint8Array {
  * writes (`keccak256(identifier || ownerAddress)`), so the USER — not the platform
  * — owns the feed. The platform only lends postage (stamps) at write time; this is
  * a swappable transport (per-user batch / browser-Bee later) that does not touch
- * ownership. Recovery for the web3auth/passkey kinds is by re-deriving from the
- * same root secret on re-login — no escrow needed for this key (the recovery
- * portability bundle still reserves a `feedSignerPrivKey` slot for the passkey kind
- * if we ever move it to an independent random secret; deriving keeps launch simple).
+ * ownership. Derivation only SEEDS a new signer; the key is then persisted +
+ * ESCROWED (`feed-signer-store.ts`, recovery + portability bundles) so a rotated
+ * passkey credential — which would derive a divergent key — cannot orphan the
+ * user's feeds. The stored/escrowed copy is authoritative, not re-derivation.
  */
 export const CONTENT_FEED_SIGNER_DOMAIN = "woco/feed-signer/v1";
 

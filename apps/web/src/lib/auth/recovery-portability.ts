@@ -86,14 +86,16 @@ export async function derivePortabilityKeys(passkeyPrivKey: string): Promise<Por
  * Seal the preserved secrets to the passkey's PRF-derived HPKE key and write the
  * envelope as the fixed-identifier SOC (overwrite-in-place). `preservedKernelAddress`
  * is the recovered account's Kernel address; the bundle inside carries the POD
- * seed (and, in Phase B, the feed-signer key). Non-throwing failures are the
+ * seed and the content-feed-signer key. Non-throwing failures are the
  * caller's to handle — this throws on any error.
  */
 export async function writePortabilityEnvelope(args: {
   passkeyPrivKey: string;
   preservedKernelAddress: string;
   podSeed: string;
-  /** Phase B: independent feed-signer key. Reserved slot — omit in Phase A. */
+  /** Content-feed signer key, carried so the account's further devices restore it
+   *  (same role the guardian escrow plays on the recovery device). Optional only
+   *  because external-wallet kinds have no feed signer to carry. */
   feedSignerPrivKey?: string;
 }): Promise<void> {
   const { passkeyPrivKey, preservedKernelAddress, podSeed, feedSignerPrivKey } = args;

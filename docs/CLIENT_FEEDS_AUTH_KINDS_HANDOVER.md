@@ -6,8 +6,7 @@ cited) — do NOT re-derive them; that is what burns tokens. Working style: cryp
 posture (verify keys/addresses, preserve raw signed bytes, reuse audited HPKE/XChaCha,
 never hand-roll); small revertable commits; comments = WHY only.
 
-Read alongside: `LAUNCH_PLAN.md` (owns ORDER), `FEED_SIGNER_ESCROW_HANDOVER.md`
-(the escrow decision + surface), `CLIENT_FEED_SIGNER_HANDOVER.md` (Phase B locked design),
+Read alongside: `LAUNCH_PLAN.md` (owns ORDER), `CLIENT_FEED_SIGNER_HANDOVER.md` (Phase B locked design),
 `EMAIL_KERNELIZE_PLAN.md`. Memory: `project_phase_b_carrier_discovery`,
 `project_signing_role_architecture`, `project_passkey_recovery`, `project_auth_provider_decision`.
 
@@ -29,22 +28,31 @@ Per-auth-kind state — `_getContentFeedRootKey` (`auth-store.svelte.ts:179`):
 
 | Auth kind | Feed signer today | Gap |
 |---|---|---|
-| passkey (PRF) | ✅ derived, working | cross-device (rotated credential → divergent key) needs escrow |
-| web3auth (email) | ⚠️ derives, but key only in memory AFTER a fresh login; null on cold restore | cold-restore handling + escrow |
+| passkey (PRF) | ✅ derived + escrowed (cross-device done) | — |
+| web3auth (email) | ⚠️ derives, but key only in memory AFTER a fresh login; null on cold restore | cold-restore handling (Chat B) |
 | local | ✅ works | — |
-| web3 wallet | ❌ `_getContentFeedRootKey` returns null → platform-signed fallback | no raw key — needs a key SOURCE |
+| web3 wallet | ❌ `_getContentFeedRootKey` returns null → platform-signed fallback | no raw key — needs a key SOURCE (Chat B) |
 | coinbase smart wallet (CSW) | ❌ returns null → platform-signed | hardest — see "Parked" |
 
 `_getContentFeedSigner` (`auth-store.svelte.ts:193-226`): prefers a STORED feed-signer key
 (`feed-signer-store.ts`) if present, else seeds it from the legacy derivation and persists.
-Today there is no escrow → the stored key is device-local only.
+The stored key is escrowed, so it survives cross-device (see below).
 
-**Escrow is the foundation and is NOT wired yet** (`FEED_SIGNER_ESCROW_HANDOVER.md`):
-`recovery-escrow.ts` escrows `{ podSeed }` ONLY; the `feedSignerPrivKey` slot is reserved
-but empty. `recovery-portability.ts` carries `feedSignerPrivKey?` as a pass-through that
-nothing populates on build and the signing path never reads back (lines 97,99,108,136,178).
-External wallets (web3, CSW) CANNOT derive a feed key deterministically → they MUST use a
-random key + escrow. **That is why escrow comes first.**
+**Escrow IS wired** (shipped `19c7e6d` + `f8a1a18`; audited 2026-06-30). The feed signer rides
+the SAME audited envelope as the POD seed — a pure content addition, no new crypto:
+- `recovery-escrow.ts` bundle is generic `secrets: Record<string,string>`; the guardian
+  ceremony seals `feedSignerPrivKey` alongside `podSeed` and the determinism self-check
+  asserts it round-trips (`auth-store.svelte.ts:1099-1101,1116`); recovery restores it under
+  the preserved parent (`:1262-1264`).
+- `recovery-portability.ts` populates `feedSignerPrivKey` on build (`:108`) and returns it on
+  restore (`:178`); the new-device login path stores it under the preserved parent
+  (`auth-store.svelte.ts:846-848`), gated by the on-chain owner check (`:352-357`).
+- `_getContentFeedSigner` prefers the stored/escrowed key over re-deriving (`:200-208`), so a
+  rotated passkey credential cannot orphan the user's feeds.
+
+This (A) "derive-then-escrow" design covers the kinds that hold a raw root key (passkey,
+web3auth, local). External wallets (web3, CSW) have no derivable root → Chat B/C must give
+them a key SOURCE (web3: sign-to-derive; CSW: random key + escrow). That is the remaining work.
 
 ## Decisions taken this session
 - **Coinbase Smart Wallet client-feeds = PARKED to post-launch.** Rationale: CSW
@@ -66,16 +74,15 @@ yet" window. email-Kernelize P1-P3 are built + typecheck-green but need a fronte
 (Chat B) comes AFTER email-Kernelize is live-verified.
 
 ## Plan — chat-by-chat (each = one testable/deployable milestone)
-- **Chat A — Escrow foundation (DO NEXT).** Make the one decision in
-  `FEED_SIGNER_ESCROW_HANDOVER.md` §"one decision": (A) keep deriving + escrow the derived
-  key (low blast radius, closest to current code) vs (B) independent random key + escrow
-  (matches design docs; REQUIRED for external wallets; changes every existing user's feed
-  ADDRESS → migration risk, flag loudly). Then wire `feedSignerPrivKey` into the sealed
-  bundle (`recovery-escrow.ts`), populate/return it (`recovery-portability.ts`), and make
-  `_getContentFeedSigner` prefer the escrowed key. Reuses existing recovery endpoints (no
-  new server crypto). Verify cross-device per `RECOVERY_VERIFICATION_CHECKLIST.md`.
-  Recommendation: lean (B) for new accounts since external wallets need it anyway, but
-  confirm with user — (A) is safer if root keys are reliably portable.
+- **Chat A — Escrow foundation (DONE — shipped `19c7e6d` + `f8a1a18`, audited 2026-06-30).**
+  Decision taken = (A) derive-then-escrow (low blast radius, no existing feed ADDRESS
+  changes). `feedSignerPrivKey` is sealed in the guardian bundle, carried in the portability
+  envelope, and `_getContentFeedSigner` prefers the escrowed key over re-deriving — so a
+  rotated passkey credential cannot orphan feeds. Reuses the existing recovery endpoints (no
+  new server crypto). Covers passkey/web3auth/local; external wallets are Chat B/C. Security
+  audit + the precise wiring sites are in the "Escrow IS wired" section above. STILL OWED:
+  the LIVE cross-device run per `RECOVERY_VERIFICATION_CHECKLIST.md` (throwaway passkey +
+  MetaMask backup; only the user can do this in a real browser).
 - **Chat B — web3auth + web3 wallet** (AFTER email-Kernelize live-verify). web3auth: derive
   `feedSignerPrivKey` from the Web3Auth key under its OWN domain + fix cold-restore (key
   absent until next login). web3 wallet: `personal_sign` is deterministic → sign-to-derive a

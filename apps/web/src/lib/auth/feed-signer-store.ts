@@ -1,7 +1,6 @@
 /**
- * At-rest store for the INDEPENDENT content-feed signer key (Phase B /
- * FEED_SIGNER_ESCROW_HANDOVER). The feed signer is an established secret — NOT a
- * value re-derived each session — so it must be persisted, and persisted exactly
+ * At-rest store for the content-feed signer key. The feed signer is an established
+ * secret — NOT a value re-derived each session — so it must be persisted, and persisted exactly
  * like the POD seed: AES-256-GCM under the non-extractable device key, AAD-bound
  * to the account's parent address so a stale blob from a different identity on the
  * same browser cannot be decrypted into this account's signer.
@@ -10,8 +9,8 @@
  * `CROSS_DEVICE_RECOVERY.md §4` — a passkey credential rotates on guardian
  * recovery, so anything re-derived from it diverges and orphans the user's feeds.
  * Cross-device + post-recovery availability comes from ESCROW + restore of this
- * key (same channel as the POD seed), wired in the later steps; this module is the
- * local persistence those paths read and write.
+ * key (same channel as the POD seed) — wired in the guardian-recovery and
+ * PRF-portability paths; this module is the local persistence those paths read and write.
  */
 
 import { StorageKeys } from "@woco/shared";
