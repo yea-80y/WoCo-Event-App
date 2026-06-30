@@ -67,6 +67,30 @@ export const RECOVERY_ENC_TYPES = {
 } as const;
 
 /**
+ * Domain for the deterministic signature a web3 wallet (external EOA) signs to
+ * derive its CONTENT-FEED signer key — the secp256k1 key whose address owns the
+ * user's content SOCs. An external EOA holds no raw key we can read, but it
+ * produces a deterministic (RFC-6979) signature, so we sign-to-derive — the same
+ * proven mechanism that derives the web3 POD seed (`requestPodIdentity`), under a
+ * DISTINCT salt so a phished feed-signer signature can never be replayed to derive
+ * POD/auth, and vice versa.
+ */
+export const FEED_SIGNER_DERIVE_DOMAIN = {
+  name: "WoCo Feed Signer",
+  version: "1",
+  salt: "0x589b7c3552e7762caab99cb795adec4338bbaafc3fb6c3604157937e6b39ac0f",
+} as const;
+
+/** EIP-712 types for DeriveFeedSigner */
+export const FEED_SIGNER_DERIVE_TYPES = {
+  DeriveFeedSigner: [
+    { name: "purpose", type: "string" },
+    { name: "address", type: "address" },
+    { name: "nonce", type: "string" },
+  ],
+} as const;
+
+/**
  * Domain for ticket-claim signatures (passkey + embed wallet-signed paths).
  * Replaces the legacy EIP-191 personal_sign challenge `woco:claim:<eventId>:<seriesId>:<timestamp>`
  * with a structured EIP-712 envelope, so wallets display each field to the

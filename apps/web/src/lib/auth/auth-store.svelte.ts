@@ -1,4 +1,12 @@
-import { type AuthKind, type EIP712Signer, StorageKeys, type SessionDelegation } from "@woco/shared";
+import {
+  type AuthKind,
+  type EIP712Signer,
+  StorageKeys,
+  type SessionDelegation,
+  FEED_SIGNER_DERIVE_DOMAIN,
+  FEED_SIGNER_DERIVE_TYPES,
+  FEED_SIGNER_DERIVE_NONCE,
+} from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import {
   requestSessionDelegation,
@@ -187,6 +195,44 @@ async function _getContentFeedRootKey(): Promise<string | null> {
 }
 
 /**
+ * Derive an external wallet's (web3 EOA) content-feed signer by sign-to-derive:
+ * the wallet has no raw key we can read, but it produces a deterministic
+ * (RFC-6979) signature over a fixed domain-separated message — the same mechanism
+ * that derives the web3 POD seed. Recovery on any device is re-signing the same
+ * message; no escrow needed.
+ *
+ * ROBUSTNESS: a second signature MUST reproduce the same key. If it doesn't, the
+ * wallet is non-deterministic and a feed signed now would be unrecoverable on the
+ * next device — so we THROW rather than store a key that silently diverges later
+ * (mirrors the guardian-escrow self-check). Content is NEVER platform-signed as a
+ * consolation: a failure here aborts the publish with a clear error instead.
+ */
+async function _deriveWeb3FeedSigner(parent: string): Promise<ContentFeedSigner> {
+  const signer712 = await _getSigner();
+  const message = {
+    purpose: "Set up your WoCo content-feed signing key",
+    address: parent,
+    nonce: FEED_SIGNER_DERIVE_NONCE,
+  };
+  const sign = () =>
+    signer712(
+      { ...FEED_SIGNER_DERIVE_DOMAIN },
+      FEED_SIGNER_DERIVE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+      message as unknown as Record<string, unknown>,
+    );
+
+  const { deriveContentFeedSignerFromSig } = await import("../swarm/content-feed.js");
+  const first = deriveContentFeedSignerFromSig(await sign());
+  const second = deriveContentFeedSignerFromSig(await sign());
+  if (first.address !== second.address) {
+    throw new Error(
+      "Your wallet's signature isn't reproducible, so we can't create a recoverable feed for your content. Try a different wallet.",
+    );
+  }
+  return first;
+}
+
+/**
  * The user's content-feed signer (Phase B), or null when this kind/state can't
  * own client-signed feeds. The address is the SOC owner + the registry value.
  */
@@ -207,7 +253,19 @@ async function _getContentFeedSigner(): Promise<ContentFeedSigner | null> {
     }
   }
 
-  // (2) No stored key yet → SEED it from the legacy derivation so any feeds this
+  // (2) External wallet (web3 EOA): no raw root key, but a deterministic
+  // signature. Sign-to-derive the feed signer (client-owned, NEVER platform),
+  // self-check determinism, then persist. Throws on a non-deterministic wallet —
+  // we fail the publish loud rather than orphan a feed or platform-sign content.
+  if (_kind === "web3" && parent) {
+    const signer = await _deriveWeb3FeedSigner(parent);
+    const { storeContentFeedSigner } = await import("./feed-signer-store.js");
+    await storeContentFeedSigner(parent, signer.privKey);
+    void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, signer.address);
+    return signer;
+  }
+
+  // (3) No stored key yet → SEED it from the legacy derivation so any feeds this
   // account already wrote under the derived address stay owned, then PERSIST it.
   // From here the key is a stored secret. (Step 1a migration; later steps escrow
   // it + restore it on new devices, and brand-new accounts switch to a random
@@ -245,8 +303,10 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
     void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, addr);
     return addr;
   }
-  // External wallet kinds never own a client feed.
-  if (_kind !== "passkey" && _kind !== "web3auth" && _kind !== "local") return null;
+  // web3 owns a client feed (sign-to-derive), but resolving its address requires a
+  // wallet prompt — so passively we use the cached address from its last publish.
+  // coinbase (CSW) is the only kind with no client feed (parked) → null.
+  if (_kind === "coinbase") return null;
   return (await getKV<string>(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS)) ?? null;
 }
 

@@ -66,6 +66,14 @@ export const POD_IDENTITY_NONCE = "WOCO-POD-IDENTITY-V1";
 /** Fixed nonce for deterministic guardian recovery-escrow X25519 key derivation */
 export const RECOVERY_ENC_NONCE = "WOCO-RECOVERY-ENC-V1";
 
+/**
+ * Fixed nonce for deterministic web3-wallet content-feed-signer derivation.
+ * The `v1` is the ROTATION lever: bump it to migrate every web3 user to a fresh
+ * feed-signer key (e.g. after a suspected signature phish) without changing any
+ * other identity.
+ */
+export const FEED_SIGNER_DERIVE_NONCE = "WOCO-FEED-SIGNER-V1";
+
 /** Session delegation expiry duration (30 days in ms) */
 export const SESSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 

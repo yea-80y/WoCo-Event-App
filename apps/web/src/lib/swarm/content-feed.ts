@@ -61,6 +61,19 @@ export function contentFeedSignerFromPrivKey(privKey: string): ContentFeedSigner
 }
 
 /**
+ * Derive the content-feed signer for an EXTERNAL wallet (web3 EOA) from its
+ * deterministic EIP-712 signature. `keccak256(canonical 65-byte signature)` → a
+ * uniform secp256k1 key — identical compression to the web3 POD seed
+ * (`pod-identity.ts`), the proven in-production pattern. Domain separation lives
+ * in what was signed (`FEED_SIGNER_DERIVE_DOMAIN`), so this does not re-prefix a
+ * domain string. The signature MUST be the canonical bytes, not the hex string.
+ */
+export function deriveContentFeedSignerFromSig(signature: string): ContentFeedSigner {
+  const seed = keccak256(getBytes(signature));
+  return { privKey: seed, address: new Wallet(seed).address.toLowerCase() };
+}
+
+/**
  * Sign + upload a JSON content feed as a client-owned SOC at
  * `contentFeedSocIdentifier(topic)`. Overwrite-in-place (same owner+identifier).
  *
