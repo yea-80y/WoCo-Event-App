@@ -1,29 +1,38 @@
-import type { RecoveryEnvelope, RecoveryGuardianIndex } from "@woco/shared";
+import type { RecoveryEnvelope, RecoveryGuardianIndex, RecoveryStatus } from "@woco/shared";
 import { readFeedPage, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
-import { topicRecovery, topicRecoveryGuardian } from "../swarm/topics.js";
+import { topicRecovery, topicRecoveryStatus, topicRecoveryGuardian } from "../swarm/topics.js";
 
 /**
- * Recovery-escrow persistence (PASSKEY_RECOVERY_PLAN §11.6 step 1).
+ * Recovery-escrow persistence (PASSKEY_RECOVERY_PLAN §11.6 / §13).
  *
- * Stores the SEALED `RecoveryEnvelope` on the Swarm feed `woco/recovery/{kernel}`.
- * The envelope is ciphertext only (DEK wrapped to the guardian's X25519 key, bundle
- * AEAD'd) so the server — which signs the feed write — never holds plaintext or a
- * key. Non-custodial by construction (§11.3/§11.4). Reads are public: the locked-out
- * user has lost their signer and cannot authenticate during recovery.
+ * §13: the SEALED `RecoveryEnvelope` is no longer written by the platform. It now
+ * lives in a GUARDIAN-owned SOC that the CLIENT signs (`swarm/recovery-feed.ts`);
+ * the server only stamps postage for it (`/api/swarm/soc`), so it can neither forge
+ * nor withhold a user's escrow. This module now handles only:
+ *  - `getRecoveryEnvelope` — LEGACY read of the old platform-signed feed, kept as a
+ *    recovery fallback for accounts protected before the migration.
+ *  - the untrusted platform HINTS (presence `RecoveryStatus`, guardian reverse index).
  */
 
+/** LEGACY read of the platform-signed envelope feed (pre-§13 recovery fallback). */
 export async function getRecoveryEnvelope(kernelAddress: string): Promise<RecoveryEnvelope | null> {
   const page = await readFeedPage(topicRecovery(kernelAddress));
   if (!page) return null;
   return decodeJsonFeed<RecoveryEnvelope>(page);
 }
 
-export async function putRecoveryEnvelope(
-  kernelAddress: string,
-  envelope: RecoveryEnvelope,
-): Promise<void> {
-  // Synchronous upload — setup reads back the envelope immediately to confirm.
-  await writeFeedPage(topicRecovery(kernelAddress), encodeJsonFeed(envelope), { deferred: false });
+/**
+ * Presence hint keyed by Kernel address (§13). Holds no escrow and no key — only a
+ * "protected" flag plus display hints. Untrusted, like the guardian reverse index.
+ */
+export async function getRecoveryStatus(kernelAddress: string): Promise<RecoveryStatus | null> {
+  const page = await readFeedPage(topicRecoveryStatus(kernelAddress));
+  if (!page) return null;
+  return decodeJsonFeed<RecoveryStatus>(page);
+}
+
+export async function putRecoveryStatus(kernelAddress: string, status: RecoveryStatus): Promise<void> {
+  await writeFeedPage(topicRecoveryStatus(kernelAddress), encodeJsonFeed(status), { deferred: false });
 }
 
 /**

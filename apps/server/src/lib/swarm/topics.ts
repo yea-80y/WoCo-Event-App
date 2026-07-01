@@ -95,6 +95,13 @@ const RECOVERY_NS = "woco/recovery";
 export const topicRecovery = (kernelAddress: string) =>
   Topic.fromString(`${RECOVERY_NS}/${kernelAddress.toLowerCase()}`);
 
+// Platform-signed PRESENCE HINT (RecoveryStatus). §13 moved the sealed escrow to a
+// GUARDIAN-owned SOC that the UI can't read without the backup-wallet signature, so
+// this small kernel-keyed doc records only that a protect happened (+ display
+// hints). Untrusted convenience — it holds no escrow and no key.
+export const topicRecoveryStatus = (kernelAddress: string) =>
+  Topic.fromString(`${RECOVERY_NS}/status/${kernelAddress.toLowerCase()}`);
+
 // Reverse lookup: guardian address → account it protects. Lets a connected
 // backup wallet auto-find the account at recovery time (RecoveryGuardianIndex).
 // Untrusted convenience hint — see the type's SECURITY note; the escrow decrypt

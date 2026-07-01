@@ -10,7 +10,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, type BackupWallet } from "../../wallet/backup-signer.js";
-  import { fetchRecoveryEnvelope, fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { fetchRecoveryStatus, fetchRecoveryByGuardian } from "../../api/recovery.js";
 
   type Phase = "intro" | "choosing" | "connecting" | "confirming" | "working" | "done" | "error";
   let phase = $state<Phase>("intro");
@@ -42,8 +42,8 @@
     checking = true;
     (async () => {
       try {
-        const env = await fetchRecoveryEnvelope(kernel);
-        alreadyProtected = !!env;
+        const status = await fetchRecoveryStatus(kernel);
+        alreadyProtected = !!status?.configured;
       } catch { /* hiccup — fall through to add-backup CTA */ } finally {
         checking = false;
         checkDone = true;

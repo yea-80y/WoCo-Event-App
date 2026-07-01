@@ -142,6 +142,22 @@ export function portabilitySocIdentifier(): Uint8Array {
   return keccak_256(utf8ToBytes(PORTABILITY_SOC_IDENTIFIER_INPUT));
 }
 
+/**
+ * Content-feed topic STRING for a passkey account's recovery-escrow envelope
+ * (`woco/recovery/{kernelAddress}`). §13: the sealed envelope moves off the
+ * platform-signed feed onto a GUARDIAN-owned SOC — the client signs it with a
+ * signer derived from the backup wallet, so the platform can no longer forge or
+ * withhold it. The SOC identifier is `contentFeedSocIdentifier` of THIS string;
+ * the OWNER is the guardian-derived SOC address (computed locally at protect and
+ * recover time), never the platform. The string mirrors the legacy bee-js
+ * `topicRecovery`, but the two address different Swarm locations (owner-addressed
+ * SOC vs sequential feed), so there is no collision — the shared string is only a
+ * naming convention.
+ */
+export function recoveryContentTopic(kernelAddress: string): string {
+  return `woco/recovery/${kernelAddress.toLowerCase()}`;
+}
+
 // ---------------------------------------------------------------------------
 // Client-owned content feeds (Phase B — CLIENT_FEED_SIGNER_HANDOVER.md Task 2)
 // ---------------------------------------------------------------------------

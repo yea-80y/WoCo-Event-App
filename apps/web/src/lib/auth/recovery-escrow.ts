@@ -35,11 +35,13 @@
  * threshold the plaintext is theirs with no "cancel". Escrow the MINIMUM.
  */
 
-import { keccak256, getBytes } from "ethers";
+import { keccak256, getBytes, Wallet } from "ethers";
 import { CipherSuite, DhkemX25519HkdfSha256, HkdfSha256, Aes256Gcm } from "@hpke/core";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha";
 import { bytesToHex, hexToBytes } from "@noble/ciphers/utils";
 import { randomBytes } from "@noble/ciphers/webcrypto";
+import { hkdf } from "@noble/hashes/hkdf";
+import { sha256 } from "@noble/hashes/sha256";
 import {
   RECOVERY_ENC_DOMAIN,
   RECOVERY_ENC_TYPES,
@@ -91,16 +93,48 @@ export interface GuardianEncryptionKeypair {
   publicKeyHex: string;
 }
 
+/** secp256k1 signer that OWNS the guardian recovery-envelope SOC (§13). */
+export interface GuardianSocSigner {
+  /** 0x-prefixed private key — signs the SOC locally (never leaves the client). */
+  privKey: string;
+  /** Lowercased owner address = the SOC owner readers verify against. */
+  address: string;
+}
+
+export interface GuardianKeys {
+  /** X25519 keypair that wraps/unwraps the escrow DEK (HPKE). */
+  encryption: GuardianEncryptionKeypair;
+  /** secp256k1 key that owns + signs the guardian-owned recovery SOC. */
+  socSigner: GuardianSocSigner;
+}
+
 /**
- * Derive a guardian's X25519 escrow keypair from a deterministic EIP-712
- * signature by the guardian EOA. Same EOA → same signature → same key, on any
- * device, with nothing stored. `guardianAddress` is bound into the message so
- * the same wallet signing for a different role yields a distinct key.
+ * HKDF `info` labels — domain-separate the two keys derived from the SINGLE
+ * guardian signature so neither reveals the other (§13, textbook KDF hygiene).
  */
-export async function deriveGuardianEncryptionKeypair(
+const HKDF_INFO_HPKE = new TextEncoder().encode("woco/recovery/hpke/v1");
+const HKDF_INFO_SOC = new TextEncoder().encode("woco/recovery/soc/v1");
+
+/**
+ * Derive BOTH guardian keys from ONE deterministic EIP-712 signature by the
+ * guardian EOA (§13). Same EOA → same signature → same keys, on any device, with
+ * nothing stored. `guardianAddress` is bound into the message so the same wallet
+ * signing for a different role yields distinct keys.
+ *
+ * Construction: keccak the canonical 65-byte signature (getBytes, not the hex
+ * string — the same compression POD identity uses) into a uniform 32-byte master
+ * secret, then HKDF-SHA256-Expand into two independent 32-byte seeds under
+ * distinct `info` labels:
+ *  - `hpke/v1`  → X25519 escrow keypair (wraps the DEK).
+ *  - `soc/v1`   → secp256k1 key that owns + signs the recovery SOC.
+ * A single wallet prompt yields both, and compromising one seed does not expose
+ * the other. Seeds are zeroed after use; the returned string keys are the
+ * caller's to hold for the duration of the ceremony.
+ */
+export async function deriveGuardianKeys(
   guardianAddress: string,
   signTypedData: EIP712Signer,
-): Promise<GuardianEncryptionKeypair> {
+): Promise<GuardianKeys> {
   const signature = await signTypedData(
     { ...RECOVERY_ENC_DOMAIN },
     RECOVERY_ENC_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
@@ -111,15 +145,30 @@ export async function deriveGuardianEncryptionKeypair(
     },
   );
 
-  // keccak the canonical 65-byte signature (getBytes, not the hex string) — the
-  // same compression POD identity uses — into a uniform 32-byte curve25519 seed.
-  const seed = getBytes(keccak256(getBytes(signature)));
+  const master = getBytes(keccak256(getBytes(signature)));
+  let hpkeSeed: Uint8Array | null = null;
+  let socSeed: Uint8Array | null = null;
   try {
-    const keyPair = await hpke.kem.deriveKeyPair(toArrayBuffer(seed));
+    hpkeSeed = hkdf(sha256, master, undefined, HKDF_INFO_HPKE, 32);
+    socSeed = hkdf(sha256, master, undefined, HKDF_INFO_SOC, 32);
+
+    const keyPair = await hpke.kem.deriveKeyPair(toArrayBuffer(hpkeSeed));
     const pub = new Uint8Array(await hpke.kem.serializePublicKey(keyPair.publicKey));
-    return { keyPair, publicKeyHex: bytesToHex(pub) };
+
+    // A uniform 32-byte HKDF output is a valid secp256k1 scalar with overwhelming
+    // probability (P[≥ n] ≈ 2^-128); ethers throws on the negligible miss, which
+    // the setup determinism self-check would surface loudly rather than silently.
+    const socPrivKey = `0x${bytesToHex(socSeed)}`;
+    const socWallet = new Wallet(socPrivKey);
+
+    return {
+      encryption: { keyPair, publicKeyHex: bytesToHex(pub) },
+      socSigner: { privKey: socPrivKey, address: socWallet.address.toLowerCase() },
+    };
   } finally {
-    seed.fill(0); // drop the curve25519 seed; the CryptoKey handles outlive it
+    master.fill(0);
+    hpkeSeed?.fill(0);
+    socSeed?.fill(0);
   }
 }
 

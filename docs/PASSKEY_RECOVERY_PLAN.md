@@ -802,3 +802,62 @@ Remaining browser items: interactive email login + same-user→same-key across d
 - WoCo-held guardian / PoH-as-signer (custodial — §12.1).
 - Friends VSS M-of-N (deferred — §12.2 #4).
 - Para-specific viem wiring (Para being phased out — §2026-06-19b).
+
+## 13. FOLLOW-UP (2026-07-01) — remove the platform signer from the recovery-escrow SOC (availability + integrity, not confidentiality)
+
+Verified in code (`routes/recovery.ts` → `lib/recovery/service.ts` → `writeFeedPage` default signer):
+the guardian-escrow envelope's Swarm feed WRITE is signed by the **platform** `FEED_PRIVATE_KEY`.
+§12.1 already blesses this on CONFIDENTIALITY grounds (payload is sealed ciphertext, storage ≠
+custody). The remaining objection is **availability/censorship**: because the platform OWNS that
+SOC, a compromised/malicious/offline platform can **overwrite or withhold** a user's escrow blob,
+i.e. users depend on us to retrieve their own recovery data. Funds are unaffected (on-chain
+guardian rotation is platform-independent, §11.2/§4) — this is POD-seed-restore availability only.
+
+DIRECTION (owner, decided 2026-07-01): phase the platform signer OUT of this path. It is
+recovery/funds-adjacent → **Opus**, fresh chat.
+
+AUDITOR VERDICT (2026-07-01, code-verified): SOUND and STRICTLY IMPROVES posture. Not novel
+plumbing — it reuses the ALREADY-SHIPPED client-owned-SOC pattern in
+`apps/web/src/lib/swarm/client-soc.ts` (`signAndUploadSoc` / `readSoc`), swapping the signer to a
+guardian-derived key. A SOC address = `keccak256(identifier‖owner)` and the reader REJECTS any
+chunk whose recovered signer ≠ owner (`makeSOCReader(owner).download`), so:
+  - Confidentiality: UNCHANGED (owner is irrelevant to the seal; payload already ciphertext).
+  - Integrity/forgery: STRONGER — self-verifying read means no party (platform or hostile gateway)
+    can serve a chunk that verifies unless the guardian key signed it. Today the platform CAN write
+    garbage to the platform-owned address (DoS); after the swap only the guardian key can write.
+  - Withhold/overwrite (the goal): FIXED — once uploaded the chunk is retrievable by address from
+    ANY gateway; platform can't overwrite (no key) or withhold (self-verifying, multi-source read).
+  - NO new trust assumption: the guardian-derived signing key relies on the backup wallet's
+    DETERMINISTIC sig — the SAME assumption `deriveGuardianEncryptionKeypair` already makes, already
+    protected by the setup determinism self-check. Transient key, browser-only at protect/recover.
+
+- **Core fix — guardian-derived SOC owner.** The backup wallet is present at BOTH protect AND
+  recover time (it already signs to derive the guardian HPKE key, `deriveGuardianEncryptionKeypair`).
+  Derive the recovery-feed SOC signer from the guardian and have the CLIENT sign+write the SOC via
+  the `signAndUploadSoc` path; read via `readSoc(guardianOwner, identifier)` (gateway-first,
+  self-verifying). Reproducible on any device by the backup wallet, no escrow, no platform key in
+  the loop. Discovery unchanged: identifier stays `topicRecovery(kernelAddress)`-derived, owner =
+  guardian address the client computes locally from the pasted TARGET + connected backup wallet.
+- **Crypto hygiene — ONE guardian signature, HKDF two labels.** Do NOT add a second wallet prompt.
+  Derive a master secret from the guardian's single EIP-712 sig, then HKDF-Expand into
+  `{ hpkeSeed (info="woco/recovery/hpke"), socSignSeed (info="woco/recovery/soc") }` — textbook
+  domain separation, keeps HPKE + SOC keys independent, no extra UX. Fold into the keccak→HKDF
+  migration (do them together — same funds-adjacent Opus chat).
+- **Why NOT the user's own content-feed signer:** that key is one of the things being LOST/escrowed
+  (whole reason POD seed is escrowed). The SOC owner must be reproducible from a credential that
+  SURVIVES device loss → the guardian, not the user's feed signer.
+- **On-chain anchoring (user's idea) — optional, orthogonal.** Anchoring the envelope's Swarm ref
+  in a sub-ENS text record / on-chain guardian index adds censorship-resistant DISCOVERY, but the
+  blob still needs a retrievable home; guardian-owned SOC already gives that. Anchor only if we
+  want tamper-evident pointer history. Not required for v1 of this fix.
+- **HONEST caveat — postage is a SEPARATE decentralisation axis.** Client-SIGNED ≠ client-UPLOADED.
+  Today client-owned feeds (incl. this SOC) are still uploaded via the server's platform POSTAGE
+  batch. Guardian-signing removes platform SIGNER control (forge/overwrite) but the platform stamp
+  may still gate the WRITE. Fully platform-free storage needs the user's own postage (Etherna
+  per-user batch registry — `project_etherna_batch_registry`). Don't claim "fully decentralised"
+  after only the signer swap; scope it as "platform can no longer forge/withhold the SOC owner."
+- **M-of-N (future):** with >1 guardian, pick a canonical SOC-owner guardian (or the account's own
+  portability-style key). v1 is 1-of-1 so guardian-owned is unambiguous; reserve the seam.
+- **Migration:** existing platform-signed recovery blobs — on next protect/re-protect, rewrite the
+  envelope under the guardian-owned SOC and (optionally) leave the old platform SOC as a read
+  fallback until all active protected accounts have re-protected. No silent break of live backups.

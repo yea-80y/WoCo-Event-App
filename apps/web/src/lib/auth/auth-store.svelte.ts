@@ -1145,7 +1145,7 @@ async function setupAccountRecovery(backup: {
   const seed = await restorePodSeed(podAddr);
   if (!seed) throw new Error("Could not access your identity key — open your dashboard once, then retry");
 
-  const { deriveGuardianEncryptionKeypair, sealRecoveryBundle, openRecoveryBundle } = await import(
+  const { deriveGuardianKeys, sealRecoveryBundle, openRecoveryBundle } = await import(
     "./recovery-escrow.js"
   );
 
@@ -1160,27 +1160,46 @@ async function setupAccountRecovery(backup: {
   const secrets: Record<string, string> = { podSeed: seed };
   if (feedSigner) secrets.feedSignerPrivKey = feedSigner.privKey;
 
-  const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
+  // ONE guardian signature derives BOTH the HPKE escrow key and the SOC signer
+  // that OWNS the guardian recovery SOC (§13) — no second wallet prompt.
+  const gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
   const envelope = await sealRecoveryBundle({
     bundle: { version: 1, secrets },
     kernelAddress,
-    guardianPublicKeysHex: [gk.publicKeyHex],
+    guardianPublicKeysHex: [gk.encryption.publicKeyHex],
   });
 
-  // Determinism self-check (sec-review note #1): re-derive the escrow key from a
-  // SECOND signature and confirm it opens the bundle to the EXACT seed. If the
-  // backup's typed-data signature is non-deterministic, the second key differs and
-  // this throws — failing loudly at setup instead of silently at recovery time.
-  const gk2 = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
-  const check = await openRecoveryBundle({ envelope, kernelAddress, guardianKeypair: gk2 });
-  if (check.secrets.podSeed !== seed || check.secrets.feedSignerPrivKey !== secrets.feedSignerPrivKey) {
+  // Determinism self-check (sec-review note #1): re-derive from a SECOND signature
+  // and confirm it (a) opens the bundle to the EXACT seed AND (b) reproduces the
+  // SAME SOC owner address. A non-deterministic backup signature would otherwise
+  // either make the bundle un-openable or orphan the guardian SOC — caught here,
+  // failing loudly at setup instead of silently at recovery time.
+  const gk2 = await deriveGuardianKeys(backup.address, backup.signTypedData);
+  const check = await openRecoveryBundle({ envelope, kernelAddress, guardianKeypair: gk2.encryption });
+  if (
+    check.secrets.podSeed !== seed ||
+    check.secrets.feedSignerPrivKey !== secrets.feedSignerPrivKey ||
+    gk2.socSigner.address !== gk.socSigner.address
+  ) {
     throw new Error(
       "Your backup wallet's signature isn't reproducible, so recovery couldn't be guaranteed. " +
         "Try a different backup wallet.",
     );
   }
 
-  // Escrow proven recoverable → now do the irreversible on-chain install.
+  // Persist the escrow as a GUARDIAN-owned SOC (§13) — client-signed, the platform
+  // only stamps postage, so it can no longer forge or withhold it. FATAL: this IS
+  // the escrow. Do it BEFORE the irreversible on-chain install so a failed write
+  // aborts with nothing committed (an installed recovery route with no escrow blob
+  // would leave POD unrecoverable).
+  const { uploadRecoveryEnvelopeSoc } = await import("../swarm/recovery-feed.js");
+  await uploadRecoveryEnvelopeSoc({
+    socSignerPrivKey: gk.socSigner.privKey,
+    kernelAddress,
+    envelope,
+  });
+
+  // Escrow persisted + proven recoverable → now do the irreversible on-chain install.
   const { deriveGuardianAddress, setupRecovery } = await import("./kernel-account.js");
   // v1 = single backup (1-of-1): one signer at full weight. Social M-of-N reuses
   // this shape with more signers + a higher threshold (no rewrite).
@@ -1200,10 +1219,16 @@ async function setupAccountRecovery(backup: {
     /* name lookup is a display nicety, never block setup on it */
   }
 
-  // Store the sealed envelope + the guardian→account auto-find hint together.
-  const { putRecoveryEnvelope } = await import("../api/recovery.js");
-  const res = await putRecoveryEnvelope(envelope, { guardianAddress, label });
-  if (!res.ok) throw new Error(res.error || "Could not save your backup — please try again");
+  // Register the platform presence + auto-find hints (untrusted convenience; the
+  // guardian SOC above is the source of truth). NON-FATAL — the escrow is already
+  // persisted, so a hint write failing must not fail the whole protect.
+  try {
+    const { registerRecoveryHint } = await import("../api/recovery.js");
+    const res = await registerRecoveryHint({ guardianAddress, label });
+    if (!res.ok) console.warn("[recovery] hint registration failed (non-fatal):", res.error);
+  } catch (err) {
+    console.warn("[recovery] hint registration failed (non-fatal):", err);
+  }
 
   return { guardianAddress, txHash };
 }
@@ -1249,26 +1274,35 @@ async function recoverAndRekey(args: {
   }
   const target = targetAddress.toLowerCase();
 
-  // Fetch the escrow up front: if there's nothing to restore, recovery would
-  // strand the POD identity — refuse before touching the chain.
-  const { fetchRecoveryEnvelope } = await import("../api/recovery.js");
-  const envelope = await fetchRecoveryEnvelope(target);
-  if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
-
   _busy = true;
   try {
     // (0) PRE-FLIGHT ownership proof: decrypt the escrow BEFORE any irreversible
-    // step. The seal key derives from the backup wallet's (deterministic)
-    // signature, so only the true guardian of THIS account can open it. A wrong
-    // address or a poisoned auto-find hint fails here — before a passkey is minted
-    // or the on-chain owner is rotated. This is the security linchpin of recovery.
+    // step. ONE guardian signature derives both the SOC owner (which locates the
+    // escrow) and the HPKE key (which opens it), so only the true guardian of THIS
+    // account can read AND decrypt it. A wrong address or a poisoned auto-find hint
+    // fails here — before a passkey is minted or the on-chain owner is rotated.
+    // This is the security linchpin of recovery.
     onProgress?.("Confirm the signature in your backup wallet to unlock this account's data");
-    const { deriveGuardianEncryptionKeypair, openRecoveryBundle } = await import("./recovery-escrow.js");
-    const gk = await deriveGuardianEncryptionKeypair(backup.address, backup.signTypedData);
+    const { deriveGuardianKeys, openRecoveryBundle } = await import("./recovery-escrow.js");
+    const gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+
+    // Read the guardian-owned escrow SOC (owner derived LOCALLY from the backup
+    // wallet — no platform signer in the loop, §13), falling back to the legacy
+    // platform-signed feed for accounts protected before this migration. If there
+    // is nothing to restore, recovery would strand the POD identity — refuse before
+    // touching the chain.
+    const { readRecoveryEnvelopeSoc } = await import("../swarm/recovery-feed.js");
+    let envelope = await readRecoveryEnvelopeSoc(gk.socSigner.address, target);
+    if (!envelope) {
+      const { fetchRecoveryEnvelope } = await import("../api/recovery.js");
+      envelope = await fetchRecoveryEnvelope(target);
+    }
+    if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
+
     let podSeed: string;
     let feedSignerPrivKey: string | undefined;
     try {
-      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk });
+      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk.encryption });
       if (!bundle.secrets.podSeed) throw new Error("missing podSeed");
       podSeed = bundle.secrets.podSeed;
       // Restored verbatim (not re-derived) so the recovered account keeps owning

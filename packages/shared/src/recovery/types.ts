@@ -56,3 +56,31 @@ export interface RecoveryGuardianIndex {
   /** Optional sub-ENS label ({label}.woco.eth) for a human-readable confirmation. */
   label?: string;
 }
+
+/** Current presence-hint format. */
+export const RECOVERY_STATUS_VERSION = 1 as const;
+
+/**
+ * Platform-signed PRESENCE HINT keyed by Kernel address (§13). Since the sealed
+ * escrow envelope moved to a GUARDIAN-owned SOC — which cannot be read without the
+ * backup-wallet signature — the UI can no longer probe "is this account protected?"
+ * by fetching the envelope. This tiny doc fills that gap: it records only that a
+ * protect happened, plus display hints. It NEVER holds the escrow or a key.
+ *
+ * SECURITY: an untrusted convenience, exactly like {@link RecoveryGuardianIndex}.
+ * The platform signs it, so it is forgeable/withholdable — but a wrong value only
+ * mis-renders the setup screen ("on record" vs "add a backup"). It carries no
+ * authority: real recoverability is proven ONLY by decrypting the guardian SOC.
+ */
+export interface RecoveryStatus {
+  /** Format version (see RECOVERY_STATUS_VERSION). */
+  v: number;
+  /** True once a protect ceremony completed (on-chain install + guardian SOC). */
+  configured: boolean;
+  /** Guardian (weighted-ECDSA) address pinned on-chain — display hint only. */
+  guardianAddress?: string;
+  /** Optional sub-ENS label ({label}.woco.eth) for a human-readable confirmation. */
+  label?: string;
+  /** ms-epoch of the last protect write (display only). */
+  updatedAt?: number;
+}

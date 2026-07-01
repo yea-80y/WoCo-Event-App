@@ -14,7 +14,7 @@
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, type BackupWallet } from "../../wallet/backup-signer.js";
-  import { fetchRecoveryEnvelope, fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { fetchRecoveryStatus, fetchRecoveryByGuardian } from "../../api/recovery.js";
   import { resolveSubEnsAddress } from "../../api/sub-ens.js";
 
   type Phase =
@@ -107,14 +107,16 @@
     }
   }
 
-  // Confirm a recovery envelope exists for `addr` and move to the found/none state.
+  // Confirm a protected account exists for `addr` and move to the found/none state.
+  // Presence hint only (§13): the authoritative check is the guardian-SOC decrypt
+  // inside recoverAndRekey, which cannot run until the backup wallet signs.
   async function checkAddress(addr: string) {
     account = addr;
     phase = "checking";
     errorMsg = "";
     try {
-      const env = await fetchRecoveryEnvelope(addr);
-      phase = env ? "found" : "none";
+      const status = await fetchRecoveryStatus(addr);
+      phase = status?.configured ? "found" : "none";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Couldn't check that account";
       phase = "error";
