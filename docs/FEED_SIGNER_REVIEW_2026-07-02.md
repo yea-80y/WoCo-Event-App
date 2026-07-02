@@ -119,6 +119,42 @@ review isn't lost. Read with `CLIENT_FEEDS_AUTH_KINDS_HANDOVER.md` and
 4. One-ceremony eager key setup (F3). (Sonnet, after Opus specs the contract)
 5. Guardian-setup warning copy (F4). (Sonnet)
 
+## Follow-up Q&A (owner questions, answered 2026-07-02)
+
+- **Web3 EOA escrow + "EAS ownership transfer":** two DIFFERENT layers. (1) Secret
+  escrow (feed signer / POD seed) preserves content-signing; (2) identity
+  SUCCESSION preserves the parent. An EAS "old parent → new parent" record must
+  be signed by the OLD key — works for proactive migration/rotation, NOT for key
+  LOSS (nothing left to sign with). Passkey users have both layers (escrow +
+  Kernel owner rotation); web3 EOAs have neither and can't until the planned
+  EIP-7702 Kernelization gives them a rotatable owner (7702 gives loss-recovery
+  but NOT compromise-recovery — the raw EOA key stays a super-authority).
+  ⇒ Revisit web3 escrow AFTER 7702 lands; at that point align web3 with the
+  passkey recovery backbone. The EAS idea the owner remembers = the feed-signer
+  ROTATION record from the security triage (parent-authorized, consulted lazily)
+  — related instinct, different layer.
+- **POD seed escrow:** YES for passkey — `podSeed` was the ORIGINAL escrow
+  payload (§11: funds rotation can't restore POD). POD is sign-to-derived (same
+  construction as the feed signer, `POD_IDENTITY_DOMAIN`); a recovered passkey
+  would derive a divergent seed, hence escrow. web3auth currently re-derives POD
+  from the Web3Auth key (no escrow) — the Web3Auth-repoint risk applies to POD
+  exactly as to the feed signer, so **option B must seal BOTH `podSeed` and
+  `feedSignerPrivKey`** for web3auth (bundle is already generic).
+- **POD gating:** rules (`PodGate`/`PodGateGroup`, keyed by `manifestRef`) are
+  part of the EVENT definition (V2 `dropGate`); holdings are read TRUSTLESSLY
+  from WoCoEventV2 slot ownership on-chain (`lib/pod/holdings.ts`), never from
+  platform feeds; evaluation is a pure shared function (`shared/pod/gate.ts`).
+  The server enforces at claim time as a chokepoint but is NOT a trust point —
+  rule, holdings, and evaluation are all publicly recomputable client-side.
+- **Passkey cross-app feed portability:** passkeys are RP-ID (domain)-bound —
+  a different app/domain = a different credential = different PRF = different
+  derived keys. Cross-app portability for passkey users therefore rides the
+  GUARDIAN ESCROW (the guardian wallet can unseal the bundle in any app that
+  implements the envelope spec), not the passkey. NOTE/verify: woco.eth.limo vs
+  gateway.woco-net.com are DIFFERENT RP IDs — a passkey registered on one host
+  cannot assert on the other; confirm passkey login is offered on one host only
+  (or scope which host is canonical) before launch.
+
 ## Auth model (for reference — asked during review)
 
 No server-side accounts/passwords/session store. Parent identity = client-held
