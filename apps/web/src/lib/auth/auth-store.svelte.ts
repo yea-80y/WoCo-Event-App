@@ -421,17 +421,19 @@ async function _restoreCachedAuth(): Promise<void> {
 
 /**
  * If the prior `PARENT_ADDRESS` in storage differs from `address`, wipe the
- * cached session + POD identity before adopting the new account. Without
- * this, a session delegation signed by the previous wallet would be
- * misattributed to the newly-logged-in identity (cross-identity leak).
+ * cached SESSION before adopting the new account — the session key + delegation
+ * are still single-slot, so without this a delegation signed by the previous
+ * wallet would be misattributed to the newly-logged-in identity (cross-identity
+ * leak). The POD seed + feed signer are now per-account keyed (podSeedKey /
+ * feedSignerKey) AND AAD-bound, so they cannot be misattributed and are left in
+ * place so a switch back to the prior account restores instantly; each account's
+ * blobs are wiped on ITS OWN logout (clearAllAuth). Only the in-memory feed-signer
+ * memo must be reset, since it's keyed by the outgoing parent.
  */
 async function _clearStaleAuthForSwitch(address: string): Promise<void> {
   const priorParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
   if (priorParent && priorParent.toLowerCase() !== address.toLowerCase()) {
     await clearSession();
-    await clearPodIdentity();
-    const { clearContentFeedSigner } = await import("./feed-signer-store.js");
-    await clearContentFeedSigner();
     _feedSignerAddressMemo = null;
   }
 }
@@ -1716,13 +1718,17 @@ async function logout(): Promise<void> {
 }
 
 async function clearAllAuth(): Promise<void> {
+  // Capture the active account's addresses BEFORE the slot wipes below reset them —
+  // needed to target this account's per-account POD-seed / feed-signer slots.
+  const podAddr = _getPodAddress() ?? undefined;
+  const parentAddr = _parent ?? undefined;
   await clearSession();
-  await clearPodIdentity();
+  await clearPodIdentity(podAddr);
   // Drop the feed-signer secret on logout (parity with the POD seed). It is
   // restorable from escrow on next login; the on-device copy should not outlive
   // the session on a shared device.
   const { clearContentFeedSigner } = await import("./feed-signer-store.js");
-  await clearContentFeedSigner();
+  await clearContentFeedSigner(parentAddr);
   // Drop the legacy PERSISTED feed-signer address cache (pre-2026-07 builds wrote
   // it). It was unauthenticated and outlived logout, leaking the previous
   // account's signer into the next login's self-reads — the live resolver now

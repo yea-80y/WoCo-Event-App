@@ -12,6 +12,18 @@ import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js"
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 /**
+ * Per-account POD-seed storage key. The blob is already AAD-bound to the address,
+ * but a SINGLE global slot let a second account on the same device overwrite (and,
+ * via the mismatch self-heal, DELETE) the first account's seed — so switching
+ * between accounts thrashed each other's data. Keying the slot by the same address
+ * lets multiple accounts' seeds coexist untouched. Logout still wipes the active
+ * account's slot (see clearPodIdentity) so shared-device hygiene is unchanged.
+ */
+function podSeedKey(address: string): string {
+  return `${StorageKeys.POD_SEED}:${address.toLowerCase()}`;
+}
+
+/**
  * Request POD identity derivation from the primary wallet.
  *
  * Uses a fixed nonce so the same wallet always produces the same
@@ -53,7 +65,7 @@ export async function requestPodIdentity(
   // identity on the same browser. See encryption.ts for rationale.
   const deviceKey = await ensureDeviceKey();
   const encSeed = await encrypt(deviceKey, AAD.POD_SEED(parentAddress), { seed });
-  await putKV(StorageKeys.POD_SEED, encSeed);
+  await putKV(podSeedKey(parentAddress), encSeed);
 
   return { podPublicKeyHex: keypair.publicKeyHex, seed };
 }
@@ -69,8 +81,17 @@ export async function requestPodIdentity(
  * blobs from before 2026-05-17.
  */
 export async function restorePodSeed(parentAddress: string): Promise<string | null> {
-  const encSeed = await getKV<EncryptedBlob>(StorageKeys.POD_SEED);
-  if (!encSeed) return null;
+  const key = podSeedKey(parentAddress);
+  let encSeed = await getKV<EncryptedBlob>(key);
+  // Legacy migration: pre-hardening builds stored ONE global POD_SEED. If the
+  // per-account slot is empty, fall back to the legacy slot; a successful decrypt
+  // means it belongs to THIS account, so migrate it and drop the legacy blob.
+  let fromLegacy = false;
+  if (!encSeed) {
+    encSeed = await getKV<EncryptedBlob>(StorageKeys.POD_SEED);
+    if (!encSeed) return null;
+    fromLegacy = true;
+  }
 
   const deviceKey = await ensureDeviceKey();
   try {
@@ -79,12 +100,16 @@ export async function restorePodSeed(parentAddress: string): Promise<string | nu
       AAD.POD_SEED(parentAddress),
       encSeed,
     );
+    if (fromLegacy) {
+      await putKV(key, encSeed); // adopt into this account's per-account slot
+      await delKV(StorageKeys.POD_SEED); // legacy single slot no longer needed
+    }
     return seed;
   } catch {
-    // AES-GCM auth tag failure (wrong AAD, tampered ciphertext, or legacy
-    // pre-hardening blob). Either way the blob is unusable for this
-    // identity — drop it so re-derivation isn't blocked.
-    await delKV(StorageKeys.POD_SEED);
+    // AES-GCM auth tag failure (wrong AAD or tampered ciphertext). Drop ONLY this
+    // account's own slot — never the legacy slot, which may still belong to a
+    // DIFFERENT account that will migrate it on its next login.
+    if (!fromLegacy) await delKV(key);
     return null;
   }
 }
@@ -115,9 +140,15 @@ export async function getPodKeypair(parentAddress: string): Promise<{
 export async function storePodSeed(parentAddress: string, seed: string): Promise<void> {
   const deviceKey = await ensureDeviceKey();
   const encSeed = await encrypt(deviceKey, AAD.POD_SEED(parentAddress), { seed });
-  await putKV(StorageKeys.POD_SEED, encSeed);
+  await putKV(podSeedKey(parentAddress), encSeed);
 }
 
-export async function clearPodIdentity(): Promise<void> {
+/**
+ * Wipe the POD seed. Pass the account's POD address to drop its per-account slot;
+ * the legacy single slot is always cleared too (shared-device hygiene — no seed
+ * left decryptable at rest after logout). Omitting the address clears only legacy.
+ */
+export async function clearPodIdentity(address?: string): Promise<void> {
+  if (address) await delKV(podSeedKey(address));
   await delKV(StorageKeys.POD_SEED);
 }
