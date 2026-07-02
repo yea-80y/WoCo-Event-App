@@ -289,6 +289,17 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
   // (a non-deterministic wallet self-check, a missing key) — we NEVER fall through
   // to a platform signer, which would silently split the user's feeds.
   if (parent && (_kind === "web3" || _kind === "web3auth" || _kind === "local" || _kind === "passkey")) {
+    // Anti-divergence guard: a RECOVERED passkey's PRF credential has ROTATED, so
+    // sign-to-derive here would produce a DIFFERENT key than the one that owns the
+    // account's existing feeds — silently forking them. Its real signer only comes
+    // from escrow/portability restore (done at login). Reaching here means that
+    // restore didn't happen, so FAIL LOUD rather than fork. Non-recovered passkeys
+    // (no binding) derive deterministically and are unaffected.
+    if (_kind === "passkey" && (await _recoveryKernelFor(_podAddress))) {
+      throw new Error(
+        "Recovered passkey feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
+      );
+    }
     const signer = await _deriveFeedSignerBySigning(parent);
     const { storeContentFeedSigner } = await import("./feed-signer-store.js");
     await storeContentFeedSigner(parent, signer.privKey);
@@ -438,24 +449,52 @@ async function _ensurePasskeyKey(): Promise<void> {
 }
 
 /**
- * Read the durable recovered-account binding (see StorageKeys.RECOVERED_KERNEL_BINDING).
- * Present ⇒ this device recovered an account whose Kernel address is PRESERVED
- * while its sudo owner was rotated to the bound passkey (`pod` = that passkey's
- * PRF-EOA). Returned only as a hint; callers gate on `pod` matching the live key.
+ * Recovered-account bindings, as a MAP `{ [prfEoaLower]: kernelAddress }`
+ * (see StorageKeys.RECOVERED_KERNEL_BINDING). Each entry means: this device
+ * recovered an account whose Kernel address is PRESERVED while its sudo owner was
+ * rotated to the passkey whose PRF-EOA is the key. Migrates a legacy single-object
+ * `{pod,kernel}` blob to the map shape transparently.
  */
-async function _getRecoveryBinding(): Promise<{ pod: string; kernel: string } | null> {
-  return (await getKV<{ pod: string; kernel: string }>(StorageKeys.RECOVERED_KERNEL_BINDING)) ?? null;
+type RecoveryBindings = Record<string, string>;
+async function _getRecoveryBindings(): Promise<RecoveryBindings> {
+  const raw = await getKV<RecoveryBindings | { pod: string; kernel: string }>(
+    StorageKeys.RECOVERED_KERNEL_BINDING,
+  );
+  if (!raw) return {};
+  // Legacy single-object shape → map (one-time transparent migration).
+  if (typeof (raw as { pod?: unknown }).pod === "string") {
+    const legacy = raw as { pod: string; kernel: string };
+    return { [legacy.pod.toLowerCase()]: legacy.kernel };
+  }
+  return raw as RecoveryBindings;
 }
 
-/** True iff the binding applies to the passkey whose PRF-EOA is `podAddress`. */
-function _bindingAddressFor(
-  binding: { pod: string; kernel: string } | null,
-  podAddress: string | null,
-): `0x${string}` | undefined {
-  if (!binding || !podAddress) return undefined;
-  return binding.pod.toLowerCase() === podAddress.toLowerCase()
-    ? (binding.kernel as `0x${string}`)
-    : undefined;
+/**
+ * The preserved Kernel address bound to the passkey whose PRF-EOA is `podAddress`,
+ * or undefined if this device holds no recovery binding for it. Callers use it as
+ * the CREATE2 override so a recovered account rebuilds at its real (preserved)
+ * address instead of the rotated credential's divergent counterfactual.
+ */
+async function _recoveryKernelFor(podAddress: string | null): Promise<`0x${string}` | undefined> {
+  if (!podAddress) return undefined;
+  const kernel = (await _getRecoveryBindings())[podAddress.toLowerCase()];
+  return kernel ? (kernel as `0x${string}`) : undefined;
+}
+
+/** Upsert the binding for one passkey (never clobbers other accounts' bindings). */
+async function _putRecoveryBinding(podAddress: string, kernel: string): Promise<void> {
+  const bindings = await _getRecoveryBindings();
+  bindings[podAddress.toLowerCase()] = kernel;
+  await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
+}
+
+/** Drop only THIS passkey's binding (e.g. proven stale on-chain), keep the rest. */
+async function _deleteRecoveryBinding(podAddress: string): Promise<void> {
+  const bindings = await _getRecoveryBindings();
+  if (podAddress.toLowerCase() in bindings) {
+    delete bindings[podAddress.toLowerCase()];
+    await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
+  }
 }
 
 /**
@@ -511,7 +550,7 @@ async function _verifyPortabilityEnvelope(
 async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
   try {
     if (_kind !== "passkey" || !_passkeyPrivateKey || !_podAddress) return;
-    const override = _bindingAddressFor(await _getRecoveryBinding(), _podAddress);
+    const override = await _recoveryKernelFor(_podAddress);
     if (!override) return; // only recovered accounts carry a binding
 
     const { derivePortabilityKeys, writePortabilityEnvelope } = await import("./recovery-portability.js");
@@ -557,7 +596,7 @@ async function _ensureKernel(): Promise<void> {
   if (_kernel) return;
   if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const override = _bindingAddressFor(await _getRecoveryBinding(), _podAddress);
+  const override = await _recoveryKernelFor(_podAddress);
   const kernel = await buildKernelFromPrivateKey(
     _passkeyPrivateKey,
     override ? { address: override } : undefined,
@@ -587,7 +626,7 @@ async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
   if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const override = _bindingAddressFor(await _getRecoveryBinding(), _getPodAddress());
+  const override = await _recoveryKernelFor(_getPodAddress());
   const kernel = await buildKernelFromPrivateKey(
     _web3authPrivateKey,
     override ? { address: override } : undefined,
@@ -850,7 +889,7 @@ async function loginWeb3Auth(): Promise<boolean> {
     // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
     // NEW device recovers by re-running the portal.)
     const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
-    let override = _bindingAddressFor(await _getRecoveryBinding(), address);
+    let override = await _recoveryKernelFor(address);
     if (override) {
       // Stale-binding guard: only trust the local binding if the preserved Kernel
       // still has THIS EOA as its on-chain ECDSA owner (mirror loginPasskey) —
@@ -858,7 +897,7 @@ async function loginWeb3Auth(): Promise<boolean> {
       const onChainOwner = await readKernelEcdsaOwner(override);
       if (onChainOwner !== null && onChainOwner.toLowerCase() !== address.toLowerCase()) {
         console.warn("[auth] local recovery binding stale (web3auth) — on-chain owner is", onChainOwner, "not", address, "— clearing");
-        await delKV(StorageKeys.RECOVERED_KERNEL_BINDING);
+        await _deleteRecoveryBinding(address);
         override = undefined;
       }
     }
@@ -975,7 +1014,7 @@ async function loginPasskey(): Promise<boolean> {
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
     const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
-    let override = _bindingAddressFor(await _getRecoveryBinding(), account.address);
+    let override = await _recoveryKernelFor(account.address);
 
     // Guard: verify the local binding's Kernel still has this PRF-EOA as its
     // on-chain ECDSA owner before trusting it. A stale binding (recovery tx
@@ -987,21 +1026,33 @@ async function loginPasskey(): Promise<boolean> {
       const onChainOwner = await readKernelEcdsaOwner(override);
       if (onChainOwner !== null && onChainOwner.toLowerCase() !== account.address.toLowerCase()) {
         console.warn("[auth] local recovery binding stale — on-chain owner is", onChainOwner, "not PRF-EOA", account.address, "— clearing");
-        await delKV(StorageKeys.RECOVERED_KERNEL_BINDING);
+        await _deleteRecoveryBinding(account.address);
         override = undefined;
       }
     }
 
-    // No LOCAL binding, but this could be a RECOVERED account opened on a SECOND
-    // device. Check the PRF-sealed portability envelope + on-chain owner; if it
-    // verifies, adopt the preserved address and restore the POD seed below
-    // (AFTER _clearStaleAuthForSwitch, which would otherwise wipe it).
+    // Recovered-account secret restore. A recovered passkey's PRF credential has
+    // ROTATED, so its POD seed + feed signer can NEVER be re-derived from it — they
+    // live only in the PRF-sealed portability envelope (written after recovery). We
+    // consult that envelope when:
+    //   (a) there is NO local binding — this may be the account opened on a 2ND device; OR
+    //   (b) a binding exists but the on-device secrets were WIPED on logout
+    //       (clearAllAuth drops the POD seed + feed signer). Without (b) a plain
+    //       logout→login of a recovered account comes back with no POD seed (→ can't
+    //       decrypt its own history, and ensurePodIdentity would re-derive a DIVERGENT
+    //       seed from the rotated credential) and no feed signer (→ its content feeds
+    //       unreadable / a divergent signer forked). The envelope is the ONLY silent
+    //       restore channel — the guardian escrow needs the guardian's signature.
+    // The presence probes below double as self-heal: restore* drops a foreign-AAD blob.
     let portabilityRestore:
       | { preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string }
       | null = null;
-    if (!override) {
+    const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
+    const podSeedPresent = !!(await restorePodSeed(account.address));
+    const feedSignerPresent = override ? !!(await restoreContentFeedSigner(override)) : false;
+    if (!override || !podSeedPresent || !feedSignerPresent) {
       portabilityRestore = await _verifyPortabilityEnvelope(account.privateKey, account.address);
-      if (portabilityRestore) override = portabilityRestore.preserved;
+      if (portabilityRestore && !override) override = portabilityRestore.preserved;
     }
 
     const kernel = await buildKernelFromPrivateKey(
@@ -1011,9 +1062,10 @@ async function loginPasskey(): Promise<boolean> {
 
     await _clearStaleAuthForSwitch(kernel.address);
 
-    // New-device recovery: persist the escrow-restored POD seed + the durable
-    // binding so future sessions rebuild at the preserved address (mirrors
-    // recoverAndRekey). Order matters — this runs AFTER _clearStaleAuthForSwitch.
+    // Persist the escrow-restored POD seed + feed signer + durable binding (mirrors
+    // recoverAndRekey). Runs AFTER _clearStaleAuthForSwitch (which wipes them on an
+    // account switch), and covers BOTH first 2nd-device recovery AND a logged-out
+    // recovered account whose on-device secrets were wiped.
     if (portabilityRestore) {
       await storePodSeed(account.address, portabilityRestore.podSeed);
       // Restore the feed signer under the PRESERVED parent address so this device
@@ -1022,10 +1074,8 @@ async function loginPasskey(): Promise<boolean> {
         const { storeContentFeedSigner } = await import("./feed-signer-store.js");
         await storeContentFeedSigner(portabilityRestore.preserved, portabilityRestore.feedSignerPrivKey);
       }
-      await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, {
-        pod: account.address.toLowerCase(),
-        kernel: portabilityRestore.preserved,
-      });
+      await _putRecoveryBinding(account.address, portabilityRestore.preserved);
+      _feedSignerAddressMemo = null;
     }
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
@@ -1132,6 +1182,20 @@ async function ensurePodIdentity(): Promise<string | null> {
       if (existing) {
         _podPublicKeyHex = existing.publicKeyHex;
         return _podPublicKeyHex;
+      }
+
+      // Anti-clobber guard: a RECOVERED passkey (binding present for this PRF-EOA)
+      // has a ROTATED credential, so re-deriving below would produce a DIVERGENT seed
+      // and permanently break decryption of its historical data. Its real seed only
+      // comes from escrow/portability restore (done at login). If it's absent here,
+      // return null (POD unavailable this session) rather than clobber it — login
+      // should have restored it; failing soft keeps historical data recoverable once
+      // the restore path runs, whereas a divergent derive would corrupt it forever.
+      if (_kind === "passkey" && (await _recoveryKernelFor(podAddr))) {
+        console.error(
+          "[auth] recovered passkey POD seed missing — refusing to re-derive a divergent seed",
+        );
+        return null;
       }
 
       // No stored seed (first login on this device, or post-migration) → derive it
@@ -1511,10 +1575,7 @@ async function recoverAndRekey(args: {
     // the Kernel at the PRESERVED address `target`, whose counterfactual it does NOT
     // match. loginPasskey/loginWeb3Auth/_ensureKernel*/init read this to rebuild at
     // the preserved address on every future session (survives logout — clearAllAuth).
-    await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, {
-      pod: newPodAddress.toLowerCase(),
-      kernel: target,
-    });
+    await _putRecoveryBinding(newPodAddress, target);
     // Cross-device portability (passkey only): `_maybeBackfillPortabilityEnvelope`
     // writes a PRF-sealed envelope on the first `ensureSession` after this ceremony,
     // so a passkey-recovered account can be re-opened on a THIRD device. A web3auth

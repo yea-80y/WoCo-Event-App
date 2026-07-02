@@ -16,14 +16,17 @@ export const StorageKeys = {
   // The Kernel smart-account address is the parent; POD must stay on the raw
   // PRF-EOA address (invariant #1) so it survives the future Option 2 swap.
   POD_ADDRESS: "woco:auth:pod-address",
-  // Durable RECOVERED-account binding: `{ pod, kernel }`. After recovery the
-  // Kernel's sudo owner is rotated but its address is PRESERVED, so the rotated
-  // passkey's counterfactual CREATE2 address no longer equals the account address.
-  // This records "the passkey whose PRF-EOA = `pod` controls the Kernel at
-  // `kernel`" so loginPasskey/_ensureKernel rebuild AT the preserved address via
-  // the override instead of the (now-divergent) counterfactual. Keyed to the
-  // PRF-EOA so it only applies to the matching passkey; persists across logout
-  // (like LOCAL_KEY) so re-login works.
+  // Durable RECOVERED-account bindings: a MAP `{ [prfEoaLower]: kernelAddress }`.
+  // After recovery the Kernel's sudo owner is rotated but its address is PRESERVED,
+  // so the rotated passkey's counterfactual CREATE2 address no longer equals the
+  // account address. Each entry records "the passkey whose PRF-EOA = key controls
+  // the Kernel at value" so loginPasskey/_ensureKernel rebuild AT the preserved
+  // address via the override instead of the (now-divergent) counterfactual. It is a
+  // MAP (not a single `{pod,kernel}`) so recovering MULTIPLE accounts on one device
+  // doesn't let a later recovery clobber an earlier one's binding — which would send
+  // the earlier account's next login to a fresh counterfactual address ("the account
+  // address changed"). Persists across logout (like LOCAL_KEY) so re-login works.
+  // Legacy single-object blobs are migrated to the map shape on first read.
   RECOVERED_KERNEL_BINDING: "woco:auth:recovered-kernel",
   LOCAL_KEY: "woco:auth:local-key",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
