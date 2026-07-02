@@ -7,15 +7,17 @@
  * there is no added latency vs the old server-write (signing is local) and the
  * stamp step is a swappable transport (per-user batch / browser-Bee later).
  *
- * The feed-signer key is derived from the user's root login secret under its OWN
- * domain (`CONTENT_FEED_SIGNER_DOMAIN`), independent of POD + funds — mirrors the
- * portability-key derivation in `recovery-portability.ts`. Reads resolve by
- * computed chunk address (Etherna-safe — never `/feeds`).
+ * The feed-signer key is SIGN-TO-DERIVED: keccak256 of a deterministic,
+ * domain-separated EIP-712 signature (`FEED_SIGNER_DERIVE_DOMAIN`) — the SAME
+ * construction as the POD seed, differing only in the domain signed, so the two
+ * keys are cryptographically independent. Once established it is persisted (and,
+ * for credentials that rotate, escrowed) and restored verbatim; the stored key
+ * always wins. Reads resolve by computed chunk address (Etherna-safe — never
+ * `/feeds`).
  */
 
-import { keccak256, getBytes, toUtf8Bytes, concat, Wallet } from "ethers";
+import { keccak256, getBytes, Wallet } from "ethers";
 import {
-  CONTENT_FEED_SIGNER_DOMAIN,
   CONTENT_FEED_MC_MARKER,
   contentFeedSocIdentifier,
   contentFeedPageTopic,
@@ -33,27 +35,10 @@ export interface ContentFeedSigner {
 }
 
 /**
- * Derive the content-feed signer from a root secp256k1 key (passkey PRF key /
- * Web3Auth key / local key). `keccak256(domain || rootKey)` → a valid secp256k1
- * key whose address owns the user's content SOCs.
- *
- * Used only to SEED a NEW signer (`_getContentFeedSigner` then persists + escrows
- * it). Recovery does NOT re-derive: a rotated passkey credential yields a divergent
- * root, so the established key is restored verbatim from escrow/portability and the
- * stored copy always wins. See `feed-signer-store.ts` + `recovery-portability.ts`.
- */
-export function deriveContentFeedSigner(rootPrivKey: string): ContentFeedSigner {
-  const rootBytes = getBytes(rootPrivKey.startsWith("0x") ? rootPrivKey : `0x${rootPrivKey}`);
-  const seed = keccak256(concat([toUtf8Bytes(CONTENT_FEED_SIGNER_DOMAIN), rootBytes]));
-  const wallet = new Wallet(seed);
-  return { privKey: seed, address: wallet.address.toLowerCase() };
-}
-
-/**
- * Build a `ContentFeedSigner` from a STORED/escrowed private key (the independent
- * feed-signer secret). Unlike `deriveContentFeedSigner` this performs no
- * derivation — the key is the established secret, restored verbatim from local
- * storage or escrow; we only recover its address.
+ * Build a `ContentFeedSigner` from a STORED/escrowed private key (the established
+ * feed-signer secret). This performs NO derivation — the key is restored verbatim
+ * from local storage or escrow (the stored key always wins over re-deriving); we
+ * only recover its address.
  */
 export function contentFeedSignerFromPrivKey(privKey: string): ContentFeedSigner {
   const key = privKey.startsWith("0x") ? privKey : `0x${privKey}`;
@@ -61,12 +46,14 @@ export function contentFeedSignerFromPrivKey(privKey: string): ContentFeedSigner
 }
 
 /**
- * Derive the content-feed signer for an EXTERNAL wallet (web3 EOA) from its
- * deterministic EIP-712 signature. `keccak256(canonical 65-byte signature)` → a
- * uniform secp256k1 key — identical compression to the web3 POD seed
- * (`pod-identity.ts`), the proven in-production pattern. Domain separation lives
- * in what was signed (`FEED_SIGNER_DERIVE_DOMAIN`), so this does not re-prefix a
- * domain string. The signature MUST be the canonical bytes, not the hex string.
+ * Derive the content-feed signer from a deterministic, domain-separated EIP-712
+ * signature — the SINGLE construction used for EVERY login kind that can own
+ * client feeds (web3 wallet, web3auth, local, passkey). `keccak256(canonical
+ * 65-byte signature)` → a uniform secp256k1 key, identical compression to the POD
+ * seed (`pod-identity.ts`), the proven in-production pattern. Domain separation
+ * lives in what was signed (`FEED_SIGNER_DERIVE_DOMAIN`, distinct salt from POD),
+ * so this does not re-prefix a domain string. The signature MUST be the canonical
+ * bytes, not the hex string.
  */
 export function deriveContentFeedSignerFromSig(signature: string): ContentFeedSigner {
   const seed = keccak256(getBytes(signature));

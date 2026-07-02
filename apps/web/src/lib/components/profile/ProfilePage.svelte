@@ -33,6 +33,7 @@
   let profile = $state<UserProfile | null>(null);
   let loading = $state(true);
   let saving = $state(false);
+  let saveError = $state('');
   let ensBindError = $state('');
   let uploadingAvatar = $state(false);
   let avatarPreviewUrl = $state<string | null>(null);
@@ -110,8 +111,10 @@
   async function saveProfile() {
     if ((!formDirty && !pendingAvatarDataUrl) || saving) return;
     saving = true;
+    saveError = '';
     try {
-      await auth.ensureSession();
+      const ok = await auth.ensureSession();
+      if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
       const prevAvatarRef = profile?.avatarRef;
       let merged: UserProfile | null = profile;
 
@@ -144,6 +147,10 @@
       avatarPreviewUrl = null;
       formDirty = false;
     } catch (err) {
+      // Surface the failure — a swallowed error here looks like a save that
+      // silently didn't stick (the feed-signer setup path can throw or be
+      // declined, and the write itself can fail after signing).
+      saveError = err instanceof Error ? err.message : "Failed to save profile — please try again.";
       console.error("Failed to save profile:", err);
     } finally {
       uploadingAvatar = false;
@@ -544,6 +551,9 @@
               Save changes
             {/if}
           </button>
+          {#if saveError}
+            <p class="save-error">{saveError}</p>
+          {/if}
         </section>
 
         <!-- Web3 identity (sub-ENS) — claiming a name makes this profile a
@@ -1095,6 +1105,13 @@
   }
 
   .ens-bind-error {
+    margin: 0.5rem 0 0;
+    font-size: 0.8125rem;
+    color: #ef4444;
+    line-height: 1.45;
+  }
+
+  .save-error {
     margin: 0.5rem 0 0;
     font-size: 0.8125rem;
     color: #ef4444;

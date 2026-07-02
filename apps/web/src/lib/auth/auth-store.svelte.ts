@@ -80,6 +80,14 @@ let _cleanupAccountListener: (() => void) | null = null;
 // prompt. First caller signs; the rest await the same promise.
 let _sessionInFlight: Promise<boolean> | null = null;
 let _podInFlight: Promise<string | null> | null = null;
+let _feedSignerInFlight: Promise<ContentFeedSigner | null> | null = null;
+
+// In-memory memo of the feed-signer ADDRESS for passive self-reads, always
+// validated against the CURRENT parent before use. Never persisted: the only
+// durable copy of signer material is the AAD-bound encrypted key blob
+// (feed-signer-store), so there is no unauthenticated record that could survive
+// an account switch and leak the previous user's signer into this one's reads.
+let _feedSignerAddressMemo: { parent: string; address: string } | null = null;
 
 // ---------------------------------------------------------------------------
 // Derived
@@ -178,37 +186,26 @@ function _getPodAddress(): string | null {
 }
 
 /**
- * Root secp256k1 secret used to derive the CONTENT-FEED signer (Phase B). Only
- * kinds that hold a deterministic raw key in memory can own client-signed feeds;
- * web3/coinbase (external wallet, no raw key) fall back to platform-signed feeds
- * (caller gets null). Web3Auth's key lives only after a fresh login — a cold
- * session restore has no key in memory → null → legacy path until next login.
- */
-async function _getContentFeedRootKey(): Promise<string | null> {
-  if (_kind === "passkey") {
-    await _ensurePasskeyKey();
-    return _passkeyPrivateKey;
-  }
-  if (_kind === "web3auth") return _web3authPrivateKey;
-  if (_kind === "local") return _localPrivateKey;
-  return null;
-}
-
-/**
- * Derive an external wallet's (web3 EOA) content-feed signer by sign-to-derive:
- * the wallet has no raw key we can read, but it produces a deterministic
- * (RFC-6979) signature over a fixed domain-separated message — the same mechanism
- * that derives the web3 POD seed. Recovery on any device is re-signing the same
- * message; no escrow needed.
+ * Establish the user's content-feed signer by SIGN-TO-DERIVE — the single
+ * construction for every kind that can own client feeds: keccak256 of a
+ * deterministic, domain-separated EIP-712 signature. This is IDENTICAL to how the
+ * POD seed is derived (`requestPodIdentity`); only the signed domain differs
+ * (`FEED_SIGNER_DERIVE_DOMAIN`, distinct salt), so the feed key and POD key are
+ * cryptographically independent.
  *
- * ROBUSTNESS: a second signature MUST reproduce the same key. If it doesn't, the
- * wallet is non-deterministic and a feed signed now would be unrecoverable on the
- * next device — so we THROW rather than store a key that silently diverges later
- * (mirrors the guardian-escrow self-check). Content is NEVER platform-signed as a
+ * Signs with `_getPodSigner()` — the DETERMINISTIC raw-key/wallet signer (raw PRF
+ * key for passkey, raw key for web3auth/local, the wallet for web3), NEVER the
+ * Kernel 1271 signer, whose signatures are non-deterministic and would orphan the
+ * feed across devices.
+ *
+ * DETERMINISM: raw-key kinds sign via ethers → RFC-6979, deterministic by
+ * construction. External wallets (web3) are not under our control, so we sign
+ * TWICE and THROW on mismatch — a non-deterministic wallet would make the feed
+ * unrecoverable on the next device. Content is NEVER platform-signed as a
  * consolation: a failure here aborts the publish with a clear error instead.
  */
-async function _deriveWeb3FeedSigner(parent: string): Promise<ContentFeedSigner> {
-  const signer712 = await _getSigner();
+async function _deriveFeedSignerBySigning(parent: string): Promise<ContentFeedSigner> {
+  const signer712 = await _getPodSigner();
   const message = {
     purpose: "Set up your WoCo content-feed signing key",
     address: parent,
@@ -223,11 +220,16 @@ async function _deriveWeb3FeedSigner(parent: string): Promise<ContentFeedSigner>
 
   const { deriveContentFeedSignerFromSig } = await import("../swarm/content-feed.js");
   const first = deriveContentFeedSignerFromSig(await sign());
-  const second = deriveContentFeedSignerFromSig(await sign());
-  if (first.address !== second.address) {
-    throw new Error(
-      "Your wallet's signature isn't reproducible, so we can't create a recoverable feed for your content. Try a different wallet.",
-    );
+  // Only EXTERNAL wallets need the reproducibility self-check: we don't control
+  // their nonce generation. Raw-key kinds sign with ethers (RFC-6979) → already
+  // deterministic, so a second prompt would be pure friction.
+  if (_kind === "web3") {
+    const second = deriveContentFeedSignerFromSig(await sign());
+    if (first.address !== second.address) {
+      throw new Error(
+        "Your wallet's signature isn't reproducible, so we can't create a recoverable feed for your content. Try a different wallet.",
+      );
+    }
   }
   return first;
 }
@@ -235,79 +237,93 @@ async function _deriveWeb3FeedSigner(parent: string): Promise<ContentFeedSigner>
 /**
  * The user's content-feed signer (Phase B), or null when this kind/state can't
  * own client-signed feeds. The address is the SOC owner + the registry value.
+ *
+ * Concurrent callers coalesce onto one establish ceremony (same pattern as
+ * ensureSession/ensurePodIdentity): two parallel first-writes would otherwise
+ * each fire a derive, and `signingRequest` auto-rejects an overlapping confirm
+ * dialog — which surfaces as a signer failure with no visible prompt.
  */
 async function _getContentFeedSigner(): Promise<ContentFeedSigner | null> {
+  if (_feedSignerInFlight) return _feedSignerInFlight;
+  const inFlight = _getContentFeedSignerInner().finally(() => {
+    _feedSignerInFlight = null;
+  });
+  _feedSignerInFlight = inFlight;
+  return inFlight;
+}
+
+async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
   const parent = _parent;
-  const { contentFeedSignerFromPrivKey, deriveContentFeedSigner } = await import("../swarm/content-feed.js");
+  const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
 
   // (1) An established key wins: the feed signer is a STORED secret (escrowed for
-  // recovery), never re-derived once set — a rotated passkey credential would
-  // derive a divergent key and orphan the user's feeds (CROSS_DEVICE_RECOVERY §4).
+  // recovery on kinds whose credential rotates), never re-derived once set — a
+  // rotated passkey credential would derive a divergent key and orphan the user's
+  // feeds (CROSS_DEVICE_RECOVERY §4).
   if (parent) {
     const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
     const stored = await restoreContentFeedSigner(parent);
     if (stored) {
       const signer = contentFeedSignerFromPrivKey(stored);
-      void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, signer.address);
+      _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
       return signer;
     }
   }
 
-  // (2) External wallet (web3 EOA): no raw root key, but a deterministic
-  // signature. Sign-to-derive the feed signer (client-owned, NEVER platform),
-  // self-check determinism, then persist. Throws on a non-deterministic wallet —
-  // we fail the publish loud rather than orphan a feed or platform-sign content.
-  if (_kind === "web3" && parent) {
-    const signer = await _deriveWeb3FeedSigner(parent);
+  // (2) No stored key yet → establish one by SIGN-TO-DERIVE, the single
+  // construction for every kind that can own client feeds (web3, web3auth, local,
+  // passkey), then PERSIST it; from here the stored key wins. On passkey it is
+  // additionally escrowed in the guardian bundle at publish time (recovery-escrow).
+  // FAIL-LOUD: these kinds MUST own client-signed content, so any failure THROWS
+  // (a non-deterministic wallet self-check, a missing key) — we NEVER fall through
+  // to a platform signer, which would silently split the user's feeds.
+  if (parent && (_kind === "web3" || _kind === "web3auth" || _kind === "local" || _kind === "passkey")) {
+    const signer = await _deriveFeedSignerBySigning(parent);
     const { storeContentFeedSigner } = await import("./feed-signer-store.js");
     await storeContentFeedSigner(parent, signer.privKey);
-    void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, signer.address);
+    _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
     return signer;
   }
 
-  // (3) No stored key yet → SEED it from the legacy derivation so any feeds this
-  // account already wrote under the derived address stay owned, then PERSIST it.
-  // From here the key is a stored secret. (Step 1a migration; later steps escrow
-  // it + restore it on new devices, and brand-new accounts switch to a random
-  // independent key once escrow guarantees cross-device delivery.)
-  const root = await _getContentFeedRootKey();
-  if (!root) return null;
-  const signer = deriveContentFeedSigner(root);
-  if (parent) {
-    const { storeContentFeedSigner } = await import("./feed-signer-store.js");
-    await storeContentFeedSigner(parent, signer.privKey);
-  }
-  // Cache the PUBLIC address so passive self-reads resolve the SOC owner without
-  // re-deriving the key (which would prompt for passkey PRF). Fire-and-forget.
-  void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, signer.address);
-  return signer;
+  // (3) Coinbase Smart Wallet: 1271/6492 signatures are non-deterministic, so it
+  // cannot sign-to-derive — client feeds are PARKED for CSW (random key + escrow,
+  // post-launch). Null here is the legacy platform-signed path, the ONLY remaining
+  // such exception.
+  return null;
 }
 
 /**
  * The user's content-feed signer ADDRESS for self-reads, resolved WITHOUT a
- * prompt: the in-memory root key if already present (web3auth/local, or a passkey
- * whose key is already unlocked), else the address cached at last derivation.
- * Returns null when the user can't own client feeds (external wallet) or has
- * never derived one on this device. Never triggers a WebAuthn PRF prompt — so it
- * is safe to call from passive UI (e.g. rendering your own avatar).
+ * prompt. Under the unified sign-to-derive construction the address can only be
+ * computed from a signature (which prompts), so passive callers resolve it from
+ * the STORED feed-signer key (a device-key decrypt, never a PRF/wallet prompt).
+ * That blob is the SINGLE durable source of truth: AES-GCM AAD-bound to the
+ * parent, so it cryptographically cannot resolve for the wrong identity — unlike
+ * a plaintext address cache, which once leaked a previous account's signer into
+ * the next login's self-reads. A parent-validated in-memory memo skips the
+ * decrypt on repeat calls. Returns null for CSW (no client feed — parked) or when
+ * the user has never established a feed signer on this device (no self-owned feed
+ * to read yet). Never signs — safe to call from passive UI (e.g. rendering your
+ * own avatar).
  */
 async function _getContentFeedSignerAddress(): Promise<string | null> {
-  // Key already in memory (no prompt) → derive directly, freshest value.
-  let inMemoryRoot: string | null = null;
-  if (_kind === "web3auth") inMemoryRoot = _web3authPrivateKey;
-  else if (_kind === "local") inMemoryRoot = _localPrivateKey;
-  else if (_kind === "passkey") inMemoryRoot = _passkeyPrivateKey;
-  if (inMemoryRoot) {
-    const { deriveContentFeedSigner } = await import("../swarm/content-feed.js");
-    const addr = deriveContentFeedSigner(inMemoryRoot).address;
-    void putKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS, addr);
-    return addr;
-  }
-  // web3 owns a client feed (sign-to-derive), but resolving its address requires a
-  // wallet prompt — so passively we use the cached address from its last publish.
-  // coinbase (CSW) is the only kind with no client feed (parked) → null.
   if (_kind === "coinbase") return null;
-  return (await getKV<string>(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS)) ?? null;
+  const parent = _parent?.toLowerCase();
+  if (!parent) return null;
+  if (_feedSignerAddressMemo?.parent === parent) return _feedSignerAddressMemo.address;
+
+  // An established secret may already be stored for this parent (derived here on
+  // a prior session, or escrow/portability-restored on a recovered device).
+  // Recover its address from the stored key so a fresh session that hasn't
+  // published yet still resolves the user's own feeds (e.g. their avatar)
+  // instead of falling back to the legacy platform feed.
+  const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
+  const stored = await restoreContentFeedSigner(parent);
+  if (!stored) return null;
+  const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
+  const address = contentFeedSignerFromPrivKey(stored).address;
+  _feedSignerAddressMemo = { parent, address };
+  return address;
 }
 
 /**
@@ -349,6 +365,7 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
     await clearPodIdentity();
     const { clearContentFeedSigner } = await import("./feed-signer-store.js");
     await clearContentFeedSigner();
+    _feedSignerAddressMemo = null;
   }
 }
 
@@ -1506,6 +1523,11 @@ async function clearAllAuth(): Promise<void> {
   // the session on a shared device.
   const { clearContentFeedSigner } = await import("./feed-signer-store.js");
   await clearContentFeedSigner();
+  // Drop the legacy PERSISTED feed-signer address cache (pre-2026-07 builds wrote
+  // it). It was unauthenticated and outlived logout, leaking the previous
+  // account's signer into the next login's self-reads — the live resolver now
+  // uses only the AAD-bound key blob + an in-memory memo.
+  await delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS);
   // NOTE: we intentionally do NOT clear the local account private key.
   // This lets the user re-login with the same local account later.
   // The key stays in IndexedDB; only the session state is wiped.
@@ -1531,6 +1553,8 @@ async function clearAllAuth(): Promise<void> {
   _kernel = null;
   _sessionInFlight = null;
   _podInFlight = null;
+  _feedSignerInFlight = null;
+  _feedSignerAddressMemo = null;
 }
 
 // ---------------------------------------------------------------------------
