@@ -279,6 +279,12 @@
           <p class="soft-warn" role="note">{bindWarning}</p>
         {/if}
 
+        <p class="security-note">
+          This becomes the one wallet that can restore your account. Only ever approve a
+          signature request here when <strong>you</strong> started a WoCo recovery yourself —
+          never because of a link, email, or message telling you to sign something.
+        </p>
+
         <button class="btn btn--primary btn--lg cta" onclick={confirmAndInstall}>
           Set as my backup
         </button>
@@ -465,6 +471,22 @@
     text-align: left;
     line-height: 1.45;
   }
+
+  /* Anti-phishing note on the guardian-bind step — warning-toned, distinct from
+     the informational .soft-warn so it reads as "stop and think", not chrome. */
+  .security-note {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-hover);
+    border-left: 3px solid var(--warning);
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.75rem;
+    margin: 0 0 1rem;
+    text-align: left;
+    line-height: 1.45;
+  }
+  .security-note strong { color: var(--text); }
 
   /* ── Shared ─────────────────────────────────────────────────────────── */
   .cta { width: 100%; justify-content: center; gap: 0.5rem; white-space: nowrap; }

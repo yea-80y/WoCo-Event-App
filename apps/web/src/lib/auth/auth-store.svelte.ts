@@ -205,7 +205,18 @@ function _getPodAddress(): string | null {
  * consolation: a failure here aborts the publish with a clear error instead.
  */
 async function _deriveFeedSignerBySigning(parent: string): Promise<ContentFeedSigner> {
-  const signer712 = await _getPodSigner();
+  // For kinds whose raw key is already in memory (web3auth, local), the feed-signer
+  // derivation is an INTERNAL key-stretch — ethers signs it silently (RFC-6979), so
+  // it needs no user confirm dialog. Deriving silently is also what lets us
+  // re-establish the signer eagerly on login/restore without popping a prompt on
+  // every page load. web3 (external wallet) must sign with the wallet itself (and
+  // gets the double-sign determinism check); passkey keeps its own _getPodSigner
+  // path (biometric + escrow-backed).
+  const silentRawKey =
+    _kind === "web3auth" ? _web3authPrivateKey : _kind === "local" ? _localPrivateKey : null;
+  const signer712 = silentRawKey
+    ? createLocalSigner(silentRawKey, async () => true)
+    : await _getPodSigner();
   const message = {
     purpose: "Set up your WoCo content-feed signing key",
     address: parent,
@@ -293,6 +304,30 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
 }
 
 /**
+ * Eagerly (re-)establish the content-feed signer for kinds that can derive it
+ * SILENTLY from an in-memory raw key (web3auth, local). This is what makes client
+ * feeds actually work across sessions and devices for these kinds:
+ *   - logout wipes the on-device signer blob (shared-device hygiene), so a plain
+ *     re-login would leave passive reads (avatar/profile) with no signer to resolve
+ *     → they'd fall back to the empty legacy feed and show blank;
+ *   - a COLD device has never stored it at all.
+ * Because the derivation is deterministic (Web3Auth/local key × fixed domain), every
+ * session and device re-derives the SAME signer → the same SOCs → the user sees
+ * their own content. Runs after the raw key is in memory; silent (no dialog) and
+ * NON-FATAL — a failure here must not block login/restore, it just defers to the
+ * lazy establish on first write. No-op for web3 (wallet re-sign, would prompt),
+ * passkey (biometric + escrow), and CSW (parked).
+ */
+async function _establishFeedSignerEagerly(): Promise<void> {
+  if (_kind !== "web3auth" && _kind !== "local") return;
+  try {
+    await _getContentFeedSigner();
+  } catch (e) {
+    console.warn("[auth] eager feed-signer establishment failed (non-fatal):", e);
+  }
+}
+
+/**
  * The user's content-feed signer ADDRESS for self-reads, resolved WITHOUT a
  * prompt. Under the unified sign-to-derive construction the address can only be
  * computed from a signature (which prompts), so passive callers resolve it from
@@ -319,11 +354,32 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   // instead of falling back to the legacy platform feed.
   const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
   const stored = await restoreContentFeedSigner(parent);
-  if (!stored) return null;
-  const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
-  const address = contentFeedSignerFromPrivKey(stored).address;
-  _feedSignerAddressMemo = { parent, address };
-  return address;
+  if (stored) {
+    const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
+    const address = contentFeedSignerFromPrivKey(stored).address;
+    _feedSignerAddressMemo = { parent, address };
+    return address;
+  }
+
+  // No stored key yet, but for kinds whose feed signer is SILENTLY derivable from
+  // an in-memory raw key (web3auth, local) we ESTABLISH it on demand rather than
+  // returning null. This closes the cold-restore race: `init()` flips isConnected
+  // true (→ ProfilePage re-reads) the instant _kind/_parent are set, BEFORE the
+  // awaited eager establishment has persisted the signer. A null here would make
+  // the self-read fall back to the empty legacy feed AND cache that blank for 5min
+  // (profiles.ts) — the exact cold-device symptom. Establishing coalesces onto the
+  // in-flight eager ceremony (_getContentFeedSigner) and pops NO dialog (ethers
+  // RFC-6979 over the in-memory key). Gated on the raw key actually being in memory
+  // so we never take the wrong (POD/passkey-prompt) derive path. Other kinds
+  // (passkey/web3) require a prompt to derive and MUST stay prompt-free here, so
+  // they return null and defer to lazy establish on first write.
+  const silentRawKey =
+    _kind === "web3auth" ? _web3authPrivateKey : _kind === "local" ? _localPrivateKey : null;
+  if (silentRawKey) {
+    const signer = await _getContentFeedSigner().catch(() => null);
+    return signer?.address ?? null;
+  }
+  return null;
 }
 
 /**
@@ -614,6 +670,7 @@ async function init(): Promise<void> {
         _parent = storedParent;
         _localPrivateKey = account.privateKey;
         await _restoreCachedAuth();
+        await _establishFeedSignerEagerly();
       } else {
         await clearAllAuth();
       }
@@ -654,6 +711,10 @@ async function init(): Promise<void> {
         _web3authPrivateKey = session.privateKey;
         _web3authPodAddress = storedPodAddr;
         await _restoreCachedAuth();
+        // Re-establish the feed signer on cold-restore too (silent). A refresh
+        // keeps the blob, but a device that only ever restored (never logged in on
+        // this tab) still needs its signer resolvable for passive profile reads.
+        await _establishFeedSignerEagerly();
       } else {
         // Missing POD_ADDRESS = a pre-Kernel-upgrade session (parent was the raw
         // EOA, not the Kernel). Force a clean re-login so the parent becomes the
@@ -739,6 +800,7 @@ async function loginLocal(): Promise<boolean> {
 
     // Restore any cached session/POD from a previous login
     await _restoreCachedAuth();
+    await _establishFeedSignerEagerly();
 
     // No account change listener needed for local accounts
     _cleanupAccountListener?.();
@@ -790,6 +852,11 @@ async function loginWeb3Auth(): Promise<boolean> {
     _passkeyPrivateKey = null;
 
     await _restoreCachedAuth();
+
+    // Establish the client feed signer now (silent, deterministic) so profile +
+    // other client feeds resolve immediately — logout wipes the on-device blob, so
+    // without this a re-login would read the empty legacy feed until the next write.
+    await _establishFeedSignerEagerly();
 
     _cleanupAccountListener?.();
     _cleanupAccountListener = null;

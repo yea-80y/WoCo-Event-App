@@ -12,7 +12,21 @@ import { buildWeb3AuthOptions, extractRawPrivateKey } from "./web3auth-config";
 
 type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
 
-let _instance: { connected: boolean; provider: MinimalProvider | null; init(): Promise<void>; connect(): Promise<MinimalProvider | null>; logout(): Promise<void> } | null = null;
+// The bits of the Web3Auth instance we touch. It extends SafeEventEmitter, so the
+// listener methods are present; `cachedConnector` tells us whether a stored session
+// is (asynchronously) rehydrating after init().
+type Web3AuthInstance = {
+  connected: boolean;
+  provider: MinimalProvider | null;
+  cachedConnector: string | null;
+  init(): Promise<void>;
+  connect(): Promise<MinimalProvider | null>;
+  logout(): Promise<void>;
+  on(event: string, fn: (...args: unknown[]) => void): void;
+  removeListener(event: string, fn: (...args: unknown[]) => void): void;
+};
+
+let _instance: Web3AuthInstance | null = null;
 
 async function _getInstance() {
   const clientId = import.meta.env.VITE_WEB3AUTH_CLIENT_ID as string | undefined;
@@ -23,8 +37,46 @@ async function _getInstance() {
   const mod = await import("@web3auth/modal");
   const w = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
   await w.init();
-  _instance = w as typeof _instance;
+  _instance = w as unknown as Web3AuthInstance;
   return _instance;
+}
+
+/**
+ * Wait for a cached Web3Auth session to finish rehydrating. In v10 the modal
+ * rehydrates the stored connector INSIDE a non-awaited `CONNECTORS_UPDATED`
+ * handler, so `w.connected` is still false the instant `init()` resolves — reading
+ * it immediately makes a valid session look logged-out (silent logout on refresh)
+ * and leaves the SDK in a half-connected state that then bypasses the OTP on the
+ * next explicit login. We only block when `cachedConnector` says a session exists;
+ * a fresh page (no cache) resolves instantly so the login screen isn't delayed.
+ */
+async function _awaitRehydration(w: Web3AuthInstance): Promise<boolean> {
+  if (w.connected) return true;
+  if (!w.cachedConnector) return false;
+
+  const { CONNECTOR_EVENTS } = await import("@web3auth/modal");
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      w.removeListener(CONNECTOR_EVENTS.CONNECTED, onConnected);
+      w.removeListener(CONNECTOR_EVENTS.AUTHORIZED, onConnected);
+      w.removeListener(CONNECTOR_EVENTS.ERRORED, onFailed);
+      w.removeListener(CONNECTOR_EVENTS.REHYDRATION_ERROR, onFailed);
+      resolve(v);
+    };
+    const onConnected = () => finish(true);
+    const onFailed = () => finish(false);
+    // Fallback: don't hang the UI if the SDK never emits (fall back to whatever
+    // connected state it reached). Rehydration normally settles in well under 1s.
+    const timer = setTimeout(() => finish(w.connected), 5000);
+    w.on(CONNECTOR_EVENTS.CONNECTED, onConnected);
+    w.on(CONNECTOR_EVENTS.AUTHORIZED, onConnected);
+    w.on(CONNECTOR_EVENTS.ERRORED, onFailed);
+    w.on(CONNECTOR_EVENTS.REHYDRATION_ERROR, onFailed);
+  });
 }
 
 async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ address: string; privateKey: `0x${string}` }> {
@@ -44,9 +96,22 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
   const w = await _getInstance();
   if (!w) throw new Error("Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).");
 
-  const provider = w.connected ? w.provider : await w.connect();
-  if (!provider) throw new Error("Email sign-in was cancelled.");
-  return _extractKeyAndAddress(provider);
+  // A cached session may still be rehydrating from a prior visit; adopt it silently
+  // rather than opening the modal (and never double-prompting the OTP).
+  if (await _awaitRehydration(w)) {
+    if (w.provider) return _extractKeyAndAddress(w.provider);
+  }
+
+  try {
+    const provider = await w.connect();
+    if (provider) return _extractKeyAndAddress(provider);
+  } catch (e) {
+    // A session rehydrating while the modal is open can close it and reject with
+    // "User closed the modal" even though we ARE now connected — recover from that.
+    if (!w.connected) throw e instanceof Error ? e : new Error("Email sign-in was cancelled.");
+  }
+  if (w.connected && w.provider) return _extractKeyAndAddress(w.provider);
+  throw new Error("Email sign-in was cancelled.");
 }
 
 /**
@@ -56,9 +121,21 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
 export async function restoreWeb3AuthSession(): Promise<{ address: string; privateKey: `0x${string}` } | null> {
   try {
     const w = await _getInstance();
-    if (!w || !w.connected || !w.provider) return null;
+    if (!w) {
+      console.debug("[web3auth] restore: no instance (missing clientId?)");
+      return null;
+    }
+    // Give a cached session time to finish rehydrating before deciding it's gone —
+    // otherwise every refresh reads connected=false and logs the user out.
+    const rehydrated = await _awaitRehydration(w);
+    console.debug(
+      "[web3auth] restore:",
+      { cachedConnector: w.cachedConnector, rehydrated, connected: w.connected, hasProvider: !!w.provider },
+    );
+    if (!w.connected || !w.provider) return null;
     return await _extractKeyAndAddress(w.provider);
-  } catch {
+  } catch (e) {
+    console.debug("[web3auth] restore threw:", e);
     return null;
   }
 }

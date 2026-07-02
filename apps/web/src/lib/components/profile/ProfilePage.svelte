@@ -289,12 +289,17 @@
     if (tab === "following" && !followingLoaded) loadFollowing();
   }
 
-  // Reset on address/auth change
+  // Reset on address/auth change. Keyed on isConnected too, not just the address:
+  // the URL bakes in a static address (`/profile/0x...`), so signing out while
+  // parked on your own profile leaves viewAddress unchanged — without the
+  // isConnected half of the key this effect would never re-fire and the page
+  // would keep showing the previous account's profile after logout.
   let _prevView = "";
   $effect(() => {
     const v = viewAddress;
-    if (v === _prevView) return;
-    _prevView = v;
+    const key = `${v}:${auth.isConnected}`;
+    if (key === _prevView) return;
+    _prevView = key;
     profile = null; events = []; eventsLoaded = false; eventsLoading = false;
     following = []; followingLoaded = false; followingLoading = false;
     trending = []; avatarPreviewUrl = null; pendingAvatarDataUrl = null;
