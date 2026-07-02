@@ -36,6 +36,11 @@
   let displayName = $state<string | null>(null);
   let errorMsg = $state("");
   let restoreStep = $state("");
+  // Forward sign-in credential for the recovered account (owner decision 2026-07-02):
+  // "email" keeps the account on email/social (a fresh Web3Auth login becomes the new
+  // Kernel owner); "passkey" mints a device passkey. This is a UX choice of the going-
+  // forward credential — the escrow mechanism that unlocks the account is unchanged.
+  let newOwnerKind = $state<"email" | "passkey">("email");
 
   const backupAddress = $derived(backup?.address ?? null);
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -134,6 +139,7 @@
       await auth.recoverAndRekey({
         backup,
         targetAddress: account.trim(),
+        newOwnerKind: newOwnerKind === "email" ? "web3auth" : "passkey",
         onProgress: (m) => { restoreStep = m; },
       });
       phase = "recovered";
@@ -269,12 +275,32 @@
             {#if displayName}<strong>{displayName}</strong> (<code>{short(account)}</code>){:else}<code>{short(account)}</code>{/if}
             to this device using your backup.
           </p>
+          <fieldset class="owner-choice" disabled={phase === "restoring"}>
+            <legend>How do you want to sign in from now on?</legend>
+            <label class="owner-opt" class:sel={newOwnerKind === "email"}>
+              <input type="radio" name="newowner" value="email" bind:group={newOwnerKind} />
+              <span class="owner-opt-body">
+                <strong>Email or social</strong>
+                <span class="owner-opt-hint">Log in the same easy way. Recommended.</span>
+              </span>
+            </label>
+            <label class="owner-opt" class:sel={newOwnerKind === "passkey"}>
+              <input type="radio" name="newowner" value="passkey" bind:group={newOwnerKind} />
+              <span class="owner-opt-body">
+                <strong>Passkey on this device</strong>
+                <span class="owner-opt-hint">Face/touch unlock, tied to this device.</span>
+              </span>
+            </label>
+          </fieldset>
           <p class="warn">
-            This is permanent: you'll create a new passkey on <strong>this</strong> device and your
-            <strong>old device's</strong> passkey will stop working for this account.
+            This is permanent: you'll set up your
+            {newOwnerKind === "email" ? "email/social sign-in" : "a new passkey"}
+            on <strong>this</strong> device and your <strong>old device's</strong> sign-in will
+            stop working for this account.
           </p>
           <p class="restore-note">
-            You'll approve <strong>two prompts in your backup wallet</strong>: one to unlock your data,
+            You'll {newOwnerKind === "email" ? "log in with email/social, then " : ""}approve
+            <strong>two prompts in your backup wallet</strong>: one to unlock your data,
             then one to authorise moving the account to this device.
           </p>
           <button class="btn btn--primary btn--lg restore-cta" onclick={restore} disabled={phase === "restoring"}>
@@ -420,6 +446,42 @@
     margin: 0 0 1rem;
   }
   .warn strong { color: var(--text); }
+
+  .owner-choice {
+    border: none;
+    margin: 0 0 1rem;
+    padding: 0;
+    display: grid;
+    gap: 0.45rem;
+    text-align: left;
+  }
+  .owner-choice legend {
+    padding: 0;
+    margin: 0 0 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .owner-opt {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-input);
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .owner-opt.sel {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-input));
+  }
+  .owner-opt input { margin-top: 0.15rem; accent-color: var(--accent); flex: none; }
+  .owner-opt-body { display: flex; flex-direction: column; gap: 0.1rem; }
+  .owner-opt-body strong { font-size: 0.88rem; color: var(--text); font-weight: 600; }
+  .owner-opt-hint { font-size: 0.78rem; color: var(--text-muted); line-height: 1.35; }
+  .owner-choice:disabled { opacity: 0.6; }
 
   .kicker--hi { color: var(--accent-text); }
   .cta { width: 100%; justify-content: center; }

@@ -575,14 +575,23 @@ async function _ensureKernel(): Promise<void> {
  * already in memory (no biometric/prompt, unlike passkey's PRF ceremony), so this
  * is a pure build. The Kernel address is deterministic from that key; assert it
  * matches the stored parent so a key change (or a stale parent) can never silently
- * attach a divergent smart account. No recovery binding/override — email recovery
- * is "log in again" (same login → same key → same Kernel).
+ * attach a divergent smart account.
+ *
+ * RECOVERED accounts: if this web3auth key is the rotated owner of a recovered
+ * account, its Kernel address was PRESERVED (≠ this key's counterfactual) — honour
+ * the durable binding (mirrors _ensureKernel) so we rebuild at the real account
+ * instead of a fresh counterfactual one. Without the override a recovered web3auth
+ * account would throw "address mismatch" on the first reload after the ceremony.
  */
 async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
   if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const kernel = await buildKernelFromPrivateKey(_web3authPrivateKey);
+  const override = _bindingAddressFor(await _getRecoveryBinding(), _getPodAddress());
+  const kernel = await buildKernelFromPrivateKey(
+    _web3authPrivateKey,
+    override ? { address: override } : undefined,
+  );
   if (_parent && kernel.address !== _parent.toLowerCase()) {
     throw new Error(
       "Kernel address mismatch (web3auth) — refusing to attach a divergent smart account.",
@@ -833,8 +842,30 @@ async function loginWeb3Auth(): Promise<boolean> {
     // address (not the EOA) becomes the parent identity, so email users get the
     // gasless on-chain rails (likes/follows) — `attester == parent` holds because
     // the Kernel is msg.sender. POD stays on the raw EOA key (invariant #1).
-    const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-    const kernel = await buildKernelFromPrivateKey(privateKey);
+    //
+    // If this web3auth key is the rotated owner of a RECOVERED account, its Kernel
+    // address was preserved (≠ this key's counterfactual) — honour the durable
+    // binding (mirrors loginPasskey) so an explicit re-login lands on the real
+    // account, not a fresh counterfactual one. (No portability-envelope path here:
+    // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
+    // NEW device recovers by re-running the portal.)
+    const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
+    let override = _bindingAddressFor(await _getRecoveryBinding(), address);
+    if (override) {
+      // Stale-binding guard: only trust the local binding if the preserved Kernel
+      // still has THIS EOA as its on-chain ECDSA owner (mirror loginPasskey) —
+      // otherwise a never-confirmed recovery tx would lock the user out.
+      const onChainOwner = await readKernelEcdsaOwner(override);
+      if (onChainOwner !== null && onChainOwner.toLowerCase() !== address.toLowerCase()) {
+        console.warn("[auth] local recovery binding stale (web3auth) — on-chain owner is", onChainOwner, "not", address, "— clearing");
+        await delKV(StorageKeys.RECOVERED_KERNEL_BINDING);
+        override = undefined;
+      }
+    }
+    const kernel = await buildKernelFromPrivateKey(
+      privateKey,
+      override ? { address: override } : undefined,
+    );
 
     await _clearStaleAuthForSwitch(kernel.address);
 
@@ -1189,16 +1220,25 @@ async function grantSpendPermission(args: {
 }
 
 // ---------------------------------------------------------------------------
-// Account recovery setup (passkey/Kernel only) — see docs/PASSKEY_RECOVERY_PLAN.md
+// Account recovery setup (Kernel-backed kinds: passkey + web3auth) — see
+// docs/PASSKEY_RECOVERY_PLAN.md and docs/WEB3AUTH_GUARDIAN_ESCROW_HANDOVER_2026-07-02.md
 // ---------------------------------------------------------------------------
 
 /**
- * One-shot "protect this account" ceremony for a passkey user:
+ * One-shot "protect this account" ceremony for a Kernel-backed user (passkey or
+ * web3auth):
  *  1. install the on-chain recovery route pinned to a guardian derived from the
  *     backup wallet (sudo/passkey userOp, sponsored),
- *  2. escrow the POD seed — sealed to an X25519 key the backup wallet derives by
- *     signing a fixed message — so a recovered account also restores ticket
- *     decryption (funds recovery alone cannot; §11.1).
+ *  2. escrow the POD seed AND the content-feed signer — sealed to an X25519 key
+ *     the backup wallet derives by signing a fixed message — so a recovered
+ *     account also restores ticket decryption + ownership of its content feeds
+ *     (funds recovery alone cannot; §11.1).
+ *
+ * web3auth is included because its raw key is a `FEED_PRIVATE_KEY`-class EXTERNAL
+ * config dependency: if Web3Auth ever repoints its key reconstruction, the user's
+ * silent re-derivation yields a DIFFERENT feed signer + POD seed and orphans their
+ * data. Escrow restores both verbatim, closing that risk. (Not for web3 wallets:
+ * re-sign IS their recovery and the parent identity is lost with the wallet.)
  *
  * The backup wallet is an EXTERNAL signer the UI connects (a normal wallet the
  * user already controls). It only ever SIGNS here — it never sends a tx. We hide
@@ -1209,8 +1249,8 @@ async function setupAccountRecovery(backup: {
   signTypedData: import("@woco/shared").EIP712Signer;
   recoveryReady?: boolean;
 }): Promise<{ guardianAddress: string; txHash: string }> {
-  if (_kind !== "passkey") {
-    throw new Error("Account recovery is only available for passkey accounts");
+  if (_kind !== "passkey" && _kind !== "web3auth") {
+    throw new Error("Account recovery is only available for passkey or email/social accounts");
   }
   // Refuse to install a backup we could never recover FROM (e.g. a provider that
   // can derive the escrow key but cannot sign the guardian userOp). Installing it
@@ -1218,7 +1258,7 @@ async function setupAccountRecovery(backup: {
   if (backup.recoveryReady === false) {
     throw new Error("This backup can't be used for recovery yet. Pick a wallet that can sign on Arbitrum.");
   }
-  await _ensureKernel();
+  await _ensureKernelForKind();
   if (!_kernel) throw new Error("Account unavailable — please sign in again");
   const kernelAddress = _kernel.address;
 
@@ -1346,12 +1386,19 @@ async function setupAccountRecovery(backup: {
 async function recoverAndRekey(args: {
   backup: import("../wallet/backup-signer.js").BackupWallet;
   targetAddress: string;
+  /** Which credential becomes the new Kernel owner. "passkey" mints a fresh passkey
+   *  on this device (PRF-EOA = new owner). "web3auth" runs an email/social login and
+   *  its EOA becomes the new owner — the account STAYS web3auth rather than being
+   *  forced to passkey (owner decision 2026-07-02). The escrow MECHANISM is
+   *  credential-driven and unchanged; only the forward credential is a choice. */
+  newOwnerKind?: "passkey" | "web3auth";
   /** Progress messages for the UI — emitted right before each wallet prompt so
    *  the user knows what they're approving (the guardian userOp signs an opaque
    *  hash that the wallet can't describe). */
   onProgress?: (msg: string) => void;
 }): Promise<{ recoveredAddress: string; txHash: string }> {
   const { backup, targetAddress, onProgress } = args;
+  const newOwnerKind = args.newOwnerKind ?? "passkey";
   if (_busy) throw new Error("Please wait — another operation is in progress");
   if (!backup.recoveryReady || !backup.getGuardianSigner) {
     throw new Error("This backup wallet can't complete a recovery. Connect a wallet that can sign on Arbitrum.");
@@ -1399,13 +1446,29 @@ async function recoverAndRekey(args: {
       );
     }
 
-    // (1) Fresh passkey on this device → its PRF-EOA is the new sudo owner.
-    onProgress?.("Create a new passkey on this device…");
-    const fresh = await createPasskeyAccount();
-    const newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
+    // (1) New owner credential on THIS device. passkey → a fresh PRF-EOA;
+    // web3auth → an email/social login whose EOA becomes the new sudo owner (the
+    // account STAYS web3auth — owner decision 2026-07-02, not forced to passkey).
+    // Either branch yields {newOwnerAddress, newOwnerPrivKey}; the POD seed is
+    // re-homed under the new owner EOA (PRF-EOA for passkey, Web3Auth EOA otherwise).
+    let newOwnerAddress: string;
+    let newOwnerPrivKey: `0x${string}`;
+    if (newOwnerKind === "web3auth") {
+      onProgress?.("Log in with email or social to take ownership on this device…");
+      const { loginWithWeb3Auth } = await import("./web3auth-account.js");
+      const web3 = await loginWithWeb3Auth();
+      newOwnerAddress = web3.address;
+      newOwnerPrivKey = web3.privateKey;
+    } else {
+      onProgress?.("Create a new passkey on this device…");
+      const fresh = await createPasskeyAccount();
+      newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
+      newOwnerPrivKey = fresh.privateKey;
+    }
+    const newPodAddress = newOwnerAddress;
 
     // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
-    onProgress?.("Approve in your backup wallet to move this account to your new passkey…");
+    onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
     const guardianSigner = await backup.getGuardianSigner();
     const guardianConfig = {
       signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
@@ -1421,7 +1484,7 @@ async function recoverAndRekey(args: {
 
     // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
     const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-    const kernel = await buildKernelFromPrivateKey(fresh.privateKey, { address: target });
+    const kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
     if (kernel.address !== target) {
       throw new Error("Recovery produced a divergent account address — aborting.");
     }
@@ -1432,41 +1495,50 @@ async function recoverAndRekey(args: {
     // calls `clearPodIdentity()`, so the recovered seed must be stored AFTER it.
     onProgress?.("Restoring your tickets and history…");
     await _clearStaleAuthForSwitch(target);
-    await storePodSeed(fresh.address, podSeed);
+    await storePodSeed(newPodAddress, podSeed);
     // Restore the original feed signer under the PRESERVED parent address (the
     // AAD key `_getContentFeedSigner` reads), so the recovered account keeps
     // ownership of its existing content feeds instead of deriving a new address
-    // from the rotated passkey. AFTER _clearStaleAuthForSwitch, which clears it.
+    // from the rotated credential. AFTER _clearStaleAuthForSwitch, which clears it.
     if (feedSignerPrivKey) {
       const { storeContentFeedSigner } = await import("./feed-signer-store.js");
       await storeContentFeedSigner(target, feedSignerPrivKey);
     }
-    await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+    await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
-    await putKV(StorageKeys.POD_ADDRESS, fresh.address);
-    // Durable recovered-account binding: the new passkey (PRF-EOA = fresh.address)
-    // controls the Kernel at the PRESERVED address `target`, whose counterfactual
-    // it does NOT match. loginPasskey/_ensureKernel read this to rebuild at the
-    // preserved address on every future session (survives logout — see clearAllAuth).
+    await putKV(StorageKeys.POD_ADDRESS, newPodAddress);
+    // Durable recovered-account binding: the new owner EOA (newPodAddress) controls
+    // the Kernel at the PRESERVED address `target`, whose counterfactual it does NOT
+    // match. loginPasskey/loginWeb3Auth/_ensureKernel*/init read this to rebuild at
+    // the preserved address on every future session (survives logout — clearAllAuth).
     await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, {
-      pod: fresh.address.toLowerCase(),
+      pod: newPodAddress.toLowerCase(),
       kernel: target,
     });
-    // Cross-device portability envelope: written by `_maybeBackfillPortabilityEnvelope`
-    // on the first `ensureSession` after this ceremony (the SOC stamp needs a
-    // session). We do NOT force a session mid-recovery — the deferred-signing
-    // invariant holds; the envelope persists as soon as the user takes an
-    // authenticated action, making the recovered account portable to new devices.
-    _kind = "passkey";
+    // Cross-device portability (passkey only): `_maybeBackfillPortabilityEnvelope`
+    // writes a PRF-sealed envelope on the first `ensureSession` after this ceremony,
+    // so a passkey-recovered account can be re-opened on a THIRD device. A web3auth
+    // owner has no PRF channel, so its envelope is not written — re-opening a
+    // web3auth-recovered account on a new device means re-running the portal (the
+    // web3auth key + guardian escrow are reproducible, so that always works).
+    _kind = newOwnerKind;
     _parent = target;
-    _passkeyPrivateKey = fresh.privateKey;
-    _podAddress = fresh.address;
+    if (newOwnerKind === "web3auth") {
+      _web3authPrivateKey = newOwnerPrivKey;
+      _web3authPodAddress = newPodAddress;
+      _passkeyPrivateKey = null;
+    } else {
+      _passkeyPrivateKey = newOwnerPrivKey;
+      _web3authPrivateKey = null;
+      _web3authPodAddress = null;
+    }
+    _podAddress = newPodAddress;
     _kernel = kernel;
     _localPrivateKey = null;
     // Cache the POD public key from the escrow-restored seed so the dashboard
     // decrypts immediately and ensurePodIdentity short-circuits (never re-derives
-    // a divergent seed from the rotated passkey credential).
-    const restoredPod = await getPodKeypair(fresh.address);
+    // a divergent seed from the rotated credential).
+    const restoredPod = await getPodKeypair(newPodAddress);
     _podPublicKeyHex = restoredPod?.publicKeyHex ?? null;
     await _restoreCachedAuth();
 

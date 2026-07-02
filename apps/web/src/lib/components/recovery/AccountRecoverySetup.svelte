@@ -30,13 +30,17 @@
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const addrDisplay = (a: string) => `${a.slice(0, 10)}…${a.slice(-8)}`;
   const signedIn = $derived(auth.isConnected);
-  const isPasskey = $derived(auth.kind === "passkey");
+  // Kernel-backed kinds can install guardian recovery: passkey (rotated credential
+  // can't re-derive its keys) and web3auth (raw key is an external-config dependency
+  // that can be repointed). Self-custody kinds (web3/local/coinbase) recover from
+  // their own wallet, so they see the "already covered" message instead.
+  const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
   // Email is the primary login for web3auth users — can't also be their sole guardian.
   const emailIsAlreadyPrimary = $derived(auth.kind === "web3auth");
 
   $effect(() => {
     if (checkDone || checking) return;
-    if (!signedIn || !isPasskey) return;
+    if (!signedIn || !canProtect) return;
     const kernel = auth.parent;
     if (!kernel) return;
     checking = true;
@@ -156,12 +160,12 @@
       <p class="lede">Sign in first, then add a backup so you can get back in if you ever lose this device.</p>
       <button class="btn btn--primary btn--lg cta" onclick={signIn}>Sign in</button>
 
-    {:else if !isPasskey}
+    {:else if !canProtect}
       <p class="kicker">Account safety</p>
       <h1>You're already covered</h1>
       <p class="lede">
         This account signs in with your own wallet, so you can always restore it from
-        there. Account backups are for passkey sign-ins.
+        there. Account backups are for passkey and email sign-ins.
       </p>
 
     {:else if checking}
@@ -288,14 +292,14 @@
         <button class="btn btn--primary btn--lg cta" onclick={confirmAndInstall}>
           Set as my backup
         </button>
-        <p class="footnote">You'll confirm once with your passkey, then sign once in your backup.</p>
+        <p class="footnote">You'll confirm on this device, then sign once in your backup.</p>
         <button class="linkish cta-link" onclick={startChoosing}>Try a different method</button>
       {/if}
 
     {:else if phase === "working"}
       <p class="kicker">Account safety</p>
       <h1>{alreadyProtected ? "Replacing your backup" : "Setting up your backup"}</h1>
-      <p class="lede">Confirm each prompt as it appears — passkey first, then your backup.</p>
+      <p class="lede">Confirm each prompt as it appears, then sign once in your backup wallet.</p>
       <p class="hint-sm" aria-live="polite"><span class="spinner"></span> Working…</p>
 
     {:else if phase === "error"}

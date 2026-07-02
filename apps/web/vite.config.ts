@@ -18,6 +18,18 @@ export default defineConfig(({ mode }) => {
       nodePolyfills({ globals: { Buffer: true, process: true }, exclude: ['process'] }),
       svelte(),
     ],
+    optimizeDeps: {
+      // @web3auth/modal dynamically imports its i18n locale chunks
+      // (loginModal.js → import('./i18n/english.json.js') etc). We load the modal
+      // itself via a dynamic import too, so Vite's dep-optimizer discovers it
+      // LATE and bundles it lazily; the locale import then triggers a SECOND
+      // optimize pass that re-hashes, and the already-loaded modal requests the
+      // stale chunk → "504 Outdated Optimize Dep" → web3auth `w.init()` throws →
+      // the user is logged out on every refresh (restore path catches the throw).
+      // Forcing the modal into the FIRST eager optimize pass keeps every chunk on
+      // one browser-hash. Dev-only (optimizeDeps is ignored by the rollup build).
+      include: ['@web3auth/modal'],
+    },
     resolve: {
       // vite-plugin-node-polyfills exposes `process` as an ES-module namespace
       // ({ default, process, __esModule }). The bundled readable-stream (via
