@@ -79,6 +79,36 @@ export async function backupWalletFromPrivateKey(privateKey: string): Promise<Ba
 }
 
 /**
+ * PASSKEY backup. The friendly factor for a web3auth (email/social) user with a
+ * phone but no crypto wallet: a dedicated recovery passkey whose PRF-derived key
+ * becomes the guardian. Reuses the SAME keccak256(PRF) construction as the primary
+ * passkey login, so it flows straight through `backupWalletFromPrivateKey`.
+ *
+ *  - mode "create" (SETUP): mints a new "WoCo Backup" passkey. A fresh credential
+ *    guarantees independence from the primary (its address can't collide), and the
+ *    caller's own-key block is the backstop.
+ *  - mode "get" (RECOVERY): discoverable picker re-derives the SAME key from the
+ *    same credential. A wrong pick fails safe (guardian address won't match escrow).
+ *
+ * Neither mode touches StorageKeys.PASSKEY_CREDENTIAL (see passkey-account.ts) — a
+ * backup ceremony must never clobber a live primary-passkey session's restore slot.
+ *
+ * ⚠️ PORTABILITY: this is only a real cross-device backup if the passkey SYNCS
+ * (iCloud Keychain / Google Password Manager / a password manager). A device-bound
+ * passkey dies with the device — the UI must steer users to a synced authenticator.
+ */
+export async function connectPasskeyBackup(mode: "create" | "get" = "create"): Promise<BackupWallet> {
+  const { isPasskeySupported, createPasskeyBackupKey, getPasskeyBackupKey } = await import(
+    "../auth/passkey-account.js"
+  );
+  if (!isPasskeySupported()) {
+    throw new Error("This device can't create passkeys. Use a crypto wallet or email backup instead.");
+  }
+  const { privateKey } = mode === "create" ? await createPasskeyBackupKey() : await getPasskeyBackupKey();
+  return backupWalletFromPrivateKey(privateKey);
+}
+
+/**
  * INJECTED-WALLET backup (MetaMask et al). For crypto-comfortable users.
  *
  * We talk to the injected provider directly (a fresh BrowserProvider) so this

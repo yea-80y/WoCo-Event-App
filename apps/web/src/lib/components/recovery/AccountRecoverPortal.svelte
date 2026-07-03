@@ -13,7 +13,7 @@
    * this for funds-holding accounts on the owner's own live end-to-end test.
    */
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { connectBackupWallet, connectWeb3AuthBackup, type BackupWallet } from "../../wallet/backup-signer.js";
+  import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { fetchRecoveryStatus, fetchRecoveryByGuardian } from "../../api/recovery.js";
   import { resolveSubEnsAddress } from "../../api/sub-ens.js";
 
@@ -46,12 +46,16 @@
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const manualReady = $derived(manualInput.trim().length > 0);
 
-  async function connectWith(method: "email" | "wallet") {
+  async function connectWith(method: "email" | "wallet" | "passkey") {
     phase = "connecting";
     errorMsg = "";
     try {
       backup = method === "email"
         ? await connectWeb3AuthBackup()
+        : method === "passkey"
+        // mode "get": discoverable picker re-derives the SAME guardian key that
+        // setup's "create" minted — the user selects their "WoCo Backup" passkey.
+        ? await connectPasskeyBackup("get")
         : await connectBackupWallet();
       phase = "intro";
       await autoFind();
@@ -202,6 +206,18 @@
                   <polyline points="1,1.5 9,8.5 17,1.5"/>
                 </svg>
                 Email
+              </button>
+              <button
+                class="connect-btn"
+                onclick={() => connectWith("passkey")}
+                disabled={phase === "connecting" || phase === "restoring"}
+              >
+                <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.6"
+                     stroke-linecap="round" stroke-linejoin="round" width="16" height="13" aria-hidden="true">
+                  <circle cx="6" cy="7" r="3.5"/>
+                  <path d="M9.5 7 H17 M14 7 V10 M17 7 V9.5"/>
+                </svg>
+                Passkey
               </button>
               <button
                 class="connect-btn"

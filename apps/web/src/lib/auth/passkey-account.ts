@@ -246,6 +246,121 @@ export async function createPasskeyAccount(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
+// Backup passkey (account-recovery guardian)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a secp256k1 key from a DEDICATED backup passkey, for use as a recovery
+ * guardian. Two hard differences from the primary-login helpers above:
+ *   1. NEVER writes StorageKeys.PASSKEY_CREDENTIAL. That slot belongs to the
+ *      primary login; clobbering it would break the logged-in session's silent
+ *      restore on reload. The backup credential is located at recovery via a
+ *      discoverable picker, so it needs no local metadata.
+ *   2. Labels the credential "WoCo Backup" so the user can tell it apart from
+ *      their login passkey in the authenticator picker during recovery.
+ *
+ * The key is keccak256(PRF(fixed-salt)) — identical construction to the primary,
+ * so getPasskeyBackupKey() re-derives the SAME key at recovery from the SAME
+ * credential. A wrong pick fails SAFE: the derived guardian address won't match
+ * the escrow, so recovery is refused rather than mis-applied. Independence from
+ * the primary is guaranteed by the caller's own-key block (the derived address
+ * can never equal auth.parent / auth.podAddress).
+ */
+export async function createPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
+  const salt = await getPrfSalt();
+  const rpId = getPasskeyRpId();
+
+  const credential = (await navigator.credentials.create({
+    publicKey: {
+      rp: { name: "WoCo", id: rpId },
+      user: {
+        id: crypto.getRandomValues(new Uint8Array(32)),
+        name: "WoCo Backup",
+        displayName: "WoCo Backup",
+      },
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      pubKeyCredParams: [
+        { alg: -7, type: "public-key" },   // ES256
+        { alg: -257, type: "public-key" },  // RS256
+      ],
+      authenticatorSelection: {
+        residentKey: "required",
+        userVerification: "required",
+      },
+      extensions: {
+        prf: { eval: { first: salt } },
+      },
+    },
+  })) as PublicKeyCredential | null;
+
+  if (!credential) {
+    throw new Error("Passkey creation was cancelled.");
+  }
+
+  const extensions = credential.getClientExtensionResults();
+
+  // Some browsers return PRF.enabled on creation but not the actual result; in
+  // that case authenticate once to obtain the PRF output (same as the primary).
+  let prfOutput: ArrayBuffer;
+  if (extensions.prf?.results?.first) {
+    prfOutput = toArrayBuffer(extensions.prf.results.first);
+  } else if (extensions.prf?.enabled) {
+    const credentialId = new Uint8Array(credential.rawId);
+    const getResult = (await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId,
+        allowCredentials: [{ id: credentialId, type: "public-key" }],
+        userVerification: "required",
+        extensions: {
+          prf: { eval: { first: salt } },
+        },
+      },
+    })) as PublicKeyCredential | null;
+
+    if (!getResult) {
+      throw new Error("Passkey authentication was cancelled.");
+    }
+    prfOutput = extractPrfResult(getResult.getClientExtensionResults());
+  } else {
+    throw new Error(
+      "Your passkey does not support the PRF extension. " +
+      "Try a device with iCloud Keychain, Google Password Manager, or 1Password.",
+    );
+  }
+
+  return deriveKey(prfOutput);
+}
+
+/**
+ * Re-derive the backup passkey key at RECOVERY time. Discoverable get() shows the
+ * authenticator picker so the user selects their "WoCo Backup" passkey; we never
+ * touch StorageKeys.PASSKEY_CREDENTIAL — the recovering device may already hold a
+ * different primary credential we must not disturb.
+ */
+export async function getPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
+  const salt = await getPrfSalt();
+  const rpId = getPasskeyRpId();
+
+  const credential = (await navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rpId,
+      userVerification: "required",
+      extensions: {
+        prf: { eval: { first: salt } },
+      },
+    },
+  })) as PublicKeyCredential | null;
+
+  if (!credential) {
+    throw new Error("Passkey authentication was cancelled.");
+  }
+  const prfOutput = extractPrfResult(credential.getClientExtensionResults());
+  return deriveKey(prfOutput);
+}
+
+// ---------------------------------------------------------------------------
 // Restore (used by init() to re-derive key silently when session exists)
 // ---------------------------------------------------------------------------
 

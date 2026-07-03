@@ -9,12 +9,13 @@
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { connectBackupWallet, connectWeb3AuthBackup, type BackupWallet } from "../../wallet/backup-signer.js";
+  import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
+  import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { fetchRecoveryStatus, fetchRecoveryByGuardian } from "../../api/recovery.js";
 
   type Phase = "intro" | "choosing" | "connecting" | "confirming" | "working" | "done" | "error";
   let phase = $state<Phase>("intro");
-  let connectingMethod = $state<"email" | "wallet" | null>(null);
+  let connectingMethod = $state<"email" | "wallet" | "passkey" | null>(null);
   let pendingBackup = $state<BackupWallet | null>(null);
   let backupAddress = $state<string | null>(null);
   // Soft warn: this wallet already guards a DIFFERENT account (independence nudge).
@@ -46,26 +47,40 @@
   //   - same PROVIDER-fate is a soft warn added at connect time (1b).
   // A web3auth user signs in BY email/social, so their backup email/social must be
   // a DIFFERENT provider (the copy says so; the same-key block enforces the worst case).
-  type Method = "email" | "wallet";
+  type Method = "email" | "wallet" | "passkey";
   interface MethodOption {
     id: Method;
     name: string;
     hint: string;
     recommended?: boolean;
   }
+  // Only offer a passkey where the device can actually make one — never recommend
+  // an impossible option (create still fails loudly if PRF is missing).
+  const passkeySupported = isPasskeySupported();
   const methodOptions = $derived<MethodOption[]>(
     auth.kind === "web3auth"
       ? [
-          { id: "email", name: "Different email or social", recommended: true,
+          // Primary IS email/social, so a passkey is the strongest independent factor
+          // for a phone-first user; the email tile must be a DIFFERENT provider.
+          ...(passkeySupported
+            ? [{ id: "passkey" as const, name: "Passkey", recommended: true,
+                 hint: "Create a recovery passkey on your phone. Best if it syncs (iCloud, Google)." }]
+            : []),
+          { id: "email", name: "Different email or social", recommended: !passkeySupported,
             hint: "Sign in with a different provider than the one you use to log in." },
           { id: "wallet", name: "Crypto wallet",
             hint: "Use MetaMask or any browser wallet." },
         ]
       : [
+          // Passkey primary — email/social is the most portable, independent backup.
           { id: "email", name: "Email or social", recommended: true,
             hint: "Sign in by email or social to create a recovery key. Works on any device." },
           { id: "wallet", name: "Crypto wallet",
             hint: "Use MetaMask or any browser wallet." },
+          ...(passkeySupported
+            ? [{ id: "passkey" as const, name: "Another passkey",
+                 hint: "Add a second passkey as backup. Best if it syncs across your devices." }]
+            : []),
         ],
   );
 
@@ -98,7 +113,7 @@
     phase = "choosing";
   }
 
-  async function chooseAndConnect(method: "email" | "wallet") {
+  async function chooseAndConnect(method: Method) {
     phase = "connecting";
     connectingMethod = method;
     errorMsg = "";
@@ -107,6 +122,8 @@
     try {
       const backup = method === "email"
         ? await connectWeb3AuthBackup()
+        : method === "passkey"
+        ? await connectPasskeyBackup("create")
         : await connectBackupWallet();
 
       // Hard block: the backup must not be one of this account's own keys (fate-sharing).
@@ -251,6 +268,12 @@
                   <rect x="1" y="1" width="18" height="14" rx="2.5"/>
                   <polyline points="1,2.5 10,9.5 19,2.5"/>
                 </svg>
+              {:else if m.id === "passkey"}
+                <svg viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7"
+                     stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
+                  <circle cx="7" cy="8" r="4.5"/>
+                  <path d="M11.5 8 H21 M17.5 8 V12 M21 8 V11.5"/>
+                </svg>
               {:else}
                 <svg viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7"
                      stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
@@ -271,10 +294,18 @@
 
     {:else if phase === "connecting"}
       <p class="kicker">Account safety</p>
-      <h1>{connectingMethod === "email" ? "Sign in with email" : "Connect your wallet"}</h1>
+      <h1>
+        {connectingMethod === "email"
+          ? "Sign in with email"
+          : connectingMethod === "passkey"
+          ? "Create your recovery passkey"
+          : "Connect your wallet"}
+      </h1>
       <p class="lede">
         {connectingMethod === "email"
           ? "A sign-in window will open — log in with your email."
+          : connectingMethod === "passkey"
+          ? "Your device will ask you to create a passkey. Use one that syncs to your other devices."
           : "Approve the connection request in your wallet."}
       </p>
       <p class="hint-sm"><span class="spinner"></span> Connecting…</p>
@@ -299,6 +330,13 @@
           <span class="addr-label">Backup wallet</span>
           <code class="addr-val">{pendingBackup ? addrDisplay(pendingBackup.address) : ""}</code>
         </div>
+
+        {#if connectingMethod === "passkey"}
+          <p class="soft-warn" role="note">
+            Make sure this passkey syncs to your other devices (iCloud Keychain or Google) —
+            a device-only passkey can't restore your account if you lose this device.
+          </p>
+        {/if}
 
         {#if bindWarning}
           <p class="soft-warn" role="note">{bindWarning}</p>
