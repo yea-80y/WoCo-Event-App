@@ -344,6 +344,42 @@ export interface SiteEventsIndex {
 }
 
 // ---------------------------------------------------------------------------
+// Client-owned site config (Phase B for sites)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pointer envelope written to the platform config feed when a site's config is
+ * CLIENT-OWNED: the full `Site` (including pages — the SOC writer auto-pages)
+ * lives in a SOC at `siteConfigTopic(siteId)` owned by `siteFeedSigner`, and the
+ * platform feed holds only this pointer. The pointer is server-written and
+ * owner-gated, so `ownerAddress`/`siteFeedSigner` are TRUSTED carriers (same
+ * role as `SiteEventEntry.creatorFeedSigner`); the `ownerAddress` inside the
+ * client-signed Site is overridden by the pointer's on every read. A pointer
+ * can only reference `siteConfigTopic(THIS siteId)`, and writing it requires
+ * owning the siteId, so it cannot be aimed at another user's config SOC.
+ */
+export interface SitePointer {
+  /** Discriminator — distinguishes a pointer from a legacy full-`Site` payload. */
+  _woco_site_ptr: 1;
+  /** Authenticated site owner (lowercased) — authoritative for ownership gates. */
+  ownerAddress: string;
+  /** Content-feed-signer address that owns the site config SOC. */
+  siteFeedSigner: Hex0x;
+  /** Unix ms of the pointer write. */
+  updatedAt: number;
+}
+
+/** True if a decoded config-feed payload is a client-owned-site pointer. */
+export function isSitePointer(o: unknown): o is SitePointer {
+  return (
+    !!o && typeof o === "object" &&
+    (o as Record<string, unknown>)._woco_site_ptr === 1 &&
+    typeof (o as Record<string, unknown>).ownerAddress === "string" &&
+    typeof (o as Record<string, unknown>).siteFeedSigner === "string"
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Creator site directory — per-owner index stored on Swarm
 // ---------------------------------------------------------------------------
 
@@ -359,6 +395,13 @@ export interface SiteDirectoryEntry {
   publishedAt?: number;
   /** Unix ms — last builder-side update (My Sites card freshness). */
   updatedAt?: number;
+  /**
+   * Discovery hint: the signer address owning this site's client-owned config
+   * SOC. Server-stamped from the authenticated publish; the `SitePointer` on the
+   * config feed stays the authoritative resolver input. Absent for legacy
+   * platform-written sites.
+   */
+  siteFeedSigner?: Hex0x;
 }
 
 /** On-feed envelope (mirrors EventDirectory pattern). */

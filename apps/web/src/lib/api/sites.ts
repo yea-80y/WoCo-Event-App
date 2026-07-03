@@ -1,12 +1,29 @@
 import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed } from "@woco/shared";
+import { siteConfigTopic } from "@woco/shared";
 import { authPost, authDelete, authGet, get } from "./client.js";
+import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 
 export interface SiteEventsFull {
   index: SiteEventsIndex;
   events: EventFeed[];
 }
 
-export async function publishSite(site: Site, events: SiteEventEntry[] = []) {
+/**
+ * Publish a site. With a `feedSigner` (Phase B for sites) the full Site —
+ * pages included, the SOC writer auto-pages — is signed + uploaded as the
+ * OWNER's client-owned SOC first, and the server only writes a `SitePointer`
+ * + the (still platform-signed) events index and directory carrier. Without a
+ * signer (kinds that can't own feeds yet) the legacy platform-written path runs.
+ */
+export async function publishSite(site: Site, events: SiteEventEntry[] = [], feedSigner?: ContentFeedSigner | null) {
+  if (feedSigner) {
+    await writeContentFeed({
+      signerPrivKey: feedSigner.privKey,
+      topic: siteConfigTopic(site.siteId),
+      data: { ...site, updatedAt: Date.now() },
+    });
+    return authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address });
+  }
   return authPost<{ siteId: string }>("/api/sites", { site, events });
 }
 

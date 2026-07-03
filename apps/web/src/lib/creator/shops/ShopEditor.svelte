@@ -189,7 +189,8 @@
         idGen: uid,
       });
 
-      const pub = await publishSite(site, []);
+      const feedSigner = await auth.getContentFeedSigner();
+      const pub = await publishSite(site, [], feedSigner);
       if (!pub.ok) throw new Error(pub.error ?? "Publish failed");
 
       const dep = await deploySite(siteId, { apiUrl: API_URL, gatewayUrl: DEFAULT_GATEWAY, wocoAppUrl: WOCO_APP_URL, site });

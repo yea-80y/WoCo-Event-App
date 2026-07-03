@@ -291,7 +291,10 @@
         pendingLogoBase64 = null;
       }
 
-      const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents));
+      // Phase B: with a content-feed signer the site config becomes a
+      // CLIENT-OWNED SOC (null → legacy platform-written path).
+      const feedSigner = await auth.getContentFeedSigner();
+      const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents), feedSigner);
       if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
       const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) });

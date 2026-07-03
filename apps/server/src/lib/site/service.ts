@@ -1,11 +1,63 @@
 import { Topic } from "@ethersphere/bee-js";
-import { siteCreatorDirectoryTopic, siteConfigTopic, siteEventsIndexTopic } from "@woco/shared";
-import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex } from "@woco/shared";
+import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEventsIndexTopic, isSitePointer } from "@woco/shared";
+import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x } from "@woco/shared";
 import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
+import { readContentFeedJson } from "../swarm/soc-upload.js";
 
 const DIR_PAGE_LIMIT = 4096;
 
 // ── Read ─────────────────────────────────────────────────────────────────────
+
+/** A resolved site config plus its ownership provenance. */
+export interface ResolvedSite {
+  site: Site;
+  /** Set when the config is a CLIENT-OWNED SOC (the signer that owns it). */
+  siteFeedSigner?: Hex0x;
+}
+
+/**
+ * Resolve a site's config, following the client-owned indirection when present.
+ * The platform config feed holds either the legacy full `Site` (pages merged from
+ * the split pages feed) or a `SitePointer`, in which case the full Site (pages
+ * included) is read from the owner's SOC at `siteConfigTopic(siteId)`. In the
+ * pointer case `site.ownerAddress` is OVERRIDDEN by the pointer's server-stamped
+ * value — ownership gates must never trust the client-signed payload's claim.
+ * The ONLY config-read path for server routes; returns null when absent/corrupt.
+ */
+export async function resolveSiteConfig(siteId: string): Promise<ResolvedSite | null> {
+  const configTopic = Topic.fromString(siteConfigTopic(siteId));
+  const configPage = await readFeedPage(configTopic);
+  if (!configPage) return null;
+
+  const head = decodeJsonFeed<unknown>(configPage);
+  if (!head) return null;
+
+  if (isSitePointer(head)) {
+    const payload = await readContentFeedJson(
+      head.siteFeedSigner.replace(/^0x/, ""),
+      siteConfigTopic(siteId),
+    ).catch(() => null);
+    if (!payload) return null;
+    let site: Site;
+    try {
+      site = JSON.parse(new TextDecoder().decode(payload)) as Site;
+    } catch {
+      return null;
+    }
+    if (!site?.siteId || site.siteId !== siteId) return null;
+    site.ownerAddress = head.ownerAddress;
+    return { site, siteFeedSigner: head.siteFeedSigner };
+  }
+
+  // Legacy platform-written site — pages live in their own split feed.
+  const site = head as Site;
+  const pagesPage = await readFeedPage(Topic.fromString(sitePagesTopicFn(siteId)));
+  if (pagesPage) {
+    const pagesData = decodeJsonFeed<{ pages: Page[] }>(pagesPage);
+    if (pagesData?.pages) site.pages = pagesData.pages;
+  }
+  return { site };
+}
 
 // In-memory memo for getCreatorSites — collapses burst reads when the
 // creator portal mounts AND repeat loads across tabs/refreshes. 5 minutes
@@ -19,15 +71,12 @@ const _creatorSitesInFlight = new Map<string, Promise<SiteDirectoryEntry[]>>();
 /**
  * Fetch just the theme palette + brandName for a site. Used by the Stripe
  * webhook to theme ticket emails and PNG cards with the organiser's branding.
- * Reads page 0 only (theme lives in the config feed, not the pages overflow).
  */
 export async function getSiteTheme(siteId: string): Promise<{ palette: SitePalette; brandName: string } | null> {
   try {
-    const page = await readFeedPage(Topic.fromString(siteConfigTopic(siteId)));
-    if (!page) return null;
-    const site = decodeJsonFeed<Site>(page);
-    if (!site?.theme?.palette) return null;
-    return { palette: site.theme.palette, brandName: site.theme.brandName };
+    const resolved = await resolveSiteConfig(siteId);
+    if (!resolved?.site?.theme?.palette) return null;
+    return { palette: resolved.site.theme.palette, brandName: resolved.site.theme.brandName };
   } catch {
     return null;
   }
@@ -200,8 +249,12 @@ async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectory
  */
 export async function upsertCreatorSite(ethAddress: string, entry: SiteDirectoryEntry): Promise<void> {
   const existing = await readCreatorSitesStrict(ethAddress);
+  const prior = existing.find((e) => e.siteId === entry.siteId);
   const filtered = existing.filter((e) => e.siteId !== entry.siteId);
-  const updated = [entry, ...filtered]; // most-recently-published first
+  // Merge over the prior entry so a caller that doesn't know a field (publish
+  // doesn't know feedHash/deployedUrl; deploy doesn't know siteFeedSigner)
+  // never wipes what the other wrote.
+  const updated = [{ ...prior, ...entry }, ...filtered]; // most-recently-published first
   await writeDirectoryPages(updated, (p) => siteCreatorDirectoryTopic(ethAddress, p));
   invalidateCreatorSitesCache(ethAddress);
   console.log(`[site] Creator directory updated for ${ethAddress}: ${updated.length} site(s)`);

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
-import { getCreatorSites, upsertCreatorSite } from "../lib/site/service.js";
+import { getCreatorSites, upsertCreatorSite, resolveSiteConfig } from "../lib/site/service.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
   readFeedPage,
@@ -32,7 +32,7 @@ import {
   siteEventsIndexTopic,
   SITE_SCHEMA_VERSION,
 } from "@woco/shared";
-import type { Site, Page, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed, EventDirectoryEntry, Hex0x } from "@woco/shared";
+import type { Site, SitePointer, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed, EventDirectoryEntry, Hex0x } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
@@ -53,22 +53,9 @@ const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multis
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Config read for routes — follows the client-owned pointer (see service.ts). */
 async function readSiteConfig(siteId: string): Promise<Site | null> {
-  const configTopic = Topic.fromString(siteConfigTopic(siteId));
-  const pagesTopic = Topic.fromString(sitePagesTopicFn(siteId));
-  const [configPage, pagesPage] = await Promise.all([
-    readFeedPage(configTopic),
-    readFeedPage(pagesTopic),
-  ]);
-  if (!configPage) return null;
-  const site = decodeJsonFeed<Site>(configPage);
-  if (!site) return null;
-  // Pages may be in their own feed (split to stay under 4096 bytes)
-  if (pagesPage) {
-    const pagesData = decodeJsonFeed<{ pages: Page[] }>(pagesPage);
-    if (pagesData?.pages) site.pages = pagesData.pages;
-  }
-  return site;
+  return (await resolveSiteConfig(siteId))?.site ?? null;
 }
 
 /**
@@ -226,35 +213,35 @@ sitesRouter.post("/", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
 
   try {
-    const body = await c.req.json() as { site?: Site; events?: SiteEventEntry[] };
+    const body = await c.req.json() as { site?: Site; events?: SiteEventEntry[]; siteFeedSigner?: string };
     if (!body?.site?.siteId) {
       return c.json({ ok: false, error: "Invalid site data" }, 400);
     }
 
     const { site, events = [] } = body;
 
+    // Client-owned publish: the full Site already lives in the owner's SOC at
+    // siteConfigTopic(siteId) (the client signs + uploads it BEFORE this call);
+    // the platform feed gets only a SitePointer. The signer address is the
+    // authenticated user's own claim about their own site — it can only resolve
+    // the SOC namespace of that signer at THIS siteId, so it cannot be aimed at
+    // another user's content (see SitePointer doc).
+    const siteFeedSigner = body.siteFeedSigner?.toLowerCase();
+    if (siteFeedSigner && !/^0x[0-9a-f]{40}$/.test(siteFeedSigner)) {
+      return c.json({ ok: false, error: "Invalid siteFeedSigner" }, 400);
+    }
+
     // If an existing site is published, only the owner may overwrite it.
-    const existing = await readSiteConfig(site.siteId);
-    if (existing && existing.ownerAddress.toLowerCase() !== parentAddress) {
+    const existing = await resolveSiteConfig(site.siteId);
+    if (existing && existing.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
 
     const now = Date.now();
-    const siteToWrite: Site = {
-      ...site,
-      ownerAddress: parentAddress,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
 
-    // Write config (without pages) + pages + events to separate feeds concurrently.
-    // Pages are split into woco/site/pages/{siteId} so the config feed stays under
-    // the 4096-byte Swarm chunk limit even for content-rich sites.
     const configTopic = Topic.fromString(siteConfigTopic(site.siteId));
     const pagesTopic  = Topic.fromString(sitePagesTopicFn(site.siteId));
     const eventsTopic = Topic.fromString(siteEventsIndexTopic(site.siteId));
-
-    const { pages, ...siteShell } = siteToWrite;
 
     // Prior server-written signers (trusted) — carried forward if a source read
     // transiently fails so a re-publish never wipes a known carrier.
@@ -263,6 +250,9 @@ sitesRouter.post("/", requireAuth, async (c) => {
     const priorSigners = new Map<string, Hex0x>();
     for (const e of priorIndex?.events ?? []) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
 
+    // The events index STAYS platform-signed regardless of config ownership: it
+    // carries per-event creatorFeedSigner values consumed on the claim/payment
+    // path, so it must remain a server-written trust carrier (93ea980 class).
     const eventsIndex: SiteEventsIndex = {
       siteId: site.siteId,
       schemaVersion: SITE_SCHEMA_VERSION,
@@ -270,11 +260,33 @@ sitesRouter.post("/", requireAuth, async (c) => {
       updatedAt: now,
     };
 
-    await Promise.all([
-      writeFeedPage(configTopic, encodeJsonFeed(siteShell)),
-      writeFeedPage(pagesTopic,  encodeJsonFeed({ pages })),
-      writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
-    ]);
+    if (siteFeedSigner) {
+      const pointer: SitePointer = {
+        _woco_site_ptr: 1,
+        ownerAddress: parentAddress,
+        siteFeedSigner: siteFeedSigner as Hex0x,
+        updatedAt: now,
+      };
+      await Promise.all([
+        writeFeedPage(configTopic, encodeJsonFeed(pointer)),
+        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
+      ]);
+    } else {
+      // Legacy platform-written path (client without a feed signer). Config
+      // (without pages) + pages split across two feeds to stay under 4096 bytes.
+      const siteToWrite: Site = {
+        ...site,
+        ownerAddress: parentAddress,
+        createdAt: existing?.site.createdAt ?? now,
+        updatedAt: now,
+      };
+      const { pages, ...siteShell } = siteToWrite;
+      await Promise.all([
+        writeFeedPage(configTopic, encodeJsonFeed(siteShell)),
+        writeFeedPage(pagesTopic,  encodeJsonFeed({ pages })),
+        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
+      ]);
+    }
 
     // Upsert into creator's site directory (fire-and-forget — non-fatal).
     upsertCreatorSite(parentAddress, {
@@ -283,6 +295,7 @@ sitesRouter.post("/", requireAuth, async (c) => {
       logoSwarmRef: site.theme?.logoSwarmRef,
       accentColor: site.theme?.palette?.accent ?? '#6366f1',
       publishedAt: now,
+      ...(siteFeedSigner ? { siteFeedSigner: siteFeedSigner as Hex0x } : {}),
     } satisfies SiteDirectoryEntry).catch((e) =>
       console.warn("[sites/publish] creator directory upsert failed:", e)
     );
@@ -564,16 +577,19 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Prefer the site config sent by the client — avoids a Swarm re-read immediately
     // after publishSite (deferred writes can have a brief propagation window).
     // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
+    // Either way, an EXISTING siteId may only be deployed by its owner — without
+    // this gate the body.site fast path would let any authenticated user overwrite
+    // another site's woco-multisite feed and re-point its custom domains.
+    const published = await resolveSiteConfig(siteId);
+    if (published && published.site.ownerAddress.toLowerCase() !== parentAddress) {
+      return c.json({ ok: false, error: "Not the site owner" }, 403);
+    }
     let site: Site;
     if (body.site && body.site.siteId === siteId) {
       site = { ...body.site, ownerAddress: parentAddress };
     } else {
-      const fromSwarm = await readSiteConfig(siteId);
-      if (!fromSwarm) return c.json({ ok: false, error: "Site not found — publish first" }, 404);
-      if (fromSwarm.ownerAddress.toLowerCase() !== parentAddress) {
-        return c.json({ ok: false, error: "Not the site owner" }, 403);
-      }
-      site = fromSwarm;
+      if (!published) return c.json({ ok: false, error: "Site not found — publish first" }, 404);
+      site = published.site;
     }
 
     let selection;
