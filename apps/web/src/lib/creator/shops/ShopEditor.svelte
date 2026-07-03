@@ -17,7 +17,8 @@
   import { createShop, updateShop, getShop, getShopOrders } from "../../api/shops.js";
   import { publishSite, deploySite } from "../../api/sites.js";
   import { GATEWAYS } from "../builder/gateways.js";
-  import { newSiteFromShop } from "@woco/shared";
+  import { newSiteFromShop, siteConfigTopic } from "@woco/shared";
+  import { logFeedToManifest } from "../../manifest/feed-log.js";
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
   import ShopLoyaltyEditor from "./ShopLoyaltyEditor.svelte";
 
@@ -199,6 +200,18 @@
       storefrontUrl = dep.data.siteUrl;
       storefrontQr = null;
       localStorage.setItem(storefrontKey, JSON.stringify({ siteId, url: storefrontUrl }));
+
+      // Manifest feed log (fire-and-forget; no-op without a feed signer).
+      void logFeedToManifest({
+        kind: "site",
+        topic: siteConfigTopic(siteId),
+        label: shop.name,
+        siteMeta: {
+          contentHash: dep.data.contentHash,
+          ...(dep.data.feedManifestHash ? { feedManifestHash: dep.data.feedManifestHash } : {}),
+        },
+        target: DEFAULT_GATEWAY.includes("woco-net.com") ? "woco" : "etherna",
+      });
     } catch (e) {
       deployErr = e instanceof Error ? e.message : "Deploy failed";
     } finally { deploying = false; }

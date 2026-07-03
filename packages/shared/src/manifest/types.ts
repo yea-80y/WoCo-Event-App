@@ -63,6 +63,58 @@ export interface BackupInventoryEntry {
 }
 
 /**
+ * What kind of content a `ManifestFeedEntry` describes. `collection`/`ticket`
+ * are reserved for the attendee rollout (profile + ticket collection) so the
+ * schema doesn't move when that lands.
+ */
+export type ManifestFeedKind = "profile" | "avatar" | "event" | "site" | "collection" | "ticket";
+
+/**
+ * One ACTIVE client-owned feed in the user's content log (Phase 4 of the
+ * manifest design — see the header). The durable identity of a mutable feed is
+ * its TOPIC (the SOC owner is the user's feed signer; the SOC address derives
+ * from both and survives edits AND batch migration), so that — never a latest
+ * payload hash — is what we log. `refs` lists immutable content the feed
+ * depends on (an avatar image, a deployed site collection) where recording it
+ * here is what makes REPLACEMENT detectable: when an upsert drops a ref, the
+ * displaced ref moves to `trash` (restorable until the old batch dies).
+ * Batch migration = re-stamp every entry's SOC + refs on the new batch;
+ * anything not listed dies with the old batch's TTL (deletion-by-omission).
+ */
+export interface ManifestFeedEntry {
+  kind: ManifestFeedKind;
+  /** Content-feed topic string (e.g. `woco/event/{eventId}`). Dedup key with `kind`. */
+  topic: string;
+  /** Non-PII memory-jog shown in the user's own storage panel (event title, brand name). */
+  label?: string;
+  /** Immutable content refs (hex, no 0x) this feed depends on. */
+  refs?: string[];
+  /** Sites only: the live deploy pointers (replaced contentHash → trash). */
+  siteMeta?: { feedManifestHash?: string; contentHash?: string };
+  /** Which gateway/batch family the content is stamped on. */
+  target?: "woco" | "etherna";
+  /** Unix ms of the last upsert. */
+  updatedAt: number;
+}
+
+/**
+ * A deleted/displaced item, kept ONLY as a restore-window courtesy: on Swarm,
+ * anything the manifest stops listing already dies with its batch (deletion is
+ * by omission and eventual — never promise immediate erasure). Entries here are
+ * restorable until a batch migration/TTL actually kills the chunks.
+ */
+export interface ManifestTrashEntry {
+  kind: ManifestFeedKind;
+  /** Present when a whole feed was deleted (vs just displaced refs). */
+  topic?: string;
+  /** Displaced immutable refs (old avatar image, superseded site build). */
+  refs?: string[];
+  label?: string;
+  /** Unix ms of the delete/displacement. */
+  deletedAt: number;
+}
+
+/**
  * The decrypted manifest body (what a `SelfSealedEnvelope` wraps). v1 = the backup
  * inventory. New sections (e.g. `feeds`) are added as OPTIONAL fields.
  */
@@ -72,6 +124,10 @@ export interface UserManifest {
   updatedAt: number;
   /** Recovery backups the user has configured. */
   backups: BackupInventoryEntry[];
+  /** Active client-owned feed log (Phase 4) — the batch-migration keep-list. */
+  feeds?: ManifestFeedEntry[];
+  /** Deleted/displaced items, restorable until the old batch dies. */
+  trash?: ManifestTrashEntry[];
 }
 
 /**

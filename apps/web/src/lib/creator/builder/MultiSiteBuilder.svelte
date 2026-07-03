@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Site, SiteEventEntry, TemplateId } from "@woco/shared";
-  import { newSiteFromTemplate } from "@woco/shared";
+  import { newSiteFromTemplate, siteConfigTopic } from "@woco/shared";
+  import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage } from "../../api/sites.js";
   import { getMySitesSWR } from "../../api/creator-cache.js";
@@ -320,6 +321,19 @@
         deployedUrl: deployRes.data.siteUrl,
         publishedAt: Date.now(),
         updatedAt: Date.now(),
+      });
+
+      // Manifest feed log (fire-and-forget; no-op without a feed signer). The
+      // superseded deploy's contentHash is displaced → trash by the merge.
+      void logFeedToManifest({
+        kind: "site",
+        topic: siteConfigTopic(site.siteId),
+        label: site.theme.brandName || 'Untitled site',
+        siteMeta: {
+          contentHash: deployRes.data.contentHash,
+          ...(deployRes.data.feedManifestHash ? { feedManifestHash: deployRes.data.feedManifestHash } : {}),
+        },
+        target: gatewayUrl.includes("woco-net.com") ? "woco" : "etherna",
       });
 
       publishState = 'done';

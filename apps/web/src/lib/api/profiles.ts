@@ -3,6 +3,7 @@ import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared
 import { authPost, get } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import { writeContentFeed, readContentFeed } from "../swarm/content-feed.js";
+import { logFeedToManifest } from "../manifest/feed-log.js";
 
 // ---------------------------------------------------------------------------
 // In-memory cache — profile data changes rarely
@@ -164,6 +165,8 @@ export async function updateProfile(updates: UpdateProfileRequest): Promise<User
     data: profile,
   });
 
+  void logFeedToManifest({ kind: "profile", topic: profileDataContentTopic(addr) });
+
   cacheStore(addr, profile);
   return profile;
 }
@@ -193,6 +196,14 @@ export async function uploadAvatar(imageDataUrl: string): Promise<string> {
     signerPrivKey: signer.privKey,
     topic: profileAvatarContentTopic(parent),
     data: { v: 1, avatarRef },
+  });
+
+  // Log the NEW image ref as the entry's only ref — the manifest merge moves a
+  // previously-logged avatar ref to trash (displaced → dies with the old batch).
+  void logFeedToManifest({
+    kind: "avatar",
+    topic: profileAvatarContentTopic(parent),
+    refs: [avatarRef],
   });
 
   // Patch the cache with the new ref so navigating back doesn't trigger a

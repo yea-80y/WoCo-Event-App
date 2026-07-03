@@ -6,6 +6,8 @@
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
+  import { eventContentTopic } from "@woco/shared";
+  import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { navigate } from "../../router/router.svelte.js";
 
   interface SeriesDraft {
@@ -276,6 +278,15 @@
       phase = "done";
       progress = 100;
       step = "Published!";
+      // Manifest feed log (fire-and-forget): the event feed is client-owned when
+      // a feed signer exists — the hook no-ops otherwise. The event's image ref
+      // is self-described inside the feed, so only identity + label are logged.
+      void logFeedToManifest({
+        kind: "event",
+        topic: eventContentTopic(eventId),
+        label: title,
+        target: gatewayUrl && !gatewayUrl.includes("woco-net.com") ? "etherna" : "woco",
+      });
       onpublished?.(eventId);
     } catch (e) {
       error = e instanceof Error ? e.message : "Unexpected error";

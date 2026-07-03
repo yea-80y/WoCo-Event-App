@@ -19,10 +19,13 @@ import {
   isSelfSealedEnvelope,
   type UserManifest,
   type BackupInventoryEntry,
+  type ManifestFeedEntry,
+  type ManifestFeedKind,
   type SelfSealedEnvelope,
 } from "@woco/shared";
 import { readContentFeed, writeContentFeed } from "../swarm/content-feed.js";
 import { openFromSelf, sealToSelf } from "./self-seal.js";
+import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry } from "./ops.js";
 
 /** The feed-signer material the manifest is owned by + sealed to. */
 export interface ManifestSigner {
@@ -65,6 +68,24 @@ export async function readBackupInventory(args: {
   return manifest?.backups ?? [];
 }
 
+/** Seal + write a manifest to the user's SOC (the shared tail of every mutation). */
+async function writeUserManifest(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+  manifest: UserManifest;
+}): Promise<void> {
+  const envelope = sealToSelf({
+    feedSignerPrivKey: args.signer.privKey,
+    parentAddress: args.parentAddress,
+    data: args.manifest,
+  });
+  await writeContentFeed({
+    signerPrivKey: args.signer.privKey,
+    topic: USER_MANIFEST_TOPIC,
+    data: envelope,
+  });
+}
+
 /**
  * Upsert a backup entry into the manifest (read → replace-by-guardian → seal →
  * write). Idempotent per guardian address: re-adding the same guardian updates its
@@ -86,15 +107,53 @@ export async function upsertBackupEntry(args: {
     updatedAt: Date.now(),
     backups: [...kept, { ...args.entry, guardianAddress: g }],
   };
+  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+}
 
-  const envelope = sealToSelf({
-    feedSignerPrivKey: args.signer.privKey,
-    parentAddress: args.parentAddress,
-    data: manifest,
-  });
-  await writeContentFeed({
-    signerPrivKey: args.signer.privKey,
-    topic: USER_MANIFEST_TOPIC,
-    data: envelope,
-  });
+// ── Feed log + trash (Phase 4 — active client-owned content) ────────────────
+// Pure transforms live in ops.ts; these wrap them in the read→seal→write cycle.
+// All best-effort comfort-layer semantics: callers treat failures as non-fatal.
+
+/** Upsert an active-feed entry; displaced refs move to trash (see ops.ts). */
+export async function upsertFeedEntry(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+  entry: ManifestFeedEntry;
+}): Promise<void> {
+  const existing = await readUserManifest({ signer: args.signer, parentAddress: args.parentAddress });
+  const manifest = mergeFeedEntry(existing, args.entry);
+  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+}
+
+/** Move a whole feed entry to trash (restorable until the old batch dies). */
+export async function trashFeedEntryOnManifest(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+  kind: ManifestFeedKind;
+  topic: string;
+}): Promise<void> {
+  const existing = await readUserManifest({ signer: args.signer, parentAddress: args.parentAddress });
+  const manifest = removeFeedEntry(existing, args.kind, args.topic);
+  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+}
+
+/** Restore a whole-feed trash entry back into the active log. */
+export async function restoreFeedEntryOnManifest(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+  kind: ManifestFeedKind;
+  topic: string;
+}): Promise<void> {
+  const existing = await readUserManifest({ signer: args.signer, parentAddress: args.parentAddress });
+  const manifest = restoreFeedEntry(existing, args.kind, args.topic);
+  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+}
+
+/** Convenience read: the active feed log (empty if no manifest yet). */
+export async function readFeedLog(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+}): Promise<ManifestFeedEntry[]> {
+  const manifest = await readUserManifest(args);
+  return manifest?.feeds ?? [];
 }
