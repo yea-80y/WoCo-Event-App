@@ -7,6 +7,7 @@ export * from "./auth/eip712-digest.js";
 export * from "./event/types.js";
 export * from "./crypto/index.js";
 export * from "./recovery/types.js";
+export * from "./manifest/types.js";
 export * from "./swarm/soc.js";
 export * from "./pod/types.js";
 export * from "./pod/topics.js";

@@ -36,6 +36,12 @@ export interface BackupWallet {
   getGuardianSigner?: () => Promise<unknown>;
   /** True iff `getGuardianSigner` is available → safe to install as a real backup. */
   recoveryReady: boolean;
+  /**
+   * Non-PII provider category for the backup-inventory memory-jog (e.g. "google",
+   * "email_passwordless") — set for email/social backups from Web3Auth
+   * `typeOfLogin`. Absent for injected wallets / passkeys.
+   */
+  providerLabel?: string;
 }
 
 /**
@@ -196,7 +202,18 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
 
   try {
     const raw = await extractRawPrivateKey(provider);
-    return await backupWalletFromPrivateKey(raw);
+    const wallet = await backupWalletFromPrivateKey(raw);
+    // Capture the provider CATEGORY (not PII) while the session is live, for the
+    // backup-inventory memory-jog. typeOfLogin is "google" | "email_passwordless"
+    // | … — a category, never the email address. Best-effort.
+    let providerLabel: string | undefined;
+    try {
+      const info = (await web3auth.getUserInfo()) as { typeOfLogin?: string };
+      providerLabel = info?.typeOfLogin || undefined;
+    } catch {
+      /* label is a nicety — never block the backup on it */
+    }
+    return { ...wallet, providerLabel };
   } finally {
     // The modal does NOT auto-close after connect() — it sits on a "connected"
     // success state. The logout below emits DISCONNECTED, which the modal reacts to

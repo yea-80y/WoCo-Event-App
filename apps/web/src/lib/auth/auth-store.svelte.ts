@@ -394,6 +394,30 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
 }
 
 /**
+ * The user's configured recovery backups from their encrypted-to-self manifest
+ * (Increment 3a) — the LOGGED-IN comfort layer that lets the "Protect your
+ * account" panel show what's already set up. Prompt-free: both the SOC owner
+ * address and the seal key come from the STORED feed-signer blob (a device-key
+ * decrypt, never a PRF/wallet signature), so passive UI can call it freely.
+ * Returns [] when not signed in, no feed signer established, or no manifest yet.
+ */
+async function getBackupInventory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
+  const parent = _parent;
+  if (!parent) return [];
+  const address = await _getContentFeedSignerAddress();
+  if (!address) return [];
+  const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
+  const privKey = await restoreContentFeedSigner(parent);
+  if (!privKey) return [];
+  try {
+    const { readBackupInventory } = await import("../manifest/inventory.js");
+    return await readBackupInventory({ signer: { privKey, address }, parentAddress: parent });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Restore cached session + POD from IndexedDB (shared by all login methods).
  * Passes the current `_parent` as the expected parent so a stale delegation
  * from a different identity can never be silently re-attached.
@@ -1355,6 +1379,12 @@ async function setupAccountRecovery(backup: {
   address: string;
   signTypedData: import("@woco/shared").EIP712Signer;
   recoveryReady?: boolean;
+  /**
+   * Self-describing labels for the backup-inventory manifest (Increment 3a) — the
+   * signer knows only address+signer, so the UI supplies HOW the user added this
+   * backup. Non-PII memory-jogs only; never a secret.
+   */
+  meta?: { method?: import("@woco/shared").BackupMethod; providerLabel?: string; maskedEmail?: string };
 }): Promise<{ guardianAddress: string; txHash: string }> {
   if (_kind !== "passkey" && _kind !== "web3auth") {
     throw new Error("Account recovery is only available for passkey or email/social accounts");
@@ -1459,6 +1489,32 @@ async function setupAccountRecovery(backup: {
     if (!res.ok) console.warn("[recovery] hint registration failed (non-fatal):", res.error);
   } catch (err) {
     console.warn("[recovery] hint registration failed (non-fatal):", err);
+  }
+
+  // Record this backup in the user's encrypted-to-self manifest so a signed-in
+  // user can later SEE and manage their backups (Increment 3a). It holds NO
+  // secrets — the sealed envelope stays in the guardian SOC; this is self-owned
+  // metadata (method + provider label + guardian address + date). NON-FATAL: the
+  // escrow + on-chain install already succeeded; a manifest write failing must not
+  // undo a completed protect. Skipped when the feed signer is unavailable (nothing
+  // to own/seal the manifest with).
+  if (feedSigner) {
+    try {
+      const { upsertBackupEntry } = await import("../manifest/inventory.js");
+      await upsertBackupEntry({
+        signer: { privKey: feedSigner.privKey, address: feedSigner.address },
+        parentAddress: kernelAddress,
+        entry: {
+          method: backup.meta?.method ?? "wallet",
+          providerLabel: backup.meta?.providerLabel ?? backup.meta?.method,
+          guardianAddress: guardianAddress.toLowerCase(),
+          addedAt: Date.now(),
+          maskedEmail: backup.meta?.maskedEmail,
+        },
+      });
+    } catch (err) {
+      console.warn("[recovery] backup-inventory manifest write failed (non-fatal):", err);
+    }
   }
 
   return { guardianAddress, txHash };
@@ -1876,4 +1932,7 @@ export const auth = {
   getContentFeedSigner: () => _getContentFeedSigner(),
   // Self-read SOC owner address — no prompt (see _getContentFeedSignerAddress).
   getContentFeedSignerAddress: () => _getContentFeedSignerAddress(),
+  // Configured recovery backups from the encrypted-to-self manifest — prompt-free
+  // read for the "Protect your account" panel (Increment 3a).
+  getBackupInventory: () => getBackupInventory(),
 };

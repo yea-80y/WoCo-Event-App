@@ -164,7 +164,12 @@
     phase = "working";
     errorMsg = "";
     try {
-      await auth.setupAccountRecovery(pendingBackup);
+      await auth.setupAccountRecovery({
+        ...pendingBackup,
+        // Record HOW this backup was added in the user's encrypted-to-self manifest
+        // (non-PII memory-jog). connectingMethod is set at connect and persists here.
+        meta: { method: connectingMethod ?? "wallet", providerLabel: pendingBackup.providerLabel },
+      });
       backupAddress = pendingBackup.address;
       alreadyProtected = true;
       phase = "done";
