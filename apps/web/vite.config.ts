@@ -19,16 +19,25 @@ export default defineConfig(({ mode }) => {
       svelte(),
     ],
     optimizeDeps: {
-      // @web3auth/modal dynamically imports its i18n locale chunks
-      // (loginModal.js → import('./i18n/english.json.js') etc). We load the modal
-      // itself via a dynamic import too, so Vite's dep-optimizer discovers it
-      // LATE and bundles it lazily; the locale import then triggers a SECOND
-      // optimize pass that re-hashes, and the already-loaded modal requests the
-      // stale chunk → "504 Outdated Optimize Dep" → web3auth `w.init()` throws →
-      // the user is logged out on every refresh (restore path catches the throw).
-      // Forcing the modal into the FIRST eager optimize pass keeps every chunk on
-      // one browser-hash. Dev-only (optimizeDeps is ignored by the rollup build).
-      include: ['@web3auth/modal'],
+      // @web3auth/modal dynamically loads its sibling packages (no-modal, auth,
+      // ws-embed) and i18n locale chunks at RUNTIME. If Vite only pre-bundles
+      // `@web3auth/modal`, those siblings are discovered LATE → a SECOND optimize
+      // pass re-hashes chunks → the already-loaded modal requests a stale `?v=` →
+      // "504 Outdated Optimize Dep" at init(), which blocks BOTH login and restore.
+      // Fix: pre-declare the whole web3auth family so the FIRST optimize pass is
+      // complete and no second pass runs. Do NOT `exclude` them — that serves their
+      // CJS sub-deps (bn.js via elliptic) as raw ESM → `import BN from 'bn.js'` has
+      // no default export → sign-in breaks. Prod is unaffected (rollup ignores
+      // optimizeDeps). Belt-and-braces: the auth store also treats an init() failure
+      // as `unavailable` (keeps the session, retries the key) so a stray re-optimize
+      // never logs the user out. After changing this list: delete
+      // apps/web/node_modules/.vite AND clear the browser's cached dep modules.
+      include: [
+        '@web3auth/modal',
+        '@web3auth/no-modal',
+        '@web3auth/auth',
+        '@web3auth/ws-embed',
+      ],
     },
     resolve: {
       // vite-plugin-node-polyfills exposes `process` as an ES-module namespace

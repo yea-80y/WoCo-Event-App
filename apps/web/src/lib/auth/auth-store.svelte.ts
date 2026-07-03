@@ -648,6 +648,31 @@ async function _ensureKernelForKind(): Promise<void> {
   throw new Error("No Kernel available for auth kind: " + _kind);
 }
 
+/**
+ * After a transient web3auth restore (`unavailable`), keep re-attempting the SDK
+ * init off the critical path until the raw key comes back — in dev the second
+ * attempt succeeds once the dep-optimizer settles; in prod a network blip clears.
+ * Never clears the session: an `expired` result here just stops the retries and
+ * leaves the cached WoCo session in place until a key-requiring action forces a
+ * re-login. Backs off 2s → 4s → 8s → 16s (capped), giving up after a few tries.
+ */
+function _retryWeb3AuthKeyInBackground(attempt = 0): void {
+  if (_web3authPrivateKey || _kind !== "web3auth") return;
+  setTimeout(async () => {
+    if (_web3authPrivateKey || _kind !== "web3auth") return;
+    try {
+      const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
+      const r = await restoreWeb3AuthSession();
+      if (r.status === "restored") {
+        _web3authPrivateKey = r.privateKey;
+        return;
+      }
+      if (r.status === "expired") return; // genuinely logged out — leave cache as-is
+    } catch { /* keep trying */ }
+    if (attempt < 4) _retryWeb3AuthKeyInBackground(attempt + 1);
+  }, Math.min(2000 * 2 ** attempt, 16000));
+}
+
 // ---------------------------------------------------------------------------
 // Initialisation (call once on app mount)
 // ---------------------------------------------------------------------------
@@ -747,26 +772,42 @@ async function init(): Promise<void> {
       }
     } else if (kind === "web3auth") {
       const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
-      const session = await restoreWeb3AuthSession();
+      const restore = await restoreWeb3AuthSession();
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
       const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
 
-      if (session && storedParent && storedPodAddr) {
+      if (restore.status === "restored" && storedParent && storedPodAddr) {
         // Connected state only — the Kernel is rebuilt lazily on first use
         // (deferred-signing), so no eth_call here. storedParent = Kernel address;
         // storedPodAddr = Web3Auth EOA (loaded BEFORE _restoreCachedAuth so POD
         // restore uses the EOA AAD, never the Kernel address — invariant #1).
         _kind = "web3auth";
         _parent = storedParent;
-        _web3authPrivateKey = session.privateKey;
+        _web3authPrivateKey = restore.privateKey;
         _web3authPodAddress = storedPodAddr;
         await _restoreCachedAuth();
         // Re-establish the feed signer on cold-restore too (silent). A refresh
         // keeps the blob, but a device that only ever restored (never logged in on
         // this tab) still needs its signer resolvable for passive profile reads.
         await _establishFeedSignerEagerly();
+      } else if (restore.status === "unavailable" && storedParent && storedPodAddr) {
+        // Web3Auth SDK couldn't init (dev dep-optimizer 504, or a network blip) —
+        // a transient failure, NOT a logout. The WoCo session (session key,
+        // delegation, POD seed, feed signer) is fully persisted and independent of
+        // the live provider, so stay logged in and reconnect the raw key in the
+        // background instead of nuking a valid session on every refresh. Actions
+        // that genuinely need the key (Kernel build, session renewal) lazily
+        // restore it — or prompt — if the retry hasn't landed yet. Mirrors the
+        // web3 "wallet not accessible" background-reconnect above.
+        _kind = "web3auth";
+        _parent = storedParent;
+        _web3authPodAddress = storedPodAddr;
+        await _restoreCachedAuth();
+        await _establishFeedSignerEagerly().catch(() => {}); // best-effort w/o key
+        _retryWeb3AuthKeyInBackground();
       } else {
-        // Missing POD_ADDRESS = a pre-Kernel-upgrade session (parent was the raw
+        // status === "expired" (SDK init OK, session genuinely gone) OR a
+        // pre-Kernel-upgrade session (missing POD_ADDRESS — parent was the raw
         // EOA, not the Kernel). Force a clean re-login so the parent becomes the
         // Kernel address rather than silently mixing identity layers (mirrors
         // the passkey pre-Kernel migration guard).

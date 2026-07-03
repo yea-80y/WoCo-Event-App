@@ -115,16 +115,40 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
 }
 
 /**
- * Silent restore — returns the key if Web3Auth's stored session is still active,
- * null if expired / not configured. Called during auth init(); never shows UI.
+ * Outcome of a silent restore. The distinction is load-bearing: an SDK that can't
+ * init (dev dep-optimizer 504, a network blip reaching Web3Auth) is NOT a logout —
+ * the stored session may be perfectly valid — so the caller must KEEP the WoCo
+ * session and reconnect the key in the background rather than clearing it. Only a
+ * successful init that reports no active session is a genuine `expired`.
  */
-export async function restoreWeb3AuthSession(): Promise<{ address: string; privateKey: `0x${string}` } | null> {
+export type Web3AuthRestore =
+  | { status: "restored"; address: string; privateKey: `0x${string}` }
+  | { status: "expired" }
+  | { status: "unavailable" };
+
+/**
+ * Silent restore. Returns the key if Web3Auth's stored session is still active,
+ * `expired` if the SDK initialised but the session is gone, `unavailable` if the
+ * SDK couldn't be reached at all (transient — do not treat as a logout). Called
+ * during auth init(); never shows UI.
+ */
+export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
+  let w: Web3AuthInstance | null;
   try {
-    const w = await _getInstance();
-    if (!w) {
-      console.debug("[web3auth] restore: no instance (missing clientId?)");
-      return null;
-    }
+    w = await _getInstance();
+  } catch (e) {
+    // init() threw — the dev dep-optimizer 504 or a transient network failure.
+    // The stored session may be intact; signal transient so we keep + retry.
+    console.debug("[web3auth] restore: init threw (transient):", e);
+    return { status: "unavailable" };
+  }
+  if (!w) {
+    // Missing clientId — a build/config issue, not a user logout. Don't nuke a
+    // stored session over it; a genuine misconfig surfaces on the next action.
+    console.debug("[web3auth] restore: no instance (missing clientId?)");
+    return { status: "unavailable" };
+  }
+  try {
     // Give a cached session time to finish rehydrating before deciding it's gone —
     // otherwise every refresh reads connected=false and logs the user out.
     const rehydrated = await _awaitRehydration(w);
@@ -132,11 +156,13 @@ export async function restoreWeb3AuthSession(): Promise<{ address: string; priva
       "[web3auth] restore:",
       { cachedConnector: w.cachedConnector, rehydrated, connected: w.connected, hasProvider: !!w.provider },
     );
-    if (!w.connected || !w.provider) return null;
-    return await _extractKeyAndAddress(w.provider);
+    if (!w.connected || !w.provider) return { status: "expired" };
+    const { address, privateKey } = await _extractKeyAndAddress(w.provider);
+    return { status: "restored", address, privateKey };
   } catch (e) {
-    console.debug("[web3auth] restore threw:", e);
-    return null;
+    // Initialised but couldn't pull the key (provider glitch) — transient too.
+    console.debug("[web3auth] restore: key extract threw (transient):", e);
+    return { status: "unavailable" };
   }
 }
 
