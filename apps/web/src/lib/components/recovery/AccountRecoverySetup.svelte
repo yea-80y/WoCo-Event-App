@@ -35,8 +35,39 @@
   // that can be repointed). Self-custody kinds (web3/local/coinbase) recover from
   // their own wallet, so they see the "already covered" message instead.
   const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
-  // Email is the primary login for web3auth users — can't also be their sole guardian.
-  const emailIsAlreadyPrimary = $derived(auth.kind === "web3auth");
+
+  // ── Backup-method recommendation ────────────────────────────────────────
+  // WHICH factors we offer, and which is best, is fully determined by HOW the
+  // user signs in — so the guidance can be exact, never a guess. The load-bearing
+  // rule is INDEPENDENCE from the primary login:
+  //   - same KEY is impossible: chooseAndConnect() hard-blocks any guardian whose
+  //     address is auth.parent (Kernel) or auth.podAddress (the primary's raw
+  //     deterministic EOA — PRF-EOA for passkey, Web3Auth EOA for web3auth).
+  //   - same PROVIDER-fate is a soft warn added at connect time (1b).
+  // A web3auth user signs in BY email/social, so their backup email/social must be
+  // a DIFFERENT provider (the copy says so; the same-key block enforces the worst case).
+  type Method = "email" | "wallet";
+  interface MethodOption {
+    id: Method;
+    name: string;
+    hint: string;
+    recommended?: boolean;
+  }
+  const methodOptions = $derived<MethodOption[]>(
+    auth.kind === "web3auth"
+      ? [
+          { id: "email", name: "Different email or social", recommended: true,
+            hint: "Sign in with a different provider than the one you use to log in." },
+          { id: "wallet", name: "Crypto wallet",
+            hint: "Use MetaMask or any browser wallet." },
+        ]
+      : [
+          { id: "email", name: "Email or social", recommended: true,
+            hint: "Sign in by email or social to create a recovery key. Works on any device." },
+          { id: "wallet", name: "Crypto wallet",
+            hint: "Use MetaMask or any browser wallet." },
+        ],
+  );
 
   $effect(() => {
     if (checkDone || checking) return;
@@ -145,8 +176,8 @@
       <p class="kicker kicker--hi">You're protected</p>
       <h1>Backup added</h1>
       <p class="lede">
-        If you ever lose this device, your backup can restore your account — with
-        your tickets and history intact.
+        If you ever lose access to this login, your backup can restore your account —
+        with your events and history intact.
       </p>
       <div class="backup-chip">
         <span class="dot"></span>
@@ -177,8 +208,8 @@
       <p class="kicker kicker--hi">Account safety</p>
       <h1>Backup on record</h1>
       <p class="lede">
-        You've set up a backup for this account. If you lose this device, your backup
-        can restore it — with your tickets and history intact.
+        You've set up a backup for this account. If you lose access to this login, your
+        backup can restore it — with your events and history intact.
       </p>
       <div class="backup-chip">
         <span class="dot"></span>
@@ -191,11 +222,11 @@
       <p class="kicker">Account safety</p>
       <h1>Protect your account</h1>
       <p class="lede">
-        Add a backup so you can get back in if you ever lose this device.
+        Add a backup so you can always get back into your account — on any device or sign-in.
       </p>
       <ul class="reasons">
         <li><span class="tick">✓</span> Recover on any phone or laptop</li>
-        <li><span class="tick">✓</span> Your tickets and history come with you</li>
+        <li><span class="tick">✓</span> Your events and history come with you</li>
         <li><span class="tick">✓</span> Only your backup can do it — no one else</li>
       </ul>
       <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Add a backup</button>
@@ -204,48 +235,38 @@
     {:else if phase === "choosing"}
       <p class="kicker">Account safety</p>
       <h1>Choose a backup method</h1>
-      <p class="lede">Pick how you'll get back in. Email is easiest for most people.</p>
+      <p class="lede">
+        {auth.kind === "web3auth"
+          ? "Pick a second, independent way back in — separate from the email you sign in with."
+          : "Pick how you'll get back in. Email or social is easiest for most people."}
+      </p>
 
       <div class="method-grid">
-        {#if emailIsAlreadyPrimary}
-          <div class="method-card method-card--disabled" aria-disabled="true">
+        {#each methodOptions as m (m.id)}
+          <button class="method-card" onclick={() => chooseAndConnect(m.id)}>
             <span class="method-icon">
-              <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.7"
-                   stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
-                <rect x="1" y="1" width="18" height="14" rx="2.5"/>
-                <polyline points="1,2.5 10,9.5 19,2.5"/>
-              </svg>
+              {#if m.id === "email"}
+                <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.7"
+                     stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
+                  <rect x="1" y="1" width="18" height="14" rx="2.5"/>
+                  <polyline points="1,2.5 10,9.5 19,2.5"/>
+                </svg>
+              {:else}
+                <svg viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7"
+                     stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
+                  <rect x="1" y="5" width="20" height="12" rx="2.5"/>
+                  <path d="M6 5V3.5a2.5 2.5 0 015 0V5"/>
+                  <circle cx="16" cy="11" r="1.8" fill="currentColor" stroke="none"/>
+                </svg>
+              {/if}
             </span>
-            <strong class="method-name">Email</strong>
-            <span class="method-hint">Email is your primary login — pick a different backup method.</span>
-          </div>
-        {:else}
-          <button class="method-card" onclick={() => chooseAndConnect("email")}>
-            <span class="method-icon">
-              <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.7"
-                   stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
-                <rect x="1" y="1" width="18" height="14" rx="2.5"/>
-                <polyline points="1,2.5 10,9.5 19,2.5"/>
-              </svg>
-            </span>
-            <strong class="method-name">Email</strong>
-            <span class="method-hint">Log in by email to create a recovery key. Easiest option.</span>
-            <span class="method-badge">Recommended</span>
+            <strong class="method-name">{m.name}</strong>
+            <span class="method-hint">{m.hint}</span>
+            {#if m.recommended}
+              <span class="method-badge">Recommended</span>
+            {/if}
           </button>
-        {/if}
-
-        <button class="method-card" onclick={() => chooseAndConnect("wallet")}>
-          <span class="method-icon">
-            <svg viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7"
-                 stroke-linecap="round" stroke-linejoin="round" width="22" height="18" aria-hidden="true">
-              <rect x="1" y="5" width="20" height="12" rx="2.5"/>
-              <path d="M6 5V3.5a2.5 2.5 0 015 0V5"/>
-              <circle cx="16" cy="11" r="1.8" fill="currentColor" stroke="none"/>
-            </svg>
-          </span>
-          <strong class="method-name">Crypto wallet</strong>
-          <span class="method-hint">Use MetaMask or any other browser wallet.</span>
-        </button>
+        {/each}
       </div>
 
     {:else if phase === "connecting"}
