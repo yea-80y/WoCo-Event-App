@@ -12,6 +12,7 @@
   import AdvancedSetup from "./builder/AdvancedSetup.svelte";
   import SiteSelector from "./builder/SiteSelector.svelte";
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
+  import BackupNudge from "../components/recovery/BackupNudge.svelte";
   import { addSiteEvent } from "../api/sites.js";
   import { claimSubEnsLabel, claimSubEnsViaPermit, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
@@ -529,6 +530,8 @@
         </div>
         <p class="output-hint">Sign in with your wallet to view orders and manage approvals. Bookmark this.</p>
       </div>
+
+      <BackupNudge />
 
       <!-- ENS -->
       <div class="output-section">

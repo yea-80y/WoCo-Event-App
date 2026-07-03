@@ -7,7 +7,7 @@
   Design spec: memory/project_ui_theming_direction.md
 -->
 <script lang="ts">
-  import type { EventDirectoryEntry, SiteDirectoryEntry, ShopDirectoryEntry } from "@woco/shared";
+  import type { EventDirectoryEntry, SiteDirectoryEntry, ShopDirectoryEntry, BackupInventoryEntry } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getMyEventsSWR, getMySitesSWR, getMyShopsSWR } from "../../api/creator-cache.js";
@@ -31,6 +31,9 @@
   import Settings from "lucide-svelte/icons/settings-2";
   import Plus from "lucide-svelte/icons/plus";
   import AlertCircle from "lucide-svelte/icons/circle-alert";
+  import ShieldCheck from "lucide-svelte/icons/shield-check";
+  import KeyRound from "lucide-svelte/icons/key-round";
+  import Mail from "lucide-svelte/icons/mail";
 
   let events = $state<EventDirectoryEntry[]>([]);
   let sites = $state<SiteDirectoryEntry[]>([]);
@@ -44,8 +47,15 @@
   let loadingShops = $state(true);
   let ownedNames = $state<OwnedSubEnsName[]>([]);
   let loadingNames = $state(true);
+  let backupInventory = $state<BackupInventoryEntry[]>([]);
+  let loadingBackups = $state(true);
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
+
+  // Kernel-backed kinds can install guardian recovery (see AccountRecoverySetup.svelte
+  // for the full rationale). Self-custody kinds (web3/local/coinbase) recover from
+  // their own wallet, so the safety panel has nothing useful to show them.
+  const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
   // Monotonic token to discard results from a prior sign-in / account switch.
   // Without it, an in-flight refresh from the previous identity could land
   // after sign-out (or after a new sign-in) and repopulate stale numbers.
@@ -72,10 +82,12 @@
     pendingTotal = 0;
     stripeReady = null;
     ownedNames = [];
+    backupInventory = [];
     loadingEvents = false;
     loadingSites = false;
     loadingShops = false;
     loadingNames = false;
+    loadingBackups = false;
   }
 
   async function loadFor(addr: string): Promise<void> {
@@ -84,6 +96,7 @@
     loadingSites = true;
     loadingShops = true;
     loadingNames = true;
+    loadingBackups = true;
 
     // Gate cached paint on a verified session: per-address localStorage must
     // not flash on screen during sign-in before EIP-712 is signed. Looks
@@ -154,6 +167,18 @@
       ownedNames = res.ok && res.data ? res.data.names : [];
       loadingNames = false;
     }).catch(() => { if (token === loadToken) loadingNames = false; });
+
+    // Prompt-free: reads the stored feed-signer blob, no signature. Only
+    // meaningful for the kinds that can install guardian recovery.
+    if (canProtect) {
+      auth.getBackupInventory().then(entries => {
+        if (token !== loadToken) return;
+        backupInventory = entries;
+        loadingBackups = false;
+      }).catch(() => { if (token === loadToken) loadingBackups = false; });
+    } else {
+      loadingBackups = false;
+    }
   }
 
   onMount(() => {
@@ -221,6 +246,37 @@
     if (isNaN(dt.getTime())) return "—";
     return dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
   }
+
+  // Non-PII provider categories from Web3Auth `typeOfLogin` → a name a person
+  // recognises. Falls back to the raw category (underscores swapped for spaces)
+  // for anything not in the map, so a new provider never renders blank.
+  const PROVIDER_NAMES: Record<string, string> = {
+    google: "Google", facebook: "Facebook", apple: "Apple", email_passwordless: "Email",
+    twitter: "X (Twitter)", discord: "Discord", github: "GitHub", linkedin: "LinkedIn",
+    reddit: "Reddit", twitch: "Twitch", line: "LINE", kakao: "Kakao", wechat: "WeChat",
+    weibo: "Weibo", farcaster: "Farcaster",
+  };
+
+  function backupLabel(b: BackupInventoryEntry): string {
+    if (b.method === "passkey") return "Passkey";
+    if (b.method === "wallet") return "Crypto wallet";
+    if (!b.providerLabel) return "Email or social";
+    return PROVIDER_NAMES[b.providerLabel] ?? b.providerLabel.replace(/_/g, " ");
+  }
+
+  function backupAddedAgo(ms: number): string {
+    const diff = now - ms;
+    const hour = 3_600_000, day = 86_400_000;
+    if (diff < hour) return "added just now";
+    if (diff < day) return `added ${Math.max(1, Math.round(diff / hour))}h ago`;
+    if (diff < day * 30) return `added ${Math.round(diff / day)}d ago`;
+    if (diff < day * 365) return `added ${Math.round(diff / (day * 30))}mo ago`;
+    return `added ${Math.round(diff / (day * 365))}y ago`;
+  }
+
+  const sortedBackups = $derived(
+    [...backupInventory].sort((a, b) => b.addedAt - a.addedAt)
+  );
 </script>
 
 <div class="studio">
@@ -444,6 +500,60 @@
             </ul>
           {/if}
         </div>
+
+        <!-- Account safety panel — only for kinds that can install guardian recovery -->
+        {#if canProtect}
+          <div class="panel panel--safety">
+            <div class="panel-head">
+              <span class="panel-title">
+                <ShieldCheck size={16} strokeWidth={2.25} />
+                Account safety
+                {#if !loadingBackups && sortedBackups.length > 0}
+                  <span class="armed-chip"><span class="armed-dot"></span>ARMED</span>
+                {/if}
+              </span>
+              <button class="link-quiet" onclick={() => navigate("/protect")}>
+                {sortedBackups.length > 0 ? "Manage →" : "Set up →"}
+              </button>
+            </div>
+
+            {#if loadingBackups}
+              <div class="panel-empty">Loading…</div>
+            {:else if sortedBackups.length === 0}
+              <div class="panel-empty">
+                <span>No backup yet — protect your dashboard.</span>
+                <button class="inline-link" onclick={() => navigate("/protect")}>
+                  <Plus size={14} strokeWidth={2.5} /> Add a backup
+                </button>
+              </div>
+            {:else}
+              <ul class="row-list">
+                {#each sortedBackups as b, i (b.guardianAddress)}
+                  <li class="backup-row-enter" style="animation-delay: {i * 55}ms">
+                    <div class="row row--static">
+                      <span class="method-badge method-badge--{b.method}">
+                        {#if b.method === "passkey"}
+                          <KeyRound size={13} strokeWidth={2.25} />
+                        {:else if b.method === "wallet"}
+                          <Wallet size={13} strokeWidth={2.25} />
+                        {:else}
+                          <Mail size={13} strokeWidth={2.25} />
+                        {/if}
+                      </span>
+                      <span class="row-main">
+                        <span class="row-title">{backupLabel(b)}</span>
+                        <span class="row-meta mono">{backupAddedAgo(b.addedAt)}</span>
+                      </span>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+              <button class="inline-link backup-add-another" onclick={() => navigate("/protect")}>
+                <Plus size={14} strokeWidth={2.5} /> Add another backup
+              </button>
+            {/if}
+          </div>
+        {/if}
 
         <!-- Web3 names panel -->
         <div class="panel panel--wide">
@@ -861,6 +971,67 @@
     transition: color var(--transition);
   }
   .inline-link:hover { color: var(--accent-hover); }
+
+  /* ── Account safety panel ──────────────────────────────────────── */
+
+  .panel--safety { position: relative; overflow: hidden; }
+  .panel--safety::before {
+    content: "";
+    position: absolute; inset: 0 0 auto 0; height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent 70%);
+    opacity: 0.7;
+  }
+
+  .armed-chip {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    margin-left: 0.15rem;
+    padding: 0.1rem 0.4rem 0.1rem 0.3rem;
+    font-size: 0.5625rem; font-weight: 700; letter-spacing: 0.14em;
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 2px;
+    text-transform: none;
+  }
+  .armed-dot {
+    width: 0.3rem; height: 0.3rem; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 5px var(--accent);
+    animation: armed-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes armed-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.7); }
+  }
+
+  .row.row--static {
+    grid-template-columns: auto 1fr;
+    cursor: default;
+  }
+  .row.row--static:hover { background: none; color: var(--text); }
+
+  .method-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.75rem; height: 1.75rem; flex-shrink: 0;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    transition: border-color var(--transition), color var(--transition);
+  }
+  .method-badge--passkey { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+  .method-badge--wallet { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+  .method-badge--email { color: var(--text-secondary); }
+
+  .backup-row-enter { animation: backup-row-rise 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  @keyframes backup-row-rise {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .backup-row-enter, .armed-dot { animation: none; }
+  }
+
+  .backup-add-another { padding: 0.5rem; }
 
   /* ── Tools ──────────────────────────────────────────────────────── */
 
