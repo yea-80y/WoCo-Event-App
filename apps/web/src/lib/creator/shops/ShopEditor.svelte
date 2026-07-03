@@ -193,7 +193,7 @@
       const pub = await publishSite(site, [], feedSigner);
       if (!pub.ok) throw new Error(pub.error ?? "Publish failed");
 
-      const dep = await deploySite(siteId, { apiUrl: API_URL, gatewayUrl: DEFAULT_GATEWAY, wocoAppUrl: WOCO_APP_URL, site });
+      const dep = await deploySite(siteId, { apiUrl: API_URL, gatewayUrl: DEFAULT_GATEWAY, wocoAppUrl: WOCO_APP_URL, site }, feedSigner);
       if (!dep.ok || !dep.data) throw new Error(dep.ok ? "Deploy returned no data" : (dep.error ?? "Deploy failed"));
 
       storefrontUrl = dep.data.siteUrl;

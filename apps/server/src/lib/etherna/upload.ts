@@ -107,14 +107,20 @@ export async function registerEthernaOffer(ref: string): Promise<void> {
  *
  * Returns the feed manifest hash (for ENS content hash) or throws.
  */
-export async function writeEthernaFeedUpdate(opts: {
+/**
+ * Steps 1–3 of an Etherna feed update, split out so a CLIENT-OWNED feed can use
+ * them too (the client signs the update SOC; only the platform-signed path runs
+ * steps 4–5 here): create/read the feed manifest for `ownerHex`, find the next
+ * sequence index, and download the content root chunk (span+data) that becomes
+ * the update SOC's body.
+ */
+export async function prepareEthernaFeedUpdate(opts: {
   topic: Topic;
   contentHash: string;   // 64-char hex, no 0x
   batchId: string;
-  signer: PrivateKey;
   ownerHex: string;      // 40-char hex, no 0x, lowercase
-}): Promise<string> {
-  const { topic, contentHash, batchId, signer, ownerHex } = opts;
+}): Promise<{ feedManifestHash: string; nextIndex: bigint; chunkBytes: Uint8Array }> {
+  const { topic, contentHash, batchId, ownerHex } = opts;
 
   await ensureEthernaToken();
   const token = getCachedEthernaToken();
@@ -152,17 +158,35 @@ export async function writeEthernaFeedUpdate(opts: {
     if (h) nextIndex = new FeedIndex(h).toBigInt();
   }
 
-  // 2. SOC identifier = keccak256(topic_bytes(32) || uint64_BE(index)(8))
-  const socId = Binary.keccak256(
-    Binary.concatBytes(topic.toUint8Array(), FeedIndex.fromBigInt(nextIndex).toUint8Array()),
-  );
-
   // 3. Download root chunk (span+data of the content CAC) — POSTed as SOC body.
   const chunkRes = await fetch(`${ETHERNA_GW}/chunks/${contentHash}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!chunkRes.ok) throw new Error(`Chunk download ${chunkRes.status}: ${contentHash.slice(0, 12)}…`);
   const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+
+  return { feedManifestHash, nextIndex, chunkBytes };
+}
+
+export async function writeEthernaFeedUpdate(opts: {
+  topic: Topic;
+  contentHash: string;   // 64-char hex, no 0x
+  batchId: string;
+  signer: PrivateKey;
+  ownerHex: string;      // 40-char hex, no 0x, lowercase
+}): Promise<string> {
+  const { topic, contentHash, batchId, signer, ownerHex } = opts;
+
+  const { feedManifestHash, nextIndex, chunkBytes } = await prepareEthernaFeedUpdate({
+    topic, contentHash, batchId, ownerHex,
+  });
+  const token = getCachedEthernaToken();
+  if (!token) throw new Error("Etherna token unavailable");
+
+  // 2. SOC identifier = keccak256(topic_bytes(32) || uint64_BE(index)(8))
+  const socId = Binary.keccak256(
+    Binary.concatBytes(topic.toUint8Array(), FeedIndex.fromBigInt(nextIndex).toUint8Array()),
+  );
 
   // 4. Sign: signer.sign(concat(socId, contentHash_bytes))
   //    contentHash_bytes = BMT address of the root CAC = the content reference itself.
@@ -182,7 +206,7 @@ export async function writeEthernaFeedUpdate(opts: {
     },
     // @ts-ignore — Node 18 fetch duplex
     duplex: "half",
-    body: chunkBytes,
+    body: Buffer.from(chunkBytes),
   });
   if (!postRes.ok) {
     const text = await postRes.text().catch(() => "");

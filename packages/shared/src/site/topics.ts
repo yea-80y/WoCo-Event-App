@@ -26,3 +26,15 @@ export function siteCreatorDirectoryTopic(ethAddress: string, page = 0): string 
   const base = `woco/site/creator/${ethAddress.toLowerCase()}`;
   return page === 0 ? base : `${base}/p${page}`;
 }
+
+/**
+ * Topic STRING of the per-site bee SEQUENCE feed that tracks the latest deployed
+ * BZZ collection hash (what custom domains / a feed-manifest URL resolve). Unlike
+ * our SOC content feeds this is a REAL bee feed (gateways resolve it via
+ * /bzz/{feedManifestHash}), so updates use the bee identifier scheme
+ * (`beeFeedUpdateIdentifier`), not `contentFeedSocIdentifier`. Client-owned sites
+ * sign these updates with their own feed signer; legacy sites are platform-signed.
+ */
+export function multisiteFeedTopic(siteId: string): string {
+  return `woco-multisite-${siteId}`;
+}

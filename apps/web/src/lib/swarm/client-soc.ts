@@ -43,14 +43,17 @@ export interface SocWriteResult {
 /**
  * Sign a SOC with `signerPrivKey` over `{ identifier, payload }` and have the
  * server stamp + upload it. `identifier` must be 32 bytes; `payload` ≤ 4096 bytes.
- * Throws if not authenticated or the upload fails.
+ * `gatewayUrl` routes the stamp to the matching batch (Etherna user batch when
+ * the Etherna gateway was picked) — same signal as the /bytes rail; omitted →
+ * WoCo platform batch. Throws if not authenticated or the upload fails.
  */
 export async function signAndUploadSoc(args: {
   signerPrivKey: string;
   identifier: Uint8Array;
   payload: Uint8Array;
+  gatewayUrl?: string;
 }): Promise<SocWriteResult> {
-  const { signerPrivKey, identifier, payload } = args;
+  const { signerPrivKey, identifier, payload, gatewayUrl } = args;
   if (identifier.length !== 32) throw new Error("SOC identifier must be 32 bytes");
   if (payload.length < 1 || payload.length > SOC_MAX_PAYLOAD_SIZE) {
     throw new Error(`SOC payload must be 1..${SOC_MAX_PAYLOAD_SIZE} bytes`);
@@ -73,6 +76,7 @@ export async function signAndUploadSoc(args: {
     signature: soc.signature.toHex(),
     span: bytesToHex(span),
     payload: bytesToHex(payload),
+    ...(gatewayUrl ? { gatewayUrl } : {}),
   });
   if (!res.ok || !res.data) throw new Error(res.error || "SOC upload failed");
   return res.data;

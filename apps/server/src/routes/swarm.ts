@@ -25,7 +25,7 @@ swarmRoutes.post("/soc", requireAuth, async (c) => {
   } catch {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
-  const b = body as Partial<SignedSocInput>;
+  const b = body as Partial<SignedSocInput> & { gatewayUrl?: unknown };
   if (
     typeof b.owner !== "string" ||
     typeof b.identifier !== "string" ||
@@ -35,15 +35,25 @@ swarmRoutes.post("/soc", requireAuth, async (c) => {
   ) {
     return c.json({ ok: false, error: "Missing SOC fields" }, 400);
   }
+  if (b.gatewayUrl !== undefined && typeof b.gatewayUrl !== "string") {
+    return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
+  }
 
   try {
+    // Same routing as /bytes: Etherna user batch when the builder picked the
+    // Etherna gateway (platform Etherna batch fallback), WoCo platform otherwise.
+    const selection = batchForDeploy({
+      ownerAddress: (c.get("parentAddress") as string).toLowerCase(),
+      gatewayUrl: typeof b.gatewayUrl === "string" ? b.gatewayUrl : "",
+      deployType: "event",
+    });
     const ref = await uploadSignedSoc({
       owner: b.owner,
       identifier: b.identifier,
       signature: b.signature,
       span: b.span,
       payload: b.payload,
-    });
+    }, selection);
     return c.json({ ok: true, data: ref });
   } catch (err) {
     const status = (err as { status?: number })?.status;

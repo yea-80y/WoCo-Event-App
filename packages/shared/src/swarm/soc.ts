@@ -216,6 +216,27 @@ export function contentFeedPageTopic(topic: string, page: number): string {
   return `${topic}/p${page}`;
 }
 
+/**
+ * SOC identifier for a bee SEQUENCE-FEED update — byte-identical to bee-js@11
+ * `makeFeedIdentifier` (verified against the installed package):
+ * `keccak256( keccak256(utf8(topicString)) || uint64BE(index) )`. Used where a
+ * client-owned feed must stay resolvable by bee's own feed machinery (gateway
+ * `/bzz/{feedManifestHash}` resolution — e.g. the per-site multisite pointer
+ * feed), which `contentFeedSocIdentifier`'s flat keccak(topic) scheme is not.
+ * The update SOC's payload is the collection ROOT CHUNK's data (span stripped),
+ * matching bee-js `uploadPayload`'s wrapped-chunk form for payloads ≤ 4096 B.
+ */
+export function beeFeedUpdateIdentifier(topicString: string, index: number): Uint8Array {
+  if (!Number.isInteger(index) || index < 0) throw new Error(`invalid feed index: ${index}`);
+  const topic = keccak_256(utf8ToBytes(topicString));
+  const idx = new Uint8Array(8);
+  new DataView(idx.buffer).setBigUint64(0, BigInt(index), false);
+  const joined = new Uint8Array(40);
+  joined.set(topic, 0);
+  joined.set(idx, 32);
+  return keccak_256(joined);
+}
+
 /** True if a decoded base-SOC payload is a multi-chunk manifest (vs a real feed). */
 export function isContentFeedManifest(o: unknown): o is ContentFeedManifest {
   return (

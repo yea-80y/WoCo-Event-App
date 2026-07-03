@@ -1,7 +1,8 @@
 import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed } from "@woco/shared";
-import { siteConfigTopic } from "@woco/shared";
+import { siteConfigTopic, multisiteFeedTopic, beeFeedUpdateIdentifier } from "@woco/shared";
 import { authPost, authDelete, authGet, get } from "./client.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
+import { signAndUploadSoc } from "../swarm/client-soc.js";
 
 export interface SiteEventsFull {
   index: SiteEventsIndex;
@@ -34,11 +35,45 @@ export async function uploadSiteImage(imageBase64: string, gatewayUrl?: string) 
   });
 }
 
-export async function deploySite(siteId: string, opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site }) {
-  return authPost<{ contentHash: string; feedManifestHash: string; siteUrl: string }>(
+export interface DeploySiteResult {
+  contentHash: string;
+  feedManifestHash: string;
+  siteUrl: string;
+  /** Present when the pointer feed is client-owned — the update we must sign. */
+  multisiteFeed?: { nextIndex: number; rootChunkPayloadB64: string };
+}
+
+/**
+ * Deploy a site. With a `feedSigner` on a client-owned site the server hands
+ * back the sequence-feed update material and the OWNER signs the pointer-feed
+ * update here (identifier derived LOCALLY from siteId — never trusted from the
+ * response). The payload is the deployed collection's root chunk, so what the
+ * feed serves is exactly what the server reported deploying.
+ */
+export async function deploySite(
+  siteId: string,
+  opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site },
+  feedSigner?: ContentFeedSigner | null,
+) {
+  const res = await authPost<DeploySiteResult>(
     `/api/sites/${siteId}/deploy`,
-    opts,
+    { ...opts, ...(feedSigner ? { clientFeed: true } : {}) },
   );
+  if (res.ok && res.data?.multisiteFeed && feedSigner) {
+    const { nextIndex, rootChunkPayloadB64 } = res.data.multisiteFeed;
+    const bin = atob(rootChunkPayloadB64);
+    const payload = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) payload[i] = bin.charCodeAt(i);
+    await signAndUploadSoc({
+      signerPrivKey: feedSigner.privKey,
+      identifier: beeFeedUpdateIdentifier(multisiteFeedTopic(siteId), nextIndex),
+      payload,
+      // Stamp on the same batch the deploy used (Etherna user batch when the
+      // Etherna gateway was picked) — the feed must live where its content does.
+      gatewayUrl: opts.gatewayUrl,
+    });
+  }
+  return res;
 }
 
 export async function loadSite(siteId: string, apiUrl?: string) {

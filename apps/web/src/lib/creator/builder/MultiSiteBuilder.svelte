@@ -297,7 +297,7 @@
       const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents), feedSigner);
       if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) });
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) }, feedSigner);
       if (!deployRes.ok || !deployRes.data) {
         throw new Error(deployRes.ok ? 'Deploy returned no data' : (deployRes.error ?? 'Deploy failed'));
       }

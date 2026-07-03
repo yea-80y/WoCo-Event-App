@@ -40,6 +40,9 @@ import {
 import { BEE_URL, getBee, requirePostageBatch } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import { whitelistHashes } from "./whitelist.js";
+import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
+
+const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -86,11 +89,22 @@ export interface SocReference {
   address: string;
 }
 
+/** Where a validated client-signed SOC gets stamped (default: WoCo platform batch). */
+export interface SocUploadDestination {
+  target: "wocoBee" | "etherna";
+  batchId: string;
+}
+
 /**
- * Validate a client-signed SOC and, if sound, stamp + upload it to our Bee.
+ * Validate a client-signed SOC and, if sound, stamp + upload it. Destination
+ * defaults to our Bee + platform batch; an Etherna destination posts the SAME
+ * wire format (`POST /soc/{owner}/{id}?sig=`, body = span||payload — verified by
+ * `writeEthernaFeedUpdate`) to the Etherna gateway with a bearer token + the
+ * routed (per-user) batch. Validation is destination-independent: the signature
+ * gate runs before any postage is spent either way.
  * Throws `Error` with a `status` field for client-side (400) validation faults.
  */
-export async function uploadSignedSoc(input: SignedSocInput): Promise<SocReference> {
+export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDestination): Promise<SocReference> {
   let owner: Uint8Array, identifier: Uint8Array, signature: Uint8Array, span: Uint8Array, payload: Uint8Array;
   try {
     owner = hexToBytes(input.owner, 20);
@@ -143,7 +157,16 @@ export async function uploadSignedSoc(input: SignedSocInput): Promise<SocReferen
   body.set(payload, span.length);
   const identifierHex = bytesToHex(identifier);
   const sigHex = bytesToHex(signature);
-  const url = `${BEE_URL}/soc/${ownerHex}/${identifierHex}?sig=${sigHex}`;
+  const etherna = dest?.target === "etherna";
+  const gwBase = etherna ? ETHERNA_GW : BEE_URL;
+  const url = `${gwBase}/soc/${ownerHex}/${identifierHex}?sig=${sigHex}`;
+
+  let ethernaToken: string | null = null;
+  if (etherna) {
+    await ensureEthernaToken();
+    ethernaToken = getCachedEthernaToken();
+    if (!ethernaToken) throw new Error("Etherna token unavailable");
+  }
 
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -158,15 +181,20 @@ export async function uploadSignedSoc(input: SignedSocInput): Promise<SocReferen
             method: "POST",
             headers: {
               "Content-Type": "application/octet-stream",
-              "Swarm-Postage-Batch-Id": requirePostageBatch(),
-              // Buffer locally + push in the BACKGROUND, returning immediately —
-              // exactly like the legacy feed/bytes writes (bytes.ts, feeds.ts).
-              // Without this, Bee defaults to a SYNCHRONOUS upload that blocks
-              // until the chunk is pushed to the network (~25-30s observed),
-              // which was the entire publish-step-1→2 regression. The chunk is
-              // readable from this node immediately, so server-side reads
-              // (register-on-chain) and the whitelisted gateway read still work.
-              "Swarm-Deferred-Upload": "true",
+              "Swarm-Postage-Batch-Id": dest?.batchId ?? requirePostageBatch(),
+              ...(etherna
+                ? { Authorization: `Bearer ${ethernaToken}` }
+                : {
+                    // Buffer locally + push in the BACKGROUND, returning immediately —
+                    // exactly like the legacy feed/bytes writes (bytes.ts, feeds.ts).
+                    // Without this, Bee defaults to a SYNCHRONOUS upload that blocks
+                    // until the chunk is pushed to the network (~25-30s observed),
+                    // which was the entire publish-step-1→2 regression. The chunk is
+                    // readable from this node immediately, so server-side reads
+                    // (register-on-chain) and the whitelisted gateway read still work.
+                    // Etherna manages its own upload pipeline, so it's WoCo-only.
+                    "Swarm-Deferred-Upload": "true",
+                  }),
             },
             body,
           }),
@@ -188,10 +216,14 @@ export async function uploadSignedSoc(input: SignedSocInput): Promise<SocReferen
       // directly from the gateway (GET /chunks/{addr}) — the client reads
       // gateway-first, server-fallback. Non-fatal: the chunk is uploaded
       // regardless, and the server read endpoint covers a whitelist lag.
-      try {
-        await whitelistHashes([socAddress]);
-      } catch (e) {
-        console.warn("[swarm] SOC whitelist failed (non-fatal, server-read fallback covers it):", e);
+      // Etherna destinations read via the Etherna gateway — our proxy
+      // whitelist doesn't apply.
+      if (!etherna) {
+        try {
+          await whitelistHashes([socAddress]);
+        } catch (e) {
+          console.warn("[swarm] SOC whitelist failed (non-fatal, server-read fallback covers it):", e);
+        }
       }
       return { owner: ownerHex, identifier: identifierHex, address: socAddress };
     } catch (err: unknown) {

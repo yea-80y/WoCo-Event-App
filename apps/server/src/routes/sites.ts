@@ -23,13 +23,14 @@ import {
   POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
-import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
+import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../lib/etherna/auth.js";
 import { getUserBatch } from "../lib/etherna/batches.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
   siteEventsIndexTopic,
+  multisiteFeedTopic,
   SITE_SCHEMA_VERSION,
 } from "@woco/shared";
 import type { Site, SitePointer, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed, EventDirectoryEntry, Hex0x } from "@woco/shared";
@@ -563,7 +564,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
   let tarPath: string | null = null;
 
   try {
-    const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site };
+    const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site; clientFeed?: boolean };
     const { apiUrl, gatewayUrl = "https://gateway.woco-net.com", wocoAppUrl = "https://woco.eth.limo" } = body;
     if (!apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
 
@@ -711,11 +712,74 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
 
-    // Per-site feed so an ENS name can point at it
-    const topic = Topic.fromString(`woco-multisite-${siteId}`);
+    // Per-site feed so an ENS name / custom domain can point at it
+    const topicString = multisiteFeedTopic(siteId);
+    const topic = Topic.fromString(topicString);
     let feedManifestHash = "";
+    // Client-owned pointer feed (set when the CLIENT will sign the update).
+    let multisiteFeed: { nextIndex: number; rootChunkPayloadB64: string } | null = null;
 
-    if (target === "etherna") {
+    // The pointer feed is CLIENT-OWNED when the site config is (siteFeedSigner
+    // resolved from the server-written pointer — never the request) AND the
+    // frontend declared it will sign the update (`clientFeed`; an old bundle
+    // that can't sign must keep the platform-signed feed, else the new manifest
+    // would point at a feed with no updates). Both targets: Etherna is the
+    // production path, so client ownership must hold there first of all.
+    const feedOwnerSigner = body.clientFeed ? published?.siteFeedSigner : undefined;
+
+    if (feedOwnerSigner && target === "etherna") {
+      // Same steps as the platform-signed Etherna write, minus signing — the
+      // client signs the update SOC and pushes it via /api/swarm/soc (which
+      // routes to the same Etherna user batch).
+      const prep = await prepareEthernaFeedUpdate({
+        topic,
+        contentHash,
+        batchId,
+        ownerHex: feedOwnerSigner.replace(/^0x/, ""),
+      });
+      feedManifestHash = prep.feedManifestHash;
+      multisiteFeed = {
+        nextIndex: Number(prep.nextIndex),
+        rootChunkPayloadB64: Buffer.from(prep.chunkBytes.subarray(8)).toString("base64"),
+      };
+    } else if (feedOwnerSigner) {
+      try {
+        const mRef = await withTimeout(
+          bee.createFeedManifest(batchId, topic, feedOwnerSigner),
+          BEE_CALL_TIMEOUT_MS,
+          "multisite feed manifest (client-owned)",
+        );
+        feedManifestHash = mRef.toString();
+      } catch {
+        // Non-fatal — /bzz/{contentHash}/ still works; domains fall back next deploy.
+      }
+      // Hand the update material back for the client to sign: the collection
+      // root chunk's data (span stripped — a chunk's data is ≤4096 B, matching
+      // bee-js uploadPayload's wrapped-chunk form) + the feed's next index.
+      const chunkRes = await fetch(`${BEE_URL}/chunks/${contentHash}`, {
+        signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
+      });
+      if (chunkRes.ok) {
+        const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+        let nextIndex = 0;
+        try {
+          const latest = await withTimeout(
+            bee.makeFeedReader(topic, feedOwnerSigner).download(),
+            BEE_CALL_TIMEOUT_MS,
+            "multisite feed index",
+          );
+          if (latest.feedIndexNext) nextIndex = Number(BigInt(`0x${latest.feedIndexNext.toHex()}`));
+        } catch {
+          // No update yet (fresh feed) — index 0.
+        }
+        multisiteFeed = {
+          nextIndex,
+          rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
+        };
+      } else {
+        console.warn(`[sites/deploy] root chunk fetch ${chunkRes.status} — client feed update skipped`);
+      }
+    } else if (target === "etherna") {
       // Etherna's Beehive only resolves feeds written with inline SOC (uploadPayload).
       // writeEthernaFeedUpdate bypasses bee-js auth issues and uses raw HTTP with
       // the correct inline-chunk SOC format (confirmed by etherna-soc-legacy-probe.ts).
@@ -836,6 +900,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         contentHash,
         feedManifestHash,
         siteUrl,
+        // Present only when the pointer feed is client-owned: the caller signs
+        // the sequence-feed update SOC (beeFeedUpdateIdentifier) with this.
+        ...(multisiteFeed ? { multisiteFeed } : {}),
       },
     });
 
