@@ -15,6 +15,7 @@ export type { OrderEntry };
 import { authPost, authGet, get, apiBase, buildAuthHeaders, currentSiteId } from "./client.js";
 import { eventContentTopic } from "@woco/shared";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
+import { trashFeedOnManifest } from "../manifest/feed-log.js";
 
 export interface PublishProgress {
   type: "progress";
@@ -134,7 +135,7 @@ export async function createEventStreaming(
  *
  * Phase B: the server only patches the platform directory entries and returns
  * the merged feed; the feed OWNER re-signs the event SOC here. Legacy events
- * are platform-rewritten server-side (no eventFeed returned → resolves null).
+ * are platform-rewritten server-side (merged feed still returned for the UI).
  *
  * @param opts.image       base64/data-URL replacement image (server uploads + whitelists).
  * @param opts.gatewayUrl  the event's storage gateway — routes the image stamp to its batch.
@@ -166,6 +167,34 @@ export async function updateEventMeta(
     return feed;
   }
   return feed ?? null;
+}
+
+/**
+ * Delete an event — only possible while it has ZERO orders (the server verifies
+ * on-chain claims, legacy claim feeds, pending approvals and live buyer holds,
+ * fail-closed). Feeds can't be erased from Swarm, so "delete" = tombstone: the
+ * server removes both directory entries and, for Phase B events, hands back the
+ * tombstoned feed for the OWNER to overwrite their SOC with here. The manifest
+ * entry moves to trash so a future batch migration drops the feed.
+ */
+export async function deleteEvent(
+  eventId: string,
+  opts: { feedSigner?: ContentFeedSigner | null } = {},
+): Promise<void> {
+  const resp = await authPost<{ eventId: string; eventFeed?: EventFeed }>(
+    `/api/events/${eventId}/delete`,
+    { ...(opts.feedSigner ? { signer: opts.feedSigner.address } : {}) },
+  );
+  if (!resp.ok) throw new Error(resp.error || "Failed to delete event");
+
+  const feed = resp.data?.eventFeed;
+  if (feed?.creatorFeedSigner && opts.feedSigner
+      && feed.creatorFeedSigner.toLowerCase() === opts.feedSigner.address.toLowerCase()) {
+    await signEventFeedSoc(feed, opts.feedSigner);
+  }
+  // Manifest bookkeeping (best-effort): the feed is deletion-by-omission on the
+  // next batch migration once its entry sits in trash.
+  void trashFeedOnManifest("event", eventContentTopic(eventId));
 }
 
 /** Fetch the organiser's current nonce on the active chain (used to predict on-chain eventId). */

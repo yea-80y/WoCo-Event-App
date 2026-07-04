@@ -8,7 +8,9 @@ import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy } from "../etherna/batch-router.js";
 import { readContentFeedJson } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
-import { getActiveChainId } from "../chain/event-contract.js";
+import { getActiveChainId, getOnChainEvent } from "../chain/event-contract.js";
+import { getClaimStatus } from "./claim-service.js";
+import { heldFor } from "./reservation-store.js";
 import { validatePodGate } from "../pod/gate-check.js";
 import { upsertCreatorPod } from "../pod/directory.js";
 import { recordOnChainEventId, applyOnChainEventIds } from "./onchain-registry.js";
@@ -24,6 +26,7 @@ import {
   topicEventDirectory,
   topicCreatorDirectory,
   topicEvent,
+  topicPendingClaims,
 } from "../swarm/topics.js";
 
 // ---------------------------------------------------------------------------
@@ -360,18 +363,18 @@ export interface EventMetaUpdates {
  * check gates every path, and directory entries are additionally re-checked
  * against their own platform-written `creatorAddress` at the write boundary.
  */
-export async function updateEventMetadata(opts: {
-  eventId: string;
-  /** VERIFIED parent address from auth middleware — never from the request body. */
-  parentAddress: string;
-  updates: EventMetaUpdates;
-  /** Untrusted Phase B carrier hint (resolves unlisted client-owned events). */
-  signerHint?: string;
-}): Promise<EventFeed> {
-  const { eventId, parentAddress, updates, signerHint } = opts;
-  const addr = parentAddress.toLowerCase();
-
-  // Resolve the basis feed, tracking WHERE it came from.
+/**
+ * Resolve an event feed for an OWNER mutation (edit/delete), tracking WHERE the
+ * basis came from. The trust rules in the {@link updateEventMetadata} doc apply:
+ * a `signerHint` read must self-describe as owned by that exact signer, and
+ * callers must never platform-write or prime the cache off a "hint" source.
+ * Throws "Event not found" / "Not the event creator".
+ */
+async function resolveEventForOwner(
+  eventId: string,
+  parentAddress: string,
+  signerHint?: string,
+): Promise<{ feed: EventFeed; source: "trusted-soc" | "platform" | "hint" }> {
   let source: "trusted-soc" | "platform" | "hint" | null = null;
   let feed: EventFeed | null = null;
 
@@ -396,9 +399,26 @@ export async function updateEventMetadata(opts: {
     }
   }
   if (!feed || !source) throw new Error("Event not found");
-  if (feed.creatorAddress.toLowerCase() !== addr) {
+  if (feed.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
     throw new Error("Not the event creator");
   }
+  return { feed, source };
+}
+
+export async function updateEventMetadata(opts: {
+  eventId: string;
+  /** VERIFIED parent address from auth middleware — never from the request body. */
+  parentAddress: string;
+  updates: EventMetaUpdates;
+  /** Untrusted Phase B carrier hint (resolves unlisted client-owned events). */
+  signerHint?: string;
+}): Promise<EventFeed> {
+  const { eventId, parentAddress, updates, signerHint } = opts;
+  const addr = parentAddress.toLowerCase();
+
+  const { feed, source } = await resolveEventForOwner(eventId, addr, signerHint);
+  // A tombstoned event is gone — editing it would resurrect a deleted feed.
+  if (feed.deleted) throw new Error("Event not found");
 
   const updated: EventFeed = { ...feed };
   if (updates.title !== undefined) updated.title = updates.title;
@@ -486,6 +506,117 @@ async function patchDirectoryEntryMeta(
 }
 
 // ---------------------------------------------------------------------------
+// Delete event (only when zero orders exist)
+// ---------------------------------------------------------------------------
+
+/** Thrown when a delete is blocked by existing tickets/holds; `blockers` lists
+ *  the human-readable reasons per series. Mapped to HTTP 409 by the route. */
+export class DeleteBlockedError extends Error {
+  readonly blockers: string[];
+  constructor(blockers: string[]) {
+    super(`Event has existing orders — cannot delete. ${blockers.join("; ")}`);
+    this.name = "DeleteBlockedError";
+    this.blockers = blockers;
+  }
+}
+
+/**
+ * Delete an event iff NO tickets exist anywhere: on-chain claims (v2 series),
+ * Swarm claim feeds (legacy series), pending approval requests, and live buyer
+ * reservations must ALL be zero. Fail-closed: if any count cannot be verified,
+ * the delete is refused rather than risking orphaned paid tickets.
+ *
+ * "Delete" = tombstone the feed (Swarm feeds can't be erased; every read path
+ * treats `deleted: true` as not-found) + remove the entry from BOTH directories.
+ * On-chain registrations remain — harmless with zero claims. Phase B feeds are
+ * client-owned: the server returns the tombstoned feed and the OWNER overwrites
+ * their SOC with it (same contract as update-meta).
+ */
+export async function deleteEventIfNoOrders(opts: {
+  eventId: string;
+  /** VERIFIED parent address from auth middleware — never from the request body. */
+  parentAddress: string;
+  /** Untrusted Phase B carrier hint (resolves unlisted client-owned events). */
+  signerHint?: string;
+}): Promise<EventFeed> {
+  const { eventId, parentAddress, signerHint } = opts;
+  const addr = parentAddress.toLowerCase();
+
+  const { feed, source } = await resolveEventForOwner(eventId, addr, signerHint);
+
+  if (!feed.deleted) {
+    const blockers: string[] = [];
+    for (const s of feed.series) {
+      let claimed: number;
+      try {
+        if (s.onChainEventId) {
+          const onChain = await getOnChainEvent(s.onChainEventId, getActiveChainId());
+          claimed = onChain ? Number(onChain.nextSlot) : 0;
+        } else {
+          claimed = (await getClaimStatus(s.seriesId, undefined, undefined, feed.creatorFeedSigner)).claimed;
+        }
+      } catch (err) {
+        console.error(`[event] delete order-check failed for series ${s.seriesId}:`, err);
+        throw new Error("Could not verify order status — try again");
+      }
+      if (claimed > 0) blockers.push(`"${s.name}": ${claimed} ticket(s) issued`);
+
+      // Strict read — the lenient reader collapses transient Swarm errors into
+      // null, which here would read as "no pending requests". Fail closed instead.
+      const pendingPage = await readFeedPageStrict(topicPendingClaims(s.seriesId));
+      if (pendingPage.status === "error") {
+        console.error(`[event] delete pending-check failed for series ${s.seriesId}:`, pendingPage.error);
+        throw new Error("Could not verify order status — try again");
+      }
+      const pendingFeed = pendingPage.status === "absent"
+        ? null
+        : decodeJsonFeed<import("@woco/shared").PendingClaimsFeed>(pendingPage.data);
+      const pendingCount = pendingFeed?.pending.filter((p) => p.status === "pending").length ?? 0;
+      if (pendingCount > 0) blockers.push(`"${s.name}": ${pendingCount} approval request(s) pending`);
+
+      const held = heldFor(s.seriesId);
+      if (held > 0) blockers.push(`"${s.name}": ${held} seat(s) currently held by buyers`);
+    }
+    if (blockers.length > 0) throw new DeleteBlockedError(blockers);
+  }
+
+  // Directory removals FIRST (the publicly visible effect), tombstone last —
+  // a failure part-way leaves the event unlisted but alive, and the delete is
+  // simply retried. Both removals are idempotent.
+  await removeEventFromDirectory(eventId);
+  await removeEventFromCreatorDirectory(feed.creatorAddress, eventId, addr);
+
+  const tombstoned: EventFeed = { ...feed, deleted: true, deletedAt: new Date().toISOString() };
+  // Same trust rule as update-meta: only a platform-sourced basis may be
+  // platform-written. Phase B: the owner overwrites their SOC client-side.
+  if (source === "platform" && !feed.creatorFeedSigner) {
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(tombstoned));
+  }
+  invalidateEventCache(eventId);
+
+  console.log(`[event] deleted ${eventId} (zero orders, source=${source})`);
+  return tombstoned;
+}
+
+/** Remove an event's entry from its creator's index (delete is the ONE operation
+ *  that trims this otherwise append-only directory). Ownership re-checked against
+ *  the entry itself at the write boundary. */
+async function removeEventFromCreatorDirectory(
+  creatorAddress: string,
+  eventId: string,
+  parentAddress: string,
+): Promise<void> {
+  const topicFn = (p: number) => topicCreatorDirectory(creatorAddress, p);
+  const entries = await readDirectoryStrict(topicFn);
+  const entry = entries.find((e) => e.eventId === eventId);
+  if (!entry) return;
+  if (entry.creatorAddress.toLowerCase() !== parentAddress) return;
+  const filtered = entries.filter((e) => e.eventId !== eventId);
+  await writeDirectoryPages(filtered, new Date().toISOString(), topicFn);
+  invalidateCreatorEventsCache(creatorAddress);
+}
+
+// ---------------------------------------------------------------------------
 // Read events
 // ---------------------------------------------------------------------------
 
@@ -554,6 +685,8 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
     const page = await readFeedPageWithRetry(topicEvent(eventId));
     feed = page ? decodeJsonFeed<EventFeed>(page) : null;
   }
+  // Tombstoned (deleted) events read as not-found on every path — money included.
+  if (feed?.deleted) return null;
   if (feed) {
     _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
     await applyOnChainEventIds(feed);
@@ -598,7 +731,7 @@ export async function getEventForDisplay(
     }
     // Trusted carrier wins; the hint is the fallback only when there is none.
     const soc = await readEventFeedSoc(eventId, trustedCarrier ?? untrustedSigner);
-    if (soc) return soc;
+    if (soc) return soc.deleted ? null : soc;
   }
   return getEvent(eventId);
 }

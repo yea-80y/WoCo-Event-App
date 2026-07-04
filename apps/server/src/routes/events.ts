@@ -4,7 +4,7 @@ import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirector
 import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, type EventMetaUpdates } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
@@ -360,12 +360,9 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
 
   try {
     const updated = await updateEventMetadata({ eventId, parentAddress, updates, signerHint });
-    // Phase B: hand the merged feed back so the owner re-signs their SOC. Legacy
-    // events were already platform-written; eventFeed is harmless there.
-    return c.json({
-      ok: true,
-      data: { eventId, ...(updated.creatorFeedSigner ? { eventFeed: updated } : {}) },
-    });
+    // Merged feed goes back on every path: Phase B owners re-sign their SOC with
+    // it; legacy callers need it for the fresh imageHash (already platform-written).
+    return c.json({ ok: true, data: { eventId, eventFeed: updated } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to update event";
     const status =
@@ -374,6 +371,37 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
       msg === "Invalid event dates" || msg === "endDate is before startDate" ? 400 : 500;
     if (status === 500) console.error("[api] update-meta failed:", err);
     return c.json({ ok: false, error: status === 500 ? "Failed to update event" : msg }, status);
+  }
+});
+
+// POST /api/events/:id/delete — authenticated, creator-only, ONLY with zero
+// orders (on-chain claims + legacy claim feeds + pending approvals + live buyer
+// holds — server-verified, fail-closed). Tombstones the feed and removes both
+// directory entries. Phase B: the owner overwrites their SOC with the returned
+// tombstoned feed, exactly like update-meta.
+events.post("/:id/delete", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = c.get("body") as { signer?: unknown };
+
+  const signerHint = typeof body.signer === "string" && /^0x[0-9a-fA-F]{40}$/.test(body.signer)
+    ? body.signer.toLowerCase()
+    : undefined;
+
+  try {
+    const tombstoned = await deleteEventIfNoOrders({ eventId, parentAddress, signerHint });
+    return c.json({ ok: true, data: { eventId, eventFeed: tombstoned } });
+  } catch (err) {
+    if (err instanceof DeleteBlockedError) {
+      return c.json({ ok: false, error: err.message, blockers: err.blockers }, 409);
+    }
+    const msg = err instanceof Error ? err.message : "Failed to delete event";
+    const status =
+      msg === "Event not found" ? 404 :
+      msg === "Not the event creator" ? 403 :
+      msg.startsWith("Could not verify") ? 503 : 500;
+    if (status === 500) console.error("[api] delete event failed:", err);
+    return c.json({ ok: false, error: status === 500 ? "Failed to delete event" : msg }, status);
   }
 });
 

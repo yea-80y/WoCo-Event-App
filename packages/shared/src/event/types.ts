@@ -196,6 +196,11 @@ export interface EventFeed {
    *  the authoritative discovery carrier is the directory entry's same field. Absent
    *  for legacy platform-signed events. */
   creatorFeedSigner?: Hex0x;
+  /** Tombstone (delete-if-no-orders). Feeds can't be erased from Swarm, so a
+   *  deleted event's feed is overwritten with this flag set; every read path
+   *  treats it as not-found. Only settable when zero tickets exist. */
+  deleted?: boolean;
+  deletedAt?: string;
 }
 
 /** Ticket series summary (stored within event feed) */

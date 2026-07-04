@@ -9,6 +9,8 @@
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
   import StripeConnect from "./StripeConnect.svelte";
+  import EditEventPanel from "../events/EditEventPanel.svelte";
+  import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
 
   interface Props {
     eventId: string;
@@ -26,7 +28,7 @@
   let decryptError = $state<string | null>(null);
 
   // Approval tab state
-  let activeTab = $state<"orders" | "approvals" | "broadcast" | "payments">("orders");
+  let activeTab = $state<"orders" | "approvals" | "broadcast" | "payments" | "edit">("orders");
   let pendingEntries = $state<PendingClaimEntry[]>([]);
   let decryptedPending = $state<Map<string, DecryptedOrder>>(new Map()); // keyed by pendingId
   let approvingId = $state<string | null>(null);
@@ -594,9 +596,33 @@
       >
         Payments
       </button>
+      <button
+        class="tab-btn"
+        class:active={activeTab === "edit"}
+        onclick={() => (activeTab = "edit")}
+      >
+        Edit
+      </button>
     </div>
 
-    {#if activeTab === "payments"}
+    {#if activeTab === "edit"}
+      <!-- Edit tab — event-level metadata (tiers/pricing are on-chain committed) -->
+      <EditEventPanel
+        {event}
+        ordersCount={ordersResponse.orders.length}
+        pendingCount={pendingEntries.length}
+        onsaved={(feed) => {
+          event = feed;
+          // Keep the SWR paint cache in step so re-entering the dashboard
+          // doesn't flash the pre-edit event.
+          cacheSet(cacheKey.event(eventId), feed, TTL.EVENT);
+        }}
+        ondeleted={() => {
+          cacheDel(cacheKey.event(eventId));
+          navigate("/creator/events");
+        }}
+      />
+    {:else if activeTab === "payments"}
       <!-- Payments tab — Stripe Connect onboarding + status -->
       <div class="payments-section">
         <StripeConnect />
