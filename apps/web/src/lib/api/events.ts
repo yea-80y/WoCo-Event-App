@@ -2,6 +2,7 @@ import type {
   EventFeed,
   EventDirectoryEntry,
   CreateEventV2Request,
+  UpdateEventMetaRequest,
   CreateEventResponse,
   ClaimTicketResponse,
   SeriesClaimStatus,
@@ -125,6 +126,46 @@ export async function createEventStreaming(
   }
 
   return result;
+}
+
+/**
+ * Edit event-level metadata (title/tagline/description/dates/location/image).
+ * Series data is manifest-committed + on-chain anchored — not editable.
+ *
+ * Phase B: the server only patches the platform directory entries and returns
+ * the merged feed; the feed OWNER re-signs the event SOC here. Legacy events
+ * are platform-rewritten server-side (no eventFeed returned → resolves null).
+ *
+ * @param opts.image       base64/data-URL replacement image (server uploads + whitelists).
+ * @param opts.gatewayUrl  the event's storage gateway — routes the image stamp to its batch.
+ * @param opts.feedSigner  the organiser's content-feed signer (Phase B). Its address is
+ *   sent as the carrier hint so UNLISTED client-owned events resolve server-side.
+ */
+export async function updateEventMeta(
+  eventId: string,
+  updates: Pick<UpdateEventMetaRequest, "title" | "tagline" | "description" | "startDate" | "endDate" | "location">,
+  opts: { image?: string; gatewayUrl?: string; feedSigner?: ContentFeedSigner | null } = {},
+): Promise<EventFeed | null> {
+  const resp = await authPost<{ eventId: string; eventFeed?: EventFeed }>(
+    `/api/events/${eventId}/update-meta`,
+    {
+      ...updates,
+      ...(opts.image ? { image: opts.image } : {}),
+      ...(opts.gatewayUrl ? { gatewayUrl: opts.gatewayUrl } : {}),
+      ...(opts.feedSigner ? { signer: opts.feedSigner.address } : {}),
+    } satisfies UpdateEventMetaRequest,
+  );
+  if (!resp.ok) throw new Error(resp.error || "Failed to update event");
+
+  // Phase B: re-sign the client-owned SOC with the merged feed. Only when the
+  // returned feed is OURS — the SOC key must never sign a feed it doesn't own.
+  const feed = resp.data?.eventFeed;
+  if (feed?.creatorFeedSigner && opts.feedSigner
+      && feed.creatorFeedSigner.toLowerCase() === opts.feedSigner.address.toLowerCase()) {
+    await signEventFeedSoc(feed, opts.feedSigner);
+    return feed;
+  }
+  return feed ?? null;
 }
 
 /** Fetch the organiser's current nonce on the active chain (used to predict on-chain eventId). */

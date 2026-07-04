@@ -1,13 +1,15 @@
 import { Hono, type Context } from "hono";
 import { streamText } from "hono/streaming";
-import type { Hex0x, CreateEventV2Request, EventDirectoryEntry } from "@woco/shared";
+import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
 import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, type EventMetaUpdates } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
-import { downloadFromBytes } from "../lib/swarm/bytes.js";
+import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
+import { whitelistHashes } from "../lib/swarm/whitelist.js";
+import { batchForDeploy } from "../lib/etherna/batch-router.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
 import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
@@ -281,6 +283,98 @@ events.post("/", requireAuth, async (c) => {
       stream.writeln(JSON.stringify({ type: "error", ok: false, error: message }));
     }
   });
+});
+
+// POST /api/events/:id/update-meta — authenticated, creator-only.
+// Edits event-LEVEL metadata only; series/payment data is manifest-committed and
+// on-chain anchored, never editable here. Phase B (client-owned feed): the server
+// patches the platform directory entries and returns the merged feed for the
+// client to re-sign — it never writes the client's SOC.
+const META_TEXT_LIMITS = { title: 200, tagline: 200, description: 10_000, location: 300 } as const;
+const MAX_EVENT_IMAGE_BYTES = 8 * 1024 * 1024;
+
+events.post("/:id/update-meta", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = c.get("body") as UpdateEventMetaRequest;
+
+  const updates: EventMetaUpdates = {};
+  for (const field of Object.keys(META_TEXT_LIMITS) as (keyof typeof META_TEXT_LIMITS)[]) {
+    const v = body[field];
+    if (v === undefined) continue;
+    if (typeof v !== "string") return c.json({ ok: false, error: `${field} must be a string` }, 400);
+    const trimmed = v.trim();
+    if (trimmed.length > META_TEXT_LIMITS[field]) {
+      return c.json({ ok: false, error: `${field} too long (max ${META_TEXT_LIMITS[field]} chars)` }, 400);
+    }
+    if (field === "title" && trimmed.length === 0) {
+      return c.json({ ok: false, error: "title cannot be empty" }, 400);
+    }
+    updates[field] = trimmed;
+  }
+  for (const field of ["startDate", "endDate"] as const) {
+    const v = body[field];
+    if (v === undefined) continue;
+    if (typeof v !== "string" || isNaN(new Date(v).getTime())) {
+      return c.json({ ok: false, error: `${field} must be a valid date` }, 400);
+    }
+    updates[field] = v;
+  }
+
+  if (body.image !== undefined) {
+    if (typeof body.image !== "string") return c.json({ ok: false, error: "image must be a string" }, 400);
+    let imageData: Uint8Array;
+    try {
+      const raw = body.image.includes(",") ? body.image.split(",")[1] : body.image;
+      imageData = Uint8Array.from(atob(raw), (ch) => ch.charCodeAt(0));
+    } catch {
+      return c.json({ ok: false, error: "Invalid image data" }, 400);
+    }
+    if (imageData.length === 0 || imageData.length > MAX_EVENT_IMAGE_BYTES) {
+      return c.json({ ok: false, error: "Image must be under 8 MB" }, 400);
+    }
+    try {
+      // Same batch routing as create — the event's batch, never a purchase trigger.
+      const selection = batchForDeploy({
+        ownerAddress: parentAddress,
+        gatewayUrl: typeof body.gatewayUrl === "string" ? body.gatewayUrl : "",
+        deployType: "event",
+      });
+      const imageHash = await uploadToBytes(imageData, selection);
+      await whitelistHashes([imageHash]).catch((err) =>
+        console.warn("[event] edit-image whitelist failed (non-critical):", err));
+      updates.imageHash = imageHash;
+    } catch (err) {
+      console.error("[api] update-meta image upload failed:", err);
+      return c.json({ ok: false, error: "Image upload failed" }, 502);
+    }
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return c.json({ ok: false, error: "No editable fields provided" }, 400);
+  }
+
+  const signerHint = typeof body.signer === "string" && /^0x[0-9a-fA-F]{40}$/.test(body.signer)
+    ? body.signer.toLowerCase()
+    : undefined;
+
+  try {
+    const updated = await updateEventMetadata({ eventId, parentAddress, updates, signerHint });
+    // Phase B: hand the merged feed back so the owner re-signs their SOC. Legacy
+    // events were already platform-written; eventFeed is harmless there.
+    return c.json({
+      ok: true,
+      data: { eventId, ...(updated.creatorFeedSigner ? { eventFeed: updated } : {}) },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to update event";
+    const status =
+      msg === "Event not found" ? 404 :
+      msg === "Not the event creator" ? 403 :
+      msg === "Invalid event dates" || msg === "endDate is before startDate" ? 400 : 500;
+    if (status === 500) console.error("[api] update-meta failed:", err);
+    return c.json({ ok: false, error: status === 500 ? "Failed to update event" : msg }, status);
+  }
 });
 
 // POST /api/events/discover — authenticated

@@ -330,6 +330,27 @@ export interface SignedTicket {
   publicKey: string;
 }
 
+/** Body of POST /api/events/:id/update-meta — edits event-LEVEL metadata only.
+ *  Series data (supply, names, prices) is committed by the signed manifest whose
+ *  digest is anchored on-chain, and is deliberately NOT editable here. */
+export interface UpdateEventMetaRequest {
+  title?: string;
+  /** Empty string clears the tagline. */
+  tagline?: string;
+  description?: string;
+  startDate?: string;
+  endDate?: string;
+  location?: string;
+  /** Replacement image as base64 / data-URL; the server uploads + whitelists it. */
+  image?: string;
+  /** The event's storage gateway — routes the replacement-image stamp to the same
+   *  batch the event content lives on (Etherna user batch vs WoCo). */
+  gatewayUrl?: string;
+  /** Phase B carrier hint so UNLISTED client-owned events resolve. UNTRUSTED:
+   *  the server uses it for a non-caching read only — never to authorise. */
+  signer?: string;
+}
+
 /** Response from POST /api/events */
 export interface CreateEventResponse {
   ok: boolean;

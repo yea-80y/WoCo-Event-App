@@ -329,6 +329,163 @@ export async function stampEventSubEns(
 }
 
 // ---------------------------------------------------------------------------
+// Update event metadata (edit — event-level fields only)
+// ---------------------------------------------------------------------------
+
+/** Event-LEVEL fields an organiser may edit after publish. Series data (supply,
+ *  manifest names, prices) is committed by the signed manifest digest anchored
+ *  on-chain and is deliberately not represented here. */
+export interface EventMetaUpdates {
+  title?: string;
+  /** Empty string clears the tagline. */
+  tagline?: string;
+  description?: string;
+  startDate?: string;
+  endDate?: string;
+  location?: string;
+  /** Swarm ref of an already-uploaded replacement image. */
+  imageHash?: string;
+}
+
+/**
+ * Apply a whitelisted metadata patch to an event.
+ *
+ * SECURITY (trust boundary): the basis feed is read with explicit source
+ * tracking. A `signerHint`-derived read is UNTRUSTED — an attacker can sign a
+ * SOC naming ANY eventId under their own key — so on that path this function
+ * (a) requires the feed's self-described `creatorFeedSigner` to equal the hint
+ * (a forged feed posing as a legacy event can never reach the platform write),
+ * (b) never writes the platform feed, and (c) only invalidates — never primes —
+ * the money-path cache. The verified `parentAddress` == `feed.creatorAddress`
+ * check gates every path, and directory entries are additionally re-checked
+ * against their own platform-written `creatorAddress` at the write boundary.
+ */
+export async function updateEventMetadata(opts: {
+  eventId: string;
+  /** VERIFIED parent address from auth middleware — never from the request body. */
+  parentAddress: string;
+  updates: EventMetaUpdates;
+  /** Untrusted Phase B carrier hint (resolves unlisted client-owned events). */
+  signerHint?: string;
+}): Promise<EventFeed> {
+  const { eventId, parentAddress, updates, signerHint } = opts;
+  const addr = parentAddress.toLowerCase();
+
+  // Resolve the basis feed, tracking WHERE it came from.
+  let source: "trusted-soc" | "platform" | "hint" | null = null;
+  let feed: EventFeed | null = null;
+
+  const trustedSigner = await resolveCreatorFeedSigner(eventId);
+  if (trustedSigner) {
+    feed = await readEventFeedSoc(eventId, trustedSigner);
+    if (feed) source = "trusted-soc";
+  }
+  if (!feed) {
+    const page = await readFeedPageWithRetry(topicEvent(eventId));
+    feed = page ? decodeJsonFeed<EventFeed>(page) : null;
+    if (feed) source = "platform";
+  }
+  if (!feed && signerHint) {
+    feed = await readEventFeedSoc(eventId, signerHint);
+    if (feed) {
+      // A hint-read feed MUST self-describe as owned by that exact signer.
+      if (feed.creatorFeedSigner?.toLowerCase() !== signerHint.toLowerCase()) {
+        throw new Error("Event not found");
+      }
+      source = "hint";
+    }
+  }
+  if (!feed || !source) throw new Error("Event not found");
+  if (feed.creatorAddress.toLowerCase() !== addr) {
+    throw new Error("Not the event creator");
+  }
+
+  const updated: EventFeed = { ...feed };
+  if (updates.title !== undefined) updated.title = updates.title;
+  if (updates.tagline !== undefined) {
+    if (updates.tagline) updated.tagline = updates.tagline;
+    else delete updated.tagline;
+  }
+  if (updates.description !== undefined) updated.description = updates.description;
+  if (updates.startDate !== undefined) updated.startDate = updates.startDate;
+  if (updates.endDate !== undefined) updated.endDate = updates.endDate;
+  if (updates.location !== undefined) updated.location = updates.location;
+  if (updates.imageHash !== undefined) updated.imageHash = updates.imageHash as EventFeed["imageHash"];
+
+  // Validate the MERGED dates — a single-field update must not invert the range.
+  const start = new Date(updated.startDate).getTime();
+  const end = new Date(updated.endDate).getTime();
+  if (isNaN(start) || isNaN(end)) throw new Error("Invalid event dates");
+  if (end < start) throw new Error("endDate is before startDate");
+
+  // Legacy platform feed: server rewrites it — but ONLY when the basis came from
+  // the platform feed itself (see the trust-boundary note above). Phase B: the
+  // server has no key for the client-owned SOC; the route returns `updated` for
+  // the client to re-sign (same contract as confirmSeriesOnChain).
+  if (source === "platform" && !feed.creatorFeedSigner) {
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+  }
+
+  // Invalidate — never prime. On the hint path a forged-but-self-consistent feed
+  // must not be able to seed the money-path cache; trusted paths simply re-resolve.
+  invalidateEventCache(eventId);
+
+  await updateDirectoryEntriesMeta(updated, addr);
+  return updated;
+}
+
+/**
+ * Mirror edited metadata into the platform-signed directory entries (global +
+ * creator index). Non-fatal: the feed is the source of truth for the detail
+ * page; directories are discovery. Each entry is patched ONLY if its own
+ * platform-written `creatorAddress` matches the verified caller.
+ */
+async function updateDirectoryEntriesMeta(updated: EventFeed, parentAddress: string): Promise<void> {
+  const patch: Partial<EventDirectoryEntry> = {
+    title: updated.title,
+    tagline: updated.tagline ?? "",
+    imageHash: updated.imageHash,
+    startDate: updated.startDate,
+    endDate: updated.endDate,
+    location: updated.location,
+  };
+
+  try {
+    if (await patchDirectoryEntryMeta(topicEventDirectory, updated.eventId, parentAddress, patch)) {
+      _dirCache = null;
+    }
+  } catch (err) {
+    console.error("[event] global directory meta patch failed (non-critical):", err);
+  }
+
+  try {
+    const creatorTopic = (p: number) => topicCreatorDirectory(updated.creatorAddress, p);
+    if (await patchDirectoryEntryMeta(creatorTopic, updated.eventId, parentAddress, patch)) {
+      invalidateCreatorEventsCache(updated.creatorAddress);
+    }
+  } catch (err) {
+    console.error("[event] creator directory meta patch failed (non-critical):", err);
+  }
+}
+
+/** Strict-read a directory, patch the matching entry (ownership re-checked at the
+ *  write boundary), rewrite pages. Returns true if a write happened. */
+async function patchDirectoryEntryMeta(
+  topicFn: (page: number) => import("@ethersphere/bee-js").Topic,
+  eventId: string,
+  parentAddress: string,
+  patch: Partial<EventDirectoryEntry>,
+): Promise<boolean> {
+  const entries = await readDirectoryStrict(topicFn);
+  const idx = entries.findIndex((e) => e.eventId === eventId);
+  if (idx === -1) return false;
+  if (entries[idx].creatorAddress.toLowerCase() !== parentAddress) return false;
+  entries[idx] = { ...entries[idx], ...patch };
+  await writeDirectoryPages(entries, new Date().toISOString(), topicFn);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Read events
 // ---------------------------------------------------------------------------
 
