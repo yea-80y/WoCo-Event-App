@@ -216,25 +216,63 @@ export function contentFeedPageTopic(topic: string, page: number): string {
   return `${topic}/p${page}`;
 }
 
+/** uint64 BIG-ENDIAN (8 bytes) — bee's feed-index byte order. Throws on non-int/negative. */
+function uint64BE(n: number): Uint8Array {
+  if (!Number.isInteger(n) || n < 0) throw new Error(`invalid feed index: ${n}`);
+  const b = new Uint8Array(8);
+  new DataView(b.buffer).setBigUint64(0, BigInt(n), false);
+  return b;
+}
+
+/**
+ * Versioned SOC identifier: `keccak256(baseIdentifier || uint64BE(version))`.
+ *
+ * A SOC is IMMUTABLE — re-uploading at the same (owner, identifier) with new bytes
+ * is silently discarded by Bee (dedupe by chunk address; 201 returned, OLD payload
+ * kept). So a fixed-identifier content feed only ever landed its FIRST write; every
+ * edit was lost. Mutability on Swarm comes from writing update N at a NEW identifier
+ * and resolving "latest" — a standard single-owner sequence feed. This derives that
+ * per-version identifier. When `baseIdentifier = contentFeedSocIdentifier(topic) =
+ * keccak(topic)`, the result is BYTE-IDENTICAL to bee's own feed-update identifier
+ * (see {@link beeFeedUpdateIdentifier}), so the versioned feed is resolvable by
+ * computed chunk address (Etherna-safe — never `/feeds`). Kept generic so a
+ * fixed-identifier feed (the recovery/portability envelope) gains the same version
+ * dimension off ITS base identifier.
+ */
+export function versionedSocIdentifier(baseIdentifier: Uint8Array, version: number): Uint8Array {
+  if (baseIdentifier.length !== SOC_IDENTIFIER_SIZE) throw new Error("base identifier must be 32 bytes");
+  return keccak_256(concatBytes(baseIdentifier, uint64BE(version)));
+}
+
+/**
+ * Page identifier for page `page` (1-based) of `version` of a versioned, multi-chunk
+ * feed: `keccak256(baseIdentifier || uint64BE(version) || uint64BE(page))`. The
+ * version is folded into the identifier so a reader of version n can never see
+ * version n+1's pages (no torn read across a concurrent update). The 48-byte input
+ * (vs the base's 40) also guarantees no collision with the base version SOC.
+ */
+export function versionedPageIdentifier(baseIdentifier: Uint8Array, version: number, page: number): Uint8Array {
+  if (baseIdentifier.length !== SOC_IDENTIFIER_SIZE) throw new Error("base identifier must be 32 bytes");
+  if (!Number.isInteger(page) || page < 1) throw new Error(`invalid page: ${page}`);
+  return keccak_256(concatBytes(baseIdentifier, uint64BE(version), uint64BE(page)));
+}
+
 /**
  * SOC identifier for a bee SEQUENCE-FEED update — byte-identical to bee-js@11
- * `makeFeedIdentifier` (verified against the installed package):
+ * `makeFeedIdentifier` (verified against the installed package + `bee-feed-identifier.test.ts`):
  * `keccak256( keccak256(utf8(topicString)) || uint64BE(index) )`. Used where a
  * client-owned feed must stay resolvable by bee's own feed machinery (gateway
  * `/bzz/{feedManifestHash}` resolution — e.g. the per-site multisite pointer
  * feed), which `contentFeedSocIdentifier`'s flat keccak(topic) scheme is not.
  * The update SOC's payload is the collection ROOT CHUNK's data (span stripped),
  * matching bee-js `uploadPayload`'s wrapped-chunk form for payloads ≤ 4096 B.
+ *
+ * This is exactly {@link versionedSocIdentifier} with `baseIdentifier = keccak(topic)`,
+ * i.e. `versionedSocIdentifier(contentFeedSocIdentifier(topic), index)` — so a
+ * versioned content feed IS a bee sequence feed with topic = the content topic.
  */
 export function beeFeedUpdateIdentifier(topicString: string, index: number): Uint8Array {
-  if (!Number.isInteger(index) || index < 0) throw new Error(`invalid feed index: ${index}`);
-  const topic = keccak_256(utf8ToBytes(topicString));
-  const idx = new Uint8Array(8);
-  new DataView(idx.buffer).setBigUint64(0, BigInt(index), false);
-  const joined = new Uint8Array(40);
-  joined.set(topic, 0);
-  joined.set(idx, 32);
-  return keccak_256(joined);
+  return versionedSocIdentifier(keccak_256(utf8ToBytes(topicString)), index);
 }
 
 /** True if a decoded base-SOC payload is a multi-chunk manifest (vs a real feed). */
@@ -293,4 +331,133 @@ export function editionsContentTopic(seriesId: string, page = 0): string {
   return page === 0
     ? `woco/pod/editions/${seriesId}`
     : `woco/pod/editions/${seriesId}/p${page}`;
+}
+
+// ---------------------------------------------------------------------------
+// Versioned content-feed READ (probe latest, reassemble, legacy fallback)
+//
+// Shared by the client (`content-feed.ts`, gateway-first `readSoc`) and the server
+// (`soc-upload.ts`, `readSocPayload`) so both ends resolve "latest" identically.
+// Each end supplies its own chunk reader; the derivation + probing algorithm live
+// here to prevent drift.
+// ---------------------------------------------------------------------------
+
+/** Reads one SOC's inline payload by identifier, or null if the chunk is absent. */
+export type SocChunkReader = (identifier: Uint8Array) => Promise<Uint8Array | null>;
+
+/**
+ * Highest version returned for a feed that has NO versioned chunk yet but does have
+ * a pre-versioning fixed-identifier chunk (written before this fix). Below 0.
+ */
+export const LEGACY_CONTENT_FEED_VERSION = -1;
+
+/** Versions probed per round-trip (parallel). Covers typical edit counts in one hop. */
+const VERSION_PROBE_WINDOW = 8;
+
+export interface VersionedFeedRead {
+  bytes: Uint8Array;
+  /** Resolved version, or {@link LEGACY_CONTENT_FEED_VERSION} for the legacy chunk. */
+  version: number;
+}
+
+/**
+ * Resolve the highest existing version by probing `read(baseIdFor(v))` FORWARD from
+ * `hint`. Versions are contiguous from 0 and immutable (a version once written can
+ * never disappear), so `hint` is a valid lower bound; a stale/wrong hint (its
+ * version absent) falls back to a full scan from 0. Returns the highest version, or
+ * `null` if no versioned chunk exists at all (⇒ caller tries the legacy identifier).
+ */
+export async function resolveLatestSocVersion(
+  read: SocChunkReader,
+  baseIdFor: (version: number) => Uint8Array,
+  hint = 0,
+): Promise<number | null> {
+  const exists = async (v: number): Promise<boolean> => (await read(baseIdFor(v))) !== null;
+
+  let start = hint > 0 ? hint : 0;
+  if (start > 0 && !(await exists(start))) start = 0; // hint unreliable → full scan
+
+  let latest = -1;
+  for (let cursor = start; ; cursor += VERSION_PROBE_WINDOW) {
+    const flags = await Promise.all(
+      Array.from({ length: VERSION_PROBE_WINDOW }, (_, i) => exists(cursor + i)),
+    );
+    let ended = false;
+    for (let i = 0; i < VERSION_PROBE_WINDOW; i++) {
+      if (flags[i]) latest = cursor + i;
+      else { ended = true; break; }
+    }
+    if (ended) break;
+  }
+  return latest >= 0 ? latest : null;
+}
+
+/**
+ * Read + reassemble ONE version's payload: a single-chunk feed is the base SOC's
+ * raw bytes; a multi-chunk feed is a {@link ContentFeedManifest} in the base SOC
+ * plus `pages` data SOCs. Returns null if the base or any page is absent (a torn /
+ * incomplete write). `baseId`/`pageIdFor` select versioned vs legacy identifiers.
+ */
+export async function assembleContentFeed(
+  read: SocChunkReader,
+  baseId: Uint8Array,
+  pageIdFor: (page: number) => Uint8Array,
+): Promise<Uint8Array | null> {
+  const raw = await read(baseId);
+  if (!raw) return null;
+
+  let head: unknown;
+  try {
+    head = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return raw; // not JSON (shouldn't happen for our feeds) — hand back as-is
+  }
+  if (!isContentFeedManifest(head)) return raw; // single-chunk feed
+  if (head.pages < 1 || head.pages > 256) return null; // bound the loop (≤ 1 MB)
+
+  const parts: Uint8Array[] = [];
+  for (let i = 1; i <= head.pages; i++) {
+    const page = await read(pageIdFor(i));
+    if (!page) return null; // a missing page ⇒ incomplete; treat as not-found
+    parts.push(page);
+  }
+  const full = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) { full.set(p, off); off += p.length; }
+  return full;
+}
+
+/**
+ * Read the latest version of a TOPIC-addressed client content feed via `read`.
+ * Probes versioned identifiers first; if none exist, falls back to the legacy
+ * pre-versioning fixed identifier (`contentFeedSocIdentifier(topic)` + its
+ * `topic/pN` pages) — so a feed written before this fix stays READABLE, and its
+ * first edit (which writes version 0) then wins over the legacy chunk with NO
+ * re-publish. Returns the raw feed bytes + the resolved version, or null.
+ */
+export async function readVersionedContentFeed(
+  read: SocChunkReader,
+  topic: string,
+  hint = 0,
+): Promise<VersionedFeedRead | null> {
+  const base = contentFeedSocIdentifier(topic);
+  const baseIdFor = (v: number): Uint8Array => versionedSocIdentifier(base, v);
+
+  const latest = await resolveLatestSocVersion(read, baseIdFor, hint);
+  if (latest !== null) {
+    const bytes = await assembleContentFeed(
+      read,
+      baseIdFor(latest),
+      (page) => versionedPageIdentifier(base, latest, page),
+    );
+    return bytes ? { bytes, version: latest } : null;
+  }
+
+  // Legacy fallback: the pre-versioning fixed identifier + its topic-string pages.
+  const legacy = await assembleContentFeed(
+    read,
+    base,
+    (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
+  );
+  return legacy ? { bytes: legacy, version: LEGACY_CONTENT_FEED_VERSION } : null;
 }

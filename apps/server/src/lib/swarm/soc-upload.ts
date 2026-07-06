@@ -30,9 +30,8 @@ import {
   calculateSocAddress,
   socSignDigest,
   encodeSpan,
-  contentFeedSocIdentifier,
-  contentFeedPageTopic,
-  isContentFeedManifest,
+  readVersionedContentFeed,
+  type SocChunkReader,
   SOC_IDENTIFIER_SIZE,
   SOC_SIGNATURE_SIZE,
   SOC_MAX_PAYLOAD_SIZE,
@@ -41,6 +40,7 @@ import { BEE_URL, getBee, requirePostageBatch } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import { whitelistHashes } from "./whitelist.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
+import { registerEthernaOffer } from "../etherna/upload.js";
 
 const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
 
@@ -216,13 +216,21 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
       // directly from the gateway (GET /chunks/{addr}) — the client reads
       // gateway-first, server-fallback. Non-fatal: the chunk is uploaded
       // regardless, and the server read endpoint covers a whitelist lag.
-      // Etherna destinations read via the Etherna gateway — our proxy
-      // whitelist doesn't apply.
       if (!etherna) {
         try {
           await whitelistHashes([socAddress]);
         } catch (e) {
           console.warn("[swarm] SOC whitelist failed (non-fatal, server-read fallback covers it):", e);
+        }
+      } else {
+        // Etherna gates anonymous reads behind an OFFER (else 402). Register one for
+        // the SOC's chunk address so any device can read it via /chunks/{addr} (and
+        // so a feed dereference over this update chunk resolves). Non-fatal — the
+        // chunk is stored regardless; a missing offer only blocks anonymous reads.
+        try {
+          await registerEthernaOffer(socAddress);
+        } catch (e) {
+          console.warn("[swarm] Etherna SOC offer failed (non-fatal):", e);
         }
       }
       return { owner: ownerHex, identifier: identifierHex, address: socAddress };
@@ -278,34 +286,22 @@ export async function readSocPayload(ownerHex: string, identifierHex: string): P
 }
 
 /**
- * Read a client-owned content feed by owner + topic STRING, reassembling the
- * multi-chunk paged form when present (mirrors the client `readContentFeed`).
- * Returns the raw JSON bytes, or null if absent / a page is missing. The base SOC
- * is either the raw JSON (single chunk) or a manifest pointing at `topic/p1 … /pN`.
+ * Read a client-owned content feed by owner + topic STRING, resolving the latest
+ * VERSION of the single-owner sequence feed and reassembling the multi-chunk paged
+ * form when present (mirrors the client `readContentFeed`). Probes versioned
+ * identifiers first, then falls back to the legacy pre-versioning fixed identifier
+ * so feeds written before the versioning fix stay readable. Returns the raw JSON
+ * bytes, or null if absent / a page is missing.
+ *
+ * `versionHint` is an optional lower bound (e.g. a directory-carried feedVersion);
+ * the read still probes forward from it, so a stale-low hint only costs a few reads.
  */
-export async function readContentFeedJson(ownerHex: string, baseTopic: string): Promise<Uint8Array | null> {
-  const baseIdHex = bytesToHex(contentFeedSocIdentifier(baseTopic));
-  const raw = await readSocPayload(ownerHex, baseIdHex);
-  if (!raw) return null;
-
-  let head: unknown;
-  try {
-    head = JSON.parse(new TextDecoder().decode(raw));
-  } catch {
-    return raw; // not JSON (shouldn't happen for our feeds) — hand back as-is
-  }
-  if (!isContentFeedManifest(head)) return raw; // single-chunk feed
-  if (head.pages < 1 || head.pages > 256) return null; // bound the fetch loop (≤1 MB)
-
-  const parts: Uint8Array[] = [];
-  for (let i = 1; i <= head.pages; i++) {
-    const idHex = bytesToHex(contentFeedSocIdentifier(contentFeedPageTopic(baseTopic, i)));
-    const page = await readSocPayload(ownerHex, idHex);
-    if (!page) return null; // a missing page ⇒ incomplete; treat as not-found
-    parts.push(page);
-  }
-  const full = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let off = 0;
-  for (const p of parts) { full.set(p, off); off += p.length; }
-  return full;
+export async function readContentFeedJson(
+  ownerHex: string,
+  baseTopic: string,
+  versionHint = 0,
+): Promise<Uint8Array | null> {
+  const read: SocChunkReader = (id) => readSocPayload(ownerHex, bytesToHex(id));
+  const res = await readVersionedContentFeed(read, baseTopic, versionHint);
+  return res?.bytes ?? null;
 }

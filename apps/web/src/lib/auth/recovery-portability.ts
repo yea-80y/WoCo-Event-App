@@ -34,7 +34,7 @@ import {
   PORTABILITY_SOC_OWNER_DOMAIN,
   PORTABILITY_HPKE_DOMAIN,
   PORTABILITY_ENVELOPE_VERSION,
-  portabilitySocIdentifier,
+  PORTABILITY_SOC_IDENTIFIER_INPUT,
   type PortabilityEnvelope,
 } from "@woco/shared";
 import {
@@ -43,7 +43,7 @@ import {
   openRecoveryBundle,
   type GuardianEncryptionKeypair,
 } from "./recovery-escrow.js";
-import { signAndUploadSoc, readSoc } from "../swarm/client-soc.js";
+import { writeContentFeed, readContentFeed } from "../swarm/content-feed.js";
 
 /** Domain-separated 32-byte seed = keccak256(utf8(domain) || prfPrivKeyBytes). */
 function domainSeed(domain: string, prfPrivKeyBytes: Uint8Array): Uint8Array {
@@ -123,12 +123,16 @@ export async function writePortabilityEnvelope(args: {
     v: PORTABILITY_ENVELOPE_VERSION,
     envelope,
   };
-  const payload = new TextEncoder().encode(JSON.stringify(payloadObj));
 
-  await signAndUploadSoc({
+  // Versioned content-feed rail: after a recovery the envelope is REWRITTEN under
+  // the new passkey's derived keys — a fixed-identifier SOC would silently discard
+  // that rewrite (immutable chunk). The topic string IS the fixed identifier input,
+  // so `contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT)` matches the
+  // legacy identifier and old envelopes stay discoverable via the fallback.
+  await writeContentFeed({
     signerPrivKey: keys.socOwnerPrivKey,
-    identifier: portabilitySocIdentifier(),
-    payload,
+    topic: PORTABILITY_SOC_IDENTIFIER_INPUT,
+    data: payloadObj,
   });
 }
 
@@ -150,17 +154,14 @@ export async function readPortabilityEnvelope(args: {
 }): Promise<OpenedPortability | null> {
   const keys = await derivePortabilityKeys(args.passkeyPrivKey);
 
-  const raw = await readSoc(keys.socOwnerAddress, portabilitySocIdentifier());
-  if (!raw) return null;
+  const parsed = await readContentFeed<PortabilityEnvelope>(
+    keys.socOwnerAddress,
+    PORTABILITY_SOC_IDENTIFIER_INPUT,
+  );
+  if (!parsed) return null;
 
-  let parsed: PortabilityEnvelope;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(raw)) as PortabilityEnvelope;
-  } catch {
-    return null;
-  }
   // v1 (cleartext-Kernel) envelopes no longer match → null → back-fill rewrites.
-  if (parsed?.v !== PORTABILITY_ENVELOPE_VERSION || !parsed.envelope) {
+  if (parsed.v !== PORTABILITY_ENVELOPE_VERSION || !parsed.envelope) {
     return null;
   }
 
