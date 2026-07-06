@@ -106,8 +106,14 @@ export async function readSoc(ownerAddress: string, identifier: Uint8Array): Pro
   try {
     const soc = await bee().makeSOCReader(`0x${owner}`).download(identifier);
     return soc.payload.toUint8Array();
-  } catch {
-    // 403 (not yet whitelisted), 404, or transient — fall through to the server.
+  } catch (err) {
+    // A gateway 404 means the bee node already ran a full network search and
+    // found nothing — asking the server would repeat that exact search against
+    // the SAME node (version probes make this the hot path). Only fall through
+    // on 403 (whitelist lag), transient errors, or anything non-definitive.
+    const status = (err as { status?: number; response?: { status?: number } })?.status
+      ?? (err as { response?: { status?: number } })?.response?.status;
+    if (status === 404) return null;
   }
 
   // 2. Server fallback (availability only).

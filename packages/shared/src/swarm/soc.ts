@@ -351,8 +351,17 @@ export type SocChunkReader = (identifier: Uint8Array) => Promise<Uint8Array | nu
  */
 export const LEGACY_CONTENT_FEED_VERSION = -1;
 
-/** Versions probed per round-trip (parallel). Covers typical edit counts in one hop. */
-const VERSION_PROBE_WINDOW = 8;
+/**
+ * Versions probed per round-trip (parallel). Deliberately SMALL: a probe past the
+ * latest version is a bee network search for a chunk that does not exist — the
+ * single most expensive read on Swarm (seconds, and it queues behind every other
+ * retrieval on the node). A window of 8 fired 7+ such searches on EVERY read of
+ * every feed and melted the bee node (2026-07-06). With 2, the common case
+ * (accurate hint, or a feed at version 0) costs exactly ONE missing-chunk search;
+ * existing-version reads are local and cheap, so extra rounds for a stale hint
+ * are fine.
+ */
+const VERSION_PROBE_WINDOW = 2;
 
 export interface VersionedFeedRead {
   bytes: Uint8Array;

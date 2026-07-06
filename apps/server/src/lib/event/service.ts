@@ -6,7 +6,7 @@ import type {
 import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x, eventContentTopic } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy } from "../etherna/batch-router.js";
-import { readContentFeedJson } from "../swarm/soc-upload.js";
+import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId, getOnChainEvent } from "../chain/event-contract.js";
 import { getClaimStatus } from "./claim-service.js";
@@ -452,6 +452,11 @@ export async function updateEventMetadata(opts: {
   // Invalidate — never prime. On the hint path a forged-but-self-consistent feed
   // must not be able to seed the money-path cache; trusted paths simply re-resolve.
   invalidateEventCache(eventId);
+  // The owner is about to sign the NEXT SOC version — drop the resolved-version
+  // cache too, or the next read would serve the pre-edit version for its TTL.
+  if (feed.creatorFeedSigner) {
+    invalidateContentFeedVersion(feed.creatorFeedSigner, eventContentTopic(eventId));
+  }
 
   // Mirror the edit into the directory entries OFF the request path. This does a
   // strict-read + full rewrite of BOTH directories (global ~100s of events +
@@ -602,6 +607,9 @@ export async function deleteEventIfNoOrders(opts: {
     await writeFeedPage(topicEvent(eventId), encodeJsonFeed(tombstoned));
   }
   invalidateEventCache(eventId);
+  if (feed.creatorFeedSigner) {
+    invalidateContentFeedVersion(feed.creatorFeedSigner, eventContentTopic(eventId));
+  }
 
   console.log(`[event] deleted ${eventId} (zero orders, source=${source})`);
   return tombstoned;
@@ -797,23 +805,25 @@ async function readDirectoryFromSwarm(): Promise<EventDirectoryEntry[]> {
 
   const all = [...dir.entries];
 
+  // Each page is an independent feed lookup (seconds each on a busy bee) —
+  // fetch them concurrently; entry order is preserved by index.
   const totalPages = dir.pages ?? 0;
-  for (let p = 1; p <= totalPages; p++) {
-    const pageData = await readFeedPage(topicEventDirectory(p));
-    if (!pageData) break;
-    const overflow = decodeJsonFeed<EventDirectory>(pageData);
-    if (overflow?.entries) all.push(...overflow.entries);
+  if (totalPages > 0) {
+    const pages = await Promise.all(
+      Array.from({ length: totalPages }, (_, i) => readFeedPage(topicEventDirectory(i + 1))),
+    );
+    for (const pageData of pages) {
+      if (!pageData) break;
+      const overflow = decodeJsonFeed<EventDirectory>(pageData);
+      if (overflow?.entries) all.push(...overflow.entries);
+    }
   }
 
   return all;
 }
 
-export async function listEvents(): Promise<EventDirectoryEntry[]> {
-  if (_dirCache && Date.now() - _dirCache.at < DIR_CACHE_TTL_MS) {
-    return _dirCache.data;
-  }
+function refreshDirectoryCache(): Promise<EventDirectoryEntry[]> {
   if (_dirInFlight) return _dirInFlight;
-
   _dirInFlight = (async () => {
     try {
       const data = await readDirectoryFromSwarm();
@@ -830,8 +840,22 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
       _dirInFlight = null;
     }
   })();
-
   return _dirInFlight;
+}
+
+export async function listEvents(): Promise<EventDirectoryEntry[]> {
+  // Stale-while-revalidate: a cold directory read is a chain of bee feed
+  // lookups (40s+ observed under load) — never block a request on it when any
+  // previous snapshot exists. Serve the stale data and refresh behind the
+  // response; only a cache-empty cold start (fresh process) has to wait, and
+  // startup priming (index.ts) makes that window tiny.
+  if (_dirCache) {
+    if (Date.now() - _dirCache.at >= DIR_CACHE_TTL_MS) {
+      refreshDirectoryCache().catch(() => undefined);
+    }
+    return _dirCache.data;
+  }
+  return refreshDirectoryCache();
 }
 
 // ---------------------------------------------------------------------------

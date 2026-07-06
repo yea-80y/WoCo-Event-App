@@ -33,6 +33,7 @@ import { agentRouter } from "./routes/agent.js";
 import { swarmRoutes } from "./routes/swarm.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
+import { listEvents } from "./lib/event/service.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -447,3 +448,9 @@ console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
 startDomainPoller();
 void logSponsorReadiness();
+// Prime the event-directory cache so the first GET /api/events after a restart
+// serves from memory instead of waiting out a cold multi-page feed read.
+void listEvents().then(
+  (d) => console.log(`[startup] event directory primed (${d.length} entries)`),
+  (err) => console.warn("[startup] event directory prime failed:", err),
+);

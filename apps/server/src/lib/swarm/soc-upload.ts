@@ -31,6 +31,12 @@ import {
   socSignDigest,
   encodeSpan,
   readVersionedContentFeed,
+  assembleContentFeed,
+  contentFeedSocIdentifier,
+  contentFeedPageTopic,
+  versionedSocIdentifier,
+  versionedPageIdentifier,
+  LEGACY_CONTENT_FEED_VERSION,
   type SocChunkReader,
   SOC_IDENTIFIER_SIZE,
   SOC_SIGNATURE_SIZE,
@@ -285,6 +291,24 @@ export async function readSocPayload(ownerHex: string, identifierHex: string): P
   }
 }
 
+// ---------------------------------------------------------------------------
+// Latest-version cache for content-feed reads.
+//
+// Resolving "latest" ends with a probe of a version that does NOT exist — a bee
+// network search that takes seconds and queues behind every other retrieval.
+// Versions are immutable and contiguous, so a recently-resolved version is safe
+// to read EXACTLY (worst case: stale by the TTL — same freshness contract as the
+// directory cache). Absent feeds get a much shorter TTL so a publish-then-read
+// flow (client signs SOC v0, then register-on-chain reads it back) isn't blocked
+// by a stale negative.
+// ---------------------------------------------------------------------------
+
+const CFV_TTL_MS = 30_000;
+const CFV_ABSENT_TTL_MS = 5_000;
+
+/** version: >=0 versioned, LEGACY_CONTENT_FEED_VERSION legacy chunk, null absent. */
+const cfvCache = new Map<string, { version: number | null; at: number }>();
+
 /**
  * Read a client-owned content feed by owner + topic STRING, resolving the latest
  * VERSION of the single-owner sequence feed and reassembling the multi-chunk paged
@@ -302,6 +326,39 @@ export async function readContentFeedJson(
   versionHint = 0,
 ): Promise<Uint8Array | null> {
   const read: SocChunkReader = (id) => readSocPayload(ownerHex, bytesToHex(id));
-  const res = await readVersionedContentFeed(read, baseTopic, versionHint);
+  const key = `${ownerHex.toLowerCase().replace(/^0x/, "")}:${baseTopic}`;
+  const base = contentFeedSocIdentifier(baseTopic);
+
+  const cached = cfvCache.get(key);
+  if (cached) {
+    const ttl = cached.version === null ? CFV_ABSENT_TTL_MS : CFV_TTL_MS;
+    if (Date.now() - cached.at < ttl) {
+      if (cached.version === null) return null;
+      // Exact-version read: existing chunks only — zero missing-chunk searches.
+      const bytes =
+        cached.version === LEGACY_CONTENT_FEED_VERSION
+          ? await assembleContentFeed(read, base, (p) =>
+              contentFeedSocIdentifier(contentFeedPageTopic(baseTopic, p)))
+          : await assembleContentFeed(read, versionedSocIdentifier(base, cached.version), (p) =>
+              versionedPageIdentifier(base, cached.version as number, p));
+      if (bytes) return bytes;
+      // Cached version unexpectedly unreadable — drop it and re-probe below.
+      cfvCache.delete(key);
+    }
+  }
+
+  // Probe forward from the best lower bound we have (caller hint vs cached).
+  const hint = Math.max(versionHint, cached?.version ?? 0);
+  const res = await readVersionedContentFeed(read, baseTopic, hint);
+  cfvCache.set(key, { version: res ? res.version : null, at: Date.now() });
   return res?.bytes ?? null;
+}
+
+/**
+ * Drop the cached latest-version for a topic — called after a same-process write
+ * lands a new version so the next read re-probes instead of serving the TTL-stale
+ * predecessor.
+ */
+export function invalidateContentFeedVersion(ownerHex: string, baseTopic: string): void {
+  cfvCache.delete(`${ownerHex.toLowerCase().replace(/^0x/, "")}:${baseTopic}`);
 }
