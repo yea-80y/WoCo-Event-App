@@ -836,6 +836,19 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       }
     }
 
+    // Etherna gates anonymous reads behind an OFFER. The content chunk is offered at
+    // upload and each feed UPDATE SOC is offered by its writer; the FEED MANIFEST
+    // must be offered too or the ENS/domain link `/bzz/{feedManifestHash}/` returns
+    // 402 for anonymous readers. Non-fatal (a missing offer only affects anon reads).
+    // NOTE: whether anonymous /bzz feed-dereference fully resolves after offering the
+    // manifest + update SOC still needs a live post-deploy probe on Beehive
+    // (see etherna-soc-legacy-probe.ts); if it 402s, the link format must fall back
+    // to `/bzz/{contentHash}/` with the feed hash reserved for ENS contenthash only.
+    if (target === "etherna" && feedManifestHash) {
+      void registerEthernaOffer(feedManifestHash).catch((e) =>
+        console.warn("[sites/deploy] etherna feed-manifest offer failed (non-fatal):", e));
+    }
+
     // Collect all image refs from the site so they're accessible via the gateway.
     const imageRefs: string[] = [];
     if (site.theme.logoSwarmRef && !/^0+$/.test(site.theme.logoSwarmRef)) imageRefs.push(site.theme.logoSwarmRef);

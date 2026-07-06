@@ -11,6 +11,7 @@
 
 import { Bee, type Topic, type PrivateKey, FeedIndex } from "@ethersphere/bee-js";
 import { Binary } from "cafe-utility";
+import { calculateSocAddress } from "@woco/shared";
 import { ensureEthernaToken, getCachedEthernaToken } from "./auth.js";
 
 const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
@@ -211,6 +212,19 @@ export async function writeEthernaFeedUpdate(opts: {
   if (!postRes.ok) {
     const text = await postRes.text().catch(() => "");
     throw new Error(`Etherna SOC write ${postRes.status}: ${text.slice(0, 200)}`);
+  }
+
+  // Offer the update SOC's chunk so an anonymous feed dereference over this update
+  // resolves without payment (the caller offers the feed manifest + content). The
+  // SOC address = keccak256(socId || owner). Non-fatal — a missing offer only
+  // blocks anonymous reads, not the write itself.
+  try {
+    const socAddr = Binary.uint8ArrayToHex(
+      calculateSocAddress(socId, Binary.hexToUint8Array(ownerHex)),
+    );
+    await registerEthernaOffer(socAddr);
+  } catch (e) {
+    console.warn("[etherna] feed-update SOC offer failed (non-fatal):", e);
   }
 
   return feedManifestHash;

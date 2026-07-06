@@ -2,6 +2,42 @@
 
 Diagnosed by Fable. Implementation intended for Opus. Read `CLAUDE.md` first.
 
+## STATUS 2026-07-06 (Opus): IMPLEMENTED — typecheck + unit tests green, NOT deployed
+
+All five workstreams below are done in-repo (branch `feat/feed-signer-recovery`,
+uncommitted). Shared typecheck, server `tsc`, and web `svelte-check` are clean
+(one pre-existing unrelated `SiteBuilder.svelte:300` 'never' error is NOT mine);
+`apps/web/test/content-feed-versioning.test.ts` (7 cases) + the existing
+`bee-feed-identifier.test.ts` byte-lock pass. What landed:
+
+- **Versioned rail** (`packages/shared/src/swarm/soc.ts`): `versionedSocIdentifier`
+  (= `beeFeedUpdateIdentifier` when base = keccak(topic); the byte order is locked
+  by the existing bee-js equivalence test), `versionedPageIdentifier`
+  (version-scoped pages — no torn reads), `resolveLatestSocVersion` (parallel
+  probe window of 8, hint-seeded forward walk), `assembleContentFeed`,
+  `readVersionedContentFeed` (versioned → legacy-identifier fallback). `beeFeedUpdateIdentifier`
+  refactored to delegate (multisite pointer feed unchanged).
+- **Client** (`content-feed.ts`): `writeContentFeed` resolves latest + writes
+  version n+1, caches a `woco:cfv:` localStorage version hint, and accepts an
+  optional `gatewayUrl`. `readContentFeed` probes + legacy-falls-back.
+- **Server** (`soc-upload.ts`): `readContentFeedJson` uses the shared probing read.
+- **Recovery** (`recovery-feed.ts`, `recovery-portability.ts`): both collapsed onto
+  `writeContentFeed`/`readContentFeed` (their fixed identifiers = `contentFeedSocIdentifier`
+  of a constant string, so legacy envelopes stay readable). FROZEN crypto untouched.
+- **Edit-rail gateway**: `EventFeed` now self-describes `gatewayUrl` (stamped at
+  create when non-WoCo); `signEventFeedSoc` restamps on `feed.gatewayUrl`;
+  `EditEventPanel` forwards `event.gatewayUrl` to `updateEventMeta` (image stamp).
+- **Slow save**: `updateDirectoryEntriesMeta` is now fire-and-forget.
+- **Etherna offers**: `uploadSignedSoc` (etherna) + `writeEthernaFeedUpdate` offer
+  their SOC chunk; deploy offers `feedManifestHash`. ⚠ anonymous `/bzz` feed-deref
+  still needs a LIVE probe (see §Related-task-3 caveat).
+
+STILL OWED: (1) live edit round-trip verification on-device, (2) frontend
+`npm run deploy` (owner), (3) the Etherna `/bzz` anon-deref probe, (4) Sonnet UI
+polish — saved-state feedback + cache invalidation so the detail page/edit form
+update immediately after save (`EventDetail` readContentFeed cache, `profileCache`,
+server `EVENT_CACHE`). The versioned byte-order rail is frozen — Sonnet must not touch it.
+
 ## Root cause (PROVEN, not a hypothesis)
 
 Bee does NOT overwrite a Single-Owner Chunk. Re-uploading a SOC at the same
