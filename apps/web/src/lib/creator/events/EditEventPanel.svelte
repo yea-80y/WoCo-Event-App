@@ -98,6 +98,8 @@
 
       const updated = await updateEventMeta(event.eventId, updates, {
         ...(imageChanged && imageDataUrl ? { image: imageDataUrl } : {}),
+        // Route a replacement-image stamp to the event's own batch (Etherna vs WoCo).
+        ...(event.gatewayUrl ? { gatewayUrl: event.gatewayUrl } : {}),
         feedSigner,
       });
       saved = true;

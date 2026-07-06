@@ -196,6 +196,12 @@ export interface EventFeed {
    *  the authoritative discovery carrier is the directory entry's same field. Absent
    *  for legacy platform-signed events. */
   creatorFeedSigner?: Hex0x;
+  /** The event's storage gateway (self-describing). Etherna ⇒ the event's content
+   *  AND its client-owned detail-feed SOC live on the organiser's Etherna batch;
+   *  absent/WoCo ⇒ the WoCo bee. Stamped at create time from the builder's choice so
+   *  the edit/delete rail can restamp the SOC + re-upload images on the SAME batch
+   *  without re-deriving it. The global directory always stays on WoCo regardless. */
+  gatewayUrl?: string;
   /** Tombstone (delete-if-no-orders). Feeds can't be erased from Swarm, so a
    *  deleted event's feed is overwritten with this flag set; every read path
    *  treats it as not-found. Only settable when zero tickets exist. */

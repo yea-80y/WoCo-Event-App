@@ -35,6 +35,10 @@ export async function signEventFeedSoc(feed: EventFeed, signer: ContentFeedSigne
     signerPrivKey: signer.privKey,
     topic: eventContentTopic(feed.eventId),
     data: feed,
+    // Route the stamp to the batch the event content lives on. The feed carries its
+    // own storage gateway (Etherna user batch vs WoCo); without this, an Etherna
+    // event's detail SOC would be stamped on the WoCo batch on every edit/restamp.
+    ...(feed.gatewayUrl ? { gatewayUrl: feed.gatewayUrl } : {}),
   });
 }
 

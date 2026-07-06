@@ -203,6 +203,9 @@ export async function createEventV2(opts: {
     ...(orderFields?.length ? { orderFields } : {}),
     ...(claimMode && claimMode !== "wallet" ? { claimMode } : {}),
     ...(creatorFeedSigner ? { creatorFeedSigner } : {}),
+    // Self-describe the storage gateway so the edit/delete rail restamps on the same
+    // batch. Only record a non-WoCo (Etherna) gateway; WoCo is the default when absent.
+    ...(gatewayUrl && !gatewayUrl.includes("woco-net.com") ? { gatewayUrl } : {}),
   };
 
   // Phase B: when the organiser owns a content-feed signer, the detail feed is a
@@ -450,7 +453,13 @@ export async function updateEventMetadata(opts: {
   // must not be able to seed the money-path cache; trusted paths simply re-resolve.
   invalidateEventCache(eventId);
 
-  await updateDirectoryEntriesMeta(updated, addr);
+  // Mirror the edit into the directory entries OFF the request path. This does a
+  // strict-read + full rewrite of BOTH directories (global ~100s of events +
+  // creator index) — seconds of work that used to block the "Saving…" spinner. The
+  // detail feed the client re-signs is the source of truth; directories are
+  // discovery and every patch is already non-fatal, so fire-and-forget is safe.
+  void updateDirectoryEntriesMeta(updated, addr).catch((err) =>
+    console.error("[event] directory meta mirror failed (non-critical):", err));
   return updated;
 }
 
