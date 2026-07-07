@@ -264,10 +264,14 @@
           }
         }
         // Persist the merged onChainEventIds by re-signing the owned feed once.
+        // The initial publish write's version came back with the create result —
+        // this flow is the topic's only writer, so version+1 is exact and the
+        // latest-version probe (missing-chunk searches) is skipped.
         if (ownedFeed && feedSigner) {
           step = "Finalising event feed...";
           try {
-            await signEventFeedSoc(ownedFeed, feedSigner);
+            await signEventFeedSoc(ownedFeed, feedSigner,
+              result.eventFeedVersion !== undefined ? result.eventFeedVersion + 1 : undefined);
           } catch (e) {
             error = `Failed to finalise event feed: ${e instanceof Error ? e.message : String(e)}`;
             return;

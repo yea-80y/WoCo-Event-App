@@ -29,12 +29,22 @@ export interface PublishProgress {
  * Sign + upload an event detail feed as the user's client-owned SOC. The server
  * never writes this feed — the owner does, here. Used on publish and whenever a
  * server op (on-chain registration, sub-ENS stamp) hands back an updated feed.
+ *
+ * `knownVersion` skips the latest-version probe (a missing-chunk network search):
+ * pass it ONLY within the publish flow, where the eventId was minted this request
+ * (version 0) or the previous write's version is in hand (+1). Returns the version
+ * written so the caller can chain the next exact write.
  */
-export async function signEventFeedSoc(feed: EventFeed, signer: ContentFeedSigner): Promise<void> {
-  await writeContentFeed({
+export async function signEventFeedSoc(
+  feed: EventFeed,
+  signer: ContentFeedSigner,
+  knownVersion?: number,
+): Promise<number> {
+  return writeContentFeed({
     signerPrivKey: signer.privKey,
     topic: eventContentTopic(feed.eventId),
     data: feed,
+    ...(knownVersion !== undefined ? { knownVersion } : {}),
     // Route the stamp to the batch the event content lives on. The feed carries its
     // own storage gateway (Etherna user batch vs WoCo); without this, an Etherna
     // event's detail SOC would be stamped on the WoCo batch on every edit/restamp.
@@ -117,14 +127,17 @@ export async function createEventStreaming(
   // Phase B: sign + upload the event detail feed as a client-owned SOC. The server
   // only stamped the directory carrier; the feed itself is unreadable until this
   // lands, so a failure here fails the publish (the organiser retries).
+  // The eventId was minted by the server THIS request, so the topic is fresh —
+  // version 0 is exact and the latest-version probe (missing-chunk searches) is
+  // skipped. A retried publish gets a NEW eventId, so 0 can never collide.
   if (result.ok && feedSigner && pendingFeed) {
     try {
       onProgress?.({ type: "progress", phase: "finalize", current: 0, total: 1, message: "Signing event feed..." });
-      await signEventFeedSoc(pendingFeed, feedSigner);
+      const feedVersion = await signEventFeedSoc(pendingFeed, feedSigner, 0);
       onProgress?.({ type: "progress", phase: "finalize", current: 1, total: 1, message: "Event feed signed" });
       // Hand the signed feed back so the caller can merge onChainEventId after
       // registration and re-sign — the server never touches this feed.
-      result = { ...result, eventFeed: pendingFeed };
+      result = { ...result, eventFeed: pendingFeed, eventFeedVersion: feedVersion };
     } catch (e) {
       return { ok: false, error: `Failed to sign event feed: ${e instanceof Error ? e.message : String(e)}` };
     }

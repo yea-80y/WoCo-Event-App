@@ -370,6 +370,10 @@ export interface CreateEventResponse {
   /** Phase B: the client-signed event feed (when the user owns it). Returned so the
    *  publish flow can merge onChainEventId after registration and re-sign the SOC. */
   eventFeed?: EventFeed;
+  /** Version the publish flow's initial SOC write landed at (0 for a fresh event).
+   *  Lets the post-registration re-sign write version+1 EXACTLY, skipping the
+   *  latest-version probe and its missing-chunk network searches. */
+  eventFeedVersion?: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -225,6 +225,7 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
       if (!etherna) {
         try {
           await whitelistHashes([socAddress]);
+          whitelistedSocs.add(socAddress);
         } catch (e) {
           console.warn("[swarm] SOC whitelist failed (non-fatal, server-read fallback covers it):", e);
         }
@@ -233,6 +234,12 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
         // the SOC's chunk address so any device can read it via /chunks/{addr} (and
         // so a feed dereference over this update chunk resolves). Non-fatal — the
         // chunk is stored regardless; a missing offer only blocks anonymous reads.
+        // NOTE: no WoCo-gateway whitelist here — Etherna's Beehive cluster does
+        // not propagate chunks to the public net our bee retrieves from (verified
+        // 2026-07-07: /chunks 200 on Etherna, 404 via our bee), so a whitelist
+        // would only convert the gateway's fast 403 into a slow futile search.
+        // Reads of Etherna-stamped SOCs resolve via readSocPayload's Etherna
+        // fallback below.
         try {
           await registerEthernaOffer(socAddress);
         } catch (e) {
@@ -261,8 +268,21 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
 }
 
 /**
+ * SOC addresses this process has confirmed whitelisted on the read proxy —
+ * dedupes the self-healing whitelist below so hot chunks don't re-POST the
+ * proxy admin endpoint on every read.
+ */
+const whitelistedSocs = new Set<string>();
+
+/**
  * Read a SOC's inline payload by computed chunk address (Etherna-safe). Returns
  * the raw payload bytes, or null if the chunk is not found.
+ *
+ * SELF-HEALING WHITELIST: a successful read proves the chunk exists and is
+ * publicly readable, so we (fire-and-forget) whitelist its address on the
+ * gateway proxy. This repairs chunks whose write-time whitelist call failed
+ * (it's non-fatal there) — without it those chunks 403 on the gateway forever
+ * and every client read pays the server fallback.
  */
 export async function readSocPayload(ownerHex: string, identifierHex: string): Promise<Uint8Array | null> {
   let owner: string, identifier: string;
@@ -276,19 +296,83 @@ export async function readSocPayload(ownerHex: string, identifierHex: string): P
   }
   try {
     const soc = await getBee().makeSOCReader(owner).download(identifier);
+    const address = bytesToHex(calculateSocAddress(hexToBytes(identifier), hexToBytes(owner)));
+    if (!whitelistedSocs.has(address)) {
+      whitelistHashes([address])
+        .then(() => whitelistedSocs.add(address))
+        .catch(() => undefined);
+    }
     return soc.payload.toUint8Array();
   } catch (err: unknown) {
     const status = (err as { status?: number })?.status ?? (err as { response?: { status?: number } })?.response?.status;
-    if (status === 404) return null;
     const msg = String((err as Error)?.message ?? "").toLowerCase();
-    if (msg.includes("not found") || msg.includes("404")) return null;
-    // Bee returns 500 "read chunk failed" for chunks that don't exist yet
     const bodyMsg = String(
       (err as { responseBody?: Buffer })?.responseBody?.toString() ?? "",
     ).toLowerCase();
-    if (status === 500 && bodyMsg.includes("read chunk failed")) return null;
-    throw err;
+    const notFound =
+      status === 404 ||
+      msg.includes("not found") || msg.includes("404") ||
+      // Bee returns 500 "read chunk failed" for chunks that don't exist yet
+      (status === 500 && bodyMsg.includes("read chunk failed"));
+    if (!notFound) throw err;
+    // Etherna-stamped SOCs never reach our bee (Beehive doesn't propagate to the
+    // public net) — try Etherna's gateway before declaring the chunk absent.
+    return readSocFromEtherna(owner, identifier);
   }
+}
+
+/**
+ * Read a SOC from the Etherna gateway by computed chunk address, with a bearer
+ * token (bypasses the anonymous-read offer gate). The response is UNTRUSTED raw
+ * chunk bytes, so the SOC signature is re-verified against the claimed owner and
+ * the identifier is checked before the payload is returned. On success the
+ * chunk's OFFER is (re-)registered fire-and-forget — self-heals SOCs whose
+ * write-time offer failed (non-fatal there), which otherwise 402 for every
+ * anonymous reader forever. Returns null when Etherna is unconfigured, the
+ * chunk is absent, or verification fails.
+ */
+async function readSocFromEtherna(ownerHex: string, identifierHex: string): Promise<Uint8Array | null> {
+  try {
+    await ensureEthernaToken();
+  } catch {
+    return null;
+  }
+  const token = getCachedEthernaToken();
+  if (!token) return null;
+
+  const ownerBytes = hexToBytes(ownerHex, 20);
+  const identifier = hexToBytes(identifierHex, SOC_IDENTIFIER_SIZE);
+  const address = bytesToHex(calculateSocAddress(identifier, ownerBytes));
+
+  let raw: Uint8Array;
+  try {
+    const r = await fetch(`${ETHERNA_GW}/chunks/${address}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return null;
+    raw = new Uint8Array(await r.arrayBuffer());
+  } catch {
+    return null;
+  }
+
+  // Stored SOC layout: identifier(32) || signature(65) || span(8) || payload(1..4096).
+  if (raw.length < SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8 + 1) return null;
+  const id = raw.subarray(0, SOC_IDENTIFIER_SIZE);
+  const sig = raw.subarray(SOC_IDENTIFIER_SIZE, SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE);
+  const span = raw.subarray(SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE, SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8);
+  const payload = raw.subarray(SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8);
+  if (bytesToHex(id) !== bytesToHex(identifier)) return null;
+  try {
+    const digest = socSignDigest(id, calculateCacAddress(span, payload));
+    const recovered = new Signature(sig).recoverPublicKey(digest).address().toHex().toLowerCase();
+    if (recovered.replace(/^0x/, "") !== bytesToHex(ownerBytes).toLowerCase()) return null;
+  } catch {
+    return null;
+  }
+
+  registerEthernaOffer(address).catch(() => undefined);
+  return payload;
 }
 
 // ---------------------------------------------------------------------------

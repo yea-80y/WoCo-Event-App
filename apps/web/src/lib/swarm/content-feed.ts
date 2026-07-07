@@ -128,16 +128,34 @@ export async function writeContentFeed(args: {
   gatewayUrl?: string;
   /** Optional caller-supplied lower bound on the latest version (else localStorage). */
   versionHint?: number;
+  /**
+   * EXACT version to write, skipping latest-version resolution entirely (each
+   * probe past the latest is a network search for a missing chunk — seconds).
+   * ONLY safe when the caller can PROVE nothing was ever written at this version:
+   * a SOC write at an existing address is silently deduped (old payload kept), so
+   * a wrong value here loses the write. In practice: version 0 of a topic keyed by
+   * an id minted THIS flow (fresh event ULID), or lastWritten+1 within the same
+   * single-writer flow. Anything else must probe.
+   */
+  knownVersion?: number;
 }): Promise<number> {
   const key = args.signerPrivKey.startsWith("0x") ? args.signerPrivKey : `0x${args.signerPrivKey}`;
   const owner = new Wallet(key).address.toLowerCase();
   const base = contentFeedSocIdentifier(args.topic);
   const gw = args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {};
 
-  const read: SocChunkReader = (id) => readSoc(owner, id);
-  const hint = args.versionHint ?? readVersionHint(owner, args.topic);
-  const latest = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
-  const version = (latest ?? LEGACY_CONTENT_FEED_VERSION) + 1;
+  let version: number;
+  if (args.knownVersion !== undefined) {
+    if (!Number.isInteger(args.knownVersion) || args.knownVersion < 0) {
+      throw new Error(`invalid knownVersion: ${args.knownVersion}`);
+    }
+    version = args.knownVersion;
+  } else {
+    const read: SocChunkReader = (id) => readSoc(owner, id);
+    const hint = args.versionHint ?? readVersionHint(owner, args.topic);
+    const latest = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
+    version = (latest ?? LEGACY_CONTENT_FEED_VERSION) + 1;
+  }
 
   const json = new TextEncoder().encode(JSON.stringify(args.data));
   if (json.length < 1) throw new Error("content feed payload must be ≥1 byte");
