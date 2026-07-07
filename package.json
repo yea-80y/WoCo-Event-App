@@ -23,7 +23,9 @@
     "upload:site": "node scripts/upload-site-to-swarm.cjs",
     "deploy": "npm run build:deploy && npm run upload:swarm",
     "check": "npm run check --workspaces --if-present",
-    "build:scanner": "npm run build:scanner -w @woco/web"
+    "build:scanner": "npm run build:scanner -w @woco/web",
+    "upload:scanner": "node scripts/upload-scanner-to-swarm.cjs",
+    "deploy:scanner": "npm run build:scanner && npm run upload:scanner"
   },
   "devDependencies": {
     "@ethersphere/bee-js": "^11.1.0",

@@ -14,6 +14,21 @@ import { join } from 'node:path'
  * /api/checkin endpoints, and fully functional offline once provisioned.
  */
 
+/** Dev parity with the deployed collection: serve scanner.html at `/`, so
+ *  door-pass links (`{origin}/#/p/...`) open the scanner, not the main app. */
+function serveScannerAtRoot(): Plugin {
+  return {
+    name: 'serve-scanner-at-root',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url === '/' || req.url?.startsWith('/index.html')) req.url = '/scanner.html'
+        next()
+      })
+    },
+  }
+}
+
 /** Swarm collections serve index.html as the index document. */
 function renameEntryToIndex(): Plugin {
   return {
@@ -31,6 +46,7 @@ export default defineConfig({
   envPrefix: 'VITE_',
   plugins: [
     svelte(),
+    serveScannerAtRoot(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['logo.png'],
