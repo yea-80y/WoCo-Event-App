@@ -4,7 +4,7 @@ import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirector
 import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, peekEventCache, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
@@ -463,20 +463,41 @@ events.post("/:id/list", requireAuth, async (c) => {
   const eventId = c.req.param("id");
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string; signer?: string };
-  // Carrier for a client-signed event: a skipAutoList event isn't in the global
-  // directory, so the server can't resolve its content-feed signer to read the
-  // client SOC. The authenticated creator passes their own signer; it's used ONLY
-  // to READ (display-only, non-caching) — the creatorAddress==parent check below is
-  // the real gate, so a forged signer can't list someone else's event.
-  const carrier = body.signer && /^0x[0-9a-fA-F]{40}$/.test(body.signer) ? body.signer.toLowerCase() : undefined;
 
+  // SECURITY: the creatorAddress==parent gate below is only meaningful when the
+  // feed comes from a source the caller cannot author. A client-supplied `signer`
+  // hint fails that test — anyone can sign a SOC naming any eventId/creator under
+  // their own key, so honouring it would let the first caller squat an UNLISTED
+  // event's directory slot (first-writer-wins) and, via the stamped
+  // creatorFeedSigner carrier, hijack its money path. The hint is therefore
+  // IGNORED here. Unlisted client-owned events resolve through the caller's OWN
+  // creator index instead: eventIds are server-minted and index entries are
+  // platform-written from the verified parent at create time, so membership IS
+  // the ownership proof.
   let eventFeed: import("@woco/shared").EventFeed | null = null;
+  let localBasis = false;
 
-  if (body.sourceApiUrl) {
+  // Trusted local resolution first (SiteBuilder passes our OWN URL as
+  // sourceApiUrl, so this must not be gated on that field): the zero-I/O cache
+  // peek covers the just-published window; the caller's creator index covers
+  // unlisted client-owned events. Both are fast — getEvent's full resolution
+  // (with its ~13s missing-feed retry ladder) runs LAST, only for legacy events
+  // listed without a source URL.
+  eventFeed = peekEventCache(eventId);
+  if (!eventFeed) {
+    const mine = await getCreatorEvents(parentAddress);
+    const ownEntry = mine.find((e) => e.eventId === eventId);
+    if (ownEntry?.creatorFeedSigner) {
+      eventFeed = await readEventFeedSoc(eventId, ownEntry.creatorFeedSigner);
+      if (eventFeed?.deleted) eventFeed = null;
+    }
+  }
+  if (eventFeed) localBasis = true;
+
+  if (!eventFeed && body.sourceApiUrl) {
     const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
-    const q = carrier ? `?signer=${carrier}` : "";
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}${q}`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed; error?: string };
       if (!json.ok || !json.data) return c.json({ ok: false, error: json.error || "Event not found on source server" }, 404);
@@ -485,8 +506,11 @@ events.post("/:id/list", requireAuth, async (c) => {
       const msg = err instanceof Error ? err.message : "Unknown error";
       return c.json({ ok: false, error: `Could not reach source server: ${msg}` }, 400);
     }
-  } else {
-    eventFeed = await getEventForDisplay(eventId, carrier);
+  }
+
+  if (!eventFeed && !body.sourceApiUrl) {
+    eventFeed = await getEvent(eventId);
+    if (eventFeed) localBasis = true;
   }
 
   if (!eventFeed) return c.json({ ok: false, error: "Event not found" }, 404);
@@ -511,8 +535,11 @@ events.post("/:id/list", requireAuth, async (c) => {
       ...(directoryApiUrl ? { apiUrl: directoryApiUrl } : {}),
       // Carry the content-feed signer into the global directory so a later no-hint
       // getEvent (deployed site, WoCo app) can resolve the client SOC — this is what
-      // makes the event PAGE load, not just the listing succeed.
-      ...(eventFeed.creatorFeedSigner ? { creatorFeedSigner: eventFeed.creatorFeedSigner } : {}),
+      // makes the event PAGE load, not just the listing succeed. LOCAL basis only:
+      // a signer attested by a caller-named remote server would poison
+      // resolveCreatorFeedSigner → the event cache → the payment path. Federated
+      // events are read via their apiUrl, never via a SOC carrier.
+      ...(localBasis && eventFeed.creatorFeedSigner ? { creatorFeedSigner: eventFeed.creatorFeedSigner } : {}),
     });
 
   } catch (err) {
@@ -645,20 +672,26 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Missing seriesId" }, 400);
   }
 
-  // Phase B carrier: the client passes its content-feed-signer so we can read the
-  // just-published client SOC without racing the fire-and-forget directory write.
-  // Client-supplied ⇒ display-only, non-caching read (the ownership check below is
-  // the gate; a forged signer can't poison the money-path cache).
-  const signerHint = body.signer && /^0x[0-9a-fA-F]{40}$/.test(body.signer) ? body.signer.toLowerCase() : undefined;
-  // The client uploads its event SOC AFTER this registration returns (see
-  // PublishButton: signEventFeedSoc runs post-register), so reading that SOC here
-  // hits a not-yet-existent chunk and STALLS on Bee network retrieval — the real
-  // cost behind a "slow on-chain step". createEventV2 primed the money-path cache
-  // moments ago (same process), so resolve from it first. The signerHint SOC read
-  // (Fix B, avoids the ~32s whole-directory lookup) stays as the cold-cache fallback.
-  let feed = await getEvent(eventId);
-  if (!feed) feed = signerHint ? await readEventFeedSoc(eventId, signerHint) : null;
-  if (!feed) feed = await getEventForDisplay(eventId, signerHint);
+  // SECURITY: same trust rule as /list — the creator gate below trusts
+  // feed.creatorAddress, so the feed must come from a source the caller cannot
+  // author. A client-supplied signer hint would let anyone register (sponsor-gas
+  // tx!) against an eventId they don't own and poison the on-chain registry via
+  // recordOnChainEventId (it overwrites, and applyOnChainEventIds merges it into
+  // every read). Resolution order: zero-I/O cache peek — createEventV2 primed it
+  // moments ago in the publish flow, so this is the hot path and avoids the
+  // not-yet-uploaded client SOC entirely — then the caller's OWN platform-written
+  // creator index (covers a cold retry after a restart), then getEvent's full
+  // trusted resolution (listed/legacy events; slow only when the event is absent).
+  let feed = peekEventCache(eventId);
+  if (!feed) {
+    const mine = await getCreatorEvents(parentAddress);
+    const ownEntry = mine.find((e) => e.eventId === eventId);
+    if (ownEntry?.creatorFeedSigner) {
+      feed = await readEventFeedSoc(eventId, ownEntry.creatorFeedSigner);
+      if (feed?.deleted) feed = null;
+    }
+  }
+  if (!feed) feed = await getEvent(eventId);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
     return c.json({ ok: false, error: "Only the event creator can register on-chain" }, 403);
@@ -723,7 +756,9 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
 
   let updatedFeed: Awaited<ReturnType<typeof confirmSeriesOnChain>>;
   try {
-    updatedFeed = await confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint);
+    // The trusted feed's own signer (never the request's) is the cold-cache
+    // fallback carrier for the confirm read.
+    updatedFeed = await confirmSeriesOnChain(eventId, seriesId, onChainEventId, feed.creatorFeedSigner);
   } catch (err) {
     console.error("[api] register-on-chain confirm error:", err);
     // Feed update failed but tx is on-chain — return the eventId so client can retry confirm

@@ -759,6 +759,18 @@ export function invalidateEventCache(eventId: string): void {
 }
 
 /**
+ * TRUSTED, zero-I/O peek at the event cache (server-authored or trusted-source
+ * entries only — see getEvent/primeEventCache). Lets infrequent routes (/list)
+ * cover the just-published window without getEvent's slow missing-feed retry
+ * ladder when the event doesn't exist locally.
+ */
+export function peekEventCache(eventId: string): EventFeed | null {
+  const cached = _eventCache.get(eventId);
+  if (!cached || cached.expiresAt <= Date.now()) return null;
+  return cached.feed.deleted ? null : cached.feed;
+}
+
+/**
  * Prime the event cache with a server-AUTHORED feed (create / chain-confirm). The
  * server built this feed, so it is the most-trusted source possible — safe to seed
  * the money-path cache directly. This bridges the discovery-carrier propagation gap:
