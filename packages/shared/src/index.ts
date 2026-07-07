@@ -15,6 +15,7 @@ export * from "./pod/gate.js";
 export * from "./pod/merkle.js";
 export * from "./pod/verify.js";
 export * from "./ticket/canonical.js";
+export * from "./checkin/types.js";
 export * from "./profile/types.js";
 export * from "./site/index.js";
 export * from "./shop/types.js";

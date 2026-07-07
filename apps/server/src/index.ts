@@ -25,6 +25,7 @@ import { shopsRouter } from "./routes/shops.js";
 import { podRouter } from "./routes/pod.js";
 import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
+import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
@@ -144,6 +145,7 @@ app.use(
       "X-Session-Timestamp",
       "X-PAYMENT",
       "X-Client-Key",
+      "X-Door-Pass",
     ],
     exposeHeaders: [
       "PAYMENT-REQUIRED",
@@ -371,6 +373,10 @@ app.route("/api/events", orders);
 app.route("/api/events", approvals);
 app.route("/api/events", broadcast);
 app.route("/api/events", reservations);
+app.route("/api/events", checkinOrganiser);
+
+// Door scanner endpoints — authed by X-Door-Pass token, not session delegation
+app.route("/api/checkin", checkin);
 
 // Collection routes (authenticated)
 app.route("/api/collection", collection);
