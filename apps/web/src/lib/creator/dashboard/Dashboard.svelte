@@ -9,6 +9,7 @@
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
   import StripeConnect from "./StripeConnect.svelte";
+  import CheckinPanel from "./CheckinPanel.svelte";
   import EditEventPanel from "../events/EditEventPanel.svelte";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
 
@@ -28,7 +29,7 @@
   let decryptError = $state<string | null>(null);
 
   // Approval tab state
-  let activeTab = $state<"orders" | "approvals" | "broadcast" | "payments" | "edit">("orders");
+  let activeTab = $state<"orders" | "approvals" | "broadcast" | "payments" | "door" | "edit">("orders");
   let pendingEntries = $state<PendingClaimEntry[]>([]);
   let decryptedPending = $state<Map<string, DecryptedOrder>>(new Map()); // keyed by pendingId
   let approvingId = $state<string | null>(null);
@@ -598,6 +599,13 @@
       </button>
       <button
         class="tab-btn"
+        class:active={activeTab === "door"}
+        onclick={() => (activeTab = "door")}
+      >
+        Door
+      </button>
+      <button
+        class="tab-btn"
         class:active={activeTab === "edit"}
         onclick={() => (activeTab = "edit")}
       >
@@ -627,6 +635,16 @@
       <div class="payments-section">
         <StripeConnect />
       </div>
+    {:else if activeTab === "door"}
+      <!-- Door tab — scanner setup + live check-in counts -->
+      <CheckinPanel
+        {eventId}
+        {event}
+        orders={ordersResponse.orders}
+        {decryptedOrders}
+        {decrypting}
+        onEnsureDecrypted={decryptCurrent}
+      />
     {:else if activeTab === "broadcast"}
       <!-- Broadcast tab -->
       {@const emailRecipients = getEmailRecipients(broadcastSeriesFilter)}
