@@ -67,9 +67,9 @@ function fromBase64url(str: string): Uint8Array<ArrayBuffer> {
 }
 
 /** Derive a secp256k1 private key + Ethereum address from the PRF output. */
-function deriveKey(prfOutput: ArrayBuffer): { address: string; privateKey: string } {
+function deriveKey(prfOutput: ArrayBuffer): { address: string; privateKey: `0x${string}` } {
   const prfBytes = new Uint8Array(prfOutput);
-  const privateKey = keccak256(prfBytes);
+  const privateKey = keccak256(prfBytes) as `0x${string}`;
   const wallet = new Wallet(privateKey);
   return { address: wallet.address.toLowerCase(), privateKey };
 }
@@ -170,7 +170,7 @@ export async function authenticatePasskey(): Promise<{
  */
 export async function createPasskeyAccount(): Promise<{
   address: string;
-  privateKey: string;
+  privateKey: `0x${string}`;
 }> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();

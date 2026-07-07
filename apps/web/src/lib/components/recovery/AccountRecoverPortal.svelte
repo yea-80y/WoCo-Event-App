@@ -198,7 +198,7 @@
               <button
                 class="connect-btn"
                 onclick={() => connectWith("email")}
-                disabled={phase === "connecting" || phase === "restoring"}
+                disabled={phase === "restoring"}
               >
                 <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.6"
                      stroke-linecap="round" stroke-linejoin="round" width="16" height="13" aria-hidden="true">
@@ -210,7 +210,7 @@
               <button
                 class="connect-btn"
                 onclick={() => connectWith("passkey")}
-                disabled={phase === "connecting" || phase === "restoring"}
+                disabled={phase === "restoring"}
               >
                 <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.6"
                      stroke-linecap="round" stroke-linejoin="round" width="16" height="13" aria-hidden="true">
@@ -222,7 +222,7 @@
               <button
                 class="connect-btn"
                 onclick={() => connectWith("wallet")}
-                disabled={phase === "connecting" || phase === "restoring"}
+                disabled={phase === "restoring"}
               >
                 <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.6"
                      stroke-linecap="round" stroke-linejoin="round" width="16" height="13" aria-hidden="true">

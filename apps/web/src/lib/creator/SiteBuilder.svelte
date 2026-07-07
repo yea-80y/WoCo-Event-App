@@ -146,8 +146,8 @@
   const dashboardUrl = $derived(eventSiteUrl ? `${eventSiteUrl}#/dashboard` : "");
   const ensHash = $derived(deployResult?.feedManifestHash ? `bzz://${deployResult.feedManifestHash}` : "");
 
-  async function deployToSwarm(): Promise<boolean> {
-    if (!createdEventId) return false;
+  async function deployToSwarm(): Promise<{ contentHash: string; feedManifestHash: string } | null> {
+    if (!createdEventId) return null;
     try {
       const json = await authPost<{ contentHash: string; feedManifestHash: string }>(
         "/api/site/deploy",
@@ -160,13 +160,13 @@
       );
       if (json.ok && json.data) {
         deployResult = json.data;
-        return true;
+        return json.data;
       }
       deployError = json.error || "Deploy failed";
-      return false;
+      return null;
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Deploy failed";
-      return false;
+      return null;
     }
   }
 
@@ -287,8 +287,8 @@
     deployError = null;
     deployResult = null;
     try {
-      const ok = await deployToSwarm();
-      if (!ok) return;
+      const deployed = await deployToSwarm();
+      if (!deployed) return;
 
       // Advance the wizard immediately — site is live. Background tasks
       // surface their status via step-3 UI (addingToSites, siteAddErrors,
@@ -296,7 +296,7 @@
       siteAddErrors = {};
       step = 3;
       void runPostDeployTasks([...selectedSiteIds]);
-      if (deployResult) void runSubEnsTask(deployResult.contentHash);
+      void runSubEnsTask(deployed.contentHash);
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Unexpected error during deploy";
     } finally {
