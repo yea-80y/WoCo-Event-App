@@ -6,6 +6,7 @@ dist
 dist-ssr
 dist-site
 dist-multisite
+dist-scanner
 
 # Logs
 *.log
