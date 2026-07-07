@@ -62,12 +62,19 @@ export async function signEventFeedSoc(
  *   skips the platform write, returning the assembled feed for the client to sign as a
  *   SOC here. Only valid against the default server (the SOC upload targets apiBase's
  *   postage batch), so callers MUST pass null when baseUrlOverride is set.
+ * @param opts.deferFeedSign  Skip the SOC write here and hand the unsigned feed back
+ *   in `result.eventFeed`. For paid-series publishes the caller signs ONCE after
+ *   on-chain registration (a version-0 write here would be obsolete the moment the
+ *   post-registration re-sign lands — one wasted round trip + stamped chunk per
+ *   publish). The caller then OWNS the write: it must sign version 0 even when
+ *   registration fails, or the event is unreadable once the server cache expires.
  */
 export async function createEventStreaming(
   req: CreateEventV2Request,
   onProgress?: (p: PublishProgress) => void,
   baseUrlOverride?: string,
   feedSigner?: ContentFeedSigner | null,
+  opts: { deferFeedSign?: boolean } = {},
 ): Promise<CreateEventResponse> {
   const base = baseUrlOverride ?? apiBase;
   // Stamp the signer address into the request so the server carries it into the
@@ -131,15 +138,18 @@ export async function createEventStreaming(
   // version 0 is exact and the latest-version probe (missing-chunk searches) is
   // skipped. A retried publish gets a NEW eventId, so 0 can never collide.
   if (result.ok && feedSigner && pendingFeed) {
-    try {
-      onProgress?.({ type: "progress", phase: "finalize", current: 0, total: 1, message: "Signing event feed..." });
-      const feedVersion = await signEventFeedSoc(pendingFeed, feedSigner, 0);
-      onProgress?.({ type: "progress", phase: "finalize", current: 1, total: 1, message: "Event feed signed" });
-      // Hand the signed feed back so the caller can merge onChainEventId after
-      // registration and re-sign — the server never touches this feed.
-      result = { ...result, eventFeed: pendingFeed, eventFeedVersion: feedVersion };
-    } catch (e) {
-      return { ok: false, error: `Failed to sign event feed: ${e instanceof Error ? e.message : String(e)}` };
+    if (opts.deferFeedSign) {
+      // Caller signs after registration (see @param deferFeedSign).
+      result = { ...result, eventFeed: pendingFeed };
+    } else {
+      try {
+        onProgress?.({ type: "progress", phase: "finalize", current: 0, total: 1, message: "Signing event feed..." });
+        await signEventFeedSoc(pendingFeed, feedSigner, 0);
+        onProgress?.({ type: "progress", phase: "finalize", current: 1, total: 1, message: "Event feed signed" });
+        result = { ...result, eventFeed: pendingFeed };
+      } catch (e) {
+        return { ok: false, error: `Failed to sign event feed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
   }
 
@@ -238,16 +248,15 @@ export async function getOrganiserNonce(address: string): Promise<{
 export async function registerSeriesOnChain(
   eventId: string,
   seriesId: string,
-  signer?: string,
 ): Promise<{ onChainEventId: string; txHash?: string; eventFeed?: EventFeed }> {
   // The route returns onChainEventId/txHash at the TOP level (not under .data),
   // so read the raw envelope rather than ApiResponse<T>'s data field.
-  // `signer` is the content-feed carrier so the server can read the just-published
-  // client SOC without waiting for the (fire-and-forget) directory write — closes
-  // the publish→register race for client-owned feeds.
+  // The server resolves the event from trusted sources only (its cache, primed at
+  // create, or the caller's platform-written creator index) — a client-supplied
+  // signer carrier is deliberately not accepted.
   const resp = (await authPost<unknown>(
     `/api/events/${eventId}/register-on-chain`,
-    { seriesId, ...(signer ? { signer } : {}) },
+    { seriesId },
   )) as { ok: boolean; error?: string; onChainEventId?: string; txHash?: string; eventFeed?: EventFeed };
   if (!resp.ok || !resp.onChainEventId) {
     throw new Error(resp.error || "register-on-chain failed");

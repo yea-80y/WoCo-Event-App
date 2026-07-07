@@ -216,6 +216,10 @@
         handleProgress,
         apiUrl,
         feedSigner,
+        // Paid publish: defer the SOC write and sign ONCE after registration —
+        // a version-0 write here would be obsolete the moment the post-register
+        // re-sign lands (one wasted round trip + stamped chunk per publish).
+        { deferFeedSign: hasPaidSeries },
       );
 
       if (!result.ok) {
@@ -251,7 +255,7 @@
           step = `Registering "${s.name}" on-chain...`;
 
           try {
-            const { onChainEventId, eventFeed } = await registerSeriesOnChain(eventId, s.seriesId, feedSigner?.address);
+            const { onChainEventId, eventFeed } = await registerSeriesOnChain(eventId, s.seriesId);
             if (eventFeed) {
               ownedFeed = eventFeed;
             } else if (ownedFeed) {
@@ -260,20 +264,37 @@
             }
           } catch (e) {
             error = `On-chain registration failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
+            // The deferred SOC hasn't been written yet — without it the event is
+            // unreadable once the server cache expires. Best-effort version-0
+            // write with what we have before surfacing the error, so the event
+            // page still works and the failure is retryable.
+            if (ownedFeed && feedSigner) {
+              await signEventFeedSoc(ownedFeed, feedSigner, 0).catch(() => {});
+            }
             return;
           }
         }
-        // Persist the merged onChainEventIds by re-signing the owned feed once.
-        // The initial publish write's version came back with the create result —
-        // this flow is the topic's only writer, so version+1 is exact and the
-        // latest-version probe (missing-chunk searches) is skipped.
+        // The topic's ONLY write (create deferred it): version 0 is exact — the
+        // eventId was minted this request — so the latest-version probe
+        // (missing-chunk network searches) is skipped. After the server cache
+        // expires this SOC is the event's only readable form, so retry transient
+        // upload blips before failing the publish. (A retry after a landed-but-
+        // unacknowledged write is safe: Bee dedupes the identical chunk.)
         if (ownedFeed && feedSigner) {
           step = "Finalising event feed...";
-          try {
-            await signEventFeedSoc(ownedFeed, feedSigner,
-              result.eventFeedVersion !== undefined ? result.eventFeedVersion + 1 : undefined);
-          } catch (e) {
-            error = `Failed to finalise event feed: ${e instanceof Error ? e.message : String(e)}`;
+          let signErr: unknown = null;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await signEventFeedSoc(ownedFeed, feedSigner, 0);
+              signErr = null;
+              break;
+            } catch (e) {
+              signErr = e;
+              await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+            }
+          }
+          if (signErr) {
+            error = `Failed to finalise event feed: ${signErr instanceof Error ? signErr.message : String(signErr)}`;
             return;
           }
         }

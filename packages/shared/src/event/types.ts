@@ -367,13 +367,10 @@ export interface CreateEventResponse {
   ok: boolean;
   eventId?: string;
   error?: string;
-  /** Phase B: the client-signed event feed (when the user owns it). Returned so the
-   *  publish flow can merge onChainEventId after registration and re-sign the SOC. */
+  /** Phase B: the client-owned event feed. Free publish: already signed as the
+   *  version-0 SOC. Paid publish (deferFeedSign): UNSIGNED — the publish flow
+   *  merges onChainEventId after registration and signs version 0 once. */
   eventFeed?: EventFeed;
-  /** Version the publish flow's initial SOC write landed at (0 for a fresh event).
-   *  Lets the post-registration re-sign write version+1 EXACTLY, skipping the
-   *  latest-version probe and its missing-chunk network searches. */
-  eventFeedVersion?: number;
 }
 
 // ---------------------------------------------------------------------------
