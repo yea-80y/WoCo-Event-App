@@ -84,7 +84,11 @@ likesRoutes.post("/record", requireAuth, async (c) => {
 
   // Linchpin: the on-chain attester MUST be the authenticated parent.
   if (like.attester !== parent) {
-    return c.json({ ok: false, error: "Attester is not the authenticated account" }, 403);
+    console.warn(`[likes] attester mismatch: attester=${like.attester} parent=${parent}`);
+    return c.json(
+      { ok: false, error: `Attester ${like.attester} is not the authenticated account ${parent}` },
+      403,
+    );
   }
   // Defence-in-depth: the chain-decoded subject must match the client's claim.
   if (like.subject !== subject.toLowerCase() || like.subjectType !== subjectType) {

@@ -681,6 +681,12 @@ export async function getEasSessionClient(
  * verificationGasLimit on first like/follow. Same latent ceiling as the agent
  * commerce / shop rail (project_agent_commerce_aa23). Sponsored + only the limit,
  * not the spend — unused verification gas is not charged.
+ *
+ * 2026-07 ZeroDev TAM response: could not reproduce; estimation now returns
+ * healthy values (~660k on a fresh enable-mode op) and they recommend
+ * provider=ULTRA_RELAY on the RPC URL (applied in .env). Primary path trusts
+ * their estimate again; this retry only fires on the exact stub error, so it
+ * stays as insurance until the fix has soaked in production use.
  */
 const VERIFICATION_GAS_FALLBACK = 3_000_000n;
 
@@ -706,8 +712,10 @@ export async function sendSessionUserOp(
     userOpHash = await client.sendUserOperation({ calls });
   } catch (err) {
     if (!isStubVerificationGasError(err)) throw err;
+    // Full error (contains the rejected userOp JSON) — evidence for the ZeroDev ticket.
+    console.warn("[kernel] stub verificationGasLimit — failing request was:", err);
     console.warn(
-      "[kernel] bundler returned stub verificationGasLimit — retrying with explicit",
+      "[kernel] retrying with explicit verificationGasLimit",
       VERIFICATION_GAS_FALLBACK,
     );
     userOpHash = await client.sendUserOperation({
@@ -936,7 +944,8 @@ async function sendSudoUserOp(
     userOpHash = await client.sendUserOperation(op as Parameters<typeof client.sendUserOperation>[0]);
   } catch (err) {
     if (!isStubVerificationGasError(err)) throw err;
-    console.warn("[kernel] recovery op got stub verificationGasLimit — retrying with explicit", VERIFICATION_GAS_FALLBACK);
+    console.warn("[kernel] recovery op got stub verificationGasLimit — failing request was:", err);
+    console.warn("[kernel] retrying with explicit verificationGasLimit", VERIFICATION_GAS_FALLBACK);
     userOpHash = await client.sendUserOperation({
       ...op,
       verificationGasLimit: VERIFICATION_GAS_FALLBACK,

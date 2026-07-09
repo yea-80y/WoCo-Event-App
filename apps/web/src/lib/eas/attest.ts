@@ -103,6 +103,14 @@ async function uidFromLogs(
 
 async function kernelSend(data: Hex0x): Promise<{ uid: Hex0x | null; txHash: string }> {
   const kernelAddress = await auth.ensureEasSessionKey(); // mints the EAS-scoped key on first use
+  // Same fail-fast as web3Send: the attester (this Kernel) must be the
+  // authenticated parent or the server /record rejects it — don't burn a
+  // sponsored op on a mismatch (seen after account recovery / owner rotation).
+  if (auth.parent && kernelAddress.toLowerCase() !== auth.parent.toLowerCase()) {
+    throw new Error(
+      `This device's session key belongs to ${kernelAddress}, but you are signed in as ${auth.parent}. Sign out and back in, then retry.`,
+    );
+  }
   const client = await getEasSessionClient(kernelAddress);
   if (!client) throw new Error("No EAS session key on this device for the Kernel.");
 
