@@ -22,6 +22,7 @@ import {
   EAS_ADDRESS, EAS_SCHEMA_UID, EAS_CHAIN_ID,
 } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
+import { getSessionDelegation } from "../auth/session-delegation.js";
 import { getEasSessionClient, sendSessionUserOp } from "../auth/kernel-account.js";
 import { switchChain } from "../payment/chains.js";
 import { requireProvider } from "../wallet/provider.js";
@@ -103,15 +104,27 @@ async function uidFromLogs(
 
 async function kernelSend(data: Hex0x): Promise<{ uid: Hex0x | null; txHash: string }> {
   const kernelAddress = await auth.ensureEasSessionKey(); // mints the EAS-scoped key on first use
-  // Same fail-fast as web3Send: the attester (this Kernel) must be the
-  // authenticated parent or the server /record rejects it — don't burn a
-  // sponsored op on a mismatch (seen after account recovery / owner rotation).
-  if (auth.parent && kernelAddress.toLowerCase() !== auth.parent.toLowerCase()) {
+  // Same fail-fast as web3Send: the attester (this Kernel) must be the parent
+  // the server authenticates — which is the STORED delegation's parent, the
+  // value the /record request headers will actually carry. Compare against
+  // that, not just in-memory auth.parent: the 2026-07-10 split-brain showed
+  // the two can disagree, and only the delegation's parent is what the server
+  // checks. Don't burn a sponsored op on a mismatch.
+  const delegation = auth.parent ? await getSessionDelegation(auth.parent) : null;
+  const authedParent = (delegation?.message.parent ?? auth.parent)?.toLowerCase();
+  if (authedParent && kernelAddress.toLowerCase() !== authedParent) {
     throw new Error(
-      `This device's session key belongs to ${kernelAddress}, but you are signed in as ${auth.parent}. Sign out and back in, then retry.`,
+      `This device's session key belongs to ${kernelAddress}, but you are signed in as ${authedParent}. Sign out and back in, then retry.`,
     );
   }
-  const client = await getEasSessionClient(kernelAddress);
+  let client = await getEasSessionClient(kernelAddress);
+  if (!client) {
+    // A stored key for the wrong Kernel was just discarded (recovered-account
+    // heal, or AAD mismatch after an account switch) — mint a fresh one pinned
+    // to the active Kernel and retry once.
+    await auth.ensureEasSessionKey();
+    client = await getEasSessionClient(kernelAddress);
+  }
   if (!client) throw new Error("No EAS session key on this device for the Kernel.");
 
   const { receipt } = await sendSessionUserOp(client, [{ to: EAS_ADDRESS, data }]);

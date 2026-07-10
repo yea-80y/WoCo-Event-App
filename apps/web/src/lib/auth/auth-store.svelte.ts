@@ -1296,7 +1296,11 @@ async function ensureWocoSessionKey(): Promise<string> {
   await _ensureKernel();
   if (!_kernel) throw new Error("Kernel unavailable — cannot mint session key");
   const { hasWocoSessionKey, createWocoSessionKey } = await import("./kernel-account.js");
-  if (!(await hasWocoSessionKey())) {
+  // Kernel-address-aware check: a stored key minted for a DIFFERENT Kernel
+  // (pre-pinning recovered-account blob, or an account switch) reports false
+  // and is overwritten with a fresh, correctly-pinned key — the heal path for
+  // the 2026-07-10 split-brain.
+  if (!(await hasWocoSessionKey(_kernel.address))) {
     await createWocoSessionKey(_kernel);
   }
   return _kernel.address;
@@ -1316,7 +1320,9 @@ async function ensureEasSessionKey(): Promise<string> {
   await _ensureKernelForKind();
   if (!_kernel) throw new Error("Kernel unavailable — cannot mint EAS session key");
   const { hasEasSessionKey, createEasSessionKey } = await import("./kernel-account.js");
-  if (!(await hasEasSessionKey())) {
+  // Kernel-address-aware check (see ensureWocoSessionKey) — wrong-Kernel blobs
+  // are replaced instead of silently attesting from a divergent account.
+  if (!(await hasEasSessionKey(_kernel.address))) {
     await createEasSessionKey(_kernel);
   }
   return _kernel.address;

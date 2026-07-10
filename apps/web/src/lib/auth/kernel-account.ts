@@ -400,6 +400,10 @@ export async function grantShopSpendPermission(args: ShopSpendGrantArgs): Promis
     },
     entryPoint: d.entryPoint,
     kernelVersion: d.kernelVersion,
+    // Pin to the built Kernel's address (see createWocoSessionKey) — a
+    // recovered attendee's approval must draw from the preserved account, not
+    // the rotated sudo key's counterfactual.
+    address: args.builtKernel.address as Address,
   });
 
   // No private key argument → the serialized blob is an APPROVAL (sudo-signed
@@ -471,6 +475,12 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
     },
     entryPoint: d.entryPoint,
     kernelVersion: d.kernelVersion,
+    // Pin to the built Kernel's address. Without this the session account is
+    // recomputed as the sudo key's counterfactual CREATE2 address — which for a
+    // RECOVERED account (owner rotated, address preserved) is a DIFFERENT,
+    // fresh Kernel: the userOp would deploy + act from the wrong address while
+    // every server check authenticates the preserved one (split-brain).
+    address: builtKernel.address as Address,
   });
 
   const serialized = await d.serializePermissionAccount(sessionAccount, sessionPk);
@@ -482,10 +492,41 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
   return sessionAccount.address.toLowerCase();
 }
 
-/** True if a session key is persisted for this device (independent of whether
- *  it still decrypts / is unexpired). */
-export async function hasWocoSessionKey(): Promise<boolean> {
-  return (await getKV(StorageKeys.WOCO_AA_SESSION)) != null;
+/**
+ * Address embedded in a stored serialized permission-account blob, or null when
+ * the blob is missing, was encrypted for a different Kernel (AAD mismatch), or
+ * doesn't parse. Cheap: decrypt + JSON only — no account deserialization, no RPC.
+ * The serialized format is @zerodev/permissions' base64(JSON) with
+ * `accountParams.accountAddress` (the userOp sender the blob will act as).
+ */
+async function storedSessionKeyAddress(
+  storageKey: string,
+  aad: string,
+): Promise<string | null> {
+  const blob = await getKV<import("@woco/shared").EncryptedBlob>(storageKey);
+  if (!blob) return null;
+  try {
+    const deviceKey = await ensureDeviceKey();
+    const serialized = await decrypt<string>(deviceKey, aad, blob);
+    const bytes = Uint8Array.from(atob(serialized), (c) => c.codePointAt(0) ?? 0);
+    const params = JSON.parse(new TextDecoder().decode(bytes)) as {
+      accountParams?: { accountAddress?: string };
+    };
+    return params?.accountParams?.accountAddress?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** True if a session key usable by THIS Kernel is persisted on this device.
+ *  A blob for a different Kernel (pre-pinning recovered-account mint, or an
+ *  account switch) reports false so the caller re-mints instead of wedging. */
+export async function hasWocoSessionKey(kernelAddress: string): Promise<boolean> {
+  const stored = await storedSessionKeyAddress(
+    StorageKeys.WOCO_AA_SESSION,
+    AAD.WOCO_AA_SESSION(kernelAddress),
+  );
+  return stored === kernelAddress.toLowerCase();
 }
 
 /** Drop the persisted session key (logout / identity switch). */
@@ -508,11 +549,15 @@ export async function getWocoSessionClient(
   const d = await loadSessionDeps();
 
   const deviceKey = await ensureDeviceKey();
-  const serialized = await decrypt<string>(
-    deviceKey,
-    AAD.WOCO_AA_SESSION(kernelAddress),
-    blob,
-  );
+  let serialized: string;
+  try {
+    serialized = await decrypt<string>(deviceKey, AAD.WOCO_AA_SESSION(kernelAddress), blob);
+  } catch {
+    // AAD mismatch — the blob belongs to a different Kernel (account switch
+    // without logout). Unusable for this identity; wipe so the caller re-mints.
+    await clearWocoSessionKey();
+    return null;
+  }
 
   const sessionAccount = await d.deserializePermissionAccount(
     d.publicClient,
@@ -520,6 +565,21 @@ export async function getWocoSessionClient(
     d.kernelVersion,
     serialized,
   );
+
+  // Heal: blobs minted before address-pinning embed the sudo key's
+  // counterfactual as sender — for a recovered account that is the WRONG
+  // Kernel. Wipe so the caller re-mints a correctly-pinned key.
+  if (sessionAccount.address.toLowerCase() !== kernelAddress.toLowerCase()) {
+    console.warn(
+      "[kernel] stored sub-ENS session key is for",
+      sessionAccount.address,
+      "not the active Kernel",
+      kernelAddress,
+      "— discarding",
+    );
+    await clearWocoSessionKey();
+    return null;
+  }
 
   const paymaster = d.createZeroDevPaymasterClient({
     chain: d.arbitrumSepolia,
@@ -598,6 +658,12 @@ export async function createEasSessionKey(builtKernel: BuiltKernel): Promise<str
     plugins: { sudo: builtKernel.sudo.validator, regular: permissionPlugin },
     entryPoint: d.entryPoint,
     kernelVersion: d.kernelVersion,
+    // Pin to the built Kernel's address (see createWocoSessionKey) — a recovered
+    // account's attester must be the preserved Kernel, not the rotated sudo
+    // key's counterfactual. This was the 2026-07-10 likes split-brain: the
+    // attestation landed from a freshly-deployed wrong-address Kernel while the
+    // HTTP session authenticated the real account, so /api/likes/record 403'd.
+    address: builtKernel.address as Address,
   });
 
   const serialized = await d.serializePermissionAccount(sessionAccount, sessionPk);
@@ -608,9 +674,14 @@ export async function createEasSessionKey(builtKernel: BuiltKernel): Promise<str
   return sessionAccount.address.toLowerCase();
 }
 
-/** True if an EAS session key is persisted for this device. */
-export async function hasEasSessionKey(): Promise<boolean> {
-  return (await getKV(StorageKeys.WOCO_AA_EAS_SESSION)) != null;
+/** True if an EAS session key usable by THIS Kernel is persisted on this
+ *  device (same wrong-Kernel semantics as hasWocoSessionKey). */
+export async function hasEasSessionKey(kernelAddress: string): Promise<boolean> {
+  const stored = await storedSessionKeyAddress(
+    StorageKeys.WOCO_AA_EAS_SESSION,
+    AAD.WOCO_AA_EAS_SESSION(kernelAddress),
+  );
+  return stored === kernelAddress.toLowerCase();
 }
 
 /** Drop the persisted EAS session key (logout / identity switch). */
@@ -631,11 +702,14 @@ export async function getEasSessionClient(
 
   const d = await loadSessionDeps();
   const deviceKey = await ensureDeviceKey();
-  const serialized = await decrypt<string>(
-    deviceKey,
-    AAD.WOCO_AA_EAS_SESSION(kernelAddress),
-    blob,
-  );
+  let serialized: string;
+  try {
+    serialized = await decrypt<string>(deviceKey, AAD.WOCO_AA_EAS_SESSION(kernelAddress), blob);
+  } catch {
+    // AAD mismatch — blob belongs to a different Kernel (see getWocoSessionClient).
+    await clearEasSessionKey();
+    return null;
+  }
 
   const sessionAccount = await d.deserializePermissionAccount(
     d.publicClient,
@@ -643,6 +717,21 @@ export async function getEasSessionClient(
     d.kernelVersion,
     serialized,
   );
+
+  // Heal (same as getWocoSessionClient): a pre-pinning blob for a recovered
+  // account would attest from the wrong Kernel — discard so the caller
+  // re-mints against the active address.
+  if (sessionAccount.address.toLowerCase() !== kernelAddress.toLowerCase()) {
+    console.warn(
+      "[kernel] stored EAS session key is for",
+      sessionAccount.address,
+      "not the active Kernel",
+      kernelAddress,
+      "— discarding",
+    );
+    await clearEasSessionKey();
+    return null;
+  }
 
   const paymaster = d.createZeroDevPaymasterClient({
     chain: d.arbitrumSepolia,
