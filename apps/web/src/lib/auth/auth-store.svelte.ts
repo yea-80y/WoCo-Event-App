@@ -115,23 +115,22 @@ async function _getSigner(): Promise<EIP712Signer> {
     );
   }
   if (_kind === "passkey") {
-    // Passkey parent is the ZeroDev Kernel — it signs AuthorizeSession as an
-    // ERC-1271/6492 signature (server verify-delegation.ts handles it). NOT the
-    // raw PRF key. POD uses _getPodSigner() instead (invariant #1).
-    await _ensureKernel();
-    if (!_kernel) throw new Error("Kernel unavailable for passkey signer");
-    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
-    return createKernelTypedDataSigner(_kernel.account);
+    // Passkey parent stays the ZeroDev Kernel (identity/EAS attester), but
+    // AuthorizeSession is signed by the RAW PRF-EOA key — ecrecover-able, so
+    // the server verifies it RPC-free and authorizes by owner-of-Kernel
+    // (kernel-owner.ts). Replaces Kernel ERC-1271, which needed deployed +
+    // owner==live-key + working RPC and 403-wedged recovered/rotated accounts
+    // (2026-07 split-brain fix). Silent (no confirm dialog) like the Kernel
+    // signer it replaces. POD uses _getPodSigner() instead (invariant #1).
+    await _ensurePasskeyKey();
+    if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for signer");
+    return createLocalSigner(_passkeyPrivateKey, async () => true);
   }
   if (_kind === "web3auth") {
-    // web3auth parent is the ZeroDev Kernel (like passkey) — it signs
-    // AuthorizeSession as an ERC-1271/6492 sig (server verify-delegation.ts
-    // accepts it). The raw Web3Auth key is used ONLY for POD (_getPodSigner,
-    // invariant #1), never for request signing.
-    await _ensureKernelForWeb3Auth();
-    if (!_kernel) throw new Error("Kernel unavailable for web3auth signer");
-    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
-    return createKernelTypedDataSigner(_kernel.account);
+    // web3auth parent is the Kernel too; AuthorizeSession is signed by the raw
+    // Web3Auth EOA key (same owner-of-Kernel server authorization as passkey).
+    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for signer");
+    return createLocalSigner(_web3authPrivateKey, async () => true);
   }
   if (_kind === "coinbase" && _parent) {
     const { createCoinbaseSigner } = await import("./signers/coinbase-signer.js");
@@ -1198,9 +1197,18 @@ async function ensureSession(): Promise<boolean> {
   const parent = _parent;
   _sessionInFlight = (async () => {
     try {
-      if (_kind === "passkey") await _ensureKernel();
       const signer = await _getSigner();
-      const { sessionAddress } = await requestSessionDelegation(parent, signer);
+      // Kernel-backed kinds sign with the raw owner EOA (ecrecover-able) while
+      // message.parent stays the Kernel — tell the local sanity check who the
+      // signature should recover to. No Kernel build needed for HTTP sessions
+      // any more; on-chain actions still build it lazily.
+      const expectedSigner =
+        _kind === "passkey"
+          ? (_podAddress ?? undefined)
+          : _kind === "web3auth"
+            ? (_web3authPodAddress ?? undefined)
+            : undefined;
+      const { sessionAddress } = await requestSessionDelegation(parent, signer, expectedSigner);
       _sessionAddress = sessionAddress;
       // A session now exists — persist the cross-device portability envelope for
       // a recovered passkey account if it hasn't been written yet (covers device A

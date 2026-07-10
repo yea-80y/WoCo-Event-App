@@ -29,6 +29,13 @@ function getHost(): string {
 export async function requestSessionDelegation(
   parentAddress: string,
   signTypedData: EIP712Signer,
+  /**
+   * Address the signature is expected to ecrecover to when it differs from
+   * `parentAddress`. Kernel-backed kinds (passkey/web3auth) sign with their
+   * RAW owner EOA key while `message.parent` stays the Kernel — the server
+   * authorizes by owner-of-Kernel (verify-delegation.ts / kernel-owner.ts).
+   */
+  expectedSigner?: string,
 ): Promise<{ sessionAddress: string; delegation: SessionDelegation }> {
   // 1. Random session key
   const sessionWallet = Wallet.createRandom();
@@ -74,7 +81,8 @@ export async function requestSessionDelegation(
         message,
         parentSig,
       );
-      if (recovered.toLowerCase() !== parentAddress.toLowerCase()) {
+      const expected = (expectedSigner ?? parentAddress).toLowerCase();
+      if (recovered.toLowerCase() !== expected) {
         throw new Error("Session delegation signature verification failed");
       }
     } catch (err) {
