@@ -14,6 +14,7 @@
   import ShopOrderScreen from "./lib/attendee/shop/ShopOrderScreen.svelte";
   import AccountRecoverySetup from "./lib/components/recovery/AccountRecoverySetup.svelte";
   import AccountRecoverPortal from "./lib/components/recovery/AccountRecoverPortal.svelte";
+  import SignupLanding from "./lib/attendee/gate/SignupLanding.svelte";
 </script>
 
 <AttendeeShell>
@@ -39,6 +40,8 @@
     <MyTickets />
   {:else if router.route === "verify"}
     <VerifyTicket />
+  {:else if router.route === "signup"}
+    <SignupLanding token={router.params.gt} />
   {:else if router.route === "profile"}
     <ProfilePage address={router.params.address} />
   {:else if router.route === "soon"}

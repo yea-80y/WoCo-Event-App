@@ -11,6 +11,7 @@
  *     /event/:id                   event
  *     /tickets   (and /my-tickets) my-tickets
  *     /verify                      verify
+ *     /signup                      signup (email-CTA landing; ?gt= gate token)
  *     /profile, /profile/:addr     profile
  *     /shops/:id/tap               shop-tap (tap-to-pay activation)
  *     /shop/:shopId/order/:code    shop-order (Stripe return — success/cancel)
@@ -89,6 +90,10 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
   if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };
+  if (path === "/signup") {
+    const gt = new URLSearchParams(query).get("gt");
+    return { route: "signup", params: gt ? { gt } : {}, surface: "attendee" };
+  }
   if (path === "/protect") return { route: "protect", params: {}, surface: "attendee" };
   if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
