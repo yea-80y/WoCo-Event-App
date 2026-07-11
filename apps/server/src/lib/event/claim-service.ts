@@ -629,6 +629,43 @@ export async function getClaimedTicketByEdition(
   return getClaimedTicketDetail(ref);
 }
 
+export type StampResult = "stamped" | "already-owned" | "not-found";
+
+/**
+ * Stamp the attendee's ed25519 POD pubkey into `ClaimedTicket.owner` and
+ * republish the claims-feed slot (attendee gate bind → de-platformed
+ * ownership record, plan §3). First stamp wins: an existing DIFFERENT owner
+ * is never overwritten — the gate nullifier already guarantees one bind per
+ * edition, so a conflicting owner means a v2 issued-to-identity ticket or an
+ * earlier stamp, both authoritative over a retro-bind.
+ *
+ * MUST run inside `queueSeriesClaim(seriesId, …)` — this is a read-modify-write
+ * of a claims page that concurrent claim allocations also rewrite.
+ */
+export async function stampTicketOwner(
+  seriesId: string,
+  edition: number,
+  podPubKey: string,
+): Promise<StampResult> {
+  const { page, slot } = editionToPageSlot(edition);
+  const claimsPageData = await readFeedPage(topicClaims(seriesId, page));
+  if (!claimsPageData) return "not-found";
+  const ref = decode4096Claims(claimsPageData)[slot];
+  if (!ref) return "not-found";
+
+  const ticket = JSON.parse(await downloadFromBytes(ref)) as ClaimedTicket;
+  if (ticket.owner) return ticket.owner === podPubKey ? "stamped" : "already-owned";
+
+  const stamped: ClaimedTicket = { ...ticket, owner: podPubKey };
+  const newRef = await uploadToBytes(JSON.stringify(stamped));
+
+  const claimsData = new Uint8Array(claimsPageData);
+  claimsData.set(hexToBytes32(newRef), slot * 32);
+  await writeFeedPage(topicClaims(seriesId, page), claimsData);
+  console.log(`[gate] owner stamped: ${seriesId}#${edition} → pod:${podPubKey.slice(0, 12)}… (${newRef})`);
+  return "stamped";
+}
+
 // ---------------------------------------------------------------------------
 // Pending claims feed
 // ---------------------------------------------------------------------------

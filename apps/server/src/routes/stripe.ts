@@ -1131,6 +1131,9 @@ async function handleSuccessfulPayment(
           buyerName,
           palette: siteTheme?.palette,
           siteId: metaSiteId || undefined,
+          // `to` here IS the verified purchase email (Stripe checkout) — the
+          // only path allowed to mint Route A gate tokens.
+          profileCta: true,
         }),
       )
       .catch((err) => {

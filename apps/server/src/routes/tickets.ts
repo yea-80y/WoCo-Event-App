@@ -3,6 +3,8 @@ import type { AppEnv } from "../types.js";
 import type { SitePalette } from "@woco/shared";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
+import { mintGateToken } from "../lib/gate/token.js";
+import { hashEmail } from "../lib/event/claim-service.js";
 
 const tickets = new Hono<AppEnv>();
 
@@ -34,6 +36,35 @@ export interface TicketEmailOpts {
   /** Organiser site ID — appended to ticket page URLs so the standalone page
    *  can look up the site palette and render in the organiser's brand colours. */
   siteId?: string;
+  /** Add the "Create your WoCo profile" CTA (Route A gate token). Set ONLY on
+   *  paths where `to` is the VERIFIED purchase email (Stripe webhook). The
+   *  public /send-email route must never set it: its recipient is arbitrary,
+   *  and a gate token minted for an arbitrary inbox would let anyone holding
+   *  a leaked /t link bind the ticket without knowing the purchase email. */
+  profileCta?: boolean;
+}
+
+/** Canonical app host for email CTAs. Emails are rendered server-side with no
+ *  request context, so this cannot come from Origin/Referer. */
+const APP_BASE = (process.env.FRONTEND_URL || "https://woco.eth.limo").replace(/\/$/, "");
+
+/** Route A signup-landing URL for one ticket, or null when the QR is
+ *  unparseable. The token rides in the hash fragment — never sent to any
+ *  server on page load; the SPA POSTs it to /api/attendee-gate/redeem. */
+function gateCtaUrl(qrContent: string, to: string): string | null {
+  const p = parseQrContent(qrContent);
+  if (!p) return null;
+  try {
+    const token = mintGateToken({
+      eventId: p.eventId,
+      seriesId: p.seriesId,
+      edition: p.edition,
+      emailHash: hashEmail(to),
+    });
+    return `${APP_BASE}/#/signup?gt=${token}`;
+  } catch {
+    return null; // EMAIL_HASH_SECRET missing (dev) — email just has no CTA
+  }
 }
 
 /** Parse `woco://t/{eventId}/{seriesId}/{edition}/{sig}` → its parts.
@@ -82,18 +113,32 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
       })
     : null;
 
+  const multiTicket = tix.length > 1;
   const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
     const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
     // Standalone HTML page: fast server-rendered, no SPA load.
     const pageUrl = ticketUrl(qrContent, to, buyerName, false, siteId);
     const cid = `woco-card-${i}`;
+    // Group buys: each ticket carries its own one-shot signup link — forward a
+    // ticket to a friend and their click binds THAT edition, not the buyer's.
+    const perTicketCta = opts.profileCta && multiTicket ? gateCtaUrl(qrContent, to) : null;
     return `
       <div class="qr-section">
         ${editionStr ? `<div class="qr-label">Ticket #${editionStr}</div>` : `<div class="qr-label">Show at the door</div>`}
         <img src="cid:${cid}" alt="Ticket — show at the door" class="qr-image" width="320" height="440" />
         ${pageUrl ? `<a href="${escHtml(pageUrl)}" class="qr-link">Open ticket page${editionStr ? ` #${editionStr}` : ""} →</a>` : ""}
+        ${perTicketCta ? `<div class="cta-mini"><a href="${escHtml(perTicketCta)}">Create a WoCo profile with this ticket →</a></div>` : ""}
       </div>`;
   }).join("\n");
+
+  const mainCtaUrl = opts.profileCta ? gateCtaUrl(tix[0].qrContent, to) : null;
+  const ctaBlock = mainCtaUrl ? `
+        <div class="cta-section">
+          <div class="cta-title">Save your ticket to a WoCo account</div>
+          <p class="cta-copy">Create your free profile to keep your ticket${multiTicket ? "s" : ""} linked to you, follow the events you love, and check in faster at the door.</p>
+          <a href="${escHtml(mainCtaUrl)}" class="cta-btn">Create your WoCo profile →</a>
+          ${multiTicket ? `<p class="cta-note">Each ticket unlocks one profile — forward a ticket to your friends and they can create their own.</p>` : ""}
+        </div>` : "";
 
   const countLabel = tix.length > 1 ? `${tix.length} Tickets` : "Your Ticket";
   const subjectEdition = tix.length === 1 && tix[0].edition != null
@@ -120,6 +165,13 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
     .qr-label { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: ${c.muted}; margin-bottom: 14px; }
     .qr-image { display: block; margin: 0 auto 16px; max-width: 100%; height: auto; border-radius: 4px; }
     .qr-link { display: inline-block; background: ${c.accent}14; border: 1px solid ${c.accent}33; color: ${c.accent}; font-size: 12px; font-weight: 600; text-decoration: none; padding: 10px 20px; border-radius: 4px; }
+    .cta-mini { margin-top: 12px; }
+    .cta-mini a { color: ${c.muted}; font-size: 11px; text-decoration: underline; }
+    .cta-section { border: 1px solid ${c.accent}38; background: ${c.accent}0d; border-radius: 4px; padding: 22px 20px; text-align: center; margin-top: 20px; }
+    .cta-title { font-size: 14px; font-weight: 700; color: ${c.text}; margin-bottom: 8px; }
+    .cta-copy { font-size: 12px; color: ${c.muted}; line-height: 1.6; margin-bottom: 16px; }
+    .cta-btn { display: inline-block; background: ${c.accent}; color: ${c.bg}; font-size: 13px; font-weight: 700; text-decoration: none; padding: 12px 24px; border-radius: 4px; }
+    .cta-note { font-size: 11px; color: ${c.muted}; margin-top: 12px; }
     .instructions { font-size: 13px; color: ${c.muted}; line-height: 1.65; margin-top: 8px; }
     .footer { border-top: 1px solid ${c.border}; padding: 20px 32px; font-size: 11px; color: ${c.muted}; }
   </style>
@@ -142,6 +194,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
           Present this email or open a link above to display your ticket QR code at the venue entrance.
           Your ticket${tix.length > 1 ? "s are" : " is"} cryptographically signed and can be verified offline.
         </p>
+        ${ctaBlock}
       </div>
       <div class="footer">
         Powered by WoCo · Decentralised event ticketing on Ethereum Swarm

@@ -7,6 +7,8 @@
  *                                          → sig-verify + emailHash match → code sent
  *   POST /api/attendee-gate/confirm      → Route B step 2: code → binding (one-shot)
  *   POST /api/attendee-gate/bind-wallet  → wallet claimers: bind own claims, no email dance
+ *   POST /api/attendee-gate/token-info   → Route A: unauthenticated landing preview
+ *   POST /api/attendee-gate/redeem       → Route A: email-CTA token → binding (one-shot)
  *
  * Security invariants:
  *  - The ClaimedTicket POD is PUBLIC Swarm data — it is never accepted as a
@@ -28,9 +30,12 @@ import {
   hashEmail,
   getClaimedTicketByEdition,
   getClaimStatus,
+  stampTicketOwner,
 } from "../lib/event/claim-service.js";
+import { queueSeriesClaim } from "./claims.js";
 import { getEvent } from "../lib/event/service.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
+import { verifyGateToken } from "../lib/gate/token.js";
 import {
   bindTicket,
   canSendCode,
@@ -83,6 +88,19 @@ async function seriesIsPaid(eventId: string, seriesId: string): Promise<boolean>
   const ev = await getEvent(eventId).catch(() => null);
   const series = ev?.series.find((s) => s.seriesId === seriesId);
   return !!series && series.price > 0;
+}
+
+/** Stamp the attendee's POD pubkey into the public ClaimedTicket (background,
+ *  non-fatal — the binding is the gate record; the stamp is the de-platformed
+ *  ownership projection). Serialised through the per-series claim queue: it
+ *  rewrites a claims page that concurrent claims also rewrite. */
+function stampOwnerBg(seriesId: string, edition: number, podPubKey?: string): void {
+  if (!podPubKey) return;
+  queueSeriesClaim(seriesId, () => stampTicketOwner(seriesId, edition, podPubKey))
+    .then((r) => {
+      if (r !== "stamped") console.warn(`[gate] owner stamp ${seriesId}#${edition}: ${r}`);
+    })
+    .catch((err) => console.error(`[gate] owner stamp failed ${seriesId}#${edition}:`, err));
 }
 
 attendeeGate.get("/status", requireAuth, async (c) => {
@@ -189,10 +207,99 @@ attendeeGate.post("/confirm", requireAuth, async (c) => {
     return c.json({ ok: false, error: "This ticket has already unlocked an account" }, 409);
   }
 
+  stampOwnerBg(body.seriesId, body.edition, body.podPubKey);
   console.log(
     `[gate] bound ${body.seriesId}#${body.edition} → ${parentAddress} (ticket-proof)`,
   );
   return c.json({ ok: true, data: { gated: true, via: "ticket" } });
+});
+
+// ---------------------------------------------------------------------------
+// Route A — email CTA token (minted at ticket-email send, lib/gate/token.ts)
+// ---------------------------------------------------------------------------
+
+// Unauthenticated preview for the signup landing page — shows "you're claiming
+// ticket #N for <event>" BEFORE the user creates an account. Read-only; the
+// token itself is unforgeable (HMAC), the limiter just caps probing volume.
+const INFO_RATE_LIMIT = 30;
+const infoAttempts = new Map<string, number[]>();
+
+attendeeGate.post("/token-info", async (c) => {
+  const ip = clientIp(c);
+  const now = Date.now();
+  const recent = (infoAttempts.get(ip) ?? []).filter((t) => now - t < START_RATE_WINDOW_MS);
+  if (recent.length >= INFO_RATE_LIMIT) {
+    return c.json({ ok: false, error: "Too many attempts — try again later" }, 429);
+  }
+  recent.push(now);
+  infoAttempts.set(ip, recent);
+
+  const body = await c.req.json<{ token?: string }>().catch(() => null);
+  if (!body?.token) return c.json({ ok: false, error: "token is required" }, 400);
+
+  const verdict = verifyGateToken(body.token);
+  if (!verdict.ok) {
+    const msg =
+      verdict.reason === "expired"
+        ? "This link has expired — open the app and use “I have a ticket” instead"
+        : "This link is not valid";
+    return c.json({ ok: false, error: msg }, verdict.reason === "expired" ? 410 : 400);
+  }
+
+  const { eventId, seriesId, edition } = verdict.payload;
+  const ev = await getEvent(eventId).catch(() => null);
+  return c.json({
+    ok: true,
+    data: {
+      eventId,
+      seriesId,
+      edition,
+      eventTitle: ev?.title,
+      eventDate: ev?.startDate,
+      eventLocation: ev?.location,
+      seriesName: ev?.series.find((s) => s.seriesId === seriesId)?.name,
+      consumed: isTicketConsumed(seriesId, edition),
+    },
+  });
+});
+
+/** Redeem the email-CTA token against the authed account. One-shot: the gate
+ *  binding nullifier is the consumption record — first click wins (buyer
+ *  forwarding the email is implicit consent, supports group buys). */
+attendeeGate.post("/redeem", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = await c.req
+    .json<{ token?: string; podPubKey?: string }>()
+    .catch(() => null);
+  if (!body?.token) return c.json({ ok: false, error: "token is required" }, 400);
+
+  const verdict = verifyGateToken(body.token);
+  if (!verdict.ok) {
+    const msg =
+      verdict.reason === "expired"
+        ? "This link has expired — use “I have a ticket” instead"
+        : "This link is not valid";
+    return c.json({ ok: false, error: msg }, verdict.reason === "expired" ? 410 : 400);
+  }
+
+  const { eventId, seriesId, edition, emailHash } = verdict.payload;
+  const bound = bindTicket({
+    seriesId,
+    edition,
+    eventId,
+    parentAddress,
+    emailHash,
+    podPubKey: typeof body.podPubKey === "string" ? body.podPubKey : undefined,
+    paid: await seriesIsPaid(eventId, seriesId),
+    route: "email-link",
+  });
+  if (!bound) {
+    return c.json({ ok: false, error: "This ticket has already unlocked an account" }, 409);
+  }
+
+  stampOwnerBg(seriesId, edition, body.podPubKey);
+  console.log(`[gate] bound ${seriesId}#${edition} → ${parentAddress} (email-link)`);
+  return c.json({ ok: true, data: { gated: true, via: "ticket", eventId, seriesId, edition } });
 });
 
 /** Wallet claimers: their claims are already bound to the authed parent on
@@ -224,7 +331,10 @@ attendeeGate.post("/bind-wallet", requireAuth, async (c) => {
       paid,
       route: "wallet",
     });
-    if (bound) boundCount++;
+    if (bound) {
+      boundCount++;
+      stampOwnerBg(body.seriesId, edition, body.podPubKey);
+    }
   }
   if (boundCount === 0) {
     return c.json({ ok: false, error: "These tickets have already unlocked an account" }, 409);
