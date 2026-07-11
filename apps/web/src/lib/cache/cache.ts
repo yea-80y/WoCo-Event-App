@@ -91,6 +91,12 @@ export const TTL = {
   SHOP_PRODUCTS: 5 * 60,
   /** Merchant's own shop list. */
   CREATOR_SHOPS: 24 * 60 * 60,
+  /**
+   * Confirmed "no profile published for this address". Suppresses the SOC probe
+   * fan-out (gateway 403 + server 404 per miss) that floods the console; short
+   * TTL so a freshly published profile appears within minutes.
+   */
+  PROFILE_MISS: 10 * 60,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -124,6 +130,8 @@ export const cacheKey = {
   shopProducts: (shopId: string) => `shop-products:${shopId}`,
   /** Merchant's own shop list. */
   creatorShops: (address: string) => `creator-shops:${address.toLowerCase()}`,
+  /** Negative profile-lookup record — see TTL.PROFILE_MISS. */
+  profileMiss: (address: string) => `profile-miss:${address.toLowerCase()}`,
 };
 
 // ---------------------------------------------------------------------------
