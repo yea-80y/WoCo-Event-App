@@ -103,10 +103,6 @@
         event = fresh;
         loading = false;
         error = null;
-        // Debug: log series payment data from API
-        for (const s of fresh.series) {
-          console.log(`[EventDetail] series "${s.name}" payment:`, s.payment ?? "FREE");
-        }
         // Fetch creator profile
         getProfile(fresh.creatorAddress, fresh.creatorFeedSigner).then((p) => {
           creatorProfile = p;

@@ -60,7 +60,6 @@
     // Always fetch fresh from Swarm in the background
     try {
       const collection = await getMyCollection();
-      console.log("[MyTickets] collection:", JSON.stringify(collection));
 
       if (!collection.entries.length) {
         tickets = [];

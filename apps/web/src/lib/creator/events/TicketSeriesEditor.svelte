@@ -318,7 +318,6 @@
         return base;
       })
     );
-    console.log("[TicketSeriesEditor] series built:", built.map(s => ({ name: s.name, payment: s.payment })));
     series = built;
   });
 
