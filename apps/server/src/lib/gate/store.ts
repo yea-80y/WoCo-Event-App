@@ -23,7 +23,7 @@ import { join } from "node:path";
 const DATA_DIR = join(process.cwd(), ".data");
 const BINDINGS_FILE = join(DATA_DIR, "attendee-gate-bindings.json");
 
-export type GateRoute = "ticket-proof" | "wallet" | "email-link";
+export type GateRoute = "ticket-proof" | "wallet" | "email-link" | "claim";
 
 export interface GateBinding {
   seriesId: string;
