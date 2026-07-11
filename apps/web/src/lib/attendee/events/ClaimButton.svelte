@@ -62,8 +62,6 @@
 
   let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate, quantity = 1, eager = false, onclaim }: Props = $props();
 
-  console.log(`[ClaimButton] seriesId=${seriesId} payment:`, payment ?? "FREE");
-
   // ──────────────────────────────────────────────────────────────
   // Payment + crypto-pay state
   // ──────────────────────────────────────────────────────────────
