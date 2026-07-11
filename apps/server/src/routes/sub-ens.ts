@@ -186,6 +186,13 @@ subEnsRoutes.post("/permit", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
   const body = await c.req.json<{ label: string }>();
 
+  // Same gate as /claim — the permit path is how passkey users mint, so
+  // leaving it open would bypass the attendee gate for the main login kind.
+  const gate = await checkAttendeeGate(parentAddress as string);
+  if (!gate.gated) {
+    return c.json({ ok: false, error: "ticket_required" }, 403);
+  }
+
   const label = body.label?.toLowerCase()?.trim();
   if (!label) return c.json({ ok: false, error: "label is required" }, 400);
 
