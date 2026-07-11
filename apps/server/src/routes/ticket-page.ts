@@ -20,75 +20,18 @@
 
 import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
-import { verifyMessage } from "ethers";
-import { buildTicketCanonicalMessage } from "@woco/shared";
 import type { SitePalette } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
-import { getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+import { verifyTicketSig } from "../lib/ticket/verify-sig.js";
 import { getSiteTheme } from "../lib/site/service.js";
 
 const ticketPage = new Hono<AppEnv>();
 
-/**
- * Verify the URL signature against the on-chain slotOwner. Returns:
- *   "valid"      — v2 event, sig recovers to the on-chain owner
- *   "invalid"    — v2 event, sig does NOT recover to the owner (forgery attempt)
- *   "unverified" — pre-on-chain (v1) event, or chain read failed; render anyway
- *                  (matches prior behaviour for legacy tickets — v1 path will
- *                  get its own verifier in a follow-up; for now Stripe → v2 is
- *                  the production path being protected)
- *
- * The trust root is `slotOwner[onChainEventId][edition - 1]`. Anyone who can
- * recover that exact address from an EIP-191 sig over our canonical message
- * controls the burner key that the contract recorded at claim time, i.e. they
- * either bought the ticket or received it from someone who did. Public Swarm
- * data alone is insufficient to forge a valid sig.
- */
-async function verifyTicketSig(params: {
-  eventId: string;
-  seriesId: string;
-  edition: number;
-  sig: string;
-}): Promise<"valid" | "invalid" | "unverified"> {
-  // Sig must at least look like a 0x-prefixed 65-byte hex string — bail early
-  // on garbage rather than letting verifyMessage throw.
-  if (!/^0x[0-9a-f]{130}$/i.test(params.sig)) return "invalid";
-
-  const ev = await getEvent(params.eventId).catch(() => null);
-  if (!ev) return "unverified";
-  const series = ev.series.find((s) => s.seriesId === params.seriesId);
-  if (!series) return "unverified";
-  if (!series.onChainEventId) return "unverified"; // v1 — skip for now
-
-  let slot;
-  try {
-    slot = await getSlotData(series.onChainEventId, params.edition - 1, getActiveChainId());
-  } catch (err) {
-    console.warn(`[ticket-page] Slot read failed (edition=${params.edition}):`, err);
-    return "unverified";
-  }
-
-  // Unclaimed slot: owner is the zero address. A sig over an unowned slot
-  // can never be valid — treat as invalid.
-  if (!slot.owner || slot.owner === "0x0000000000000000000000000000000000000000") {
-    return "invalid";
-  }
-
-  let recovered;
-  try {
-    const canonical = buildTicketCanonicalMessage({
-      onChainEventId: series.onChainEventId,
-      seriesId: params.seriesId,
-      edition: params.edition,
-    });
-    recovered = verifyMessage(canonical, params.sig).toLowerCase();
-  } catch {
-    return "invalid";
-  }
-  return recovered === slot.owner.toLowerCase() ? "valid" : "invalid";
-}
+// verifyTicketSig moved to lib/ticket/verify-sig.ts — shared with the attendee
+// gate. "unverified" (v1 / chain read failure) still renders here, matching
+// prior behaviour for legacy tickets; the gate treats it as a hard reject.
 
 function invalidTicketHtml(): string {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>Invalid ticket</title><style>body{background:#0c0d12;color:#f3f4f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem;margin:0}.box{max-width:420px;text-align:center;background:#15161f;border:1px solid #2a1f1f;border-radius:18px;padding:2rem 1.5rem}h1{font-size:1.25rem;color:#ff7a7a;margin:0 0 0.75rem}p{color:#a0a0b8;font-size:0.9375rem;line-height:1.5;margin:0}</style></head><body><div class="box"><h1>Invalid ticket</h1><p>This ticket link could not be verified against the on-chain record. If you believe this is a mistake, contact the event organiser.</p></div></body></html>`;

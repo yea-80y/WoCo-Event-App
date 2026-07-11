@@ -611,6 +611,24 @@ export async function getClaimedTicketDetail(ref: string): Promise<ClaimedTicket
   }
 }
 
+/**
+ * Fetch a single ClaimedTicket by its edition number — one page read + one
+ * body read instead of the full getClaimStatus fan-out. Used by the attendee
+ * gate to check `ownerEmailHash` against a presented email.
+ */
+export async function getClaimedTicketByEdition(
+  seriesId: string,
+  edition: number,
+): Promise<ClaimedTicket | null> {
+  if (!Number.isInteger(edition) || edition < 1) return null;
+  const { page, slot } = editionToPageSlot(edition);
+  const claimsPage = await readFeedPage(topicClaims(seriesId, page));
+  if (!claimsPage) return null;
+  const ref = decode4096Claims(claimsPage)[slot];
+  if (!ref) return null;
+  return getClaimedTicketDetail(ref);
+}
+
 // ---------------------------------------------------------------------------
 // Pending claims feed
 // ---------------------------------------------------------------------------

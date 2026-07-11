@@ -3,6 +3,7 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getProfile, updateProfile, uploadAvatar } from "../lib/profile/service.js";
 import { getLabelOwner } from "../lib/chain/sub-ens-contract.js";
+import { checkAttendeeGate } from "../lib/gate/check.js";
 import type { UpdateProfileRequest } from "@woco/shared";
 
 export const profiles = new Hono<AppEnv>();
@@ -31,6 +32,13 @@ profiles.post("/", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
   const body = c.get("body") as Record<string, unknown>;
   console.log(`[api] POST /api/profile parent=${parentAddress} keys=${Object.keys(body).join(",")}`);
+
+  // Attendee gate: profiles are unlocked by a purchased ticket (or by being
+  // an organiser). UI catches "ticket_required" and routes to the gate flow.
+  const gate = await checkAttendeeGate(parentAddress);
+  if (!gate.gated) {
+    return c.json({ ok: false, error: "ticket_required" }, 403);
+  }
 
   const updates: UpdateProfileRequest = {
     displayName: body.displayName as string | undefined,
@@ -113,6 +121,11 @@ profiles.post("/verify-label", requireAuth, async (c) => {
 profiles.post("/avatar", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
   const body = c.get("body") as Record<string, unknown>;
+
+  const gate = await checkAttendeeGate(parentAddress);
+  if (!gate.gated) {
+    return c.json({ ok: false, error: "ticket_required" }, 403);
+  }
 
   const imageB64 = body.image as string;
   if (!imageB64 || typeof imageB64 !== "string") {
