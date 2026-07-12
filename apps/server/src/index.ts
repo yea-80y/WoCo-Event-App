@@ -30,6 +30,7 @@ import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { likesRoutes } from "./routes/likes.js";
+import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
 import { swarmRoutes } from "./routes/swarm.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
@@ -408,6 +409,9 @@ app.route("/api/sub-ens", subEnsRoutes);
 
 // EAS likes (#4) — verify-on-chain record + projection reads
 app.route("/api/likes", likesRoutes);
+
+// Onboarding campaign — referral attribution/relay + cohort badges
+app.route("/api/campaign", campaignRoutes);
 
 // Client-signed Single-Owner-Chunk write rail (client signs, server stamps).
 // Phase A of the client feed signer / cross-device recovery work.

@@ -11,6 +11,10 @@
   import { rememberLabel, nameForSubject } from "../../likes/label-cache.js";
   import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
+  import ReferralShareCard from "../campaign/ReferralShareCard.svelte";
+  import CohortStamp from "../campaign/CohortStamp.svelte";
+  import { getBadge } from "../../api/campaign.js";
+  import type { BadgeRecord } from "@woco/shared";
   import WalletTab from "./WalletTab.svelte";
   import SubENSPicker from "../../creator/builder/SubENSPicker.svelte";
   import LikeButton from "../likes/LikeButton.svelte";
@@ -33,6 +37,16 @@
   let profile = $state<UserProfile | null>(null);
   let loading = $state(true);
   let saving = $state(false);
+
+  // Cohort badge (public read, one tiny GET keyed on the viewed address).
+  let badge = $state<BadgeRecord | null>(null);
+  $effect(() => {
+    badge = null;
+    if (!viewAddress) return;
+    getBadge(viewAddress as `0x${string}`).then((resp) => {
+      if (resp.ok) badge = resp.data ?? null;
+    }).catch(() => {});
+  });
   let saveError = $state('');
   let ensBindError = $state('');
   let uploadingAvatar = $state(false);
@@ -377,6 +391,14 @@
       {:else}
         <div class="name-row">
           <h1 class="display-name">{displayName}</h1>
+          {#if badge}
+            <span
+              class="cohort-mark"
+              title={badge.epoch === 0 ? "Early adopter — cohort attested on-chain" : `Cohort ${badge.epoch} — attested on-chain`}
+            >
+              <CohortStamp epoch={badge.epoch} size={36} />
+            </span>
+          {/if}
           {#if isOwner && auth.kind}
             <span
               class="kind-badge"
@@ -476,6 +498,8 @@
 
     {#if activeTab === "profile"}
       <div class="tab-body">
+
+        <ReferralShareCard />
 
         <!-- Edit form -->
         <section class="settings-card">
@@ -934,6 +958,12 @@
     gap: 0.625rem;
     flex-wrap: wrap;
     margin-bottom: 0.25rem;
+  }
+
+  .cohort-mark {
+    display: inline-flex;
+    line-height: 0;
+    cursor: help;
   }
 
   .display-name {

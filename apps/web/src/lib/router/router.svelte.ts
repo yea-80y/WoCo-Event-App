@@ -133,6 +133,14 @@ function matchRoute(pathWithQuery: string): Match {
 }
 
 function update() {
+  // Referral capture: #/ref/{address} isn't a screen — persist the referrer
+  // and land on discover. Lazy import keeps wallet deps out of the router.
+  const refMatch = parseHash().match(/^\/ref\/(0x[0-9a-fA-F]{40})$/);
+  if (refMatch) {
+    void import("../api/campaign.js").then((m) => m.storeCapturedRef(refMatch[1]));
+    window.location.replace(`${window.location.pathname}#/discover`);
+    return;
+  }
   const matched = matchRoute(parseHash());
   _route = matched.route;
   _params = matched.params;

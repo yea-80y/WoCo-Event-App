@@ -11,6 +11,34 @@
     auth.init();
   });
 
+  // Referral attribution: a captured #/ref/{address} waits in localStorage
+  // until the account's first authenticated moment (a session already exists,
+  // so this never triggers an unsolicited signing prompt), then registers the
+  // pending referral server-side. First attribution wins; self-referral is
+  // dropped client-side and rejected server-side.
+  let refPostInFlight = false;
+  $effect(() => {
+    if (!auth.isAuthenticated || refPostInFlight) return;
+    void import("./lib/api/campaign.js").then(async (m) => {
+      const ref = m.readCapturedRef();
+      if (!ref) return;
+      if (auth.parent && ref === auth.parent.toLowerCase()) {
+        m.clearCapturedRef();
+        return;
+      }
+      refPostInFlight = true;
+      try {
+        const resp = await m.postPendingReferral(ref);
+        // 4xx (self-referral, already attributed) is final too — stop retrying.
+        if (resp.ok || resp.error) m.clearCapturedRef();
+      } catch {
+        // Network failure — keep the capture for the next authenticated visit.
+      } finally {
+        refPostInFlight = false;
+      }
+    });
+  });
+
   // Lazy-load the creator bundle — attendees never download builder/dashboard code.
   const creatorAppPromise = $derived(
     router.surface === "creator"

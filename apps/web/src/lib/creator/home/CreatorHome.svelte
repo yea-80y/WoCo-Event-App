@@ -19,6 +19,7 @@
   import { onMount, onDestroy } from "svelte";
   import { isPastEvent } from "../../utils/events.js";
   import TicketStub from "../../components/icons/sprites/TicketStub.svelte";
+  import ReferralConfirmBanner from "../../components/campaign/ReferralConfirmBanner.svelte";
   import CrtMonitor from "../../components/icons/sprites/CrtMonitor.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import CalendarDays from "lucide-svelte/icons/calendar-days";
@@ -311,6 +312,8 @@
       </div>
     </div>
   </section>
+
+  <ReferralConfirmBanner />
 
   {#if !auth.isConnected}
     <section class="signin-callout card">
