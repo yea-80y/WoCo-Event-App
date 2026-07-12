@@ -16,7 +16,10 @@
  * `/feeds`).
  */
 
-import { keccak256, getBytes, Wallet } from "ethers";
+// ethers and client-soc (bee-js) are imported lazily inside each function —
+// this module is statically reachable from api/events + api/profiles at first
+// paint, and top-level imports here would drag both libraries into the boot
+// bundle.
 import {
   CONTENT_FEED_MC_MARKER,
   contentFeedSocIdentifier,
@@ -30,7 +33,6 @@ import {
   type SocChunkReader,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
-import { signAndUploadSoc, readSoc } from "./client-soc.js";
 
 // ---------------------------------------------------------------------------
 // Version hints (optimisation, not correctness)
@@ -84,7 +86,8 @@ export interface ContentFeedSigner {
  * from local storage or escrow (the stored key always wins over re-deriving); we
  * only recover its address.
  */
-export function contentFeedSignerFromPrivKey(privKey: string): ContentFeedSigner {
+export async function contentFeedSignerFromPrivKey(privKey: string): Promise<ContentFeedSigner> {
+  const { Wallet } = await import("ethers");
   const key = privKey.startsWith("0x") ? privKey : `0x${privKey}`;
   return { privKey: key, address: new Wallet(key).address.toLowerCase() };
 }
@@ -99,7 +102,8 @@ export function contentFeedSignerFromPrivKey(privKey: string): ContentFeedSigner
  * so this does not re-prefix a domain string. The signature MUST be the canonical
  * bytes, not the hex string.
  */
-export function deriveContentFeedSignerFromSig(signature: string): ContentFeedSigner {
+export async function deriveContentFeedSignerFromSig(signature: string): Promise<ContentFeedSigner> {
+  const { keccak256, getBytes, Wallet } = await import("ethers");
   const seed = keccak256(getBytes(signature));
   return { privKey: seed, address: new Wallet(seed).address.toLowerCase() };
 }
@@ -139,6 +143,10 @@ export async function writeContentFeed(args: {
    */
   knownVersion?: number;
 }): Promise<number> {
+  const [{ Wallet }, { signAndUploadSoc, readSoc }] = await Promise.all([
+    import("ethers"),
+    import("./client-soc.js"),
+  ]);
   const key = args.signerPrivKey.startsWith("0x") ? args.signerPrivKey : `0x${args.signerPrivKey}`;
   const owner = new Wallet(key).address.toLowerCase();
   const base = contentFeedSocIdentifier(args.topic);
@@ -204,6 +212,7 @@ export async function writeContentFeed(args: {
  * this fix stay readable. Multi-chunk aware.
  */
 export async function readContentFeed<T>(ownerAddress: string, topic: string): Promise<T | null> {
+  const { readSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   const read: SocChunkReader = (id) => readSoc(owner, id);
   const res = await readVersionedContentFeed(read, topic, readVersionHint(owner, topic));

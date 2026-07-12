@@ -218,12 +218,12 @@ async function _deriveFeedSignerBySigning(parent: string): Promise<ContentFeedSi
     );
 
   const { deriveContentFeedSignerFromSig } = await import("../swarm/content-feed.js");
-  const first = deriveContentFeedSignerFromSig(await sign());
+  const first = await deriveContentFeedSignerFromSig(await sign());
   // Only EXTERNAL wallets need the reproducibility self-check: we don't control
   // their nonce generation. Raw-key kinds sign with ethers (RFC-6979) → already
   // deterministic, so a second prompt would be pure friction.
   if (_kind === "web3") {
-    const second = deriveContentFeedSignerFromSig(await sign());
+    const second = await deriveContentFeedSignerFromSig(await sign());
     if (first.address !== second.address) {
       throw new Error(
         "Your wallet's signature isn't reproducible, so we can't create a recoverable feed for your content. Try a different wallet.",
@@ -263,7 +263,7 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
     const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
     const stored = await restoreContentFeedSigner(parent);
     if (stored) {
-      const signer = contentFeedSignerFromPrivKey(stored);
+      const signer = await contentFeedSignerFromPrivKey(stored);
       _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
       return signer;
     }
@@ -355,7 +355,7 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   const stored = await restoreContentFeedSigner(parent);
   if (stored) {
     const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
-    const address = contentFeedSignerFromPrivKey(stored).address;
+    const address = (await contentFeedSignerFromPrivKey(stored)).address;
     _feedSignerAddressMemo = { parent, address };
     return address;
   }

@@ -1,4 +1,3 @@
-import { keccak256, getBytes } from "ethers";
 import {
   POD_IDENTITY_DOMAIN,
   POD_IDENTITY_TYPES,
@@ -49,12 +48,14 @@ export async function requestPodIdentity(
   );
 
   // Deterministic: same wallet → same signature → same seed.
+  // ethers imported lazily — this module is in auth-store's boot graph.
   // Use getBytes(signature) to hash the canonical signature bytes (65 bytes),
   // not toUtf8Bytes(signature) which hashes the hex string representation
   // (132 bytes of ASCII). The byte form is the standard way to compress an
   // ECDSA signature into a uniform-distribution seed and is what every other
   // library in the ecosystem does. BREAKING (2026-04-09): changes the derived
   // ed25519 keypair for any user who previously called this function.
+  const { keccak256, getBytes } = await import("ethers");
   const seed = keccak256(getBytes(signature));
 
   // Derive keypair to get public key

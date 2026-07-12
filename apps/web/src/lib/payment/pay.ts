@@ -45,7 +45,7 @@ export async function waitForConfirmations(
   chainId: PaymentChainId,
   onProgress?: ConfirmationProgress,
 ): Promise<void> {
-  const provider = getEthersProvider();
+  const provider = await getEthersProvider();
   const required = getMinConfirmations(chainId) + 1; // +1 = buffer for RPC skew
   onProgress?.({ phase: "waiting-confirmations", current: 0, total: required, txHash: tx.hash });
 
@@ -131,7 +131,7 @@ export async function executePayment(opts: {
   await switchChain(chainId);
   await new Promise((r) => setTimeout(r, 500));
 
-  const provider = getEthersProvider();
+  const provider = await getEthersProvider();
   const signer = signerAddress
     ? new JsonRpcSigner(provider, signerAddress)
     : await provider.getSigner();
@@ -255,7 +255,7 @@ export async function getUSDCBalance(
   chainId: PaymentChainId,
   address: string,
 ): Promise<string> {
-  const provider = getEthersProvider();
+  const provider = await getEthersProvider();
   const usdcAddress = USDC_ADDRESSES[chainId];
   if (!usdcAddress) throw new Error(`USDC not supported on chain ${chainId}`);
   const usdc = new Contract(usdcAddress, ERC20_ABI, provider);
