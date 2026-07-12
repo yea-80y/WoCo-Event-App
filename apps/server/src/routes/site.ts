@@ -54,10 +54,9 @@ site.post("/deploy", requireAuth, async (c) => {
     const body = await c.req.json() as {
       eventId: string;
       gatewayUrl?: string;
-      paraApiKey?: string;
       apiUrl: string;
     };
-    const { eventId, gatewayUrl, paraApiKey, apiUrl: clientApiUrl } = body;
+    const { eventId, gatewayUrl, apiUrl: clientApiUrl } = body;
 
     if (!eventId) {
       return c.json({ ok: false, error: "eventId is required" }, 400);
@@ -128,7 +127,6 @@ site.post("/deploy", requireAuth, async (c) => {
       contentGatewayUrl: "https://gateway.woco-net.com",
       eventId,
       ...(eventSigner ? { eventSigner } : {}),
-      ...(paraApiKey?.trim() ? { paraApiKey: paraApiKey.trim() } : {}),
     };
     const configScript = `<script>window.SITE_CONFIG=${JSON.stringify(config)};</script>`;
     const injectedHtml = siteHtml.replace("</head>", `  ${configScript}\n  </head>`);

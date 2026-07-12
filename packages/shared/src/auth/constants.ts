@@ -25,10 +25,9 @@ export const StorageKeys = {
   // MAP (not a single `{pod,kernel}`) so recovering MULTIPLE accounts on one device
   // doesn't let a later recovery clobber an earlier one's binding — which would send
   // the earlier account's next login to a fresh counterfactual address ("the account
-  // address changed"). Persists across logout (like LOCAL_KEY) so re-login works.
+  // address changed"). Persists across logout so re-login works.
   // Legacy single-object blobs are migrated to the map shape on first read.
   RECOVERED_KERNEL_BINDING: "woco:auth:recovered-kernel",
-  LOCAL_KEY: "woco:auth:local-key",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
   // ZeroDev on-chain session key: the scoped, serialized permission account
   // (contains the session private key) encrypted at rest. DISTINCT from

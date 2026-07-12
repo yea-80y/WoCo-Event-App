@@ -104,16 +104,14 @@
     auth.kind === "passkey" || auth.kind === "coinbase" || auth.kind === "web3auth",
   );
   // Any login whose own auth address can serve as the crypto payout recipient.
-  // (Replaces the old `web3 || para` check — `para` is a removed kind, which is
-  // why web3auth users were wrongly blocked from crypto payouts.)
   const canSelfReceiveCrypto = $derived(isEoaIdentity || isSmartAccountIdentity);
 
   /**
    * Crypto payout recipient address — separate from auth identity.
    *
-   * - web3/para users: auto-set to auth.parent (their wallet IS the payout address).
-   * - passkey/local users: must explicitly connect a wallet to receive crypto.
-   *   `auth.parent` for these users is a passkey/browser key — NOT something
+   * - web3 users: auto-set to auth.parent (their wallet IS the payout address).
+   * - passkey users: must explicitly connect a wallet to receive crypto.
+   *   `auth.parent` for these users is a passkey-derived key — NOT something
    *   they can withdraw funds from on-chain.
    */
   let cryptoRecipientAddress = $state<string | null>(null);

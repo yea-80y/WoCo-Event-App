@@ -37,10 +37,10 @@
     }
   }
 
-  function handleParaEmail() {
-    // Close modal and redirect to login — Para creates an EVM wallet from email
+  function handleEmailWallet() {
+    // Close modal and reopen login — Web3Auth creates an EVM wallet from an
+    // email or social login
     onClose();
-    // The login modal with Para option will handle it from the nav bar
     import("../../auth/login-request.svelte.js").then(({ loginRequest }) => {
       loginRequest.request();
     });
@@ -78,15 +78,15 @@
         </span>
       </button>
 
-      <button class="option-btn" onclick={handleParaEmail}>
+      <button class="option-btn" onclick={handleEmailWallet}>
         <span class="option-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
           </svg>
         </span>
         <span class="option-text">
-          <span class="option-title">Create wallet with email</span>
-          <span class="option-sub">Get a wallet via Para (no extension needed)</span>
+          <span class="option-title">Create wallet with email or social login</span>
+          <span class="option-sub">No extension needed</span>
         </span>
       </button>
     </div>

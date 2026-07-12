@@ -7,8 +7,7 @@
  * which transparently handles all three signature shapes.
  *
  * The SDK + provider are kept inside this module behind lazy init so the
- * ~280KB bundle isn't pulled into chunks that never touch CSW — same pattern
- * we use for Para.
+ * ~280KB bundle isn't pulled into chunks that never touch CSW.
  */
 
 // Avoid pulling the SDK types into the rest of the bundle unless needed.

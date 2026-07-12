@@ -1,4 +1,4 @@
-export type AuthKind = "web3" | "local" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none";
+export type AuthKind = "web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none";
 
 /** Callback that signs EIP-712 typed data — used by session delegation + POD identity */
 export type EIP712Signer = (

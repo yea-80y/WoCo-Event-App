@@ -72,16 +72,16 @@
 
   const authKindLabel: Record<string, string> = {
     web3: "Web3 Wallet",
-    para: "Para Wallet",
     passkey: "Passkey",
-    local: "Browser Account",
+    web3auth: "Email / Social Login",
+    coinbase: "Coinbase Smart Wallet",
   };
 
   const authKindColor: Record<string, string> = {
     web3: "#C7F23A",
-    para: "#7c6cf0",
     passkey: "#22c55e",
-    local: "#f59e0b",
+    web3auth: "#38bdf8",
+    coinbase: "#2563eb",
   };
 
   function bannerGradient(addr: string): string {
