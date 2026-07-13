@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 20 matches apps/server/Dockerfile — CI must build what production runs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # packages/shared ships raw TS (main: ./src/index.ts) — consumers compile it,
+      # so there is nothing to build, only to typecheck.
+      - name: Typecheck shared
+        run: npm run check -w @woco/shared
+
+      - name: Test shared (POD signing)
+        run: npm test -w @woco/shared
+
+      - name: Typecheck server
+        run: npm run build:server
+
+      - name: Build web
+        run: npm run build:web
+
+      - name: Build embed
+        run: npm run build:embed
