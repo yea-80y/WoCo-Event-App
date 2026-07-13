@@ -84,6 +84,38 @@ test("POD derivation is deterministic and seed-sensitive", async () => {
   assert.notEqual(a1.publicKeyHex, b.publicKeyHex, "different seed must yield a different identity");
 });
 
+// GOLDEN VECTORS — the test above only proves derivation is self-consistent: if the
+// algorithm changed, both sides of `a1 === a2` would move together and it would still
+// pass. These pin seed → public key to fixed bytes, so a crypto-library change that
+// alters identity FAILS LOUDLY instead of silently orphaning every ticket ever issued.
+//
+// The first vector is the RFC 8032 standard ed25519 test vector (all-zero secret key),
+// so any correct implementation MUST reproduce it. Divergence = the library is wrong,
+// or derivation changed.
+//
+// Do NOT "fix" these by pasting in new values. If they fail, the identity of every
+// existing user just changed — that is a migration, not a test update.
+const POD_GOLDEN: ReadonlyArray<readonly [seed: string, publicKeyHex: string]> = [
+  // RFC 8032 §7.1 TEST 1 — secret key 00…00
+  ["00".repeat(32), "0x3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"],
+  ["11".repeat(32), "0xd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"],
+  ["22".repeat(32), "0xa09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0"],
+  ["deadbeef".repeat(8), "0xff57575dc7af8bfc4d0837cc1ce2017b686a88145dc5579a958e3462fe9a908e"],
+  ["00".repeat(31) + "01", "0x4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29"],
+];
+
+test("POD derivation matches golden vectors (identity must never silently change)", async () => {
+  for (const [seed, expected] of POD_GOLDEN) {
+    const kp = await deriveKeypair(seed);
+    assert.equal(
+      kp.publicKeyHex,
+      expected,
+      `seed ${seed.slice(0, 16)}… must derive ${expected} — a mismatch means every ` +
+        `existing POD identity has changed and all issued tickets are orphaned`,
+    );
+  }
+});
+
 test("a stored seed is read back as the exact identity, with no signature", async () => {
   await clearPodIdentity();
   const addr = "0x1111111111111111111111111111111111111111";
