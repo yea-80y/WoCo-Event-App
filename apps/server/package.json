@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node --import tsx src/index.ts",
     "agent:demo": "node --import tsx scripts/agent/demo.ts",
-    "agent:mcp": "node --import tsx scripts/agent/mcp.ts"
+    "agent:mcp": "node --import tsx scripts/agent/mcp.ts",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^11.0.0",

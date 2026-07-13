@@ -14,6 +14,7 @@
     "dev:web": "npm run dev -w @woco/web",
     "dev:server": "npm run dev -w @woco/server",
     "test:shared": "npm test -w @woco/shared",
+    "test:server": "npm test -w @woco/server",
     "build:web": "npm run build -w @woco/web",
     "build:server": "npm run build -w @woco/server",
     "build:embed": "npm run build -w @woco/embed",
