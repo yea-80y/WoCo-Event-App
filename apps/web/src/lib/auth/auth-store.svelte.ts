@@ -388,17 +388,39 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
  * decrypt, never a PRF/wallet signature), so passive UI can call it freely.
  * Returns [] when not signed in, no feed signer established, or no manifest yet.
  */
+// Session memo for the backup inventory. A user without a manifest pays a full
+// failed-SOC-probe fan-out (gateway 403s + server 404s) on EVERY passive panel
+// mount otherwise. In-memory only — this is decrypted private metadata (guardian
+// addresses) and must not land in localStorage. Concurrent callers (CreatorHome
+// + BackupNudge) share one in-flight read.
+let _backupInvMemo: { parent: string; at: number; entries: import("@woco/shared").BackupInventoryEntry[] } | null = null;
+let _backupInvFlight: { parent: string; promise: Promise<import("@woco/shared").BackupInventoryEntry[]> } | null = null;
+const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
+
 async function getBackupInventory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
   const parent = _parent;
   if (!parent) return [];
+  const memo = _backupInvMemo;
+  if (memo && memo.parent === parent && Date.now() - memo.at < BACKUP_INV_TTL_MS) return memo.entries;
+  if (_backupInvFlight?.parent === parent) return _backupInvFlight.promise;
+  const promise = _readBackupInventoryUncached(parent).finally(() => {
+    _backupInvFlight = null;
+  });
+  _backupInvFlight = { parent, promise };
+  return promise;
+}
+
+async function _readBackupInventoryUncached(parent: string): Promise<import("@woco/shared").BackupInventoryEntry[]> {
   const address = await _getContentFeedSignerAddress();
-  if (!address) return [];
+  if (!address) return []; // no signer yet — cheap, don't memo (may appear right after login)
   const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
   const privKey = await restoreContentFeedSigner(parent);
   if (!privKey) return [];
   try {
     const { readBackupInventory } = await import("../manifest/inventory.js");
-    return await readBackupInventory({ signer: { privKey, address }, parentAddress: parent });
+    const entries = await readBackupInventory({ signer: { privKey, address }, parentAddress: parent });
+    _backupInvMemo = { parent, at: Date.now(), entries };
+    return entries;
   } catch {
     return [];
   }
@@ -1445,6 +1467,7 @@ async function setupAccountRecovery(backup: {
           maskedEmail: backup.meta?.maskedEmail,
         },
       });
+      _backupInvMemo = null; // next panel read sees the new entry
     } catch (err) {
       console.warn("[recovery] backup-inventory manifest write failed (non-fatal):", err);
     }
@@ -1789,6 +1812,8 @@ async function clearAllAuth(): Promise<void> {
   _podInFlight = null;
   _feedSignerInFlight = null;
   _feedSignerAddressMemo = null;
+  _backupInvMemo = null;
+  _backupInvFlight = null;
 }
 
 // ---------------------------------------------------------------------------
