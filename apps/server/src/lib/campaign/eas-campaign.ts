@@ -22,6 +22,7 @@ import {
 } from "@woco/shared";
 import type { Hex0x, DelegatedSignature } from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
+import { sendSponsorTx } from "../chain/sponsor-nonce.js";
 
 const EAS_ABI = [
   "function getAttestation(bytes32 uid) view returns (tuple(bytes32 uid, bytes32 schema, uint64 time, uint64 expirationTime, uint64 revocationTime, bytes32 refUID, address recipient, address attester, bool revocable, bytes data))",
@@ -58,14 +59,6 @@ const referralSchemaUid = (): Hex0x =>
   (process.env.EAS_REFERRAL_SCHEMA_UID as Hex0x | undefined) ?? EAS_REFERRAL_SCHEMA_UID;
 const badgeSchemaUid = (): Hex0x =>
   (process.env.EAS_BADGE_SCHEMA_UID as Hex0x | undefined) ?? EAS_BADGE_SCHEMA_UID;
-
-/** Serialise sponsor-wallet sends — one funded EOA, concurrent txs race nonces. */
-let sendChain: Promise<unknown> = Promise.resolve();
-function withSponsorLock<T>(fn: () => Promise<T>): Promise<T> {
-  const next = sendChain.then(fn, fn);
-  sendChain = next.then(() => {}, () => {});
-  return next;
-}
 
 function uidFromReceipt(receipt: { logs: readonly any[] }, schema: Hex0x, iface: Contract["interface"]): Hex0x {
   for (const log of receipt.logs) {
@@ -177,8 +170,9 @@ export async function relayDelegatedReferral(input: {
   }
 
   try {
-    const receipt = await withSponsorLock(async () => {
-      const tx = await eas.attestByDelegation({
+    const tx = await sendSponsorTx(
+      { chainId: EAS_CHAIN_ID, address: sponsor().address, provider: provider(), label: "attestByDelegation" },
+      (o) => eas.attestByDelegation({
         schema: referralSchemaUid(),
         data: {
           recipient: input.referrer,
@@ -191,9 +185,9 @@ export async function relayDelegatedReferral(input: {
         signature: input.signature,
         attester: input.attester,
         deadline: input.deadline,
-      });
-      return tx.wait();
-    });
+      }, o),
+    );
+    const receipt = await tx.wait();
     const uid = uidFromReceipt(receipt!, referralSchemaUid(), eas.interface);
     return { ok: true, uid, txHash: receipt!.hash };
   } catch (err) {
@@ -215,8 +209,9 @@ export async function attestJoinedBadge(
     ["uint8", "uint32"],
     [BadgeType.Joined, epoch],
   );
-  const receipt = await withSponsorLock(async () => {
-    const tx = await eas.attest({
+  const tx = await sendSponsorTx(
+    { chainId: EAS_CHAIN_ID, address: sponsor().address, provider: provider(), label: "attestJoinedBadge" },
+    (o) => eas.attest({
       schema: badgeSchemaUid(),
       data: {
         recipient,
@@ -226,9 +221,9 @@ export async function attestJoinedBadge(
         data,
         value: 0n,
       },
-    });
-    return tx.wait();
-  });
+    }, o),
+  );
+  const receipt = await tx.wait();
   const uid = uidFromReceipt(receipt!, badgeSchemaUid(), eas.interface);
   const block = await provider().getBlock(receipt!.blockNumber);
   return { uid, time: block?.timestamp ?? Math.floor(Date.now() / 1000) };

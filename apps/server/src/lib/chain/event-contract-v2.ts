@@ -1,5 +1,6 @@
 import { JsonRpcProvider, Contract, Interface, Wallet } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
+import { sendSponsorTx } from "./sponsor-nonce.js";
 import type { OnChainEvent, SlotData } from "./event-contract.js";
 
 /**
@@ -161,7 +162,10 @@ export async function claimForV2(
     `burner=${burnerAddress} orderRef=${orderRefBytes32.slice(0, 10)}… chain=${chainId}`,
   );
 
-  const tx = await contract.claimFor(onChainEventId, burnerAddress, orderRefBytes32);
+  const tx = await sendSponsorTx(
+    { chainId, address: wallet.address, provider: wallet.provider!, label: "claimFor" },
+    (o) => contract.claimFor(onChainEventId, burnerAddress, orderRefBytes32, o),
+  );
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from V2 claimFor tx");
 
@@ -188,7 +192,10 @@ export async function batchClaimForV2(
     `n=${burners.length} orderRef=${orderRefBytes32.slice(0, 10)}… chain=${chainId}`,
   );
 
-  const tx = await contract.batchClaimFor(onChainEventId, burners, orderRefBytes32);
+  const tx = await sendSponsorTx(
+    { chainId, address: wallet.address, provider: wallet.provider!, label: "batchClaimFor" },
+    (o) => contract.batchClaimFor(onChainEventId, burners, orderRefBytes32, o),
+  );
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from V2 batchClaimFor tx");
 
@@ -233,8 +240,11 @@ export async function registerEventV2(
     `manifestRef=${manifestRef.slice(0, 10)}… chain=${chainId}`,
   );
 
-  const tx = await contract.registerEvent(
-    supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs,
+  const tx = await sendSponsorTx(
+    { chainId, address: wallet.address, provider: wallet.provider!, label: "registerEvent" },
+    (o) => contract.registerEvent(
+      supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs, o,
+    ),
   );
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from V2 registerEvent tx");

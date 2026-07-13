@@ -3,6 +3,8 @@ import {
   AbiCoder, solidityPackedKeccak256, getBytes,
 } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
+import { sendSponsorTx } from "./sponsor-nonce.js";
+import { getSponsorAddress } from "./sponsor-wallet.js";
 
 // Arbitrum Sepolia (421614) — deployed 2026-05-29, verified
 // Arbitrum One (42161)      — pending mainnet deploy
@@ -194,7 +196,11 @@ export async function mintSubEnsName(
   const contenthash = swarmHash ? encodeSwarmContenthash(swarmHash) : new Uint8Array(0);
 
   console.log(`[sub-ens] register label=${label} owner=${ownerAddress} chain=${chainId}`);
-  const tx = await writeContract(chainId).register(label, ownerAddress, contenthash, textKeys, textValues);
+  const contract = writeContract(chainId);
+  const tx = await sendSponsorTx(
+    { chainId, address: getSponsorAddress(), provider: getProvider(chainId), label: "sub-ens.register" },
+    (o) => contract.register(label, ownerAddress, contenthash, textKeys, textValues, o),
+  );
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from register tx");
   console.log(`[sub-ens] registered label=${label} txHash=${receipt.hash} gasUsed=${receipt.gasUsed}`);
@@ -267,7 +273,11 @@ export async function updateSubEnsContenthash(label: string, swarmHash: string):
   const contenthash = encodeSwarmContenthash(swarmHash);
 
   console.log(`[sub-ens] setContenthash label=${label} hash=${swarmHash.slice(0, 10)}… chain=${chainId}`);
-  const tx = await writeContract(chainId).setContenthash(label, contenthash);
+  const contract = writeContract(chainId);
+  const tx = await sendSponsorTx(
+    { chainId, address: getSponsorAddress(), provider: getProvider(chainId), label: "sub-ens.setContenthash" },
+    (o) => contract.setContenthash(label, contenthash, o),
+  );
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from setContenthash tx");
   console.log(`[sub-ens] contenthash updated label=${label} txHash=${receipt.hash}`);

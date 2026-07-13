@@ -20,6 +20,7 @@ import {
 } from "@woco/shared";
 import type { Hex0x, TrendingSubject } from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
+import { sendSponsorTx } from "../chain/sponsor-nonce.js";
 
 export function aggregatorAddress(): string {
   return process.env.STYLUS_AGGREGATOR_ADDRESS ?? STYLUS_LIKE_AGGREGATOR_ADDRESS;
@@ -43,9 +44,6 @@ function keeperContract(): Contract | null {
   return new Contract(aggregatorAddress(), [...STYLUS_LIKE_AGGREGATOR_ABI], _keeper);
 }
 
-// Pokes are serialised: concurrent sends from one wallet race on the nonce.
-let _pokeQueue: Promise<void> = Promise.resolve();
-
 /**
  * Push a chain-verified attestation UID into the aggregator. Fire-and-forget:
  * a missed poke only delays the on-chain count — the UID stays submittable by
@@ -56,15 +54,21 @@ let _pokeQueue: Promise<void> = Promise.resolve();
 export function pokeAggregator(uid: Hex0x): void {
   const contract = keeperContract();
   if (!contract) return;
-  _pokeQueue = _pokeQueue
-    .then(async () => {
-      const tx = await contract.record(uid);
+  void (async () => {
+    try {
+      const tx = await sendSponsorTx(
+        { chainId: EAS_CHAIN_ID, address: _keeper!.address, provider: provider(), label: "stylus.record" },
+        (o) => contract.record(uid, o),
+      );
       const receipt = await tx.wait(1);
       console.log(`[stylus] record(${uid.slice(0, 10)}…) tx=${receipt?.hash} gas=${receipt?.gasUsed}`);
-    })
-    .catch((err) => {
-      console.warn(`[stylus] poke failed for ${uid.slice(0, 10)}… (recoverable — anyone can resubmit):`, err?.message ?? err);
-    });
+    } catch (err) {
+      console.warn(
+        `[stylus] poke failed for ${uid.slice(0, 10)}… (recoverable — anyone can resubmit):`,
+        (err as Error)?.message ?? err,
+      );
+    }
+  })();
 }
 
 async function trendingForType(
