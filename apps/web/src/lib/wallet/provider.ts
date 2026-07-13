@@ -1,4 +1,4 @@
-import { BrowserProvider } from "ethers";
+import type { BrowserProvider } from "ethers";
 import type { EthereumProvider } from "./types.js";
 
 let _wcProvider: EthereumProvider | null = null;
@@ -20,9 +20,14 @@ export function requireProvider(): EthereumProvider {
   return provider;
 }
 
-/** Returns a cached BrowserProvider wrapping the current wallet provider. */
-export function getEthersProvider(): BrowserProvider {
+/**
+ * Returns a cached BrowserProvider wrapping the current wallet provider.
+ * Async so ethers stays out of the eager boot graph (this module is reachable
+ * from the login modal at first paint).
+ */
+export async function getEthersProvider(): Promise<BrowserProvider> {
   if (!_ethersProvider) {
+    const { BrowserProvider } = await import("ethers");
     _ethersProvider = new BrowserProvider(requireProvider());
   }
   return _ethersProvider;

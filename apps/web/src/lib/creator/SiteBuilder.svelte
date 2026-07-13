@@ -73,7 +73,6 @@
 
   // Step 2 — deploy targets
   let gatewayUrl = $state("https://gateway.etherna.io");
-  let paraApiKey = $state("");
   let listOnWoco = $state(false);
   let selectedSiteIds = $state<string[]>([]);
   let siteAddErrors = $state<Record<string, string>>({});
@@ -155,7 +154,6 @@
           eventId: createdEventId,
           gatewayUrl: gatewayUrl.trim(),
           apiUrl,
-          ...(paraApiKey.trim() ? { paraApiKey: paraApiKey.trim() } : {}),
         },
       );
       if (json.ok && json.data) {
@@ -448,26 +446,6 @@
       </div>
 
       <EventDomainPicker bind:intent={domainIntent} />
-
-      <details class="advanced-panel">
-        <summary>Advanced</summary>
-        <div class="advanced-panel-body">
-          <div class="field-group">
-            <label class="field-label" for="para-key">Para API key <span class="optional">optional</span></label>
-            <input
-              id="para-key"
-              class="input"
-              type="text"
-              bind:value={paraApiKey}
-              placeholder="Leave blank to use WoCo's shared beta key"
-            />
-            <p class="field-hint">
-              Enables email-based wallet login for attendees. Get a key at
-              <a href="https://developer.getpara.com" target="_blank" rel="noopener">developer.getpara.com</a>.
-            </p>
-          </div>
-        </div>
-      </details>
 
       {#if deployError}
         <div class="create-error">
@@ -820,19 +798,6 @@
   .note { font-size: 0.8125rem; color: var(--text-muted); line-height: 1.5; margin: 0; }
   .note a { color: var(--accent-text); }
   .checkbox-option { display: flex; gap: 0.75rem; align-items: flex-start; cursor: pointer; }
-
-  /* ── Advanced panel ───────────────────────────────────────────────────────── */
-  .advanced-panel {
-    border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
-  }
-  .advanced-panel summary {
-    padding: 0.625rem 0.875rem; font-size: 0.8125rem; font-weight: 600;
-    color: var(--text-muted); cursor: pointer; user-select: none;
-    list-style: none;
-  }
-  .advanced-panel summary::-webkit-details-marker { display: none; }
-  .advanced-panel[open] summary { border-bottom: 1px solid var(--border); }
-  .advanced-panel-body { padding: 1rem 0.875rem; display: flex; flex-direction: column; gap: 1rem; }
 
   /* ── Deploy ───────────────────────────────────────────────────────────────── */
   .deploy-btn { min-width: 10rem; }

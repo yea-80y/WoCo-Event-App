@@ -28,11 +28,6 @@ import {
   onAccountsChanged,
 } from "../wallet/connection.js";
 import {
-  createLocalAccount,
-  restoreLocalAccount,
-  clearLocalAccount,
-} from "./local-account.js";
-import {
   authenticatePasskey,
   restorePasskeyAccount,
   createPasskeyAccount,
@@ -56,7 +51,6 @@ let _ready = $state(false);
 let _busy = $state(false);
 
 // In-memory only — never exposed reactively
-let _localPrivateKey: string | null = null;
 let _passkeyPrivateKey: string | null = null;
 let _web3authPrivateKey: string | null = null;
 
@@ -108,11 +102,6 @@ const isAuthenticated = $derived(isConnected && hasSession);
 async function _getSigner(): Promise<EIP712Signer> {
   if (_kind === "web3" && _parent) {
     return createWeb3Signer(_parent);
-  }
-  if (_kind === "local" && _localPrivateKey) {
-    return createLocalSigner(_localPrivateKey, (info) =>
-      signingRequest.request(info),
-    );
   }
   if (_kind === "passkey") {
     // Passkey parent stays the ZeroDev Kernel (identity/EAS attester), but
@@ -193,7 +182,7 @@ function _getPodAddress(): string | null {
  * cryptographically independent.
  *
  * Signs with `_getPodSigner()` — the DETERMINISTIC raw-key/wallet signer (raw PRF
- * key for passkey, raw key for web3auth/local, the wallet for web3), NEVER the
+ * key for passkey, raw key for web3auth, the wallet for web3), NEVER the
  * Kernel 1271 signer, whose signatures are non-deterministic and would orphan the
  * feed across devices.
  *
@@ -204,15 +193,14 @@ function _getPodAddress(): string | null {
  * consolation: a failure here aborts the publish with a clear error instead.
  */
 async function _deriveFeedSignerBySigning(parent: string): Promise<ContentFeedSigner> {
-  // For kinds whose raw key is already in memory (web3auth, local), the feed-signer
+  // For kinds whose raw key is already in memory (web3auth), the feed-signer
   // derivation is an INTERNAL key-stretch — ethers signs it silently (RFC-6979), so
   // it needs no user confirm dialog. Deriving silently is also what lets us
   // re-establish the signer eagerly on login/restore without popping a prompt on
   // every page load. web3 (external wallet) must sign with the wallet itself (and
   // gets the double-sign determinism check); passkey keeps its own _getPodSigner
   // path (biometric + escrow-backed).
-  const silentRawKey =
-    _kind === "web3auth" ? _web3authPrivateKey : _kind === "local" ? _localPrivateKey : null;
+  const silentRawKey = _kind === "web3auth" ? _web3authPrivateKey : null;
   const signer712 = silentRawKey
     ? createLocalSigner(silentRawKey, async () => true)
     : await _getPodSigner();
@@ -229,12 +217,12 @@ async function _deriveFeedSignerBySigning(parent: string): Promise<ContentFeedSi
     );
 
   const { deriveContentFeedSignerFromSig } = await import("../swarm/content-feed.js");
-  const first = deriveContentFeedSignerFromSig(await sign());
+  const first = await deriveContentFeedSignerFromSig(await sign());
   // Only EXTERNAL wallets need the reproducibility self-check: we don't control
   // their nonce generation. Raw-key kinds sign with ethers (RFC-6979) → already
   // deterministic, so a second prompt would be pure friction.
   if (_kind === "web3") {
-    const second = deriveContentFeedSignerFromSig(await sign());
+    const second = await deriveContentFeedSignerFromSig(await sign());
     if (first.address !== second.address) {
       throw new Error(
         "Your wallet's signature isn't reproducible, so we can't create a recoverable feed for your content. Try a different wallet.",
@@ -274,20 +262,20 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
     const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
     const stored = await restoreContentFeedSigner(parent);
     if (stored) {
-      const signer = contentFeedSignerFromPrivKey(stored);
+      const signer = await contentFeedSignerFromPrivKey(stored);
       _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
       return signer;
     }
   }
 
   // (2) No stored key yet → establish one by SIGN-TO-DERIVE, the single
-  // construction for every kind that can own client feeds (web3, web3auth, local,
+  // construction for every kind that can own client feeds (web3, web3auth,
   // passkey), then PERSIST it; from here the stored key wins. On passkey it is
   // additionally escrowed in the guardian bundle at publish time (recovery-escrow).
   // FAIL-LOUD: these kinds MUST own client-signed content, so any failure THROWS
   // (a non-deterministic wallet self-check, a missing key) — we NEVER fall through
   // to a platform signer, which would silently split the user's feeds.
-  if (parent && (_kind === "web3" || _kind === "web3auth" || _kind === "local" || _kind === "passkey")) {
+  if (parent && (_kind === "web3" || _kind === "web3auth" || _kind === "passkey")) {
     // Anti-divergence guard: a RECOVERED passkey's PRF credential has ROTATED, so
     // sign-to-derive here would produce a DIFFERENT key than the one that owns the
     // account's existing feeds — silently forking them. Its real signer only comes
@@ -315,13 +303,13 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
 
 /**
  * Eagerly (re-)establish the content-feed signer for kinds that can derive it
- * SILENTLY from an in-memory raw key (web3auth, local). This is what makes client
+ * SILENTLY from an in-memory raw key (web3auth). This is what makes client
  * feeds actually work across sessions and devices for these kinds:
  *   - logout wipes the on-device signer blob (shared-device hygiene), so a plain
  *     re-login would leave passive reads (avatar/profile) with no signer to resolve
  *     → they'd fall back to the empty legacy feed and show blank;
  *   - a COLD device has never stored it at all.
- * Because the derivation is deterministic (Web3Auth/local key × fixed domain), every
+ * Because the derivation is deterministic (Web3Auth key × fixed domain), every
  * session and device re-derives the SAME signer → the same SOCs → the user sees
  * their own content. Runs after the raw key is in memory; silent (no dialog) and
  * NON-FATAL — a failure here must not block login/restore, it just defers to the
@@ -329,7 +317,7 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
  * passkey (biometric + escrow), and CSW (parked).
  */
 async function _establishFeedSignerEagerly(): Promise<void> {
-  if (_kind !== "web3auth" && _kind !== "local") return;
+  if (_kind !== "web3auth") return;
   try {
     await _getContentFeedSigner();
   } catch (e) {
@@ -366,13 +354,13 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   const stored = await restoreContentFeedSigner(parent);
   if (stored) {
     const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
-    const address = contentFeedSignerFromPrivKey(stored).address;
+    const address = (await contentFeedSignerFromPrivKey(stored)).address;
     _feedSignerAddressMemo = { parent, address };
     return address;
   }
 
   // No stored key yet, but for kinds whose feed signer is SILENTLY derivable from
-  // an in-memory raw key (web3auth, local) we ESTABLISH it on demand rather than
+  // an in-memory raw key (web3auth) we ESTABLISH it on demand rather than
   // returning null. This closes the cold-restore race: `init()` flips isConnected
   // true (→ ProfilePage re-reads) the instant _kind/_parent are set, BEFORE the
   // awaited eager establishment has persisted the signer. A null here would make
@@ -383,8 +371,7 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   // so we never take the wrong (POD/passkey-prompt) derive path. Other kinds
   // (passkey/web3) require a prompt to derive and MUST stay prompt-free here, so
   // they return null and defer to lazy establish on first write.
-  const silentRawKey =
-    _kind === "web3auth" ? _web3authPrivateKey : _kind === "local" ? _localPrivateKey : null;
+  const silentRawKey = _kind === "web3auth" ? _web3authPrivateKey : null;
   if (silentRawKey) {
     const signer = await _getContentFeedSigner().catch(() => null);
     return signer?.address ?? null;
@@ -400,17 +387,39 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
  * decrypt, never a PRF/wallet signature), so passive UI can call it freely.
  * Returns [] when not signed in, no feed signer established, or no manifest yet.
  */
+// Session memo for the backup inventory. A user without a manifest pays a full
+// failed-SOC-probe fan-out (gateway 403s + server 404s) on EVERY passive panel
+// mount otherwise. In-memory only — this is decrypted private metadata (guardian
+// addresses) and must not land in localStorage. Concurrent callers (CreatorHome
+// + BackupNudge) share one in-flight read.
+let _backupInvMemo: { parent: string; at: number; entries: import("@woco/shared").BackupInventoryEntry[] } | null = null;
+let _backupInvFlight: { parent: string; promise: Promise<import("@woco/shared").BackupInventoryEntry[]> } | null = null;
+const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
+
 async function getBackupInventory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
   const parent = _parent;
   if (!parent) return [];
+  const memo = _backupInvMemo;
+  if (memo && memo.parent === parent && Date.now() - memo.at < BACKUP_INV_TTL_MS) return memo.entries;
+  if (_backupInvFlight?.parent === parent) return _backupInvFlight.promise;
+  const promise = _readBackupInventoryUncached(parent).finally(() => {
+    _backupInvFlight = null;
+  });
+  _backupInvFlight = { parent, promise };
+  return promise;
+}
+
+async function _readBackupInventoryUncached(parent: string): Promise<import("@woco/shared").BackupInventoryEntry[]> {
   const address = await _getContentFeedSignerAddress();
-  if (!address) return [];
+  if (!address) return []; // no signer yet — cheap, don't memo (may appear right after login)
   const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
   const privKey = await restoreContentFeedSigner(parent);
   if (!privKey) return [];
   try {
     const { readBackupInventory } = await import("../manifest/inventory.js");
-    return await readBackupInventory({ signer: { privKey, address }, parentAddress: parent });
+    const entries = await readBackupInventory({ signer: { privKey, address }, parentAddress: parent });
+    _backupInvMemo = { parent, at: Date.now(), entries };
+    return entries;
   } catch {
     return [];
   }
@@ -759,19 +768,6 @@ async function init(): Promise<void> {
       } else {
         await clearAllAuth();
       }
-    } else if (kind === "local") {
-      const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
-      const account = await restoreLocalAccount();
-
-      if (account && storedParent && account.address === storedParent) {
-        _kind = "local";
-        _parent = storedParent;
-        _localPrivateKey = account.privateKey;
-        await _restoreCachedAuth();
-        await _establishFeedSignerEagerly();
-      } else {
-        await clearAllAuth();
-      }
     } else if (kind === "passkey") {
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
       const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
@@ -873,7 +869,6 @@ async function loginWeb3(): Promise<boolean> {
     await putKV(StorageKeys.PARENT_ADDRESS, address);
     _kind = "web3";
     _parent = address;
-    _localPrivateKey = null;
 
     // Restore any cached session/POD from a previous login with the same
     // parent. When unlocking MetaMask after init() skipped the session-only
@@ -893,47 +888,11 @@ async function loginWeb3(): Promise<boolean> {
   }
 }
 
-async function loginLocal(): Promise<boolean> {
-  if (_busy) return false;
-  _busy = true;
-
-  try {
-    // Try to restore existing local account, or create a new one
-    let account = await restoreLocalAccount();
-    if (!account) {
-      account = await createLocalAccount();
-    }
-
-    await _clearStaleAuthForSwitch(account.address);
-
-    await putKV(StorageKeys.AUTH_KIND, "local" as AuthKind);
-    await putKV(StorageKeys.PARENT_ADDRESS, account.address);
-    _kind = "local";
-    _parent = account.address;
-    _localPrivateKey = account.privateKey;
-
-    // Restore any cached session/POD from a previous login
-    await _restoreCachedAuth();
-    await _establishFeedSignerEagerly();
-
-    // No account change listener needed for local accounts
-    _cleanupAccountListener?.();
-    _cleanupAccountListener = null;
-
-    return true;
-  } catch (e) {
-    console.error("[auth] local login failed:", e);
-    return false;
-  } finally {
-    _busy = false;
-  }
-}
-
 /**
  * Open the Web3Auth PnP modal (email / social login). Extracts the raw key
- * client-side and keeps it in memory as the session signer — same pattern as
- * local account but sourced from Web3Auth's MPC reconstruction instead of
- * IndexedDB. Web3Auth's stored session enables silent restore on page reload.
+ * client-side and keeps it in memory as the session signer, sourced from
+ * Web3Auth's MPC reconstruction. Web3Auth's stored session enables silent
+ * restore on page reload.
  */
 async function loginWeb3Auth(): Promise<boolean> {
   if (_busy) return false;
@@ -984,7 +943,6 @@ async function loginWeb3Auth(): Promise<boolean> {
     _web3authPrivateKey = privateKey;
     _web3authPodAddress = address;
     _kernel = kernel;
-    _localPrivateKey = null;
     _passkeyPrivateKey = null;
 
     await _restoreCachedAuth();
@@ -1049,7 +1007,6 @@ async function loginCoinbase(): Promise<boolean> {
     await putKV(StorageKeys.PARENT_ADDRESS, address);
     _kind = "coinbase";
     _parent = address;
-    _localPrivateKey = null;
     _passkeyPrivateKey = null;
 
     await _restoreCachedAuth();
@@ -1154,7 +1111,6 @@ async function loginPasskey(): Promise<boolean> {
     _passkeyPrivateKey = account.privateKey;
     _podAddress = account.address;
     _kernel = kernel;
-    _localPrivateKey = null;
 
     await _restoreCachedAuth();
 
@@ -1173,9 +1129,8 @@ async function loginPasskey(): Promise<boolean> {
 /**
  * Dispatcher: login with specified method, or show method picker.
  */
-async function login(method?: "web3" | "local" | "passkey"): Promise<boolean> {
+async function login(method?: "web3" | "passkey"): Promise<boolean> {
   if (method === "web3") return loginWeb3();
-  if (method === "local") return loginLocal();
   if (method === "passkey") return loginPasskey();
   // No method specified — caller should show LoginModal
   return false;
@@ -1526,6 +1481,7 @@ async function setupAccountRecovery(backup: {
           maskedEmail: backup.meta?.maskedEmail,
         },
       });
+      _backupInvMemo = null; // next panel read sees the new entry
     } catch (err) {
       console.warn("[recovery] backup-inventory manifest write failed (non-fatal):", err);
     }
@@ -1708,7 +1664,6 @@ async function recoverAndRekey(args: {
     }
     _podAddress = newPodAddress;
     _kernel = kernel;
-    _localPrivateKey = null;
     // Cache the POD public key from the escrow-restored seed so the dashboard
     // decrypts immediately and ensurePodIdentity short-circuits (never re-derives
     // a divergent seed from the rotated credential).
@@ -1862,7 +1817,6 @@ async function clearAllAuth(): Promise<void> {
   _parent = null;
   _sessionAddress = null;
   _podPublicKeyHex = null;
-  _localPrivateKey = null;
   _passkeyPrivateKey = null;
   _web3authPrivateKey = null;
   _podAddress = null;
@@ -1872,6 +1826,8 @@ async function clearAllAuth(): Promise<void> {
   _podInFlight = null;
   _feedSignerInFlight = null;
   _feedSignerAddressMemo = null;
+  _backupInvMemo = null;
+  _backupInvFlight = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1923,7 +1879,6 @@ export const auth = {
   init,
   login,
   loginWeb3,
-  loginLocal,
   loginPasskey,
   loginWeb3Auth,
   loginCoinbase,

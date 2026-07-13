@@ -1,4 +1,7 @@
-import { Wallet, ZeroHash, verifyTypedData, type TypedDataField } from "ethers";
+// ethers is imported lazily inside each function — this module is statically
+// reachable from auth-store at boot, and a top-level ethers import would drag
+// ~640KB into the first-paint bundle.
+import type { Wallet } from "ethers";
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
@@ -37,6 +40,8 @@ export async function requestSessionDelegation(
    */
   expectedSigner?: string,
 ): Promise<{ sessionAddress: string; delegation: SessionDelegation }> {
+  const { Wallet, ZeroHash, verifyTypedData } = await import("ethers");
+
   // 1. Random session key
   const sessionWallet = Wallet.createRandom();
   const sessionAddress = sessionWallet.address;
@@ -77,7 +82,7 @@ export async function requestSessionDelegation(
     try {
       const recovered = verifyTypedData(
         SESSION_DOMAIN,
-        SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
+        SESSION_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
         message,
         parentSig,
       );
@@ -172,6 +177,7 @@ export async function restoreSession(expectedParent: string): Promise<{
     return null;
   }
 
+  const { Wallet } = await import("ethers");
   const sessionWallet = new Wallet(privateKey);
   if (sessionWallet.address !== address) {
     await clearSession();

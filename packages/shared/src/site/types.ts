@@ -434,8 +434,6 @@ export interface SiteRuntimeConfig {
   gatewayUrl: string;
   /** API base URL for contactForm POSTs and event reads. */
   apiUrl?: string;
-  /** Para wallet API key — injected by single-event site builder. */
-  paraApiKey?: string;
   /** Builder preview only — event entries injected from builder state so events
    *  grid renders without requiring the feed to be published first. */
   previewEvents?: SiteEventEntry[];

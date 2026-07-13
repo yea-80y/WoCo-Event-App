@@ -23,7 +23,6 @@
  * manifest — nobody else, and never the server, which sees ciphertext only.
  */
 
-import { getBytes } from "ethers";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha";
 import { bytesToHex, hexToBytes } from "@noble/ciphers/utils";
 import { randomBytes } from "@noble/ciphers/webcrypto";
@@ -55,8 +54,8 @@ function aadBytes(parentAddress: string): Uint8Array {
  * here.
  */
 function deriveManifestKey(feedSignerPrivKey: string): Uint8Array {
-  const hex = feedSignerPrivKey.startsWith("0x") ? feedSignerPrivKey : `0x${feedSignerPrivKey}`;
-  const ikm = getBytes(hex);
+  const hex = feedSignerPrivKey.startsWith("0x") ? feedSignerPrivKey.slice(2) : feedSignerPrivKey;
+  const ikm = hexToBytes(hex);
   if (ikm.length !== 32) {
     ikm.fill(0);
     throw new Error("deriveManifestKey: feed-signer key must be 32 bytes");

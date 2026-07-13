@@ -4,6 +4,7 @@ import { authPost, get } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import { writeContentFeed, readContentFeed } from "../swarm/content-feed.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
+import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
 
 // ---------------------------------------------------------------------------
 // In-memory cache — profile data changes rarely
@@ -24,11 +25,36 @@ function cacheHit(address: string): UserProfile | null | undefined {
 
 function cacheStore(address: string, profile: UserProfile | null) {
   profileCache.set(address.toLowerCase(), { profile, fetchedAt: Date.now() });
+  if (profile) cacheDel(cacheKey.profileMiss(address));
 }
 
 /** Invalidate cache for an address (after update). */
 export function invalidateProfileCache(address: string) {
   profileCache.delete(address.toLowerCase());
+  cacheDel(cacheKey.profileMiss(address));
+}
+
+// ---------------------------------------------------------------------------
+// Miss suppression — a profile that doesn't exist must not cost a request storm.
+//
+// Every lookup of a never-published profile fans out into several failed
+// fetches (SOC version probes → gateway 403 + server 404 fallback, then the
+// legacy server read), and the browser prints each one to the console. Two
+// layers keep repeats off the wire:
+//   1. inFlight — concurrent components (UserAvatar / CreatorChip / EventDetail)
+//      asking for the same address share ONE lookup.
+//   2. localStorage negative cache (TTL.PROFILE_MISS) — survives reloads and
+//      navigation, unlike the in-memory Map.
+// The negative record stores the signer it was probed with: a hinted read can
+// find a client-owned profile a hint-less read cannot, so a stronger-signer
+// call re-probes instead of trusting a weaker miss.
+// ---------------------------------------------------------------------------
+
+const inFlight = new Map<string, Promise<UserProfile | null>>();
+
+interface ProfileMiss {
+  /** Content-feed signer the miss was recorded with (lowercase), or null. */
+  s: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,23 +97,45 @@ async function readClientProfile(address: string, signer: string): Promise<UserP
  * platform-signed profile, or no carrier) we fall back to the server read.
  */
 export async function getProfile(address: string, signerHint?: string): Promise<UserProfile | null> {
-  const cached = cacheHit(address);
+  const addr = address.toLowerCase();
+  const cached = cacheHit(addr);
   if (cached !== undefined) return cached;
 
+  // Share one lookup across concurrent callers. Keyed per hint (not just per
+  // address) so a hinted read never inherits the weaker result of a hint-less
+  // one that happened to start first.
+  const flightKey = `${addr}|${signerHint?.toLowerCase() ?? ""}`;
+  const pending = inFlight.get(flightKey);
+  if (pending) return pending;
+
+  const lookup = fetchProfileUncached(addr, signerHint).finally(() => inFlight.delete(flightKey));
+  inFlight.set(flightKey, lookup);
+  return lookup;
+}
+
+async function fetchProfileUncached(addr: string, signerHint?: string): Promise<UserProfile | null> {
   // Resolve the content-feed signer ADDRESS: explicit hint, or our own signer
   // when reading our own profile (no carrier needed for self). The self path uses
   // the no-prompt address resolver — a passive avatar read must never trigger a
   // passkey PRF prompt.
   let signer: string | null | undefined = signerHint;
-  if (!signer && auth.parent && address.toLowerCase() === auth.parent.toLowerCase()) {
+  if (!signer && auth.parent && addr === auth.parent.toLowerCase()) {
     signer = await auth.getContentFeedSignerAddress();
+  }
+  const signerLc = signer?.toLowerCase() ?? null;
+
+  // Honour a recorded miss unless this call carries a signer the miss lacked.
+  const miss = cacheGet<ProfileMiss>(cacheKey.profileMiss(addr));
+  if (miss && (!signerLc || miss.s === signerLc)) {
+    cacheStore(addr, null);
+    return null;
   }
 
   if (signer) {
     try {
-      const profile = await readClientProfile(address, signer);
+      const profile = await readClientProfile(addr, signer);
       if (profile) {
-        cacheStore(address, profile);
+        cacheStore(addr, profile);
         return profile;
       }
     } catch {
@@ -96,9 +144,15 @@ export async function getProfile(address: string, signerHint?: string): Promise<
   }
 
   try {
-    const resp = await get<UserProfile | null>(`/api/profile/${address.toLowerCase()}`);
+    const resp = await get<UserProfile | null>(`/api/profile/${addr}`);
     const profile = resp.ok ? (resp.data ?? null) : null;
-    cacheStore(address, profile);
+    cacheStore(addr, profile);
+    // Record the confirmed miss (both rails said "no profile") so repeat visits
+    // within the TTL are request-free. Transport errors land in catch — a flaky
+    // network must not suppress a real profile.
+    if (!profile && resp.ok) {
+      cacheSet<ProfileMiss>(cacheKey.profileMiss(addr), { s: signerLc }, TTL.PROFILE_MISS);
+    }
     return profile;
   } catch {
     return null;

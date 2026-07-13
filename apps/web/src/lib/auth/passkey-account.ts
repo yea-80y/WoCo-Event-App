@@ -1,7 +1,5 @@
 /// <reference path="./webauthn-prf.d.ts" />
 
-import { keccak256 } from "ethers";
-import { Wallet } from "ethers";
 import { StorageKeys, PASSKEY_PRF_SALT_INPUT } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -66,8 +64,10 @@ function fromBase64url(str: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-/** Derive a secp256k1 private key + Ethereum address from the PRF output. */
-function deriveKey(prfOutput: ArrayBuffer): { address: string; privateKey: `0x${string}` } {
+/** Derive a secp256k1 private key + Ethereum address from the PRF output.
+ *  ethers is imported lazily — this module is in the login modal's boot graph. */
+async function deriveKey(prfOutput: ArrayBuffer): Promise<{ address: string; privateKey: `0x${string}` }> {
+  const { keccak256, Wallet } = await import("ethers");
   const prfBytes = new Uint8Array(prfOutput);
   const privateKey = keccak256(prfBytes) as `0x${string}`;
   const wallet = new Wallet(privateKey);

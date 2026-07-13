@@ -27,7 +27,7 @@ export async function ensureDeviceKey(): Promise<CryptoKey> {
  *
  * Two layers of binding:
  *   1. SLOT KIND — prevents cross-slot blob substitution (e.g. swap a
- *      delegation blob into the local-account slot).
+ *      delegation blob into another slot).
  *   2. PARENT ADDRESS — for identity-scoped slots (POD seed, session key,
  *      session delegation) the AAD also commits to the wallet address that
  *      wrote the blob. Decryption fails cryptographically when the active
@@ -36,14 +36,9 @@ export async function ensureDeviceKey(): Promise<CryptoKey> {
  *      silently re-used by a different identity on the same browser. AAD
  *      is authenticated but NOT encrypted.
  *
- * LOCAL_ACCOUNT is the only slot kept as a constant — the plaintext IS
- * the account address, so binding AAD to the address would be circular
- * (we'd need the address to construct the AAD before decryption).
- *
  * Address is lowercased so casing variation cannot lock a user out.
  */
 export const AAD = {
-  LOCAL_ACCOUNT: "woco/device/local-account/v1",
   SESSION_KEY: (parent: string) =>
     `woco/device/session-key/v1:${parent.toLowerCase()}`,
   SESSION_DELEGATION: (parent: string) =>

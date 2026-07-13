@@ -1,17 +1,17 @@
-import { Wallet } from "ethers";
 import type { EIP712Signer, SigningRequestInfo } from "@woco/shared";
 
 /**
  * Create an EIP-712 signer that signs locally with a private key.
  * Shows a confirmation dialog before each signature via the confirmFn callback.
+ * ethers is imported lazily so signer factories stay off the boot path.
  */
 export function createLocalSigner(
   privateKey: string,
   confirmFn: (info: SigningRequestInfo) => Promise<boolean>,
 ): EIP712Signer {
-  const wallet = new Wallet(privateKey);
-
   return async (domain, types, value) => {
+    const { Wallet } = await import("ethers");
+    const wallet = new Wallet(privateKey);
     // Build human-readable info for the confirmation dialog
     const domainName = (domain.name as string) || "Unknown";
     const typeName = Object.keys(types)[0] || "Unknown";

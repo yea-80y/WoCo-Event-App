@@ -15,7 +15,6 @@
     usdcAvailableOnChain: boolean;
     claiming: boolean;
     step: string;
-    authKind: string | null;
     hasStripe: boolean;
     stripeLoading: boolean;
     stripeEmail: string;
@@ -39,7 +38,6 @@
     usdcAvailableOnChain,
     claiming,
     step,
-    authKind,
     hasStripe,
     stripeLoading,
     stripeEmail,
@@ -155,10 +153,6 @@
     {/if}
     <button class="pay-cancel" onclick={onCancel}>Cancel</button>
   </div>
-
-  {#if authKind === "local"}
-    <p class="pay-note">Crypto payments require a Web3 wallet or Para account.</p>
-  {/if}
 
   {#if hasStripe}
     <div class="pay-divider">
@@ -429,13 +423,6 @@
 
   .pay-cancel:hover {
     color: var(--text-secondary);
-  }
-
-  .pay-note {
-    font-size: 0.625rem;
-    color: var(--text-muted);
-    margin: 0;
-    text-align: center;
   }
 
   /* Stripe fallback divider (shared with parent — Svelte scopes, duplicate kept here) */
