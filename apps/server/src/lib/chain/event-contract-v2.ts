@@ -230,6 +230,7 @@ export async function registerEventV2(
   contractAddress: string,
   sponsorPk: string,
   chainId: number,
+  onTxSent?: (tx: { txHash: string; nonce: number; chainId: number }) => void,
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const wallet   = new Wallet(sponsorPk, getProvider(chainId));
   const contract = new Contract(contractAddress, V2_REGISTER_ABI, wallet);
@@ -246,6 +247,10 @@ export async function registerEventV2(
       supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs, o,
     ),
   );
+  // Durably mark the tx as broadcast BEFORE awaiting it: everything from here to
+  // the caller's confirmation write is a window in which a crash or a client retry
+  // could otherwise re-send, and registerEvent is not idempotent (WoCoEventV2.sol:247).
+  onTxSent?.({ txHash: tx.hash, nonce: tx.nonce, chainId });
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from V2 registerEvent tx");
 

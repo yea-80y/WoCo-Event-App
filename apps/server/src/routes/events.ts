@@ -6,7 +6,7 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, peekEventCache, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
-import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
+import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy } from "../lib/etherna/batch-router.js";
@@ -742,41 +742,51 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const eventEndTs = Math.max(Number.isFinite(endSec) ? endSec : 0, nowSec + 3600);
 
   const tReg = Date.now();
-  let onChainEventId: string;
-  let txHash: string;
+  // Exactly-once: registerEvent is NOT idempotent (the contract keys the event id off
+  // a sponsor-nonce counter, not the manifest), and publish RETRIES this endpoint after
+  // a phase-2 failure. The guard therefore cannot live in the feed we just resolved —
+  // the cache/SOC tiers above carry no on-chain id — so it lives in the persisted
+  // registry + pending-tx marker. See lib/event/register-once.ts.
+  let result: Awaited<ReturnType<typeof registerSeriesExactlyOnce>>;
   try {
-    ({ onChainEventId, txHash } = await registerEventOnChain(series.totalSupply, manifestRef, {
-      priceBaseUnits: 0n,
-      payoutRecipient: feed.creatorAddress,
-      dropGate: ZERO_ADDRESS,
-      eventEndTs,
-    }));
+    result = await registerSeriesExactlyOnce({
+      eventId,
+      seriesId,
+      supply: series.totalSupply,
+      manifestRef,
+      v2Params: {
+        priceBaseUnits: 0n,
+        payoutRecipient: feed.creatorAddress,
+        dropGate: ZERO_ADDRESS,
+        eventEndTs,
+      },
+      ...(feed.creatorFeedSigner ? { signerHint: feed.creatorFeedSigner } : {}),
+      ...(series.onChainEventId ? { feedOnChainEventId: series.onChainEventId } : {}),
+    });
   } catch (err) {
-    console.error("[api] register-on-chain tx error:", err);
+    console.error("[api] register-on-chain error:", err);
     const message = err instanceof Error ? err.message : "registerEvent tx failed";
     return c.json({ ok: false, error: message }, 500);
   }
-  const tTx = Date.now();
 
-  let updatedFeed: Awaited<ReturnType<typeof confirmSeriesOnChain>>;
-  try {
-    // The trusted feed's own signer (never the request's) is the cold-cache
-    // fallback carrier for the confirm read.
-    updatedFeed = await confirmSeriesOnChain(eventId, seriesId, onChainEventId, feed.creatorFeedSigner);
-  } catch (err) {
-    console.error("[api] register-on-chain confirm error:", err);
-    // Feed update failed but tx is on-chain — return the eventId so client can retry confirm
-    return c.json({ ok: false, error: "Tx confirmed but feed update failed — retry", onChainEventId, txHash }, 500);
+  if (result.status === "pending") {
+    // The earlier tx may still mine. Re-sending would mint a second on-chain event,
+    // so the only safe answer is "come back" — the next call adopts that tx's id.
+    return c.json(
+      { ok: false, error: "Registration already in flight — retry in a moment", txHash: result.txHash, retryable: true },
+      409,
+    );
   }
 
   console.log(
-    `[api] register-on-chain timing: feedRead=${tReg - tStart}ms tx=${tTx - tReg}ms confirm=${Date.now() - tTx}ms total=${Date.now() - tStart}ms`,
+    `[api] register-on-chain timing: feedRead=${tReg - tStart}ms chain=${Date.now() - tReg}ms total=${Date.now() - tStart}ms status=${result.status}`,
   );
   return c.json({
     ok: true,
-    onChainEventId,
-    txHash,
-    ...(feed.creatorFeedSigner ? { eventFeed: updatedFeed } : {}),
+    onChainEventId: result.onChainEventId,
+    ...(result.status === "registered" && result.txHash ? { txHash: result.txHash } : {}),
+    ...(result.status === "already" ? { alreadyRegistered: true } : {}),
+    ...(feed.creatorFeedSigner && result.feed ? { eventFeed: result.feed } : {}),
   });
 });
 

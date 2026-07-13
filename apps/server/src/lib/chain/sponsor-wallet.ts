@@ -11,6 +11,7 @@ import {
   batchClaimForV2,
   registerEventV2,
   isSponsorAuthorisedV2,
+  V2_ABI,
 } from "./event-contract-v2.js";
 
 /** V2 registerEvent params not present in the V1 2-arg call. */
@@ -53,6 +54,78 @@ function getSponsorWallet(): Wallet {
   provider.pollingInterval = 500;
   _wallet = new Wallet(pk, provider);
   return _wallet;
+}
+
+/**
+ * Called the moment a sponsor tx is broadcast — BEFORE it is awaited. Lets the
+ * caller durably record "this tx exists" so a crash or retry during the
+ * confirmation window can resolve it instead of sending a second one.
+ */
+export type SponsorTxSent = (tx: { txHash: string; nonce: number; chainId: number }) => void;
+
+/** Fate of a previously-broadcast registerEvent tx. */
+export type RegisterTxOutcome =
+  /** Mined and the Registered log is in the receipt — the registration HAPPENED. */
+  | { status: "registered"; onChainEventId: string; txHash: string }
+  /** Mined but reverted — no registration; safe to broadcast a replacement. */
+  | { status: "reverted" }
+  /** The nonce was consumed by a different tx, so this one can never mine. */
+  | { status: "replaced" }
+  /** Still in the mempool — it MAY yet mine, so it must NOT be re-broadcast. */
+  | { status: "pending" };
+
+/**
+ * Decide the fate of an already-broadcast registerEvent tx WITHOUT sending anything.
+ *
+ * The rule this enforces: never re-send a tx that might be in flight. The contract
+ * derives its eventId from a sponsor-nonce counter (WoCoEventV2.sol:247), not from
+ * the manifest, so a duplicate send is not idempotent — it mints a second on-chain
+ * event with its own supply.
+ *
+ * "replaced" is deliberately conservative. A confirmed sponsor nonce past this tx's
+ * nonce proves the slot was taken by something else, but an RPC whose head is ahead
+ * of its receipt index would look identical for an instant, so the receipt is re-read
+ * after a short delay before we commit to that answer. Anything still ambiguous stays
+ * `pending`: a stuck-unregistered event is recoverable, a duplicate registration is not.
+ */
+export async function resolveRegisterTx(txHash: string, nonce: number): Promise<RegisterTxOutcome> {
+  const wallet = getSponsorWallet();
+  const provider = wallet.provider!;
+  const chainId = getActiveChainId();
+
+  const parse = (receipt: { logs: ReadonlyArray<{ topics: readonly string[]; data: string }> }): string | null => {
+    const iface = new Interface(getEventContractVersion(chainId) === "v2" ? V2_ABI : REGISTER_ABI);
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
+        if (parsed?.name === "Registered") return parsed.args.eventId as string;
+      } catch {
+        // log from another contract
+      }
+    }
+    return null;
+  };
+
+  const receipt = await provider.getTransactionReceipt(txHash);
+  if (receipt) {
+    if (receipt.status === 0) return { status: "reverted" };
+    const onChainEventId = parse(receipt);
+    if (!onChainEventId) throw new Error(`registerEvent tx ${txHash} mined but has no Registered log`);
+    return { status: "registered", onChainEventId, txHash };
+  }
+
+  const confirmedNonce = await provider.getTransactionCount(wallet.address, "latest");
+  if (confirmedNonce > nonce) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const recheck = await provider.getTransactionReceipt(txHash);
+    if (!recheck) return { status: "replaced" };
+    if (recheck.status === 0) return { status: "reverted" };
+    const onChainEventId = parse(recheck);
+    if (!onChainEventId) throw new Error(`registerEvent tx ${txHash} mined but has no Registered log`);
+    return { status: "registered", onChainEventId, txHash };
+  }
+
+  return { status: "pending" };
 }
 
 /** Generate a fresh ephemeral burner address. Private key is discarded immediately. */
@@ -280,6 +353,7 @@ export async function registerEventOnChain(
   supply: number,
   manifestRef: string,
   v2Params?: RegisterV2Params,
+  onTxSent?: SponsorTxSent,
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const chainId = getActiveChainId();
   const address = getWoCoEventAddress(chainId);
@@ -301,6 +375,7 @@ export async function registerEventOnChain(
       address,
       pk,
       chainId,
+      onTxSent,
     );
   }
 
@@ -315,6 +390,7 @@ export async function registerEventOnChain(
     { chainId, address: wallet.address, provider: wallet.provider!, label: "v1.registerEvent" },
     (o) => contract.registerEvent(supply, manifestRef, o),
   );
+  onTxSent?.({ txHash: tx.hash, nonce: tx.nonce, chainId });
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from registerEvent tx");
 
