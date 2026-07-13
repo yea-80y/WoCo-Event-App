@@ -23,6 +23,12 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: "@ethersphere/bee-js"
         update-types: [version-update:semver-major]
+      # @noble/* derives POD identities, signs ticket editions and seals recovery
+      # escrow. A derivation change here silently invalidates every ticket ever
+      # issued — and a green build would not notice. Bump only alongside the
+      # golden vectors in apps/web/test/pod-identity.test.ts.
+      - dependency-name: "@noble/*"
+        update-types: [version-update:semver-major]
 
   # The Docker base image. This is the watcher that would have caught
   # node:20-alpine going end-of-life on 2026-04-30.
