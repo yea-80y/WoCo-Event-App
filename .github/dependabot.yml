@@ -1,0 +1,40 @@
+version: 2
+
+updates:
+  # npm workspaces — one PR stream from the root lockfile.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Patch/minor churn lands as one reviewable PR instead of dozens.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Majors here move consensus/signing behaviour — bump them deliberately,
+      # never as a drive-by dependency PR.
+      - dependency-name: ethers
+        update-types: [version-update:semver-major]
+      - dependency-name: viem
+        update-types: [version-update:semver-major]
+      - dependency-name: "@ethersphere/bee-js"
+        update-types: [version-update:semver-major]
+
+  # The Docker base image. This is the watcher that would have caught
+  # node:20-alpine going end-of-life on 2026-04-30.
+  - package-ecosystem: docker
+    directory: /apps/server
+    schedule:
+      interval: weekly
+      day: monday
+
+  # Action versions — GitHub deprecates runner Node versions out from under these.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
