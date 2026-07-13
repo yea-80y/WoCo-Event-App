@@ -13,7 +13,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ed25519 } from "@noble/curves/ed25519";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   LEAF_DOMAIN,
   bytesToHex0x,
@@ -220,7 +220,7 @@ test("manifest digest: key order doesn't affect digest", () => {
 // ---------------------------------------------------------------------------
 
 test("hex: round-trip random 32 bytes", () => {
-  const bytes = ed25519.utils.randomPrivateKey();
+  const bytes = ed25519.utils.randomSecretKey();
   const hex = bytesToHex0x(bytes);
   assert.equal(hex.length, 2 + 64);
   const back = hex0xToBytes(hex);

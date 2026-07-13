@@ -23,11 +23,11 @@
  * manifest — nobody else, and never the server, which sees ciphertext only.
  */
 
-import { xchacha20poly1305 } from "@noble/ciphers/chacha";
-import { bytesToHex, hexToBytes } from "@noble/ciphers/utils";
-import { randomBytes } from "@noble/ciphers/webcrypto";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha256 } from "@noble/hashes/sha256";
+import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { bytesToHex, hexToBytes } from "@noble/ciphers/utils.js";
+import { randomBytes } from "@noble/ciphers/utils.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import type { SelfSealedEnvelope } from "@woco/shared";
 
 /** XChaCha20-Poly1305 nonce length (bytes). */

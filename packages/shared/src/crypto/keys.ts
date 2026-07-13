@@ -10,10 +10,15 @@
  * by the x25519 functions). A keccak256 hash output maps directly.
  */
 
-import { x25519 } from "@noble/curves/ed25519";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+
+// @noble/hashes v2 requires `info` as bytes; v1 UTF-8 encoded the string itself.
+// Encoding here yields the identical derived key (verified against Node's RFC 5869
+// hkdfSync), so existing encrypted history stays decryptable.
+const ENCRYPTION_INFO_BYTES = utf8ToBytes("woco/encryption/v1");
 
 /**
  * Convert a 32-byte hex seed to an X25519 private key.
@@ -71,7 +76,7 @@ export function deriveEncryptionKeypairFromPodSeed(podSeedHex: string): {
   const podSeed = hexToBytes(
     podSeedHex.startsWith("0x") ? podSeedHex.slice(2) : podSeedHex,
   );
-  const encSeed = hkdf(sha256, podSeed, new Uint8Array(0), "woco/encryption/v1", 32);
+  const encSeed = hkdf(sha256, podSeed, new Uint8Array(0), ENCRYPTION_INFO_BYTES, 32);
   const publicKey = x25519.getPublicKey(encSeed);
 
   return {

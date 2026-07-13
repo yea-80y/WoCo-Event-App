@@ -14,12 +14,18 @@
  *   - Uses Web Crypto API for AES-GCM (hardware-accelerated, constant-time)
  */
 
-import { x25519 } from "@noble/curves/ed25519";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { SealedBox } from "./types.js";
 import { ECIES_INFO } from "./constants.js";
+
+// @noble/hashes v2 requires `info` as bytes; v1 accepted a string and UTF-8
+// encoded it internally. Encoding it here reproduces the identical derived key
+// (verified against Node's RFC 5869 hkdfSync), so existing sealed boxes stay
+// decryptable. Changing this encoding would silently orphan every sealed order.
+const ECIES_INFO_BYTES = utf8ToBytes(ECIES_INFO);
 
 /** Strip optional 0x prefix and convert hex to bytes. */
 function toBytes(hex: string): Uint8Array {
@@ -61,7 +67,7 @@ export async function seal(
   const shared = x25519.getSharedSecret(ephPrivate, pubKeyBytes);
 
   // 3. HKDF key derivation (salt = ephemeral public key for domain separation)
-  const aesKeyBytes = hkdf(sha256, shared, ephPublic, ECIES_INFO, 32);
+  const aesKeyBytes = hkdf(sha256, shared, ephPublic, ECIES_INFO_BYTES, 32);
 
   // 4. AES-256-GCM encrypt via Web Crypto
   const aesKey = await crypto.subtle.importKey(
@@ -111,7 +117,7 @@ export async function open(
   const shared = x25519.getSharedSecret(privKeyBytes, ephPublic);
 
   // 2. HKDF key derivation (same parameters → same AES key)
-  const aesKeyBytes = hkdf(sha256, shared, ephPublic, ECIES_INFO, 32);
+  const aesKeyBytes = hkdf(sha256, shared, ephPublic, ECIES_INFO_BYTES, 32);
 
   // 3. AES-256-GCM decrypt via Web Crypto
   const aesKey = await crypto.subtle.importKey(

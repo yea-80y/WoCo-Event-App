@@ -12,7 +12,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ed25519 } from "@noble/curves/ed25519";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   buildPodTree,
   getEditionProof,
@@ -214,7 +214,7 @@ function makeManifestForRoot(root: string, pubkeyHex: string, totalSupply: numbe
 }
 
 test("manifest: sign + verify round-trip", () => {
-  const priv = ed25519.utils.randomPrivateKey();
+  const priv = ed25519.utils.randomSecretKey();
   const pub = ed25519.getPublicKey(priv);
   const pubHex = bytesToHex0xNoPrefix(pub);
   const pods = makePods(50, pubHex);
@@ -225,7 +225,7 @@ test("manifest: sign + verify round-trip", () => {
 });
 
 test("manifest: tampered metadataRoot fails verification", () => {
-  const priv = ed25519.utils.randomPrivateKey();
+  const priv = ed25519.utils.randomSecretKey();
   const pub = ed25519.getPublicKey(priv);
   const pubHex = bytesToHex0xNoPrefix(pub);
   const pods = makePods(10, pubHex);
@@ -243,7 +243,7 @@ test("manifest: tampered metadataRoot fails verification", () => {
 });
 
 test("manifest: tampered totalSupply fails verification", () => {
-  const priv = ed25519.utils.randomPrivateKey();
+  const priv = ed25519.utils.randomSecretKey();
   const pub = ed25519.getPublicKey(priv);
   const pubHex = bytesToHex0xNoPrefix(pub);
   const pods = makePods(10, pubHex);
@@ -255,8 +255,8 @@ test("manifest: tampered totalSupply fails verification", () => {
 });
 
 test("manifest: signature from wrong key fails", () => {
-  const priv1 = ed25519.utils.randomPrivateKey();
-  const priv2 = ed25519.utils.randomPrivateKey();
+  const priv1 = ed25519.utils.randomSecretKey();
+  const priv2 = ed25519.utils.randomSecretKey();
   const pub1Hex = bytesToHex0xNoPrefix(ed25519.getPublicKey(priv1));
   const pods = makePods(5, pub1Hex);
   const { root } = buildPodTree(pods);
@@ -267,7 +267,7 @@ test("manifest: signature from wrong key fails", () => {
 });
 
 test("manifest: malformed signature fails gracefully (no throw)", () => {
-  const priv = ed25519.utils.randomPrivateKey();
+  const priv = ed25519.utils.randomSecretKey();
   const pubHex = bytesToHex0xNoPrefix(ed25519.getPublicKey(priv));
   const pods = makePods(3, pubHex);
   const { root } = buildPodTree(pods);
@@ -287,7 +287,7 @@ test("e2e: full verifier path against fixed-issuer reference event", () => {
   //   2. Recompute manifest digest (== chain manifestRef).
   //   3. Recompute leaf for scanned edition.
   //   4. Verify Merkle proof against manifest.metadataRoot.
-  const priv = ed25519.utils.randomPrivateKey();
+  const priv = ed25519.utils.randomSecretKey();
   const pubHex = bytesToHex0xNoPrefix(ed25519.getPublicKey(priv));
   const pods = makePods(42, pubHex);
   const { tree, root } = buildPodTree(pods);

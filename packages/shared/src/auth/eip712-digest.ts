@@ -15,7 +15,7 @@
  *   - ethers encoder:     https://github.com/ethers-io/ethers.js/blob/main/src.ts/hash/typed-data.ts
  */
 
-import { keccak_256 } from "@noble/hashes/sha3";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 
 export interface EIP712TypeField {
   name: string;

@@ -17,7 +17,7 @@
 import { config as loadEnv } from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
-import { ed25519 } from "@noble/curves/ed25519";
+import { ed25519 } from "@noble/curves/ed25519.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(__dirname, "../.env") });
@@ -38,7 +38,7 @@ async function main() {
   }
 
   // ── ed25519 POD key (throwaway) ──────────────────────────────────────────
-  const priv = ed25519.utils.randomPrivateKey();
+  const priv = ed25519.utils.randomSecretKey();
   const pub = ed25519.getPublicKey(priv);
   const issuer = Buffer.from(pub).toString("hex"); // lowercase, no 0x
 

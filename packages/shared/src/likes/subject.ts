@@ -14,8 +14,8 @@
  * depends on (see docs/EAS_LIKES_HANDOVER.md).
  */
 
-import { keccak_256 } from "@noble/hashes/sha3";
-import { bytesToHex, utf8ToBytes, concatBytes } from "@noble/hashes/utils";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex, utf8ToBytes, concatBytes } from "@noble/hashes/utils.js";
 import type { Hex0x } from "../types.js";
 import { SubjectType, type LikeSubject } from "./types.js";
 

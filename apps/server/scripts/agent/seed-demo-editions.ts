@@ -18,8 +18,8 @@
 import { config as loadEnv } from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
-import { ed25519 } from "@noble/curves/ed25519";
-import { bytesToHex } from "@noble/hashes/utils";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { uploadToBytes } from "../../src/lib/swarm/bytes.js";
 import { writeFeedPage, pack4096, readFeedPage } from "../../src/lib/swarm/feeds.js";
 import { topicEditions } from "../../src/lib/swarm/topics.js";
@@ -46,7 +46,7 @@ async function main() {
   }
 
   // Throwaway POD key — each ticket self-verifies against its embedded pubkey.
-  const podPriv = ed25519.utils.randomPrivateKey();
+  const podPriv = ed25519.utils.randomSecretKey();
   const podPub = ed25519.getPublicKey(podPriv);
   const publicKey = bytesToHex(podPub);
   const mintedAt = new Date().toISOString();

@@ -25,7 +25,7 @@
  */
 
 import * as dagCbor from "@ipld/dag-cbor";
-import { keccak_256 } from "@noble/hashes/sha3";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import type { ManifestV1Body, PodV2Body } from "./types.js";
 
 /** Domain separator for leaf hashing. Any byte other than 0x00/0x01 would do; 0x00 chosen for clarity. */

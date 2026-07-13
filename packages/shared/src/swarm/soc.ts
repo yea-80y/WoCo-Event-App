@@ -17,8 +17,8 @@
  * (no bee-js dep) so `@woco/shared` stays free of the Bee SDK.
  */
 
-import { keccak_256 } from "@noble/hashes/sha3";
-import { concatBytes, utf8ToBytes } from "@noble/hashes/utils";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { RecoveryEnvelope } from "../recovery/types.js";
 
 /** Max SOC/CAC payload (bytes). */

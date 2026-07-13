@@ -1,5 +1,5 @@
 import * as ed from "@noble/ed25519";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 /**
  * Derive ed25519 private key from a 32-byte hex seed.
