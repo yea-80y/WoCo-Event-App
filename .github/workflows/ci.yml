@@ -44,6 +44,13 @@ jobs:
       - name: Typecheck server
         run: npm run build:server
 
+      # Sponsor-wallet nonce queue. Guards a money path: a nonce collision on
+      # batchClaimFor charges a buyer and mints no ticket, and the retry path
+      # must never re-broadcast an in-flight tx (double-mint). Typecheck cannot
+      # see either — contract methods are any-typed.
+      - name: Test server (sponsor nonce queue)
+        run: npm run test:server
+
       - name: Build web
         run: npm run build:web
 
