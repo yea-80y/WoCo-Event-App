@@ -1,5 +1,9 @@
 WoCo App — decentralised event platform on Swarm + Ethereum.
 
+PUBLIC FILE — this repo is public. Architecture, conventions and code map only.
+No server addresses, SSH targets, deploy commands, or env-secret management here:
+that lives in CLAUDE.local.md (untracked, gitignored). Keep it that way.
+
 Running history of completed work and the Devcon/EF roadmap lives in `docs/DEVLOG.md`.
 Cryptographic audit + fix rounds: `docs/CRYPTO_AUDIT_2026-04-08.md`, `docs/SECURITY_FIXES_2026-04-09.md`.
 
@@ -32,73 +36,17 @@ DEV COMMANDS:
   npm run build:embed    # IIFE bundle → packages/embed/dist/woco-embed.js
   npm run build:site     # generated-site build → apps/web/dist-site/
 
-DEV BEE TUNNEL (since 2026-05-26):
-- The old laptop bee at 192.168.0.144 is gone; local dev now reads/writes against the
-  Hetzner bee via SSH port-forward. `apps/server/.env` has `BEE_URL=http://localhost:1633`.
-- `npm run dev:server` runs `apps/server/scripts/dev-with-tunnel.mjs`, which:
-    1. resolves `bee-node` container IP via `ssh root@46.225.174.72 'docker inspect ...'`
-    2. opens `ssh -N -L 1633:<ip>:1633 root@46.225.174.72` as a child process
-    3. execs tsx watch
-  Ctrl-C / tsx crash / terminal close kills the tunnel (trap on EXIT/INT/TERM).
-- If port 1633 is already bound (e.g. you started a separate `ssh -fN` manually) the
-  wrapper reuses it instead of erroring.
-- Bypass the tunnel: `npm run dev:notunnel -w @woco/server` (will fail Swarm reads
-  unless BEE_URL_FALLBACK=https://gateway.woco-net.com handles them).
-- IMPORTANT: dev WRITES now hit the production Hetzner bee. Anything you publish
-  locally lands in the real platform feeds (events directory, etc.) — be careful.
-
-DEPLOYMENT (Hetzner CPX22, migrated 2026-05-19 — see docs/HETZNER_DEPLOY.md):
-- Backend: Hetzner CPX22 VM at 46.225.174.72 (user: root, dir: /opt/woco), Docker Compose 3-service stack
-  (bee + bee-proxy + server). Connect: `ssh root@46.225.174.72` (key on laptop `~/.ssh/id_ed25519`).
-- Frontend: Swarm feed via gateway.woco-net.com AND woco.eth.limo (ENS)
-- API: events-api.woco-net.com (host cloudflared → 127.0.0.1:3001 server)
-- Gateway: gateway.woco-net.com (host cloudflared → 127.0.0.1:3000 bee-proxy)
-- Old laptop-server (192.168.0.144) is DECOMMISSIONED but kept cold for 2-week rollback until 2026-06-02.
-  Containers removed, compose file renamed. See docs/LAPTOP_BEE_EMERGENCY_RESURRECTION.md for rollback.
-
-SERVER DEPLOY (Hetzner — much simpler than the old kill-and-restart laptop flow):
-- apps/server/.env on THIS LAPTOP is master. Mirrored to /opt/woco/server.env on the VM.
-
-STEP 1 — server code update:
-    rsync -az --exclude=node_modules --exclude=.git --exclude=dist \
-      --exclude=apps/web/dist-site --exclude=apps/web/dist-multisite \
-      --exclude=packages/embed/dist --exclude=contracts-stylus/like-aggregator/target \
-      ~/projects/woco_app/ root@46.225.174.72:/opt/woco/repo/
-    ssh root@46.225.174.72 'cd /opt/woco && docker compose up -d --build server'
-
-STEP 1b — multisite bundle update (only when MultiSiteApp.svelte or anything in the
-  multisite build has changed — i.e. the deployed site runtime, NOT just the WoCo builder UI):
-    npm run build:multisite
-    rsync -az apps/web/dist-multisite/ root@46.225.174.72:/opt/woco/repo/apps/web/dist-multisite/
-  No server restart needed — it is a read-only Docker volume mount; the container reads the
-  new files immediately. HOWEVER: organisers must re-publish their sites from the builder
-  after this sync, because each live Swarm site contains the bundle baked in at publish time.
-
-STEP 2 — env update (only if .env changed):
-    scp ~/projects/woco_app/apps/server/.env root@46.225.174.72:/opt/woco/server.env
-    ssh root@46.225.174.72 'sed -i "s|^BEE_URL=.*|BEE_URL=http://bee-node:1633|" /opt/woco/server.env && sed -i "s|^PROXY_URL=.*|PROXY_URL=http://bee-proxy:3000|" /opt/woco/server.env && cd /opt/woco && docker compose restart server'
-
-STEP 3 — verify:
-- Logs: `ssh root@46.225.174.72 'cd /opt/woco && docker compose logs -f --tail 50 server'`
-- Verify: `curl https://events-api.woco-net.com/api/health` (HTTPS only — no LAN IP path anymore)
-- No PID hunting, no nohup, no duplicate-process worries — docker compose handles lifecycle.
-
-PRODUCTION ENV (`apps/server/.env`):
-- apps/server/.env ON THIS LAPTOP is master — synced to server every deploy
-- ALLOWED_HOSTS must include every frontend host (gateway.woco-net.com, etc.)
-- BEE_URL: laptop master keeps LAN IP, but the scp deploy step rewrites it to `http://bee-node:1633`
-  (in-docker DNS) on the VM. Don't edit the VM copy directly — it'll be overwritten on next deploy.
-- EMAIL_HASH_SECRET must be set (HMAC key for email hashing — without it falls back to
-  unsalted SHA-256). Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
-- PAYMENT_QUOTE_SECRET must be set (HMAC key for signed payment quotes). Same generator.
-  Without it, /api/payment/quote cannot sign and all crypto claims will fail.
-- STRIPE_WEBHOOK_SECRET (connect-account events) + STRIPE_WEBHOOK_SECRET_PLATFORM
-  (platform events like account.updated). Both required in production.
-- SHOP_SPENDER_SECRET (HMAC key → per-shop spender key for the POS spend-permission
-  rail). MUST be stable + protected like FEED_PRIVATE_KEY — rotating it changes every
-  shop's spender address and orphans live spend permissions. Generate: same as EMAIL_HASH_SECRET.
-- ZERODEV_RPC (server bundler+paymaster RPC for Kernel spend-permission draws — the
-  server-side twin of VITE_ZERODEV_RPC; required for the POS rail to settle).
+DEV BEE / DEPLOYMENT / PRODUCTION ENV:
+- All operational detail (dev bee tunnel, server deploy procedure, env management,
+  required production secrets) lives in CLAUDE.local.md — untracked, this machine only.
+- Public shape: backend = Docker Compose stack (bee + bee-proxy + server) on a VM;
+  frontend = Swarm feed behind gateway.woco-net.com and woco.eth.limo; API =
+  events-api.woco-net.com. Deploys are manual (rsync + compose rebuild).
+- IMPORTANT for dev: `npm run dev:server` tunnels to the PRODUCTION bee — anything
+  you publish locally lands in the real platform feeds. Be careful.
+- Required server env (names only; see `apps/server/.env.example`): EMAIL_HASH_SECRET,
+  PAYMENT_QUOTE_SECRET, STRIPE_WEBHOOK_SECRET + STRIPE_WEBHOOK_SECRET_PLATFORM,
+  SHOP_SPENDER_SECRET, ZERODEV_RPC, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, ALLOWED_HOSTS.
 
 ============================================================================
 AUTH ARCHITECTURE
@@ -141,8 +89,7 @@ SWARM
 ============================================================================
 
 - Frontend Bee gateway: https://gateway.woco-net.com (dev) / gateway.ethswarm.org (generated prod sites)
-- Backend Bee (in-cluster on Hetzner): http://bee-node:1633 (internal docker DNS, set as BEE_URL on the VM)
-  Laptop dev master still has BEE_URL pointing at LAN; the deploy step rewrites it (see deploy section above).
+- Backend Bee (in-cluster): http://bee-node:1633 (internal docker DNS, set as BEE_URL on the VM)
 - Postage batch: `POSTAGE_BATCH_ID` (server-only)
 - Feed private key: `FEED_PRIVATE_KEY` (server-only; platform signer owns all feeds — centralised for now)
 
@@ -360,8 +307,9 @@ TEMPLATE PRESET: pub-venue-v1 (only one so far). newSiteFromTemplate() in shared
 KNOWN GOTCHAS (site builder):
 - build:multisite → dist-multisite/ (NOT build:site → dist-site/). The server reads this
   directory at site-publish time and bakes it into the Swarm collection. dist-multisite/ is
-  excluded from the standard rsync — run STEP 1b whenever the multisite runtime changes,
-  then organisers must re-publish their sites to pick up the new bundle.
+  excluded from the standard deploy sync — run the multisite deploy step (CLAUDE.local.md)
+  whenever the multisite runtime changes, then organisers must re-publish their sites to
+  pick up the new bundle.
 - GET /api/sites/mine must be registered BEFORE /:id in Hono or "mine" matches as a siteId.
 - Creator directory upsert is fire-and-forget on both publish and deploy — non-fatal.
 - events-full has 5-min server-side Map cache per siteId; invalidated on server restart.
@@ -485,9 +433,7 @@ BUILD / DEPLOY:
 - `Vite base` must be `'./'` (relative) — absolute paths break under Swarm `/bzz/` URLs
 - Upload script is `.cjs` (monorepo has `"type": "module"`)
 - ALLOWED_HOSTS on server must include every frontend host or session delegation 403s
-- apps/server/.env on laptop is master — IS synced to server on every deploy (overwrites)
 - Server start script is `npm run start` (`node --import tsx src/index.ts`), NOT `node dist/index.js`
-- After Bee restart, wait ~20s for peer warmup before deploying frontend
 - Hono default 404 returns plain text "404 Not Found" — `authPost`'s `resp.json()`
   throws "Unexpected non-whitespace character at position 4". Consider a global 404 JSON handler.
 
