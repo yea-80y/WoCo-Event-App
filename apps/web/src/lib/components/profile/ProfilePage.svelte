@@ -2,6 +2,8 @@
   import type { UserProfile, EventDirectoryEntry, LikeSubject } from "@woco/shared";
   import { SubjectType, profileLikeSubject } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar } from "../../api/profiles.js";
+  import { gate } from "../../attendee/gate/gate.svelte.js";
+  import { isTicketRequired } from "../../api/attendee-gate.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
@@ -122,6 +124,26 @@
     if (profile && !formDirty) initForm();
   });
 
+  // Attendee gate — profiles unlock with a ticket (organisers pass automatically).
+  // Silent status check once the session exists; refresh() dedups in-flight calls.
+  $effect(() => {
+    if (isOwner && auth.hasSession && !gate.status) void gate.refresh();
+  });
+
+  const needsUnlock = $derived(isOwner && gate.status !== null && !gate.status.gated);
+
+  /**
+   * True when saving may proceed. Blocks only on a POSITIVE "not gated" —
+   * unknown status (server unreachable) fails open: the client-signed profile
+   * write must not hard-depend on the server, and the server still enforces
+   * the gate on its own endpoints.
+   */
+  async function ensureUnlocked(): Promise<boolean> {
+    const status = gate.status ?? (await gate.refresh());
+    if (!status || status.gated) return true;
+    return gate.request();
+  }
+
   async function saveProfile() {
     if ((!formDirty && !pendingAvatarDataUrl) || saving) return;
     saving = true;
@@ -129,6 +151,10 @@
     try {
       const ok = await auth.ensureSession();
       if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
+      if (!(await ensureUnlocked())) {
+        saveError = "Link a ticket to unlock your profile first.";
+        return;
+      }
       const prevAvatarRef = profile?.avatarRef;
       let merged: UserProfile | null = profile;
 
@@ -164,7 +190,9 @@
       // Surface the failure — a swallowed error here looks like a save that
       // silently didn't stick (the feed-signer setup path can throw or be
       // declined, and the write itself can fail after signing).
-      saveError = err instanceof Error ? err.message : "Failed to save profile — please try again.";
+      saveError = isTicketRequired(err)
+        ? "Link a ticket to unlock your profile first."
+        : err instanceof Error ? err.message : "Failed to save profile — please try again.";
       console.error("Failed to save profile:", err);
     } finally {
       uploadingAvatar = false;
@@ -185,6 +213,12 @@
         // invalidate here or the next Swarm read races against feed propagation.
       }
     } catch (err) {
+      if (isTicketRequired(err)) {
+        const unlocked = await gate.request();
+        if (unlocked) return handleSubEnsClaim(label);
+        ensBindError = 'Link a ticket to unlock your account first';
+        return;
+      }
       const msg = err instanceof Error ? err.message : 'Failed to save name to profile';
       ensBindError = msg;
       console.error("Failed to bind sub-ENS to profile:", err);
@@ -498,6 +532,28 @@
 
     {#if activeTab === "profile"}
       <div class="tab-body">
+
+        {#if needsUnlock}
+          <!-- Attendee gate: profile features unlock with a purchased ticket -->
+          <section class="settings-card unlock-card">
+            <div class="unlock-row">
+              <div class="unlock-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 5v2M15 11v2M15 17v2M5 5h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V7a2 2 0 0 1 2-2z"/>
+                </svg>
+              </div>
+              <div class="unlock-text">
+                <p class="unlock-title">Unlock your account with a ticket</p>
+                <p class="unlock-sub">
+                  Your profile, name and follows unlock once you link a ticket —
+                  use the link in your purchase email, or a ticket claimed with
+                  this account.
+                </p>
+              </div>
+            </div>
+            <button class="save-btn" onclick={() => gate.request()}>Link a ticket</button>
+          </section>
+        {/if}
 
         <ReferralShareCard />
 
@@ -1121,6 +1177,51 @@
 
   .settings-card--danger {
     border-color: color-mix(in srgb, var(--error) 20%, var(--border));
+  }
+
+  /* Attendee-gate unlock card */
+  .unlock-card {
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+    background: color-mix(in srgb, var(--accent) 4%, var(--bg-surface));
+  }
+
+  .unlock-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.875rem;
+  }
+
+  .unlock-icon {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+  }
+
+  .unlock-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .unlock-title {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+
+  .unlock-sub {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
   }
 
   .card-title {

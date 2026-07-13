@@ -36,6 +36,8 @@ import {
   PAGE_N_CAPACITY,
 } from "../swarm/topics.js";
 import { heldFor } from "./reservation-store.js";
+import { bindTicket } from "../gate/store.js";
+import { signOwnerBinding } from "../ticket/owner-binding.js";
 
 /** Internal result type — `_pendingId` is stripped before returning to clients */
 export type ClaimResult = ClaimedTicket & { _pendingId?: string };
@@ -165,8 +167,19 @@ export async function claimTicket(opts: {
    *  Resolved server-side from the trusted event feed (`creatorFeedSigner`), never
    *  from the request body. Absent ⇒ legacy platform-signed editions feed. */
   carrier?: string;
+  /**
+   * Present when the claimer has a WoCo account at claim time (claimed.v2,
+   * plan §3 "go-forward claims"). The caller MUST have verified the account:
+   * wallet-session claims use the verified parent; the Stripe webhook uses
+   * the server-vouched metadata.claimerAddress. Effects:
+   *  - `podPubKey` set → ClaimedTicket born as v2 with `owner` + platform
+   *    `ownerSig` (issued-to-identity, no bearer dance ever needed)
+   *  - the edition is gate-bound to `parentAddress` at claim time (on approve
+   *    for approval-required series) — profile unlocked with the purchase
+   */
+  accountClaim?: { parentAddress: string; podPubKey?: string };
 }): Promise<ClaimResult> {
-  const { seriesId, identifier, encryptedOrder, orderRef: prefetchedOrderRef, via, paid, claimedAt: claimedAtOverride, carrier } = opts;
+  const { seriesId, identifier, encryptedOrder, orderRef: prefetchedOrderRef, via, paid, claimedAt: claimedAtOverride, carrier, accountClaim } = opts;
 
   const logId = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash.slice(0, 12)}...`;
   console.log(`[claim] Claiming ticket for series ${seriesId}, claimer ${logId}`);
@@ -306,9 +319,15 @@ export async function claimTicket(opts: {
     throw new Error("Ticket signature verification failed");
   }
 
-  // 5. Create claimed ticket
+  // 5. Create claimed ticket. With a verified account present (accountClaim)
+  //    and a POD pubkey, the ticket is born issued-to-identity: claimed.v2,
+  //    owner + platform ownerSig from the first byte — no bearer dance later.
+  const claimedAt = claimedAtOverride ?? new Date().toISOString();
+  const ownerPodPubKey = accountClaim?.podPubKey?.toLowerCase();
+  let ownerBound = !!ownerPodPubKey && /^[0-9a-f]{64}$/.test(ownerPodPubKey);
+
   const claimedTicket: ClaimedTicket = {
-    podType: "woco.ticket.claimed.v1",
+    podType: ownerBound ? "woco.ticket.claimed.v2" : "woco.ticket.claimed.v1",
     eventId: originalTicket.data.eventId,
     seriesId: originalTicket.data.seriesId,
     seriesName: originalTicket.data.seriesName,
@@ -317,16 +336,35 @@ export async function claimTicket(opts: {
     imageHash: originalTicket.data.imageHash,
     creator: originalTicket.data.creator,
     mintedAt: originalTicket.data.mintedAt,
+    ...(ownerBound ? { owner: ownerPodPubKey } : {}),
     ownerAddress: identifier.type === "wallet" ? identifier.address : undefined,
     ownerEmailHash:
       identifier.type === "email"
         ? identifier.emailHash
         : identifier.secondaryEmailHash,
-    claimedAt: claimedAtOverride ?? new Date().toISOString(),
+    claimedAt,
     originalPodHash: ticketRef,
     originalSignature: originalTicket.signature,
     ...(approvalRequired ? { approvalStatus: "pending" as const } : {}),
   };
+
+  if (ownerBound) {
+    try {
+      claimedTicket.ownerSig = await signOwnerBinding({
+        eventId: claimedTicket.eventId,
+        seriesId: claimedTicket.seriesId,
+        edition: claimedTicket.edition,
+        owner: ownerPodPubKey!,
+        claimedAt,
+      });
+    } catch (err) {
+      // Never block a sale on the attestation — downgrade to a v1 bearer
+      // ticket with the owner field as a plain retro-style stamp.
+      console.error("[claim] ownerSig signing failed — downgrading to v1:", err);
+      claimedTicket.podType = "woco.ticket.claimed.v1";
+      ownerBound = false;
+    }
+  }
 
   // 6. Upload claimed ticket to /bytes
   const claimedRef = await uploadToBytes(JSON.stringify(claimedTicket));
@@ -372,6 +410,24 @@ export async function claimTicket(opts: {
     });
     console.log(`[claim] Pending claim created: ${pendingId} for edition ${editionNumber}`);
     return { ...claimedTicket, _pendingId: pendingId };
+  }
+
+  // Account-holder claim: gate-bind the edition at purchase so the buyer's
+  // profile is unlocked with the ticket — no Route A/B dance. Sync file write;
+  // an already-consumed edition is a silent no-op (nullifier semantics).
+  if (accountClaim) {
+    const bound = bindTicket({
+      seriesId,
+      edition: editionNumber,
+      eventId: originalTicket.data.eventId,
+      parentAddress: accountClaim.parentAddress,
+      podPubKey: ownerBound ? ownerPodPubKey : undefined,
+      paid: !!paid,
+      route: "claim",
+    });
+    if (bound) {
+      console.log(`[gate] bound ${seriesId}#${editionNumber} → ${accountClaim.parentAddress} (claim)`);
+    }
   }
 
   // Normal path: claimers feed write goes to a per-series background queue
@@ -611,6 +667,61 @@ export async function getClaimedTicketDetail(ref: string): Promise<ClaimedTicket
   }
 }
 
+/**
+ * Fetch a single ClaimedTicket by its edition number — one page read + one
+ * body read instead of the full getClaimStatus fan-out. Used by the attendee
+ * gate to check `ownerEmailHash` against a presented email.
+ */
+export async function getClaimedTicketByEdition(
+  seriesId: string,
+  edition: number,
+): Promise<ClaimedTicket | null> {
+  if (!Number.isInteger(edition) || edition < 1) return null;
+  const { page, slot } = editionToPageSlot(edition);
+  const claimsPage = await readFeedPage(topicClaims(seriesId, page));
+  if (!claimsPage) return null;
+  const ref = decode4096Claims(claimsPage)[slot];
+  if (!ref) return null;
+  return getClaimedTicketDetail(ref);
+}
+
+export type StampResult = "stamped" | "already-owned" | "not-found";
+
+/**
+ * Stamp the attendee's ed25519 POD pubkey into `ClaimedTicket.owner` and
+ * republish the claims-feed slot (attendee gate bind → de-platformed
+ * ownership record, plan §3). First stamp wins: an existing DIFFERENT owner
+ * is never overwritten — the gate nullifier already guarantees one bind per
+ * edition, so a conflicting owner means a v2 issued-to-identity ticket or an
+ * earlier stamp, both authoritative over a retro-bind.
+ *
+ * MUST run inside `queueSeriesClaim(seriesId, …)` — this is a read-modify-write
+ * of a claims page that concurrent claim allocations also rewrite.
+ */
+export async function stampTicketOwner(
+  seriesId: string,
+  edition: number,
+  podPubKey: string,
+): Promise<StampResult> {
+  const { page, slot } = editionToPageSlot(edition);
+  const claimsPageData = await readFeedPage(topicClaims(seriesId, page));
+  if (!claimsPageData) return "not-found";
+  const ref = decode4096Claims(claimsPageData)[slot];
+  if (!ref) return "not-found";
+
+  const ticket = JSON.parse(await downloadFromBytes(ref)) as ClaimedTicket;
+  if (ticket.owner) return ticket.owner === podPubKey ? "stamped" : "already-owned";
+
+  const stamped: ClaimedTicket = { ...ticket, owner: podPubKey };
+  const newRef = await uploadToBytes(JSON.stringify(stamped));
+
+  const claimsData = new Uint8Array(claimsPageData);
+  claimsData.set(hexToBytes32(newRef), slot * 32);
+  await writeFeedPage(topicClaims(seriesId, page), claimsData);
+  console.log(`[gate] owner stamped: ${seriesId}#${edition} → pod:${podPubKey.slice(0, 12)}… (${newRef})`);
+  return "stamped";
+}
+
 // ---------------------------------------------------------------------------
 // Pending claims feed
 // ---------------------------------------------------------------------------
@@ -665,6 +776,22 @@ export async function approvePendingClaim(
   const approvedTicket: ClaimedTicket = { ...pendingTicket, approvalStatus: "approved" };
   const newClaimedRef = await uploadToBytes(JSON.stringify(approvedTicket));
   console.log(`[approve] Approved ticket uploaded: ${newClaimedRef}, edition ${editionNumber}`);
+
+  // Identity-issued (claimed.v2) pending claim: the gate binding was deferred
+  // until approval — bind now to the wallet the ticket was claimed with.
+  if (approvedTicket.owner && approvedTicket.ownerAddress) {
+    const bound = bindTicket({
+      seriesId,
+      edition: editionNumber,
+      eventId: approvedTicket.eventId,
+      parentAddress: approvedTicket.ownerAddress,
+      podPubKey: approvedTicket.owner,
+      route: "claim",
+    });
+    if (bound) {
+      console.log(`[gate] bound ${seriesId}#${editionNumber} → ${approvedTicket.ownerAddress} (claim, on approve)`);
+    }
+  }
 
   // 4. Update claims feed slot with approved ref
   const { page: claimPage, slot: claimSlot } = editionToPageSlot(editionNumber);

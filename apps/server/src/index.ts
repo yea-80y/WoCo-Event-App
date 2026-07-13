@@ -29,6 +29,7 @@ import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
+import { attendeeGate } from "./routes/attendee-gate.js";
 import { likesRoutes } from "./routes/likes.js";
 import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
@@ -406,6 +407,9 @@ app.route("/api/etherna", ethernaRoutes);
 
 // Sub-ENS on Arbitrum — check/claim/update label.woco.eth names
 app.route("/api/sub-ens", subEnsRoutes);
+
+// Attendee gate — ticket-purchase-gated account unlock (docs/ATTENDEE_GATE_RESALE_PLAN.md)
+app.route("/api/attendee-gate", attendeeGate);
 
 // EAS likes (#4) — verify-on-chain record + projection reads
 app.route("/api/likes", likesRoutes);

@@ -377,9 +377,13 @@ export interface CreateEventResponse {
 // Claiming
 // ---------------------------------------------------------------------------
 
-/** A claimed ticket (original ticket data + claim metadata) */
+/** A claimed ticket (original ticket data + claim metadata).
+ *  v2 = issued-to-identity: `owner` is set at claim time and `ownerSig` (the
+ *  platform's EIP-191 sig over `buildClaimedOwnerV2Message`) covers the
+ *  binding. v1 = bearer; `owner` may be stamped retroactively via the
+ *  attendee gate (no ownerSig — the gate binding store is the record). */
 export interface ClaimedTicket {
-  podType: "woco.ticket.claimed.v1";
+  podType: "woco.ticket.claimed.v1" | "woco.ticket.claimed.v2";
   eventId: string;
   seriesId: string;
   seriesName: string;
@@ -388,8 +392,13 @@ export interface ClaimedTicket {
   imageHash: string;
   creator: string;
   mintedAt: string;
-  /** ed25519 public key (optional — only present when POD identity was derived) */
+  /** Attendee ed25519 POD public key — the owner-of-record. Set at claim time
+   *  (v2) or stamped retroactively by the attendee gate (v1). */
   owner?: string;
+  /** v2 only: platform EIP-191 sig over `buildClaimedOwnerV2Message` — the
+   *  issued-to-identity attestation covering (eventId, seriesId, edition,
+   *  owner, claimedAt). */
+  ownerSig?: Hex0x;
   /** Wallet address (for wallet-based claims) */
   ownerAddress?: Hex0x;
   /** HMAC-SHA256 hash of email.
@@ -417,6 +426,10 @@ export interface ClaimTicketRequest {
   encryptedOrder?: SealedBox;
   /** On-chain payment proof (for paid events) */
   paymentProof?: PaymentProof;
+  /** Attendee ed25519 POD pubkey (hex, no 0x) — wallet-authenticated modes
+   *  only. When present the claim is issued-to-identity (claimed.v2): owner
+   *  stamped at birth + platform ownerSig + automatic gate binding. */
+  ownerPodPubKey?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import {
   signSubEnsPermit,
 } from "../lib/chain/sub-ens-contract.js";
 import { stampEventSubEns } from "../lib/event/service.js";
+import { checkAttendeeGate } from "../lib/gate/check.js";
 import type { AppEnv } from "../types.js";
 
 // Preview links resolve through the WoCo gateway (eth.limo .woco.eth resolution is
@@ -97,6 +98,14 @@ subEnsRoutes.get("/owned", requireAuth, async (c) => {
  */
 subEnsRoutes.post("/claim", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
+
+  // Attendee gate: sub-ENS names are unlocked by a purchased ticket (or by
+  // being an organiser). UI catches "ticket_required" → gate flow.
+  const gate = await checkAttendeeGate(parentAddress as string);
+  if (!gate.gated) {
+    return c.json({ ok: false, error: "ticket_required" }, 403);
+  }
+
   const body = await c.req.json<{
     label: string;
     swarmHash?: string;
@@ -176,6 +185,13 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
 subEnsRoutes.post("/permit", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
   const body = await c.req.json<{ label: string }>();
+
+  // Same gate as /claim — the permit path is how passkey users mint, so
+  // leaving it open would bypass the attendee gate for the main login kind.
+  const gate = await checkAttendeeGate(parentAddress as string);
+  if (!gate.gated) {
+    return c.json({ ok: false, error: "ticket_required" }, 403);
+  }
 
   const label = body.label?.toLowerCase()?.trim();
   if (!label) return c.json({ ok: false, error: "label is required" }, 400);

@@ -265,6 +265,21 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   const encryptedOrder = rawBody.encryptedOrder as SealedBox | undefined;
   const paymentProof = rawBody.paymentProof as PaymentProof | undefined;
 
+  // claimed.v2: user-initiated wallet-authenticated claims carry the account →
+  // ticket born issued-to-identity + gate-bound at claim time. API mode is
+  // excluded: the organiser vouches for the address, but the holder never
+  // consented to their profile unlock being consumed. The pubkey itself is
+  // client-asserted (same as every gate bind path) — binding it to the WRONG
+  // key only hurts the claimer's own ticket.
+  const ownerPodPubKey =
+    typeof rawBody.ownerPodPubKey === "string" && /^[0-9a-f]{64}$/i.test(rawBody.ownerPodPubKey)
+      ? rawBody.ownerPodPubKey.toLowerCase()
+      : undefined;
+  const accountClaim =
+    identifier.type === "wallet" && mode !== "api"
+      ? { parentAddress: identifier.address, podPubKey: ownerPodPubKey }
+      : undefined;
+
   // ---------------------------------------------------------------------------
   // Payment verification — if series requires payment, validate proof
   // ---------------------------------------------------------------------------
@@ -496,7 +511,15 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       && parseFloat(series.payment.price) > 0
       && !series.approvalRequired;
     const ticket: ClaimResult = await queueSeriesClaim(seriesId, () =>
-      claimTicket({ seriesId, identifier, encryptedOrder, via, paid, carrier: event.creatorFeedSigner }),
+      claimTicket({
+        seriesId,
+        identifier,
+        encryptedOrder,
+        via,
+        paid,
+        carrier: event.creatorFeedSigner,
+        ...(accountClaim ? { accountClaim } : {}),
+      }),
     );
 
     // Approval flow: strip internal _pendingId and return pending state

@@ -21,6 +21,7 @@
   const loadShopOrderScreen = () => import("./lib/attendee/shop/ShopOrderScreen.svelte");
   const loadRecoverySetup = () => import("./lib/components/recovery/AccountRecoverySetup.svelte");
   const loadRecoverPortal = () => import("./lib/components/recovery/AccountRecoverPortal.svelte");
+  const loadSignupLanding = () => import("./lib/attendee/gate/SignupLanding.svelte");
 
   // Warm the chunks behind the bottom-nav destinations once the landing
   // screen is idle, so first navigation doesn't pay a cold Swarm fetch.
@@ -64,6 +65,8 @@
     <LazyRoute loader={loadMyTickets} />
   {:else if router.route === "verify"}
     <LazyRoute loader={loadVerifyTicket} />
+  {:else if router.route === "signup"}
+    <LazyRoute loader={loadSignupLanding} props={{ token: router.params.gt }} />
   {:else if router.route === "profile"}
     <LazyRoute loader={loadProfilePage} props={{ address: router.params.address }} />
   {:else if router.route === "soon"}

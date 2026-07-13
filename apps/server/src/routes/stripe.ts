@@ -30,6 +30,7 @@ import { topicClaimers } from "../lib/swarm/topics.js";
 import type { ClaimersFeed } from "@woco/shared";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { sendTicketEmail } from "./tickets.js";
+import { bindTicket } from "../lib/gate/store.js";
 import { getSiteTheme, resolveSiteEventSigner } from "../lib/site/service.js";
 import { getReservation, consume as consumeReservation } from "../lib/event/reservation-store.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
@@ -293,7 +294,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, podPubKey: rawPodPubKey } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -309,8 +310,15 @@ stripe.post("/create-checkout", async (c) => {
     /** Deployed site id — passed when checkout originates from an organiser's
      *  site-builder page so the webhook can theme the ticket email + PNG. */
     siteId?: string;
+    /** Attendee ed25519 POD pubkey (hex, no 0x) — claimed.v2. Only honoured
+     *  when the request also carries a verified session (see metadata below). */
+    podPubKey?: string;
   };
   const siteId = typeof rawSiteId === "string" && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
+  const podPubKey =
+    typeof rawPodPubKey === "string" && /^[0-9a-f]{64}$/i.test(rawPodPubKey)
+      ? rawPodPubKey.toLowerCase()
+      : undefined;
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
 
   // Validate reservation if one was supplied. The reservation is expected to
@@ -589,6 +597,9 @@ stripe.post("/create-checkout", async (c) => {
           // Server-vouched: only set from a verified session, never from the body.
           // The webhook trusts this field because we wrote it.
           claimerAddress: verifiedAddress || "",
+          // claimed.v2: attendee POD pubkey riding with a verified session —
+          // the webhook stamps it as owner-of-record + gate-binds at claim.
+          ...(verifiedAddress && podPubKey ? { podPubKey } : {}),
           quantity: String(quantity),
           // Stored so the webhook can issue refunds through the connected account.
           connectedAccountId: organiserRecord.stripeAccountId,
@@ -819,7 +830,7 @@ async function handleSuccessfulPayment(
   session: import("stripe").Stripe.Checkout.Session,
   webhookEventCreated: number,
 ): Promise<void> {
-  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId, siteId: metaSiteId } = session.metadata ?? {};
+  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId, siteId: metaSiteId, podPubKey: metaPodPubKey } = session.metadata ?? {};
 
   if (!eventId || !seriesId) {
     console.error("[stripe-webhook] Missing eventId/seriesId in session metadata");
@@ -856,6 +867,20 @@ async function handleSuccessfulPayment(
     console.error("[stripe-webhook] No claimer identifier in session metadata");
     return;
   }
+
+  // claimed.v2: buyer was signed in at checkout (claimerAddress is server-
+  // vouched — written only from a verified session). Applied to the FIRST
+  // ticket of the order only: the buyer needs exactly one edition for their
+  // own unlock; the rest stay bearer so group-buy forwarding keeps working.
+  const accountClaim = claimerAddress
+    ? {
+        parentAddress: claimerAddress.toLowerCase(),
+        podPubKey:
+          typeof metaPodPubKey === "string" && /^[0-9a-f]{64}$/i.test(metaPodPubKey)
+            ? metaPodPubKey.toLowerCase()
+            : undefined,
+      }
+    : undefined;
 
   // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
   // via session metadata). Falls back to a minimal server-built seal for the
@@ -1002,6 +1027,26 @@ async function handleSuccessfulPayment(
       }
       // burners[] goes out of scope here — private keys are unreferenced
       // and eligible for garbage collection.
+
+      // claimed.v2 on the on-chain rail: there is no ClaimedTicket POD to
+      // stamp (the contract is the ledger), but the buyer's account still
+      // gets its gate binding at purchase — first edition only, same
+      // group-buy reasoning as the v1 path.
+      if (accountClaim && slotsForBurners.length > 0) {
+        const firstEdition = slotsForBurners[0] + 1;
+        const bound = bindTicket({
+          seriesId,
+          edition: firstEdition,
+          eventId,
+          parentAddress: accountClaim.parentAddress,
+          podPubKey: accountClaim.podPubKey,
+          paid: true,
+          route: "claim",
+        });
+        if (bound) {
+          console.log(`[gate] bound ${seriesId}#${firstEdition} → ${accountClaim.parentAddress} (claim, on-chain)`);
+        }
+      }
     }
   } else {
     // ── v1 Swarm-feed path (unchanged) ─────────────────────────────────────
@@ -1016,6 +1061,7 @@ async function handleSuccessfulPayment(
             paid: true,
             claimedAt,
             ...(editionsCarrier ? { carrier: editionsCarrier } : {}),
+            ...(accountClaim && i === 0 ? { accountClaim } : {}),
             ...(prefetchedOrderRef
               ? { orderRef: prefetchedOrderRef }
               : { encryptedOrder }),
@@ -1131,6 +1177,11 @@ async function handleSuccessfulPayment(
           buyerName,
           palette: siteTheme?.palette,
           siteId: metaSiteId || undefined,
+          // `to` here IS the verified purchase email (Stripe checkout) — the
+          // only path allowed to mint Route A gate tokens. Skipped when a
+          // signed-in buyer's single ticket was already bound at claim time;
+          // multi-ticket orders keep the per-ticket links for forwarding.
+          profileCta: !accountClaim || claimedResults.length > 1,
         }),
       )
       .catch((err) => {

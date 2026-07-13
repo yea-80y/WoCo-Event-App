@@ -1,7 +1,8 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { getMyCollection, getTicketDetail } from "../../api/events.js";
+  import { gate } from "../gate/gate.svelte.js";
+  import { getMyCollection, getTicketDetail, getEvent } from "../../api/events.js";
   import type { ClaimedTicket, CollectionEntry } from "@woco/shared";
   import TicketCard from "./TicketCard.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
@@ -40,9 +41,28 @@
       }
     }
 
-    // Step 3: show cached tickets instantly, then background-refresh
+    // Step 3: show cached tickets instantly, then background-refresh.
+    // Gate bindings (tickets linked from email — attendee gate) load alongside.
+    void gate.refresh();
     await loadTickets();
   }
+
+  // Tickets proven-and-linked via the attendee gate (email/wallet possession
+  // proof) — these live in the gate binding store, not the collection feed.
+  const linkedTickets = $derived(gate.status?.bindings ?? []);
+
+  // Resolve event titles for linked tickets; keyed marker avoids re-fetch loops.
+  let eventTitles = $state<Record<string, string>>({});
+  $effect(() => {
+    for (const b of linkedTickets) {
+      if (!(b.eventId in eventTitles)) {
+        eventTitles[b.eventId] = "";
+        getEvent(b.eventId)
+          .then((ev) => { if (ev?.title) eventTitles[b.eventId] = ev.title; })
+          .catch(() => { /* fallback label stays */ });
+      }
+    }
+  });
 
   async function loadTickets() {
     const addr = auth.parent;
@@ -123,15 +143,48 @@
     <div class="error-state">
       <p>{error}</p>
     </div>
-  {:else if tickets.length === 0}
-    <div class="empty-state">
-      <p>No tickets yet. Browse events and claim your first ticket!</p>
-    </div>
   {:else}
-    <div class="ticket-grid">
-      {#each tickets as ticket (ticket.originalPodHash)}
-        <TicketCard {ticket} />
-      {/each}
+    {#if tickets.length === 0 && linkedTickets.length === 0}
+      <div class="empty-state">
+        <p>No tickets yet. Browse events and claim your first ticket!</p>
+      </div>
+    {/if}
+
+    {#if tickets.length > 0}
+      <div class="ticket-grid">
+        {#each tickets as ticket (ticket.originalPodHash)}
+          <TicketCard {ticket} />
+        {/each}
+      </div>
+    {/if}
+
+    {#if linkedTickets.length > 0}
+      <h2 class="linked-heading">Linked tickets</h2>
+      <div class="linked-list">
+        {#each linkedTickets as b (`${b.seriesId}#${b.edition}`)}
+          <div class="linked-card">
+            <div class="linked-main">
+              <span class="linked-title">{eventTitles[b.eventId] || `Event ${b.eventId.slice(0, 10)}…`}</span>
+              <span class="linked-meta">
+                Ticket #{b.edition} · linked {new Date(b.boundAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+              </span>
+            </div>
+            <span class="linked-badge">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+              Linked
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Attendee-gate funnel: log a purchased ticket sitting in your inbox -->
+    <div class="email-cta">
+      <div class="email-cta-text">
+        <p class="email-cta-title">Got a ticket in your email?</p>
+        <p class="email-cta-sub">Link it to this account to unlock your profile and keep it with you.</p>
+      </div>
+      <button class="email-cta-btn" onclick={() => gate.request()}>Link a ticket</button>
     </div>
   {/if}
 </div>
@@ -192,4 +245,121 @@
     border-color: var(--accent);
     color: var(--accent-ink);
   }
+
+  /* ── Linked (gate-bound) tickets ─────────────────────────── */
+  .linked-heading {
+    margin: 1.5rem 0 0.75rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .linked-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .linked-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 0.875rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .linked-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
+  }
+
+  .linked-title {
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .linked-meta {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+  }
+
+  .linked-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    flex-shrink: 0;
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
+    font-size: 0.5625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-radius: 100px;
+    padding: 0.25rem 0.5625rem;
+  }
+
+  /* ── Email-ticket CTA ────────────────────────────────────── */
+  .email-cta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 1.5rem;
+    padding: 0.875rem 1rem;
+    background: color-mix(in srgb, var(--accent) 4%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+    border-radius: var(--radius-md);
+  }
+
+  .email-cta-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
+  }
+
+  .email-cta-title {
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+
+  .email-cta-sub {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+
+  .email-cta-btn {
+    flex-shrink: 0;
+    padding: 0.5rem 1.125rem;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: opacity var(--transition);
+    letter-spacing: -0.01em;
+  }
+
+  .email-cta-btn:hover { opacity: 0.88; }
 </style>

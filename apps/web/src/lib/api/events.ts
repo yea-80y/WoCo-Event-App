@@ -13,6 +13,7 @@ import type {
 } from "@woco/shared";
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, buildAuthHeaders, currentSiteId } from "./client.js";
+import { auth } from "../auth/auth-store.svelte.js";
 import { eventContentTopic } from "@woco/shared";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 import { trashFeedOnManifest } from "../manifest/feed-log.js";
@@ -301,9 +302,19 @@ export async function claimTicket(
 ): Promise<ClaimTicketResponse> {
   // Wallet claims require session delegation (proves address ownership)
   const siteId = currentSiteId();
+  // claimed.v2: cached POD pubkey only (never prompts a signature mid-claim) —
+  // the ticket is issued to this identity and the account gate-bound at claim.
+  const ownerPodPubKey = auth.podPublicKeyHex ?? undefined;
   const json = await authPost<ClaimTicketResponse>(
     `/api/events/${eventId}/series/${seriesId}/claim`,
-    { mode: "wallet", walletAddress, encryptedOrder, ...(paymentProof ? { paymentProof } : {}), ...(siteId ? { siteId } : {}) },
+    {
+      mode: "wallet",
+      walletAddress,
+      encryptedOrder,
+      ...(paymentProof ? { paymentProof } : {}),
+      ...(siteId ? { siteId } : {}),
+      ...(ownerPodPubKey ? { ownerPodPubKey } : {}),
+    },
     apiUrl,
   );
   return {
