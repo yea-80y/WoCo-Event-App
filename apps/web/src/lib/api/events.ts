@@ -244,7 +244,7 @@ export async function getOrganiserNonce(address: string): Promise<{
 
 /**
  * Register a series on-chain via the server's sponsor wallet.
- * No EOA or wallet connection needed — works for passkey/Para/email organisers.
+ * No EOA or wallet connection needed — works for passkey/email organisers.
  */
 export async function registerSeriesOnChain(
   eventId: string,

@@ -11,7 +11,6 @@
 
 import type { Hex0x, LikeSubject, LikeCount, TrendingSubject, SubjectType } from "@woco/shared";
 import { authPost } from "./client.js";
-import { attestLike, revokeLike } from "../eas/attest.js";
 import { requireAccountForAction } from "../auth/ensure-action.js";
 
 const BASE =
@@ -87,6 +86,10 @@ export async function toggleLike(
 ): Promise<ToggleResult | null> {
   const ready = await requireAccountForAction({ onChain: true });
   if (!ready) return null;
+
+  // attest.js drags the EAS + ZeroDev/viem graph — load it only when a like is
+  // actually toggled (LikeButton is rendered on every event card at first paint).
+  const { attestLike, revokeLike } = await import("../eas/attest.js");
 
   if (!currentlyLiked) {
     const { uid } = await attestLike(subject);

@@ -1,4 +1,4 @@
-import { verifyMessage, getAddress } from "ethers";
+import { verifyMessage, verifyTypedData, getAddress, type TypedDataField } from "ethers";
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
@@ -7,6 +7,7 @@ import {
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
+import { isKernelOwner } from "./kernel-owner.js";
 
 /**
  * Verify a session delegation bundle.
@@ -17,9 +18,16 @@ import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
  * 3. Not future-dated (1 min clock skew allowed)
  * 4. Host matches allowed list (if provided)
  * 5. Claimed session address matches delegation
- * 6. EIP-712 signature is valid for the claimed parent — EOA (ecrecover),
- *    ERC-1271 (deployed smart account), or ERC-6492 (counterfactual smart
- *    account). Smart-account paths read isValidSignature via RPC.
+ * 6. EIP-712 signature is valid for the claimed parent — one of:
+ *    a. EOA (local ecrecover, recovered == parent);
+ *    b. Kernel-owner EOA (local ecrecover, recovered OWNS the parent Kernel —
+ *       deterministic counterfactual match, or live on-chain owner for rotated
+ *       /recovered accounts; see kernel-owner.ts). This is the passkey/web3auth
+ *       path since the 2026-07 split-brain fix: the raw owner key signs,
+ *       message.parent stays the Kernel identity;
+ *    c. ERC-1271 (deployed smart account) or ERC-6492 (counterfactual smart
+ *       account) via RPC — smart wallets (CSW) and pre-fix Kernel-signed
+ *       delegations.
  * 7. sessionProof was signed by the claimed session key
  * 8. Session not revoked
  */
@@ -60,24 +68,48 @@ export async function verifyDelegation(
       };
     }
 
-    // EIP-712 signature verification. viem handles all three signature shapes
-    // in one call: EOA (local ecrecover, no RPC), ERC-1271 (deployed smart
-    // account, eth_call to isValidSignature), and ERC-6492 (counterfactual
-    // smart account, simulated deploy + isValidSignature). The shift from
-    // recover-and-compare to verify-against-claimed-address is mandatory for
-    // smart accounts — their signatures are not recoverable to an EOA.
-    let validSig: boolean;
-    try {
-      validSig = await verifySmartWalletTypedData({
-        address: message.parent as `0x${string}`,
-        domain: SESSION_DOMAIN,
-        types: SESSION_TYPES,
-        primaryType: "AuthorizeSession",
-        message: message as unknown as Record<string, unknown>,
-        signature: parentSig as `0x${string}`,
-      });
-    } catch {
-      return { valid: false, error: "Signature verification failed" };
+    // EIP-712 signature verification, cheapest-first:
+    //  (1) EOA-shaped sig (65 bytes) → local ecrecover. Valid when the
+    //      recovered address IS the parent (plain EOA logins), or when it OWNS
+    //      the parent Kernel (passkey/web3auth since the 2026-07 fix — raw
+    //      owner key signs, parent stays the Kernel; deterministic
+    //      counterfactual match is RPC-free, rotated/recovered accounts fall
+    //      back to a live owner read).
+    //  (2) Anything else (or an ecrecover miss) → viem universal verify:
+    //      ERC-1271 (deployed smart account) / ERC-6492 (counterfactual),
+    //      eth_call via RPC — CSW and pre-fix Kernel-signed delegations.
+    let validSig = false;
+    if (parentSig.length === 132) {
+      let recovered: string | null = null;
+      try {
+        recovered = verifyTypedData(
+          SESSION_DOMAIN,
+          SESSION_TYPES as unknown as Record<string, TypedDataField[]>,
+          message,
+          parentSig,
+        ).toLowerCase();
+      } catch {
+        recovered = null; // not ecrecover-able — fall through to (2)
+      }
+      if (recovered) {
+        validSig =
+          recovered === message.parent.toLowerCase() ||
+          (await isKernelOwner(recovered, message.parent));
+      }
+    }
+    if (!validSig) {
+      try {
+        validSig = await verifySmartWalletTypedData({
+          address: message.parent as `0x${string}`,
+          domain: SESSION_DOMAIN,
+          types: SESSION_TYPES,
+          primaryType: "AuthorizeSession",
+          message: message as unknown as Record<string, unknown>,
+          signature: parentSig as `0x${string}`,
+        });
+      } catch {
+        return { valid: false, error: "Signature verification failed" };
+      }
     }
     if (!validSig) {
       return { valid: false, error: "Invalid signature" };

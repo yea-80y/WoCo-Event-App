@@ -69,7 +69,7 @@ export async function payShopUSDC(opts: {
   // some mobile wallets where the switch ack races the next request.
   await new Promise((r) => setTimeout(r, 500));
 
-  const provider = getEthersProvider();
+  const provider = await getEthersProvider();
   const signer = await provider.getSigner();
   const payer = (await signer.getAddress()).toLowerCase() as Hex0x;
 

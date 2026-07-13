@@ -79,7 +79,7 @@ export async function disconnectWallet(): Promise<boolean> {
     });
     return true;
   } catch {
-    // Wallet doesn't support EIP-2255 (older MetaMask, WalletConnect, Para, etc.)
+    // Wallet doesn't support EIP-2255 (older MetaMask, WalletConnect, etc.)
     return false;
   }
 }

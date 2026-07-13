@@ -1,5 +1,5 @@
 /**
- * Web3Auth PnP primary-login helpers — the replacement for para-account.ts.
+ * Web3Auth PnP primary-login helpers (email + social logins).
  * Web3Auth reconstructs a standard secp256k1 key client-side (device + network
  * shares) and exposes it via `private_key`. We hold it in memory for the
  * session; Web3Auth's own localStorage keeps the session alive across page loads.

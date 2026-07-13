@@ -10,10 +10,9 @@
       <span class="identity-label">Account type</span>
       <span class="identity-value">
         {#if auth.kind === "web3"}Web3 Wallet
-        {:else if auth.kind === "web3auth"}Email Account
+        {:else if auth.kind === "web3auth"}Email / Social Login
         {:else if auth.kind === "coinbase"}Coinbase Smart Wallet
         {:else if auth.kind === "passkey"}Passkey
-        {:else if auth.kind === "local"}Browser Account
         {:else}Not connected{/if}
       </span>
     </div>

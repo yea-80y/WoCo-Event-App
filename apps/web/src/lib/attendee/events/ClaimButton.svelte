@@ -89,8 +89,8 @@
       selectedPayMethod = "ETH";
     }
   });
-  /** Card-first users: passkey, local (no crypto wallet). Crypto-first: web3, para. */
-  const isCardFirst = $derived(auth.kind === "passkey" || auth.kind === "local" || !auth.kind);
+  /** Card-first users: passkey (no crypto wallet upfront). Crypto-first: web3. */
+  const isCardFirst = $derived(auth.kind === "passkey" || !auth.kind);
 
   const buyerFees = $derived(calculateBuyerFees(payment, quantity));
 
@@ -621,12 +621,6 @@
         if (!ok) { error = "Login cancelled"; return; }
       }
 
-      // Local accounts can't pay — need real wallet
-      if (auth.kind === "local") {
-        error = "Crypto payments require a wallet. Please sign in with a Web3 wallet or Para.";
-        return;
-      }
-
       // Ensure session BEFORE payment so all wallet signing is done upfront.
       // This avoids a third MetaMask round-trip after the transaction lands.
       if (!auth.hasSession) {
@@ -1101,7 +1095,6 @@
       {usdcAvailableOnChain}
       {claiming}
       {step}
-      authKind={auth.kind}
       {hasStripe}
       {stripeLoading}
       {stripeEmail}

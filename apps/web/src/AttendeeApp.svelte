@@ -1,20 +1,42 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { router, navigate } from "./lib/router/router.svelte.js";
   import AttendeeShell from "./lib/layouts/AttendeeShell.svelte";
-  import EventDetail from "./lib/attendee/events/EventDetail.svelte";
-  import EventPage from "./lib/components/site/EventPage.svelte";
-  import EventPurchased from "./lib/attendee/events/EventPurchased.svelte";
+  import LazyRoute from "./lib/router/LazyRoute.svelte";
   import Home from "./lib/attendee/home/Home.svelte";
-  import MyTickets from "./lib/attendee/passport/MyTickets.svelte";
-  import VerifyTicket from "./lib/attendee/passport/VerifyTicket.svelte";
-  import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
-  import { getExternalEventApi } from "./lib/api/event-api-registry.js";
   import ComingSoon from "./lib/attendee/coming-soon/ComingSoon.svelte";
-  import ShopTapScreen from "./lib/attendee/shop/ShopTapScreen.svelte";
-  import ShopOrderScreen from "./lib/attendee/shop/ShopOrderScreen.svelte";
-  import AccountRecoverySetup from "./lib/components/recovery/AccountRecoverySetup.svelte";
-  import AccountRecoverPortal from "./lib/components/recovery/AccountRecoverPortal.svelte";
-  import SignupLanding from "./lib/attendee/gate/SignupLanding.svelte";
+  import { getExternalEventApi } from "./lib/api/event-api-registry.js";
+
+  // Route-level code splitting: only Home ships in the boot chunk (Swarm
+  // round-trips are slow, so the eager graph must stay minimal). Every other
+  // route — and its dependency subtree (payments, EAS, recovery, shop rail) —
+  // downloads on first navigation.
+  const loadEventDetail = () => import("./lib/attendee/events/EventDetail.svelte");
+  const loadEventPage = () => import("./lib/components/site/EventPage.svelte");
+  const loadEventPurchased = () => import("./lib/attendee/events/EventPurchased.svelte");
+  const loadMyTickets = () => import("./lib/attendee/passport/MyTickets.svelte");
+  const loadVerifyTicket = () => import("./lib/attendee/passport/VerifyTicket.svelte");
+  const loadProfilePage = () => import("./lib/components/profile/ProfilePage.svelte");
+  const loadShopTapScreen = () => import("./lib/attendee/shop/ShopTapScreen.svelte");
+  const loadShopOrderScreen = () => import("./lib/attendee/shop/ShopOrderScreen.svelte");
+  const loadRecoverySetup = () => import("./lib/components/recovery/AccountRecoverySetup.svelte");
+  const loadRecoverPortal = () => import("./lib/components/recovery/AccountRecoverPortal.svelte");
+  const loadSignupLanding = () => import("./lib/attendee/gate/SignupLanding.svelte");
+
+  // Warm the chunks behind the bottom-nav destinations once the landing
+  // screen is idle, so first navigation doesn't pay a cold Swarm fetch.
+  onMount(() => {
+    const warm = () => {
+      void loadEventDetail();
+      void loadMyTickets();
+      void loadProfilePage();
+    };
+    if ("requestIdleCallback" in window) {
+      requestIdleCallback(warm, { timeout: 4000 });
+    } else {
+      setTimeout(warm, 2000);
+    }
+  });
 </script>
 
 <AttendeeShell>
@@ -22,37 +44,43 @@
     <Home />
   {:else if router.route === "event"}
     {#if getExternalEventApi(router.params.id)}
-      <EventPage
-        eventId={router.params.id}
-        apiUrl={getExternalEventApi(router.params.id)}
-        onback={() => navigate("/")}
-        ondashboard={() => navigate(`/creator/events/${router.params.id}`)}
+      <LazyRoute
+        loader={loadEventPage}
+        props={{
+          eventId: router.params.id,
+          apiUrl: getExternalEventApi(router.params.id),
+          onback: () => navigate("/"),
+          ondashboard: () => navigate(`/creator/events/${router.params.id}`),
+        }}
       />
     {:else}
-      <EventDetail
-        eventId={router.params.id}
-        onback={() => navigate("/")}
+      <LazyRoute
+        loader={loadEventDetail}
+        props={{ eventId: router.params.id, onback: () => navigate("/") }}
       />
     {/if}
   {:else if router.route === "event-purchased"}
-    <EventPurchased eventId={router.params.id} />
+    <LazyRoute loader={loadEventPurchased} props={{ eventId: router.params.id }} />
   {:else if router.route === "my-tickets"}
-    <MyTickets />
+    <LazyRoute loader={loadMyTickets} />
   {:else if router.route === "verify"}
-    <VerifyTicket />
+    <LazyRoute loader={loadVerifyTicket} />
   {:else if router.route === "signup"}
-    <SignupLanding token={router.params.gt} />
+    <LazyRoute loader={loadSignupLanding} props={{ token: router.params.gt }} />
   {:else if router.route === "profile"}
-    <ProfilePage address={router.params.address} />
+    <LazyRoute loader={loadProfilePage} props={{ address: router.params.address }} />
   {:else if router.route === "soon"}
     <ComingSoon feature={router.params.feature} />
   {:else if router.route === "shop-tap"}
-    <ShopTapScreen shopId={router.params.shopId} />
+    <LazyRoute loader={loadShopTapScreen} props={{ shopId: router.params.shopId }} />
   {:else if router.route === "shop-order"}
-    <ShopOrderScreen shopId={router.params.shopId} code={router.params.code} />
+    <LazyRoute
+      loader={loadShopOrderScreen}
+      props={{ shopId: router.params.shopId, code: router.params.code }}
+    />
   {:else if router.route === "protect"}
-    <AccountRecoverySetup />
+    <LazyRoute loader={loadRecoverySetup} />
   {:else if router.route === "recover"}
-    <AccountRecoverPortal />
+    <LazyRoute loader={loadRecoverPortal} />
   {/if}
 </AttendeeShell>
