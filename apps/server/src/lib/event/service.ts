@@ -386,6 +386,17 @@ async function resolveEventForOwner(
     feed = await readEventFeedSoc(eventId, trustedSigner);
     if (feed) source = "trusted-soc";
   }
+  // The caller's own creator index is the second TRUSTED carrier: it is
+  // platform-written, keyed by the verified parentAddress, and — unlike the global
+  // directory — retains unlisted (skipAutoList) events. It is what lets an owner
+  // edit/delete an unlisted client-signed event without the untrusted `signerHint`.
+  if (!feed) {
+    const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
+    if (own?.creatorFeedSigner) {
+      feed = await readEventFeedSoc(eventId, own.creatorFeedSigner);
+      if (feed) source = "trusted-soc";
+    }
+  }
   if (!feed) {
     const page = await readFeedPageWithRetry(topicEvent(eventId));
     feed = page ? decodeJsonFeed<EventFeed>(page) : null;
@@ -751,6 +762,57 @@ export async function getEventForDisplay(
     if (soc) return soc.deleted ? null : soc;
   }
   return getEvent(eventId);
+}
+
+/**
+ * Event read for an AUTHENTICATED route acting on the caller's own event.
+ *
+ * `getEvent`'s only discovery carrier is the GLOBAL directory, which a
+ * `skipAutoList` (unlisted) event is never added to — and a Phase B client-signed
+ * event writes no platform feed either — so every organiser route reading such an
+ * event with `getEvent(eventId)` 404s on its own creator's request.
+ *
+ * The caller's OWN creator index closes that gap and is TRUSTED, not client input:
+ * the server mints `eventId` and stamps `creatorAddress` from the verified
+ * `parentAddress` at create time, and the index is platform-written and never pruned
+ * when an event is unlisted. So an entry for `eventId` under `parentAddress` can only
+ * exist because this caller really did create that event.
+ *
+ * Resolution order: zero-I/O cache peek (a just-published event is already primed) →
+ * the caller's own creator index → `getEvent`'s full trusted resolution (listed and
+ * legacy platform-signed events).
+ *
+ * NON-CACHING on the creator-index path by design: an organiser read must never
+ * decide what a later claim/payment read sees (see {@link getEvent}). Ownership is
+ * still the caller's to enforce — this returns any event it can resolve, so routes
+ * keep their own `creatorAddress === parentAddress` 403 check.
+ */
+export async function getEventForOwner(
+  eventId: string,
+  parentAddress: string,
+): Promise<EventFeed | null> {
+  return (await resolveOwnEventLocally(eventId, parentAddress)) ?? (await getEvent(eventId));
+}
+
+/**
+ * The TRUSTED, fast half of {@link getEventForOwner}: cache peek → caller's own
+ * creator index. Never falls back to {@link getEvent}, whose missing-feed retry
+ * ladder costs ~13s — callers that have a cheaper next step (a remote source
+ * server, say) resolve locally first and choose their own fallback.
+ */
+export async function resolveOwnEventLocally(
+  eventId: string,
+  parentAddress: string,
+): Promise<EventFeed | null> {
+  const cached = peekEventCache(eventId);
+  if (cached) return applyOnChainEventIds(cached);
+
+  const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
+  if (own?.creatorFeedSigner) {
+    const feed = await readEventFeedSoc(eventId, own.creatorFeedSigner);
+    if (feed && !feed.deleted) return applyOnChainEventIds(feed);
+  }
+  return null;
 }
 
 /** Invalidate the event cache after a publish/update so the next read is fresh. */

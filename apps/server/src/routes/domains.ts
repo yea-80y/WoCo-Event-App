@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEventForOwner } from "../lib/event/service.js";
 import {
   registerDomain,
   verifyDomain,
@@ -55,7 +55,7 @@ domains.post("/", requireAuth, async (c) => {
       target = { siteId };
     } else {
       // Event path: verify event exists and caller is creator
-      const event = await getEvent(eventId!);
+      const event = await getEventForOwner(eventId!, parentAddress);
       if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
       if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
         return c.json({ ok: false, error: "Only the event organiser can register domains" }, 403);

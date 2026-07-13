@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEventForOwner } from "../lib/event/service.js";
 import { getResend, getFromAddress } from "../lib/email/client.js";
 
 const broadcast = new Hono<AppEnv>();
@@ -28,7 +28,7 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
     const fromAddress = getFromAddress();
 
     // 2. Load event and verify organiser ownership
-    const event = await getEvent(eventId);
+    const event = await getEventForOwner(eventId, parentAddress);
     if (!event) {
       return c.json({ ok: false, error: "Event not found" }, 404);
     }

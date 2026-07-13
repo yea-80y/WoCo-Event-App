@@ -27,7 +27,7 @@ import type {
 } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEvent, getEventForOwner } from "../lib/event/service.js";
 import { readFeedPage, decodeJsonFeed } from "../lib/swarm/feeds.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
@@ -52,9 +52,9 @@ const MAX_SYNC_RECORDS = 5000;
 const checkinOrganiser = new Hono<AppEnv>();
 
 async function loadOwnedEvent(c: Context<AppEnv>, eventId: string) {
-  const event = await getEvent(eventId).catch(() => null);
-  if (!event) return { error: c.json({ ok: false, error: "Event not found" }, 404 as const) };
   const parentAddress = c.get("parentAddress");
+  const event = await getEventForOwner(eventId, parentAddress).catch(() => null);
+  if (!event) return { error: c.json({ ok: false, error: "Event not found" }, 404 as const) };
   if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
     return { error: c.json({ ok: false, error: "Only the event organiser can manage check-in" }, 403 as const) };
   }
