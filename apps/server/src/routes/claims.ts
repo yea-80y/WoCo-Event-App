@@ -24,6 +24,7 @@ import { checkAndConsumeTxHash } from "../lib/payment/tx-registry.js";
 import { verifyQuote, consumeQuote } from "../lib/payment/quote.js";
 import { formatUnits } from "ethers";
 import { extractDelegation, verifyDelegation } from "../lib/auth/verify-delegation.js";
+import { issueJoinedBadge } from "../lib/campaign/badges.js";
 
 const claims = new Hono<AppEnv>();
 
@@ -526,6 +527,10 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       const { _pendingId, ...ticketForClient } = ticket;
       return c.json({ ok: true, ticket: ticketForClient, edition: ticket.edition, approvalPending: true, pendingId: _pendingId });
     }
+
+    // Claiming a ticket is a "first meaningful action" — cohort badge
+    // (wallet identifiers only; email claims have no on-chain address).
+    if (identifier.type === "wallet") void issueJoinedBadge(identifier.address);
 
     return c.json({ ok: true, ticket, edition: ticket.edition });
   } catch (err) {

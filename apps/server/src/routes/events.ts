@@ -15,6 +15,7 @@ import { manifestDigest, bytesToHex0x } from "@woco/shared";
 import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
+import { issueJoinedBadge } from "../lib/campaign/badges.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -277,6 +278,9 @@ events.post("/", requireAuth, async (c) => {
         ok: true,
         data: { eventId: result.eventId, ...(feedSigner ? { eventFeed: result } : {}) },
       }));
+
+      // Publishing an event is a "first meaningful action" — cohort badge.
+      void issueJoinedBadge(parentAddress);
     } catch (err) {
       console.error("[api] createEventV2 error:", err);
       const message = err instanceof Error ? err.message : "Failed to create event";
