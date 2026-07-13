@@ -37,11 +37,11 @@
 
 import { keccak256, getBytes, Wallet } from "ethers";
 import { CipherSuite, DhkemX25519HkdfSha256, HkdfSha256, Aes256Gcm } from "@hpke/core";
-import { xchacha20poly1305 } from "@noble/ciphers/chacha";
-import { bytesToHex, hexToBytes } from "@noble/ciphers/utils";
-import { randomBytes } from "@noble/ciphers/webcrypto";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha256 } from "@noble/hashes/sha256";
+import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { bytesToHex, hexToBytes } from "@noble/ciphers/utils.js";
+import { randomBytes } from "@noble/ciphers/utils.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   RECOVERY_ENC_DOMAIN,
   RECOVERY_ENC_TYPES,

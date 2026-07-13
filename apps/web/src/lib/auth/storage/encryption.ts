@@ -1,4 +1,4 @@
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import type { EncryptedBlob } from "@woco/shared";
 import { StorageKeys } from "@woco/shared";
 import { getKV, putKV } from "./indexeddb.js";

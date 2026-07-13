@@ -3,8 +3,8 @@
  * Shared between frontend and server so both can verify ticket integrity.
  */
 
-import { ed25519 } from "@noble/curves/ed25519";
-import { hexToBytes } from "@noble/hashes/utils";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import type { SignedTicket } from "../event/types.js";
 
 /**
