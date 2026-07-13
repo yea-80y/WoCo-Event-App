@@ -137,7 +137,7 @@ this only affects rotated/recovered accounts.
   claiming a fix. A deployed hypothesis that doesn't move the number is a failure.
 - Small, separable commits at each milestone. Owner pushes to GitHub themselves.
 - Claude owns SERVER deploys (rsync + `docker compose up -d --build server` to
-  `root@46.225.174.72:/opt/woco`); owner owns frontend `npm run deploy`. Frontend runs
+  the production VM); owner owns frontend `npm run deploy`. Frontend runs
   in dev (`npm run dev:web`) against PROD `events-api.woco-net.com`, so frontend edits
   are live via HMR; server fixes must be deployed to prod to take effect.
 - Clean up all temporary instrumentation (revert probes) — leave no debt.
