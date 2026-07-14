@@ -5,6 +5,7 @@ import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FEATURES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { requireAuth } from "./middleware/auth.js";
 import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
@@ -201,6 +202,13 @@ app.post("/api/payment/quote", async (c) => {
       currency?: "ETH" | "USDC";
       claimerAddress?: string;
     } | null;
+
+    // Closed platform-wide for launch (#41). Checked before the Swarm read: a series
+    // published before the flag flipped still carries cryptoEnabled, and there is no
+    // point paying for a feed lookup to sign a quote the claim route would reject.
+    if (!FEATURES.cryptoPaymentsAllowed) {
+      return c.json({ ok: false, error: "Crypto payments are not available" }, 403);
+    }
 
     if (!body?.eventId || !body.seriesId || !body.chainId || !body.currency) {
       return c.json({ ok: false, error: "Missing eventId, seriesId, chainId, or currency" }, 400);

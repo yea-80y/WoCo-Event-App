@@ -22,7 +22,8 @@
 import { Hono } from "hono";
 import { parseUnits } from "ethers";
 import type { AppEnv } from "../types.js";
-import { USDC_ADDRESSES } from "@woco/shared";
+import type { Context, Next } from "hono";
+import { USDC_ADDRESSES, FEATURES } from "@woco/shared";
 import type { Hex0x, PaymentChainId, SealedBox } from "@woco/shared";
 import { getEvent, listEvents } from "../lib/event/service.js";
 import { getClaimStatus } from "../lib/event/claim-service.js";
@@ -37,6 +38,19 @@ import {
 import { issuePurchaseIntent, peekPurchaseIntent, deletePurchaseIntent } from "../lib/agent/purchase-intent.js";
 
 export const agentRouter = new Hono<AppEnv>();
+
+// Kill switch for the agent money path (#41 — settlement is on-chain, the ticket still
+// mints Swarm-only). Discovery stays open: /events reads nothing and moves nothing.
+agentRouter.use("/grant-params", agentCommerceGate);
+agentRouter.use("/quote", agentCommerceGate);
+agentRouter.use("/buy", agentCommerceGate);
+
+async function agentCommerceGate(c: Context<AppEnv>, next: Next) {
+  if (!FEATURES.agentCommerceAllowed) {
+    return c.json({ ok: false, error: "Agent purchases are not available" }, 403);
+  }
+  await next();
+}
 
 // --- Minimal IP rate limit (on-chain reads cost) -------------------------------
 const RATE_LIMIT = 30;

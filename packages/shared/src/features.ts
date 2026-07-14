@@ -13,6 +13,14 @@ export const FEATURES = {
   // half-rail is unreachable; flip back on with that work. Gates UI + server
   // validation in lockstep — an old client can't offer crypto past the API.
   cryptoPaymentsAllowed: false,
+  // The MCP agent-commerce rail (/api/agent/quote + /buy): an agent draws USDC under a
+  // spend permission the user signed on-chain. Shares the #41 defect — settlement is
+  // on-chain but the ticket still mints via claimTicket(), i.e. Swarm-only. Left ON: it
+  // is opt-in (no grant, no rail), is not reachable from the checkout UI, and so does not
+  // contradict "crypto is not surfaced for launch". Flagged separately from
+  // cryptoPaymentsAllowed because it is a separate decision — and because a live money
+  // path needs a kill switch that is not a code change.
+  agentCommerceAllowed: true,
 } as const;
 
 /** Minimum buyer-pays fee % (3% Stripe + 1.5% WoCo). UI snaps below this back up. */

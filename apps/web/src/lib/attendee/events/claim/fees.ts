@@ -1,5 +1,5 @@
 import type { PaymentConfig } from "@woco/shared";
-import { PLATFORM_FEE_BP } from "@woco/shared";
+import { PLATFORM_FEE_BP, FEATURES } from "@woco/shared";
 import { CURRENCY_SYMBOLS } from "./helpers.js";
 
 /** Buyer always sees ticket × 1.10 on card payments.
@@ -39,6 +39,7 @@ export function calculateBuyerFees(
     fee: fmt(cardFee),
     platform: fmt(cryptoPlatformFee),
     cardTotal: payment.stripeEnabled ? fmt(subtotal + cardFee) : null,
-    cryptoTotal: payment.cryptoEnabled ? fmt(subtotal + cryptoPlatformFee) : null,
+    cryptoTotal:
+      FEATURES.cryptoPaymentsAllowed && payment.cryptoEnabled ? fmt(subtotal + cryptoPlatformFee) : null,
   };
 }
