@@ -28,7 +28,8 @@ The current batch `9ef3373b…` holds **test data**. The plan is to let it die, 
 | 4 | Fresh **production postage batch** (real depth + TTL, not test values) | #45 |
 | 5 | Fresh **production events directory feed** so test events don't show | — |
 | 6 | **TTL monitoring + auto-topup/dilute** so no batch ever silently expires again | #45 |
-| 7 | Stripe purchase gate for user batches (retire `FREE_HOSTING`) | #44 |
+| 7 | Stripe purchase gate for user batches (retire `FREE_HOSTING`) — **verification gate + per-owner quota + storage ledger SHIPPED** (`feat/free-hosting-stripe-gate`): free hosting now requires `charges_enabled` (same check as paid events); `.data/storage-ledger.json` logs every deploy's bytes per owner (= quota meter + future migration manifest). Remaining: batch-purchase checkout, renewal/topup UI, frontend catch of `STRIPE_VERIFICATION_REQUIRED`/`FREE_HOSTING_QUOTA_EXCEEDED`, then `FREE_HOSTING=false` | #44 |
+| 7b | **Etherna platform batch `87cc2df1…` TTL ≈ 4 days** (measured 2026-07-15, `batchTTL:352996`, mutable) — top up before 2026-07-19 or every free-hosted site dies | #45 |
 
 > Ordering matters: re-route (1) and cut over (4,5) **before** the old batch expires — you can only
 > re-stamp what you can still read. In testing this is slack; at launch it is a hard deadline.

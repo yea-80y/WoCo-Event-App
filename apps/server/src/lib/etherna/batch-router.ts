@@ -26,6 +26,9 @@ export type UploadTarget = "wocoBee" | "etherna";
 export interface BatchSelection {
   batchId: string;
   target: UploadTarget;
+  /** Set when a WEBSITE deploy landed on the shared platform batch via the
+   *  free-hosting promo — the caller must apply the per-owner byte quota. */
+  freeHosted?: boolean;
 }
 
 const ETHERNA_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
@@ -35,6 +38,13 @@ export class BatchPurchaseRequired extends Error {
   constructor() {
     super("Etherna website deploy requires a user batch. Call POST /api/etherna/purchase-batch first.");
     this.name = "BatchPurchaseRequired";
+  }
+}
+
+export class StripeVerificationRequired extends Error {
+  constructor() {
+    super("Free website hosting requires a verified Stripe account. Complete identity verification in Dashboard → Payments, then deploy again.");
+    this.name = "StripeVerificationRequired";
   }
 }
 
@@ -85,6 +95,10 @@ interface RouterInput {
   ownerAddress: string;
   gatewayUrl: string;
   deployType: DeployType;
+  /** Stripe-verified organiser (charges_enabled) — gates the FREE_HOSTING
+   *  fallback for website deploys. Callers resolve it via isVerifiedOrganiser();
+   *  irrelevant for events and for owners with their own live batch. */
+  freeHostingEligible?: boolean;
 }
 
 export function batchForDeploy(input: RouterInput): BatchSelection {
@@ -114,12 +128,18 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
   // is what the Stripe purchase gate will hang off — the user then buys their own
   // batch. Events ALWAYS fall back: they never trigger a purchase.
   if (deployType === "event" || FREE_HOSTING) {
+    // Free hosting is a shared-batch subsidy, so it is gated: only Stripe-verified
+    // organisers (same charges_enabled check as paid-event publishing) get it.
+    // Events are exempt — they never trigger a purchase or a gate.
+    if (deployType === "website" && input.freeHostingEligible === false) {
+      throw new StripeVerificationRequired();
+    }
     const platform = process.env.ETHERNA_PLATFORM_BATCH;
     if (!platform) {
       throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot fall back for " + deployType + " deploy");
     }
     console.log(`[batch-router] ${deployType} deploy → etherna PLATFORM batch ${platform.slice(0, 12)}…${deployType === "website" ? " (FREE_HOSTING)" : ""} (no live user batch for ${ownerAddress.slice(0, 10)}…)`);
-    return { batchId: platform, target: "etherna" };
+    return { batchId: platform, target: "etherna", ...(deployType === "website" ? { freeHosted: true } : {}) };
   }
 
   throw new BatchPurchaseRequired();

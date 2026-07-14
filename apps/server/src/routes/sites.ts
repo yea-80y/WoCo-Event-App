@@ -22,7 +22,13 @@ import {
   BEE_URL,
   POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
-import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired } from "../lib/etherna/batch-router.js";
+import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
+import { recordUpload, getUsedBytes } from "../lib/swarm/storage-ledger.js";
+
+/** Per-owner byte cap for free-hosted (shared platform batch) website deploys.
+ *  Default 200MB ≈ 20 full site publishes; each publish is a fresh ~8-10MB tar. */
+const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 200 * 1024 * 1024;
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../lib/etherna/auth.js";
 import { getUserBatch } from "../lib/etherna/batches.js";
@@ -599,10 +605,14 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         ownerAddress: parentAddress,
         gatewayUrl,
         deployType: "website",
+        freeHostingEligible: await isVerifiedOrganiser(parentAddress),
       });
     } catch (err) {
       if (err instanceof BatchPurchaseRequired) {
         return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
+      }
+      if (err instanceof StripeVerificationRequired) {
+        return c.json({ ok: false, error: err.message, code: "STRIPE_VERIFICATION_REQUIRED" }, 403);
       }
       throw err;
     }
@@ -680,6 +690,20 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
     const tarData = await fs.readFile(tarPath);
 
+    // Free-hosted deploys share the platform batch, so cap what each owner can
+    // put on it. Checked against the storage ledger BEFORE spending postage.
+    if (selection.freeHosted) {
+      const used = getUsedBytes(parentAddress);
+      if (used + tarData.length > FREE_HOSTING_QUOTA_BYTES) {
+        const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
+        return c.json({
+          ok: false,
+          error: `Free hosting quota exceeded: ${mb(used)}MB used + ${mb(tarData.length)}MB deploy > ${mb(FREE_HOSTING_QUOTA_BYTES)}MB limit. Purchase your own storage batch to continue.`,
+          code: "FREE_HOSTING_QUOTA_EXCEEDED",
+        }, 413);
+      }
+    }
+
     let contentHash: string;
     if (target === "etherna") {
       contentHash = await uploadCollectionToEtherna({
@@ -711,6 +735,17 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
       ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
+
+    // Every deploy lands in the storage ledger regardless of batch: it is both
+    // the quota meter and the per-owner migration manifest (re-stamp walks it).
+    recordUpload(parentAddress, {
+      ref: contentHash,
+      bytes: tarData.length,
+      kind: "site-deploy",
+      batchId,
+      target,
+      note: siteId,
+    });
 
     // Per-site feed so an ENS name / custom domain can point at it
     const topicString = multisiteFeedTopic(siteId);
