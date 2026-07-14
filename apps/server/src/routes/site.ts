@@ -10,6 +10,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { getCreatorEvents } from "../lib/event/service.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
+import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
@@ -176,6 +177,18 @@ site.post("/deploy", requireAuth, async (c) => {
 
       ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
+
+    // Event pages are exempt from the free-hosting gate (publishing an event must
+    // never block on it) but their bytes still land in the ledger — it is the
+    // capacity meter and the per-owner migration manifest for ALL hosted content.
+    recordUpload(parentAddress, {
+      ref: contentHash,
+      bytes: tarData.length,
+      kind: "event-site-deploy",
+      batchId,
+      target,
+      note: eventId,
+    });
 
     // 5) Per-event feed topic so each event gets its own updatable ENS entry.
     // The feed index always lives on the WoCo Bee — bee-js v11's onRequest
