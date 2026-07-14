@@ -24,7 +24,7 @@ import {
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired } from "../lib/etherna/batch-router.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
-import { recordUpload, getUsedBytes } from "../lib/swarm/storage-ledger.js";
+import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js";
 
 /** Per-owner byte cap for free-hosted (shared platform batch) website deploys.
  *  Default 200MB ≈ 20 full site publishes; each publish is a fresh ~8-10MB tar. */
@@ -693,7 +693,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Free-hosted deploys share the platform batch, so cap what each owner can
     // put on it. Checked against the storage ledger BEFORE spending postage.
     if (selection.freeHosted) {
-      const used = getUsedBytes(parentAddress);
+      const used = getFreeHostedBytes(parentAddress);
       if (used + tarData.length > FREE_HOSTING_QUOTA_BYTES) {
         const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
         return c.json({
@@ -745,6 +745,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       batchId,
       target,
       note: siteId,
+      ...(selection.freeHosted ? { freeHosted: true } : {}),
     });
 
     // Per-site feed so an ENS name / custom domain can point at it

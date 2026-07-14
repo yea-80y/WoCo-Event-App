@@ -31,6 +31,10 @@ export interface StoredUpload {
   at: string;
   /** Optional context (siteId, eventId, …). */
   note?: string;
+  /** True when this upload was subsidised by the free-hosting promo (website on
+   *  the shared platform batch). ONLY these bytes count against the free quota —
+   *  event pages are always free and user-batch deploys are already paid for. */
+  freeHosted?: boolean;
 }
 
 interface OwnerLedger {
@@ -76,6 +80,13 @@ export function recordUpload(ownerAddress: string, upload: Omit<StoredUpload, "a
 export function getUsedBytes(ownerAddress: string): number {
   ensureLoaded();
   return store[ownerAddress.toLowerCase()]?.usedBytes ?? 0;
+}
+
+/** Bytes consumed under the free-hosting promo only — the quota denominator. */
+export function getFreeHostedBytes(ownerAddress: string): number {
+  ensureLoaded();
+  const uploads = store[ownerAddress.toLowerCase()]?.uploads ?? [];
+  return uploads.reduce((sum, u) => sum + (u.freeHosted ? u.bytes : 0), 0);
 }
 
 /** The owner's full upload history — the migration manifest. */
