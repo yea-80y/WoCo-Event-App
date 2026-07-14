@@ -62,3 +62,27 @@ is on-chain but the ticket is not.
 every claim that is not a Stripe purchase against a registered series. Deleting it breaks
 crypto claims. The correct fix is to bring the other routes ONTO the on-chain/Swarm
 hybrid, after which the Swarm-only ledger can be retired.
+
+---
+
+## De-platforming roadmap (added 2026-07-14)
+
+Ordered by recommended sequence, not by ticket number. "Signer weight" = how much the
+platform signer being in the path actually costs (trust the user must place in WoCo).
+
+| # | Gap | Effort | Signer weight | Template already in repo | Notes |
+|---|---|---|---|---|---|
+| 1 | **Profile data** (#42) | Low | Medium | **Yes** — avatar (`profile/service.ts:118-125`) | Mirror the sibling: `writeFeed:false`, client signs its own SOC, platform writes only the pointer if one is even needed. The single cleanest win — the correct pattern lives 40 lines below the broken one. Ship first. |
+| 2 | **Shop config** | Medium | Low (no shops live, v2) | **Yes** — site config (`routes/sites.ts:272-273`) | Same shape as sites: platform writes only the discovery **pointer**; config + pages are client-signed SOCs. Not launch-blocking; do it when Shop leaves v2. |
+| 3 | **Crypto claim rail** (#41) | High | **High** (at the door) | Partial — Stripe v2 path (`stripe.ts:942`) mints on-chain already | The big one. Needs events to register with a real `priceBaseUnits` (today `0n`, `events.ts:756`) + buyers on the contract's permissionless `payAndClaimWithPermit`. USDC-only (single-token escrow); ETH is a later client-side swap, not contract work. Gated OFF for launch (`features.ts` `cryptoPaymentsAllowed:false`). |
+| 4 | **User collection** | Falls out of #3 | Medium | — | Written server-side inside the claim (`claim-service.ts:974,994,1000`). Not independently fixable — it de-platforms as a consequence of #3 moving claims to the client/contract. |
+| — | Legacy event detail feed | — | — | — | NOT a gap. Written only for pre-Phase-B events with no `creatorFeedSigner` (`service.ts:215`). Acceptable back-compat; just don't regress it onto the modern path. |
+
+**Do NOT chase these — they are correctly platform-signed (see table up top for why):**
+event directory + creator index, recovery status + guardian index, site **pointer** feed,
+claim ledger (`topicClaims`/`topicClaimers`/`topicPendingClaims`). The claim ledger only
+becomes retirable *after* #3, not before.
+
+**Suggested first move for a dedicated pass:** #1 (profile) — low risk, ships standalone,
+and proves the pattern end-to-end (client SOC on a single-writer user feed) before the
+higher-effort #3. #3 is the one that actually removes the platform signer from the door.
