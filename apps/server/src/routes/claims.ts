@@ -8,6 +8,7 @@ import {
   CLAIM_TYPES,
   USDC_ADDRESSES,
   CHAIN_NAMES,
+  FEATURES,
 } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
@@ -336,11 +337,31 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
   }
 
   if (series.payment) {
+    // FEATURES gates crypto at event CREATION, but a series published before the flag
+    // flipped still carries cryptoEnabled — so the rail has to be closed here too, or a
+    // legacy event would still route buyers onto it. paymentProof is crypto-only (Stripe
+    // claims arrive via the webhook calling claimTicket directly, never through here).
+    if (paymentProof && !FEATURES.cryptoPaymentsAllowed) {
+      return c.json({ ok: false, error: "Crypto payments are not available" }, 403);
+    }
+
     // Stripe-only events: if payment has stripeEnabled but NOT cryptoEnabled, and no proof,
     // redirect to Stripe checkout instead of returning 402 for crypto.
-    const cryptoRequired = series.payment.cryptoEnabled && series.payment.acceptedChains.length > 0;
+    const cryptoRequired =
+      FEATURES.cryptoPaymentsAllowed &&
+      series.payment.cryptoEnabled &&
+      series.payment.acceptedChains.length > 0;
 
     if (!paymentProof) {
+      // Crypto was the only rail and it is closed platform-wide: say so, rather than
+      // 402ing with crypto terms the server would then refuse to honour.
+      if (!cryptoRequired && !series.payment.stripeEnabled) {
+        return c.json({
+          ok: false,
+          error: "This ticket is not available for purchase right now",
+        }, 409);
+      }
+
       if (!cryptoRequired && series.payment.stripeEnabled) {
         // Stripe-only: tell client to use Stripe
         return c.json({

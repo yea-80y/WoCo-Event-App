@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { OrderField, SealedBox, ClaimMode, PaymentConfig, PaymentChainId, PaymentProof, ClaimedTicket } from "@woco/shared";
-  import { sealJson, USDC_ADDRESSES } from "@woco/shared";
+  import { sealJson, USDC_ADDRESSES, FEATURES } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
@@ -66,7 +66,12 @@
   // Payment + crypto-pay state
   // ──────────────────────────────────────────────────────────────
   const isPaid = $derived(!!payment && parseFloat(payment.price) > 0);
-  const hasCrypto = $derived(!!payment?.cryptoEnabled && (payment?.acceptedChains?.length ?? 0) > 0);
+  // FEATURES gates crypto at creation, but an event published before the flag flipped
+  // still carries cryptoEnabled — without this the buyer would be offered a rail the
+  // server now refuses (see claims.ts / /api/payment/quote).
+  const hasCrypto = $derived(
+    FEATURES.cryptoPaymentsAllowed && !!payment?.cryptoEnabled && (payment?.acceptedChains?.length ?? 0) > 0,
+  );
   const hasStripe = $derived(!!payment?.stripeEnabled);
   let stripeLoading = $state(false);
   let stripeEmail = $state("");
