@@ -222,24 +222,17 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
       // directly from the gateway (GET /chunks/{addr}) — the client reads
       // gateway-first, server-fallback. Non-fatal: the chunk is uploaded
       // regardless, and the server read endpoint covers a whitelist lag.
-      if (!etherna) {
-        try {
-          await whitelistHashes([socAddress]);
-          whitelistedSocs.add(socAddress);
-        } catch (e) {
-          console.warn("[swarm] SOC whitelist failed (non-fatal, server-read fallback covers it):", e);
-        }
-      } else {
+      try {
+        await whitelistHashes([socAddress]);
+        whitelistedSocs.add(socAddress);
+      } catch (e) {
+        console.warn("[swarm] SOC whitelist failed (non-fatal, server-read fallback covers it):", e);
+      }
+      if (etherna) {
         // Etherna gates anonymous reads behind an OFFER (else 402). Register one for
-        // the SOC's chunk address so any device can read it via /chunks/{addr} (and
-        // so a feed dereference over this update chunk resolves). Non-fatal — the
-        // chunk is stored regardless; a missing offer only blocks anonymous reads.
-        // NOTE: no WoCo-gateway whitelist here — Etherna's Beehive cluster does
-        // not propagate chunks to the public net our bee retrieves from (verified
-        // 2026-07-07: /chunks 200 on Etherna, 404 via our bee), so a whitelist
-        // would only convert the gateway's fast 403 into a slow futile search.
-        // Reads of Etherna-stamped SOCs resolve via readSocPayload's Etherna
-        // fallback below.
+        // the SOC's chunk address so any device can read it from Etherna's own
+        // gateway. Non-fatal — the chunk is stored regardless; a missing offer only
+        // blocks anonymous reads there.
         try {
           await registerEthernaOffer(socAddress);
         } catch (e) {
@@ -315,8 +308,12 @@ export async function readSocPayload(ownerHex: string, identifierHex: string): P
       // Bee returns 500 "read chunk failed" for chunks that don't exist yet
       (status === 500 && bodyMsg.includes("read chunk failed"));
     if (!notFound) throw err;
-    // Etherna-stamped SOCs never reach our bee (Beehive doesn't propagate to the
-    // public net) — try Etherna's gateway before declaring the chunk absent.
+    // Etherna-stamped SOCs DO reach the public net and are normally retrievable
+    // here (verified 2026-07-14: SOC stamped on Etherna, HTTP 200 from our bee
+    // seconds later). This fallback is a backstop for the retrieval window — a
+    // just-written chunk whose push hasn't settled in its storer neighbourhood
+    // yet — not a routing workaround. Etherna's own gateway always has the chunk
+    // locally, so it answers while the network search would still miss.
     return readSocFromEtherna(owner, identifier);
   }
 }
