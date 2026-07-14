@@ -11,9 +11,13 @@ Last updated: 2026-07-14.
 
 | # | Item | Owner | State |
 |---|---|---|---|
-| 1 | **Batch routing (#48)** — get cold-path writes off the WoCo batch onto Etherna | **Fable** | Briefed. Spec: `PLATFORM_SIGNER_AUDIT.md` § "Batch routing". |
-| ~~2~~ | ~~Merge PR #46~~ | — | ✅ merged `d36a88c` — prod == main again |
-| ~~3~~ | ~~Close #42~~ | — | ✅ closed — profile already client-signed |
+| 1 | **Merge PR #51 + deploy** — close the crypto rail at *claim* time | — | The #40 flag gated event **creation** only; events published before it still offered crypto. Adds `agentCommerceAllowed` kill switch. |
+| 2 | **Frontend deploy** (`npm run deploy`) — main carries `PublishButton` + `creator-cache` changes from #40, plus #51's ClaimButton gate | **user** | Server side already live; frontend is the lagging half. Deploy server **before** frontend. |
+| 3 | **Verify #33** — door-scanner roster re-push, against the deployed server | **user** | Reopened: #40 auto-closed it on a keyword, but the fix was only hypothesised. |
+| 4 | **Batch routing (#48)** + production cutover | **Fable** | Deferred — picked up later. Spec: `PLATFORM_SIGNER_AUDIT.md` § "Batch routing". |
+| ~~—~~ | ~~Merge PR #46~~ | — | ✅ merged `d36a88c` |
+| ~~—~~ | ~~Close #42~~ | — | ✅ closed — profile already client-signed |
+| ~~—~~ | ~~Merge PR #40 (exactly-once registration) + #49 (docs)~~ | — | ✅ merged `edb6993` / `0dfc729`; **server deployed**. Closed #36, #14. |
 
 ## Next — cut over to production
 
@@ -33,18 +37,26 @@ The current batch `9ef3373b…` holds **test data**. The plan is to let it die, 
 
 | # | Item | Issue |
 |---|---|---|
-| 8 | **Unify claim rails** — crypto claims never mint on-chain; only Stripe does | #41 |
-| 9 | Publish is not resumable — a failed on-chain register forks a second event | #36 |
-| 10 | Event directory does not scale — every publish rewrites every page | #37 |
+| 8 | Event directory does not scale — every publish rewrites every page | #37 |
+| ~~—~~ | ~~Publish is not resumable — a failed register forks a second event~~ | ✅ #36 |
+
+**#41 is no longer a launch blocker.** Crypto is not surfaced for launch, and PR #51 makes that
+true *in code* rather than as a side effect of the directory cutover. The rail is not deleted —
+it is off behind `FEATURES.cryptoPaymentsAllowed`, one line from coming back.
+
+Two things must be true before crypto (or the agent rail) is promoted again:
+- Claims must mint on-chain, not Swarm-only, or a paying buyer gets a weaker ticket than a Stripe buyer.
+- **#41 must cover the agent rail too** (`/api/agent/buy` settles USDC on-chain then mints via
+  `claimTicket()` — same defect). Fixing only the consumer rail leaves the agent one broken.
 
 ## Bugs from testing round 1
 
 | # | Item | Issue |
 |---|---|---|
-| 11 | Creator dashboard shows the same event twice | #32 |
-| 12 | Door scanner: re-pushed roster not picked up on refresh | #33 |
-| 13 | Dashboard 404s on unlisted client-signed events | #14 |
-| 14 | Referral link UX — silent capture needs visible feedback | #34 |
+| 10 | Door scanner: re-pushed roster not picked up on refresh — **fix shipped, unverified** | #33 |
+| 11 | Referral link UX — silent capture needs visible feedback | #34 |
+| 12 | Creator dashboard shows the same event twice — **not a bug**: two real events from a retried publish. Root cause (#30, #36) is fixed; close after a clean publish run confirms it | #32 |
+| ~~—~~ | ~~Dashboard 404s on unlisted client-signed events~~ | ✅ #14 |
 
 ## Hygiene
 
