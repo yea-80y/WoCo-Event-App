@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { ClaimersFeed, OrderEntry, SealedBox } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEventForOwner } from "../lib/event/service.js";
 import { readFeedPage, decodeJsonFeed } from "../lib/swarm/feeds.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
@@ -36,7 +36,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
 
   try {
     // 1. Load event and verify ownership
-    const event = await getEvent(eventId);
+    const event = await getEventForOwner(eventId, parentAddress);
     if (!event) {
       return c.json({ ok: false, error: "Event not found" }, 404);
     }
@@ -191,7 +191,7 @@ orders.post("/:id/webhook-relay", requireAuth, async (c) => {
 
   try {
     // 1. Verify organizer ownership
-    const event = await getEvent(eventId);
+    const event = await getEventForOwner(eventId, parentAddress);
     if (!event) {
       return c.json({ ok: false, error: "Event not found" }, 404);
     }

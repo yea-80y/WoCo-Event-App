@@ -78,6 +78,97 @@ export function recordOnChainEventId(eventId: string, seriesId: string, onChainE
   persist();
 }
 
+/**
+ * Zero-I/O lookup of an already-recorded registration (tiers 1+2 ONLY — never
+ * walks the chain). This is the exactly-once guard for `register-on-chain`:
+ * `recordOnChainEventId` runs before the feed write in `confirmSeriesOnChain`, so
+ * a registration whose tx landed but whose feed update then failed is still found
+ * here — including after a restart, since the map is `.data`-backed. Reading the
+ * feed alone is NOT sufficient: two of the route's three resolution tiers
+ * (`peekEventCache`, `readEventFeedSoc`) hand back a feed with no on-chain id
+ * merged in, and the contract does not dedupe (`registerEvent` keys the id off a
+ * sponsor-nonce counter, not the manifest), so a missed guard mints a SECOND
+ * on-chain event. `applyOnChainEventIds` cannot serve as the guard: on a
+ * genuinely-first registration its tier-3 miss triggers a full chain walk, which
+ * would land on the publish hot path.
+ */
+export function lookupOnChainEventId(eventId: string, seriesId: string): string | null {
+  ensureLoaded();
+  return byEventSeries.get(key(eventId, seriesId)) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Pending-registration markers
+// ---------------------------------------------------------------------------
+
+/**
+ * A registerEvent tx that has been BROADCAST but not yet recorded as confirmed.
+ * Written the instant the tx hits the mempool (before `tx.wait`), so a crash,
+ * timeout or organiser retry in the confirmation window can RESOLVE the existing
+ * tx instead of broadcasting a second one. `nonce` is what makes "this tx can
+ * never mine" decidable: if the sponsor's confirmed nonce has passed it and no
+ * receipt exists, some other tx took that slot.
+ */
+export interface PendingRegistration {
+  txHash: string;
+  nonce: number;
+  chainId: number;
+  /** ISO timestamp of broadcast — diagnostics only. */
+  at: string;
+}
+
+const PENDING_FILE = join(DATA_DIR, "pending-registrations.json");
+
+/** `${eventId}|${seriesId}` → the in-flight tx. */
+const pending = new Map<string, PendingRegistration>();
+let pendingLoaded = false;
+
+function ensurePendingLoaded(): void {
+  if (pendingLoaded) return;
+  pendingLoaded = true;
+  try {
+    const obj = JSON.parse(readFileSync(PENDING_FILE, "utf-8")) as Record<string, PendingRegistration>;
+    for (const [k, v] of Object.entries(obj)) pending.set(k, v);
+    if (pending.size > 0) {
+      console.log(`[onchain-cache] Loaded ${pending.size} pending registration(s)`);
+    }
+  } catch {
+    // No pending markers — the normal case.
+  }
+}
+
+function persistPending(): void {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(PENDING_FILE, JSON.stringify(Object.fromEntries(pending)), "utf-8");
+  } catch (err) {
+    console.error("[onchain-cache] Failed to persist pending registrations:", err);
+  }
+}
+
+/** Mark a registerEvent tx as broadcast. MUST be called before the tx can mine. */
+export function recordPendingRegistration(
+  eventId: string,
+  seriesId: string,
+  tx: Omit<PendingRegistration, "at">,
+): void {
+  ensurePendingLoaded();
+  pending.set(key(eventId, seriesId), { ...tx, at: new Date().toISOString() });
+  persistPending();
+}
+
+export function lookupPendingRegistration(eventId: string, seriesId: string): PendingRegistration | null {
+  ensurePendingLoaded();
+  return pending.get(key(eventId, seriesId)) ?? null;
+}
+
+/** Drop the marker once the tx is resolved (confirmed, reverted, or replaced). */
+export function clearPendingRegistration(eventId: string, seriesId: string): void {
+  ensurePendingLoaded();
+  if (!pending.delete(key(eventId, seriesId))) return;
+  persistPending();
+}
+
 /** Deterministic eventId for the sponsor's nth registration — mirrors the contract. */
 function deriveEventId(sponsor: string, nonce: number): string {
   return keccak256(AbiCoder.defaultAbiCoder().encode(["address", "uint256"], [sponsor, nonce]));

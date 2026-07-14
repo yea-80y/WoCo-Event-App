@@ -22,7 +22,7 @@
  */
 
 import type { EventDirectoryEntry, EventFeed, SiteDirectoryEntry, ShopDirectoryEntry } from "@woco/shared";
-import { authGet, get } from "./client.js";
+import { authGet } from "./client.js";
 import { cacheGet, cacheSet, cacheKey, TTL } from "../cache/cache.js";
 import {
   getEventOrders,
@@ -102,7 +102,12 @@ export function getMyShopsSWR(address: string): SWRResult<ShopDirectoryEntry[]> 
 }
 
 // ---------------------------------------------------------------------------
-// Event metadata — /api/events/:id (public, no auth needed)
+// Event metadata — /api/events/:id/owned (organiser read; auth'd)
+//
+// The public /api/events/:id resolves an event's content-feed signer from the
+// GLOBAL directory, which an unlisted (skipAutoList) client-signed event is never
+// in — so the creator's own dashboard 404s on it. The auth'd route resolves the
+// signer from the caller's own creator index instead (issue #14).
 // ---------------------------------------------------------------------------
 
 export function getEventSWR(eventId: string): SWRResult<EventFeed> {
@@ -110,7 +115,7 @@ export function getEventSWR(eventId: string): SWRResult<EventFeed> {
   const cached = cacheGet<EventFeed>(key);
   const refresh = async (): Promise<EventFeed | null> => {
     try {
-      const resp = await get<EventFeed>(`/api/events/${eventId}`);
+      const resp = await authGet<EventFeed>(`/api/events/${eventId}/owned`);
       if (!resp.data) return null;
       cacheSet(key, resp.data, TTL.EVENT);
       return resp.data;

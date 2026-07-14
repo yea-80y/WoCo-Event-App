@@ -4,9 +4,9 @@ import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirector
 import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, peekEventCache, readEventFeedSoc, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
-import { registerEventOnChain } from "../lib/chain/sponsor-wallet.js";
+import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy } from "../lib/etherna/batch-router.js";
@@ -128,6 +128,25 @@ events.get("/:id", async (c) => {
     return c.json({ ok: true, data: event });
   } catch (err) {
     console.error("[api] getEvent error:", err);
+    return c.json({ ok: false, error: "Failed to get event" }, 500);
+  }
+});
+
+// GET /api/events/:id/owned — authenticated organiser read of one of OWN events.
+// The public GET /:id can only resolve an unlisted client-signed event from a
+// client-supplied ?signer. Here the caller is authenticated, so the signer comes
+// from their own creator index instead — trusted, server-resolved, no client input.
+// No 403: the feed is the same public event data GET /:id serves (private order
+// data lives behind /orders); the dashboard keeps its own organiser-mismatch UX.
+events.get("/:id/owned", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = c.get("parentAddress") as string;
+  try {
+    const event = await getEventForOwner(eventId, parentAddress);
+    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+    return c.json({ ok: true, data: event });
+  } catch (err) {
+    console.error("[api] getOwnedEvent error:", err);
     return c.json({ ok: false, error: "Failed to get event" }, 500);
   }
 });
@@ -482,20 +501,10 @@ events.post("/:id/list", requireAuth, async (c) => {
   let localBasis = false;
 
   // Trusted local resolution first (SiteBuilder passes our OWN URL as
-  // sourceApiUrl, so this must not be gated on that field): the zero-I/O cache
-  // peek covers the just-published window; the caller's creator index covers
-  // unlisted client-owned events. Both are fast — getEvent's full resolution
-  // (with its ~13s missing-feed retry ladder) runs LAST, only for legacy events
-  // listed without a source URL.
-  eventFeed = peekEventCache(eventId);
-  if (!eventFeed) {
-    const mine = await getCreatorEvents(parentAddress);
-    const ownEntry = mine.find((e) => e.eventId === eventId);
-    if (ownEntry?.creatorFeedSigner) {
-      eventFeed = await readEventFeedSoc(eventId, ownEntry.creatorFeedSigner);
-      if (eventFeed?.deleted) eventFeed = null;
-    }
-  }
+  // sourceApiUrl, so this must not be gated on that field). getEvent's full
+  // resolution (with its ~13s missing-feed retry ladder) runs LAST, only for
+  // legacy events listed without a source URL.
+  eventFeed = await resolveOwnEventLocally(eventId, parentAddress);
   if (eventFeed) localBasis = true;
 
   if (!eventFeed && body.sourceApiUrl) {
@@ -611,8 +620,9 @@ events.post("/:id/confirm-chain", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Missing seriesId, onChainEventId, or chainId" }, 400);
   }
 
-  // Load event from Swarm
-  const feed = await getEvent(eventId);
+  // Load event from Swarm — owner-scoped, so an unlisted client-signed event
+  // resolves via the caller's own creator index rather than 404ing.
+  const feed = await getEventForOwner(eventId, parentAddress);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const seriesSummary = feed.series.find((s) => s.seriesId === seriesId);
@@ -681,21 +691,9 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   // author. A client-supplied signer hint would let anyone register (sponsor-gas
   // tx!) against an eventId they don't own and poison the on-chain registry via
   // recordOnChainEventId (it overwrites, and applyOnChainEventIds merges it into
-  // every read). Resolution order: zero-I/O cache peek — createEventV2 primed it
-  // moments ago in the publish flow, so this is the hot path and avoids the
-  // not-yet-uploaded client SOC entirely — then the caller's OWN platform-written
-  // creator index (covers a cold retry after a restart), then getEvent's full
-  // trusted resolution (listed/legacy events; slow only when the event is absent).
-  let feed = peekEventCache(eventId);
-  if (!feed) {
-    const mine = await getCreatorEvents(parentAddress);
-    const ownEntry = mine.find((e) => e.eventId === eventId);
-    if (ownEntry?.creatorFeedSigner) {
-      feed = await readEventFeedSoc(eventId, ownEntry.creatorFeedSigner);
-      if (feed?.deleted) feed = null;
-    }
-  }
-  if (!feed) feed = await getEvent(eventId);
+  // every read). getEventForOwner resolves only trusted bases (cache peek → the
+  // caller's own platform-written creator index → the trusted global carrier).
+  const feed = await getEventForOwner(eventId, parentAddress);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
     return c.json({ ok: false, error: "Only the event creator can register on-chain" }, 403);
@@ -742,41 +740,51 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const eventEndTs = Math.max(Number.isFinite(endSec) ? endSec : 0, nowSec + 3600);
 
   const tReg = Date.now();
-  let onChainEventId: string;
-  let txHash: string;
+  // Exactly-once: registerEvent is NOT idempotent (the contract keys the event id off
+  // a sponsor-nonce counter, not the manifest), and publish RETRIES this endpoint after
+  // a phase-2 failure. The guard therefore cannot live in the feed we just resolved —
+  // the cache/SOC tiers above carry no on-chain id — so it lives in the persisted
+  // registry + pending-tx marker. See lib/event/register-once.ts.
+  let result: Awaited<ReturnType<typeof registerSeriesExactlyOnce>>;
   try {
-    ({ onChainEventId, txHash } = await registerEventOnChain(series.totalSupply, manifestRef, {
-      priceBaseUnits: 0n,
-      payoutRecipient: feed.creatorAddress,
-      dropGate: ZERO_ADDRESS,
-      eventEndTs,
-    }));
+    result = await registerSeriesExactlyOnce({
+      eventId,
+      seriesId,
+      supply: series.totalSupply,
+      manifestRef,
+      v2Params: {
+        priceBaseUnits: 0n,
+        payoutRecipient: feed.creatorAddress,
+        dropGate: ZERO_ADDRESS,
+        eventEndTs,
+      },
+      ...(feed.creatorFeedSigner ? { signerHint: feed.creatorFeedSigner } : {}),
+      ...(series.onChainEventId ? { feedOnChainEventId: series.onChainEventId } : {}),
+    });
   } catch (err) {
-    console.error("[api] register-on-chain tx error:", err);
+    console.error("[api] register-on-chain error:", err);
     const message = err instanceof Error ? err.message : "registerEvent tx failed";
     return c.json({ ok: false, error: message }, 500);
   }
-  const tTx = Date.now();
 
-  let updatedFeed: Awaited<ReturnType<typeof confirmSeriesOnChain>>;
-  try {
-    // The trusted feed's own signer (never the request's) is the cold-cache
-    // fallback carrier for the confirm read.
-    updatedFeed = await confirmSeriesOnChain(eventId, seriesId, onChainEventId, feed.creatorFeedSigner);
-  } catch (err) {
-    console.error("[api] register-on-chain confirm error:", err);
-    // Feed update failed but tx is on-chain — return the eventId so client can retry confirm
-    return c.json({ ok: false, error: "Tx confirmed but feed update failed — retry", onChainEventId, txHash }, 500);
+  if (result.status === "pending") {
+    // The earlier tx may still mine. Re-sending would mint a second on-chain event,
+    // so the only safe answer is "come back" — the next call adopts that tx's id.
+    return c.json(
+      { ok: false, error: "Registration already in flight — retry in a moment", txHash: result.txHash, retryable: true },
+      409,
+    );
   }
 
   console.log(
-    `[api] register-on-chain timing: feedRead=${tReg - tStart}ms tx=${tTx - tReg}ms confirm=${Date.now() - tTx}ms total=${Date.now() - tStart}ms`,
+    `[api] register-on-chain timing: feedRead=${tReg - tStart}ms chain=${Date.now() - tReg}ms total=${Date.now() - tStart}ms status=${result.status}`,
   );
   return c.json({
     ok: true,
-    onChainEventId,
-    txHash,
-    ...(feed.creatorFeedSigner ? { eventFeed: updatedFeed } : {}),
+    onChainEventId: result.onChainEventId,
+    ...(result.status === "registered" && result.txHash ? { txHash: result.txHash } : {}),
+    ...(result.status === "already" ? { alreadyRegistered: true } : {}),
+    ...(feed.creatorFeedSigner && result.feed ? { eventFeed: result.feed } : {}),
   });
 });
 

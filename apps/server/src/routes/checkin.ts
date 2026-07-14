@@ -27,7 +27,7 @@ import type {
 } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
 import { readFeedPage, decodeJsonFeed } from "../lib/swarm/feeds.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { topicClaimers } from "../lib/swarm/topics.js";
@@ -52,9 +52,9 @@ const MAX_SYNC_RECORDS = 5000;
 const checkinOrganiser = new Hono<AppEnv>();
 
 async function loadOwnedEvent(c: Context<AppEnv>, eventId: string) {
-  const event = await getEvent(eventId).catch(() => null);
-  if (!event) return { error: c.json({ ok: false, error: "Event not found" }, 404 as const) };
   const parentAddress = c.get("parentAddress");
+  const event = await getEventForOwner(eventId, parentAddress).catch(() => null);
+  if (!event) return { error: c.json({ ok: false, error: "Event not found" }, 404 as const) };
   if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
     return { error: c.json({ ok: false, error: "Only the event organiser can manage check-in" }, 403 as const) };
   }
@@ -72,7 +72,10 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
   );
 
   try {
-    const token = issueDoorPass(event.eventId, exp);
+    // Stamp the content-feed signer into the pass record — the organiser is
+    // authenticated here, so this is the last point where an unlisted event's
+    // signer can be resolved from trusted state. /pack has no parent address.
+    const token = issueDoorPass(event.eventId, exp, event.creatorFeedSigner);
     return c.json({ ok: true, data: { token, exp } });
   } catch (err) {
     console.error("[checkin] door-pass issue failed:", err);
@@ -124,7 +127,7 @@ checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
 const checkin = new Hono<AppEnv>();
 
 /** Verify X-Door-Pass and confirm it was issued for the URL's event. */
-function authorisePass(c: Context<AppEnv>): { ok: true } | { ok: false; resp: Response } {
+function authorisePass(c: Context<AppEnv>): { ok: true; signer?: string } | { ok: false; resp: Response } {
   const token = c.req.header("X-Door-Pass");
   if (!token) {
     return { ok: false, resp: c.json({ ok: false, error: "Missing door pass" }, 401) };
@@ -140,7 +143,7 @@ function authorisePass(c: Context<AppEnv>): { ok: true } | { ok: false; resp: Re
   if (verdict.eventId !== c.req.param("eventId")) {
     return { ok: false, resp: c.json({ ok: false, error: "Door pass is for a different event" }, 403) };
   }
-  return { ok: true };
+  return { ok: true, ...(verdict.signer ? { signer: verdict.signer } : {}) };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -167,7 +170,12 @@ checkin.get("/:eventId/pack", async (c) => {
 
   const eventId = c.req.param("eventId");
   try {
-    const event = await getEvent(eventId);
+    // An unlisted (skipAutoList) client-signed event is in no global directory, so
+    // getEvent() cannot resolve it and the scanner would 404 at the door. The pass
+    // carries the signer we stamped at issue time — trusted, HMAC-authenticated,
+    // and not client input. Passes issued before this fall through to getEvent().
+    const event = (auth.signer ? await getEventBySigner(eventId, auth.signer) : null)
+      ?? await getEvent(eventId);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
     const chainId = getActiveChainId();

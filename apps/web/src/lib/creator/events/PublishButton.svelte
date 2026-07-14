@@ -1,6 +1,7 @@
 <script lang="ts">
-  import type { OrderField, ClaimMode } from "@woco/shared";
+  import type { OrderField, ClaimMode, EventFeed } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, FEATURES } from "@woco/shared";
+  import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
@@ -58,6 +59,22 @@
   let step = $state("");
   let progress = $state(0);
   let phase = $state<"auth" | "building" | "uploading" | "chain" | "done">("auth");
+
+  // Publish is two phases: write the event to Swarm, then register it on-chain.
+  // Phase 1 is NOT rolled back when phase 2 fails, and its eventId is minted by the
+  // server per request — so re-running the whole publish forks a second, complete
+  // event rather than converging on the first (issue #36; observed live 2026-07-13).
+  // Holding phase 1's result here is what makes the failure resumable: the retry
+  // re-runs phase 2 ONLY, against the eventId that already exists.
+  let pendingEventId = $state<string | null>(null);
+  // Not rendered, so deliberately not $state — a proxy here would also wrap the feed
+  // we hand to signEventFeedSoc for signing.
+  let pendingFeed: EventFeed | undefined;
+  let pendingSigner: ContentFeedSigner | null = null;
+  /** Highest event-SOC version we have SUCCESSFULLY written, if any. */
+  let lastSocVersion: number | null = null;
+  /** Set once any SOC write is attempted — after that, version 0 can no longer be assumed free. */
+  let socEverAttempted = false;
 
   // Authoritative date validation (the input `min` attrs are only a soft guard).
   // A past end date silently blocks ticket sales — the event reads as already
@@ -239,80 +256,139 @@
       // redundant browser re-upload of bodies that already exist, and a failure mode
       // that blocked the on-chain registration step below.
 
-      // ── On-chain registration (paid series only) ──────────────────────
-      // The server runs the registration tx and returns onChainEventId; it does
-      // NOT write the client-owned event feed. It returns the server-verified
-      // updated feed, and the OWNER signs that exact feed once here. Do not rely
-      // on local mutation alone: if the final SOC misses onChainEventId, Stripe
-      // falls back to the legacy Swarm claim path.
-      let ownedFeed = result.eventFeed;
-      if (hasPaidSeries) {
-        phase = "chain";
-        for (let i = 0; i < series.length; i++) {
-          const s = series[i]!;
-          if (!s.payment) continue; // skip free series
+      // Phase 1 is committed on Swarm from here on. Anything that fails below must
+      // resume against THIS eventId — re-running publish would mint a new one (#36).
+      pendingEventId = eventId;
+      pendingFeed = result.eventFeed;
+      pendingSigner = feedSigner;
+      lastSocVersion = null;
 
-          step = `Registering "${s.name}" on-chain...`;
+      if (!(await registerAndFinalise())) return;
+      finishPublish(eventId);
+    } catch (e) {
+      error = e instanceof Error ? e.message : "Unexpected error";
+    } finally {
+      publishing = false;
+    }
+  }
 
-          try {
-            const { onChainEventId, eventFeed } = await registerSeriesOnChain(eventId, s.seriesId);
-            if (eventFeed) {
-              ownedFeed = eventFeed;
-            } else if (ownedFeed) {
-              const ss = ownedFeed.series.find((x) => x.seriesId === s.seriesId);
-              if (ss) ss.onChainEventId = onChainEventId;
-            }
-          } catch (e) {
-            error = `On-chain registration failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
-            // The deferred SOC hasn't been written yet — without it the event is
-            // unreadable once the server cache expires. Best-effort version-0
-            // write with what we have before surfacing the error, so the event
-            // page still works and the failure is retryable.
-            if (ownedFeed && feedSigner) {
-              await signEventFeedSoc(ownedFeed, feedSigner, 0).catch(() => {});
-            }
-            return;
-          }
+  /**
+   * Phase 2 — on-chain registration (paid series only) + the event feed's SOC write.
+   * Re-runnable against an existing eventId, which is what makes a phase-2 failure
+   * recoverable instead of fork-inducing. The server side is exactly-once: a retry
+   * adopts the id of a tx that already landed rather than sending a second one
+   * (registerEvent is not idempotent — see lib/event/register-once.ts).
+   *
+   * Returns false with `error` set; the caller leaves the pending state in place so
+   * the user can retry.
+   */
+  async function registerAndFinalise(): Promise<boolean> {
+    const eventId = pendingEventId!;
+    const feedSigner = pendingSigner;
+    if (!hasPaidSeries) return true;
+
+    phase = "chain";
+    for (const s of series) {
+      if (!s.payment) continue; // free series are not registered on-chain
+
+      step = `Registering "${s.name}" on-chain...`;
+      try {
+        // The server runs the tx and returns onChainEventId; it does NOT write the
+        // client-owned event feed. It returns the server-verified updated feed, and
+        // the OWNER signs that exact feed below. Do not rely on local mutation alone:
+        // if the final SOC misses onChainEventId, Stripe falls back to the legacy
+        // Swarm claim path.
+        const { onChainEventId, eventFeed } = await registerSeriesOnChain(eventId, s.seriesId);
+        if (eventFeed) {
+          pendingFeed = eventFeed;
+        } else if (pendingFeed) {
+          const ss = pendingFeed.series.find((x) => x.seriesId === s.seriesId);
+          if (ss) ss.onChainEventId = onChainEventId;
         }
-        // The topic's ONLY write (create deferred it): version 0 is exact — the
-        // eventId was minted this request — so the latest-version probe
-        // (missing-chunk network searches) is skipped. After the server cache
-        // expires this SOC is the event's only readable form, so retry transient
-        // upload blips before failing the publish. (A retry after a landed-but-
-        // unacknowledged write is safe: Bee dedupes the identical chunk.)
-        if (ownedFeed && feedSigner) {
-          step = "Finalising event feed...";
-          let signErr: unknown = null;
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              await signEventFeedSoc(ownedFeed, feedSigner, 0);
-              signErr = null;
-              break;
-            } catch (e) {
-              signErr = e;
-              await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-            }
-          }
-          if (signErr) {
-            error = `Failed to finalise event feed: ${signErr instanceof Error ? signErr.message : String(signErr)}`;
-            return;
-          }
+      } catch (e) {
+        error = `On-chain registration failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
+        // The deferred SOC hasn't been written yet — without it the event is
+        // unreadable once the server cache expires. Best-effort write with what we
+        // have, so the event page still works and the failure is retryable.
+        if (pendingFeed && feedSigner) {
+          await writeEventSoc(pendingFeed, feedSigner).catch(() => {});
+        }
+        return false;
+      }
+    }
+
+    if (pendingFeed && feedSigner) {
+      step = "Finalising event feed...";
+      let signErr: unknown = null;
+      // After the server cache expires this SOC is the event's only readable form,
+      // so retry transient upload blips before failing. (A retry after a landed-but-
+      // unacknowledged write is safe: Bee dedupes the identical chunk.)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await writeEventSoc(pendingFeed, feedSigner);
+          signErr = null;
+          break;
+        } catch (e) {
+          signErr = e;
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
         }
       }
+      if (signErr) {
+        error = `Failed to finalise event feed: ${signErr instanceof Error ? signErr.message : String(signErr)}`;
+        return false;
+      }
+    }
+    return true;
+  }
 
-      phase = "done";
-      progress = 100;
-      step = "Published!";
-      // Manifest feed log (fire-and-forget): the event feed is client-owned when
-      // a feed signer exists — the hook no-ops otherwise. The event's image ref
-      // is self-described inside the feed, so only identity + label are logged.
-      void logFeedToManifest({
-        kind: "event",
-        topic: eventContentTopic(eventId),
-        label: title,
-        target: gatewayUrl && !gatewayUrl.includes("woco-net.com") ? "etherna" : "woco",
-      });
-      onpublished?.(eventId);
+  /**
+   * Write the event's SOC at a version we can prove is free.
+   *
+   * A SOC write to an address that already exists is SILENTLY deduped — the old
+   * payload wins and the new content is lost — so an exact version may only be used
+   * when nothing can have been written there. On the first pass that is version 0
+   * (the eventId was minted this request), and skipping the probe avoids a
+   * missing-chunk network search. But a failed registration writes the feed
+   * best-effort before surfacing the error, so on a RETRY version 0 may already be
+   * taken: continue from the last version we know we wrote, and if we don't know
+   * (that best-effort write swallows its own errors), probe for the latest.
+   */
+  async function writeEventSoc(feed: EventFeed, signer: ContentFeedSigner): Promise<void> {
+    const next = lastSocVersion === null ? (socEverAttempted ? undefined : 0) : lastSocVersion + 1;
+    socEverAttempted = true;
+    lastSocVersion = await signEventFeedSoc(feed, signer, next);
+  }
+
+  function finishPublish(eventId: string) {
+    phase = "done";
+    progress = 100;
+    step = "Published!";
+    pendingEventId = null;
+    pendingFeed = undefined;
+    pendingSigner = null;
+    // Manifest feed log (fire-and-forget): the event feed is client-owned when
+    // a feed signer exists — the hook no-ops otherwise. The event's image ref
+    // is self-described inside the feed, so only identity + label are logged.
+    void logFeedToManifest({
+      kind: "event",
+      topic: eventContentTopic(eventId),
+      label: title,
+      target: gatewayUrl && !gatewayUrl.includes("woco-net.com") ? "etherna" : "woco",
+    });
+    onpublished?.(eventId);
+  }
+
+  /**
+   * Retry ONLY the on-chain registration. The event already exists on Swarm; running
+   * publish again would mint a second eventId and leave two live events (#36).
+   */
+  async function handleRetryRegistration() {
+    if (publishing || !pendingEventId) return;
+    publishing = true;
+    error = null;
+    try {
+      const eventId = pendingEventId;
+      if (await registerAndFinalise()) finishPublish(eventId);
     } catch (e) {
       error = e instanceof Error ? e.message : "Unexpected error";
     } finally {
@@ -322,17 +398,29 @@
 </script>
 
 <div class="publish">
+  <!-- Once phase 1 has landed, the event EXISTS. Publishing again would mint a second
+       eventId and leave two live events (#36), so the only forward action is to finish
+       registering the one we have. -->
   <button
     class="publish-btn"
-    onclick={handlePublish}
-    disabled={!canPublish || publishing || disabled}
+    onclick={pendingEventId ? handleRetryRegistration : handlePublish}
+    disabled={publishing || (!pendingEventId && (!canPublish || disabled))}
   >
     {#if publishing}
       {step}
+    {:else if pendingEventId}
+      Retry registration
     {:else}
       {label ?? "Publish Event"}
     {/if}
   </button>
+
+  {#if pendingEventId && !publishing}
+    <p class="hint pending">
+      Your event was created and is safe — only the on-chain registration failed.
+      Retrying finishes it; it will not create a second event.
+    </p>
+  {/if}
 
   {#if publishing}
     <div class="progress-container">
@@ -436,6 +524,11 @@
     font-size: 0.8125rem;
     text-align: center;
     margin: 0;
+  }
+
+  .hint.pending {
+    color: var(--text);
+    line-height: 1.45;
   }
 
   .error {

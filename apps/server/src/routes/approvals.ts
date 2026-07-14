@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { SealedBox } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEventForOwner } from "../lib/event/service.js";
 import { getPendingClaimsFeed, approvePendingClaim, rejectPendingClaim } from "../lib/event/claim-service.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 
@@ -28,7 +28,7 @@ approvals.get("/:eventId/pending-claims", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
 
   try {
-    const event = await getEvent(eventId);
+    const event = await getEventForOwner(eventId, parentAddress);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
     if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
@@ -92,7 +92,7 @@ approvals.post("/:eventId/series/:seriesId/pending-claims/:pendingId/approve", r
   const parentAddress = c.get("parentAddress");
 
   try {
-    const event = await getEvent(eventId);
+    const event = await getEventForOwner(eventId, parentAddress);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
     if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
@@ -123,7 +123,7 @@ approvals.post("/:eventId/series/:seriesId/pending-claims/:pendingId/reject", re
   const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : undefined;
 
   try {
-    const event = await getEvent(eventId);
+    const event = await getEventForOwner(eventId, parentAddress);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
     if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
