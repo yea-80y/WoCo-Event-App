@@ -53,6 +53,17 @@ function isEthernaGateway(url: string): boolean {
  */
 const MIN_BATCH_REMAINING_MS = 60 * 60 * 1000;
 
+/**
+ * Launch promo: host user WEBSITES on the shared platform batch instead of making
+ * them buy their own. Default ON — the Stripe purchase gate does not exist yet, so
+ * without this a website deploy has no reachable path at all. Set FREE_HOSTING=false
+ * once that gate ships; BatchPurchaseRequired then resumes and the UI sells a batch.
+ *
+ * The platform batch's TTL becomes the lifetime of every free-hosted site, so keeping
+ * it topped up is what "free hosting" actually means operationally.
+ */
+const FREE_HOSTING = process.env.FREE_HOSTING !== "false";
+
 /** True if the registry says this batch still has usable life left. */
 function isLive(batch: { expiresAt: string }): boolean {
   const expiresAt = Date.parse(batch.expiresAt);
@@ -98,12 +109,16 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
     );
   }
 
-  if (deployType === "event") {
+  // Websites fall back to the platform batch only while free hosting is on (the
+  // launch promo). Flipping FREE_HOSTING off restores BatchPurchaseRequired, which
+  // is what the Stripe purchase gate will hang off — the user then buys their own
+  // batch. Events ALWAYS fall back: they never trigger a purchase.
+  if (deployType === "event" || FREE_HOSTING) {
     const platform = process.env.ETHERNA_PLATFORM_BATCH;
     if (!platform) {
-      throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot fall back for event deploy");
+      throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot fall back for " + deployType + " deploy");
     }
-    console.log(`[batch-router] ${deployType} deploy → etherna PLATFORM batch ${platform.slice(0, 12)}… (no user batch for ${ownerAddress.slice(0, 10)}…)`);
+    console.log(`[batch-router] ${deployType} deploy → etherna PLATFORM batch ${platform.slice(0, 12)}…${deployType === "website" ? " (FREE_HOSTING)" : ""} (no live user batch for ${ownerAddress.slice(0, 10)}…)`);
     return { batchId: platform, target: "etherna" };
   }
 
