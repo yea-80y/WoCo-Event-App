@@ -808,11 +808,28 @@ export async function resolveOwnEventLocally(
   if (cached) return applyOnChainEventIds(cached);
 
   const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
-  if (own?.creatorFeedSigner) {
-    const feed = await readEventFeedSoc(eventId, own.creatorFeedSigner);
-    if (feed && !feed.deleted) return applyOnChainEventIds(feed);
-  }
+  if (own?.creatorFeedSigner) return getEventBySigner(eventId, own.creatorFeedSigner);
   return null;
+}
+
+/**
+ * Read a client-signed event SOC by a signer the SERVER resolved and vouches for
+ * (creator index, directory carrier, or a value it stamped into its own
+ * HMAC-authenticated door-pass record). NEVER pass a signer taken from a client
+ * request — that is {@link getEventForDisplay}'s job.
+ *
+ * `applyOnChainEventIds` is not optional here: `/pack` and the dashboard branch
+ * v2-vs-v1 on `series.onChainEventId`, which a raw SOC read does not carry when the
+ * client never re-signed the feed after registration. Skip it and a v2 series
+ * silently degrades to the v1 branch with no `slotOwners` — the door scanner would
+ * be unable to verify tickets offline.
+ *
+ * Non-caching: never primes the shared money-path cache (see {@link getEvent}).
+ */
+export async function getEventBySigner(eventId: string, signer: string): Promise<EventFeed | null> {
+  const feed = await readEventFeedSoc(eventId, signer);
+  if (!feed || feed.deleted) return null;
+  return applyOnChainEventIds(feed);
 }
 
 /** Invalidate the event cache after a publish/update so the next read is fresh. */
