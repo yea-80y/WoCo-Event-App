@@ -24,7 +24,6 @@
   import SubENSPicker from "./SubENSPicker.svelte";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
-  import { getMyEthernaBatch } from "../../api/etherna.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   function uid(): string {
@@ -231,18 +230,17 @@
     return () => window.removeEventListener('message', handler);
   });
 
-  /** Etherna website publish requires a per-user batch. Returns true if the
-   * batch exists OR the user just bought one in the modal; false if cancelled.
-   * Throws on lookup errors (auth/network/server) so they surface as a publish
-   * failure instead of being mistaken for "no batch yet" and silently opening
-   * the purchase modal. */
-  async function ensureUserBatchForEtherna(): Promise<boolean> {
-    if (gatewayUrl !== ETHERNA_URL) return true;
-    const res = await getMyEthernaBatch();
-    if (!res.ok) throw new Error(res.error || 'Could not check Etherna batch');
-    if (res.data) return true;
+  /** Sentinel errors for the gates the SERVER may raise on a deploy. The client
+   * never pre-decides: with free hosting on, most publishes need no batch at
+   * all, so the old "check batch, open the purchase modal first" flow blocked
+   * users the server was happy to host for free. */
+  class BatchPurchaseNeeded extends Error {}
+  class StripeVerificationNeeded extends Error {}
+
+  /** Open the batch purchase modal; resolves true once purchased, false if closed. */
+  function requestBatchPurchase(): Promise<boolean> {
     purchaseOpen = true;
-    return await new Promise<boolean>((resolve) => {
+    return new Promise<boolean>((resolve) => {
       pendingPurchaseResolve = resolve;
     });
   }
@@ -277,17 +275,17 @@
     publishError = '';
     deployedUrl = '';
 
-    try {
-      const batchOk = await ensureUserBatchForEtherna();
-      if (!batchOk) {
-        // User cancelled the purchase modal — not an error, just a no-op.
-        publishState = 'idle';
-        return;
-      }
-
+    /** Logo upload → publish config/feeds → deploy. Throws the sentinel errors
+     * above when the server raises a gate, so the outer flow can react (open
+     * the right modal) and retry. */
+    const publishSequence = async () => {
       if (pendingLogoBase64) {
         const imgRes = await uploadSiteImage(pendingLogoBase64, gatewayUrl);
-        if (!imgRes.ok) throw new Error(imgRes.error ?? 'Logo upload failed');
+        if (!imgRes.ok) {
+          if (imgRes.code === 'BATCH_PURCHASE_REQUIRED') throw new BatchPurchaseNeeded();
+          if (imgRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(imgRes.error);
+          throw new Error(imgRes.error ?? 'Logo upload failed');
+        }
         site.theme.logoSwarmRef = imgRes.data!.imageRef;
         pendingLogoBase64 = null;
       }
@@ -300,14 +298,41 @@
 
       const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) }, feedSigner);
       if (!deployRes.ok || !deployRes.data) {
+        if (deployRes.code === 'BATCH_PURCHASE_REQUIRED') throw new BatchPurchaseNeeded();
+        if (deployRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(deployRes.error);
         throw new Error(deployRes.ok ? 'Deploy returned no data' : (deployRes.error ?? 'Deploy failed'));
       }
+      return deployRes.data;
+    };
 
-      deployedUrl  = deployRes.data.siteUrl;
-      deployedHash = deployRes.data.contentHash;
+    try {
+      let deployed;
+      try {
+        deployed = await publishSequence();
+      } catch (err) {
+        if (err instanceof BatchPurchaseNeeded) {
+          const purchased = await requestBatchPurchase();
+          if (!purchased) {
+            // User cancelled the purchase modal — not an error, just a no-op.
+            publishState = 'idle';
+            return;
+          }
+          deployed = await publishSequence();
+        } else if (err instanceof StripeVerificationNeeded) {
+          // Free hosting needs a verified Stripe account — open the connect
+          // modal; the user verifies there and publishes again.
+          stripeModalOpen = true;
+          throw new Error(err.message || 'Free hosting requires a verified Stripe account.');
+        } else {
+          throw err;
+        }
+      }
+
+      deployedUrl  = deployed.siteUrl;
+      deployedHash = deployed.contentHash;
       localStorage.setItem(`woco:site-content-hash:${site.siteId}`, deployedHash);
-      if (deployRes.data.feedManifestHash) {
-        feedHash = deployRes.data.feedManifestHash;
+      if (deployed.feedManifestHash) {
+        feedHash = deployed.feedManifestHash;
         localStorage.setItem(FEED_HASH_KEY, feedHash);
       }
       localStorage.setItem(LAST_SITE_KEY, site.siteId);
@@ -317,8 +342,8 @@
         brandName: site.theme.brandName || 'Untitled site',
         logoSwarmRef: site.theme.logoSwarmRef,
         accentColor: site.theme.palette.accent,
-        feedHash: feedHash || deployRes.data.feedManifestHash,
-        deployedUrl: deployRes.data.siteUrl,
+        feedHash: feedHash || deployed.feedManifestHash,
+        deployedUrl: deployed.siteUrl,
         publishedAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -330,8 +355,8 @@
         topic: siteConfigTopic(site.siteId),
         label: site.theme.brandName || 'Untitled site',
         siteMeta: {
-          contentHash: deployRes.data.contentHash,
-          ...(deployRes.data.feedManifestHash ? { feedManifestHash: deployRes.data.feedManifestHash } : {}),
+          contentHash: deployed.contentHash,
+          ...(deployed.feedManifestHash ? { feedManifestHash: deployed.feedManifestHash } : {}),
         },
         target: gatewayUrl.includes("woco-net.com") ? "woco" : "etherna",
       });
