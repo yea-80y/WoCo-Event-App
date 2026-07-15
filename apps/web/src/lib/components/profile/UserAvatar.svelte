@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { UserProfile } from "@woco/shared";
   import { getProfile } from "../../api/profiles.js";
+  import { imageUrlCandidates, useNextImageUrl } from "../site/image-fallback.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -14,7 +15,10 @@
 
   let { address, size = 32, profile: propProfile, clickable = false, onclick }: Props = $props();
 
-  const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
+  // Avatar bytes may be stamped on either batch (WoCo historically, Etherna
+  // since #48) — read WoCo-gateway-first with Etherna <img> fallback on error,
+  // same as site/event images. Content-addressed ref ⇒ any source is safe.
+  const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL as string | undefined;
 
   let fetched = $state<UserProfile | null>(propProfile ?? null);
   let loaded = $state(propProfile !== undefined);
@@ -35,7 +39,7 @@
   }
 
   const avatarUrl = $derived(
-    fetched?.avatarRef ? `${BEE_GATEWAY}/bytes/${fetched.avatarRef}` : null,
+    fetched?.avatarRef ? (imageUrlCandidates(fetched.avatarRef, BEE_GATEWAY)[0] ?? null) : null,
   );
 
   // Only show an initial if the user has set a display name
@@ -67,6 +71,7 @@
       alt=""
       style="width:{size}px;height:{size}px"
       class="avatar-img"
+      onerror={(e) => useNextImageUrl(e, fetched?.avatarRef, BEE_GATEWAY)}
     />
   {:else if initial}
     <span class="avatar-initials">{initial}</span>

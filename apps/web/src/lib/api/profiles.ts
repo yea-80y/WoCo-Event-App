@@ -3,6 +3,7 @@ import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared
 import { authPost, get } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import { writeContentFeed, readContentFeed } from "../swarm/content-feed.js";
+import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
 
@@ -213,10 +214,14 @@ export async function updateProfile(updates: UpdateProfileRequest): Promise<User
     updatedAt: new Date().toISOString(),
   };
 
+  // Profile data is user content: the Etherna gateway signal routes the stamp
+  // to the user's own batch when they have one, the shared Etherna platform
+  // batch otherwise (#48). Reads are batch-agnostic (computed chunk address).
   await writeContentFeed({
     signerPrivKey: signer.privKey,
     topic: profileDataContentTopic(addr),
     data: profile,
+    gatewayUrl: ETHERNA_GATEWAY_URL,
   });
 
   void logFeedToManifest({ kind: "profile", topic: profileDataContentTopic(addr) });
@@ -250,6 +255,7 @@ export async function uploadAvatar(imageDataUrl: string): Promise<string> {
     signerPrivKey: signer.privKey,
     topic: profileAvatarContentTopic(parent),
     data: { v: 1, avatarRef },
+    gatewayUrl: ETHERNA_GATEWAY_URL,
   });
 
   // Log the NEW image ref as the entry's only ref — the manifest merge moves a

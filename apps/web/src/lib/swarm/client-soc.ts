@@ -97,7 +97,11 @@ export async function signAndUploadSoc(args: {
  * server-side at write time); the server fallback covers a whitelist lag and is
  * availability-only. No auth required on either path.
  */
-export async function readSoc(ownerAddress: string, identifier: Uint8Array): Promise<Uint8Array | null> {
+export async function readSoc(
+  ownerAddress: string,
+  identifier: Uint8Array,
+  opts: { thorough?: boolean } = {},
+): Promise<Uint8Array | null> {
   if (identifier.length !== 32) throw new Error("SOC identifier must be 32 bytes");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
 
@@ -111,9 +115,17 @@ export async function readSoc(ownerAddress: string, identifier: Uint8Array): Pro
     // found nothing — asking the server would repeat that exact search against
     // the SAME node (version probes make this the hot path). Only fall through
     // on 403 (whitelist lag), transient errors, or anything non-definitive.
+    //
+    // EXCEPT `thorough` reads (the WRITE-path version probe): an Etherna-stamped
+    // chunk written seconds ago can 404 here while its push is still settling,
+    // yet the server fallback reads it from Etherna's own store. Trusting the
+    // 404 would make the version resolver stop one short and re-write an
+    // EXISTING immutable SOC — Bee dedupes silently and the edit is LOST
+    // (landmine 2, ETHERNA_USER_CONTENT_HANDOVER.md). Writes are rare, so the
+    // extra server round-trip is confined to where it is correctness-critical.
     const status = (err as { status?: number; response?: { status?: number } })?.status
       ?? (err as { response?: { status?: number } })?.response?.status;
-    if (status === 404) return null;
+    if (status === 404 && !opts.thorough) return null;
   }
 
   // 2. Server fallback (availability only).
