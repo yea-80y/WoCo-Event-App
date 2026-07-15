@@ -27,11 +27,10 @@ import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js";
 
 /** Per-owner byte cap for free-hosted (shared platform batch) website deploys.
- *  Default 200MB ≈ 20 full site publishes; each publish is a fresh ~8-10MB tar. */
-const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 200 * 1024 * 1024;
+ *  Quota counts each site's LATEST deploy only (republish supersedes — see
+ *  storage-ledger.ts), so 100MB ≈ 10 live sites at the ~8-10MB tar size. */
+const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 100 * 1024 * 1024;
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
-import { ensureEthernaToken, getCachedEthernaToken } from "../lib/etherna/auth.js";
-import { getUserBatch } from "../lib/etherna/batches.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
@@ -49,11 +48,6 @@ import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../
 const sitesRouter = new Hono();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
-
-function isEthernaUrl(url: string): boolean {
-  try { return new URL(url).host.endsWith(new URL(ETHERNA_GW).host); } catch { return false; }
-}
 const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multisite");
 
 // ---------------------------------------------------------------------------
@@ -176,34 +170,48 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Image too large (max 4MB)" }, 400);
     }
 
-    if (isEthernaUrl(body.gatewayUrl ?? "")) {
-      const userBatch = getUserBatch(parentAddress);
-      if (!userBatch) {
-        return c.json({ ok: false, error: "No Etherna batch — purchase one first (click Publish)", code: "BATCH_PURCHASE_REQUIRED" }, 402);
-      }
-      await ensureEthernaToken();
-      const token = getCachedEthernaToken();
-      const resp = await fetch(`${ETHERNA_GW}/bytes`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "Swarm-Postage-Batch-Id": userBatch.batchId,
-          Authorization: `Bearer ${token}`,
-        },
-        // @ts-ignore — Node 18 fetch duplex
-        duplex: "half",
-        body: bytes,
+    // Same routing + gates as the site deploy itself: user batch when live,
+    // free-hosting platform-batch fallback (Stripe-verified, quota-metered)
+    // otherwise. Site images are site bytes — letting them bypass the quota
+    // would leave the deploy gate meterable around.
+    let selection;
+    try {
+      selection = batchForDeploy({
+        ownerAddress: parentAddress,
+        gatewayUrl: body.gatewayUrl ?? "",
+        deployType: "website",
+        freeHostingEligible: await isVerifiedOrganiser(parentAddress),
       });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        throw new Error(`Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
+    } catch (err) {
+      if (err instanceof BatchPurchaseRequired) {
+        return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
       }
-      const { reference } = await resp.json() as { reference: string };
-      await registerEthernaOffer(reference);
-      return c.json({ ok: true, data: { imageRef: reference } });
+      if (err instanceof StripeVerificationRequired) {
+        return c.json({ ok: false, error: err.message, code: "STRIPE_VERIFICATION_REQUIRED" }, 403);
+      }
+      throw err;
     }
 
-    const imageRef = await uploadToBytes(bytes);
+    if (selection.freeHosted) {
+      const used = getFreeHostedBytes(parentAddress);
+      if (used + bytes.length > FREE_HOSTING_QUOTA_BYTES) {
+        return c.json({
+          ok: false,
+          error: "Free hosting quota exceeded — purchase your own storage batch to continue.",
+          code: "FREE_HOSTING_QUOTA_EXCEEDED",
+        }, 413);
+      }
+    }
+
+    const imageRef = await uploadToBytes(bytes, selection);
+    recordUpload(parentAddress, {
+      ref: imageRef,
+      bytes: bytes.length,
+      kind: "site-image",
+      batchId: selection.batchId,
+      target: selection.target,
+      ...(selection.freeHosted ? { freeHosted: true } : {}),
+    });
     return c.json({ ok: true, data: { imageRef } });
   } catch (err) {
     console.error("[sites/upload-image]", err);
@@ -692,8 +700,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
     // Free-hosted deploys share the platform batch, so cap what each owner can
     // put on it. Checked against the storage ledger BEFORE spending postage.
+    // This site's own current deploy is excluded — the new tar supersedes it.
     if (selection.freeHosted) {
-      const used = getFreeHostedBytes(parentAddress);
+      const used = getFreeHostedBytes(parentAddress, { excludeSite: siteId });
       if (used + tarData.length > FREE_HOSTING_QUOTA_BYTES) {
         const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
         return c.json({

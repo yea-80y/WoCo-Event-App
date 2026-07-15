@@ -9,4 +9,7 @@ export interface ApiResponse<T = unknown> {
   ok: boolean;
   data?: T;
   error?: string;
+  /** Machine-readable error code (e.g. BATCH_PURCHASE_REQUIRED) — UI branches on
+   *  this, never on the human-readable `error` text. */
+  code?: string;
 }

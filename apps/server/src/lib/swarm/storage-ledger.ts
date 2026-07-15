@@ -82,11 +82,34 @@ export function getUsedBytes(ownerAddress: string): number {
   return store[ownerAddress.toLowerCase()]?.usedBytes ?? 0;
 }
 
-/** Bytes consumed under the free-hosting promo only — the quota denominator. */
-export function getFreeHostedBytes(ownerAddress: string): number {
+/**
+ * Bytes consumed under the free-hosting promo only — the quota denominator.
+ *
+ * Site deploys count LATEST-PER-SITE, not cumulative: a republish supersedes the
+ * previous deploy of the same siteId (`note`), so iterating on a site never burns
+ * quota. Superseded refs stay in `uploads` (they are still the migration/GC
+ * manifest — a future re-stamp onto a fresh batch walks only the live set, which
+ * is what actually garbage-collects dead versions). Non-deploy free-hosted kinds
+ * (e.g. site images) accumulate — there is no supersede signal for them.
+ *
+ * `excludeSite` drops that site's current deploy from the total — used when
+ * quota-checking a REdeploy, whose new tar replaces the existing one.
+ */
+export function getFreeHostedBytes(ownerAddress: string, opts: { excludeSite?: string } = {}): number {
   ensureLoaded();
   const uploads = store[ownerAddress.toLowerCase()]?.uploads ?? [];
-  return uploads.reduce((sum, u) => sum + (u.freeHosted ? u.bytes : 0), 0);
+  let sum = 0;
+  const latestSiteDeploy = new Map<string, number>();
+  for (const u of uploads) {
+    if (!u.freeHosted) continue;
+    // Uploads are appended chronologically, so the last entry per siteId wins.
+    if (u.kind === "site-deploy" && u.note) latestSiteDeploy.set(u.note, u.bytes);
+    else sum += u.bytes;
+  }
+  for (const [siteId, bytes] of latestSiteDeploy) {
+    if (siteId !== opts.excludeSite) sum += bytes;
+  }
+  return sum;
 }
 
 /** The owner's full upload history — the migration manifest. */
