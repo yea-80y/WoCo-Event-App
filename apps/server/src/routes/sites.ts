@@ -22,7 +22,7 @@ import {
   BEE_URL,
   POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
-import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired, type BatchSelection } from "../lib/etherna/batch-router.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js";
 
@@ -114,6 +114,39 @@ async function stampEventSigners(
       return signer ? { ...rest, creatorFeedSigner: signer } : rest;
     }),
   );
+}
+
+/**
+ * Batch routing for a site's PLATFORM-WRITTEN feed pages (pointer, legacy
+ * config/pages, events index). They follow the site's home gateway so the
+ * feeds live and die with the site content they anchor (#48) — a WoCo-stamped
+ * pointer to an Etherna-hosted site would expire independently of it.
+ * deployType "event" = the UNGATED cold-write rules (user batch if live, else
+ * the shared Etherna platform batch): a 4KB feed page must never trip the
+ * purchase or verification gate. Any failure falls back to the WoCo batch —
+ * feed routing is an optimisation of postage lifetime, never publish-blocking.
+ */
+function siteFeedDest(ownerAddress: string, gatewayUrl: string | undefined): BatchSelection | undefined {
+  if (!gatewayUrl) return undefined;
+  try {
+    const sel = batchForDeploy({ ownerAddress, gatewayUrl, deployType: "event" });
+    return sel.target === "etherna" ? sel : undefined;
+  } catch (e) {
+    console.warn("[sites] feed batch routing failed — WoCo batch fallback:", (e as Error).message);
+    return undefined;
+  }
+}
+
+/** Resolve the site's home gateway from the owner's directory entry (the
+ *  deployedUrl carries the gateway host) — for endpoints that rewrite site
+ *  feeds without a client gateway signal (add/remove event). */
+async function siteFeedDestFromDirectory(ownerAddress: string, siteId: string): Promise<BatchSelection | undefined> {
+  try {
+    const sites = await getCreatorSites(ownerAddress);
+    return siteFeedDest(ownerAddress, sites.find((s) => s.siteId === siteId)?.deployedUrl);
+  } catch {
+    return undefined;
+  }
 }
 
 function spawnPromise(cmd: string, args: string[]): Promise<void> {
@@ -228,12 +261,16 @@ sitesRouter.post("/", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
 
   try {
-    const body = await c.req.json() as { site?: Site; events?: SiteEventEntry[]; siteFeedSigner?: string };
+    const body = await c.req.json() as { site?: Site; events?: SiteEventEntry[]; siteFeedSigner?: string; gatewayUrl?: string };
     if (!body?.site?.siteId) {
       return c.json({ ok: false, error: "Invalid site data" }, 400);
     }
+    if (body.gatewayUrl !== undefined && typeof body.gatewayUrl !== "string") {
+      return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
+    }
 
     const { site, events = [] } = body;
+    const feedDest = siteFeedDest(parentAddress, body.gatewayUrl);
 
     // Client-owned publish: the full Site already lives in the owner's SOC at
     // siteConfigTopic(siteId) (the client signs + uploads it BEFORE this call);
@@ -283,8 +320,8 @@ sitesRouter.post("/", requireAuth, async (c) => {
         updatedAt: now,
       };
       await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(pointer)),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
+        writeFeedPage(configTopic, encodeJsonFeed(pointer), { dest: feedDest }),
+        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
       ]);
     } else {
       // Legacy platform-written path (client without a feed signer). Config
@@ -297,9 +334,9 @@ sitesRouter.post("/", requireAuth, async (c) => {
       };
       const { pages, ...siteShell } = siteToWrite;
       await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(siteShell)),
-        writeFeedPage(pagesTopic,  encodeJsonFeed({ pages })),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
+        writeFeedPage(configTopic, encodeJsonFeed(siteShell), { dest: feedDest }),
+        writeFeedPage(pagesTopic,  encodeJsonFeed({ pages }), { dest: feedDest }),
+        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
       ]);
     }
 
@@ -470,7 +507,9 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
     }
     index.updatedAt = Date.now();
 
-    await writeFeedPage(topic, encodeJsonFeed(index));
+    await writeFeedPage(topic, encodeJsonFeed(index), {
+      dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+    });
     return c.json({ ok: true, data: index });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to add event" }, 500);
@@ -503,7 +542,9 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
     index.events = index.events.filter((e) => e.eventId !== eventId);
     index.updatedAt = Date.now();
 
-    await writeFeedPage(topic, encodeJsonFeed(index));
+    await writeFeedPage(topic, encodeJsonFeed(index), {
+      dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+    });
     return c.json({ ok: true, data: index });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to remove event" }, 500);

@@ -144,3 +144,23 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
 
   throw new BatchPurchaseRequired();
 }
+
+/**
+ * Routing for USER CONTENT the server stamps on the user's behalf regardless of
+ * any client gateway signal (avatar image bytes, legacy event-detail restamps):
+ * the owner's live Etherna batch when they have one, else the shared Etherna
+ * platform batch. Never gated — these kinds are free by policy (see
+ * docs/PLATFORM_SIGNER_AUDIT.md § batch routing). Falls back to the WoCo batch
+ * when Etherna is off/unconfigured so the write path never depends on it.
+ */
+export function batchForUserContent(ownerAddress: string): BatchSelection {
+  if (process.env.ETHERNA_ENABLED === "true") {
+    try {
+      return batchForDeploy({ ownerAddress, gatewayUrl: ETHERNA_URL, deployType: "event" });
+    } catch (err) {
+      console.warn("[batch-router] user-content routing unavailable — WoCo fallback:", (err as Error).message);
+    }
+  }
+  if (!POSTAGE_BATCH_ID) throw new Error("No batch available for user content (Etherna off, POSTAGE_BATCH_ID unset)");
+  return { batchId: POSTAGE_BATCH_ID, target: "wocoBee" };
+}

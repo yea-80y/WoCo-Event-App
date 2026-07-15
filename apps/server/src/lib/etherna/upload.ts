@@ -11,7 +11,7 @@
 
 import { Bee, type Topic, type PrivateKey, FeedIndex } from "@ethersphere/bee-js";
 import { Binary } from "cafe-utility";
-import { calculateSocAddress } from "@woco/shared";
+import { calculateSocAddress, calculateCacAddress, encodeSpan } from "@woco/shared";
 import { ensureEthernaToken, getCachedEthernaToken } from "./auth.js";
 
 const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
@@ -167,6 +167,67 @@ export async function prepareEthernaFeedUpdate(opts: {
   const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
 
   return { feedManifestHash, nextIndex, chunkBytes };
+}
+
+/**
+ * Write ONE sequence-feed update with an arbitrary INLINE payload (a 4096-byte
+ * feed page) at an EXPLICIT index, stamped on an Etherna batch. This is the
+ * Etherna twin of `feeds.ts`'s bee-js `uploadPayload({ index })` write — same
+ * SOC layout (identifier = keccak(topic || index_be8), body = span || payload),
+ * different node + batch. The caller owns index resolution (feeds.ts's per-topic
+ * cache); an explicit index is REQUIRED here — bee-js's silent fall-back-to-0 on
+ * lookup errors is a known feed corrupter.
+ *
+ * Throws Error with a `status` field on non-2xx so the caller's transient-error
+ * classifier (429/423/5xx) can retry.
+ */
+export async function writeEthernaFeedPage(opts: {
+  topic: Topic;
+  index: bigint;
+  payload: Uint8Array;   // ≤4096 bytes
+  batchId: string;
+  signer: PrivateKey;
+  ownerHex: string;      // 40-char hex, no 0x, lowercase
+}): Promise<void> {
+  await ensureEthernaToken();
+  const token = getCachedEthernaToken();
+  if (!token) throw new Error("Etherna token unavailable");
+
+  const socId = Binary.keccak256(
+    Binary.concatBytes(opts.topic.toUint8Array(), FeedIndex.fromBigInt(opts.index).toUint8Array()),
+  );
+  const span = encodeSpan(opts.payload.length);
+  const cacAddress = calculateCacAddress(span, opts.payload);
+  const sig = opts.signer.sign(Binary.concatBytes(socId, cacAddress)) as unknown as { toUint8Array(): Uint8Array };
+
+  const socIdHex = Binary.uint8ArrayToHex(socId);
+  const sigHex = Binary.uint8ArrayToHex(sig.toUint8Array());
+  const postRes = await fetch(`${ETHERNA_GW}/soc/${opts.ownerHex}/${socIdHex}?sig=${sigHex}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Swarm-Postage-Batch-Id": opts.batchId,
+      Authorization: `Bearer ${token}`,
+    },
+    // @ts-ignore — Node 18 fetch duplex
+    duplex: "half",
+    body: Buffer.from(Binary.concatBytes(span, opts.payload)),
+  });
+  if (!postRes.ok) {
+    const text = await postRes.text().catch(() => "");
+    const err = new Error(`Etherna feed-page write ${postRes.status}: ${text.slice(0, 200)}`) as Error & { status?: number };
+    err.status = postRes.status;
+    throw err;
+  }
+
+  // Offer the SOC so Etherna's own gateway serves it anonymously. Our reads come
+  // from our bee (the chunk propagates to the public net), so this is fire-and-
+  // forget availability polish, never load-bearing.
+  const socAddr = Binary.uint8ArrayToHex(
+    calculateSocAddress(socId, Binary.hexToUint8Array(opts.ownerHex)),
+  );
+  void registerEthernaOffer(socAddr).catch((e) =>
+    console.warn("[etherna] feed-page offer failed (non-fatal):", e));
 }
 
 export async function writeEthernaFeedUpdate(opts: {

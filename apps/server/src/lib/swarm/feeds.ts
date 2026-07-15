@@ -2,6 +2,8 @@ import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import zlib from "node:zlib";
 import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
+import type { BatchSelection } from "../etherna/batch-router.js";
+import { writeEthernaFeedPage } from "../etherna/upload.js";
 
 // ---------------------------------------------------------------------------
 // Binary packing (128 slots x 32 bytes = 4096 bytes)
@@ -202,7 +204,9 @@ export async function readFeedPageWithRetry(
 function isTransientFeedError(err: unknown): boolean {
   const e = err as any;
   const status: number | undefined = e?.status ?? e?.response?.status;
-  if (status === 429) return true;
+  // 423 = Etherna/Bee per-bucket postage-stamp lock held by a concurrent write
+  // to the same batch — clears when the contending write releases (see bytes.ts).
+  if (status === 429 || status === 423) return true;
   if (status && status >= 500) return true;
   if (status === undefined) {
     const msg = String(e?.message ?? "").toLowerCase();
@@ -220,8 +224,18 @@ export interface WriteFeedPageOptions {
   fresh?: boolean;
   /** When true (default), Bee queues the upload in the background and returns
    *  immediately. Set to false for writes that must be readable on the next
-   *  request — e.g. profile updates where the client reads back straight away. */
+   *  request — e.g. profile updates where the client reads back straight away.
+   *  Ignored for an Etherna dest (that write path is synchronous HTTP). */
   deferred?: boolean;
+  /** Routes which batch PAYS for this page (docs/PLATFORM_SIGNER_AUDIT.md
+   *  § batch routing). `target:"etherna"` writes the update SOC via the Etherna
+   *  gateway with `dest.batchId`; absent/wocoBee ⇒ local bee + platform batch,
+   *  unchanged. Signing (always the platform key) and READS (always our own
+   *  bee — stamped chunks propagate to the public net) are unaffected. Only for
+   *  COLD single-page feeds: never purchase-path feeds (claims, collections,
+   *  directory) and never paged feeds (pages 0..N-1 would keep the old batch
+   *  and die with it — the audit's straddle landmine). */
+  dest?: BatchSelection;
 }
 
 export async function writeFeedPage(
@@ -258,9 +272,46 @@ async function doWriteFeedPage(
     // cache because we record the index post-upload.
   }
 
+  const etherna = options.dest?.target === "etherna";
+  // The Etherna path posts a raw SOC and cannot delegate index discovery to
+  // bee-js — resolve explicitly (our own bee resolves the feed regardless of
+  // which batch stamped it). A failed read ABORTS the write: guessing 0 would
+  // land on an existing immutable SOC and silently keep the old payload.
+  if (etherna && nextIndex === undefined) {
+    const prior = await readFeedPageStrict(topic); // primes feedNextIndex on ok
+    if (prior.status === "absent") nextIndex = 0n;
+    else if (prior.status === "ok") nextIndex = feedNextIndex.get(key);
+    else throw prior.error;
+    if (nextIndex === undefined) {
+      throw new Error(`feed ${key.slice(0, 16)}: cannot resolve next index for Etherna write`);
+    }
+  }
+
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
+      if (etherna) {
+        const release = await beeUploadSem.acquire();
+        try {
+          await withTimeout(
+            writeEthernaFeedPage({
+              topic,
+              index: nextIndex!,
+              payload: page,
+              batchId: options.dest!.batchId,
+              signer: getPlatformSigner(),
+              ownerHex: getPlatformOwner().toHex(),
+            }),
+            BEE_CALL_TIMEOUT_MS,
+            `etherna feed write ${key.slice(0, 16)}`,
+          );
+        } finally {
+          release();
+        }
+        feedNextIndex.set(key, nextIndex! + 1n);
+        return;
+      }
+
       const writer = getBee().makeFeedWriter(topic, getPlatformSigner());
       const uploadOpts: { index?: FeedIndex; deferred?: boolean } = {
         // `swarm-deferred-upload: true` — Bee buffers locally and pushes to
@@ -297,7 +348,9 @@ async function doWriteFeedPage(
       }
       // 404 from the feed chunk lookup (rare) — drop the cache and retry at
       // index 0. Stops a stale cached index from permanently breaking writes.
-      if (status === 404 && attempt === 0) {
+      // WoCo path only: an Etherna 404 is a gateway/batch error, and blindly
+      // rewriting at index 0 would dedupe against the existing SOC (lost write).
+      if (!etherna && status === 404 && attempt === 0) {
         console.warn(`[swarm] Feed chunk missing (404), resetting feed at index 0...`);
         feedNextIndex.delete(key);
         nextIndex = 0n;
