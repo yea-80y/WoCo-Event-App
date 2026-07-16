@@ -6,6 +6,31 @@ import type { SignedManifestV1, PodV2Body, PodGate, PodGateGroup } from "../pod/
 export type ClaimMode = "wallet" | "email" | "both";
 
 // ---------------------------------------------------------------------------
+// Discovery facet tags
+// ---------------------------------------------------------------------------
+
+/**
+ * Facet a discovery tag belongs to. `location` + `genre` are the controlled-
+ * vocabulary facets surfaced at launch (see event/tags.ts for the vocab and the
+ * build-time normaliser); `artist` + `brand` are reserved for a later UI addition
+ * on the SAME mechanism (no schema migration). `other` is the free-text escape
+ * hatch — an uncontrolled value the normaliser keeps rather than dropping.
+ */
+export type EventTagType = "location" | "genre" | "artist" | "brand" | "other";
+
+/**
+ * A single discovery tag. Lives in the CREATOR-SIGNED event content (EventFeed) —
+ * the truth layer — and is copied + normalised into each directory snapshot card
+ * at build time. Never invented at snapshot-build time (that would be
+ * platform-editable and unrebuildable, breaking the cache-not-truth rule).
+ */
+export interface EventTag {
+  type: EventTagType;
+  /** Human-readable facet value, e.g. "London" / "Techno". Normalised at build. */
+  value: string;
+}
+
+// ---------------------------------------------------------------------------
 // Payment types
 // ---------------------------------------------------------------------------
 
@@ -182,6 +207,10 @@ export interface EventFeed {
   creatorPodKey: string;
   series: SeriesSummary[];
   createdAt: string;
+  /** Discovery facet tags (location/genre/…). Creator-signed content is the truth
+   *  home; the directory snapshot copies + normalises these into each card. Editable
+   *  post-publish via update-meta (re-signs the SOC — gas-free; not on-chain). */
+  tags?: EventTag[];
   /** Organizer's X25519 public key for order encryption (hex, no 0x prefix) */
   encryptionKey?: string;
   /** Order form fields — present when organizer collects customer info */
@@ -263,6 +292,8 @@ export interface CreateEventV2Request {
     startDate: string;
     endDate: string;
     location: string;
+    /** Discovery facet tags (location/genre/…) — stamped into the signed EventFeed. */
+    tags?: EventTag[];
   };
   series: Array<{
     seriesId: string;
@@ -354,6 +385,9 @@ export interface UpdateEventMetaRequest {
   location?: string;
   /** Replacement image as base64 / data-URL; the server uploads + whitelists it. */
   image?: string;
+  /** Replacement discovery tags. Present (even empty) ⇒ overwrite the event's tags;
+   *  absent ⇒ leave unchanged. Re-signs the SOC (gas-free) + triggers a snapshot rebuild. */
+  tags?: EventTag[];
   /** The event's storage gateway — routes the replacement-image stamp to the same
    *  batch the event content lives on (Etherna user batch vs WoCo). */
   gatewayUrl?: string;

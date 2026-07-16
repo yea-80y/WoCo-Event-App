@@ -97,6 +97,24 @@ export function lookupOnChainEventId(eventId: string, seriesId: string): string 
   return byEventSeries.get(key(eventId, seriesId)) ?? null;
 }
 
+/**
+ * Every known registration as a chain→content resolution entry (inverts the
+ * persisted `${eventId}|${seriesId}` → onChainEventId map). The directory-snapshot
+ * full-rebuild uses this: the platform sponsor registers ALL events, so this map is
+ * a complete enumerator of onChainEventId → {wocoEventId, seriesId}. `creatorFeedSigner`
+ * is filled by the builder from the resolved feed (this cache doesn't carry it).
+ */
+export function getAllResolutionEntries(): Array<{ onChainEventId: string; wocoEventId: string; seriesId: string }> {
+  ensureLoaded();
+  const out: Array<{ onChainEventId: string; wocoEventId: string; seriesId: string }> = [];
+  for (const [k, onChainEventId] of byEventSeries) {
+    const sep = k.indexOf("|");
+    if (sep === -1) continue;
+    out.push({ onChainEventId, wocoEventId: k.slice(0, sep), seriesId: k.slice(sep + 1) });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Pending-registration markers
 // ---------------------------------------------------------------------------

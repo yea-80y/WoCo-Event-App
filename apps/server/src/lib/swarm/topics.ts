@@ -19,6 +19,13 @@ export const topicEvent = (eventId: string) =>
   Topic.fromString(`${EVENT_NS}/${eventId}`);
 
 /**
+ * Platform-signed pointer feed → the current immutable directory-snapshot blob
+ * (#37). Single O(1) page; the ONLY centralised piece of the chain-log directory.
+ */
+export const topicEventsSnapshot = () =>
+  Topic.fromString(`${EVENT_NS}/directory/snapshot`);
+
+/**
  * Editions feed topic. Page 0 is the base topic, additional pages
  * are suffixed with /p{pageIndex} to support >127 tickets per series.
  */

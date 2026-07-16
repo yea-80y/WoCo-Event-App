@@ -14,6 +14,8 @@ import { heldFor } from "./reservation-store.js";
 import { validatePodGate } from "../pod/gate-check.js";
 import { upsertCreatorPod } from "../pod/directory.js";
 import { recordOnChainEventId, applyOnChainEventIds } from "./onchain-registry.js";
+import { setListed, setTombstoned } from "./listing-state.js";
+import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";
 import {
   readFeedPage,
   readFeedPageStrict,
@@ -23,7 +25,6 @@ import {
   decodeJsonFeed,
 } from "../swarm/feeds.js";
 import {
-  topicEventDirectory,
   topicCreatorDirectory,
   topicEvent,
   topicPendingClaims,
@@ -70,6 +71,8 @@ export async function createEventV2(opts: {
   startDate: string;
   endDate: string;
   location: string;
+  /** Discovery facet tags — stamped into the signed EventFeed (creator-signed truth). */
+  tags?: import("@woco/shared").EventTag[];
   creatorAddress: Hex0x;
   creatorPodKey: string;
   imageData: Uint8Array;
@@ -103,7 +106,7 @@ export async function createEventV2(opts: {
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
-    eventId, title, tagline, description, startDate, endDate, location,
+    eventId, title, tagline, description, startDate, endDate, location, tags,
     creatorAddress, creatorPodKey, imageData, series,
     encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
@@ -216,6 +219,7 @@ export async function createEventV2(opts: {
     startDate,
     endDate,
     location,
+    ...(tags?.length ? { tags } : {}),
     creatorAddress,
     creatorPodKey,
     series: seriesSummaries,
@@ -248,15 +252,21 @@ export async function createEventV2(opts: {
   // (Phase B events have no platform feed to fall back to). See primeEventCache.
   primeEventCache(eventId, eventFeed);
 
-  // ── Update directories (fire-and-forget) ─────────────────────────────
-  // creatorFeedSigner is the discovery carrier — stamped into BOTH the global and
-  // creator directory entries (platform-signed) so a reader resolves the event SOC
-  // with no global registry.
+  // ── Directory (#37) ───────────────────────────────────────────────────
+  // Global directory membership is now a small listing overlay, not an O(n) Swarm
+  // rewrite: record listed/unlisted (skipAutoList ⇒ site-builder-only ⇒ not listed)
+  // + a card seed (the builder's federated/transient-miss fallback). The public
+  // snapshot is (re)built on register-success — so an unregistered event never
+  // surfaces — hence no rebuild scheduled here.
   const totalTickets = series.reduce((n, s) => n + s.totalSupply, 0);
+  setListed(eventId, !skipAutoList, cardFromFeed(eventFeed));
+
+  // Per-creator index (organiser dashboard view) — retained on Swarm: O(few) per
+  // creator, keeps unlisted events, and is the trusted carrier for owner reads. The
+  // ONLY directory Swarm-write on publish. creatorFeedSigner rides as discovery carrier.
   addToEventDirectory(
     { eventId, title, ...(tagline ? { tagline } : {}), imageHash, startDate, endDate, location, creatorAddress, seriesCount: series.length, totalTickets, createdAt, ...(creatorFeedSigner ? { creatorFeedSigner } : {}) },
-    { skipPublicDirectory: !!skipAutoList },
-  ).catch((err) => console.error("[event] Directory update failed (non-critical):", err));
+  ).catch((err) => console.error("[event] Creator index update failed (non-critical):", err));
 
   emit("finalize", 1, 1, "Event published!");
   console.log(`[event] v2 event created — ${eventId} (${series.length} series, ${totalPods} pods, ${Date.now() - tStart}ms)`);
@@ -306,6 +316,19 @@ export async function confirmSeriesOnChain(
   // purchase's reserve/claim immediately after registration reads the v2 event from
   // cache instead of racing the still-propagating directory carrier (Problem 2).
   primeEventCache(eventId, updated);
+
+  // #37: register-success is the directory-snapshot trigger. The on-chain
+  // `Registered` log is the enumerator, but its `manifestRef` is a digest (not a
+  // Swarm address), so we hand the builder the onChainEventId→content resolution
+  // entry it can't derive from chain. Debounced, so a multi-series publish coalesces
+  // into one rebuild; durability is covered by onchain-registry's persisted map
+  // (the periodic full reconcile rebuilds from it if this in-memory trigger is lost).
+  scheduleSnapshotRebuild(eventId, [{
+    onChainEventId,
+    wocoEventId: eventId,
+    seriesId,
+    ...(updated.creatorFeedSigner ? { creatorFeedSigner: updated.creatorFeedSigner } : {}),
+  }]);
 
   // Surface this series as a `ticket` POD type in the creator's POD directory
   // (powers the #/creator/pods manager + <PodPicker>). Fire-and-forget: the
@@ -376,6 +399,8 @@ export interface EventMetaUpdates {
   location?: string;
   /** Swarm ref of an already-uploaded replacement image. */
   imageHash?: string;
+  /** Replacement discovery tags — present (even empty) ⇒ overwrite; absent ⇒ leave. */
+  tags?: import("@woco/shared").EventTag[];
 }
 
 /**
@@ -470,6 +495,10 @@ export async function updateEventMetadata(opts: {
   if (updates.endDate !== undefined) updated.endDate = updates.endDate;
   if (updates.location !== undefined) updated.location = updates.location;
   if (updates.imageHash !== undefined) updated.imageHash = updates.imageHash as EventFeed["imageHash"];
+  if (updates.tags !== undefined) {
+    if (updates.tags.length) updated.tags = updates.tags;
+    else delete updated.tags;
+  }
 
   // Validate the MERGED dates — a single-field update must not invert the range.
   const start = new Date(updated.startDate).getTime();
@@ -494,21 +523,26 @@ export async function updateEventMetadata(opts: {
     invalidateContentFeedVersion(feed.creatorFeedSigner, eventContentTopic(eventId));
   }
 
-  // Mirror the edit into the directory entries OFF the request path. This does a
-  // strict-read + full rewrite of BOTH directories (global ~100s of events +
-  // creator index) — seconds of work that used to block the "Saving…" spinner. The
-  // detail feed the client re-signs is the source of truth; directories are
-  // discovery and every patch is already non-fatal, so fire-and-forget is safe.
+  // Mirror the edit into the per-creator index OFF the request path (the detail
+  // feed the client re-signs is the source of truth; the index is discovery, and
+  // the patch is non-fatal, so fire-and-forget is safe).
   void updateDirectoryEntriesMeta(updated, addr).catch((err) =>
     console.error("[event] directory meta mirror failed (non-critical):", err));
+  // #37: the GLOBAL directory card is refreshed by rebuilding the snapshot — the
+  // builder re-resolves this event's content into a fresh card (picking up the edit,
+  // incl. tags), which also normalises + re-copies the tag facets.
+  scheduleSnapshotRebuild(updated.eventId);
   return updated;
 }
 
 /**
- * Mirror edited metadata into the platform-signed directory entries (global +
- * creator index). Non-fatal: the feed is the source of truth for the detail
- * page; directories are discovery. Each entry is patched ONLY if its own
- * platform-written `creatorAddress` matches the verified caller.
+ * Mirror edited metadata into the per-creator index (organiser view). Non-fatal:
+ * the feed is the source of truth for the detail page; the index is discovery. The
+ * entry is patched ONLY if its own platform-written `creatorAddress` matches the
+ * verified caller.
+ *
+ * #37: the GLOBAL directory is no longer patched here — its cards are rebuilt from
+ * content by the snapshot builder (see the scheduleSnapshotRebuild call in the caller).
  */
 async function updateDirectoryEntriesMeta(updated: EventFeed, parentAddress: string): Promise<void> {
   const patch: Partial<EventDirectoryEntry> = {
@@ -519,14 +553,6 @@ async function updateDirectoryEntriesMeta(updated: EventFeed, parentAddress: str
     endDate: updated.endDate,
     location: updated.location,
   };
-
-  try {
-    if (await patchDirectoryEntryMeta(topicEventDirectory, updated.eventId, parentAddress, patch)) {
-      _dirCache = null;
-    }
-  } catch (err) {
-    console.error("[event] global directory meta patch failed (non-critical):", err);
-  }
 
   try {
     const creatorTopic = (p: number) => topicCreatorDirectory(updated.creatorAddress, p);
@@ -632,8 +658,11 @@ export async function deleteEventIfNoOrders(opts: {
 
   // Directory removals FIRST (the publicly visible effect), tombstone last —
   // a failure part-way leaves the event unlisted but alive, and the delete is
-  // simply retried. Both removals are idempotent.
-  await removeEventFromDirectory(eventId);
+  // simply retried. All idempotent.
+  // #37: global removal = tombstone the listing overlay (terminal, never re-lists)
+  // + rebuild the snapshot so the card drops. The per-creator index is still a feed.
+  setTombstoned(eventId);
+  scheduleSnapshotRebuild(eventId);
   await removeEventFromCreatorDirectory(feed.creatorAddress, eventId, addr);
 
   const tombstoned: EventFeed = { ...feed, deleted: true, deletedAt: new Date().toISOString() };
@@ -895,83 +924,18 @@ interface EventDirectory {
   pages?: number;
 }
 
-/** Max JSON bytes per directory page (must fit in a single 4096-byte Bee chunk). */
+/** Max JSON bytes per directory page (must fit in a single 4096-byte Bee chunk).
+ *  Retained for the per-creator index writer (the global directory retired in #37). */
 const DIR_PAGE_LIMIT = 4096;
 
-// ---------------------------------------------------------------------------
-// In-memory directory cache
-// ---------------------------------------------------------------------------
-// Read-through cache with TTL. Avoids re-reading Swarm feeds on every
-// GET /api/events while still healing from out-of-band writes (dev server
-// writing via SSH tunnel, future client-side feed signers) within the TTL.
-// Same-process writes prime the cache directly so the author sees their
-// change immediately.
-
-const DIR_CACHE_TTL_MS = 60_000;
-
-let _dirCache: { at: number; data: EventDirectoryEntry[] } | null = null;
-let _dirInFlight: Promise<EventDirectoryEntry[]> | null = null;
-
-/** Read directory from Swarm (used on first call and cache miss). */
-async function readDirectoryFromSwarm(): Promise<EventDirectoryEntry[]> {
-  const page0 = await readFeedPage(topicEventDirectory());
-  if (!page0) return [];
-  const dir = decodeJsonFeed<EventDirectory>(page0);
-  if (!dir) return [];
-
-  const all = [...dir.entries];
-
-  // Each page is an independent feed lookup (seconds each on a busy bee) —
-  // fetch them concurrently; entry order is preserved by index.
-  const totalPages = dir.pages ?? 0;
-  if (totalPages > 0) {
-    const pages = await Promise.all(
-      Array.from({ length: totalPages }, (_, i) => readFeedPage(topicEventDirectory(i + 1))),
-    );
-    for (const pageData of pages) {
-      if (!pageData) break;
-      const overflow = decodeJsonFeed<EventDirectory>(pageData);
-      if (overflow?.entries) all.push(...overflow.entries);
-    }
-  }
-
-  return all;
-}
-
-function refreshDirectoryCache(): Promise<EventDirectoryEntry[]> {
-  if (_dirInFlight) return _dirInFlight;
-  _dirInFlight = (async () => {
-    try {
-      const data = await readDirectoryFromSwarm();
-      // Only persist non-empty results. readFeedPage() swallows transient
-      // Swarm errors into null (→ []); caching that would serve "no events"
-      // until the next write or restart. Empty result falls through to the
-      // last good cache if one exists.
-      if (data.length > 0) {
-        _dirCache = { at: Date.now(), data };
-        return data;
-      }
-      return _dirCache?.data ?? data;
-    } finally {
-      _dirInFlight = null;
-    }
-  })();
-  return _dirInFlight;
-}
-
 export async function listEvents(): Promise<EventDirectoryEntry[]> {
-  // Stale-while-revalidate: a cold directory read is a chain of bee feed
-  // lookups (40s+ observed under load) — never block a request on it when any
-  // previous snapshot exists. Serve the stale data and refresh behind the
-  // response; only a cache-empty cold start (fresh process) has to wait, and
-  // startup priming (index.ts) makes that window tiny.
-  if (_dirCache) {
-    if (Date.now() - _dirCache.at >= DIR_CACHE_TTL_MS) {
-      refreshDirectoryCache().catch(() => undefined);
-    }
-    return _dirCache.data;
-  }
-  return refreshDirectoryCache();
+  // #37: the global directory is now the immutable chain-log snapshot — a read is
+  // 1 pointer-feed read + 1 blob fetch (SWR-cached in getEventsSnapshot), regardless
+  // of event count. SnapshotCard is a superset of EventDirectoryEntry (it also carries
+  // `tags` for client-side discovery filtering), so the cards satisfy the return type
+  // directly. Empty before the first snapshot exists (fresh cutover) → empty directory.
+  const snap = await getEventsSnapshot();
+  return snap?.cards ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,29 +1068,19 @@ async function readDirectoryStrict(
   return all;
 }
 
+/**
+ * Add an event to its creator's per-creator index (organiser dashboard view).
+ *
+ * #37: the GLOBAL public directory is no longer written here — membership moved to
+ * the listing overlay + chain-log snapshot (see listing-state.ts / directory-snapshot.ts).
+ * This function now maintains ONLY the per-creator Swarm index, which stays a feed
+ * (O(few) per creator, retains unlisted events, trusted carrier for owner reads).
+ */
 async function addToEventDirectory(
   entry: EventDirectoryEntry,
-  opts: { skipPublicDirectory?: boolean } = {},
 ): Promise<void> {
-  // Write to global public directory (skipped for site-builder events until explicitly listed).
-  if (!opts.skipPublicDirectory) {
-    // Always strict-read at write time. The read-cache may be up to
-    // DIR_CACHE_TTL_MS stale, and with dev-tunnel writes (and future
-    // client-side feed signers) another writer may have appended entries
-    // we don't know about — trusting a stale local view would clobber them.
-    const allEntries = await readDirectoryStrict(topicEventDirectory);
-
-    if (!allEntries.some((e) => e.eventId === entry.eventId)) {
-      const updated = [entry, ...allEntries];
-      _dirCache = { at: Date.now(), data: updated };
-      const updatedAt = new Date().toISOString();
-      await writeDirectoryPages(updated, updatedAt, topicEventDirectory);
-      console.log(`[event] Directory updated: ${updated.length} events`);
-    }
-  }
-
   // Per-creator index (never removed from — listing status doesn't affect
-  // organiser view). Same strict-read protection.
+  // organiser view). Strict-read protection against clobbering concurrent writes.
   const creatorEntries = await readDirectoryStrict(
     (p) => topicCreatorDirectory(entry.creatorAddress, p),
   );
@@ -1210,15 +1164,3 @@ export async function getCreatorEvents(
   }
 }
 
-export async function removeEventFromDirectory(eventId: string): Promise<void> {
-  // Strict-read at write time — see addToEventDirectory for rationale.
-  const allEntries = await readDirectoryStrict(topicEventDirectory);
-  const before = allEntries.length;
-  const filtered = allEntries.filter((e) => e.eventId !== eventId);
-  if (filtered.length === before) return; // not in directory
-
-  _dirCache = { at: Date.now(), data: filtered };
-  const updatedAt = new Date().toISOString();
-  await writeDirectoryPages(filtered, updatedAt, topicEventDirectory);
-  console.log(`[event] Directory updated (removed ${eventId}): ${filtered.length} events`);
-}
