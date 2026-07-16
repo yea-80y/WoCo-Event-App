@@ -159,7 +159,10 @@ export async function writeContentFeed(args: {
     }
     version = args.knownVersion;
   } else {
-    const read: SocChunkReader = (id) => readSoc(owner, id);
+    // thorough: the write-path probe MUST see chunks still settling on the
+    // public net (Etherna-stamped writes) — a missed version here re-writes an
+    // existing immutable SOC and silently loses the edit (see readSoc).
+    const read: SocChunkReader = (id) => readSoc(owner, id, { thorough: true });
     const hint = args.versionHint ?? readVersionHint(owner, args.topic);
     const latest = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
     version = (latest ?? LEGACY_CONTENT_FEED_VERSION) + 1;

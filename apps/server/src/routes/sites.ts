@@ -22,10 +22,15 @@ import {
   BEE_URL,
   POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
-import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired, type BatchSelection } from "../lib/etherna/batch-router.js";
+import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
+import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js";
+
+/** Per-owner byte cap for free-hosted (shared platform batch) website deploys.
+ *  Quota counts each site's LATEST deploy only (republish supersedes — see
+ *  storage-ledger.ts), so 100MB ≈ 10 live sites at the ~8-10MB tar size. */
+const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 100 * 1024 * 1024;
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
-import { ensureEthernaToken, getCachedEthernaToken } from "../lib/etherna/auth.js";
-import { getUserBatch } from "../lib/etherna/batches.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
@@ -43,11 +48,6 @@ import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../
 const sitesRouter = new Hono();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
-
-function isEthernaUrl(url: string): boolean {
-  try { return new URL(url).host.endsWith(new URL(ETHERNA_GW).host); } catch { return false; }
-}
 const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multisite");
 
 // ---------------------------------------------------------------------------
@@ -116,6 +116,39 @@ async function stampEventSigners(
   );
 }
 
+/**
+ * Batch routing for a site's PLATFORM-WRITTEN feed pages (pointer, legacy
+ * config/pages, events index). They follow the site's home gateway so the
+ * feeds live and die with the site content they anchor (#48) — a WoCo-stamped
+ * pointer to an Etherna-hosted site would expire independently of it.
+ * deployType "event" = the UNGATED cold-write rules (user batch if live, else
+ * the shared Etherna platform batch): a 4KB feed page must never trip the
+ * purchase or verification gate. Any failure falls back to the WoCo batch —
+ * feed routing is an optimisation of postage lifetime, never publish-blocking.
+ */
+function siteFeedDest(ownerAddress: string, gatewayUrl: string | undefined): BatchSelection | undefined {
+  if (!gatewayUrl) return undefined;
+  try {
+    const sel = batchForDeploy({ ownerAddress, gatewayUrl, deployType: "event" });
+    return sel.target === "etherna" ? sel : undefined;
+  } catch (e) {
+    console.warn("[sites] feed batch routing failed — WoCo batch fallback:", (e as Error).message);
+    return undefined;
+  }
+}
+
+/** Resolve the site's home gateway from the owner's directory entry (the
+ *  deployedUrl carries the gateway host) — for endpoints that rewrite site
+ *  feeds without a client gateway signal (add/remove event). */
+async function siteFeedDestFromDirectory(ownerAddress: string, siteId: string): Promise<BatchSelection | undefined> {
+  try {
+    const sites = await getCreatorSites(ownerAddress);
+    return siteFeedDest(ownerAddress, sites.find((s) => s.siteId === siteId)?.deployedUrl);
+  } catch {
+    return undefined;
+  }
+}
+
 function spawnPromise(cmd: string, args: string[]): Promise<void> {
   return new Promise((res, rej) => {
     const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -170,34 +203,48 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Image too large (max 4MB)" }, 400);
     }
 
-    if (isEthernaUrl(body.gatewayUrl ?? "")) {
-      const userBatch = getUserBatch(parentAddress);
-      if (!userBatch) {
-        return c.json({ ok: false, error: "No Etherna batch — purchase one first (click Publish)", code: "BATCH_PURCHASE_REQUIRED" }, 402);
-      }
-      await ensureEthernaToken();
-      const token = getCachedEthernaToken();
-      const resp = await fetch(`${ETHERNA_GW}/bytes`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "Swarm-Postage-Batch-Id": userBatch.batchId,
-          Authorization: `Bearer ${token}`,
-        },
-        // @ts-ignore — Node 18 fetch duplex
-        duplex: "half",
-        body: bytes,
+    // Same routing + gates as the site deploy itself: user batch when live,
+    // free-hosting platform-batch fallback (Stripe-verified, quota-metered)
+    // otherwise. Site images are site bytes — letting them bypass the quota
+    // would leave the deploy gate meterable around.
+    let selection;
+    try {
+      selection = batchForDeploy({
+        ownerAddress: parentAddress,
+        gatewayUrl: body.gatewayUrl ?? "",
+        deployType: "website",
+        freeHostingEligible: await isVerifiedOrganiser(parentAddress),
       });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        throw new Error(`Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
+    } catch (err) {
+      if (err instanceof BatchPurchaseRequired) {
+        return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
       }
-      const { reference } = await resp.json() as { reference: string };
-      await registerEthernaOffer(reference);
-      return c.json({ ok: true, data: { imageRef: reference } });
+      if (err instanceof StripeVerificationRequired) {
+        return c.json({ ok: false, error: err.message, code: "STRIPE_VERIFICATION_REQUIRED" }, 403);
+      }
+      throw err;
     }
 
-    const imageRef = await uploadToBytes(bytes);
+    if (selection.freeHosted) {
+      const used = getFreeHostedBytes(parentAddress);
+      if (used + bytes.length > FREE_HOSTING_QUOTA_BYTES) {
+        return c.json({
+          ok: false,
+          error: "Free hosting quota exceeded — purchase your own storage batch to continue.",
+          code: "FREE_HOSTING_QUOTA_EXCEEDED",
+        }, 413);
+      }
+    }
+
+    const imageRef = await uploadToBytes(bytes, selection);
+    recordUpload(parentAddress, {
+      ref: imageRef,
+      bytes: bytes.length,
+      kind: "site-image",
+      batchId: selection.batchId,
+      target: selection.target,
+      ...(selection.freeHosted ? { freeHosted: true } : {}),
+    });
     return c.json({ ok: true, data: { imageRef } });
   } catch (err) {
     console.error("[sites/upload-image]", err);
@@ -214,12 +261,16 @@ sitesRouter.post("/", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
 
   try {
-    const body = await c.req.json() as { site?: Site; events?: SiteEventEntry[]; siteFeedSigner?: string };
+    const body = await c.req.json() as { site?: Site; events?: SiteEventEntry[]; siteFeedSigner?: string; gatewayUrl?: string };
     if (!body?.site?.siteId) {
       return c.json({ ok: false, error: "Invalid site data" }, 400);
     }
+    if (body.gatewayUrl !== undefined && typeof body.gatewayUrl !== "string") {
+      return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
+    }
 
     const { site, events = [] } = body;
+    const feedDest = siteFeedDest(parentAddress, body.gatewayUrl);
 
     // Client-owned publish: the full Site already lives in the owner's SOC at
     // siteConfigTopic(siteId) (the client signs + uploads it BEFORE this call);
@@ -269,8 +320,8 @@ sitesRouter.post("/", requireAuth, async (c) => {
         updatedAt: now,
       };
       await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(pointer)),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
+        writeFeedPage(configTopic, encodeJsonFeed(pointer), { dest: feedDest }),
+        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
       ]);
     } else {
       // Legacy platform-written path (client without a feed signer). Config
@@ -283,9 +334,9 @@ sitesRouter.post("/", requireAuth, async (c) => {
       };
       const { pages, ...siteShell } = siteToWrite;
       await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(siteShell)),
-        writeFeedPage(pagesTopic,  encodeJsonFeed({ pages })),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex)),
+        writeFeedPage(configTopic, encodeJsonFeed(siteShell), { dest: feedDest }),
+        writeFeedPage(pagesTopic,  encodeJsonFeed({ pages }), { dest: feedDest }),
+        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
       ]);
     }
 
@@ -456,7 +507,9 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
     }
     index.updatedAt = Date.now();
 
-    await writeFeedPage(topic, encodeJsonFeed(index));
+    await writeFeedPage(topic, encodeJsonFeed(index), {
+      dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+    });
     return c.json({ ok: true, data: index });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to add event" }, 500);
@@ -489,7 +542,9 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
     index.events = index.events.filter((e) => e.eventId !== eventId);
     index.updatedAt = Date.now();
 
-    await writeFeedPage(topic, encodeJsonFeed(index));
+    await writeFeedPage(topic, encodeJsonFeed(index), {
+      dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+    });
     return c.json({ ok: true, data: index });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to remove event" }, 500);
@@ -599,10 +654,14 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         ownerAddress: parentAddress,
         gatewayUrl,
         deployType: "website",
+        freeHostingEligible: await isVerifiedOrganiser(parentAddress),
       });
     } catch (err) {
       if (err instanceof BatchPurchaseRequired) {
         return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
+      }
+      if (err instanceof StripeVerificationRequired) {
+        return c.json({ ok: false, error: err.message, code: "STRIPE_VERIFICATION_REQUIRED" }, 403);
       }
       throw err;
     }
@@ -680,6 +739,21 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
     const tarData = await fs.readFile(tarPath);
 
+    // Free-hosted deploys share the platform batch, so cap what each owner can
+    // put on it. Checked against the storage ledger BEFORE spending postage.
+    // This site's own current deploy is excluded — the new tar supersedes it.
+    if (selection.freeHosted) {
+      const used = getFreeHostedBytes(parentAddress, { excludeSite: siteId });
+      if (used + tarData.length > FREE_HOSTING_QUOTA_BYTES) {
+        const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
+        return c.json({
+          ok: false,
+          error: `Free hosting quota exceeded: ${mb(used)}MB used + ${mb(tarData.length)}MB deploy > ${mb(FREE_HOSTING_QUOTA_BYTES)}MB limit. Purchase your own storage batch to continue.`,
+          code: "FREE_HOSTING_QUOTA_EXCEEDED",
+        }, 413);
+      }
+    }
+
     let contentHash: string;
     if (target === "etherna") {
       contentHash = await uploadCollectionToEtherna({
@@ -711,6 +785,18 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
       ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
+
+    // Every deploy lands in the storage ledger regardless of batch: it is both
+    // the quota meter and the per-owner migration manifest (re-stamp walks it).
+    recordUpload(parentAddress, {
+      ref: contentHash,
+      bytes: tarData.length,
+      kind: "site-deploy",
+      batchId,
+      target,
+      note: siteId,
+      ...(selection.freeHosted ? { freeHosted: true } : {}),
+    });
 
     // Per-site feed so an ENS name / custom domain can point at it
     const topicString = multisiteFeedTopic(siteId);

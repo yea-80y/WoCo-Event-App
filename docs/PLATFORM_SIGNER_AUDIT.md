@@ -90,7 +90,21 @@ higher-effort #3. #3 is the one that actually removes the platform signer from t
 
 ---
 
-# Batch routing — which batch PAYS (added 2026-07-14)
+# Batch routing — which batch PAYS (added 2026-07-14; IMPLEMENTED 2026-07-15, #48)
+
+> **Status:** shipped on `feat/free-hosting-stripe-gate`. `writeFeedPage` takes an
+> optional `dest` (BatchSelection); routed per the split below. Site feeds follow the
+> site's home gateway (publish carries `gatewayUrl`, add/remove-event derives it from
+> the directory `deployedUrl`); the event mini-site feed and legacy event detail feed
+> follow the content's batch; avatar bytes + profile/avatar/site-config SOCs route via
+> `batchForUserContent` / the client's Etherna gateway signal. NOT routed by design:
+> claim ledger, collections, recovery, directory (purchase-path/paged), and the legacy
+> profile-data feed (read-back-after-write UX). NEW CAVEAT — sequence-feed index
+> continuity: bee's feed lookup walks indexes from 0, so if a feed's EARLY updates die
+> with an old batch the lookup can fail even though the latest update is alive (same
+> class as the paged-feed landmine below; our server-side index cache masks it until a
+> restart). Fine while test data is expendable; at production cutover start fresh
+> feeds or re-stamp old updates.
 
 **Orthogonal to signing.** A postage stamp is not part of the signed data: a SOC signature commits
 to `identifier + content address` only, never to the batch. Verified — an existing SOC was re-stamped

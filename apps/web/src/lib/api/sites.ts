@@ -16,16 +16,25 @@ export interface SiteEventsFull {
  * + the (still platform-signed) events index and directory carrier. Without a
  * signer (kinds that can't own feeds yet) the legacy platform-written path runs.
  */
-export async function publishSite(site: Site, events: SiteEventEntry[] = [], feedSigner?: ContentFeedSigner | null) {
+export async function publishSite(
+  site: Site,
+  events: SiteEventEntry[] = [],
+  feedSigner?: ContentFeedSigner | null,
+  /** The site's home gateway — routes the config SOC's stamp AND the server's
+   *  pointer/events-index feed writes onto the site's own batch (#48). */
+  gatewayUrl?: string,
+) {
+  const gw = gatewayUrl ? { gatewayUrl } : {};
   if (feedSigner) {
     await writeContentFeed({
       signerPrivKey: feedSigner.privKey,
       topic: siteConfigTopic(site.siteId),
       data: { ...site, updatedAt: Date.now() },
+      ...gw,
     });
-    return authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address });
+    return authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address, ...gw });
   }
-  return authPost<{ siteId: string }>("/api/sites", { site, events });
+  return authPost<{ siteId: string }>("/api/sites", { site, events, ...gw });
 }
 
 export async function uploadSiteImage(imageBase64: string, gatewayUrl?: string) {

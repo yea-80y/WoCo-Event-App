@@ -5,7 +5,7 @@ import type {
 } from "@woco/shared";
 import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x, eventContentTopic } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
-import { batchForDeploy } from "../etherna/batch-router.js";
+import { batchForDeploy, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId, getOnChainEvent } from "../chain/event-contract.js";
@@ -28,6 +28,27 @@ import {
   topicEvent,
   topicPendingClaims,
 } from "../swarm/topics.js";
+
+/**
+ * Batch routing for a LEGACY (platform-signed) event detail feed restamp —
+ * follows the event's self-described storage gateway (#48), so the feed lives
+ * and dies with the event content it describes. Cold path only; Phase B events
+ * (creatorFeedSigner set) never reach the platform write at all.
+ */
+function legacyEventFeedDest(feed: Pick<EventFeed, "creatorAddress" | "gatewayUrl">): BatchSelection | undefined {
+  if (!feed.gatewayUrl) return undefined;
+  try {
+    const sel = batchForDeploy({
+      ownerAddress: feed.creatorAddress.toLowerCase(),
+      gatewayUrl: feed.gatewayUrl,
+      deployType: "event",
+    });
+    return sel.target === "etherna" ? sel : undefined;
+  } catch (e) {
+    console.warn("[event] legacy feed batch routing failed — WoCo fallback:", (e as Error).message);
+    return undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Create event (v2 — manifest-based, on-chain)
@@ -214,7 +235,11 @@ export async function createEventV2(opts: {
   // /api/swarm/soc. Legacy (no signer): platform-signed write as before.
   if (!creatorFeedSigner) {
     emit("finalize", 0, 1, "Writing event feed...");
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed), { fresh: true });
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed), {
+      fresh: true,
+      // Same batch as the event content itself (#48).
+      dest: batchSelection.target === "etherna" ? batchSelection : undefined,
+    });
   } else {
     emit("finalize", 0, 1, "Preparing event feed for signing...");
   }
@@ -275,7 +300,7 @@ export async function confirmSeriesOnChain(
   // no key for it and must never write it. The client merges onChainEventId into the
   // feed it owns and re-signs the SOC (see PublishButton). Legacy events: platform write.
   if (!feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), { dest: legacyEventFeedDest(feed) });
   }
   // Re-seed (not just invalidate) with the onChainEventId-merged feed so the test
   // purchase's reserve/claim immediately after registration reads the v2 event from
@@ -328,7 +353,7 @@ export async function stampEventSubEns(
   // Phase B: client-owned feed — the client re-signs the SOC with the label (the
   // route returns `updated` for that). Legacy events: platform write here.
   if (!feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), { dest: legacyEventFeedDest(feed) });
   }
   invalidateEventCache(eventId);
   return updated;
@@ -457,7 +482,7 @@ export async function updateEventMetadata(opts: {
   // server has no key for the client-owned SOC; the route returns `updated` for
   // the client to re-sign (same contract as confirmSeriesOnChain).
   if (source === "platform" && !feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated));
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), { dest: legacyEventFeedDest(feed) });
   }
 
   // Invalidate — never prime. On the hint path a forged-but-self-consistent feed
@@ -615,7 +640,7 @@ export async function deleteEventIfNoOrders(opts: {
   // Same trust rule as update-meta: only a platform-sourced basis may be
   // platform-written. Phase B: the owner overwrites their SOC client-side.
   if (source === "platform" && !feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(tombstoned));
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(tombstoned), { dest: legacyEventFeedDest(feed) });
   }
   invalidateEventCache(eventId);
   if (feed.creatorFeedSigner) {

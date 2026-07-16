@@ -4,13 +4,13 @@ import {
   getBee,
   getPlatformSigner,
   getPlatformOwner,
-  POSTAGE_BATCH_ID,
   BEE_URL,
 } from "../config/swarm.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getCreatorEvents } from "../lib/event/service.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
-import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer } from "../lib/etherna/upload.js";
+import { recordUpload } from "../lib/swarm/storage-ledger.js";
+import { uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { promises as fs } from "node:fs";
@@ -100,7 +100,6 @@ site.post("/deploy", requireAuth, async (c) => {
     const { batchId, target } = selection;
     const signer = getPlatformSigner();
     const owner = getPlatformOwner();
-    const bee = target === "etherna" ? getEthernaBee() : getBee();
 
     // 1) Read site.html and inject runtime config before </head>
     const siteHtmlPath = join(DIST_SITE_PATH, "site.html");
@@ -177,33 +176,58 @@ site.post("/deploy", requireAuth, async (c) => {
       ({ reference: contentHash } = await uploadResp.json() as { reference: string });
     }
 
+    // Event pages are exempt from the free-hosting gate (publishing an event must
+    // never block on it) but their bytes still land in the ledger — it is the
+    // capacity meter and the per-owner migration manifest for ALL hosted content.
+    recordUpload(parentAddress, {
+      ref: contentHash,
+      bytes: tarData.length,
+      kind: "event-site-deploy",
+      batchId,
+      target,
+      note: eventId,
+    });
+
     // 5) Per-event feed topic so each event gets its own updatable ENS entry.
-    // The feed index always lives on the WoCo Bee — bee-js v11's onRequest
-    // auth injection is unreliable for SOC writes, and this is a WoCo platform
-    // feed regardless of where the content was uploaded.
+    // The feed follows the CONTENT's batch (#48): an Etherna-hosted page must
+    // not leave its pointer feed stamped on the WoCo batch — the two would
+    // expire independently and the pointer would outlive or predecease the
+    // content it points at. Same split as the multisite deploy (sites.ts).
     const topic = Topic.fromString(`woco-site-${eventId}`);
-    const platformBee = getBee();
-
-    // Create feed manifest (one-time; if it already exists the call still succeeds)
     let feedManifestHash = "";
-    try {
-      const mRef = await withTimeout(
-        platformBee.createFeedManifest(POSTAGE_BATCH_ID, topic, owner),
-        BEE_CALL_TIMEOUT_MS,
-        "site feed manifest",
-      );
-      feedManifestHash = mRef.toString();
-    } catch {
-      // Non-fatal — organiser can still use the direct content hash
-    }
 
-    // 6) Update feed → new content hash
-    const writer = platformBee.makeFeedWriter(topic, signer);
-    await withTimeout(
-      writer.upload(POSTAGE_BATCH_ID, new Reference(contentHash)),
-      BEE_CALL_TIMEOUT_MS,
-      "site feed write",
-    );
+    if (target === "etherna") {
+      feedManifestHash = await writeEthernaFeedUpdate({
+        topic,
+        contentHash,
+        batchId,
+        signer,
+        ownerHex: owner.toHex(),
+      });
+    } else {
+      const platformBee = getBee();
+      // Create feed manifest (one-time; if it already exists the call still succeeds)
+      try {
+        const mRef = await withTimeout(
+          platformBee.createFeedManifest(batchId, topic, owner),
+          BEE_CALL_TIMEOUT_MS,
+          "site feed manifest",
+        );
+        feedManifestHash = mRef.toString();
+      } catch {
+        // Non-fatal — organiser can still use the direct content hash
+      }
+
+      // 6) Update feed → new content hash. uploadReference, NOT upload():
+      // bee-js v11's upload() writes an entry createFeedManifest-style
+      // manifests cannot resolve (2026-04-18 deploy-script incident).
+      const writer = platformBee.makeFeedWriter(topic, signer);
+      await withTimeout(
+        writer.uploadReference(batchId, new Reference(contentHash)),
+        BEE_CALL_TIMEOUT_MS,
+        "site feed write",
+      );
+    }
 
     return c.json({ ok: true, data: { contentHash, feedManifestHash } });
 
