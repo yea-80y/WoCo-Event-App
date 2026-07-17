@@ -1576,7 +1576,7 @@
   .log-toggle-active,
   .log-toggle-active:hover {
     background: var(--accent);
-    color: #000;
+    color: var(--accent-ink);
   }
 
   .log-toggle-count {
