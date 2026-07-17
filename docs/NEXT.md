@@ -89,3 +89,14 @@ Two things must be true before crypto (or the agent rail) is promoted again:
 
 #43 shop config · #12 referral payout · #13 resale + Stripe recipient rail ·
 #28 ECIES golden vectors · #31 ZeroDev gas workaround · #8 browser-verify #1–#4
+
+**Event-page SEO from #37 discovery fields (Sonnet, frontend-only)** — `EventTag`
+(genre) and `EventGeo` (lat/lng/address/city/country) are already the right shape
+for real SEO/rich-results: today nothing emits them. `schema.org`/`ld+json` only
+exists server-side today as an *import* parser (reading other sites' Event markup
+to prefill a new WoCo event) — WoCo's own event pages and site-builder
+`FeaturedEventSection`/`EventsGridSection` emit no structured data. Scope: inject
+a `application/ld+json` `Event` block (name/dates/`location: {Place, address,
+geo}`/`keywords` from tags) + `<meta name="description">` on the event detail
+page, mirroring how `siteDescription` is already injected at multisite deploy
+time. Not started.

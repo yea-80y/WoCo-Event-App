@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { OrderField, ClaimMode, EventFeed } from "@woco/shared";
+  import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, FEATURES } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -31,6 +31,8 @@
     startDate: string;
     endDate: string;
     location: string;
+    geo?: EventGeo;
+    tags?: EventTag[];
     imageDataUrl: string | null;
     series: SeriesDraft[];
     orderFields?: OrderField[];
@@ -47,7 +49,7 @@
   }
 
   let {
-    title, tagline, description, startDate, endDate, location,
+    title, tagline, description, startDate, endDate, location, geo, tags,
     imageDataUrl, series, orderFields, claimMode,
     disabled = false, disabledReason,
     apiUrl, skipAutoList = false, label, gatewayUrl,
@@ -206,7 +208,11 @@
 
       const result = await createEventStreaming(
         {
-          event: { title, ...(tagline ? { tagline } : {}), description, startDate: startDateIso, endDate: endDateIso, location },
+          event: {
+            title, ...(tagline ? { tagline } : {}), description, startDate: startDateIso, endDate: endDateIso, location,
+            ...(geo ? { geo } : {}),
+            ...(tags?.length ? { tags } : {}),
+          },
           series: series.map((s, i) => ({
             seriesId: s.seriesId,
             name: s.name,

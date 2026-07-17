@@ -1,9 +1,11 @@
 <script lang="ts">
-  import type { EventFeed } from "@woco/shared";
+  import type { EventFeed, EventGeo, EventTag } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { updateEventMeta, deleteEvent } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import ImageUpload from "./ImageUpload.svelte";
+  import LocationPicker from "./LocationPicker.svelte";
+  import GenreTagPicker from "./GenreTagPicker.svelte";
   import { toLocalInput } from "./date.js";
 
   interface Props {
@@ -28,6 +30,8 @@
   let startDate = $state(toLocalInput(new Date(event.startDate)));
   let endDate = $state(toLocalInput(new Date(event.endDate)));
   let location = $state(event.location);
+  let geo = $state<EventGeo | undefined>(event.geo);
+  let tags = $state<EventTag[]>(event.tags ?? []);
   // Seeded with the CURRENT image (gateway URL) so the picker shows it; only a
   // data: URL (a fresh upload) is ever sent to the server.
   let imageDataUrl = $state<string | null>(
@@ -58,8 +62,21 @@
 
   const canSave = $derived(!saving && title.trim().length > 0 && !dateError);
 
+  function geoEqual(a: EventGeo | undefined, b: EventGeo | undefined): boolean {
+    const norm = (g: EventGeo | undefined) => JSON.stringify(g ?? {}, Object.keys(g ?? {}).sort());
+    return norm(a) === norm(b);
+  }
+
+  function tagsEqual(a: EventTag[], b: EventTag[]): boolean {
+    const norm = (arr: EventTag[]) => arr.map((t) => `${t.type}:${t.value}`).sort().join("|");
+    return norm(a) === norm(b);
+  }
+
   function buildUpdates() {
-    const updates: Record<string, string> = {};
+    const updates: Pick<
+      import("@woco/shared").UpdateEventMetaRequest,
+      "title" | "tagline" | "description" | "startDate" | "endDate" | "location" | "geo" | "tags"
+    > = {};
     if (title.trim() !== event.title) updates.title = title.trim();
     if (tagline.trim() !== (event.tagline ?? "")) updates.tagline = tagline.trim();
     if (description.trim() !== event.description) updates.description = description.trim();
@@ -68,6 +85,8 @@
     if (startIso !== new Date(event.startDate).toISOString()) updates.startDate = startIso;
     if (endIso !== new Date(event.endDate).toISOString()) updates.endDate = endIso;
     if (location.trim() !== event.location) updates.location = location.trim();
+    if (!geoEqual(geo, event.geo)) updates.geo = geo ?? {};
+    if (!tagsEqual(tags, event.tags ?? [])) updates.tags = tags;
     return updates;
   }
 
@@ -178,6 +197,9 @@
       <input type="text" bind:value={location} maxlength="300" />
     </label>
   </div>
+
+  <LocationPicker bind:geo bind:location />
+  <GenreTagPicker bind:tags />
 
   {#if dateError}
     <p class="field-error">{dateError}</p>
