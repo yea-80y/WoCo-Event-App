@@ -1,6 +1,7 @@
 import type {
   EventFeed,
   EventDirectoryEntry,
+  SnapshotCard,
   CreateEventV2Request,
   UpdateEventMetaRequest,
   CreateEventResponse,
@@ -172,7 +173,7 @@ export async function createEventStreaming(
  */
 export async function updateEventMeta(
   eventId: string,
-  updates: Pick<UpdateEventMetaRequest, "title" | "tagline" | "description" | "startDate" | "endDate" | "location">,
+  updates: Pick<UpdateEventMetaRequest, "title" | "tagline" | "description" | "startDate" | "endDate" | "location" | "tags" | "geo">,
   opts: { image?: string; gatewayUrl?: string; feedSigner?: ContentFeedSigner | null } = {},
 ): Promise<EventFeed | null> {
   const resp = await authPost<{ eventId: string; eventFeed?: EventFeed }>(
@@ -275,8 +276,23 @@ export async function confirmChainRegistration(
   return authPost(`/api/events/${eventId}/confirm-chain`, { seriesId, onChainEventId, chainId });
 }
 
-export async function listEvents(): Promise<EventDirectoryEntry[]> {
-  const resp = await get<EventDirectoryEntry[]>("/api/events");
+/**
+ * The global directory. Cards are SnapshotCard (a superset of EventDirectoryEntry —
+ * see service.ts `listEvents`), so this is typed as SnapshotCard[] to expose
+ * `tags`/`geo` for client-side discovery filtering (#37 facet filter).
+ */
+export async function listEvents(): Promise<SnapshotCard[]> {
+  const resp = await get<SnapshotCard[]>("/api/events");
+  return resp.data ?? [];
+}
+
+/**
+ * An organiser's full public event catalogue (incl. past events) — powers the
+ * events log on a profile page. Unauthenticated; reads the per-creator index
+ * (never trimmed by unlist), unlike the global directory scan it replaces.
+ */
+export async function getEventsByCreator(address: string): Promise<EventDirectoryEntry[]> {
+  const resp = await get<EventDirectoryEntry[]>(`/api/events/by-creator/${address.toLowerCase()}`);
   return resp.data ?? [];
 }
 

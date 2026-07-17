@@ -22,6 +22,9 @@
   import LikeButton from "../likes/LikeButton.svelte";
   import SpendingWallet from "../../attendee/shop/SpendingWallet.svelte";
   import EventCard from "../../attendee/events/EventCard.svelte";
+  import { getEventsByCreator } from "../../api/events.js";
+  import { isPastEvent } from "../../utils/events.js";
+  import { onMount, onDestroy } from "svelte";
 
   type ProfileTab = "profile" | "wallet" | "events" | "following";
 
@@ -59,6 +62,12 @@
   let events = $state<EventDirectoryEntry[]>([]);
   let eventsLoaded = $state(false);
   let eventsLoading = $state(false);
+  type EventsSubTab = "upcoming" | "past";
+  let eventsSubTab = $state<EventsSubTab>("upcoming");
+  // Reactive clock — drives the upcoming/past split without any server involvement
+  // (same pattern as Home.svelte's discovery tabs).
+  let eventsNow = $state(Date.now());
+  let eventsClockTimer: ReturnType<typeof setInterval>;
   let following = $state<LikeSubject[]>([]);
   let followingLoaded = $state(false);
   let followingLoading = $state(false);
@@ -307,14 +316,28 @@
         const resp = await authGet<EventDirectoryEntry[]>("/api/events/mine");
         if (resp.ok && resp.data) events = resp.data;
       } else {
-        // Public profile: scan global directory and filter
-        const { get } = await import("../../api/client.js");
-        const resp = await get<EventDirectoryEntry[]>("/api/events");
-        if (resp.ok && resp.data)
-          events = resp.data.filter(e => e.creatorAddress.toLowerCase() === viewAddress);
+        // Public profile: the organiser's full catalogue (incl. past events),
+        // straight from their per-creator index — no global directory scan.
+        events = await getEventsByCreator(viewAddress);
       }
     } catch { /* silent */ }
     finally { eventsLoading = false; eventsLoaded = true; }
+  }
+
+  // Client-side split — single source of truth, no extra network calls.
+  const upcomingEvents = $derived(
+    events.filter(e => !isPastEvent(e, eventsNow))
+      .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()),
+  );
+  const pastEvents = $derived(
+    events.filter(e => isPastEvent(e, eventsNow))
+      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime()),
+  );
+
+  function openEvent(event: EventDirectoryEntry) {
+    if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
+    setEventFeedSigner(event.eventId, event.creatorFeedSigner);
+    navigate(`/event/${event.eventId}`);
   }
 
   async function loadFollowing() {
@@ -349,6 +372,7 @@
     if (key === _prevView) return;
     _prevView = key;
     profile = null; events = []; eventsLoaded = false; eventsLoading = false;
+    eventsSubTab = "upcoming";
     following = []; followingLoaded = false; followingLoading = false;
     trending = []; avatarPreviewUrl = null; pendingAvatarDataUrl = null;
     if (!v) {
@@ -366,6 +390,11 @@
       loadEvents();
     }
   });
+
+  onMount(() => {
+    eventsClockTimer = setInterval(() => { eventsNow = Date.now(); }, 60_000);
+  });
+  onDestroy(() => clearInterval(eventsClockTimer));
 </script>
 
 <div class="profile-page">
@@ -492,6 +521,49 @@
       {/if}
     </div>
   </header>
+
+  <!-- ── Events log sub-tabs (segmented control — nested one level under the
+       main tab-nav, so it reads as a lighter secondary control) ─────────── -->
+  {#snippet eventsLogToggle()}
+    <div class="log-toggle" role="tablist" aria-label="Events log">
+      <button
+        type="button"
+        class="log-toggle-btn"
+        class:log-toggle-active={eventsSubTab === "upcoming"}
+        onclick={() => eventsSubTab = "upcoming"}
+        role="tab"
+        aria-selected={eventsSubTab === "upcoming"}
+      >
+        Upcoming
+        {#if upcomingEvents.length > 0}<span class="log-toggle-count">{upcomingEvents.length}</span>{/if}
+      </button>
+      <button
+        type="button"
+        class="log-toggle-btn"
+        class:log-toggle-active={eventsSubTab === "past"}
+        onclick={() => eventsSubTab = "past"}
+        role="tab"
+        aria-selected={eventsSubTab === "past"}
+      >
+        Past
+        {#if pastEvents.length > 0}<span class="log-toggle-count">{pastEvents.length}</span>{/if}
+      </button>
+    </div>
+  {/snippet}
+
+  {#snippet eventsLogGrid(list, emptyText)}
+    {#if list.length === 0}
+      <div class="events-empty events-empty--nested">
+        <p class="empty-sub">{emptyText}</p>
+      </div>
+    {:else}
+      <div class="events-grid">
+        {#each list as event (event.eventId)}
+          <EventCard {event} onclick={() => openEvent(event)} />
+        {/each}
+      </div>
+    {/if}
+  {/snippet}
 
   <!-- ── Tabs (owner only) ──────────────────────────────────── -->
   {#if isOwner}
@@ -762,15 +834,12 @@
             </button>
           </div>
         {:else}
-          <div class="events-grid">
-            {#each events as event (event.eventId)}
-              <EventCard {event} onclick={() => {
-                if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-                setEventFeedSigner(event.eventId, event.creatorFeedSigner);
-                navigate(`/event/${event.eventId}`);
-              }} />
-            {/each}
-          </div>
+          {@render eventsLogToggle()}
+          {#if eventsSubTab === "upcoming"}
+            {@render eventsLogGrid(upcomingEvents, "Nothing upcoming — anything you publish next lands here.")}
+          {:else}
+            {@render eventsLogGrid(pastEvents, "Nothing in the past yet.")}
+          {/if}
         {/if}
       </div>
     {/if}
@@ -887,24 +956,33 @@
     {/if}
 
   {:else}
-    <!-- Non-owner: just their events -->
+    <!-- Non-owner: organiser's public events log -->
     <div class="tab-body">
       {#if !eventsLoaded}
         <div class="events-loading">
           <span class="spin-md"></span>
           <span>Loading events…</span>
         </div>
-      {:else if events.length > 0}
-        <h2 class="public-events-heading">Events</h2>
-        <div class="events-grid">
-          {#each events as event (event.eventId)}
-            <EventCard {event} onclick={() => {
-              if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-              setEventFeedSigner(event.eventId, event.creatorFeedSigner);
-              navigate(`/event/${event.eventId}`);
-            }} />
-          {/each}
+      {:else if events.length === 0}
+        <div class="events-empty">
+          <div class="empty-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+          </div>
+          <p class="empty-title">No events yet</p>
+          <p class="empty-sub">Events from this organiser will appear here.</p>
         </div>
+      {:else}
+        <h2 class="public-events-heading">Events</h2>
+        {@render eventsLogToggle()}
+        {#if eventsSubTab === "upcoming"}
+          {@render eventsLogGrid(upcomingEvents, "No upcoming events right now.")}
+        {:else}
+          {@render eventsLogGrid(pastEvents, "No past events yet — this organiser's history will build up here.")}
+        {/if}
       {/if}
     </div>
   {/if}
@@ -1460,6 +1538,57 @@
     font-weight: 700;
     color: var(--text);
     letter-spacing: -0.01em;
+  }
+
+  /* Events log — segmented pill control. Deliberately NOT another underlined
+     tab row (that's the top-level .tab-nav's job) — a filled pill toggle reads
+     as a secondary, nested control and keeps the hierarchy legible. */
+  .log-toggle {
+    display: inline-flex;
+    padding: 0.1875rem;
+    gap: 0.125rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    margin-bottom: 1rem;
+  }
+
+  .log-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.875rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background var(--transition), color var(--transition);
+  }
+
+  .log-toggle-btn:hover { color: var(--text-secondary); }
+
+  .log-toggle-active,
+  .log-toggle-active:hover {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  .log-toggle-count {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
+  }
+
+  .log-toggle-active .log-toggle-count { opacity: 0.6; }
+
+  .events-empty--nested {
+    padding: 2rem 1rem;
+    gap: 0;
   }
 
   .events-grid {

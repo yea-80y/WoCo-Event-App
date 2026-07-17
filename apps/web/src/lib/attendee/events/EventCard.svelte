@@ -1,20 +1,31 @@
 <script lang="ts">
-  import type { EventDirectoryEntry } from "@woco/shared";
+  import type { EventDirectoryEntry, EventTag, EventGeo } from "@woco/shared";
   import { isPastEvent } from "../../utils/events.js";
+  import { formatDistanceKm } from "../../utils/geo-distance.js";
   import CreatorChip from "../../components/profile/CreatorChip.svelte";
 
   interface Props {
-    event: EventDirectoryEntry;
+    // Superset of EventDirectoryEntry: SnapshotCard (global directory, #37) carries
+    // tags/geo; per-creator listings still pass plain EventDirectoryEntry, so both
+    // must satisfy this shape without widening the shared type itself.
+    event: EventDirectoryEntry & { tags?: EventTag[]; geo?: EventGeo };
     /** Whether the current user owns a ticket for this event */
     owned?: boolean;
+    /** "Near me" distance (km) from the discovery filter — shown as a badge when set. */
+    distanceKm?: number;
     onclick?: () => void;
   }
 
-  let { event, owned = false, onclick }: Props = $props();
+  let { event, owned = false, distanceKm, onclick }: Props = $props();
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
   const isPast = $derived(isPastEvent(event));
+
+  // Structured geo (#37) supersedes the free-text location line for display when present.
+  const locationLine = $derived(
+    [event.geo?.venue, event.geo?.city].filter(Boolean).join(", ") || event.location,
+  );
 
   function handleClick() {
     onclick?.();
@@ -58,8 +69,13 @@
     {#if event.tagline}
       <p class="tagline">{event.tagline}</p>
     {/if}
-    {#if event.location}
-      <p class="location">{event.location}</p>
+    {#if locationLine || distanceKm !== undefined}
+      <p class="location">
+        {#if locationLine}<span>{locationLine}</span>{/if}
+        {#if distanceKm !== undefined}
+          <span class="distance">{formatDistanceKm(distanceKm)} away</span>
+        {/if}
+      </p>
     {/if}
     <div class="card-footer">
       <CreatorChip address={event.creatorAddress} compact={false} showFollow signer={event.creatorFeedSigner} />
@@ -127,9 +143,20 @@
   }
 
   .location {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
     margin: 0;
     color: var(--text-secondary);
     font-size: 0.8125rem;
+  }
+
+  .distance {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--accent-text);
+    white-space: nowrap;
   }
 
   .card-title-row {

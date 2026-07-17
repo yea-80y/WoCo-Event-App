@@ -1,10 +1,12 @@
 import { Hono, type Context } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
-import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
+import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, addEventToDirectory, removeEventFromDirectory, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
+import { setListed } from "../lib/event/listing-state.js";
+import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
@@ -111,6 +113,28 @@ events.get("/mine", requireAuth, async (c) => {
   }
 });
 
+// GET /api/events/by-creator/:address — PUBLIC (unauthenticated) organiser history.
+// Powers the "past + upcoming events" log on an organiser's profile page. Reads the
+// per-creator index (never trimmed by unlist), so attendees see the organiser's full
+// catalogue, not just what's in the global discovery snapshot. Must be registered
+// BEFORE /:id so "by-creator" isn't matched as an eventId.
+events.get("/by-creator/:address", async (c) => {
+  if (!checkReadRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
+  const address = c.req.param("address").toLowerCase();
+  try {
+    const entries = await getCreatorEvents(address);
+    const seen = new Set<string>();
+    const merged = entries.filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; });
+    const filter = c.req.query("filter") ?? "all";
+    const now = Date.now();
+    const data = filter === "all" ? merged : merged.filter((e) => isPastEntry(e, now) === (filter === "past"));
+    return c.json({ ok: true, data });
+  } catch (err) {
+    console.error("[api] getCreatorEvents (public) error:", err);
+    return c.json({ ok: false, error: "Failed to list events" }, 500);
+  }
+});
+
 // GET /api/events/:id - public detail
 events.get("/:id", async (c) => {
   if (!checkReadRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
@@ -167,6 +191,20 @@ events.post("/", requireAuth, async (c) => {
   }
   if (!creatorPodKey || !image) {
     return c.json({ ok: false, error: "Missing creatorPodKey or image" }, 400);
+  }
+  if (ev.tags !== undefined) {
+    if (!Array.isArray(ev.tags) || ev.tags.length > 32
+        || ev.tags.some((t) => !t || typeof t.type !== "string" || typeof t.value !== "string" || t.value.length > 128)) {
+      return c.json({ ok: false, error: "tags must be an array (max 32) of {type, value} with value ≤ 128 chars" }, 400);
+    }
+  }
+  if (ev.geo !== undefined) {
+    if (typeof ev.geo !== "object" || ev.geo === null || Array.isArray(ev.geo)) {
+      return c.json({ ok: false, error: "geo must be an object" }, 400);
+    }
+    if (!geoWithinSizeLimit(ev.geo)) {
+      return c.json({ ok: false, error: "geo too large (max 1KB serialised)" }, 400);
+    }
   }
   for (const s of series) {
     if (!s.signedManifest || !s.podBodies?.length) {
@@ -277,6 +315,8 @@ events.post("/", requireAuth, async (c) => {
         startDate: ev.startDate,
         endDate: ev.endDate,
         location: ev.location || "",
+        ...(ev.tags?.length ? { tags: ev.tags } : {}),
+        ...(ev.geo ? { geo: ev.geo } : {}),
         creatorAddress: parentAddress.toLowerCase() as Hex0x,
         creatorPodKey,
         imageData,
@@ -371,6 +411,25 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
       console.error("[api] update-meta image upload failed:", err);
       return c.json({ ok: false, error: "Image upload failed" }, 502);
     }
+  }
+
+  if (body.tags !== undefined) {
+    if (!Array.isArray(body.tags) || body.tags.some((t) => !t || typeof t.type !== "string" || typeof t.value !== "string" || t.value.length > 128)) {
+      return c.json({ ok: false, error: "tags must be an array of {type, value} with value ≤ 128 chars" }, 400);
+    }
+    // Store as-is; the snapshot builder normalises to controlled vocab at build time.
+    updates.tags = body.tags.slice(0, 32);
+  }
+
+  if (body.geo !== undefined) {
+    if (typeof body.geo !== "object" || body.geo === null || Array.isArray(body.geo)) {
+      return c.json({ ok: false, error: "geo must be an object" }, 400);
+    }
+    if (!geoWithinSizeLimit(body.geo)) {
+      return c.json({ ok: false, error: "geo too large (max 1KB serialised)" }, 400);
+    }
+    // Store as-is (empty object clears); the snapshot builder normalises at build time.
+    updates.geo = body.geo;
   }
 
   if (Object.keys(updates).length === 0) {
@@ -535,26 +594,19 @@ events.post("/:id/list", requireAuth, async (c) => {
     // Substitute the server's own PUBLIC_API_BASE for any localhost / private /
     // non-https value the client supplied. Federated public URLs pass through.
     const directoryApiUrl = sanitisePublicApiUrl(body.sourceApiUrl);
-    await addEventToDirectory({
-      eventId: eventFeed.eventId,
-      title: eventFeed.title,
-      imageHash: eventFeed.imageHash,
-      startDate: eventFeed.startDate,
-      location: eventFeed.location || "",
-      creatorAddress: eventFeed.creatorAddress,
-      seriesCount: eventFeed.series.length,
-      totalTickets: eventFeed.series.reduce((sum, s) => sum + s.totalSupply, 0),
-      createdAt: eventFeed.createdAt,
-      ...(directoryApiUrl ? { apiUrl: directoryApiUrl } : {}),
-      // Carry the content-feed signer into the global directory so a later no-hint
-      // getEvent (deployed site, WoCo app) can resolve the client SOC — this is what
-      // makes the event PAGE load, not just the listing succeed. LOCAL basis only:
-      // a signer attested by a caller-named remote server would poison
-      // resolveCreatorFeedSigner → the event cache → the payment path. Federated
-      // events are read via their apiUrl, never via a SOC carrier.
-      ...(localBasis && eventFeed.creatorFeedSigner ? { creatorFeedSigner: eventFeed.creatorFeedSigner } : {}),
-    });
-
+    // #37: listing is now a small overlay flag + a snapshot rebuild, not an O(n)
+    // directory rewrite. The card seed (built from the resolved feed) is the
+    // builder's fallback — essential for FEDERATED events (apiUrl set), which the
+    // builder cannot resolve via our own getEvent. SECURITY unchanged: the
+    // creatorFeedSigner carrier is stamped LOCAL-basis only (a remote-attested
+    // signer must never seed the money path); federated events carry apiUrl instead.
+    const seedFeed = (localBasis || !eventFeed.creatorFeedSigner)
+      ? eventFeed
+      : { ...eventFeed, creatorFeedSigner: undefined };
+    // explicitlyListed: a deliberate /list surfaces even an UNREGISTERED event
+    // (federated, or a re-listed legacy event) — see directory-snapshot enumeration.
+    setListed(eventId, true, cardFromFeed(seedFeed, directoryApiUrl ? { apiUrl: directoryApiUrl } : undefined), { explicitlyListed: true });
+    scheduleSnapshotRebuild(eventId);
   } catch (err) {
     console.error("[api] list event error:", err);
     return c.json({ ok: false, error: "Failed to add event to directory" }, 500);
@@ -598,8 +650,10 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   }
 
   try {
-    await removeEventFromDirectory(eventId);
-
+    // #37: unlist = clear the listing overlay flag + rebuild the snapshot (the
+    // card drops). Not a tombstone — the event can be re-listed later.
+    setListed(eventId, false);
+    scheduleSnapshotRebuild(eventId);
   } catch (err) {
     console.error("[api] unlist event error:", err);
     return c.json({ ok: false, error: "Failed to remove event from directory" }, 500);

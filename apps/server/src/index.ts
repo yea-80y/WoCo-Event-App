@@ -38,6 +38,7 @@ import { swarmRoutes } from "./routes/swarm.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
+import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -470,9 +471,14 @@ console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
 startDomainPoller();
 void logSponsorReadiness();
-// Prime the event-directory cache so the first GET /api/events after a restart
-// serves from memory instead of waiting out a cold multi-page feed read.
+// Prime the directory-snapshot read cache (#37: 1 pointer + 1 blob) so the first
+// GET /api/events after a restart serves from memory instead of a cold read.
 void listEvents().then(
   (d) => console.log(`[startup] event directory primed (${d.length} entries)`),
   (err) => console.warn("[startup] event directory prime failed:", err),
 );
+// Periodic full reconcile — heals snapshot drift (edits, expired events, a lost
+// incremental trigger) from the chain-log registrations. Does NOT force an initial
+// rebuild: a fresh deploy leaves the snapshot as-is until a publish/list or the
+// ops rebuild endpoint runs the cutover, so the switch-over is deliberate.
+startSnapshotMaintenance();

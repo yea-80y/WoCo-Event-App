@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { OrderField, ClaimMode, PaymentConfig } from "@woco/shared";
+  import type { OrderField, ClaimMode, PaymentConfig, EventGeo, EventTag } from "@woco/shared";
   import EventEditor from "./EventEditor.svelte";
   import PublishButton from "./PublishButton.svelte";
   import StripeVerifyGate from "./StripeVerifyGate.svelte";
@@ -23,6 +23,8 @@
   let startDate = $state(localInputFromNow(60));
   let endDate = $state(localInputFromNow(180));
   let location = $state("");
+  let geo = $state<EventGeo | undefined>(undefined);
+  let tags = $state<EventTag[]>([]);
   let imageDataUrl = $state<string | null>(null);
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
   let cryptoRecipientMissing = $state(false);
@@ -84,6 +86,8 @@
     bind:collectInfo
     bind:cryptoRecipientMissing
     bind:importedTiers
+    bind:geo
+    bind:tags
   />
 
   <SubENSPicker />
@@ -95,6 +99,8 @@
     {startDate}
     {endDate}
     {location}
+    {geo}
+    {tags}
     {imageDataUrl}
     {series}
     orderFields={collectInfo ? orderFields : undefined}

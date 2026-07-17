@@ -448,6 +448,10 @@ SECURITY / AUTH:
 - `.data/consumed-tx-hashes.json`, `.data/revoked-sessions.json`, and
   `.data/consumed-stripe-sessions.json` MUST survive server restarts — loaded on
   startup. Don't delete them
+- `.data/event-listing-state.json` (#37 global-directory listing overlay) MUST survive
+  restarts. If it IS lost, the builder self-heals by reseeding from the last snapshot
+  (directory-snapshot.ts) rather than publishing an empty directory — but don't rely on
+  that; it only recovers events already in a snapshot, not unregistered federated/re-listed ones
 
 SVELTE 5 / BEE-JS / PARA:
 - Svelte 5 `$state` proxy: properties absent from initial object literal aren't reactive;

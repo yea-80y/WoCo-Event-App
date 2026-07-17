@@ -1,9 +1,11 @@
 <script lang="ts">
-  import type { OrderField, ClaimMode, PaymentConfig } from "@woco/shared";
+  import type { OrderField, ClaimMode, PaymentConfig, EventGeo, EventTag } from "@woco/shared";
   import { FEATURES } from "@woco/shared";
   import ImageUpload from "./ImageUpload.svelte";
   import TicketSeriesEditor from "./TicketSeriesEditor.svelte";
   import OrderFieldsEditor from "./OrderFieldsEditor.svelte";
+  import LocationPicker from "./LocationPicker.svelte";
+  import GenreTagPicker from "./GenreTagPicker.svelte";
   import type { ImportTier } from "./ImportUrlPanel.svelte";
   import { localInputFromNow } from "./date.js";
 
@@ -34,6 +36,8 @@
     collectInfo: boolean;
     cryptoRecipientMissing: boolean;
     importedTiers?: ImportTier[] | null;
+    geo?: EventGeo;
+    tags?: EventTag[];
   }
 
   let {
@@ -51,6 +55,8 @@
     collectInfo = $bindable(),
     cryptoRecipientMissing = $bindable(),
     importedTiers = $bindable(null),
+    geo = $bindable(undefined),
+    tags = $bindable([]),
   }: Props = $props();
 
   const EMAIL_FIELD_ID = "__email";
@@ -114,6 +120,9 @@
     <input type="text" bind:value={location} placeholder="Venue or online link" />
   </label>
 </div>
+
+<LocationPicker bind:geo bind:location />
+<GenreTagPicker bind:tags />
 
 <TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers />
 
