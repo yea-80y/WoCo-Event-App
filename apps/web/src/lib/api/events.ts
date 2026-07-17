@@ -287,6 +287,16 @@ export async function listEvents(): Promise<SnapshotCard[]> {
 }
 
 /**
+ * An organiser's full public event catalogue (incl. past events) — powers the
+ * events log on a profile page. Unauthenticated; reads the per-creator index
+ * (never trimmed by unlist), unlike the global directory scan it replaces.
+ */
+export async function getEventsByCreator(address: string): Promise<EventDirectoryEntry[]> {
+  const resp = await get<EventDirectoryEntry[]>(`/api/events/by-creator/${address.toLowerCase()}`);
+  return resp.data ?? [];
+}
+
+/**
  * @param signer  Phase B discovery carrier — the organiser's content-feed-signer
  *   address, when the caller already holds it (e.g. from the directory entry or a
  *   cached feed). Lets the server read the client SOC as a pure relay, avoiding a
