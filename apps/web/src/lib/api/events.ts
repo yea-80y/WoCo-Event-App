@@ -1,6 +1,7 @@
 import type {
   EventFeed,
   EventDirectoryEntry,
+  SnapshotCard,
   CreateEventV2Request,
   UpdateEventMetaRequest,
   CreateEventResponse,
@@ -275,8 +276,13 @@ export async function confirmChainRegistration(
   return authPost(`/api/events/${eventId}/confirm-chain`, { seriesId, onChainEventId, chainId });
 }
 
-export async function listEvents(): Promise<EventDirectoryEntry[]> {
-  const resp = await get<EventDirectoryEntry[]>("/api/events");
+/**
+ * The global directory. Cards are SnapshotCard (a superset of EventDirectoryEntry —
+ * see service.ts `listEvents`), so this is typed as SnapshotCard[] to expose
+ * `tags`/`geo` for client-side discovery filtering (#37 facet filter).
+ */
+export async function listEvents(): Promise<SnapshotCard[]> {
+  const resp = await get<SnapshotCard[]>("/api/events");
   return resp.data ?? [];
 }
 

@@ -1,11 +1,14 @@
 <script lang="ts">
-  import type { EventDirectoryEntry } from "@woco/shared";
+  import type { SnapshotCard } from "@woco/shared";
+  import { COUNTRY_VOCAB, GENRE_VOCAB } from "@woco/shared";
   import { listEvents } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
   import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
   import EventCard from "../events/EventCard.svelte";
+  import DiscoveryFilters from "./DiscoveryFilters.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
+  import { haversineKm, type NearMeState } from "../../utils/geo-distance.js";
   import { onMount, onDestroy } from "svelte";
 
   type Tab = "upcoming" | "past";
@@ -17,18 +20,76 @@
   let clockTimer: ReturnType<typeof setInterval>;
 
   const _KEY = cacheKey.directory();
-  const _cached = cacheGet<EventDirectoryEntry[]>(_KEY);
+  const _cached = cacheGet<SnapshotCard[]>(_KEY);
 
-  let allEvents = $state<EventDirectoryEntry[]>(_cached ?? []);
+  let allEvents = $state<SnapshotCard[]>(_cached ?? []);
   let loading = $state(_cached === null);
+
+  // ── Discovery facet filter (#37) — client-side, zero extra requests ────────
+  let country = $state("");
+  let selectedGenres = $state<Set<string>>(new Set());
+  let nearMe = $state<NearMeState | null>(null);
+  const hasActiveFilters = $derived(!!country || selectedGenres.size > 0 || !!nearMe);
+
+  function passesCountry(e: SnapshotCard): boolean {
+    return !country || e.geo?.country === country;
+  }
+  function passesGenre(e: SnapshotCard): boolean {
+    if (selectedGenres.size === 0) return true;
+    const eventGenres = e.tags?.filter((t) => t.type === "genre").map((t) => t.value) ?? [];
+    return eventGenres.some((g) => selectedGenres.has(g));
+  }
+  function passesNearMe(e: SnapshotCard): boolean {
+    if (!nearMe) return true;
+    if (e.geo?.lat === undefined || e.geo?.lng === undefined) return false;
+    return haversineKm(nearMe.lat, nearMe.lng, e.geo.lat, e.geo.lng) <= nearMe.radiusKm;
+  }
+  function distanceFor(e: SnapshotCard): number | undefined {
+    if (!nearMe || e.geo?.lat === undefined || e.geo?.lng === undefined) return undefined;
+    return haversineKm(nearMe.lat, nearMe.lng, e.geo.lat, e.geo.lng);
+  }
+  function clearFilters() {
+    country = "";
+    selectedGenres = new Set();
+    nearMe = null;
+  }
+
+  const filteredEvents = $derived(
+    allEvents.filter((e) => passesCountry(e) && passesGenre(e) && passesNearMe(e)),
+  );
+
+  // Facet option counts exclude their OWN facet (but respect the others) — picking
+  // a country never hides itself from the country list, standard faceted-search UX.
+  const countryOptions = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const e of allEvents) {
+      if (!passesGenre(e) || !passesNearMe(e)) continue;
+      if (e.geo?.country) counts.set(e.geo.country, (counts.get(e.geo.country) ?? 0) + 1);
+    }
+    return COUNTRY_VOCAB
+      .filter((c) => counts.has(c.code) || c.code === country)
+      .map((c) => ({ code: c.code, name: c.name, count: counts.get(c.code) ?? 0 }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  });
+
+  const genreOptions = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const e of allEvents) {
+      if (!passesCountry(e) || !passesNearMe(e)) continue;
+      for (const t of e.tags ?? []) {
+        if (t.type === "genre") counts.set(t.value, (counts.get(t.value) ?? 0) + 1);
+      }
+    }
+    return GENRE_VOCAB.map((value) => ({ value, count: counts.get(value) ?? 0 }));
+  });
 
   // Client-side split — single source of truth, no extra network calls
   const upcoming = $derived(
-    allEvents.filter(e => !isPastEvent(e, now))
+    filteredEvents.filter(e => !isPastEvent(e, now))
       .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
   );
   const past = $derived(
-    allEvents.filter(e => isPastEvent(e, now))
+    filteredEvents.filter(e => isPastEvent(e, now))
       .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime())
   );
 
@@ -55,6 +116,16 @@
   <p class="hero-sub">Independent events, cryptographic tickets, no corporate middleman.</p>
 </section>
 
+{#if !loading && allEvents.length > 0}
+  <DiscoveryFilters
+    countries={countryOptions}
+    genres={genreOptions}
+    bind:country
+    bind:selectedGenres
+    bind:nearMe
+  />
+{/if}
+
 <div class="tabs">
   <button class="tab" class:active={tab === "upcoming"} onclick={() => tab = "upcoming"}>
     Upcoming
@@ -76,13 +147,18 @@
   {:else if tab === "upcoming"}
     {#if upcoming.length === 0}
       <div class="empty">
-        <p class="empty-head">No upcoming events</p>
-        <p class="empty-sub">Check back soon — or <button class="inline-link" onclick={() => navigate("/creator")}>start something yourself</button>.</p>
+        {#if hasActiveFilters}
+          <p class="empty-head">No events match your filters</p>
+          <p class="empty-sub"><button class="inline-link" onclick={clearFilters}>Clear filters</button> to see everything upcoming.</p>
+        {:else}
+          <p class="empty-head">No upcoming events</p>
+          <p class="empty-sub">Check back soon — or <button class="inline-link" onclick={() => navigate("/creator")}>start something yourself</button>.</p>
+        {/if}
       </div>
     {:else}
       <div class="event-grid">
         {#each upcoming as event (event.eventId)}
-          <EventCard {event} onclick={() => {
+          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => {
             if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
             setEventFeedSigner(event.eventId, event.creatorFeedSigner);
             navigate(`/event/${event.eventId}`);
@@ -93,12 +169,17 @@
   {:else}
     {#if past.length === 0}
       <div class="empty">
-        <p class="empty-head">No past events</p>
+        {#if hasActiveFilters}
+          <p class="empty-head">No past events match your filters</p>
+          <p class="empty-sub"><button class="inline-link" onclick={clearFilters}>Clear filters</button> to see everything past.</p>
+        {:else}
+          <p class="empty-head">No past events</p>
+        {/if}
       </div>
     {:else}
       <div class="event-grid">
         {#each past as event (event.eventId)}
-          <EventCard {event} onclick={() => {
+          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => {
             if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
             setEventFeedSigner(event.eventId, event.creatorFeedSigner);
             navigate(`/event/${event.eventId}`);
