@@ -3,7 +3,7 @@
 The single ordered list. GitHub issues are the *what*; this is the *when*. If a plan only
 exists in a chat message, it does not exist. Update this file when the order changes.
 
-Last updated: 2026-07-17.
+Last updated: 2026-07-17 (evening — #37 merged + deployed).
 
 > **Model routing (token efficiency):** the Owner column now names the cheapest model that
 > can safely own the item. **Fable** = architecture, money paths, irreversible Swarm/batch
@@ -25,10 +25,11 @@ Last updated: 2026-07-17.
 
 | # | Item | Owner | State |
 |---|---|---|---|
-| 1 | **Frontend deploy** (`npm run deploy`) — main carries #40/#51 client changes PLUS #52's builder gates + avatar fallback + client-side Etherna stamp routing | **user** | Server side live (74a3872 deployed 2026-07-16); frontend is the lagging half. Deploy server **before** frontend ✅ done. |
+| 1 | **Frontend deploy** (`npm run deploy`) — main carries #40/#51 client changes PLUS #52's builder gates + avatar fallback + client-side Etherna stamp routing **PLUS #37's discovery UI** (geo+genre pickers, facet filter, profile events log) | **user** | Server side live (#52 74a3872 2026-07-16, #37 bb1f284 2026-07-17); frontend is the lagging half. Deploy server **before** frontend ✅ done. |
 | 2 | **Browser-verify #52** — free-hosting gate + quota + batch routing, after the frontend deploy | **user** | Watch `docker compose logs -f server \| grep -E "batch-router\|storage-ledger"`; ledger = `docker compose exec server cat .data/storage-ledger.json`. |
 | 3 | **Verify #33** — door-scanner roster re-push, against the deployed server | **user** | Reopened: #40 auto-closed it on a keyword, but the fix was only hypothesised. |
-| 4 | **Event directory rebuild (#37)** — chain-log truth + immutable snapshot + pointer feed | **Opus/Sonnet build, Fable reviews** | **Server BUILD + Fable's 5 fixes DONE + Fable-approved, committed on `feat/directory-snapshot-37` (7e516bb):** build:server clean, shared 81/81, server 30/30. Flow: push → PR → CI → merge → **server-only deploy** (Claude owns; API shape unchanged, NO frontend deploy). Cutover: public directory shows empty immediately; each event returns via ONE `POST /api/events/:id/list` from its organiser; 30-min janitor + instant-publish rebuild heal the rest. No rebuild secret (removed per Fable — final). **Discovery model LOCKED 2026-07-17 (Opus + owner):** location = structured coordinate-anchored `EventGeo` (ISO country vocab bundled + city/venue/lat-lng from a client-side OPEN geocoder at create time — NOT Google Places; `venueRef` reserved for future WoCo venue profiles); genre = controlled `EventTag` multi-select (15 terms, music sub-genres deferred to ride the same mechanism when data warrants). Schema + server plumbing shipped in shared/server (geo.ts, normaliseGeo, geo on EventFeed/create/update/SnapshotCard). **Past-events fix (Opus, committed `a6d6576` on branch — UNPUSHED, needs server redeploy):** the snapshot no longer drops events 24h after they end (attendee **Past** tab was going empty — bad UX while small), and a new PUBLIC `GET /api/events/by-creator/:address` (unauthenticated, rate-limited, never-trimmed creator index) powers a per-organiser history log on the profile from today; scale path documented in code (move past events off the global blob once it grows). **Fresh chats next (all Sonnet, frontend-only, branch off `feat/directory-snapshot-37`):** (a) creator tag+geo picker in event create/edit — geocoder selection ALSO auto-populates the free-text `location` display field (editable); (b) discovery facet filter UI on the directory (country/genre/near-me, client-side over `SnapshotCard.tags`/`.geo`); (c) organiser profile events log — switch `ProfilePage.loadEvents()` public path to `by-creator`, split past/upcoming. Do NOT build a Swarm append-log. Subsumes "fresh directory feed" below (pointer cutover filters test events). |
+| ~~4~~ | ~~Event directory rebuild (#37)~~ | — | ✅ **PR #54 merged `bb1f284`, server DEPLOYED 2026-07-17** (Fable signed off schema + past-events fix + 3 Sonnet frontend commits; build:server clean, shared 82/82, server 30/30, build:web clean). Cutover live: `/api/events` returns `[]` — test events filtered out as designed; real events return via one organiser `/list` each. Docs: `docs/EVENTS_DIRECTORY.md`. Remaining: user frontend deploy (item 1) + browser verify of pickers/filter/profile log. Old detail follows for reference: |
+| ᶜᶫᵒˢᵉᵈ | (was) **Event directory rebuild (#37)** — chain-log truth + immutable snapshot + pointer feed | **Opus/Sonnet build, Fable reviews** | **Server BUILD + Fable's 5 fixes DONE + Fable-approved, committed on `feat/directory-snapshot-37` (7e516bb):** build:server clean, shared 81/81, server 30/30. Flow: push → PR → CI → merge → **server-only deploy** (Claude owns; API shape unchanged, NO frontend deploy). Cutover: public directory shows empty immediately; each event returns via ONE `POST /api/events/:id/list` from its organiser; 30-min janitor + instant-publish rebuild heal the rest. No rebuild secret (removed per Fable — final). **Discovery model LOCKED 2026-07-17 (Opus + owner):** location = structured coordinate-anchored `EventGeo` (ISO country vocab bundled + city/venue/lat-lng from a client-side OPEN geocoder at create time — NOT Google Places; `venueRef` reserved for future WoCo venue profiles); genre = controlled `EventTag` multi-select (15 terms, music sub-genres deferred to ride the same mechanism when data warrants). Schema + server plumbing shipped in shared/server (geo.ts, normaliseGeo, geo on EventFeed/create/update/SnapshotCard). **Past-events fix (Opus, committed `a6d6576` on branch — UNPUSHED, needs server redeploy):** the snapshot no longer drops events 24h after they end (attendee **Past** tab was going empty — bad UX while small), and a new PUBLIC `GET /api/events/by-creator/:address` (unauthenticated, rate-limited, never-trimmed creator index) powers a per-organiser history log on the profile from today; scale path documented in code (move past events off the global blob once it grows). **Fresh chats next (all Sonnet, frontend-only, branch off `feat/directory-snapshot-37`):** (a) creator tag+geo picker in event create/edit — geocoder selection ALSO auto-populates the free-text `location` display field (editable); (b) discovery facet filter UI on the directory (country/genre/near-me, client-side over `SnapshotCard.tags`/`.geo`); (c) organiser profile events log — switch `ProfilePage.loadEvents()` public path to `by-creator`, split past/upcoming. Do NOT build a Swarm append-log. Subsumes "fresh directory feed" below (pointer cutover filters test events). |
 | ~~—~~ | ~~Merge PR #51 + deploy~~ | — | ✅ merged, live 2026-07-14 |
 | ~~—~~ | ~~Batch routing (#48) + free-hosting gate (#44 stages 1+2)~~ | — | ✅ **PR #52 merged `74a3872`, server DEPLOYED 2026-07-16.** Cutover (#45) still open. |
 | ~~—~~ | ~~Merge PR #46~~ | — | ✅ merged `d36a88c` |
@@ -54,7 +55,7 @@ The current batch `9ef3373b…` holds **test data**. The plan is to let it die, 
 
 | # | Item | Issue |
 |---|---|---|
-| 8 | Event directory does not scale — every publish rewrites every page → **in flight** (Now table, item 4) | #37 |
+| ~~8~~ | ~~Event directory does not scale~~ ✅ resolved — #37 snapshot deployed 2026-07-17 | #37 |
 | ~~—~~ | ~~Publish is not resumable — a failed register forks a second event~~ | ✅ #36 |
 
 **#41 is no longer a launch blocker.** Crypto is not surfaced for launch, and PR #51 makes that
@@ -90,7 +91,7 @@ Two things must be true before crypto (or the agent rail) is promoted again:
 #43 shop config · #12 referral payout · #13 resale + Stripe recipient rail ·
 #28 ECIES golden vectors · #31 ZeroDev gas workaround · #8 browser-verify #1–#4
 
-**Event-page SEO from #37 discovery fields (Sonnet, frontend-only)** — `EventTag`
+**Event-page SEO from #37 discovery fields (Sonnet, frontend-only) — now issue #55** — `EventTag`
 (genre) and `EventGeo` (lat/lng/address/city/country) are already the right shape
 for real SEO/rich-results: today nothing emits them. `schema.org`/`ld+json` only
 exists server-side today as an *import* parser (reading other sites' Event markup
