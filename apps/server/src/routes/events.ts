@@ -113,6 +113,28 @@ events.get("/mine", requireAuth, async (c) => {
   }
 });
 
+// GET /api/events/by-creator/:address — PUBLIC (unauthenticated) organiser history.
+// Powers the "past + upcoming events" log on an organiser's profile page. Reads the
+// per-creator index (never trimmed by unlist), so attendees see the organiser's full
+// catalogue, not just what's in the global discovery snapshot. Must be registered
+// BEFORE /:id so "by-creator" isn't matched as an eventId.
+events.get("/by-creator/:address", async (c) => {
+  if (!checkReadRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
+  const address = c.req.param("address").toLowerCase();
+  try {
+    const entries = await getCreatorEvents(address);
+    const seen = new Set<string>();
+    const merged = entries.filter(e => { if (seen.has(e.eventId)) return false; seen.add(e.eventId); return true; });
+    const filter = c.req.query("filter") ?? "all";
+    const now = Date.now();
+    const data = filter === "all" ? merged : merged.filter((e) => isPastEntry(e, now) === (filter === "past"));
+    return c.json({ ok: true, data });
+  } catch (err) {
+    console.error("[api] getCreatorEvents (public) error:", err);
+    return c.json({ ok: false, error: "Failed to list events" }, 500);
+  }
+});
+
 // GET /api/events/:id - public detail
 events.get("/:id", async (c) => {
   if (!checkReadRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);

@@ -52,14 +52,6 @@ export function cardFromFeed(feed: EventFeed, extra?: { apiUrl?: string }): Snap
   };
 }
 
-/** Grace after which a finished event drops from the directory. */
-const PAST_EVENT_GRACE_MS = 24 * 60 * 60 * 1000;
-
-function isPast(card: SnapshotCard): boolean {
-  const end = new Date(card.endDate ?? card.startDate).getTime();
-  return Number.isFinite(end) && end + PAST_EVENT_GRACE_MS < Date.now();
-}
-
 // ---------------------------------------------------------------------------
 // Read path — pointer feed → immutable blob, SWR cache. Backs listEvents().
 // ---------------------------------------------------------------------------
@@ -224,9 +216,13 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
     else existing.delete(eventId);
   }
 
-  // Inclusion overlay (default-exclude) + past-event drop, then newest-first.
+  // Inclusion overlay (default-exclude), then newest-first. Past events are NOT
+  // dropped: global discovery keeps them so the attendee "Past" tab stays populated
+  // while volume is small. The scale path (when the snapshot blob grows unwieldy) is
+  // to serve past events per-organiser off the creator index (GET /by-creator) rather
+  // than the global blob — the profile history surface, not this list.
   const cards = [...existing.values()]
-    .filter((c) => isListedForSnapshot(c.eventId) && !isPast(c))
+    .filter((c) => isListedForSnapshot(c.eventId))
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
 
   // Skip the write when nothing changed. Every rebuild uploads a NEW immutable
