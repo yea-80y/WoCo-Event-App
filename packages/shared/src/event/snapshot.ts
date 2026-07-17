@@ -1,5 +1,5 @@
 import type { Hex0x, Hex64 } from "../types.js";
-import type { EventTag } from "./types.js";
+import type { EventTag, EventGeo } from "./types.js";
 
 /**
  * Directory read model (#37). The event directory is a three-layer split:
@@ -40,6 +40,9 @@ export interface SnapshotCard {
   createdAt: string;
   /** Normalised, controlled-vocab facet tags for client-side filtering. */
   tags: EventTag[];
+  /** Normalised structured location for client-side filtering (country/coords)
+   *  + display (city/venue). Absent when the event carries no usable geo. */
+  geo?: EventGeo;
   /** Federated (self-hosted) organisers only: base URL to fetch event data / route
    *  claims to. Absent for WoCo-hosted events. */
   apiUrl?: string;

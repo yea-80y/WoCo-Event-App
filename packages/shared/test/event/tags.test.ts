@@ -10,13 +10,16 @@ import { normaliseTags } from "../../src/event/tags.js";
 import type { EventTag } from "../../src/event/types.js";
 
 test("canonicalises a known controlled value's casing", () => {
-  assert.deepEqual(normaliseTags([{ type: "location", value: "LONDON" }]), [{ type: "location", value: "London" }]);
   assert.deepEqual(normaliseTags([{ type: "genre", value: "  music " }]), [{ type: "genre", value: "Music" }]);
 });
 
 test("unknown controlled value → other (kept, not dropped)", () => {
-  assert.deepEqual(normaliseTags([{ type: "location", value: "Narnia" }]), [{ type: "other", value: "Narnia" }]);
   assert.deepEqual(normaliseTags([{ type: "genre", value: "Vaporwave" }]), [{ type: "other", value: "Vaporwave" }]);
+});
+
+test("location facet is free-text now (moved to EventGeo) — passes through", () => {
+  assert.deepEqual(normaliseTags([{ type: "location", value: "Narnia" }]), [{ type: "location", value: "Narnia" }]);
+  assert.deepEqual(normaliseTags([{ type: "location", value: "LONDON" }]), [{ type: "location", value: "LONDON" }]);
 });
 
 test("unknown facet type → other (incl. non-string type)", () => {

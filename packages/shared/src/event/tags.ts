@@ -10,22 +10,14 @@ import type { EventTag, EventTagType } from "./types.js";
  * as a controlled facet. This keeps discovery facets clean without turning the
  * vocabulary into a truth-layer (content-signature) constraint.
  *
- * Launch surfaces `location` + `genre`. `artist` / `brand` ride the same
- * mechanism later with no schema change.
+ * Launch surfaces `genre` here. Location is NOT a tag — it moved to the
+ * structured `EventGeo` object (event/geo.ts) because a curated place-name vocab
+ * can't scale internationally. `artist` / `brand` (and a future music
+ * `subgenre`) ride the same mechanism later with no schema change.
  *
- * ⚠️ DRAFT VOCAB — pending owner sign-off. The free-text `other` escape hatch
- * means a missing term never breaks a listing (it just lands under `other`), so
- * this list can grow without a migration. Curate before launch.
+ * The free-text `other` escape hatch means a missing term never breaks a listing
+ * (it just lands under `other`), so this list can grow without a migration.
  */
-
-/** Controlled city / region values for the `location` facet. Kept separate from
- *  the free-text venue/address string on the event (that stays for display). A
- *  city not listed here still works via the `other` escape hatch. */
-export const LOCATION_VOCAB = [
-  "London", "Manchester", "Birmingham", "Leeds", "Liverpool", "Bristol",
-  "Sheffield", "Newcastle", "Nottingham", "Leicester", "Brighton", "Cardiff",
-  "Glasgow", "Edinburgh", "Belfast", "Dublin", "Online",
-] as const;
 
 /** Controlled values for the `genre` facet. An event may carry several. */
 export const GENRE_VOCAB = [
@@ -34,9 +26,10 @@ export const GENRE_VOCAB = [
   "Wellness", "Community", "Markets", "Family", "Business & Networking", "Gaming",
 ] as const;
 
-/** Facets that enforce a controlled vocabulary at build time. */
+/** Facets that enforce a controlled vocabulary at build time. `location` is
+ *  intentionally absent — location discovery lives in EventGeo now, so any
+ *  legacy `location` tag passes through as free text rather than being coerced. */
 const CONTROLLED: Partial<Record<EventTagType, readonly string[]>> = {
-  location: LOCATION_VOCAB,
   genre: GENRE_VOCAB,
 };
 

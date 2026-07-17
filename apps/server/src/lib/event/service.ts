@@ -73,6 +73,8 @@ export async function createEventV2(opts: {
   location: string;
   /** Discovery facet tags — stamped into the signed EventFeed (creator-signed truth). */
   tags?: import("@woco/shared").EventTag[];
+  /** Structured location — stamped into the signed EventFeed (creator-signed truth). */
+  geo?: import("@woco/shared").EventGeo;
   creatorAddress: Hex0x;
   creatorPodKey: string;
   imageData: Uint8Array;
@@ -106,7 +108,7 @@ export async function createEventV2(opts: {
   onProgress?: (p: CreateProgress) => void;
 }): Promise<EventFeed> {
   const {
-    eventId, title, tagline, description, startDate, endDate, location, tags,
+    eventId, title, tagline, description, startDate, endDate, location, tags, geo,
     creatorAddress, creatorPodKey, imageData, series,
     encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
@@ -220,6 +222,7 @@ export async function createEventV2(opts: {
     endDate,
     location,
     ...(tags?.length ? { tags } : {}),
+    ...(geo ? { geo } : {}),
     creatorAddress,
     creatorPodKey,
     series: seriesSummaries,
@@ -401,6 +404,9 @@ export interface EventMetaUpdates {
   imageHash?: string;
   /** Replacement discovery tags — present (even empty) ⇒ overwrite; absent ⇒ leave. */
   tags?: import("@woco/shared").EventTag[];
+  /** Replacement structured location — present ⇒ overwrite (empty object clears);
+   *  absent ⇒ leave. */
+  geo?: import("@woco/shared").EventGeo;
 }
 
 /**
@@ -498,6 +504,11 @@ export async function updateEventMetadata(opts: {
   if (updates.tags !== undefined) {
     if (updates.tags.length) updated.tags = updates.tags;
     else delete updated.tags;
+  }
+  if (updates.geo !== undefined) {
+    // An empty/unusable geo clears it; otherwise store raw (snapshot normalises).
+    if (updates.geo && Object.keys(updates.geo).length) updated.geo = updates.geo;
+    else delete updated.geo;
   }
 
   // Validate the MERGED dates — a single-field update must not invert the range.

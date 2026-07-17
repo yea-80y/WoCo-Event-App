@@ -10,10 +10,13 @@ export type ClaimMode = "wallet" | "email" | "both";
 // ---------------------------------------------------------------------------
 
 /**
- * Facet a discovery tag belongs to. `location` + `genre` are the controlled-
- * vocabulary facets surfaced at launch (see event/tags.ts for the vocab and the
- * build-time normaliser); `artist` + `brand` are reserved for a later UI addition
- * on the SAME mechanism (no schema migration). `other` is the free-text escape
+ * Facet a discovery tag belongs to. `genre` is the controlled-vocabulary facet
+ * surfaced at launch (see event/tags.ts for the vocab + build-time normaliser).
+ * `location` is now free-text/legacy only — structured location moved to the
+ * `EventGeo` object (event/geo.ts); the `location` facet is no longer controlled
+ * and is retained for backward-compat with pre-#37 signed feeds. `artist` +
+ * `brand` are reserved for a later UI addition on the SAME mechanism (no schema
+ * migration — e.g. a music `subgenre` facet). `other` is the free-text escape
  * hatch — an uncontrolled value the normaliser keeps rather than dropping.
  */
 export type EventTagType = "location" | "genre" | "artist" | "brand" | "other";
@@ -26,8 +29,42 @@ export type EventTagType = "location" | "genre" | "artist" | "brand" | "other";
  */
 export interface EventTag {
   type: EventTagType;
-  /** Human-readable facet value, e.g. "London" / "Techno". Normalised at build. */
+  /** Human-readable facet value, e.g. "Techno". Normalised at build. */
   value: string;
+}
+
+// ---------------------------------------------------------------------------
+// Structured event geography (location model, #37)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an event happens — structured, coordinate-anchored geography. Replaces
+ * the old flat `location` discovery tag (a curated place-name vocab can't scale
+ * internationally). See event/geo.ts for the country vocab + `normaliseGeo`.
+ *
+ * Lives in the CREATOR-SIGNED event content (truth); copied + normalised into
+ * each snapshot card at build time. Populated at CREATE time by a client-side
+ * OPEN places geocoder (OSM/Nominatim/Photon/Mapbox — never Google Places, whose
+ * ToS forbids storing coordinates). Reads/discovery never touch a geocoder —
+ * cards filter client-side by country/coords. The free-text `EventFeed.location`
+ * string stays independent as the venue/address DISPLAY line.
+ */
+export interface EventGeo {
+  /** ISO 3166-1 alpha-2 (uppercase) — the coarse, controlled, bundled filter. */
+  country?: string;
+  /** Geocoder-canonicalised city/town label (display + secondary filter). */
+  city?: string;
+  /** Named place ("like Google") — display. */
+  venue?: string;
+  /** Formatted address line — display. */
+  address?: string;
+  /** Latitude — the universal filter primitive (enables "near me" / map). */
+  lat?: number;
+  /** Longitude. */
+  lng?: number;
+  /** RESERVED: future link to a WoCo venue profile. Empty at launch; reserving
+   *  it now means the venue-profile graph needs no schema migration. */
+  venueRef?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,10 +244,14 @@ export interface EventFeed {
   creatorPodKey: string;
   series: SeriesSummary[];
   createdAt: string;
-  /** Discovery facet tags (location/genre/…). Creator-signed content is the truth
-   *  home; the directory snapshot copies + normalises these into each card. Editable
+  /** Discovery facet tags (genre/…). Creator-signed content is the truth home;
+   *  the directory snapshot copies + normalises these into each card. Editable
    *  post-publish via update-meta (re-signs the SOC — gas-free; not on-chain). */
   tags?: EventTag[];
+  /** Structured, coordinate-anchored location (country/city/venue/lat-lng). The
+   *  discovery-filter home for location (the free-text `location` above stays as
+   *  the display line). Copied + normalised into each snapshot card. */
+  geo?: EventGeo;
   /** Organizer's X25519 public key for order encryption (hex, no 0x prefix) */
   encryptionKey?: string;
   /** Order form fields — present when organizer collects customer info */
@@ -292,8 +333,11 @@ export interface CreateEventV2Request {
     startDate: string;
     endDate: string;
     location: string;
-    /** Discovery facet tags (location/genre/…) — stamped into the signed EventFeed. */
+    /** Discovery facet tags (genre/…) — stamped into the signed EventFeed. */
     tags?: EventTag[];
+    /** Structured location (country/city/venue/lat-lng) — stamped into the signed
+     *  EventFeed. Populate via a client-side open geocoder at create time. */
+    geo?: EventGeo;
   };
   series: Array<{
     seriesId: string;
@@ -388,6 +432,9 @@ export interface UpdateEventMetaRequest {
   /** Replacement discovery tags. Present (even empty) ⇒ overwrite the event's tags;
    *  absent ⇒ leave unchanged. Re-signs the SOC (gas-free) + triggers a snapshot rebuild. */
   tags?: EventTag[];
+  /** Replacement structured location. Present ⇒ overwrite (empty object clears);
+   *  absent ⇒ leave unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
+  geo?: EventGeo;
   /** The event's storage gateway — routes the replacement-image stamp to the same
    *  batch the event content lives on (Etherna user batch vs WoCo). */
   gatewayUrl?: string;

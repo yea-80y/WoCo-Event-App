@@ -17,7 +17,7 @@
 import type {
   EventFeed, EventsSnapshot, EventsSnapshotPointer, SnapshotCard, SnapshotResolutionEntry,
 } from "@woco/shared";
-import { normaliseTags } from "@woco/shared";
+import { normaliseTags, normaliseGeo } from "@woco/shared";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import { readFeedPage, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
 import { topicEventsSnapshot } from "../swarm/topics.js";
@@ -47,6 +47,7 @@ export function cardFromFeed(feed: EventFeed, extra?: { apiUrl?: string }): Snap
     totalTickets: feed.series.reduce((n, s) => n + s.totalSupply, 0),
     createdAt: feed.createdAt,
     tags: normaliseTags(feed.tags),
+    ...((g) => (g ? { geo: g } : {}))(normaliseGeo(feed.geo)),
     ...(extra?.apiUrl ? { apiUrl: extra.apiUrl } : {}),
   };
 }

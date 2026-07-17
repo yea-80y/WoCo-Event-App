@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
-import { FEATURES, BUYER_FEE_FLOOR_PCT } from "@woco/shared";
+import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
@@ -172,8 +172,16 @@ events.post("/", requireAuth, async (c) => {
   }
   if (ev.tags !== undefined) {
     if (!Array.isArray(ev.tags) || ev.tags.length > 32
-        || ev.tags.some((t) => !t || typeof t.type !== "string" || typeof t.value !== "string")) {
-      return c.json({ ok: false, error: "tags must be an array (max 32) of {type, value}" }, 400);
+        || ev.tags.some((t) => !t || typeof t.type !== "string" || typeof t.value !== "string" || t.value.length > 128)) {
+      return c.json({ ok: false, error: "tags must be an array (max 32) of {type, value} with value ≤ 128 chars" }, 400);
+    }
+  }
+  if (ev.geo !== undefined) {
+    if (typeof ev.geo !== "object" || ev.geo === null || Array.isArray(ev.geo)) {
+      return c.json({ ok: false, error: "geo must be an object" }, 400);
+    }
+    if (!geoWithinSizeLimit(ev.geo)) {
+      return c.json({ ok: false, error: "geo too large (max 1KB serialised)" }, 400);
     }
   }
   for (const s of series) {
@@ -286,6 +294,7 @@ events.post("/", requireAuth, async (c) => {
         endDate: ev.endDate,
         location: ev.location || "",
         ...(ev.tags?.length ? { tags: ev.tags } : {}),
+        ...(ev.geo ? { geo: ev.geo } : {}),
         creatorAddress: parentAddress.toLowerCase() as Hex0x,
         creatorPodKey,
         imageData,
@@ -383,11 +392,22 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
   }
 
   if (body.tags !== undefined) {
-    if (!Array.isArray(body.tags) || body.tags.some((t) => !t || typeof t.type !== "string" || typeof t.value !== "string")) {
-      return c.json({ ok: false, error: "tags must be an array of {type, value}" }, 400);
+    if (!Array.isArray(body.tags) || body.tags.some((t) => !t || typeof t.type !== "string" || typeof t.value !== "string" || t.value.length > 128)) {
+      return c.json({ ok: false, error: "tags must be an array of {type, value} with value ≤ 128 chars" }, 400);
     }
     // Store as-is; the snapshot builder normalises to controlled vocab at build time.
     updates.tags = body.tags.slice(0, 32);
+  }
+
+  if (body.geo !== undefined) {
+    if (typeof body.geo !== "object" || body.geo === null || Array.isArray(body.geo)) {
+      return c.json({ ok: false, error: "geo must be an object" }, 400);
+    }
+    if (!geoWithinSizeLimit(body.geo)) {
+      return c.json({ ok: false, error: "geo too large (max 1KB serialised)" }, 400);
+    }
+    // Store as-is (empty object clears); the snapshot builder normalises at build time.
+    updates.geo = body.geo;
   }
 
   if (Object.keys(updates).length === 0) {
