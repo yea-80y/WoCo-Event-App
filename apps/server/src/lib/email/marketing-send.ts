@@ -46,9 +46,12 @@ You're receiving this because you opted in to updates from ${fromDisplayName}. S
 
 /** Inject the compliance footer just before </body>, or append. */
 function withFooter(html: string, footer: string): string {
-  const idx = html.toLowerCase().lastIndexOf("</body>");
-  if (idx === -1) return html + footer;
-  return html.slice(0, idx) + footer + html.slice(idx);
+  // Only treat </body> as the insertion point when it really ends the document —
+  // a mid-document </body> (e.g. inside a display:none div sent straight to the
+  // API) must not let a sender tuck the footer out of sight.
+  const m = /<\/body>\s*(<\/html>\s*)?$/i.exec(html);
+  if (!m) return html + footer;
+  return html.slice(0, m.index) + footer + html.slice(m.index);
 }
 
 export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<MarketingSendResult> {
@@ -60,7 +63,11 @@ export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<Ma
 
   const resend = getResend();
   const organiserAddress = opts.organiserAddress.toLowerCase();
-  const from = `"${opts.fromDisplayName.replace(/"/g, "'").slice(0, 60)}" <${opts.fromAddress}>`;
+  // Strip control chars so caller-supplied strings can never smuggle header
+  // material (Resend's API is JSON, but this seam must not depend on that).
+  const displayName = opts.fromDisplayName.replace(/[\r\n\x00-\x1f"]/g, "'").slice(0, 60);
+  const subject = opts.subject.replace(/[\r\n\x00-\x1f]+/g, " ").trim();
+  const from = `"${displayName}" <${opts.fromAddress}>`;
 
   const result: MarketingSendResult = { sent: 0, suppressed: 0, failed: 0, errors: [] };
 
@@ -90,8 +97,8 @@ export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<Ma
         const { error } = await resend.emails.send({
           from,
           to: [p.email],
-          subject: opts.subject,
-          html: withFooter(opts.html, footerHtml(opts.fromDisplayName, p.unsubUrl)),
+          subject,
+          html: withFooter(opts.html, footerHtml(displayName, p.unsubUrl)),
           headers: {
             "List-Unsubscribe": `<${p.unsubUrl}>`,
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",

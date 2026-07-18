@@ -60,7 +60,7 @@ unsubscribe.get("/:token", (c) => {
 <label><input type="checkbox" name="all" value="1" /> Also block <strong>all</strong> marketing email sent via WoCo, from any organiser</label>
 <button type="submit">Unsubscribe</button>
 </form>
-<small>You can resubscribe at any time by asking the organiser to re-add you.</small>`,
+<small>This applies to this email address only. Ticket confirmations for events you book are not affected.</small>`,
     ),
   );
 });

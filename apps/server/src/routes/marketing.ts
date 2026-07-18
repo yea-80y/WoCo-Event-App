@@ -212,35 +212,55 @@ marketing.post("/broadcast", requireAuth, async (c) => {
       }
     }
 
-    // Rate limit: 2 marketing broadcasts per hour per organiser
-    const now = Date.now();
-    const timestamps = broadcastRateMap.get(org) ?? [];
-    const recent = timestamps.filter((t) => now - t < BROADCAST_RATE_WINDOW);
-    if (recent.length >= BROADCAST_RATE_LIMIT) {
-      return c.json({ ok: false, error: "Rate limit exceeded (2 marketing broadcasts per hour)" }, 429);
-    }
-
-    // Daily cap: explicit reject, never silent trimming
-    const remaining = capRemaining(org);
-    if (recipients.length > remaining) {
+    // Recipients must come from the imported list — the wizard's consent
+    // warranty is the only path to a sendable address. (Suppression is still
+    // re-checked per recipient inside sendMarketingBatch.)
+    const storedHashes = new Set(getList(org)?.emailHashes ?? []);
+    const unknownCount = recipients.filter((r) => !storedHashes.has(hashEmail(r.email))).length;
+    if (unknownCount > 0) {
       return c.json(
-        { ok: false, error: `Daily marketing send cap reached (${remaining} of your daily allowance remaining). Try a smaller batch or wait.` },
-        429,
+        { ok: false, error: `${unknownCount} recipient(s) are not in your imported audience — import them first` },
+        400,
       );
     }
 
-    const result = await sendMarketingBatch({
-      organiserAddress: org,
-      fromDisplayName: fromName,
-      fromAddress: resolveMarketingFrom(org),
-      subject,
-      html: htmlBody,
-      recipients,
+    // Rate limit + cap + send + record run under the org lock so concurrent
+    // broadcasts can't both pass the checks and double the allowance.
+    const outcome = await withOrgLock(org, async () => {
+      const now = Date.now();
+      const timestamps = broadcastRateMap.get(org) ?? [];
+      const recent = timestamps.filter((t) => now - t < BROADCAST_RATE_WINDOW);
+      if (recent.length >= BROADCAST_RATE_LIMIT) {
+        return { rejected: "Rate limit exceeded (2 marketing broadcasts per hour)" } as const;
+      }
+
+      // Daily cap: explicit reject, never silent trimming
+      const remaining = capRemaining(org);
+      if (recipients.length > remaining) {
+        return {
+          rejected: `Daily marketing send cap reached (${remaining} of your daily allowance remaining). Try a smaller batch or wait.`,
+        } as const;
+      }
+
+      const result = await sendMarketingBatch({
+        organiserAddress: org,
+        fromDisplayName: fromName,
+        fromAddress: resolveMarketingFrom(org),
+        subject,
+        html: htmlBody,
+        recipients,
+      });
+
+      recent.push(now);
+      broadcastRateMap.set(org, recent);
+      recordSend(org, result.sent);
+      return { result } as const;
     });
 
-    recent.push(now);
-    broadcastRateMap.set(org, recent);
-    recordSend(org, result.sent);
+    if ("rejected" in outcome) {
+      return c.json({ ok: false, error: outcome.rejected }, 429);
+    }
+    const result = outcome.result;
 
     console.log(
       `[marketing] broadcast org=${org} sent=${result.sent} suppressed=${result.suppressed} failed=${result.failed}`,

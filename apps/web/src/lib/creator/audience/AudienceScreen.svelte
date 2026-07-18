@@ -5,7 +5,6 @@
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { onMount } from "svelte";
   import {
     getMarketingList,
     uploadMarketingList,
@@ -110,12 +109,12 @@
 
   const reachable = $derived(contacts.filter((c) => !suppressedEmails.has(c.email)).length);
 
-  onMount(() => {
-    if (auth.ready && auth.isConnected) void load();
-  });
-
+  // Single-fire load once auth is ready (covers both mount-already-connected
+  // and connect-after-mount without double-fetching).
+  let loadStarted = false;
   $effect(() => {
-    if (auth.ready && auth.isConnected && loading && contacts.length === 0 && !meta && !loadError) {
+    if (auth.ready && auth.isConnected && !loadStarted) {
+      loadStarted = true;
       void load();
     }
   });

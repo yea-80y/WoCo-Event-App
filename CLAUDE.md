@@ -231,7 +231,10 @@ GDPR posture: organiser = data controller, WoCo = processor. Load-bearing facts:
   non-transactional send path: suppression + RFC 8058 List-Unsubscribe/
   List-Unsubscribe-Post headers + footer (provenance + unsub link) are
   unconditional. Refuses to send if PUBLIC_API_BASE unset. Ticket emails are
-  transactional — NO unsubscribe on them, ever.
+  transactional — NO unsubscribe on them, ever. /api/marketing/broadcast also
+  hash-checks every recipient against the stored list (the import wizard's
+  consent warranty is the only path to a sendable address); footer insertion
+  only honours a document-final </body> (mid-doc </body> can't hide it).
 - /u/:token = public unsubscribe page (one-click POST tolerant of empty body).
   Token mu1.* = HMAC(EMAIL_HASH_SECRET-derived key) over {emailHash, org};
   NO expiry (expired unsub link = spam complaint). Rotating EMAIL_HASH_SECRET

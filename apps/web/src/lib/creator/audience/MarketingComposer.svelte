@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { MarketingContact, MarketingBroadcastResult } from "@woco/shared";
   import { sendMarketingBroadcast } from "../../api/marketing.js";
-  import { auth } from "../../auth/auth-store.svelte.js";
 
   interface Props {
     contacts: MarketingContact[];
@@ -74,10 +73,6 @@
       sending = false;
     }
   }
-
-  $effect(() => {
-    if (!fromName && auth.parent) fromName = "";
-  });
 </script>
 
 <section class="composer" aria-label="Compose broadcast">
