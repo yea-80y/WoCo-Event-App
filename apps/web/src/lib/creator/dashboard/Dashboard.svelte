@@ -764,6 +764,9 @@
           {#if broadcastResult}
             <div class="broadcast-result" class:has-failures={broadcastResult.failedCount > 0}>
               Sent to {broadcastResult.sentCount} of {broadcastResult.totalRecipients} recipient{broadcastResult.totalRecipients !== 1 ? "s" : ""}.
+              {#if broadcastResult.suppressedCount > 0}
+                <br>{broadcastResult.suppressedCount} skipped (unsubscribed).
+              {/if}
               {#if broadcastResult.failedCount > 0}
                 <br>{broadcastResult.failedCount} failed.
               {/if}

@@ -445,6 +445,8 @@ export async function webhookRelay(
 export interface BroadcastResponse {
   sentCount: number;
   failedCount: number;
+  /** Recipients skipped because they unsubscribed (or bounced/complained) */
+  suppressedCount: number;
   totalRecipients: number;
   errors?: string[];
 }
