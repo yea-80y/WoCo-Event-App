@@ -131,3 +131,13 @@ export function editionPageCount(totalSupply: number): number {
   if (totalSupply <= PAGE_0_CAPACITY) return 1;
   return 1 + Math.ceil((totalSupply - PAGE_0_CAPACITY) / PAGE_N_CAPACITY);
 }
+
+// ---------------------------------------------------------------------------
+// Marketing feeds — pointer to the organiser's SEALED contact-list blob.
+// The feed page holds only {swarmRef, count, updatedAt}; the blob itself is
+// ECIES-sealed to the organiser's X25519 key (server never sees plaintext).
+// ---------------------------------------------------------------------------
+const MARKETING_NS = "woco/marketing";
+
+export const topicMarketingList = (ethAddress: string) =>
+  Topic.fromString(`${MARKETING_NS}/list/${ethAddress.toLowerCase()}`);

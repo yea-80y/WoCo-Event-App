@@ -30,6 +30,7 @@ import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { unsubscribe } from "./routes/unsubscribe.js";
 import { resendWebhook } from "./routes/resend-webhook.js";
+import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
@@ -451,6 +452,9 @@ app.route("/api/tickets", tickets);
 
 // Resend delivery webhooks (bounce/complaint → global suppression)
 app.route("/api/resend", resendWebhook);
+
+// Organiser marketing audience (sealed contact lists + broadcasts)
+app.route("/api/marketing", marketing);
 
 // Public ticket page + composite PNG — replaces the slow woco.eth.limo/#/verify
 // link in confirmation emails. Mounted at /t (not /api/t) since these are

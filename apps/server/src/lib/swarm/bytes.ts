@@ -1,3 +1,4 @@
+import type { RedundancyLevel } from "@ethersphere/bee-js";
 import { getBee, requirePostageBatch } from "../../config/swarm.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
@@ -94,7 +95,11 @@ function isTransientSwarmError(err: unknown): boolean {
  * with the Etherna gateway selected MUST land on the Etherna batch — only the
  * global directory stays on the WoCo bee.
  */
-export async function uploadToBytes(data: string | Uint8Array, selection?: BatchSelection): Promise<Hex64> {
+export async function uploadToBytes(
+  data: string | Uint8Array,
+  selection?: BatchSelection,
+  options?: { redundancyLevel?: RedundancyLevel },
+): Promise<Hex64> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
   await ensureEthernaToken();
 
@@ -123,7 +128,14 @@ export async function uploadToBytes(data: string | Uint8Array, selection?: Batch
           );
         }
         const result = await withTimeout(
-          getBee().uploadData(batchId, bytes, { deferred: true }),
+          getBee().uploadData(batchId, bytes, {
+            deferred: true,
+            // Erasure coding (marketing lists use STRONG). Etherna path ignores
+            // the option — those callers never pass it.
+            ...(options?.redundancyLevel !== undefined
+              ? { redundancyLevel: options.redundancyLevel }
+              : {}),
+          }),
           BEE_CALL_TIMEOUT_MS,
           "bytes upload",
         );
