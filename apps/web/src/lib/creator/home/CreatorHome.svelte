@@ -33,6 +33,7 @@
   import Plus from "lucide-svelte/icons/plus";
   import AlertCircle from "lucide-svelte/icons/circle-alert";
   import ShieldCheck from "lucide-svelte/icons/shield-check";
+  import Users from "lucide-svelte/icons/users";
   import KeyRound from "lucide-svelte/icons/key-round";
   import Mail from "lucide-svelte/icons/mail";
 
@@ -502,6 +503,27 @@
               {/each}
             </ul>
           {/if}
+        </div>
+
+        <!-- Audience panel — marketing list lives per-organiser, not per-event.
+             Static link (no load: opening the list downloads + decrypts the
+             sealed blob, too heavy for the home screen). -->
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">
+              <Users size={16} strokeWidth={2.25} />
+              Audience
+            </span>
+            <button class="link-quiet" onclick={() => navigate("/creator/audience")}>
+              Open →
+            </button>
+          </div>
+          <div class="panel-empty">
+            <span>Your marketing list — import contacts, broadcast updates.</span>
+            <button class="inline-link" onclick={() => navigate("/creator/audience")}>
+              <Plus size={14} strokeWidth={2.5} /> Import contacts
+            </button>
+          </div>
         </div>
 
         <!-- Account safety panel — only for kinds that can install guardian recovery -->
