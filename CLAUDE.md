@@ -217,6 +217,44 @@ git history + `project_stripe_ux` memory). Load-bearing facts only:
   `<rect>` matrix). Email attaches PNG `cid:woco-card-N`. `PUBLIC_API_BASE` env required.
 
 ============================================================================
+MARKETING AUDIENCE / EMAIL COMPLIANCE (2026-07-18)
+============================================================================
+
+Organiser marketing lists (CSV import from Skiddle/Fatsoma/RA) + broadcasts.
+GDPR posture: organiser = data controller, WoCo = processor. Load-bearing facts:
+
+- SUPPRESSION IS THE GUARANTEE: server-side list keyed by hashEmail() HMAC,
+  checked inside sendMarketingBatch on EVERY non-transactional send — survives
+  CSV re-uploads. Per-organiser scope (default) + global (opt-all/bounce/
+  complaint). Swarm deletion is hygiene, never the enforcement layer.
+- sendMarketingBatch (lib/email/marketing-send.ts) is the ONLY allowed
+  non-transactional send path: suppression + RFC 8058 List-Unsubscribe/
+  List-Unsubscribe-Post headers + footer (provenance + unsub link) are
+  unconditional. Refuses to send if PUBLIC_API_BASE unset. Ticket emails are
+  transactional — NO unsubscribe on them, ever. /api/marketing/broadcast also
+  hash-checks every recipient against the stored list (the import wizard's
+  consent warranty is the only path to a sendable address); footer insertion
+  only honours a document-final </body> (mid-doc </body> can't hide it).
+- /u/:token = public unsubscribe page (one-click POST tolerant of empty body).
+  Token mu1.* = HMAC(EMAIL_HASH_SECRET-derived key) over {emailHash, org};
+  NO expiry (expired unsub link = spam complaint). Rotating EMAIL_HASH_SECRET
+  invalidates all outstanding unsub links AND changes emailHashes.
+- Contact list: sealed CLIENT-SIDE to organiser's X25519 (same as orders),
+  blob on Swarm via uploadToBytes RedundancyLevel.STRONG (first erasure-coding
+  use), pointer feed woco/marketing/list/{addr}. Server keeps only emailHashes.
+  Plaintext emails transit import/check/broadcast bodies transiently (client
+  can't compute the server-secret HMAC) — hashed-and-discarded.
+- Organiser sending domains: Resend Domains API, verify-on-demand (no poller);
+  resolveMarketingFrom: verified org domain → RESEND_FROM_MARKETING → RESEND_FROM.
+  From-domain never bypasses suppression/headers.
+- Resend webhook /api/resend/webhook: bounce/complaint → GLOBAL suppression;
+  SDK-bundled svix verify UNCONDITIONAL (no NODE_ENV gate — forged bounce =
+  targeted email denial); secret unset → acknowledge-and-drop; svix-id dedupe.
+- ESP SEAM: all Resend calls live in lib/email/ — future SES migration touches
+  only that directory. Marketing caps: 2 broadcasts/hr + MARKETING_DAILY_CAP
+  (rolling 24h, default 2000) per organiser; explicit 429, never silent trim.
+
+============================================================================
 EAS LIKES / SOCIAL GRAPH (#4, Arbitrum buildathon)
 ============================================================================
 
@@ -361,6 +399,14 @@ CLAIMS / EVENTS / PAYMENTS:
   apps/server/src/lib/event/reservation-store.ts      # file-backed slot reservation (.data/reservations.json)
   apps/server/src/lib/ticket/render-card.ts           # SVG → 800×1100 composite PNG via resvg-js
 
+MARKETING AUDIENCE:
+  apps/server/src/lib/email/marketing-send.ts        # THE non-transactional send path (suppression+RFC8058)
+  apps/server/src/lib/marketing/{suppression-store,unsub-token,list-store,send-cap,sending-domain-store,consumed-webhook-events}.ts
+  apps/server/src/routes/{marketing,unsubscribe,resend-webhook}.ts  # /api/marketing, /u, /api/resend/webhook
+  apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ContactSearch,MarketingComposer,SendingDomainPanel}.svelte
+  apps/web/src/lib/api/marketing.ts                  # client wrappers
+  packages/shared/src/marketing/types.ts             # MarketingContact, list payload, domain types
+
 EAS LIKES (#4):
   apps/web/src/lib/eas/{eas-abi,attest}.ts            # attestLike/revokeLike (passkey gasless + web3 own-gas)
   apps/web/src/lib/auth/ensure-action.ts              # requireAccountForAction() sign-in-to-act gate
@@ -448,6 +494,9 @@ SECURITY / AUTH:
 - `.data/consumed-tx-hashes.json`, `.data/revoked-sessions.json`, and
   `.data/consumed-stripe-sessions.json` MUST survive server restarts — loaded on
   startup. Don't delete them
+- Same rule for the marketing stores: `.data/marketing-suppression.json` (losing
+  it = emailing people who unsubscribed — legal breach), `marketing-lists.json`,
+  `marketing-domains.json`, `marketing-send-log.json`, `consumed-resend-events.json`
 - `.data/event-listing-state.json` (#37 global-directory listing overlay) MUST survive
   restarts. If it IS lost, the builder self-heals by reseeding from the last snapshot
   (directory-snapshot.ts) rather than publishing an empty directory — but don't rely on

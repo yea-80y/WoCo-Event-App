@@ -28,6 +28,9 @@ import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
+import { unsubscribe } from "./routes/unsubscribe.js";
+import { resendWebhook } from "./routes/resend-webhook.js";
+import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
@@ -447,10 +450,20 @@ app.route("/api/recovery", recovery);
 // Ticket actions (send email, etc.)
 app.route("/api/tickets", tickets);
 
+// Resend delivery webhooks (bounce/complaint → global suppression)
+app.route("/api/resend", resendWebhook);
+
+// Organiser marketing audience (sealed contact lists + broadcasts)
+app.route("/api/marketing", marketing);
+
 // Public ticket page + composite PNG — replaces the slow woco.eth.limo/#/verify
 // link in confirmation emails. Mounted at /t (not /api/t) since these are
 // user-facing URLs that ship in emails.
 app.route("/t", ticketPage);
+
+// Public unsubscribe page (RFC 8058 one-click target) — same no-/api rationale
+// as /t: these URLs ship inside marketing emails.
+app.route("/u", unsubscribe);
 
 // Serve embed bundle so venue site previews can load it directly from the API
 // instead of requiring a deployed BZZ collection.

@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
-import { getResend, getFromAddress } from "../lib/email/client.js";
+import { getResend } from "../lib/email/client.js";
+import { sendMarketingBatch } from "../lib/email/marketing-send.js";
+import { resolveMarketingFrom } from "../lib/marketing/sending-domain-store.js";
 
 const broadcast = new Hono<AppEnv>();
 
@@ -21,11 +23,9 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
 
   try {
     // 1. Check Resend is configured
-    let resend: ReturnType<typeof getResend>;
-    try { resend = getResend(); } catch {
+    try { getResend(); } catch {
       return c.json({ ok: false, error: "Email not configured (RESEND_API_KEY missing)" }, 500);
     }
-    const fromAddress = getFromAddress();
 
     // 2. Load event and verify organiser ownership
     const event = await getEventForOwner(eventId, parentAddress);
@@ -74,44 +74,35 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Rate limit exceeded (5 broadcasts per hour)" }, 429);
     }
 
-    // 5. Send via Resend
-    let sentCount = 0;
-    let failedCount = 0;
-    const errors: string[] = [];
-
-    // Send individually so each recipient only sees their own address
-    for (const recipient of recipients) {
-      try {
-        await resend.emails.send({
-          from: `"${event.title}" <${fromAddress}>`,
-          to: [recipient.email],
-          subject,
-          html: htmlBody,
-        });
-        sentCount++;
-      } catch (err) {
-        failedCount++;
-        const msg = err instanceof Error ? err.message : "Unknown error";
-        errors.push(`${recipient.email}: ${msg}`);
-        console.error(`[broadcast] Failed to send to ${recipient.email}:`, msg);
-      }
-    }
+    // 5. Send through the compliance path: suppression + List-Unsubscribe +
+    // footer are unconditional for every non-transactional email. Event
+    // broadcasts do NOT consume the marketing daily cap (attendee-relationship
+    // mail, already bounded by 5/hr x 500).
+    const result = await sendMarketingBatch({
+      organiserAddress: parentAddress,
+      fromDisplayName: event.title,
+      fromAddress: resolveMarketingFrom(parentAddress),
+      subject,
+      html: htmlBody,
+      recipients,
+    });
 
     // Record the broadcast
     recent.push(now);
     broadcastRateMap.set(parentAddress, recent);
 
     console.log(
-      `[broadcast] eventId=${eventId} sent=${sentCount} failed=${failedCount} subject="${subject.slice(0, 50)}"`,
+      `[broadcast] eventId=${eventId} sent=${result.sent} suppressed=${result.suppressed} failed=${result.failed} subject="${subject.slice(0, 50)}"`,
     );
 
     return c.json({
       ok: true,
       data: {
-        sentCount,
-        failedCount,
+        sentCount: result.sent,
+        failedCount: result.failed,
+        suppressedCount: result.suppressed,
         totalRecipients: recipients.length,
-        ...(errors.length > 0 ? { errors: errors.slice(0, 10) } : {}),
+        ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 10) } : {}),
       },
     });
   } catch (err) {
