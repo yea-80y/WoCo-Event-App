@@ -29,6 +29,7 @@ import { reservations } from "./routes/reservations.js";
 import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { unsubscribe } from "./routes/unsubscribe.js";
+import { resendWebhook } from "./routes/resend-webhook.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
@@ -447,6 +448,9 @@ app.route("/api/recovery", recovery);
 
 // Ticket actions (send email, etc.)
 app.route("/api/tickets", tickets);
+
+// Resend delivery webhooks (bounce/complaint → global suppression)
+app.route("/api/resend", resendWebhook);
 
 // Public ticket page + composite PNG — replaces the slow woco.eth.limo/#/verify
 // link in confirmation emails. Mounted at /t (not /api/t) since these are
