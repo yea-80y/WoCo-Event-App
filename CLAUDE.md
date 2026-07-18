@@ -253,6 +253,11 @@ GDPR posture: organiser = data controller, WoCo = processor. Load-bearing facts:
 - ESP SEAM: all Resend calls live in lib/email/ — future SES migration touches
   only that directory. Marketing caps: 2 broadcasts/hr + MARKETING_DAILY_CAP
   (rolling 24h, default 2000) per organiser; explicit 429, never silent trim.
+- ABUSE GATE (#59): /broadcast + /domain(create) require isVerifiedOrganiser
+  (Stripe charges_enabled, same as paid events/free hosting) → 403
+  STRIPE_VERIFICATION_REQUIRED. Import/read/suppress stay open; event
+  broadcasts deliberately ungated (attendee-relationship mail must not
+  depend on Stripe). UI pre-checks via StripeVerifyGate in AudienceScreen.
 
 ============================================================================
 EAS LIKES / SOCIAL GRAPH (#4, Arbitrum buildathon)

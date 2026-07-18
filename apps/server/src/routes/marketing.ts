@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
+import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
@@ -176,6 +177,23 @@ marketing.post("/suppress", requireAuth, async (c) => {
   return c.json({ ok: true, data: { suppressed: emails.length } });
 });
 
+/** Abuse gate (#59): sending on WoCo's reputation requires a Stripe-verified
+ *  organiser — same charges_enabled check as paid events and free hosting.
+ *  Importing/reading the list stays open; only SENDING (and claiming Resend
+ *  domain slots) is gated. Event broadcasts are deliberately NOT gated here:
+ *  attendee-relationship mail (e.g. cancellations) must not depend on Stripe. */
+async function requireVerifiedSender(org: string): Promise<Response | null> {
+  if (await isVerifiedOrganiser(org)) return null;
+  return Response.json(
+    {
+      ok: false,
+      error: "Connect and verify a Stripe account to send marketing (free — it verifies your identity and protects everyone's deliverability)",
+      code: "STRIPE_VERIFICATION_REQUIRED",
+    },
+    { status: 403 },
+  );
+}
+
 /** Marketing broadcast to client-decrypted recipients. */
 marketing.post("/broadcast", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
@@ -185,6 +203,9 @@ marketing.post("/broadcast", requireAuth, async (c) => {
     try { getResend(); } catch {
       return c.json({ ok: false, error: "Email not configured (RESEND_API_KEY missing)" }, 500);
     }
+
+    const gate = await requireVerifiedSender(org);
+    if (gate) return gate;
 
     const fromName = body.fromName as string;
     const subject = body.subject as string;
@@ -307,6 +328,8 @@ marketing.post("/domain", requireAuth, async (c) => {
   const body = c.get("body") as Record<string, unknown>;
 
   try {
+    const gate = await requireVerifiedSender(org);
+    if (gate) return gate;
     if (getDomain(org)) {
       return c.json({ ok: false, error: "A sending domain is already connected — remove it first" }, 409);
     }
