@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
-import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
+import { getResend } from "../lib/email/client.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
+import { resolveMarketingFrom } from "../lib/marketing/sending-domain-store.js";
 
 const broadcast = new Hono<AppEnv>();
 
@@ -80,7 +81,7 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
     const result = await sendMarketingBatch({
       organiserAddress: parentAddress,
       fromDisplayName: event.title,
-      fromAddress: getMarketingFromAddress(),
+      fromAddress: resolveMarketingFrom(parentAddress),
       subject,
       html: htmlBody,
       recipients,

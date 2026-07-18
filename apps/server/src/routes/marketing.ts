@@ -21,6 +21,13 @@ import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-stor
 import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
+import {
+  getDomain,
+  putDomain,
+  deleteDomain,
+  resolveMarketingFrom,
+  type SendingDomainEntry,
+} from "../lib/marketing/sending-domain-store.js";
 import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
 import { writeFeedPage, encodeJsonFeed } from "../lib/swarm/feeds.js";
 import { topicMarketingList } from "../lib/swarm/topics.js";
@@ -225,7 +232,7 @@ marketing.post("/broadcast", requireAuth, async (c) => {
     const result = await sendMarketingBatch({
       organiserAddress: org,
       fromDisplayName: fromName,
-      fromAddress: getMarketingFromAddress(),
+      fromAddress: resolveMarketingFrom(org),
       subject,
       html: htmlBody,
       recipients,
@@ -252,6 +259,125 @@ marketing.post("/broadcast", requireAuth, async (c) => {
   } catch (err) {
     console.error("[marketing] broadcast error:", err);
     const message = err instanceof Error ? err.message : "Broadcast failed";
+    return c.json({ ok: false, error: message }, 500);
+  }
+});
+
+// ── Organiser sending domain (Resend Domains API) ──────────────────────────
+
+const HOSTNAME_RE = /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+const LOCAL_PART_RE = /^[a-z0-9._-]{1,64}$/i;
+
+function toInfo(entry: SendingDomainEntry): Record<string, unknown> {
+  return {
+    domain: entry.domain,
+    fromLocalPart: entry.fromLocalPart,
+    status: entry.status,
+    records: entry.records,
+    fromAddress:
+      entry.status === "verified"
+        ? `${entry.fromLocalPart}@${entry.domain}`
+        : getMarketingFromAddress(),
+    createdAt: entry.createdAt,
+  };
+}
+
+marketing.post("/domain", requireAuth, async (c) => {
+  const org = c.get("parentAddress").toLowerCase();
+  const body = c.get("body") as Record<string, unknown>;
+
+  try {
+    if (getDomain(org)) {
+      return c.json({ ok: false, error: "A sending domain is already connected — remove it first" }, 409);
+    }
+    const domain = typeof body.domain === "string" ? body.domain.trim().toLowerCase() : "";
+    if (!HOSTNAME_RE.test(domain)) {
+      return c.json({ ok: false, error: "Enter a valid domain, e.g. mail.yourvenue.com" }, 400);
+    }
+    const fromLocalPart =
+      typeof body.fromLocalPart === "string" && body.fromLocalPart.trim()
+        ? body.fromLocalPart.trim().toLowerCase()
+        : "news";
+    if (!LOCAL_PART_RE.test(fromLocalPart)) {
+      return c.json({ ok: false, error: "From name before the @ can only use letters, numbers, dots, dashes" }, 400);
+    }
+
+    const { data, error } = await getResend().domains.create({ name: domain });
+    if (error || !data) {
+      return c.json({ ok: false, error: error?.message || "Domain registration failed" }, 502);
+    }
+
+    const now = new Date().toISOString();
+    const entry: SendingDomainEntry = {
+      resendDomainId: data.id,
+      domain,
+      fromLocalPart,
+      status: data.status,
+      records: (data.records ?? []) as SendingDomainEntry["records"],
+      createdAt: now,
+      updatedAt: now,
+    };
+    putDomain(org, entry);
+    return c.json({ ok: true, data: toInfo(entry) });
+  } catch (err) {
+    console.error("[marketing] domain create error:", err);
+    const message = err instanceof Error ? err.message : "Domain connect failed";
+    return c.json({ ok: false, error: message }, 500);
+  }
+});
+
+marketing.get("/domain", requireAuth, (c) => {
+  const org = c.get("parentAddress").toLowerCase();
+  const entry = getDomain(org);
+  return c.json({ ok: true, data: entry ? toInfo(entry) : null });
+});
+
+marketing.post("/domain/verify", requireAuth, async (c) => {
+  const org = c.get("parentAddress").toLowerCase();
+  try {
+    const entry = getDomain(org);
+    if (!entry) return c.json({ ok: false, error: "No sending domain connected" }, 404);
+
+    // Trigger Resend's verification pass, then read back the current state.
+    await getResend().domains.verify(entry.resendDomainId);
+    const { data, error } = await getResend().domains.get(entry.resendDomainId);
+    if (error || !data) {
+      return c.json({ ok: false, error: error?.message || "Verification check failed" }, 502);
+    }
+
+    const updated: SendingDomainEntry = {
+      ...entry,
+      status: data.status,
+      records: (data.records ?? []) as SendingDomainEntry["records"],
+      updatedAt: new Date().toISOString(),
+    };
+    putDomain(org, updated);
+    return c.json({ ok: true, data: toInfo(updated) });
+  } catch (err) {
+    console.error("[marketing] domain verify error:", err);
+    const message = err instanceof Error ? err.message : "Domain verify failed";
+    return c.json({ ok: false, error: message }, 500);
+  }
+});
+
+marketing.delete("/domain", requireAuth, async (c) => {
+  const org = c.get("parentAddress").toLowerCase();
+  try {
+    const entry = getDomain(org);
+    if (!entry) return c.json({ ok: false, error: "No sending domain connected" }, 404);
+
+    // Best-effort remote removal — always clear locally so the organiser
+    // isn't stuck if the Resend record is already gone.
+    try {
+      await getResend().domains.remove(entry.resendDomainId);
+    } catch (err) {
+      console.warn("[marketing] Resend domain remove failed (clearing locally):", err);
+    }
+    deleteDomain(org);
+    return c.json({ ok: true, data: { removed: true } });
+  } catch (err) {
+    console.error("[marketing] domain delete error:", err);
+    const message = err instanceof Error ? err.message : "Domain removal failed";
     return c.json({ ok: false, error: message }, 500);
   }
 });

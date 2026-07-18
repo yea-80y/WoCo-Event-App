@@ -15,6 +15,7 @@
   import CsvImportWizard from "./CsvImportWizard.svelte";
   import ContactSearch from "./ContactSearch.svelte";
   import MarketingComposer from "./MarketingComposer.svelte";
+  import SendingDomainPanel from "./SendingDomainPanel.svelte";
 
   let loading = $state(true);
   let loadError = $state<string | null>(null);
@@ -207,6 +208,8 @@
     {#if panel === "compose" && contacts.length > 0}
       <MarketingComposer {contacts} {suppressedEmails} />
     {/if}
+
+    <SendingDomainPanel />
   {/if}
 </div>
 
