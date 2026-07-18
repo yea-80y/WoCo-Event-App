@@ -15,6 +15,7 @@
   import ContactSearch from "./ContactSearch.svelte";
   import MarketingComposer from "./MarketingComposer.svelte";
   import SendingDomainPanel from "./SendingDomainPanel.svelte";
+  import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
 
   let loading = $state(true);
   let loadError = $state<string | null>(null);
@@ -24,6 +25,8 @@
   let saving = $state(false);
   let wizardOpen = $state(false);
   let panel = $state<"contacts" | "compose" | null>(null);
+  /** Abuse gate (#59): sending requires a Stripe-verified organiser. */
+  let stripeVerified = $state<boolean | null>(null);
 
   /** X25519 keys derived from the organiser's POD seed (decrypt + re-seal). */
   async function getKeys(): Promise<{ privateKey: Uint8Array; publicKey: Uint8Array } | null> {
@@ -205,10 +208,19 @@
     {/if}
 
     {#if panel === "compose" && contacts.length > 0}
-      <MarketingComposer {contacts} {suppressedEmails} />
+      <StripeVerifyGate
+        bind:verified={stripeVerified}
+        title="Verify Stripe to send broadcasts"
+        sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Your contact list is yours either way: importing and managing it needs nothing."
+      />
+      {#if stripeVerified}
+        <MarketingComposer {contacts} {suppressedEmails} />
+      {/if}
     {/if}
 
-    <SendingDomainPanel />
+    {#if stripeVerified !== false}
+      <SendingDomainPanel />
+    {/if}
   {/if}
 </div>
 

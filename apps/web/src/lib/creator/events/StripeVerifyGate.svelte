@@ -20,8 +20,15 @@
   interface Props {
     /** null = still checking · false = not verified · true = charges_enabled. */
     verified?: boolean | null;
+    /** Override the prompt copy (defaults are the event-creation wording). */
+    title?: string;
+    sub?: string;
   }
-  let { verified = $bindable(null) }: Props = $props();
+  let {
+    verified = $bindable(null),
+    title = "Verify Stripe to accept card payments",
+    sub,
+  }: Props = $props();
 
   let modalOpen = $state(false);
 
@@ -66,10 +73,12 @@
         </svg>
       </span>
       <div class="gate-text">
-        <p class="gate-title">Verify Stripe to accept card payments</p>
+        <p class="gate-title">{title}</p>
         <p class="gate-sub">
           {#if !auth.isConnected}
-            Sign in, then connect Stripe — card payments run through it.
+            Sign in, then connect Stripe — it verifies who you are.
+          {:else if sub}
+            {sub}
           {:else}
             Card payments settle through Stripe, so you need a connected, verified
             account to publish an event with card payments on. In test mode it
