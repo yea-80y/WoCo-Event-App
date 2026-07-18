@@ -248,8 +248,8 @@ GDPR posture: organiser = data controller, WoCo = processor. Load-bearing facts:
   resolveMarketingFrom: verified org domain → RESEND_FROM_MARKETING → RESEND_FROM.
   From-domain never bypasses suppression/headers.
 - Resend webhook /api/resend/webhook: bounce/complaint → GLOBAL suppression;
-  SDK-bundled svix verify; production rejects unsigned (forged bounce =
-  targeted email denial); svix-id dedupe.
+  SDK-bundled svix verify UNCONDITIONAL (no NODE_ENV gate — forged bounce =
+  targeted email denial); secret unset → acknowledge-and-drop; svix-id dedupe.
 - ESP SEAM: all Resend calls live in lib/email/ — future SES migration touches
   only that directory. Marketing caps: 2 broadcasts/hr + MARKETING_DAILY_CAP
   (rolling 24h, default 2000) per organiser; explicit 429, never silent trim.

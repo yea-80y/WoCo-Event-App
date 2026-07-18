@@ -5,9 +5,10 @@
  * Gmail/Yahoo 0.1% line without manual list hygiene.
  *
  * Signature verification uses the SDK's bundled svix verify (throws on bad
- * sig). Production rejects unsigned deliveries — same posture as the Stripe
- * webhook. Recipient addresses appear here transiently in plaintext and are
- * hashed immediately; nothing plaintext is stored.
+ * sig) and is UNCONDITIONAL — no NODE_ENV escape hatch; without a configured
+ * secret events are acknowledged and dropped. Recipient addresses appear here
+ * transiently in plaintext and are hashed immediately; nothing plaintext is
+ * stored.
  */
 
 import { Hono } from "hono";
@@ -21,45 +22,43 @@ const resendWebhook = new Hono<AppEnv>();
 
 interface WebhookEventShape {
   type?: string;
-  data?: { email_id?: string; to?: string[] };
+  data?: { to?: string[] };
 }
 
 resendWebhook.post("/webhook", async (c) => {
+  // A verified signature is the ONLY path to processing: a forged bounce/
+  // complaint would globally suppress arbitrary addresses (targeted denial of
+  // email), so this never depends on NODE_ENV. Without a configured secret we
+  // acknowledge-and-drop rather than parse unauthenticated input; dev testing
+  // sets a real secret (svix CLI or Resend test endpoint).
+  const secret = process.env.RESEND_WEBHOOK_SECRET;
+  if (!secret) {
+    console.warn("[resend-webhook] RESEND_WEBHOOK_SECRET unset — event ignored");
+    return c.json({ ok: true, data: { ignored: true } });
+  }
+
   const rawBody = await c.req.text();
   const svixId = c.req.header("svix-id");
   const svixTimestamp = c.req.header("svix-timestamp");
   const svixSignature = c.req.header("svix-signature");
-  const secret = process.env.RESEND_WEBHOOK_SECRET;
+  if (!svixId || !svixTimestamp || !svixSignature) {
+    return c.json({ ok: false, error: "Webhook signature required" }, 400);
+  }
 
   let event: WebhookEventShape;
-
-  if (secret && svixId && svixTimestamp && svixSignature) {
-    try {
-      event = getResend().webhooks.verify({
-        payload: rawBody,
-        headers: { id: svixId, timestamp: svixTimestamp, signature: svixSignature },
-        webhookSecret: secret,
-      }) as WebhookEventShape;
-    } catch {
-      console.warn("[resend-webhook] signature verification failed");
-      return c.json({ ok: false, error: "Invalid signature" }, 400);
-    }
-  } else if (process.env.NODE_ENV === "production") {
-    // Never process unsigned events in production — a forged bounce webhook
-    // could suppress arbitrary addresses (targeted denial of email).
-    console.warn("[resend-webhook] rejected unsigned webhook in production");
-    return c.json({ ok: false, error: "Webhook signature required" }, 400);
-  } else {
-    try {
-      event = JSON.parse(rawBody) as WebhookEventShape;
-    } catch {
-      return c.json({ ok: false, error: "Invalid JSON" }, 400);
-    }
+  try {
+    event = getResend().webhooks.verify({
+      payload: rawBody,
+      headers: { id: svixId, timestamp: svixTimestamp, signature: svixSignature },
+      webhookSecret: secret,
+    }) as WebhookEventShape;
+  } catch {
+    console.warn("[resend-webhook] signature verification failed");
+    return c.json({ ok: false, error: "Invalid signature" }, 400);
   }
 
   // Exactly-once across svix redeliveries
-  const dedupeKey = svixId || event.data?.email_id;
-  if (dedupeKey && !checkAndConsumeWebhookEvent(dedupeKey)) {
+  if (!checkAndConsumeWebhookEvent(svixId)) {
     return c.json({ ok: true, data: { deduped: true } });
   }
 

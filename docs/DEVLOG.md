@@ -4,6 +4,33 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Marketing audience + email compliance (2026-07-18, PR #58)
+
+Organiser marketing stack: CSV import wizard (papaparse, consent-warranty gate),
+contact lists ECIES-sealed client-side to the organiser's X25519 key (Swarm blob,
+STRONG erasure coding — first use), server keeps only HMAC email hashes.
+`sendMarketingBatch` = the single non-transactional send path (server-side
+suppression re-check, RFC 8058 one-click unsubscribe, provenance footer); event
+broadcasts retrofitted through it. Public `/u/:token` unsubscribe (HMAC token, no
+expiry), Resend bounce/complaint webhook → global suppression, organiser sending
+domains via Resend Domains API, 2/hr + rolling-24h daily send caps.
+
+Fable audit (same day, two rounds):
+- R1 fixes (`7b216ed`): footer insertion anchored to document-final `</body>`
+  (hide-the-footer bypass); broadcast recipients hash-checked ⊆ imported list;
+  cap checks + send + record serialised under per-org lock; control-char strip
+  on fromName/subject; `/u` copy no longer promised a nonexistent resubscribe
+  path; two frontend cleanups.
+- R2 (security review): webhook signature verification made UNCONDITIONAL — no
+  NODE_ENV gate; secret unset ⇒ acknowledge-and-drop, never parse-and-suppress.
+
+Open decisions tracked in GitHub issues (see PR #58 body): abuse gate
+(charges_enabled) before public launch, operational-vs-marketing suppression,
+resubscribe flow, CAN-SPAM postal address, >1000-recipient batching, marketing
+blobs must join the #45 batch cutover.
+
+---
+
 ## Build status (as of 2026-04-09)
 
 ### Core platform — complete
