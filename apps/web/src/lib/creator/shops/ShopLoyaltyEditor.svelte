@@ -24,11 +24,15 @@
   const SYM: Record<string, string> = { GBP: "£", USD: "$", EUR: "€" };
   const sym = $derived(SYM[shop.currency] ?? "");
 
-  let enabled = $state(shop.loyalty?.enabled ?? false);
-  let earnRate = $state<number>(shop.loyalty?.earnRate ?? 0);
+  // One-time capture of the loyalty config as first rendered — the form is a
+  // local draft; later prop refreshes must not clobber in-progress edits.
+  // svelte-ignore state_referenced_locally
+  const initialLoyalty = shop.loyalty;
+  let enabled = $state(initialLoyalty?.enabled ?? false);
+  let earnRate = $state<number>(initialLoyalty?.earnRate ?? 0);
   // Local editable copy of the thresholds.
   let rows = $state<SpendThresholdReward[]>(
-    (shop.loyalty?.spendThresholds ?? []).map((t) => ({ ...t })),
+    (initialLoyalty?.spendThresholds ?? []).map((t) => ({ ...t })),
   );
 
   let badges = $state<PodDirectoryEntry[]>([]);

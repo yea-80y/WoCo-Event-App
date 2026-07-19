@@ -289,13 +289,13 @@
       </div>
     </header>
 
-    <nav class="tabs" role="tablist">
+    <div class="tabs" role="tablist" aria-label="Shop sections">
       {#each [["catalog","Catalog"],["payments","Payments"],["loyalty","Loyalty"],["surfaces","Surfaces"],["orders","Orders"]] as [id, label] (id)}
         <button class="tab" class:active={tab === id} role="tab" aria-selected={tab === id} onclick={() => { tab = id as Tab; }}>
           {label}
         </button>
       {/each}
-    </nav>
+    </div>
 
     <div class="tab-body card">
       {#if tab === "catalog"}

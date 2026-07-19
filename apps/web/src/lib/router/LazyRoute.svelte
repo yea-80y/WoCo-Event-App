@@ -9,8 +9,8 @@
     props?: Record<string, unknown>;
   } = $props();
 
-  const component = loader().then(
-    (m) => m.default as Component<Record<string, unknown>>
+  const component = $derived(
+    loader().then((m) => m.default as Component<Record<string, unknown>>)
   );
 </script>
 

@@ -8,7 +8,7 @@
     tickets: { before: "Your tickets, in your\u00a0", tag: "pocket", after: "." },
     profile: { before: "Your scene, your\u00a0",    tag: "face",   after: "." },
   };
-  const copy = headlines[feature] ?? headlines["tickets"];
+  const copy = $derived(headlines[feature] ?? headlines["tickets"]);
 
   let email = $state("");
   let submitted = $state(false);

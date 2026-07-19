@@ -25,14 +25,18 @@
     return { mode: "any", gates: [g as PodGate], window: { kind: "always" } };
   }
 
-  const initGroup = toGroup(gate);
+  // One-time capture on first render (per the back-compat note above) — the
+  // editor is a local draft; later prop refreshes must not reset it.
+  // svelte-ignore state_referenced_locally
+  const initGate = gate;
+  const initGroup = toGroup(initGate);
 
   type Phase = "idle" | "loading" | "ready" | "error";
   let phase = $state<Phase>("idle");
   let gateable = $state<PodDirectoryEntry[]>([]);
   let error = $state("");
 
-  let enabled = $state(!!gate);
+  let enabled = $state(!!initGate);
   let selectedRefs = $state<string[]>(initGroup?.gates.map((g) => g.manifestRef) ?? []);
   let mode = $state<"any" | "all">(initGroup?.mode ?? "any");
   let windowKind = $state<"always" | "time" | "firstN">(

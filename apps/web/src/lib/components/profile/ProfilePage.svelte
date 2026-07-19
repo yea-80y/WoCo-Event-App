@@ -567,7 +567,7 @@
 
   <!-- ── Tabs (owner only) ──────────────────────────────────── -->
   {#if isOwner}
-    <nav class="tab-nav" role="tablist">
+    <div class="tab-nav" role="tablist" aria-label="Profile sections">
       <button
         class="tab-btn"
         class:tab-active={activeTab === "profile"}
@@ -596,7 +596,7 @@
         role="tab"
         aria-selected={activeTab === "following"}
       >Following</button>
-    </nav>
+    </div>
   {/if}
 
   <!-- ── Tab bodies ─────────────────────────────────────────── -->

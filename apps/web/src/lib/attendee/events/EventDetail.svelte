@@ -37,6 +37,8 @@
   })();
 
   // External API URL — set by home page when navigating to an externally-listed event
+  // (eventId is per-mount stable — the route remounts this component per event)
+  // svelte-ignore state_referenced_locally
   const externalApiUrl = getExternalEventApi(eventId);
 
   /**
@@ -57,6 +59,7 @@
   }
 
   // Synchronous cache read — before first render, so no loading flash on return visits
+  // svelte-ignore state_referenced_locally
   const _KEY = cacheKey.event(eventId);
   const _cached = cacheGet<EventFeed>(_KEY);
 

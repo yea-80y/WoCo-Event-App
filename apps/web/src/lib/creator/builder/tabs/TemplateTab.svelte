@@ -160,7 +160,9 @@
           onclick={() => onselect(t.id)}
         ></button>
 
-        <!-- ── Animated preview ── -->
+        <!-- ── Animated preview ── mouseenter only replays the decorative
+             animation; autoplay covers keyboard/touch users. -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="preview-wrap"
           class:wrap-mobile={viewMode === 'mobile'}

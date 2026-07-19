@@ -475,13 +475,9 @@
     transition: border-color 0.15s, background 0.15s;
     text-align: left;
   }
-  .method-card:hover:not(.method-card--disabled) {
+  .method-card:hover {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 6%, var(--bg-input));
-  }
-  .method-card--disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
   }
   .method-icon {
     color: var(--accent);

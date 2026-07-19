@@ -49,7 +49,7 @@
   let confirmRegen = $state(false);
   let status = $state<CheckinStatus | null>(null);
 
-  const storageKey = `woco:doorpass:${eventId}`;
+  const storageKey = $derived(`woco:doorpass:${eventId}`);
   const hasEncrypted = $derived(orders.some((o) => !!o.encryptedOrder));
   const needsDecrypt = $derived(hasEncrypted && decryptedOrders.size === 0);
 

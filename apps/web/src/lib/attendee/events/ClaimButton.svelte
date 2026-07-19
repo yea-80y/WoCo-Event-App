@@ -77,6 +77,9 @@
   let stripeEmail = $state("");
   /** Last successfully claimed ticket (available for wallet/email direct claims, not Stripe webhook) */
   let lastClaimedTicket = $state<ClaimedTicket | undefined>(undefined);
+  // eventId/seriesId are per-mount stable (component remounts per series) —
+  // the init-time captures below are intentional.
+  // svelte-ignore state_referenced_locally
   const stripeSuccess = useStripeSuccess({ eventId, seriesId });
   let showChainSelector = $state(false);
   let selectedChain = $state<PaymentChainId | null>(null);
@@ -120,12 +123,14 @@
   const _addr = auth.parent?.toLowerCase();
 
   // 1. Permanent claimed cache — checked first (most valuable: zero network calls)
+  // svelte-ignore state_referenced_locally
   const _permanentKey = _addr ? cacheKey.claimed(eventId, seriesId, _addr) : null;
   const _permanentClaimed = _permanentKey
     ? cacheGet<{ edition: number; via: "wallet" | "email" }>(_permanentKey)
     : null;
 
   // 2. Claim status cache (availability count, pending state)
+  // svelte-ignore state_referenced_locally
   const _statusKey = cacheKey.claimStatus(eventId, seriesId, _addr);
   const _cachedStatus = _permanentClaimed
     ? null // no need — we already know the final state
@@ -187,6 +192,7 @@
    * already committed to checkout before ClaimButton mounted (e.g. EventPage
    * mounts us only after "Get tickets" is clicked).
    */
+  // svelte-ignore state_referenced_locally
   let intentToCheckout = $state(eager);
 
   // ──────────────────────────────────────────────────────────────
@@ -367,6 +373,7 @@
     auth.parent?.toLowerCase() ?? "",
   );
 
+  // svelte-ignore state_referenced_locally
   const orderPrefetch = useOrderPrefetch({
     seriesId,
     encryptionKey,
@@ -398,6 +405,7 @@
    * Abuse is bounded by clientKey dedup (one hold per browser per series),
    * per-IP cap, 10-min TTL.
    */
+  // svelte-ignore state_referenced_locally
   const reservationHook = useReservation({
     eventId,
     seriesId,
@@ -429,6 +437,7 @@
   // closed (the $effect above), and successful checkout consumption.
 
   /** sessionStorage key for stashing form data across Stripe redirect */
+  // svelte-ignore state_referenced_locally
   const STRIPE_FORM_KEY = `woco:stripe-form:${eventId}:${seriesId}`;
 
   /** Detect "already claimed" responses and transition to claimed state instead of error */
@@ -445,6 +454,7 @@
     return false;
   }
 
+  // svelte-ignore state_referenced_locally
   const shortfall = useShortfall({ eventId, seriesId });
 
   /** Apply server "Paid X, expected Y" response → shortfall receipt; clears `error` on hit. */
@@ -1258,47 +1268,6 @@
     background: rgba(255, 255, 255, 0.25);
   }
 
-  .stripe-processing {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border: 1px solid var(--accent);
-    background: var(--accent-subtle);
-    border-radius: var(--radius-sm);
-    max-width: 320px;
-  }
-
-  .stripe-processing-spinner {
-    width: 18px;
-    height: 18px;
-    border: 2px solid var(--accent);
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: stripe-processing-spin 0.8s linear infinite;
-    flex-shrink: 0;
-  }
-
-  @keyframes stripe-processing-spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .stripe-processing-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-  }
-
-  .stripe-processing-title {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text);
-  }
-
-  .stripe-processing-sub {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
 
   /* STRIPE EMAIL-SUCCESS MODAL — moved to ./claim/StripeSuccessCard.svelte */
 
