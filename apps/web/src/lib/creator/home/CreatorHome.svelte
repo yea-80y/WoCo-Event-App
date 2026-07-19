@@ -15,6 +15,9 @@
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import OwnedNamesList from "../builder/OwnedNamesList.svelte";
+  import { onboarding } from "./onboarding.svelte.js";
+  import WelcomeModal from "./WelcomeModal.svelte";
+  import GettingStartedCard from "./GettingStartedCard.svelte";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount, onDestroy } from "svelte";
   import { isPastEvent } from "../../utils/events.js";
@@ -198,9 +201,26 @@
     const addr = auth.parent;
     if (!auth.isConnected || !addr) {
       resetState();
+      onboarding.reset();
       return;
     }
+    onboarding.loadFor(addr);
     loadFor(addr.toLowerCase());
+  });
+
+  // First-visit welcome — only once the panels have resolved, so an already
+  // set-up organiser (events + sites + Stripe all present) never sees a flash
+  // of onboarding they don't need.
+  let welcomeOpen = $state(false);
+  const setupComplete = $derived(events.length > 0 && sites.length > 0 && stripeReady === true);
+  const panelsResolved = $derived(!loadingEvents && !loadingSites && stripeReady !== null);
+  $effect(() => {
+    welcomeOpen =
+      auth.isConnected &&
+      panelsResolved &&
+      !setupComplete &&
+      !onboarding.record.seenWelcome &&
+      !onboarding.record.dismissed;
   });
 
   // Quick suggestions — show only what's actionable
@@ -216,14 +236,18 @@
         },
       });
     }
-    if (auth.isConnected && stripeReady === false) {
+    // The Getting Started checklist owns the Stripe + first-event prompts while
+    // it's visible — duplicating them here would be the bombardment the
+    // onboarding is meant to avoid.
+    const checklistVisible = !onboarding.record.dismissed && !setupComplete;
+    if (auth.isConnected && stripeReady === false && !checklistVisible) {
       out.push({
         kind: "stripe",
         label: "Finish Stripe onboarding to accept card payments",
         action: () => navigate("/creator/events"),
       });
     }
-    if (auth.isConnected && events.length === 0 && sites.length === 0) {
+    if (auth.isConnected && events.length === 0 && sites.length === 0 && !checklistVisible) {
       out.push({
         kind: "empty",
         label: "You're just starting out — try creating your first event",
@@ -281,6 +305,8 @@
   );
 </script>
 
+<WelcomeModal bind:open={welcomeOpen} />
+
 <div class="studio">
 
   <!-- ── Hero stat strip ─────────────────────────────────────────────── -->
@@ -315,6 +341,14 @@
   </section>
 
   <ReferralConfirmBanner />
+
+  {#if auth.isConnected && panelsResolved && !onboarding.record.dismissed}
+    <GettingStartedCard
+      {stripeReady}
+      eventsCount={events.length}
+      sitesCount={sites.length}
+    />
+  {/if}
 
   {#if !auth.isConnected}
     <section class="signin-callout card">
