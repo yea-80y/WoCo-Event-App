@@ -551,7 +551,7 @@
     </div>
   {/snippet}
 
-  {#snippet eventsLogGrid(list, emptyText)}
+  {#snippet eventsLogGrid(list: EventDirectoryEntry[], emptyText: string)}
     {#if list.length === 0}
       <div class="events-empty events-empty--nested">
         <p class="empty-sub">{emptyText}</p>
