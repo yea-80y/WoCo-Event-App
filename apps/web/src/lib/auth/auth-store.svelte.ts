@@ -50,6 +50,11 @@ let _podPublicKeyHex = $state<string | null>(null);
 let _ready = $state(false);
 let _busy = $state(false);
 
+// Login progress for the modal's authenticating scene — display-only, never
+// gates logic. "waiting" = the user-facing credential step (WebAuthn prompt,
+// wallet popup, Web3Auth modal); "finalizing" = post-credential account setup.
+let _loginStage = $state<"waiting" | "finalizing" | null>(null);
+
 // In-memory only — never exposed reactively
 let _passkeyPrivateKey: string | null = null;
 let _web3authPrivateKey: string | null = null;
@@ -538,15 +543,19 @@ async function _deleteRecoveryBinding(podAddress: string): Promise<void> {
  * VERIFY ON-CHAIN that the preserved Kernel's current ECDSA owner equals this
  * device's PRF-EOA before trusting it — the chain, not the blob, is the authority.
  *
- * Pure check: returns `{ preserved, podSeed }` to apply, or null. The caller does
- * the storage writes (storePodSeed + binding) AFTER `_clearStaleAuthForSwitch`,
- * which would otherwise wipe a freshly-stored seed. The read is unauthenticated,
- * so this works during login before any session exists.
+ * Pure check: returns `{ preserved, podSeed }` to apply, `null` when the probe
+ * definitively found no envelope (the cacheable answer for a never-recovered
+ * account), or `"unavailable"` when the check errored or an envelope was found
+ * but could not be verified on-chain — treated as absent for THIS login but
+ * never cached. The caller does the storage writes (storePodSeed + binding)
+ * AFTER `_clearStaleAuthForSwitch`, which would otherwise wipe a freshly-stored
+ * seed. The read is unauthenticated, so this works during login before any
+ * session exists.
  */
 async function _verifyPortabilityEnvelope(
   passkeyPrivKey: string,
   podAddress: string,
-): Promise<{ preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string } | null> {
+): Promise<{ preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string } | null | "unavailable"> {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
     const opened = await readPortabilityEnvelope({ passkeyPrivKey });
@@ -554,12 +563,14 @@ async function _verifyPortabilityEnvelope(
 
     // Trust backstop: the override is applied ONLY if the deployed Kernel at the
     // claimed address currently has THIS PRF-EOA as its ECDSA sudo owner. A
-    // stale/forged envelope pointing elsewhere fails here and is discarded.
+    // stale/forged envelope pointing elsewhere fails here and is discarded —
+    // but as "unavailable", not "absent": an RPC blip on the owner read must
+    // not poison the returning-device cache.
     const { readKernelEcdsaOwner } = await import("./kernel-account.js");
     const owner = await readKernelEcdsaOwner(opened.preservedKernelAddress);
     if (!owner || owner.toLowerCase() !== podAddress.toLowerCase()) {
       console.warn("[auth] portability envelope failed on-chain owner check — ignoring");
-      return null;
+      return "unavailable";
     }
     return {
       preserved: opened.preservedKernelAddress as `0x${string}`,
@@ -568,7 +579,7 @@ async function _verifyPortabilityEnvelope(
     };
   } catch (e) {
     console.warn("[auth] portability envelope check failed (non-fatal):", e);
-    return null;
+    return "unavailable";
   }
 }
 
@@ -852,16 +863,87 @@ async function init(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Kernel-address login cache — the RETURNING-device fast path
+//
+// A Kernel-backed login's parent address is a pure function of the owner EOA
+// (CREATE2), yet every explicit login used to rebuild the Kernel (viem+zerodev
+// chunk + ZeroDev RPC) just to re-learn it — and passkey logins additionally
+// probed Swarm for a portability envelope that, for a never-recovered account,
+// does not exist (a missing-chunk probe is a full network search — seconds).
+// Both results are stable per EOA, so they are cached durably (localStorage,
+// survives logout — same class as RECOVERED_KERNEL_BINDING):
+//
+//  - the entry is written ONLY when no recovery binding existed at login and
+//    (passkey) the envelope probe definitively found nothing;
+//  - a recovery can never make a cached entry stale: it always mints a FRESH
+//    credential (new EOA), and an existing EOA that becomes a recovered
+//    account's new owner gets a durable binding, which is checked BEFORE this
+//    cache and takes precedence;
+//  - safety net: the cache only short-circuits login. `_ensureKernel*` still
+//    asserts the rebuilt Kernel address against the parent on first on-chain
+//    use, and the server authorizes sessions by owner-of-Kernel — a corrupt
+//    entry fails loudly, it cannot attach a divergent identity.
+//
+// Residual risk (accepted): a recovered account's FIRST login on a new device
+// during a total gateway+server outage reads the envelope as absent — today
+// that login already lands in the wrong counterfactual account; the cache makes
+// the retry sticky until recovery is re-run on this device (which writes the
+// binding, healing it). The navigator.onLine guard covers the hard-offline case.
+// ---------------------------------------------------------------------------
+
+const KERNEL_ADDR_CACHE_PREFIX = "woco:kaddr:";
+
+function readCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string): string | null {
+  try {
+    const v = globalThis.localStorage?.getItem(
+      `${KERNEL_ADDR_CACHE_PREFIX}${kind}:${eoa.toLowerCase()}`,
+    );
+    return v && /^0x[0-9a-f]{40}$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string, kernelAddress: string): void {
+  try {
+    globalThis.localStorage?.setItem(
+      `${KERNEL_ADDR_CACHE_PREFIX}${kind}:${eoa.toLowerCase()}`,
+      kernelAddress.toLowerCase(),
+    );
+  } catch {
+    /* cache is best-effort */
+  }
+}
+
+/** True if ANY Kernel-backed login has completed on this device — the signal
+ *  that the next login will very likely take the fast path (no Kernel build),
+ *  so the heavy viem/zerodev prefetch would be wasted bytes. */
+function hasAnyCachedKernelAddress(): boolean {
+  try {
+    const ls = globalThis.localStorage;
+    if (!ls) return false;
+    for (let i = 0; i < ls.length; i++) {
+      if (ls.key(i)?.startsWith(KERNEL_ADDR_CACHE_PREFIX)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Login — method-specific (connect/create only, NO EIP-712 popups)
 // ---------------------------------------------------------------------------
 
 async function loginWeb3(): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
+  _loginStage = "waiting";
 
   try {
     const address = await connectWallet();
     if (!address) return false;
+    _loginStage = "finalizing";
 
     await _clearStaleAuthForSwitch(address);
 
@@ -885,6 +967,7 @@ async function loginWeb3(): Promise<boolean> {
     return false;
   } finally {
     _busy = false;
+    _loginStage = null;
   }
 }
 
@@ -897,10 +980,39 @@ async function loginWeb3(): Promise<boolean> {
 async function loginWeb3Auth(): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
+  _loginStage = "waiting";
 
   try {
     const { loginWithWeb3Auth } = await import("./web3auth-account.js");
     const { address, privateKey } = await loginWithWeb3Auth();
+    _loginStage = "finalizing";
+
+    // FAST PATH (returning device): Kernel address already resolved for this
+    // EOA on a previous non-recovered login — skip the build (viem/zerodev
+    // chunk + ZeroDev RPC); `_ensureKernelForWeb3Auth` rebuilds + asserts
+    // lazily, exactly like the reload-restore path. Binding checked first so a
+    // recovered account always resolves through its preserved address.
+    const fastOverride = await _recoveryKernelFor(address);
+    if (!fastOverride) {
+      const cachedKernel = readCachedKernelAddress("web3auth", address);
+      if (cachedKernel) {
+        await _clearStaleAuthForSwitch(cachedKernel);
+        await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
+        await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
+        await putKV(StorageKeys.POD_ADDRESS, address);
+        _kind = "web3auth";
+        _parent = cachedKernel;
+        _web3authPrivateKey = privateKey;
+        _web3authPodAddress = address;
+        _kernel = null;
+        _passkeyPrivateKey = null;
+        await _restoreCachedAuth();
+        await _establishFeedSignerEagerly();
+        _cleanupAccountListener?.();
+        _cleanupAccountListener = null;
+        return true;
+      }
+    }
 
     // Kernelize: build the ZeroDev Kernel from the raw Web3Auth key. The Kernel
     // address (not the EOA) becomes the parent identity, so email users get the
@@ -914,7 +1026,7 @@ async function loginWeb3Auth(): Promise<boolean> {
     // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
     // NEW device recovers by re-running the portal.)
     const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
-    let override = await _recoveryKernelFor(address);
+    let override = fastOverride;
     if (override) {
       // Stale-binding guard: only trust the local binding if the preserved Kernel
       // still has THIS EOA as its on-chain ECDSA owner (mirror loginPasskey) —
@@ -952,6 +1064,12 @@ async function loginWeb3Auth(): Promise<boolean> {
     // without this a re-login would read the empty legacy feed until the next write.
     await _establishFeedSignerEagerly();
 
+    // Seed the returning-device fast path (never for a recovered account — its
+    // binding is the authority and is checked before the cache anyway).
+    if (!override) {
+      writeCachedKernelAddress("web3auth", address, kernel.address);
+    }
+
     _cleanupAccountListener?.();
     _cleanupAccountListener = null;
 
@@ -961,7 +1079,57 @@ async function loginWeb3Auth(): Promise<boolean> {
     return false;
   } finally {
     _busy = false;
+    _loginStage = null;
   }
+}
+
+/**
+ * Idle-prefetch the chunks a passkey login needs (ethers for PRF-key
+ * derivation + session signing; viem/zerodev for a first-device Kernel build)
+ * so the post-biometric path never stalls on a chunk download. Call from
+ * PasskeyLogin mount — the modal being open is the intent signal. Chunks are
+ * immutable-cached, so repeat opens cost nothing.
+ */
+let _passkeyPrefetch: Promise<void> | null = null;
+function prefetchPasskeySdk(): Promise<void> {
+  if (!_passkeyPrefetch) {
+    // Returning devices (any cached Kernel address) take the fast path, which
+    // needs only ethers — don't pull the viem/zerodev chunk for them.
+    const heavy = hasAnyCachedKernelAddress()
+      ? []
+      : [
+          import("viem"),
+          import("viem/accounts"),
+          import("viem/chains"),
+          import("@zerodev/sdk"),
+          import("@zerodev/ecdsa-validator"),
+          import("@zerodev/sdk/constants"),
+        ];
+    _passkeyPrefetch = Promise.all([import("ethers"), ...heavy]).then(
+      () => undefined,
+      () => {
+        _passkeyPrefetch = null; // failed fetch → allow retry on next call
+      },
+    );
+  }
+  return _passkeyPrefetch;
+}
+
+/**
+ * Idle-prefetch the Web3Auth modal SDK (large) so "Continue with Email" spends
+ * its click on `init()` + the modal, not on downloading the bundle.
+ */
+let _web3authPrefetch: Promise<void> | null = null;
+function prefetchWeb3AuthSdk(): Promise<void> {
+  if (!_web3authPrefetch) {
+    _web3authPrefetch = import("@web3auth/modal").then(
+      () => undefined,
+      () => {
+        _web3authPrefetch = null;
+      },
+    );
+  }
+  return _web3authPrefetch;
 }
 
 /**
@@ -996,11 +1164,13 @@ function prefetchCoinbaseSdk(): Promise<void> {
 async function loginCoinbase(): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
+  _loginStage = "waiting";
 
   try {
     await prefetchCoinbaseSdk();
     const { connectCoinbase } = await import("./coinbase-account.js");
     const { address } = await connectCoinbase();
+    _loginStage = "finalizing";
 
     await _clearStaleAuthForSwitch(address);
     await putKV(StorageKeys.AUTH_KIND, "coinbase" as AuthKind);
@@ -1020,16 +1190,47 @@ async function loginCoinbase(): Promise<boolean> {
     return false;
   } finally {
     _busy = false;
+    _loginStage = null;
   }
 }
 
 async function loginPasskey(): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
+  _loginStage = "waiting";
 
   try {
     // Always use discoverable get() → shows passkey picker → falls back to create
     const account = await authenticatePasskey();
+    _loginStage = "finalizing";
+
+    let override = await _recoveryKernelFor(account.address);
+
+    // FAST PATH (returning device, never-recovered passkey): a previous login
+    // on this device already resolved this PRF-EOA — Kernel address cached, the
+    // portability probe definitively found no envelope, no recovery binding.
+    // Both facts are stable per EOA (see the cache header comment), so skip the
+    // multi-second Swarm probe AND the Kernel build entirely; the Kernel is
+    // rebuilt lazily on first on-chain use (`_ensureKernel`, which asserts the
+    // address against this parent), exactly like the reload-restore path.
+    if (!override) {
+      const cachedKernel = readCachedKernelAddress("passkey", account.address);
+      if (cachedKernel) {
+        await _clearStaleAuthForSwitch(cachedKernel);
+        await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+        await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
+        await putKV(StorageKeys.POD_ADDRESS, account.address);
+        _kind = "passkey";
+        _parent = cachedKernel;
+        _passkeyPrivateKey = account.privateKey;
+        _podAddress = account.address;
+        _kernel = null;
+        await _restoreCachedAuth();
+        _cleanupAccountListener?.();
+        _cleanupAccountListener = null;
+        return true;
+      }
+    }
 
     // Build the ZeroDev Kernel; its deterministic address is the parent identity.
     // The raw PRF key remains the POD source + the Kernel's ECDSA sudo signer.
@@ -1037,7 +1238,7 @@ async function loginPasskey(): Promise<boolean> {
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
     const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
-    let override = await _recoveryKernelFor(account.address);
+    const hadBinding = !!override;
 
     // Guard: verify the local binding's Kernel still has this PRF-EOA as its
     // on-chain ECDSA owner before trusting it. A stale binding (recovery tx
@@ -1070,12 +1271,18 @@ async function loginPasskey(): Promise<boolean> {
     let portabilityRestore:
       | { preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string }
       | null = null;
+    let envelopeAbsent = false;
     const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
     const podSeedPresent = !!(await restorePodSeed(account.address));
     const feedSignerPresent = override ? !!(await restoreContentFeedSigner(override)) : false;
     if (!override || !podSeedPresent || !feedSignerPresent) {
-      portabilityRestore = await _verifyPortabilityEnvelope(account.privateKey, account.address);
-      if (portabilityRestore && !override) override = portabilityRestore.preserved;
+      const check = await _verifyPortabilityEnvelope(account.privateKey, account.address);
+      if (check === null) {
+        envelopeAbsent = true; // definitive — makes this login cacheable below
+      } else if (check !== "unavailable") {
+        portabilityRestore = check;
+        if (!override) override = check.preserved;
+      }
     }
 
     const kernel = await buildKernelFromPrivateKey(
@@ -1114,6 +1321,13 @@ async function loginPasskey(): Promise<boolean> {
 
     await _restoreCachedAuth();
 
+    // Seed the returning-device fast path: only a never-recovered login may
+    // cache (no binding, probe DEFINITIVELY empty — "unavailable" never lands
+    // here), and never while offline (an offline probe can't be definitive).
+    if (!hadBinding && envelopeAbsent && navigator.onLine !== false) {
+      writeCachedKernelAddress("passkey", account.address, kernel.address);
+    }
+
     _cleanupAccountListener?.();
     _cleanupAccountListener = null;
 
@@ -1123,6 +1337,7 @@ async function loginPasskey(): Promise<boolean> {
     return false;
   } finally {
     _busy = false;
+    _loginStage = null;
   }
 }
 
@@ -1871,6 +2086,8 @@ export const auth = {
   get podAddress() { return _getPodAddress(); },
   get ready() { return _ready; },
   get busy() { return _busy; },
+  // Display-only login progress for the modal's authenticating scene.
+  get loginStage() { return _loginStage; },
   get hasSession() { return hasSession; },
   get hasPodIdentity() { return hasPodIdentity; },
   get isConnected() { return isConnected; },
@@ -1883,6 +2100,8 @@ export const auth = {
   loginWeb3Auth,
   loginCoinbase,
   prefetchCoinbaseSdk,
+  prefetchPasskeySdk,
+  prefetchWeb3AuthSdk,
   ensureSession,
   logout,
   ensurePodIdentity,
