@@ -169,6 +169,8 @@
 
     {#if addPageOpen}
       <div class="add-page-form">
+        <!-- Form only appears on explicit "+" click — focusing it is the point. -->
+        <!-- svelte-ignore a11y_autofocus -->
         <input
           class="input"
           type="text"

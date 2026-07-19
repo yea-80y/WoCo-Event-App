@@ -50,6 +50,7 @@
   // Best-effort event title from cache. Don't block first paint on a fetch —
   // the success card stands alone without it; the line just renders without a
   // title until the fresh GET resolves.
+  // svelte-ignore state_referenced_locally
   const _cachedEvent = cacheGet<EventFeed>(cacheKey.event(eventId));
   let eventTitle = $state<string | null>(_cachedEvent?.title ?? null);
 
@@ -240,8 +241,7 @@
     gap: 0.5rem;
     margin-bottom: 1rem;
   }
-  .btn-primary,
-  .btn-secondary {
+  .btn-primary {
     width: 100%;
     padding: 0.75rem 1rem;
     font-weight: 600;
@@ -249,19 +249,11 @@
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
-  }
-  .btn-primary {
     background: var(--accent);
     color: var(--accent-ink, #fff);
     border: 1px solid var(--accent);
   }
   .btn-primary:hover { background: var(--accent-hover); }
-  .btn-secondary {
-    background: transparent;
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-  }
-  .btn-secondary:hover { border-color: var(--text-muted); color: var(--text); }
   .foot {
     margin: 0.25rem 0 0;
     font-size: 0.6875rem;

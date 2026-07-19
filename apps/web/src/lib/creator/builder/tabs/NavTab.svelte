@@ -85,8 +85,9 @@
     <div class="add-form">
       <div class="add-form-row">
         <div class="field">
-          <label class="field-label">Page</label>
+          <label class="field-label" for="nav-add-page">Page</label>
           <select
+            id="nav-add-page"
             class="input select"
             value={addSlug}
             onchange={(e) => onSlugChange((e.currentTarget as HTMLSelectElement).value)}
@@ -98,8 +99,9 @@
           </select>
         </div>
         <div class="field">
-          <label class="field-label">Label</label>
+          <label class="field-label" for="nav-add-label">Label</label>
           <input
+            id="nav-add-label"
             class="input"
             type="text"
             placeholder="Nav label"

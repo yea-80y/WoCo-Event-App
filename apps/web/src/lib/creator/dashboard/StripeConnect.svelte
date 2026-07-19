@@ -574,23 +574,6 @@
     max-width: 360px;
   }
 
-  .features {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-    margin: 0.5rem 0;
-    width: 100%;
-    max-width: 280px;
-  }
-
-  .feature {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-  }
-
   /* ── CTA button ──────────────────────────────── */
   .stripe-cta {
     display: inline-flex;

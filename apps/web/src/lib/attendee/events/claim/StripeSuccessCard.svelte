@@ -12,6 +12,7 @@
   role="dialog"
   aria-modal="true"
   aria-labelledby="ses-title"
+  tabindex="-1"
   onclick={(e) => { if ((e.target as HTMLElement).classList.contains("ses-overlay")) ondismiss(); }}
   onkeydown={(e) => { if (e.key === "Escape") ondismiss(); }}
 >

@@ -294,7 +294,8 @@
 
   {#if open}
     <div bind:this={popoverEl} class="cf-pop" role="dialog" aria-label="Colour picker">
-      <!-- SV plane -->
+      <!-- SV plane — pointer-drag surface; the hex input below is the keyboard path -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         bind:this={svEl}
         class="cf-sv"
@@ -312,7 +313,8 @@
         ></div>
       </div>
 
-      <!-- Hue strip -->
+      <!-- Hue strip — pointer-drag surface; the hex input below is the keyboard path -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         bind:this={hueEl}
         class="cf-hue"

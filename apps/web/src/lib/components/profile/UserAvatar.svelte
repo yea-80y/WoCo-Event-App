@@ -20,15 +20,9 @@
   // same as site/event images. Content-addressed ref ⇒ any source is safe.
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL as string | undefined;
 
-  let fetched = $state<UserProfile | null>(propProfile ?? null);
-  let loaded = $state(propProfile !== undefined);
-
-  // Keep in sync when parent passes updated profile data
-  $effect(() => {
-    if (propProfile !== undefined) {
-      fetched = propProfile;
-    }
-  });
+  // Parent-provided profile wins; self-fetch only when none was passed.
+  let remote = $state<UserProfile | null>(null);
+  const fetched = $derived(propProfile !== undefined ? propProfile : remote);
 
   // Deterministic gradient from address
   function addressGradient(addr: string): string {
@@ -50,20 +44,27 @@
   onMount(() => {
     if (propProfile !== undefined) return;
     getProfile(address).then((p) => {
-      fetched = p;
-      loaded = true;
+      remote = p;
     });
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- Role/tabindex are dynamic (button when clickable, img otherwise) — the
+     static analyser can't see that, hence the ignore. Keyboard path is real. -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
   class="avatar"
   class:clickable
   style="width:{size}px;height:{size}px;background:{avatarUrl ? 'none' : addressGradient(address)};font-size:{Math.max(size * 0.38, 10)}px"
   role={clickable ? "button" : "img"}
-  tabindex={clickable ? 0 : -1}
+  tabindex={clickable ? 0 : undefined}
   onclick={() => clickable && onclick?.()}
+  onkeydown={(e) => {
+    if (clickable && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      onclick?.();
+    }
+  }}
 >
   {#if avatarUrl}
     <img

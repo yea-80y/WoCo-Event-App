@@ -1321,21 +1321,6 @@
     color: var(--text);
   }
 
-  .fee-payout-line {
-    display: flex;
-    justify-content: space-between;
-    border-top: 1px dashed var(--border);
-    padding-top: 0.375rem;
-    margin-top: 0.125rem;
-    font-weight: 600;
-    color: var(--success);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .fee-payout-value {
-    color: var(--success);
-  }
-
   /* ── Card payments row (card-only mode) ── */
   .card-payments-row {
     display: flex;

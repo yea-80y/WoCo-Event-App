@@ -52,6 +52,8 @@
   let phase = $state<Phase>("form");
   let errorMsg = $state("");
   let permission = $state<ShopSpendPermission | null>(null);
+  // Form seed — one-time capture of the suggested cap is intentional.
+  // svelte-ignore state_referenced_locally
   let capInput = $state(String(defaultCapMinor / 100));
   let copied = $state(false);
   let qrSvg = $state<string | null>(null);

@@ -23,19 +23,23 @@
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
-  // Drafts seeded from the live feed; dates convert ISO → local picker format.
-  let title = $state(event.title);
-  let tagline = $state(event.tagline ?? "");
-  let description = $state(event.description);
-  let startDate = $state(toLocalInput(new Date(event.startDate)));
-  let endDate = $state(toLocalInput(new Date(event.endDate)));
-  let location = $state(event.location);
-  let geo = $state<EventGeo | undefined>(event.geo);
-  let tags = $state<EventTag[]>(event.tags ?? []);
+  // Drafts seeded from the feed as first rendered; dates convert ISO → local
+  // picker format. One-time capture is intentional — later prop refreshes must
+  // not clobber in-progress edits (dirty-checks in buildUpdates read the live prop).
+  // svelte-ignore state_referenced_locally
+  const initial = event;
+  let title = $state(initial.title);
+  let tagline = $state(initial.tagline ?? "");
+  let description = $state(initial.description);
+  let startDate = $state(toLocalInput(new Date(initial.startDate)));
+  let endDate = $state(toLocalInput(new Date(initial.endDate)));
+  let location = $state(initial.location);
+  let geo = $state<EventGeo | undefined>(initial.geo);
+  let tags = $state<EventTag[]>(initial.tags ?? []);
   // Seeded with the CURRENT image (gateway URL) so the picker shows it; only a
   // data: URL (a fresh upload) is ever sent to the server.
   let imageDataUrl = $state<string | null>(
-    event.imageHash ? `${BEE_GATEWAY}/bytes/${event.imageHash}` : null,
+    initial.imageHash ? `${BEE_GATEWAY}/bytes/${initial.imageHash}` : null,
   );
 
   let saving = $state(false);

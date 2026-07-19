@@ -774,16 +774,7 @@
     font-size: 0.875rem; font-weight: 600; color: var(--text);
     display: flex; align-items: center; gap: 0.375rem;
   }
-  .optional { font-weight: 400; color: var(--text-muted); font-size: 0.8rem; }
-  .input {
-    width: 100%; padding: 0.625rem 0.875rem;
-    background: var(--bg-input, var(--bg-surface)); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); color: var(--text); font-size: 0.9375rem;
-    transition: border-color var(--transition); font-family: inherit;
-  }
-  .input:focus { outline: none; border-color: var(--accent); }
   .field-hint { font-size: 0.8125rem; color: var(--text-muted); margin: 0; line-height: 1.5; }
-  .field-hint a { color: var(--accent-text); }
 
   .site-add-error { margin: 0; font-size: 0.8125rem; color: var(--error); }
   .site-add-error code { font-family: var(--font-mono); font-size: 0.75rem; }
