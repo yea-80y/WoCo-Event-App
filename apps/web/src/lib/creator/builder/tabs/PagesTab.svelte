@@ -113,6 +113,42 @@
     expandedSectionId = expandedSectionId === id ? null : id;
   }
 
+  // ── Drag-to-reorder (arrows kept as the keyboard-accessible path) ──────────
+  let dragIndex = $state<number | null>(null);
+  let dropIndex = $state<number | null>(null);
+
+  function handleDragStart(i: number, e: DragEvent) {
+    dragIndex = i;
+    expandedSectionId = null; // collapse while dragging — the card is the unit
+    if (e.dataTransfer) {
+      e.dataTransfer.setData('text/plain', String(i)); // Firefox needs data set
+      e.dataTransfer.effectAllowed = 'move';
+    }
+  }
+
+  function handleDragOver(i: number, e: DragEvent) {
+    if (dragIndex === null) return;
+    e.preventDefault();
+    dropIndex = i;
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  }
+
+  function handleDrop(i: number, e: DragEvent) {
+    e.preventDefault();
+    if (dragIndex !== null && dragIndex !== i) {
+      const secs = site.pages[pi].sections;
+      const [moved] = secs.splice(dragIndex, 1);
+      secs.splice(i, 0, moved);
+    }
+    dragIndex = null;
+    dropIndex = null;
+  }
+
+  function handleDragEnd() {
+    dragIndex = null;
+    dropIndex = null;
+  }
+
   // ── Section type metadata ─────────────────────────────────────────────────────
   interface SectionTypeMeta {
     type: SectionType;
@@ -232,11 +268,29 @@
           <p>No sections yet. Add one below.</p>
         </div>
       {:else}
-        <div class="section-list">
+        <div class="section-list" role="list">
           {#each selectedPage.sections as sec, i (sec.id)}
             {@const meta = sectionMeta(sec.type)}
-            <div class="section-card" class:expanded={expandedSectionId === sec.id}>
+            <div
+              class="section-card"
+              class:expanded={expandedSectionId === sec.id}
+              class:dragging={dragIndex === i}
+              class:drop-target={dropIndex === i && dragIndex !== null && dragIndex !== i}
+              role="listitem"
+              ondragover={(e) => handleDragOver(i, e)}
+              ondrop={(e) => handleDrop(i, e)}
+            >
               <div class="section-card-header">
+                <button
+                  class="drag-grip"
+                  title="Drag to reorder (or use the arrow buttons)"
+                  aria-label="Drag to reorder"
+                  draggable="true"
+                  ondragstart={(e) => handleDragStart(i, e)}
+                  ondragend={handleDragEnd}
+                >
+                  <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true"><circle cx="2.5" cy="2.5" r="1.2"/><circle cx="7.5" cy="2.5" r="1.2"/><circle cx="2.5" cy="7" r="1.2"/><circle cx="7.5" cy="7" r="1.2"/><circle cx="2.5" cy="11.5" r="1.2"/><circle cx="7.5" cy="11.5" r="1.2"/></svg>
+                </button>
                 <button class="section-toggle" onclick={() => toggleExpand(sec.id)}>
                   <span class="type-badge" style="background: {meta.color}22; color: {meta.color}; border-color: {meta.color}44">
                     {@html meta.icon} {meta.label}
@@ -298,7 +352,15 @@
     min-height: 60vh;
   }
 
+  /* Collapse to one column when the surrounding container is narrow — a small
+     viewport OR the builder's side rail next to the live canvas. */
   @media (max-width: 767px) {
+    .pages-tab {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @container builder-rail (max-width: 767px) {
     .pages-tab {
       grid-template-columns: 1fr;
     }
@@ -314,6 +376,15 @@
   }
 
   @media (max-width: 767px) {
+    .pages-sidebar {
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      padding-right: 0;
+      padding-bottom: 1rem;
+    }
+  }
+
+  @container builder-rail (max-width: 767px) {
     .pages-sidebar {
       border-right: none;
       border-bottom: 1px solid var(--border);
@@ -478,11 +549,37 @@
     border-color: var(--border-hover);
   }
 
+  .section-card.dragging {
+    opacity: 0.35;
+  }
+
+  /* Insert marker: the dragged card will land ABOVE this one. */
+  .section-card.drop-target {
+    box-shadow: 0 -2px 0 0 var(--accent);
+  }
+
   .section-card-header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem 0.625rem;
+  }
+
+  .drag-grip {
+    display: flex;
+    align-items: center;
+    color: var(--text-dim);
+    cursor: grab;
+    flex-shrink: 0;
+    padding: 0.125rem;
+  }
+
+  .section-card-header:hover .drag-grip {
+    color: var(--text-muted);
+  }
+
+  .drag-grip:active {
+    cursor: grabbing;
   }
 
   .section-toggle {

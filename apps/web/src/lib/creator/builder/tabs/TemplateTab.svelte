@@ -474,6 +474,14 @@
     }
   }
 
+  /* In the builder's side rail (live canvas open) the three-up grid has no
+     room — stack the template cards full-width instead. */
+  @container builder-rail (max-width: 719px) {
+    .template-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
   /* ══════════════════════════════════════════════════════════════════════
      Template card
      ══════════════════════════════════════════════════════════════════════ */

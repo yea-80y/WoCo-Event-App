@@ -10,6 +10,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import type { MySiteRecord } from './types.js';
   import MySitesScreen from './MySitesScreen.svelte';
+  import LivePreviewPane from './LivePreviewPane.svelte';
   import TemplateTab from "./tabs/TemplateTab.svelte";
   import BrandTab from "./tabs/BrandTab.svelte";
   import PagesTab from "./tabs/PagesTab.svelte";
@@ -217,17 +218,46 @@
     // No timed postMessage — preview tab requests on ready (handler in onMount).
   }
 
-  // Reply to handshake requests from any preview tab this builder opened.
-  // The tab posts `{type:'woco-preview-request'}` once Svelte has mounted, so
-  // we always respond after the listener is attached on the preview side.
+  // Reply to handshake requests from any preview surface this builder owns —
+  // the full-tab preview it opened AND the inline canvas iframe. Falls back to
+  // a fresh snapshot so a request can never arrive "too early".
   onMount(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type !== 'woco-preview-request') return;
-      if (!lastPreviewData || !e.source) return;
-      (e.source as Window).postMessage({ type: 'woco-preview', data: lastPreviewData }, '*');
+      if (!e.source) return;
+      const data = lastPreviewData ?? buildPreviewData();
+      (e.source as Window).postMessage({ type: 'woco-preview', data }, '*');
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
+  });
+
+  // ── Live canvas ───────────────────────────────────────────────────────────────
+  // Debounced snapshot pushed to the inline preview iframe on every edit. The
+  // synchronous buildPreviewData() call is what establishes deep reactivity on
+  // the whole draft; only the assignment is deferred.
+  let previewData = $state('');
+  let mobilePreviewOpen = $state(false);
+  let canvasWide = $state(false);
+  let tabBarH = $state(46); // measured — the sticky canvas sits exactly below it
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(min-width: 1100px)');
+    canvasWide = mq.matches;
+    const onchange = (e: MediaQueryListEvent) => { canvasWide = e.matches; };
+    mq.addEventListener('change', onchange);
+    return () => mq.removeEventListener('change', onchange);
+  });
+
+  $effect(() => {
+    if (screen !== 'builder') return;
+    const snap = buildPreviewData();
+    const t = setTimeout(() => {
+      previewData = snap;
+      lastPreviewData = snap;
+    }, 180);
+    return () => clearTimeout(t);
   });
 
   /** Sentinel errors for the gates the SERVER may raise on a deploy. The client
@@ -348,6 +378,10 @@
         updatedAt: Date.now(),
       });
 
+      // Refresh the instant-open copy — what was just published IS the latest.
+      cacheSet(cacheKey.siteConfig(site.siteId), $state.snapshot(site), TTL.SITE_CONFIG);
+      cacheSet(cacheKey.siteEventsIndex(site.siteId), $state.snapshot(siteEvents), TTL.SITE_CONFIG);
+
       // Manifest feed log (fire-and-forget; no-op without a feed signer). The
       // superseded deploy's contentHash is displaced → trash by the merge.
       void logFeedToManifest({
@@ -384,43 +418,92 @@
     } catch { return null; }
   }
 
-  /** Open a site from the My Sites registry. Prefers the published copy on Swarm;
-   *  falls back to the local draft for sites that were never published (otherwise
-   *  the GET 404s and the card silently does nothing). */
+  /** Enter the builder with a loaded site + events, stamping all the per-site
+   *  localStorage anchors the rest of the flow relies on. */
+  function enterBuilder(rec: MySiteRecord, loaded: Site, events: SiteEventEntry[] | null) {
+    site = loaded;
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(loaded));
+    localStorage.setItem(LAST_SITE_KEY, rec.siteId);
+    localStorage.setItem(FEED_HASH_KEY, rec.feedHash ?? '');
+    feedHash = rec.feedHash ?? '';
+    deployedUrl = rec.deployedUrl ?? '';
+    deployedHash =
+      localStorage.getItem(`woco:site-content-hash:${rec.siteId}`) ??
+      (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1] ??
+      '';
+    if (events) {
+      siteEvents = events;
+      localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
+    }
+    screen = 'builder';
+    tab = 'brand';
+  }
+
+  /** Open a site from the My Sites registry.
+   *
+   *  Fast path: a locally known copy (instant-open cache from a previous open/
+   *  publish, or the on-device draft) opens the builder IMMEDIATELY; the
+   *  published copy is fetched in the background and swapped in only while the
+   *  user hasn't edited yet — an edit made in those first seconds always wins.
+   *
+   *  Slow path (first open on this device): blocking fetch with card spinner. */
   async function handleOpenSite(rec: MySiteRecord) {
-    openingId = rec.siteId;
     openError = '';
+    const cachedSite =
+      cacheGet<Site>(cacheKey.siteConfig(rec.siteId)) ?? localDraftFor(rec.siteId);
+
+    if (cachedSite) {
+      const cachedEvents =
+        cacheGet<SiteEventEntry[]>(cacheKey.siteEventsIndex(rec.siteId)) ?? loadEventsDraft();
+      enterBuilder(rec, cachedSite, cachedEvents);
+      const openedSite = JSON.stringify($state.snapshot(site));
+      const openedEvents = JSON.stringify($state.snapshot(siteEvents));
+
+      void (async () => {
+        const [siteRes, eventsRes] = await Promise.all([
+          loadSite(rec.siteId),
+          getSiteEvents(rec.siteId),
+        ]);
+        if (siteRes.ok && siteRes.data) {
+          cacheSet(cacheKey.siteConfig(rec.siteId), siteRes.data, TTL.SITE_CONFIG);
+          if (
+            site.siteId === rec.siteId && screen === 'builder' &&
+            JSON.stringify($state.snapshot(site)) === openedSite
+          ) {
+            site = siteRes.data;
+            localStorage.setItem(DRAFT_KEY, JSON.stringify(siteRes.data));
+          }
+        }
+        if (eventsRes.ok && eventsRes.data) {
+          cacheSet(cacheKey.siteEventsIndex(rec.siteId), eventsRes.data.events, TTL.SITE_CONFIG);
+          if (
+            site.siteId === rec.siteId && screen === 'builder' &&
+            JSON.stringify($state.snapshot(siteEvents)) === openedEvents
+          ) {
+            siteEvents = eventsRes.data.events;
+            localStorage.setItem(EVENTS_KEY, JSON.stringify(eventsRes.data.events));
+          }
+        }
+      })();
+      return;
+    }
+
+    openingId = rec.siteId;
     try {
       const [siteRes, eventsRes] = await Promise.all([
         loadSite(rec.siteId),
         getSiteEvents(rec.siteId),
       ]);
 
-      const loaded = (siteRes.ok && siteRes.data) ? siteRes.data : localDraftFor(rec.siteId);
+      const loaded = (siteRes.ok && siteRes.data) ? siteRes.data : null;
       if (!loaded) {
         openError = `“${rec.brandName}” hasn't been published yet and isn't saved on this device. Open it on the device where you created it, or start a new site.`;
         return;
       }
-
-      site = loaded;
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(loaded));
-      localStorage.setItem(LAST_SITE_KEY, rec.siteId);
-      localStorage.setItem(FEED_HASH_KEY, rec.feedHash ?? '');
-      feedHash = rec.feedHash ?? '';
-      deployedUrl = rec.deployedUrl ?? '';
-      deployedHash =
-        localStorage.getItem(`woco:site-content-hash:${rec.siteId}`) ??
-        (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1] ??
-        '';
-      if (eventsRes.ok && eventsRes.data) {
-        siteEvents = eventsRes.data.events;
-        localStorage.setItem(EVENTS_KEY, JSON.stringify(eventsRes.data.events));
-      } else if (!siteRes.ok) {
-        // Draft fallback — pair it with the local events draft for the same site.
-        siteEvents = loadEventsDraft();
-      }
-      screen = 'builder';
-      tab = 'brand';
+      cacheSet(cacheKey.siteConfig(rec.siteId), loaded, TTL.SITE_CONFIG);
+      const events = (eventsRes.ok && eventsRes.data) ? eventsRes.data.events : null;
+      if (events) cacheSet(cacheKey.siteEventsIndex(rec.siteId), events, TTL.SITE_CONFIG);
+      enterBuilder(rec, loaded, events);
     } finally {
       openingId = undefined;
     }
@@ -450,9 +533,11 @@
     site = siteRes.data;
     localStorage.setItem(DRAFT_KEY, JSON.stringify(siteRes.data));
     localStorage.setItem(LAST_SITE_KEY, id);
+    cacheSet(cacheKey.siteConfig(id), siteRes.data, TTL.SITE_CONFIG);
     if (eventsRes.ok && eventsRes.data) {
       siteEvents = eventsRes.data.events;
       localStorage.setItem(EVENTS_KEY, JSON.stringify(eventsRes.data.events));
+      cacheSet(cacheKey.siteEventsIndex(id), eventsRes.data.events, TTL.SITE_CONFIG);
     }
 
     // Add to registry so it shows on My Sites
@@ -533,7 +618,7 @@
 
   {:else}
     <!-- Builder header -->
-    <div class="tab-bar">
+    <div class="tab-bar" bind:clientHeight={tabBarH}>
       <div class="tab-bar-left">
         <button class="back-btn" onclick={goToMySites} title="Back to My Sites">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -570,7 +655,11 @@
       </div>
 
       <div class="tab-bar-right">
-        <button class="preview-btn" onclick={openPreview} title="Draft preview — only visible to you. Publish to get a shareable link.">
+        <button
+          class="preview-btn"
+          onclick={() => { if (canvasWide) openPreview(); else mobilePreviewOpen = true; }}
+          title="Draft preview — only visible to you. Publish to get a shareable link."
+        >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M6 2H2v10h10V8M9 2h3v3M8 6l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="preview-label">Preview</span>
         </button>
@@ -595,6 +684,8 @@
       </div>
     </div>
 
+    <div class="editor-split">
+    <div class="editor-rail">
     <div class="gateway-row">
       <label class="gateway-label" for="ms-gw-picker">Deploy gateway</label>
       <div class="gateway-input"><GatewayPicker bind:value={gatewayUrl} /></div>
@@ -673,8 +764,25 @@
         </DomainTab>
       {/if}
     </div>
+    </div>
+
+    {#if canvasWide}
+      <div class="editor-canvas" style="top: {tabBarH}px; height: calc(100vh - {tabBarH}px);">
+        <LivePreviewPane data={previewData} onopenfull={openPreview} />
+      </div>
+    {/if}
+    </div>
   {/if}
 </div>
+
+{#if mobilePreviewOpen && screen === 'builder'}
+  <LivePreviewPane
+    overlay
+    data={previewData}
+    onclose={() => (mobilePreviewOpen = false)}
+    onopenfull={openPreview}
+  />
+{/if}
 
 <PurchaseBatchModal
   open={purchaseOpen}
@@ -694,6 +802,56 @@
     min-height: calc(100vh - 10rem);
     display: flex;
     flex-direction: column;
+  }
+
+  /* ── Editor split: controls rail + live canvas ── */
+  .editor-split {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .editor-rail {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .editor-canvas {
+    display: none;
+  }
+
+  @media (min-width: 1100px) {
+    /* Break out of the 840px shell — a split editor needs the whole viewport.
+       The 100vw overshoot (scrollbar width) is clipped via body overflow. */
+    .builder {
+      margin-left: calc(50% - 50vw);
+      margin-right: calc(50% - 50vw);
+    }
+
+    :global(body:has(.builder)) {
+      overflow-x: clip;
+    }
+
+    .editor-split {
+      flex-direction: row;
+      align-items: stretch;
+    }
+
+    .editor-rail {
+      flex: 0 0 31rem;
+      max-width: 31rem;
+      border-right: 1px solid var(--border);
+    }
+
+    .editor-canvas {
+      display: block;
+      flex: 1;
+      min-width: 0;
+      position: sticky; /* top/height inline — measured from the tab bar */
+    }
   }
 
   /* ── Auth loading ── */
@@ -969,7 +1127,8 @@
     color: #ef4444;
   }
 
-  /* Tab content */
+  /* Tab content — a named container so tabs (PagesTab) can adapt to the rail's
+     width, not the viewport's. */
   .tab-content {
     flex: 1;
     padding: 1.5rem;
@@ -977,6 +1136,7 @@
     width: 100%;
     margin: 0 auto;
     box-sizing: border-box;
+    container: builder-rail / inline-size;
   }
 
   /* Mobile: two-row tab bar — nav controls on row 1, action buttons on row 2 */

@@ -97,19 +97,4 @@
     gap: 1rem;
   }
 
-  .divider {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    color: var(--text-muted);
-    font-size: 0.75rem;
-  }
-
-  .divider::before,
-  .divider::after {
-    content: "";
-    flex: 1;
-    height: 1px;
-    background: var(--border);
-  }
 </style>

@@ -4,6 +4,12 @@
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
   import EventPage from './lib/components/site/EventPage.svelte';
   import ShopOrderScreen from './lib/attendee/shop/ShopOrderScreen.svelte';
+  // True when config arrives via the builder preview channel (localStorage
+  // handoff or postMessage) rather than the baked-at-deploy SITE_CONFIG. Only
+  // preview contexts keep listening for config messages — a deployed site must
+  // never let another window rewrite its content via postMessage.
+  let previewMode = false;
+
   // Try to get config from localStorage (same-origin case).
   // Returns null if nothing is found — postMessage handler will fill it in.
   function getInitialConfig(): SiteRuntimeConfig | null {
@@ -11,6 +17,7 @@
     const tsRaw = localStorage.getItem('woco:preview-timestamp');
     const isBuilderPreview = tsRaw !== null && (Date.now() - parseInt(tsRaw, 10)) < 300_000;
     if (!isBuilderPreview && window.SITE_CONFIG?.site) return window.SITE_CONFIG as SiteRuntimeConfig;
+    previewMode = true;
     const preview = localStorage.getItem('woco:site-preview');
     if (preview) {
       try {
@@ -125,13 +132,12 @@
   }
 
   onMount(() => {
-    if (site) {
+    if (site && !previewMode) {
       activateSite();
       return;
     }
-    // Config not in localStorage — handshake with the builder window.
-    // We request on mount (listener already attached), so it doesn't matter
-    // how slow the bundle was to load on this side.
+    // Preview context: listen for config for the whole session — the builder
+    // re-pushes on every edit, which is what makes the inline canvas live.
     let pollId: ReturnType<typeof setInterval> | null = null;
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'woco-preview' && e.data.data) {
@@ -139,29 +145,37 @@
           const c = JSON.parse(e.data.data) as SiteRuntimeConfig;
           if (c?.site) {
             config = c;
-            window.removeEventListener('message', handler);
-            if (pollId) clearInterval(pollId);
+            logoFailed = false; // a new/replaced logo deserves a fresh try
+            if (pollId) { clearInterval(pollId); pollId = null; }
           }
         } catch {}
       }
     };
     window.addEventListener('message', handler);
 
-    const requestConfig = () => {
-      if (window.opener && !window.opener.closed) {
-        try { window.opener.postMessage({ type: 'woco-preview-request' }, '*'); } catch {}
-      }
-    };
-    requestConfig();
-    // Retry a few times in case the opener was navigating; give up after ~6s.
-    let tries = 0;
-    pollId = setInterval(() => {
-      if (config || ++tries > 12) {
-        if (pollId) clearInterval(pollId);
-        return;
-      }
+    if (!site) {
+      // No localStorage handoff — handshake with whichever window owns us:
+      // the builder tab that opened us, or the builder page framing us.
+      const requestConfig = () => {
+        const target = window.opener && !window.opener.closed
+          ? window.opener as Window
+          : window.parent !== window ? window.parent : null;
+        if (target) {
+          try { target.postMessage({ type: 'woco-preview-request' }, '*'); } catch {}
+        }
+      };
       requestConfig();
-    }, 500);
+      // Retry a few times in case the opener was navigating; give up after ~6s.
+      let tries = 0;
+      pollId = setInterval(() => {
+        if (config || ++tries > 12) {
+          if (pollId) clearInterval(pollId);
+          pollId = null;
+          return;
+        }
+        requestConfig();
+      }, 500);
+    }
 
     return () => {
       window.removeEventListener('message', handler);
@@ -173,6 +187,20 @@
   $effect(() => {
     if (site && !configReady) activateSite();
   });
+
+  // Live edits: each re-pushed config re-applies the theme and refreshes the
+  // baked ref sections read (previewEvents etc.). Idempotent after activate.
+  $effect(() => {
+    if (!site || !configReady) return;
+    window.SITE_CONFIG = config!;
+    applyTheme();
+  });
+
+  // Adding/removing site events must remount event-driven sections (they fetch
+  // once on mount). Only ever non-empty in builder preview.
+  const previewEventsKey = $derived(
+    config?.previewEvents?.map((e) => `${e.eventId}${e.featured ? '*' : ''}`).join(',') ?? ''
+  );
 
   // Lock body scroll when overlay/drawer menu is open
   $effect(() => {
@@ -348,7 +376,7 @@
       <EventPage eventId={route.eventId} {apiUrl} onback={() => history.back()} />
     </main>
   {:else}
-    {#key route.slug}
+    {#key route.slug + '|' + previewEventsKey}
       {@const page = currentPage(route.slug)}
       {#if page}
         <main>
