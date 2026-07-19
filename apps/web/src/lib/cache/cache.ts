@@ -83,6 +83,8 @@ export const TTL = {
   CREATOR_EVENTS: 24 * 60 * 60,
   /** Creator's own sites list — long TTL; background refresh patches UI on every load. */
   CREATOR_SITES: 24 * 60 * 60,
+  /** A site's published config + events index — makes builder open instant; refreshed in background on every open. */
+  SITE_CONFIG: 30 * 24 * 60 * 60,
   /** Event admin order list — server is source of truth; this is just a fast paint cache. */
   EVENT_ORDERS: 24 * 60 * 60,
   /** Pending-approval queue for an event. */
@@ -118,6 +120,10 @@ export const cacheKey = {
   ticket: (ref: string) => `ticket:${ref}`,
   /** Full event list for a deployed site (bundled fetch). */
   siteEvents: (siteId: string) => `site-events:${siteId}`,
+  /** Published site config (builder instant-open copy). */
+  siteConfig: (siteId: string) => `site-config:${siteId}`,
+  /** Site events index entries (builder instant-open copy). */
+  siteEventsIndex: (siteId: string) => `site-events-index:${siteId}`,
   /** Creator's own events list — keyed by creator address. */
   creatorEvents: (address: string) => `creator-events:${address.toLowerCase()}`,
   /** Creator's own sites list — keyed by creator address. */

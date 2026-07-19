@@ -66,7 +66,9 @@
   }
 </script>
 
-<div class="scan-screen" onpointerdown={armAudio}>
+<svelte:window onpointerdown={armAudio} />
+
+<div class="scan-screen">
   <QrCamera onScan={(data) => void handlePayload(data)} />
 
   {#if outcome}
