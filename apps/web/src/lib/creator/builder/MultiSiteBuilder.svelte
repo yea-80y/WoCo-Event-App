@@ -241,6 +241,15 @@
   let canvasWide = $state(false);
   let tabBarH = $state(46); // measured — the sticky canvas sits exactly below it
 
+  const CANVAS_COLLAPSED_KEY = 'woco:builder-canvas-collapsed';
+  let canvasCollapsed = $state(
+    typeof window !== 'undefined' && localStorage.getItem(CANVAS_COLLAPSED_KEY) === '1'
+  );
+  function setCanvasCollapsed(v: boolean): void {
+    canvasCollapsed = v;
+    try { localStorage.setItem(CANVAS_COLLAPSED_KEY, v ? '1' : '0'); } catch { /* quota */ }
+  }
+
   $effect(() => {
     if (typeof window === 'undefined') return;
     const mq = window.matchMedia('(min-width: 1100px)');
@@ -600,7 +609,7 @@
   });
 </script>
 
-<div class="builder">
+<div class="builder" class:canvas-collapsed={canvasCollapsed}>
   {#if !auth.ready}
     <!-- Auth restoring from IndexedDB — avoid flashing the sign-in screen -->
     <div class="auth-loading" aria-label="Loading…"></div>
@@ -766,12 +775,23 @@
     </div>
     </div>
 
-    {#if canvasWide}
+    {#if canvasWide && !canvasCollapsed}
       <div class="editor-canvas" style="top: {tabBarH}px; height: calc(100vh - {tabBarH}px);">
-        <LivePreviewPane data={previewData} onopenfull={openPreview} />
+        <LivePreviewPane
+          data={previewData}
+          onopenfull={openPreview}
+          onminimize={() => setCanvasCollapsed(true)}
+        />
       </div>
     {/if}
     </div>
+
+    {#if canvasWide && canvasCollapsed}
+      <button class="canvas-restore" onclick={() => setCanvasCollapsed(false)} title="Show live preview">
+        <span class="restore-dot" aria-hidden="true"></span>
+        <span class="restore-label">Live preview</span>
+      </button>
+    {/if}
   {/if}
 </div>
 
@@ -825,8 +845,10 @@
 
   @media (min-width: 1100px) {
     /* Break out of the 840px shell — a split editor needs the whole viewport.
-       The 100vw overshoot (scrollbar width) is clipped via body overflow. */
-    .builder {
+       The 100vw overshoot (scrollbar width) is clipped via body overflow.
+       With the canvas collapsed the split is gone, so the builder returns to
+       the centred shell instead of stretching a lone rail across the screen. */
+    .builder:not(.canvas-collapsed) {
       margin-left: calc(50% - 50vw);
       margin-right: calc(50% - 50vw);
     }
@@ -840,7 +862,7 @@
       align-items: stretch;
     }
 
-    .editor-rail {
+    .builder:not(.canvas-collapsed) .editor-rail {
       flex: 0 0 31rem;
       max-width: 31rem;
       border-right: 1px solid var(--border);
@@ -852,6 +874,52 @@
       min-width: 0;
       position: sticky; /* top/height inline — measured from the tab bar */
     }
+  }
+
+  /* Edge tab that restores the collapsed live canvas. */
+  .canvas-restore {
+    position: fixed;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4375rem;
+    padding: 0.75rem 0.375rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-right: 0;
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+    transition: all var(--transition);
+  }
+
+  .canvas-restore:hover {
+    background: var(--accent-subtle);
+    border-color: var(--border-hover);
+  }
+
+  .restore-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .restore-label {
+    writing-mode: vertical-rl;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .canvas-restore:hover .restore-label {
+    color: var(--text);
   }
 
   /* ── Auth loading ── */
