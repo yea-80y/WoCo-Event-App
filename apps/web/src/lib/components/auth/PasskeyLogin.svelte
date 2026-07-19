@@ -5,9 +5,13 @@
 
   interface Props {
     oncomplete?: () => void;
+    /** Attempt started — the modal swaps to its authenticating scene. */
+    onstart?: () => void;
+    /** Attempt settled (either way) — the modal returns to the picker. */
+    onsettle?: () => void;
   }
 
-  let { oncomplete }: Props = $props();
+  let { oncomplete, onstart, onsettle }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
   let hasExisting = $state(false);
@@ -15,17 +19,25 @@
   onMount(async () => {
     supported = isPasskeySupported();
     if (supported) {
+      // Warm the chunks the post-biometric path needs (ethers; viem/zerodev on
+      // first-device logins) so the click never stalls on a download.
+      void auth.prefetchPasskeySdk();
       hasExisting = await hasStoredPasskeyCredential();
     }
   });
 
   async function handleLogin() {
     error = null;
-    const ok = await auth.login("passkey");
-    if (ok) {
-      oncomplete?.();
-    } else {
-      error = "Passkey authentication failed. Try again or use another method.";
+    onstart?.();
+    try {
+      const ok = await auth.login("passkey");
+      if (ok) {
+        oncomplete?.();
+      } else {
+        error = "Passkey authentication failed. Try again or use another method.";
+      }
+    } finally {
+      onsettle?.();
     }
   }
 </script>
@@ -101,15 +113,16 @@
     gap: 0.625rem;
   }
 
+  /* Hero method — WoCo's native account gets the accent treatment. */
   .passkey-btn {
-    padding: 0.75rem;
+    padding: 0.875rem;
     font-size: 0.9375rem;
-    font-weight: 600;
+    font-weight: 700;
     border-radius: var(--radius-sm);
-    background: var(--bg-surface);
-    color: var(--text);
-    border: 1px solid var(--border);
-    transition: all var(--transition);
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: 1px solid var(--accent);
+    transition: background var(--transition);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -117,8 +130,11 @@
   }
 
   .passkey-btn:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent-text);
+    background: var(--accent-hover);
+  }
+
+  .passkey-btn:active:not(:disabled) {
+    background: var(--accent-press);
   }
 
   .passkey-btn:disabled {
