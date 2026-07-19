@@ -4,9 +4,13 @@
 
   interface Props {
     oncomplete?: () => void;
+    /** Attempt started — the modal swaps to its authenticating scene. */
+    onstart?: () => void;
+    /** Attempt settled (either way) — the modal returns to the picker. */
+    onsettle?: () => void;
   }
 
-  let { oncomplete }: Props = $props();
+  let { oncomplete, onstart, onsettle }: Props = $props();
   let error = $state<string | null>(null);
   let wcConnecting = $state(false);
   // Reactive — MetaMask injects window.ethereum asynchronously after page load,
@@ -31,17 +35,23 @@
 
   async function handleLogin() {
     error = null;
-    const ok = await auth.login("web3");
-    if (ok) {
-      oncomplete?.();
-    } else if (!auth.isConnected) {
-      error = "Login cancelled or failed. Please try again.";
+    onstart?.();
+    try {
+      const ok = await auth.login("web3");
+      if (ok) {
+        oncomplete?.();
+      } else if (!auth.isConnected) {
+        error = "Login cancelled or failed. Please try again.";
+      }
+    } finally {
+      onsettle?.();
     }
   }
 
   async function handleWalletConnect() {
     wcConnecting = true;
     error = null;
+    onstart?.();
     try {
       const { connectViaWalletConnect } = await import("../../wallet/wc-provider.js");
       const address = await connectViaWalletConnect();
@@ -61,6 +71,7 @@
       error = `WalletConnect error: ${msg.slice(0, 120)}`;
     } finally {
       wcConnecting = false;
+      onsettle?.();
     }
   }
 </script>

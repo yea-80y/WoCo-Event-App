@@ -5,9 +5,13 @@
 
   interface Props {
     oncomplete?: () => void;
+    /** Attempt started — the modal swaps to its authenticating scene. */
+    onstart?: () => void;
+    /** Attempt settled (either way) — the modal returns to the picker. */
+    onsettle?: () => void;
   }
 
-  let { oncomplete }: Props = $props();
+  let { oncomplete, onstart, onsettle }: Props = $props();
   let error = $state<string | null>(null);
   let step = $state<"connect" | "authorize">("connect");
   let authorizeBtn = $state<HTMLButtonElement | null>(null);
@@ -20,6 +24,7 @@
 
   async function handleConnect() {
     error = null;
+    onstart?.();
     try {
       const ok = await auth.loginCoinbase();
       if (!ok) {
@@ -32,6 +37,10 @@
     } catch (e: any) {
       console.error("[CoinbaseLogin] connect", e);
       error = e?.message?.slice(0, 120) || "Coinbase Smart Wallet error";
+    } finally {
+      // Settles back to the picker either way — on success the picker shows
+      // this component's step 2 (separate click = fresh transient activation).
+      onsettle?.();
     }
   }
 
@@ -41,6 +50,7 @@
   // chaining sign into the same click hits a 4001 race.
   async function handleAuthorize() {
     error = null;
+    onstart?.();
     try {
       const ok = await auth.ensureSession();
       if (!ok) {
@@ -51,6 +61,8 @@
     } catch (e: any) {
       console.error("[CoinbaseLogin] authorize", e);
       error = e?.message?.slice(0, 120) || "Authorization failed";
+    } finally {
+      onsettle?.();
     }
   }
 </script>

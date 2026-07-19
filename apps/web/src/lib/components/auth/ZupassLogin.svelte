@@ -6,7 +6,6 @@
   <button class="zupass-btn" disabled>
     Sign in with Zupass
   </button>
-  <p class="hint">Coming soon</p>
 </div>
 
 <style>
@@ -27,12 +26,5 @@
     border: 1px solid var(--border);
     opacity: 0.5;
     cursor: not-allowed;
-  }
-
-  .hint {
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    text-align: center;
-    margin: 0;
   }
 </style>
