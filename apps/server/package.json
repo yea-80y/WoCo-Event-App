@@ -13,28 +13,28 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@ethersphere/bee-js": "^11.0.0",
+    "@ethersphere/bee-js": "^11.2.0",
     "@hono/node-server": "^1.14.0",
     "@resvg/resvg-js": "^2.6.2",
     "@woco/shared": "*",
-    "@x402/core": "^2.7.0",
-    "@x402/hono": "^2.7.0",
+    "@x402/core": "^2.19.0",
+    "@x402/hono": "^2.19.0",
     "@zerodev/ecdsa-validator": "^5.4.9",
     "@zerodev/permissions": "^5.6.3",
     "@zerodev/sdk": "^5.5.10",
-    "dotenv": "^17.3.1",
-    "ethers": "^6.13.0",
-    "hono": "^4.7.0",
-    "qrcode": "^1.5.3",
-    "resend": "^6.9.4",
-    "stripe": "^22.0.1",
-    "viem": "^2.51.0"
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "hono": "^4.12.31",
+    "qrcode": "^1.5.4",
+    "resend": "^6.17.2",
+    "stripe": "^22.3.2",
+    "viem": "^2.55.4"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^24.10.1",
     "@types/qrcode": "^1.5.5",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.1",
     "typescript": "~5.9.3"
   }
 }

@@ -32,10 +32,10 @@
     "deploy:scanner": "npm run build:scanner && npm run upload:scanner"
   },
   "devDependencies": {
-    "@ethersphere/bee-js": "^11.1.0",
-    "axios": "^1.13.5",
-    "dotenv": "^17.3.1",
-    "tar": "^7.5.9",
+    "@ethersphere/bee-js": "^11.2.0",
+    "axios": "^1.18.1",
+    "dotenv": "^17.4.2",
+    "tar": "^7.5.20",
     "typescript": "~5.9.3"
   }
 }
