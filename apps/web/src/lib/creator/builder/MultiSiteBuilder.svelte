@@ -748,6 +748,7 @@
         <EventsTab
           siteId={site.siteId}
           {siteEvents}
+          published={!!feedHash || publishState === 'done'}
           onsiteeventschange={(ev) => siteEvents = ev}
         />
       {:else if tab === 'shop'}

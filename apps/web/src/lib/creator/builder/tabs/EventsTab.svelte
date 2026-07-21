@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SiteEventEntry, EventDirectoryEntry } from "@woco/shared";
   import { getMyEventsSWR } from "../../../api/creator-cache.js";
+  import { addSiteEvent, removeSiteEvent } from "../../../api/sites.js";
   import { auth } from "../../../auth/auth-store.svelte.js";
   import { navigate } from "../../../router/router.svelte.js";
   import ImportUrlPanel, { type ImportPreview } from "../../events/ImportUrlPanel.svelte";
@@ -9,16 +10,23 @@
   interface Props {
     siteId: string;
     siteEvents: SiteEventEntry[];
+    /** True once the site exists on the server (has been published at least
+     *  once). Only then can a toggle write the events feed live; a never-published
+     *  site keeps toggles local and persists them on the first publish. */
+    published: boolean;
     onsiteeventschange: (events: SiteEventEntry[]) => void;
   }
 
-  let { siteId, siteEvents, onsiteeventschange }: Props = $props();
+  let { siteId, siteEvents, published, onsiteeventschange }: Props = $props();
 
   type LoadState = "loading" | "ready" | "unauth" | "error";
 
   let loadState = $state<LoadState>("loading");
   let stateError = $state("");
   let myEvents = $state<EventDirectoryEntry[]>([]);
+  // Per-event in-flight + error state for live feed writes (published sites only).
+  let pendingIds = $state(new Set<string>());
+  let toggleErrors = $state<Record<string, string>>({});
 
   // Derive which eventIds are currently in the site
   let inSite = $derived(new Set(siteEvents.map((e) => e.eventId)));
@@ -79,22 +87,79 @@
     navigate("/creator/events/new");
   }
 
+  function setError(eventId: string, msg: string | null) {
+    const next = { ...toggleErrors };
+    if (msg) next[eventId] = msg; else delete next[eventId];
+    toggleErrors = next;
+  }
+
+  /**
+   * Persist an optimistic local change to the events feed. On a published site the
+   * add/remove endpoint writes the index immediately (no republish, no gas) — the
+   * same path the creation wizard uses — and the server's returned index becomes
+   * authoritative (it carries the per-event creatorFeedSigner stamps). On a
+   * never-published site (or a transient "Site not found") we keep the local edit;
+   * the first publish writes the whole index. Any other failure reverts + surfaces.
+   */
+  async function persistToggle(
+    eventId: string,
+    optimistic: SiteEventEntry[],
+    write: () => Promise<{ ok: boolean; data?: { events: SiteEventEntry[] }; error?: string }>,
+  ) {
+    if (pendingIds.has(eventId)) return;
+    const prev = siteEvents;
+    onsiteeventschange(optimistic);
+    if (!published) return; // rides the first publish
+
+    pendingIds = new Set([...pendingIds, eventId]);
+    setError(eventId, null);
+    try {
+      const r = await write();
+      if (r.ok && r.data) {
+        // Adopt the authoritative index (carries creatorFeedSigner stamps) only
+        // when this is the sole in-flight write — otherwise a concurrent toggle's
+        // optimistic change, absent from this older response, would flicker off.
+        if (pendingIds.size <= 1) onsiteeventschange(r.data.events);
+      } else if (/not found/i.test(r.error ?? "")) {
+        // Site config not written yet — keep the optimistic edit; publish persists it.
+      } else {
+        onsiteeventschange(prev);
+        setError(eventId, r.error || "Could not save — try again");
+      }
+    } catch (e) {
+      onsiteeventschange(prev);
+      setError(eventId, e instanceof Error ? e.message : "Could not save — try again");
+    } finally {
+      const next = new Set(pendingIds);
+      next.delete(eventId);
+      pendingIds = next;
+    }
+  }
+
   function toggleEvent(eventId: string) {
     if (inSite.has(eventId)) {
-      onsiteeventschange(siteEvents.filter((e) => e.eventId !== eventId));
+      persistToggle(
+        eventId,
+        siteEvents.filter((e) => e.eventId !== eventId),
+        () => removeSiteEvent(siteId, eventId),
+      );
     } else {
-      onsiteeventschange([
-        ...siteEvents,
-        { eventId, featured: false, addedAt: Date.now() },
-      ]);
+      persistToggle(
+        eventId,
+        [...siteEvents, { eventId, featured: false, addedAt: Date.now() }],
+        () => addSiteEvent(siteId, eventId, false),
+      );
     }
   }
 
   function toggleFeatured(eventId: string) {
-    onsiteeventschange(
-      siteEvents.map((e) =>
-        e.eventId === eventId ? { ...e, featured: !e.featured } : e
-      )
+    const entry = siteEvents.find((e) => e.eventId === eventId);
+    if (!entry) return;
+    const nextFeatured = !entry.featured;
+    persistToggle(
+      eventId,
+      siteEvents.map((e) => (e.eventId === eventId ? { ...e, featured: nextFeatured } : e)),
+      () => addSiteEvent(siteId, eventId, nextFeatured),
     );
   }
 
@@ -122,6 +187,7 @@
       <p class="tab-desc">
         Choose which of your events appear on this site. Toggle <span class="star-inline">★</span> to feature an event
         in <code>featuredEvent</code> sections and <code>eventsGrid mode: featured</code>.
+        {#if published}Changes go live on your site within a minute — no need to republish.{/if}
       </p>
     </div>
     <div class="count-pill">
@@ -164,16 +230,21 @@
         {@const active = inSite.has(ev.eventId)}
         {@const isFeatured = featured.has(ev.eventId)}
         {@const past = isPast(ev.startDate)}
+        {@const pending = pendingIds.has(ev.eventId)}
+        {@const err = toggleErrors[ev.eventId]}
         <li class="event-row" class:active class:past>
           <div class="event-row-left">
             <button
               class="toggle-btn"
               class:on={active}
+              disabled={pending}
               onclick={() => toggleEvent(ev.eventId)}
               title={active ? "Remove from site" : "Add to site"}
               aria-label={active ? "Remove from site" : "Add to site"}
             >
-              {#if active}
+              {#if pending}
+                <span class="row-spinner"></span>
+              {:else if active}
                 <span class="check">✓</span>
               {:else}
                 <span class="plus">+</span>
@@ -187,6 +258,7 @@
                 {#if ev.location} · {ev.location}{/if}
                 {#if past}<span class="past-badge">Past</span>{/if}
               </span>
+              {#if err}<span class="row-error">{err}</span>{/if}
             </div>
           </div>
 
@@ -194,6 +266,7 @@
             <button
               class="featured-btn"
               class:starred={isFeatured}
+              disabled={pending}
               onclick={() => toggleFeatured(ev.eventId)}
               title={isFeatured ? "Unmark as featured" : "Mark as featured"}
               aria-label={isFeatured ? "Unmark as featured" : "Mark as featured"}
@@ -351,6 +424,20 @@
     to { transform: rotate(360deg); }
   }
 
+  .row-spinner {
+    width: 0.9rem;
+    height: 0.9rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  .row-error {
+    font-size: 0.75rem;
+    color: var(--error, #ef4444);
+  }
+
   /* ── Event list ───────────────────────────────────────────────────── */
   .event-list {
     list-style: none;
@@ -470,8 +557,14 @@
     transform: scale(1.15);
   }
 
-  .featured-btn:hover:not(.starred) {
+  .featured-btn:hover:not(.starred):not(:disabled) {
     color: #f59e0b88;
+  }
+
+  .featured-btn:disabled,
+  .toggle-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   /* ── Summary chips ────────────────────────────────────────────────── */
