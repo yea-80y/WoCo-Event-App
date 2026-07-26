@@ -1,9 +1,16 @@
+<script module lang="ts">
+  /** Module-scoped so multiple grids on one page get distinct JSON-LD ids. */
+  let gridInstance = 0;
+</script>
+
 <script lang="ts">
   import type { EventsGridSection as EventsGridSectionType, Site, EventFeed, SiteEventEntry } from '@woco/shared';
   import type { SiteEventsFull } from '../../../api/sites.js';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
   import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
+  import { buildEventJsonLd } from '@woco/shared';
+  import { setJsonLd } from '../../../seo/head.js';
 
   interface Props {
     section: EventsGridSectionType;
@@ -159,6 +166,38 @@
   function gatewayImageUrl(imageHash: string | undefined): string | undefined {
     return firstImageUrl(imageHash);
   }
+
+  // ── SEO (#55) ────────────────────────────────────────────────────────────────
+  // A listing page describes many events, so the correct shape is an ItemList of
+  // Events rather than repeated top-level Event blocks. Instance-scoped id: a page
+  // may hold more than one grid, and they must not overwrite each other.
+  const jsonLdId = `events-grid-${gridInstance++}`;
+
+  $effect(() => {
+    if (loadState !== 'ready' || events.length === 0) {
+      setJsonLd(jsonLdId, null);
+      return;
+    }
+
+    const base = window.location.href.split('#')[0];
+    const items = events
+      .map((ev, i) => {
+        const item = buildEventJsonLd(ev, {
+          url: `${base}#/events/${ev.eventId}`,
+          imageUrl: gatewayImageUrl(ev.imageHash),
+          organiserName: site.theme?.brandName,
+        });
+        return item ? { '@type': 'ListItem', position: i + 1, item } : null;
+      })
+      .filter((x): x is { '@type': string; position: number; item: Record<string, unknown> } => x !== null);
+
+    setJsonLd(
+      jsonLdId,
+      items.length ? { '@context': 'https://schema.org', '@type': 'ItemList', itemListElement: items } : null,
+    );
+  });
+
+  onDestroy(() => setJsonLd(jsonLdId, null));
 </script>
 
 <section class="events-grid-section">

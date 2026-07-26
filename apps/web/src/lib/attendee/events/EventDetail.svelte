@@ -17,6 +17,8 @@
   import { onMount, onDestroy } from "svelte";
   import { isPastEvent as checkPast } from "../../utils/events.js";
   import { firstImageUrl, useNextImageUrl } from "../../components/site/image-fallback.js";
+  import { buildEventJsonLd, eventMetaDescription } from "@woco/shared";
+  import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
 
   interface Props {
     eventId: string;
@@ -120,7 +122,34 @@
       });
   });
 
-  onDestroy(() => clearInterval(clockTimer));
+  // ── SEO (#55) ────────────────────────────────────────────────────────────────
+  // Runtime injection: this page's content is only known after the feed loads, so
+  // deploy-time injection (the rule for static organiser sites) can't apply here.
+  // Google renders JS, so Event rich results still work; non-rendering crawlers get
+  // the shell. Deployed organiser event pages are the stronger surface — see #71.
+  $effect(() => {
+    if (!event) return;
+    const ev = event;
+
+    setTitle(ev.title, "WoCo");
+    setMetaDescription(eventMetaDescription(ev));
+    setJsonLd(
+      "event",
+      buildEventJsonLd(ev, {
+        url: window.location.href,
+        imageUrl: ev.imageHash ? firstImageUrl(ev.imageHash, BEE_GATEWAY) : undefined,
+        organiserName: creatorProfile?.displayName || undefined,
+      }),
+    );
+  });
+
+  onDestroy(() => {
+    clearInterval(clockTimer);
+    // Leaving the route must drop the markup — a stale Event block on the next
+    // page describes content that isn't there.
+    setJsonLd("event", null);
+    setMetaDescription(null);
+  });
 </script>
 
 <div class="event-detail">

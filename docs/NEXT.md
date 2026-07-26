@@ -87,12 +87,33 @@ Two things must be true before crypto (or the agent rail) is promoted again:
 | 18 | bee-js `11.1.0 → 12.3.1` — fold into #45 (it fixes `extendStorage` no-op, `calculateTopUpForBzz`, adds `minimumValidityBlocks`) — **Opus**, Fable reviews the feed-write surface | — |
 | 19 | bee node `2.8.0 → 2.8.1` — crash-safe chunk store. Insurance, not urgent (0 restarts in 47d) | — |
 
+## SEO + custom domains — plan locked 2026-07-26
+
+Full decisions, verified current state and guidance copy: **`docs/SEO_PLAN.md`**. Read it
+before touching any of these — several tempting "fixes" are wrong (e.g. sub-ENS must stay on
+profiles and event pages; the custom-domain worker must proxy, never redirect).
+
+| # | Item | Owner | State |
+|---|---|---|---|
+| 1 | **Edge proxy (Cloudflare Worker)** — `packages/edge-proxy/` was planned in `docs/CUSTOM_DOMAINS_PLAN.md` and **never built**. Blocks the whole DNS-first strategy. Server half (registry, public `/api/domains/resolve/:hostname`, poller, `DomainLinker`) already exists | Opus | #67 — not started |
+| 2 | **One CNAME path** — drop the 7-day-trial / NS-migration funnel. Cloudflare for SaaS is 100 hostnames free then $0.10/mo; the funnel dodges a cost that doesn't exist | Sonnet | #68 |
+| 3 | **Drop sub-ENS from the website builder** — keep it on profiles (identity/EAS) and event pages (USP) | Sonnet | #69 |
+| 4 | **Deploy-time `<title>` + canonical** — sites currently ship `<title>Site</title>`; nothing emits canonical anywhere | Sonnet | #70 |
+| 5 | **schema.org/Event JSON-LD** — highest value-per-effort, independent of the worker | Sonnet | #55 |
+| 6 | **Real per-page URLs** (static pre-render) — hash routing makes an N-page site ONE indexable URL. Largest piece | Opus | #71 |
+| 7 | **SEO guidance panel** in builder — live checks + wires up the orphaned `Page.metaDescription` | Sonnet | #72 |
+| 8 | **sitemap.xml + robots.txt** at deploy | Sonnet | #73 |
+
+Address ladder: organiser's own DNS (recommended) → organiser's own ENS → WoCo-issued ENS
+equivalent (future). **No WoCo-issued free subdomain tier** — rejected, see SEO_PLAN D2.
+
 ## Deferred / v2
 
 #43 shop config · #12 referral payout · #13 resale + Stripe recipient rail ·
 #28 ECIES golden vectors · #31 ZeroDev gas workaround · #8 browser-verify #1–#4
 
-**Event-page SEO from #37 discovery fields (Sonnet, frontend-only) — now issue #55** — `EventTag`
+**Event-page SEO from #37 discovery fields (Sonnet, frontend-only) — now issue #55, folded
+into `docs/SEO_PLAN.md` item 5** — `EventTag`
 (genre) and `EventGeo` (lat/lng/address/city/country) are already the right shape
 for real SEO/rich-results: today nothing emits them. `schema.org`/`ld+json` only
 exists server-side today as an *import* parser (reading other sites' Event markup
