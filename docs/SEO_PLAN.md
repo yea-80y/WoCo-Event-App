@@ -118,6 +118,10 @@ Do not charge organisers for domain linking.
 
 ## Guidance we give organisers
 
+**The user-facing copy lives in `docs/SEO_GUIDANCE.md`** — that file is the single source of
+truth for what we say to organisers, including tone rules ("never use the word SEO"). #72
+wires those strings in; do not re-write them somewhere else. Summary of the model:
+
 Shipped as a live scoring panel in the builder, not a help doc.
 
 - **Title formula:** `{what you are} in {where} | {brand}` → "Craft beer pub in Camden | The
