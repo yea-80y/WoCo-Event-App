@@ -5,6 +5,7 @@
  *
  *   NEUTRAL surface
  *     /                            splitter (landing — funnels to organiser vs attendee)
+ *     /legal, /legal/:doc          legal (privacy, terms, organiser-terms, dpa, cookies)
  *
  *   ATTENDEE surface
  *     /discover                    discover (events feed — was at /)
@@ -58,6 +59,13 @@ function matchRoute(pathWithQuery: string): Match {
 
   // ── Neutral splitter (root landing) ──────────────────────────────────────
   if (path === "/" || path === "") return { route: "splitter", params: {}, surface: "neutral" };
+
+  // ── Legal documents (neutral: reachable pre-login, from emails, and from a
+  //    checkout the buyer has not signed into) ──────────────────────────────
+  const legalMatch = path.match(/^\/legal(?:\/([a-z-]+))?$/);
+  if (legalMatch) {
+    return { route: "legal", params: { doc: legalMatch[1] ?? "index" }, surface: "neutral" };
+  }
 
   // ── Creator surface (explicit /creator/* prefix) ─────────────────────────
   if (path === "/creator") return { route: "creator-home", params: {}, surface: "creator" };

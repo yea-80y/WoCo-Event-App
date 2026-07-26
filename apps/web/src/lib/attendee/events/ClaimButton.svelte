@@ -56,11 +56,14 @@
      * filling out the form.
      */
     eager?: boolean;
+    /** Organiser display name, shown in the checkout privacy notice so the buyer
+     *  is told who actually receives their details. Falls back to generic wording. */
+    organiserName?: string;
     /** Called when a claim succeeds — parent can show the TicketSuccess modal */
     onclaim?: (data: { edition: number | null; claimedVia: "wallet" | "email" | null; ticket?: ClaimedTicket; claimerEmail?: string; editions?: Array<{ edition: number; ticket?: ClaimedTicket }> }) => void;
   }
 
-  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate, quantity = 1, eager = false, onclaim }: Props = $props();
+  let { eventId, seriesId, totalSupply, encryptionKey, orderFields, claimMode = "wallet", approvalRequired = false, apiUrl, payment, eventEndDate, quantity = 1, eager = false, organiserName, onclaim }: Props = $props();
 
   // ──────────────────────────────────────────────────────────────
   // Payment + crypto-pay state
@@ -169,6 +172,16 @@
   let showWalletModal = $state(false);
   /** Inline email input for email claims when no email field in order form */
   let inlineEmail = $state("");
+  /** PECR opt-in. null until the buyer touches it — an untouched box is still a
+   *  valid "no" for sending, but it is recorded as an explicit false only once
+   *  the form has actually been shown (see claimMarketingConsent below). */
+  let marketingConsent = $state<boolean | null>(null);
+  /** The form was displayed, so the opt-out WAS offered — that is what PECR
+   *  reg. 22 requires. An untouched checkbox therefore records as a refusal,
+   *  not as "never asked". */
+  const claimMarketingConsent = $derived(
+    showOrderForm ? marketingConsent === true : undefined
+  );
   /** Whether the order form already includes an email-type field */
   const hasEmailField = $derived(
     !!orderFields?.some((f) => f.type === "email" || f.id === "__email")
@@ -746,7 +759,7 @@
         });
       }
 
-      const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl, proof);
+      const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl, proof, claimMarketingConsent);
       if (!result.ok) {
         const msg = result.error || "Failed to claim ticket";
         if (handleAlreadyClaimed(msg)) return;
@@ -797,7 +810,7 @@
       let result;
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
-          result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl, proof);
+          result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl, proof, claimMarketingConsent);
           // If server still sees too few confs, backoff and retry — the tx is
           // on-chain, it just hasn't propagated to the server's RPC yet.
           if (!result.ok && /Need \d+ confirmations/.test(result.error ?? "")) {
@@ -902,7 +915,7 @@
         }
 
         step = "Claiming ticket...";
-        const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl);
+        const result = await claimTicketByEmail(eventId, seriesId, email, encryptedOrder, apiUrl, undefined, claimMarketingConsent);
 
         if (!result.ok) {
           const msg = result.error || "Failed to claim ticket";
@@ -959,7 +972,7 @@
         }
 
         step = "Claiming ticket...";
-        const result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl);
+        const result = await claimTicket(eventId, seriesId, auth.parent!, encryptedOrder, apiUrl, undefined, claimMarketingConsent);
 
         if (!result.ok) {
           const msg = result.error || "Failed to claim ticket";
@@ -1090,6 +1103,8 @@
       bind:formData
       bind:inlineEmail
       bind:stripeEmail
+      bind:marketingConsent
+      {organiserName}
       onStripeCheckout={handleStripeCheckout}
       onPayHover={() => { payHoverTick++; }}
       onClaim={(method) => {

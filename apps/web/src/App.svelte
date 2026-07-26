@@ -46,9 +46,27 @@
       ? import("./CreatorApp.svelte").then((m) => m.default)
       : null
   );
+
+  // Legal pages are lazy for the same reason: policy text is only downloaded by
+  // someone who actually opens a policy.
+  const legalPagePromise = $derived(
+    router.route === "legal"
+      ? import("./lib/legal/LegalPage.svelte").then((m) => m.default)
+      : null
+  );
 </script>
 
-{#if router.surface === "neutral"}
+{#if router.route === "legal"}
+  {#await legalPagePromise}
+    <div class="surface-loading">Loading…</div>
+  {:then Comp}
+    {#if Comp}
+      <Comp doc={router.params.doc ?? "index"} />
+    {/if}
+  {:catch}
+    <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
+  {/await}
+{:else if router.surface === "neutral"}
   <Splitter />
 {:else if router.surface === "creator"}
   {#await creatorAppPromise}

@@ -315,6 +315,7 @@ export async function claimTicket(
   encryptedOrder?: SealedBox,
   apiUrl?: string,
   paymentProof?: import("@woco/shared").PaymentProof,
+  marketingConsent?: boolean,
 ): Promise<ClaimTicketResponse> {
   // Wallet claims require session delegation (proves address ownership)
   const siteId = currentSiteId();
@@ -330,6 +331,7 @@ export async function claimTicket(
       ...(paymentProof ? { paymentProof } : {}),
       ...(siteId ? { siteId } : {}),
       ...(ownerPodPubKey ? { ownerPodPubKey } : {}),
+      ...(marketingConsent !== undefined ? { marketingConsent } : {}),
     },
     apiUrl,
   );
@@ -350,12 +352,20 @@ export async function claimTicketByEmail(
   encryptedOrder?: SealedBox,
   apiUrl?: string,
   paymentProof?: import("@woco/shared").PaymentProof,
+  marketingConsent?: boolean,
 ): Promise<ClaimTicketResponse> {
   const siteId = currentSiteId();
   const resp = await fetch(`${apiUrl ?? apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "email", email, encryptedOrder, ...(paymentProof ? { paymentProof } : {}), ...(siteId ? { siteId } : {}) }),
+    body: JSON.stringify({
+      mode: "email",
+      email,
+      encryptedOrder,
+      ...(paymentProof ? { paymentProof } : {}),
+      ...(siteId ? { siteId } : {}),
+      ...(marketingConsent !== undefined ? { marketingConsent } : {}),
+    }),
   });
   const json = await resp.json();
   return {

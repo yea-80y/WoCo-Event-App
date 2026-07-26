@@ -55,8 +55,8 @@ lives here (`contracts/` Solidity, `contracts-stylus/` Rust/WASM), no other repo
 - **Multi-page site builder** — organisers publish standalone Swarm-hosted sites; no server at runtime.
 
 **Payments**
-- **Stripe Connect** (card) — the live rail for paying customers today (destination charges, 1.5%
-  platform fee).
+- **Stripe Connect** (card) — the live rail for paying customers today (direct charges on the
+  organiser's connected account, 1.5% platform fee).
 - **Crypto** — ETH/USDC with a signed-quote flow + on-chain verification (on-chain ticketing + USDC
   shop rails; see the buildathon docs). Built and **verified on-chain** (the agent draw settles real
   USDC), but intentionally **held back from real customers until a security audit** (not yet done).

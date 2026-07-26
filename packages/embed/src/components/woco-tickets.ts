@@ -7,6 +7,9 @@ import {
   CLAIM_DOMAIN,
   CLAIM_TYPES,
   eip712Digest,
+  MARKETING_CONSENT_NOTICE,
+  TRANSACTIONAL_EMAIL_NOTICE,
+  CHECKOUT_PRIVACY_SUMMARY,
   type OrderField,
   type SealedBox,
 } from "@woco/shared";
@@ -85,6 +88,8 @@ export class WocoTickets extends HTMLElement {
 
   private get eventId() { return this.getAttribute("event-id") || ""; }
   private get apiUrl() { return this.getAttribute("api-url") || ""; }
+  /** Where the hosted legal pages live. Overridable for self-hosted deployments. */
+  private get appUrl() { return this.getAttribute("app-url") || "https://woco.eth.limo"; }
   private get claimMode() { return (this.getAttribute("claim-mode") || "email") as "wallet" | "email" | "both"; }
   private get theme() { return (this.getAttribute("theme") || "dark") as "dark" | "light"; }
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
@@ -383,6 +388,31 @@ export class WocoTickets extends HTMLElement {
 
   private readonly fingerprintIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"/><path d="M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"/></svg>`;
 
+  /**
+   * Point-of-collection notice + marketing opt-in.
+   *
+   * The widget runs on the ORGANISER'S domain, where the buyer has never seen a
+   * WoCo page — so the disclosure and the PECR opt-out have to travel with the
+   * form. Wording is kept byte-identical to the main checkout (shared/legal
+   * consent.ts) because the server stores it as Art. 7(1) evidence — the two
+   * surfaces must not drift, so both read the same shared constants.
+   */
+  private renderConsent(seriesId: string): string {
+    return `
+      <div class="consent-block">
+        <div class="transactional-note">${this.esc(TRANSACTIONAL_EMAIL_NOTICE)}</div>
+        <label class="consent-row">
+          <input type="checkbox" data-marketing-consent="${this.esc(seriesId)}" />
+          <span>${this.esc(MARKETING_CONSENT_NOTICE)}</span>
+        </label>
+        <div class="privacy-note">
+          ${this.esc(CHECKOUT_PRIVACY_SUMMARY)}
+          <a href="${this.esc(this.appUrl)}/#/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+        </div>
+      </div>
+    `;
+  }
+
   private renderPasskeyButton(seriesId: string, disabled = false, approvalRequired = false): string {
     return `
       <div class="passkey-section">
@@ -464,6 +494,7 @@ export class WocoTickets extends HTMLElement {
           <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
           <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">${claimLabel}</button>
         </div>
+        ${this.renderConsent(seriesId)}
       `;
     } else if (mode === "wallet") {
       // Wallet: sign claim message via MetaMask (EIP-191) + passkey
@@ -481,6 +512,7 @@ export class WocoTickets extends HTMLElement {
           <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
           <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">${claimLabel}</button>
         </div>
+        ${this.renderConsent(seriesId)}
       `;
       if (isWalletAvailable()) {
         submitHtml += `<div class="passkey-divider">or</div>
@@ -837,6 +869,11 @@ export class WocoTickets extends HTMLElement {
     try {
       const body: Record<string, unknown> = { mode: "email", email };
       if (encryptedOrder) body.encryptedOrder = encryptedOrder;
+      // The form was rendered, so the opt-out WAS offered — an untouched box is
+      // an explicit refusal (recorded as a suppression), not "never asked".
+      body.marketingConsent = !!this.shadow.querySelector<HTMLInputElement>(
+        `[data-marketing-consent="${seriesId}"]`,
+      )?.checked;
 
       const resp = await this.api.post<unknown>(
         `/api/events/${this.eventId}/series/${seriesId}/claim`,

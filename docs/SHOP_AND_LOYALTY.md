@@ -26,7 +26,8 @@ Money spent is **USDC**, shown to the user in their fiat currency — there is *
 credit token**. The same USDC in the user's own wallet is spendable anywhere. Two rails, mirroring
 events:
 
-- **Card** — Stripe Connect (destination charge + webhook → order paid), the live rail today.
+- **Card** — Stripe Connect (direct charge on the merchant's connected account + webhook → order
+  paid), the live rail today.
 - **Crypto (USDC)** — two sub-flows:
   - **Per-order signed quote** (web shop / online): the server issues an HMAC-signed, one-shot quote
     committing to an exact USDC amount; payment is verified on-chain by exact amount + recipient +
