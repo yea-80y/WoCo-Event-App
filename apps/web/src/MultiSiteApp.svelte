@@ -33,6 +33,8 @@
   const gatewayUrl = $derived(config?.gatewayUrl ?? (import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com'));
   const apiUrl     = $derived(config?.apiUrl ?? (import.meta.env.VITE_API_URL ?? 'http://localhost:3001'));
   const navStyle   = $derived<NavStyleId>((site?.theme?.navStyle as NavStyleId) ?? 'topbar');
+  // Deployed sites run standalone off Swarm — legal pages live back on the app.
+  const wocoAppUrl = $derived(config?.wocoAppUrl ?? 'https://woco.eth.limo');
 
   function logoUrl(): string | null {
     if (config?.previewLogoDataUrl) return config.previewLogoDataUrl;
@@ -402,7 +404,9 @@
       {#if site.contact.email}
         <a class="footer-link" href="mailto:{site.contact.email}">{site.contact.email}</a>
       {/if}
-      <span class="footer-powered">Powered by <a href="https://woco.eth.limo" target="_blank" rel="noopener">WoCo</a></span>
+      <a class="footer-link" href="{wocoAppUrl}/#/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy</a>
+      <a class="footer-link" href="{wocoAppUrl}/#/legal/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+      <span class="footer-powered">Powered by <a href={wocoAppUrl} target="_blank" rel="noopener">WoCo</a></span>
     </div>
   </footer>
 </div>

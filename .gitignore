@@ -24,6 +24,10 @@ deploy/secrets/
 *.md
 !README.md
 !docs/*.md
+# `!docs/*.md` is one level only — the published legal documents live in a
+# subdirectory AND are imported by the app at build time (?raw), so they must
+# be tracked or the web build breaks on a fresh clone.
+!docs/legal/*.md
 
 # Scripts / artifacts
 *.sh

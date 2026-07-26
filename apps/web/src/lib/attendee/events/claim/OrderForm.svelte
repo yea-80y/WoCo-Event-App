@@ -1,5 +1,10 @@
 <script lang="ts">
   import type { OrderField, ClaimMode, SeriesClaimStatus } from "@woco/shared";
+  import {
+    MARKETING_CONSENT_NOTICE,
+    TRANSACTIONAL_EMAIL_NOTICE,
+    CHECKOUT_PRIVACY_SUMMARY,
+  } from "@woco/shared";
   import type { BuyerFees } from "./fees.js";
 
   interface Props {
@@ -26,6 +31,11 @@
     formData: Record<string, string>;
     inlineEmail: string;
     stripeEmail: string;
+    /** Organiser display name — the consent must name who is being consented to. */
+    organiserName?: string;
+    /** Tri-state, bound upward: null = never asked. Starts unticked; a pre-ticked
+     *  box is not valid consent (UK GDPR Recital 32). */
+    marketingConsent: boolean | null;
     onStripeCheckout: () => void;
     onPayHover: () => void;
     onClaim: (method?: "wallet" | "email") => void;
@@ -53,6 +63,8 @@
     formData = $bindable(),
     inlineEmail = $bindable(),
     stripeEmail = $bindable(),
+    organiserName,
+    marketingConsent = $bindable(),
     onStripeCheckout,
     onPayHover,
     onClaim,
@@ -137,6 +149,31 @@
     </label>
   {/if}
 
+  <!-- Notice + consent sit ABOVE the action buttons: both must be visible
+       before submission, not after it. -->
+  <div class="consent-block">
+    <p class="transactional-note">{TRANSACTIONAL_EMAIL_NOTICE}</p>
+
+    <label class="consent-row">
+      <input
+        type="checkbox"
+        checked={marketingConsent === true}
+        onchange={(e) => (marketingConsent = (e.target as HTMLInputElement).checked)}
+      />
+      <span>{MARKETING_CONSENT_NOTICE}</span>
+    </label>
+
+    <p class="privacy-note">
+      {#if organiserName}
+        Your details go to <strong>{organiserName}</strong>, who is responsible for them.
+        {CHECKOUT_PRIVACY_SUMMARY.slice(CHECKOUT_PRIVACY_SUMMARY.indexOf("Anything you enter"))}
+      {:else}
+        {CHECKOUT_PRIVACY_SUMMARY}
+      {/if}
+      <a href="#/legal/privacy" target="_blank" rel="noopener">Privacy Policy</a>
+    </p>
+  </div>
+
   <div class="form-actions">
     {#if stripeAfterForm}
       <!-- Order form was shown before Stripe checkout -->
@@ -195,9 +232,6 @@
     {/if}
     <button class="cancel-btn" onclick={onCancel}>Cancel</button>
   </div>
-  {#if hasOrderForm}
-    <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
-  {/if}
 </div>
 
 <style>
@@ -282,11 +316,52 @@
     color: var(--text-secondary);
   }
 
-  .encrypt-note {
+  .consent-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4375rem;
+    padding: 0.625rem 0.75rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .transactional-note {
     font-size: 0.6875rem;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .consent-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--text);
+  }
+
+  .consent-row input[type="checkbox"] {
+    width: 0.875rem;
+    height: 0.875rem;
+    margin-top: 0.125rem;
+    flex-shrink: 0;
+    accent-color: var(--accent);
+  }
+
+  .privacy-note {
+    font-size: 0.6875rem;
+    line-height: 1.5;
     color: var(--text-muted);
     margin: 0;
-    text-align: right;
+    padding-top: 0.375rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .privacy-note a {
+    color: var(--accent-text);
+    text-decoration: underline;
   }
 
   /* Shared with parent — Svelte scopes per-component, so duplicate. */

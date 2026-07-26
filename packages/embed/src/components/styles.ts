@@ -191,6 +191,54 @@ export function getStyles(theme: "dark" | "light"): string {
       margin: 0.375rem 0 0;
     }
 
+    /* Point-of-collection notice + PECR opt-in. The widget runs on the
+       organiser's own site, so this is the buyer's ONLY disclosure. */
+    .consent-block {
+      margin-top: 0.625rem;
+      padding: 0.5rem 0.625rem;
+      border: 1px solid ${vars.border};
+      border-radius: 6px;
+      background: ${vars.inputBg};
+    }
+
+    .consent-block .transactional-note {
+      font-size: 0.6875rem;
+      color: ${vars.textSecondary};
+      margin-bottom: 0.375rem;
+    }
+
+    .consent-block .consent-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.4375rem;
+      cursor: pointer;
+      font-size: 0.71875rem;
+      line-height: 1.45;
+      color: ${vars.text};
+    }
+
+    .consent-block .consent-row input[type="checkbox"] {
+      width: 0.8125rem;
+      height: 0.8125rem;
+      margin: 0.125rem 0 0;
+      flex-shrink: 0;
+      accent-color: ${vars.accent};
+    }
+
+    .consent-block .privacy-note {
+      margin-top: 0.4375rem;
+      padding-top: 0.375rem;
+      border-top: 1px solid ${vars.border};
+      font-size: 0.6875rem;
+      line-height: 1.5;
+      color: ${vars.textSecondary};
+    }
+
+    .consent-block .privacy-note a {
+      color: ${vars.accent};
+      text-decoration: underline;
+    }
+
     /* Order form */
     .series-card.series-card--expanded {
       flex-direction: column;

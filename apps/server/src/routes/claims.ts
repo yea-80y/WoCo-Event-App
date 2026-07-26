@@ -26,6 +26,9 @@ import { verifyQuote, consumeQuote } from "../lib/payment/quote.js";
 import { formatUnits } from "ethers";
 import { extractDelegation, verifyDelegation } from "../lib/auth/verify-delegation.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
+import { recordConsent } from "../lib/marketing/consent-store.js";
+import { suppressOrg } from "../lib/marketing/suppression-store.js";
+import { MARKETING_CONSENT_NOTICE } from "@woco/shared";
 
 const claims = new Hono<AppEnv>();
 
@@ -265,6 +268,14 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
 
   const encryptedOrder = rawBody.encryptedOrder as SealedBox | undefined;
   const paymentProof = rawBody.paymentProof as PaymentProof | undefined;
+
+  // PECR reg. 22: the organiser may only rely on the soft opt-in if an opt-out
+  // was offered when the address was collected. Tri-state on purpose —
+  // `undefined` means the buyer came through a surface that never asked (older
+  // embed build, API claim), which is NOT the same as a refusal and must not be
+  // recorded as either. Only an explicit true/false is evidence.
+  const marketingConsent =
+    typeof rawBody.marketingConsent === "boolean" ? rawBody.marketingConsent : undefined;
 
   // claimed.v2: user-initiated wallet-authenticated claims carry the account →
   // ticket born issued-to-identity + gate-bound at claim time. API mode is
@@ -542,6 +553,28 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
         ...(accountClaim ? { accountClaim } : {}),
       }),
     );
+
+    // Consent is recorded only once the claim actually succeeded — a failed or
+    // sold-out attempt must not leave a marketing permission behind. A refusal
+    // goes to the suppression store rather than "no consent record" so it is
+    // enforced by the existing send-time check and survives a CSV re-upload.
+    if (marketingConsent !== undefined) {
+      const consentHash =
+        identifier.type === "email" ? identifier.emailHash : identifier.secondaryEmailHash;
+      if (consentHash) {
+        const organiser = event.creatorAddress.toLowerCase();
+        if (marketingConsent) {
+          recordConsent(consentHash, organiser, {
+            ts: new Date().toISOString(),
+            source: "checkout",
+            eventId,
+            notice: MARKETING_CONSENT_NOTICE,
+          });
+        } else {
+          suppressOrg(consentHash, organiser, "declined");
+        }
+      }
+    }
 
     // Approval flow: strip internal _pendingId and return pending state
     if (ticket.approvalStatus === "pending") {

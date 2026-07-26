@@ -2,7 +2,11 @@
  * Stripe Connect routes — organiser onboarding + attendee checkout.
  *
  * Onboarding uses Stripe's hosted flow (Account Links).
- * Payments use destination charges via Stripe Checkout Sessions.
+ * Payments use DIRECT charges on the organiser's connected account via Stripe
+ * Checkout Sessions — session created with `{stripeAccount}` and no
+ * `transfer_data`, so the organiser is merchant of record and carries
+ * first-line dispute liability. Express accounts mean the PLATFORM still
+ * absorbs unrecoverable negative balances; see docs/legal/DATA_INVENTORY.md §5.1.
  */
 
 import { Hono } from "hono";
@@ -266,7 +270,7 @@ stripe.post("/prepare-order", async (c) => {
  *
  * Body: { eventId, seriesId, claimerEmail? }
  *
- * Creates a Checkout Session with a destination charge to the organiser's
+ * Creates a Checkout Session as a direct charge on the organiser's
  * connected account. Two auth flows:
  *
  *   1. Wallet / passkey / local / para user — sends session delegation
