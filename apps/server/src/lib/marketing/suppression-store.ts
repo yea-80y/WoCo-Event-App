@@ -16,7 +16,10 @@ import { join } from "node:path";
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-suppression.json");
 
-export type SuppressSource = "unsub" | "unsub_all" | "bounce" | "complaint" | "manual";
+// "declined" = opted out at the point of collection (checkout). Recorded as a
+// suppression rather than an absent consent so the refusal is enforced by the
+// same check as an unsubscribe, and survives a later CSV re-upload.
+export type SuppressSource = "unsub" | "unsub_all" | "bounce" | "complaint" | "manual" | "declined";
 
 interface SuppressionMark {
   ts: string;

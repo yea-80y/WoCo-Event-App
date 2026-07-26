@@ -9,6 +9,11 @@
 
   let { section, site, apiUrl }: Props = $props();
 
+  // Deployed sites are standalone Swarm bundles with no server at runtime, so
+  // the legal pages have to be linked absolutely back to the WoCo app.
+  const wocoAppUrl =
+    (typeof window !== 'undefined' && window.SITE_CONFIG?.wocoAppUrl) || 'https://woco.eth.limo';
+
   let name = $state('');
   let email = $state('');
   let message = $state('');
@@ -56,6 +61,14 @@
         {#if status === 'error'}
           <p class="error">{errorMsg}</p>
         {/if}
+        <!-- Point-of-collection notice. This form runs on the organiser's own
+             deployed site, where the visitor has no other privacy disclosure —
+             the organiser is the controller for whatever is submitted here. -->
+        <p class="privacy-note">
+          Your message is sent to {site.theme.brandName}, who is responsible for it and will use it
+          only to reply to you. Delivered via WoCo — see the
+          <a href="{wocoAppUrl}/#/legal/privacy" target="_blank" rel="noopener noreferrer">WoCo Privacy Policy</a>.
+        </p>
         <button type="submit" disabled={status === 'sending'}>
           {status === 'sending' ? 'Sending…' : 'Send message'}
         </button>
@@ -72,6 +85,18 @@
   .inner {
     max-width: 560px;
     margin: 0 auto;
+  }
+
+  .privacy-note {
+    font-size: 0.75rem;
+    line-height: 1.5;
+    opacity: 0.7;
+    margin: 0;
+  }
+
+  .privacy-note a {
+    color: inherit;
+    text-decoration: underline;
   }
 
   h2 {

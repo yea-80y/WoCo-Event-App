@@ -915,6 +915,91 @@ function writeCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string, ker
   }
 }
 
+// A RECOVERED account can never use the kaddr cache (its parent is the PRESERVED
+// Kernel address, not this EOA's counterfactual), so every explicit login re-paid
+// the on-chain owner read + the Kernel build. Both are skippable on a RETURNING
+// device: once this device has passed the binding's on-chain ECDSA-owner guard,
+// record binding-kernel per EOA. A later login whose binding still matches the
+// marker fast-paths like a non-recovered login and RE-VERIFIES the owner in the
+// background (_verifyRecoveredBindingInBackground) — a binding gone stale since
+// (owner rotated away elsewhere) clears the marker + binding and logs out, so
+// staleness is corrected within one session instead of trusted forever.
+const KERNEL_BINDING_VERIFIED_PREFIX = "woco:kbindok:";
+
+function readVerifiedBinding(kind: "passkey" | "web3auth", eoa: string): string | null {
+  try {
+    const v = globalThis.localStorage?.getItem(
+      `${KERNEL_BINDING_VERIFIED_PREFIX}${kind}:${eoa.toLowerCase()}`,
+    );
+    return v && /^0x[0-9a-f]{40}$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeVerifiedBinding(kind: "passkey" | "web3auth", eoa: string, kernelAddress: string): void {
+  try {
+    globalThis.localStorage?.setItem(
+      `${KERNEL_BINDING_VERIFIED_PREFIX}${kind}:${eoa.toLowerCase()}`,
+      kernelAddress.toLowerCase(),
+    );
+  } catch {
+    /* marker is best-effort */
+  }
+}
+
+function clearVerifiedBinding(kind: "passkey" | "web3auth", eoa: string): void {
+  try {
+    globalThis.localStorage?.removeItem(
+      `${KERNEL_BINDING_VERIFIED_PREFIX}${kind}:${eoa.toLowerCase()}`,
+    );
+  } catch {
+    /* marker is best-effort */
+  }
+}
+
+/** Off-critical-path twin of the login-time stale-binding guard: re-check the
+ *  preserved Kernel's on-chain ECDSA owner after a recovered-account fast-path
+ *  login. On a confirmed mismatch the binding + marker are cleared and the user
+ *  is logged out — the next login takes the slow path and lands correctly. RPC
+ *  errors change nothing (the marker was only ever written after a full check). */
+function _verifyRecoveredBindingInBackground(
+  kind: "passkey" | "web3auth",
+  kernel: `0x${string}`,
+  eoa: string,
+): void {
+  void (async () => {
+    try {
+      const { readKernelEcdsaOwner } = await import("./kernel-account.js");
+      const onChainOwner = await readKernelEcdsaOwner(kernel);
+      if (onChainOwner !== null && onChainOwner.toLowerCase() !== eoa.toLowerCase()) {
+        console.warn(
+          "[auth] recovered-account binding went stale — on-chain owner is",
+          onChainOwner, "not", eoa, "— clearing and logging out",
+        );
+        await _deleteRecoveryBinding(eoa);
+        clearVerifiedBinding(kind, eoa);
+        await logout();
+      }
+    } catch {
+      /* transient RPC failure — the next fast-path login re-checks */
+    }
+  })();
+}
+
+/** After a fast-path login the Kernel is deliberately unbuilt, so the FIRST
+ *  action that needs it (ensureSession's EIP-712 delegation, any on-chain op)
+ *  used to pay the viem/zerodev chunk + build serially — login felt fast but
+ *  the first click paid the bill. Prebuild once the login flow has yielded:
+ *  same work, off the critical path, and no biometric (key already in memory). */
+function _scheduleKernelPrebuild(): void {
+  setTimeout(() => {
+    _ensureKernelForKind().catch(() => {
+      /* lazy build on first use remains the fallback */
+    });
+  }, 1500);
+}
+
 /** True if ANY Kernel-backed login has completed on this device — the signal
  *  that the next login will very likely take the fast path (no Kernel build),
  *  so the heavy viem/zerodev prefetch would be wasted bytes. */
@@ -1008,6 +1093,7 @@ async function loginWeb3Auth(): Promise<boolean> {
         _passkeyPrivateKey = null;
         await _restoreCachedAuth();
         await _establishFeedSignerEagerly();
+        _scheduleKernelPrebuild();
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         return true;
@@ -1199,9 +1285,12 @@ async function loginPasskey(): Promise<boolean> {
   _busy = true;
   _loginStage = "waiting";
 
+  const t0 = performance.now();
+  let tCeremony = t0;
   try {
     // Always use discoverable get() → shows passkey picker → falls back to create
     const account = await authenticatePasskey();
+    tCeremony = performance.now();
     _loginStage = "finalizing";
 
     let override = await _recoveryKernelFor(account.address);
@@ -1226,8 +1315,42 @@ async function loginPasskey(): Promise<boolean> {
         _podAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
+        _scheduleKernelPrebuild();
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
+        console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
+        return true;
+      }
+    } else if (readVerifiedBinding("passkey", account.address) === override.toLowerCase()) {
+      // RECOVERED-ACCOUNT FAST PATH (returning device): this device has already
+      // passed the binding's on-chain owner guard, and the on-device secrets a
+      // recovered account can NEVER re-derive (POD seed, feed signer) are still
+      // present — so skip the owner-read RPC and the Kernel build exactly like
+      // the non-recovered fast path. Owner staleness is re-checked in the
+      // background; the Kernel rebuilds lazily at the preserved address via the
+      // binding (`_ensureKernel` honours it and still asserts the parent).
+      const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
+      const [seed, feedSigner] = await Promise.all([
+        restorePodSeed(account.address),
+        restoreContentFeedSigner(override),
+      ]);
+      if (seed && feedSigner) {
+        const parent = override.toLowerCase();
+        await _clearStaleAuthForSwitch(parent);
+        await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+        await putKV(StorageKeys.PARENT_ADDRESS, parent);
+        await putKV(StorageKeys.POD_ADDRESS, account.address);
+        _kind = "passkey";
+        _parent = parent;
+        _passkeyPrivateKey = account.privateKey;
+        _podAddress = account.address;
+        _kernel = null;
+        await _restoreCachedAuth();
+        _verifyRecoveredBindingInBackground("passkey", override, account.address);
+        _scheduleKernelPrebuild();
+        _cleanupAccountListener?.();
+        _cleanupAccountListener = null;
+        console.debug(`[auth] passkey login (recovered fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
         return true;
       }
     }
@@ -1328,9 +1451,17 @@ async function loginPasskey(): Promise<boolean> {
       writeCachedKernelAddress("passkey", account.address, kernel.address);
     }
 
+    // Seed the recovered-account fast path: reaching here with an override means
+    // this login passed an on-chain owner check (the login-time guard, or the
+    // envelope's — both verify before the override is trusted).
+    if (override) {
+      writeVerifiedBinding("passkey", account.address, kernel.address);
+    }
+
     _cleanupAccountListener?.();
     _cleanupAccountListener = null;
 
+    console.debug(`[auth] passkey login (full path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
     return true;
   } catch (e) {
     console.error("[auth] passkey login failed:", e);

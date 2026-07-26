@@ -171,7 +171,11 @@ CRYPTO PAYMENTS (ETH + USDC on Base/Optimism/Mainnet/Sepolia):
 
 STRIPE PAYMENTS (Card via Stripe Connect):
 - Stripe Connect Express accounts, hosted onboarding (Account Links)
-- Destination charges: WoCo platform collects, transfers to organiser minus fee
+- DIRECT charges on the connected account (`{stripeAccount}`, no `transfer_data`): the ORGANISER
+  is merchant of record — their name on checkout + the buyer's statement, their dispute liability
+  first-line. Platform takes `application_fee_amount`. NOT destination charges (corrected 2026-07-26).
+  CAVEAT: Express accounts = platform is responsible for unrecoverable negative balances, so WoCo
+  carries residual chargeback exposure. See docs/legal/DATA_INVENTORY.md §5.1.
 - Platform fee: 1.5% (application_fee_amount) — matches escrow contract (150 bp)
 - Stripe fee on top (paid by organiser from their cut):
   UK/EU cards ~2% + 20p, international ~3.75% + 20p (includes Connect +0.5%)

@@ -6,7 +6,9 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
+  import { buildEventJsonLd, eventMetaDescription } from "@woco/shared";
+  import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
   import TicketSuccess from "../../attendee/events/TicketSuccess.svelte";
   import type { ClaimedTicket } from "@woco/shared";
@@ -108,6 +110,32 @@
 
   // Sourced from the deployed-site runtime config injected by the deploy step.
   const siteName = (typeof window !== "undefined" && window.SITE_CONFIG?.site?.theme?.brandName) || null;
+
+  // ── SEO (#55) ────────────────────────────────────────────────────────────────
+  // Organiser sites are the strongest SEO surface we have — a real venue domain
+  // rather than a shared gateway root — so Event rich results matter most here.
+  // The event body is fetched at runtime, hence runtime injection; the site's own
+  // title/description/canonical are injected at deploy time (routes/sites.ts).
+  $effect(() => {
+    if (!event) return;
+    const ev = event;
+
+    setTitle(ev.title, siteName ?? undefined);
+    setMetaDescription(eventMetaDescription(ev));
+    setJsonLd(
+      "event",
+      buildEventJsonLd(ev, {
+        url: window.location.href,
+        imageUrl: ev.imageHash ? firstImageUrl(ev.imageHash, BEE_GATEWAY) : undefined,
+        organiserName: siteName ?? undefined,
+      }),
+    );
+  });
+
+  onDestroy(() => {
+    setJsonLd("event", null);
+    setMetaDescription(null);
+  });
 
   function dismissPurchaseSuccess() {
     stripeBanner = null;

@@ -14,8 +14,10 @@
     onclose?: () => void;
     /** Open the full-tab preview (existing openPreview flow). */
     onopenfull?: () => void;
+    /** Collapse the docked pane (desktop split view only). */
+    onminimize?: () => void;
   }
-  let { data, overlay = false, onclose, onopenfull }: Props = $props();
+  let { data, overlay = false, onclose, onopenfull, onminimize }: Props = $props();
 
   let iframeEl = $state<HTMLIFrameElement | undefined>();
   let loaded = $state(false);
@@ -76,6 +78,13 @@
         <button class="pane-action" onclick={onopenfull} title="Open full preview in a new tab">
           <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M6 2H2v10h10V8M9 2h3v3M8 6l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="pane-action-label">Full tab</span>
+        </button>
+      {/if}
+
+      {#if !overlay && onminimize}
+        <button class="pane-action" onclick={onminimize} title="Hide the preview panel — the editor gets the full width">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M5 3l4 4-4 4M12 2v10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="pane-action-label">Hide</span>
         </button>
       {/if}
 

@@ -11,6 +11,7 @@
     checkMarketingEmails,
     suppressContacts,
   } from "../../api/marketing.js";
+  import { markAudienceImported } from "../home/onboarding.svelte.js";
   import CsvImportWizard from "./CsvImportWizard.svelte";
   import ContactSearch from "./ContactSearch.svelte";
   import MarketingComposer from "./MarketingComposer.svelte";
@@ -89,6 +90,7 @@
       const sealed = await sealJson(keys.publicKey, { version: 1, contacts: next } satisfies MarketingListPayload);
       meta = await uploadMarketingList(sealed, next.map((c) => c.email));
       contacts = next;
+      if (next.length > 0 && auth.parent) markAudienceImported(auth.parent);
       await refreshSuppressed(next);
     } finally {
       saving = false;

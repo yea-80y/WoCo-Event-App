@@ -1,8 +1,15 @@
+<script module lang="ts">
+  /** Module-scoped so multiple featured sections get distinct JSON-LD ids. */
+  let featuredInstance = 0;
+</script>
+
 <script lang="ts">
   import type { FeaturedEventSection as FeaturedEventSectionType, EventFeed } from '@woco/shared';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
   import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
+  import { buildEventJsonLd } from '@woco/shared';
+  import { setJsonLd } from '../../../seo/head.js';
 
   interface Props {
     section: FeaturedEventSectionType;
@@ -15,6 +22,27 @@
   type LoadState = 'loading' | 'ready' | 'error' | 'notfound';
   let loadState = $state<LoadState>('loading');
   let event = $state<EventFeed | null>(null);
+
+  // ── SEO (#55) ────────────────────────────────────────────────────────────────
+  // A single highlighted event, so a top-level Event block is correct here — but
+  // it points at the event's own page, not this one, to avoid two pages claiming
+  // the same event.
+  const jsonLdId = `featured-event-${featuredInstance++}`;
+
+  $effect(() => {
+    if (!event) { setJsonLd(jsonLdId, null); return; }
+    const base = window.location.href.split('#')[0];
+    setJsonLd(
+      jsonLdId,
+      buildEventJsonLd(event, {
+        url: `${base}#/events/${event.eventId}`,
+        imageUrl: firstImageUrl(event.imageHash, gatewayUrl),
+        organiserName: (typeof window !== 'undefined' && window.SITE_CONFIG?.site?.theme?.brandName) || undefined,
+      }),
+    );
+  });
+
+  onDestroy(() => setJsonLd(jsonLdId, null));
 
   onMount(async () => {
     const ck = cacheKey.event(section.eventId);

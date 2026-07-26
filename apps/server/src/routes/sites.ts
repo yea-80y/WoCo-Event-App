@@ -340,6 +340,10 @@ sitesRouter.post("/", requireAuth, async (c) => {
       ]);
     }
 
+    // Publish rewrote the events index — drop the events-full memo (declared
+    // below; the closure resolves it at request time) so it doesn't serve stale.
+    _siteEventsFull.delete(site.siteId);
+
     // Upsert into creator's site directory (fire-and-forget — non-fatal).
     upsertCreatorSite(parentAddress, {
       siteId: site.siteId,
@@ -495,7 +499,8 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
       ? (decodeJsonFeed<SiteEventsIndex>(page) ?? { siteId, schemaVersion: SITE_SCHEMA_VERSION, events: [], updatedAt: 0 })
       : { siteId, schemaVersion: SITE_SCHEMA_VERSION, events: [], updatedAt: 0 };
 
-    if (!index.events.find((e) => e.eventId === body.eventId)) {
+    const existingEntry = index.events.find((e) => e.eventId === body.eventId);
+    if (!existingEntry) {
       const priorSigners = new Map<string, Hex0x>();
       for (const e of index.events) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
       const [entry] = await stampEventSigners([{
@@ -504,12 +509,19 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
         addedAt: Date.now(),
       }], parentAddress, priorSigners);
       index.events.push(entry);
+    } else if (body.featured !== undefined && existingEntry.featured !== body.featured) {
+      // The idempotent add doubles as a featured-flag update for an event already
+      // on the site — lets the builder persist a ★ toggle without a full republish.
+      existingEntry.featured = body.featured;
     }
     index.updatedAt = Date.now();
 
     await writeFeedPage(topic, encodeJsonFeed(index), {
       dest: await siteFeedDestFromDirectory(parentAddress, siteId),
     });
+    // A write just changed the index; drop the events-full memo so the next
+    // deployed-site visitor reads the new list instead of the 5-min-stale copy.
+    _siteEventsFull.delete(siteId);
     return c.json({ ok: true, data: index });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to add event" }, 500);
@@ -545,6 +557,7 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
     await writeFeedPage(topic, encodeJsonFeed(index), {
       dest: await siteFeedDestFromDirectory(parentAddress, siteId),
     });
+    _siteEventsFull.delete(siteId); // see add-event handler — keep visitors fresh
     return c.json({ ok: true, data: index });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to remove event" }, 500);
