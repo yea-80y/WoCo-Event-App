@@ -17,6 +17,10 @@ COPY packages/embed/    ./packages/embed/
 COPY apps/server/src    ./apps/server/src
 COPY apps/server/tsconfig.json ./apps/server/
 
+# Ops scripts must ship with the image: payout-schedule-audit.ts is the documented
+# post-deploy step (docs/PAYOUTS.md §9) and has to run against the live .data store
+COPY apps/server/scripts ./apps/server/scripts
+
 # Build the embed widget so /embed/woco-embed.js is served correctly
 RUN npm run build:embed
 
