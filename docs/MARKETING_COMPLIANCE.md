@@ -19,11 +19,22 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   hygiene, never the enforcement layer.
 - `sendMarketingBatch` (`lib/email/marketing-send.ts`) is the ONLY allowed non-transactional
   send path: suppression + RFC 8058 `List-Unsubscribe` / `List-Unsubscribe-Post` headers +
-  footer (provenance + unsub link) are unconditional. Refuses to send if `PUBLIC_API_BASE`
-  unset. **Ticket emails are transactional — NO unsubscribe on them, ever.**
+  footer (provenance + unsub link + postal address) + a `text/plain` alternative part are
+  unconditional. **Ticket emails are transactional — NO unsubscribe on them, ever.**
   `/api/marketing/broadcast` also hash-checks every recipient against the stored list (the
   import wizard's consent warranty is the only path to a sendable address); footer insertion
   only honours a document-final `</body>` (a mid-doc `</body>` can't hide it).
+- **FAILS CLOSED on misconfiguration**: refuses to send if `PUBLIC_API_BASE` (unsub links) or
+  `MARKETING_POSTAL_ADDRESS` (CAN-SPAM §7704(a)(5)) is unset. Sending non-compliant mail is
+  worse than not sending — both are legal breaches that also burn reputation permanently.
+- The footer builder (`lib/email/marketing-footer.ts`) is pure and unit-tested
+  (`test/marketing-footer.test.ts`). It **HTML-escapes the organiser display name**: unescaped,
+  a 60-char name fits `<div style=display:none>` (24 chars, no quotes needed) and would hide
+  the unsubscribe link itself, defeating the whole control.
+- **REPUTATION SPLIT**: marketing must not share a sending domain with ticket email. Mailbox
+  providers score reputation per domain and Gmail/Yahoo cap complaints at 0.3% per domain, so
+  one bad campaign puts *ticket* email in spam on event day. `RESEND_FROM_MARKETING` is the
+  seam; it must point at a separate subdomain before the first imported list is emailed.
 - `/u/:token` = public unsubscribe page (one-click POST tolerant of empty body).
   Token `mu1.*` = HMAC(`EMAIL_HASH_SECRET`-derived key) over `{emailHash, org}`; **NO expiry**
   (an expired unsub link = spam complaint). Rotating `EMAIL_HASH_SECRET` invalidates all
@@ -62,6 +73,7 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
 
 ```
 apps/server/src/lib/email/marketing-send.ts   # THE non-transactional send path
+apps/server/src/lib/email/marketing-footer.ts # pure compliance block + text/plain part
 apps/server/src/lib/marketing/{suppression-store,unsub-token,list-store,send-cap,
                                sending-domain-store,consumed-webhook-events}.ts
 apps/server/src/routes/{marketing,unsubscribe,resend-webhook}.ts
@@ -72,6 +84,13 @@ packages/shared/src/marketing/types.ts        # MarketingContact, list payload, 
 ```
 
 ## Gotchas
+
+**The production `RESEND_API_KEY` is send-only** (`restricted_api_key`, verified against the
+live API 2026-07-27). `/api/marketing/domain` create/verify calls `domains.create` and will
+401 → the route returns 502 and `SendingDomainPanel` is dead in production. Either issue a
+full-access key or keep organiser sending domains switched off until SES (which
+`docs/PRICING_AND_EMAIL.md` §6 says is the plan anyway — do not onboard organiser domains on
+Resend, the DNS re-do is migration debt).
 
 These `.data` stores MUST survive server restarts:
 

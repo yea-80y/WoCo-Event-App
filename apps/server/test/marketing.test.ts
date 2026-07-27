@@ -20,11 +20,13 @@ const hash = (n: number) => n.toString(16).padStart(64, "0");
 
 let token: typeof import("../src/lib/marketing/unsub-token.js");
 let store: typeof import("../src/lib/marketing/suppression-store.js");
+let send: typeof import("../src/lib/email/marketing-send.js");
 
 before(async () => {
   process.chdir(mkdtempSync(join(tmpdir(), "woco-marketing-test-")));
   token = await import("../src/lib/marketing/unsub-token.js");
   store = await import("../src/lib/marketing/suppression-store.js");
+  send = await import("../src/lib/email/marketing-send.js");
 });
 
 test("unsub token round-trips and preserves payload", () => {
@@ -80,4 +82,37 @@ test("suppression is idempotent and first mark wins", () => {
   store.suppressOrg(hash(30), ORG, "unsub");
   store.suppressOrg(hash(30), ORG, "manual");
   assert.equal(store.isSuppressed(hash(30), ORG), true);
+});
+
+/**
+ * A misconfigured deploy must fail closed. Sending commercial mail with a
+ * broken unsubscribe link or no postal address is worse than not sending:
+ * both are legal breaches that also burn sender reputation permanently.
+ */
+test("marketing send refuses to run when it cannot be compliant", async () => {
+  const batch = {
+    organiserAddress: ORG,
+    fromDisplayName: "Test Venue",
+    fromAddress: "news@example.com",
+    subject: "Hello",
+    html: "<p>Hi</p>",
+    recipients: [{ email: "someone@example.com" }],
+  };
+
+  const before = {
+    base: process.env.PUBLIC_API_BASE,
+    addr: process.env.MARKETING_POSTAL_ADDRESS,
+  };
+  try {
+    process.env.PUBLIC_API_BASE = "";
+    process.env.MARKETING_POSTAL_ADDRESS = "WoCo Ltd, London";
+    await assert.rejects(send.sendMarketingBatch(batch), /PUBLIC_API_BASE/);
+
+    process.env.PUBLIC_API_BASE = "https://api.example.com";
+    process.env.MARKETING_POSTAL_ADDRESS = "";
+    await assert.rejects(send.sendMarketingBatch(batch), /MARKETING_POSTAL_ADDRESS/);
+  } finally {
+    process.env.PUBLIC_API_BASE = before.base;
+    process.env.MARKETING_POSTAL_ADDRESS = before.addr;
+  }
 });

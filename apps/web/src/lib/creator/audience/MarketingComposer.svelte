@@ -100,7 +100,8 @@
 
   <p class="footer-note">
     Every email automatically carries a "you opted in to updates from {fromName.trim() || "your brand"}"
-    line and an unsubscribe link — you don't need to add either.
+    line, an unsubscribe link, and our postal address — the three things the law requires.
+    You don't need to add any of them.
   </p>
 
   {#if showPreview}
