@@ -15,6 +15,7 @@
   import CsvImportWizard from "./CsvImportWizard.svelte";
   import ConsentLedger from "./ConsentLedger.svelte";
   import ContactSearch from "./ContactSearch.svelte";
+  import AttendeeImport from "./AttendeeImport.svelte";
   import MarketingComposer from "./MarketingComposer.svelte";
   import SendingDomainPanel from "./SendingDomainPanel.svelte";
   import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
@@ -29,7 +30,7 @@
   let consentedEmails = $state<Set<string>>(new Set());
   let saving = $state(false);
   let wizardOpen = $state(false);
-  let panel = $state<"contacts" | "compose" | null>(null);
+  let panel = $state<"contacts" | "compose" | "attendees" | null>(null);
   let consentFilter = $state<ContactConsentState | null>(null);
   /** Abuse gate (#59): sending requires a Stripe-verified organiser. */
   let stripeVerified = $state<boolean | null>(null);
@@ -179,10 +180,14 @@
         <h3>Bring your people with you</h3>
         <p class="muted">
           Import the customer lists you've exported from Skiddle, Fatsoma, RA or any other
-          platform. Contacts are encrypted before they're stored — and anyone who
-          unsubscribes stays unsubscribed, even if you re-import the same file.
+          platform, or pull in the ticket buyers who opted in at checkout. Contacts are
+          encrypted before they're stored — and anyone who unsubscribes stays unsubscribed,
+          even if you re-import the same file.
         </p>
-        <button class="btn-primary" onclick={() => (wizardOpen = true)}>Import contacts</button>
+        <div class="actions center">
+          <button class="btn-primary" onclick={() => (wizardOpen = true)}>Import contacts</button>
+          <button class="btn-ghost" onclick={() => (panel = "attendees")}>Add from your events</button>
+        </div>
       </div>
     {:else}
       <ConsentLedger
@@ -200,6 +205,11 @@
         <button class="btn-primary" onclick={() => (wizardOpen = !wizardOpen)}>
           {wizardOpen ? "Close import" : "Import contacts"}
         </button>
+        <button
+          class="btn-ghost"
+          class:active={panel === "attendees"}
+          onclick={() => (panel = panel === "attendees" ? null : "attendees")}
+        >Add from your events</button>
         <button
           class="btn-ghost"
           class:active={panel === "compose"}
@@ -225,6 +235,10 @@
         onCommit={handleWizardCommit}
         onCancel={() => (wizardOpen = false)}
       />
+    {/if}
+
+    {#if panel === "attendees"}
+      <AttendeeImport {contacts} busy={saving} {getKeys} onCommit={commitList} />
     {/if}
 
     {#if panel === "contacts" && contacts.length > 0}
@@ -319,6 +333,8 @@
     gap: 0.5rem;
     flex-wrap: wrap;
   }
+
+  .actions.center { justify-content: center; }
 
   .btn-primary {
     background: var(--accent);
