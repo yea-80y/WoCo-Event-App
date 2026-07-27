@@ -466,7 +466,7 @@ The Stripe questions block nothing here. This track can run to completion while 
 | | Item | Why |
 |---|---|---|
 | **E4** | Message Resend (§9) | Confirms broadcast-over-transactional is acceptable |
-| **E6** | Open AWS + file SES production access | Sandbox is 200/day to verified addresses only. **File early — it gates E7–E9.** |
+| **E6** | Open AWS + file SES production access | Sandbox is 200/day to verified addresses only. **BLOCKED ON NOTHING — file today.** It gates E7–E9, and through E8 it gates organiser custom sending domains, which gates onboarding any organiser with their own brand domain. Review is a queue wait we cannot compress, so it must start before the code that needs it. **This does NOT wait on tier sign-off** — only E10's *gating* does. |
 
 ### Blocked on tier sign-off (§7)
 
@@ -657,10 +657,14 @@ So `interval: "manual"` removes the *automatic* payout — the common case, and 
 
 ### Still open with Stripe — send on the live thread
 
+**One ask, two parts.** Reduced from four 2026-07-27 — see `PAYOUTS.md` §6.
+
 1. **Grant the payout restriction** above (needs a use-case description: UK event ticketing, future delivery, funds held until after the event to protect attendee refunds).
-2. **Does Managed Risk preserve our control of the payout schedule?** The payout-control page conditions it on *"Platforms that manage fraud and dispute liability, or have platform controls"* — under Managed Risk **Stripe** carries that liability, not us. If the switch costs us the hold, the Option B trade changes shape.
-3. **Do existing connected accounts come across?** Bot said no; human called it a platform-level reconfiguration. Not obviously the same claim, and if they do migrate the pre-launch urgency drops.
-4. **UNVERIFIED, not stated on `docs.stripe.com/refunds`:** how long after a charge a refund can still be issued. Matters for long-lead events — if the window is shorter than the sales lead time, advance tickets may not be refundable through Stripe at all.
+2. **Does that restriction survive Managed Risk?** The payout-control page says *"Platforms that manage fraud and dispute liability, **or** have platform controls, can adjust the payout interval"* — a disjunction, so granting (1) should satisfy it regardless of who carries liability. Our reading, not Stripe's words; confirm it.
+
+~~3. Do existing connected accounts come across?~~ **DEAD — do not ask.** Pre-launch, 12 test accounts, all zero balance. Nothing to migrate, and asking frames us as a live platform with an installed base.
+
+~~4. How long after a charge can a refund be issued?~~ **Answer ourselves** — read `docs.stripe.com/refunds` and test one in the dashboard against a test charge. Not worth a support round-trip.
 
 ### Also settled — not escrow
 

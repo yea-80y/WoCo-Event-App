@@ -181,18 +181,24 @@ Its absence is a production alarm, not a degraded feature.
 
 Send on the existing thread — all three are cheap to ask while it is live.
 
+**One ask, two parts** — they are the same conversation and should not be split:
+
 1. **Restrict connected accounts from self-initiating payouts** (§3.2). Requires a support
    request with a use-case description. Without it our hold is advisory. Use case: UK
    event ticketing, future delivery, funds held until after the event to protect attendee
    refunds on cancellation.
-2. **Does Managed Risk preserve our control of the payout schedule?** The payout-control
-   page says *"Platforms that manage fraud and dispute liability, or have platform
-   controls, can adjust the payout interval."* Under Managed Risk **Stripe** carries that
-   liability, not us — so confirm `interval: "manual"` and post-event release survive the
-   switch. If they don't, Option B removes our hold entirely and the trade changes.
-3. **Do existing connected accounts come across?** The support bot said Express accounts
-   cannot be migrated; the human called it a platform-level reconfiguration. Those may not
-   be the same claim. If existing accounts do migrate, the pre-launch urgency drops.
+2. **Does that restriction survive Managed Risk?** The payout-control page says *"Platforms
+   that manage fraud and dispute liability, **or** have platform controls, can adjust the
+   payout interval."* That is a disjunction: granting (1) should satisfy the second limb
+   independently of who carries liability. **Our reading, not Stripe's words — get it
+   confirmed**, because if the hold does not survive, Option B removes our attendee
+   protection entirely and the trade changes shape.
+
+> ~~3. Do existing connected accounts migrate?~~ **DEAD — do not ask.** We are pre-launch.
+> The 12 connected accounts are test accounts at zero balance (verified 2026-07-27 before
+> the schedule fix). If they cannot migrate we discard them. The question has no decision
+> attached to it, and asking it invites Stripe to treat us as a live platform with an
+> installed base — which is the opposite of the position we want going into this.
 
 **UNVERIFIED, worth confirming:** how long after a charge a refund can still be issued
 through Stripe. Not stated on `docs.stripe.com/refunds`. Matters for long-lead events: if
