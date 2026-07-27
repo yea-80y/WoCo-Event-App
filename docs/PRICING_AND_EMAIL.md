@@ -486,3 +486,82 @@ The Stripe questions block nothing here. This track can run to completion while 
 ### Ordering note
 
 **Do not onboard a single organiser custom sending domain on Resend** (§6). Each needs two Resend domains, Pro caps at 10, and migrating them to SES means every organiser re-does their DNS. Own-domain sending ships with E10, after SES — not before.
+
+## 15. RESOLVED — Stripe human support, 2026-07-27
+
+**This section supersedes §7's "verify" caveats and §11's open items.** Answers from a Stripe support agent (not the bot) against §10/§13.
+
+### Our fee model — settled, and we DO pay
+
+We are on **"you handle pricing"**; our platform is the fees collector because we take `application_fee_amount`. Charged to our platform account:
+
+| | |
+|---|---|
+| **£2 per monthly active connected account** | "active" = any month payouts are sent to its bank account |
+| **0.25% + 10p per payout sent** | ✅ confirms stripe.com/gb/connect/pricing — **the bot's "25p globally" was wrong** |
+
+Processing (1.5% + 20p UK) is separately deducted from the connected account's balance at charge time — the organiser pays it, unchanged.
+
+**The 0.25% is the number that matters, and it was missed all along.** It is charged on payout *volume*, not per organiser:
+
+| Organiser selling £50k/yr | |
+|---|---|
+| Our platform fee at 1.5% | £750 |
+| Less 0.25% payout fee on £50k | −£125 |
+| Less £2 × 12 active-account fee | −£24 |
+| Less ~12 × 10p payout fixed | −£1.20 |
+| **Net to WoCo** | **~£600 — an effective 1.20%, not 1.50%** |
+
+**Connect fees eat ~20% of gross ticketing revenue.** That dwarfs email (~$12/yr) and hosting (~$2/yr) combined. Every earlier unit-economics table in this doc understated it.
+
+### Payout timing — confirmed, and manual is Stripe's own recommendation
+
+- `settings[payouts][schedule][delay_days]` — settable on create or update
+- **Dashboard self-serve max is 7 days** for most new Express platforms; longer is configurable via the API, and beyond the self-serve ceiling needs "a backend extension through your Stripe account team"
+- `interval: "manual"` → `POST /v1/payouts` per payout. Quoted: *"This is the recommended pattern for future-delivery businesses like event ticketing, as it lets you hold organiser funds until after the event date and only release them when you're satisfied the event has taken place."*
+
+**Decision: `interval: "manual"` + a post-event release job.** Stripe's own recommendation for our vertical, and it sidesteps every `delay_days` ceiling. Item 0 / row 00 is unchanged in substance but now de-risked — we are doing the standard thing.
+
+⚠️ **The bot's "90-day UK maximum hold" was NOT repeated by the human.** They described holding "until after the event date" with no ceiling, which implies no such limit — but they did not explicitly deny it either. **Get it in writing before promising festival/early-bird support**, and keep the hold ceiling a constant in code regardless.
+
+Note also a parameter mismatch to be careful of: the account setting is `settings[payouts][schedule][delay_days]`; the balance-settings override documented at max 31 is `payments.settlement_timing.delay_days_override`. Different parameters. Manual payouts avoid needing either.
+
+### Platform reserve — reactive, plus a possible launch reserve
+
+- Reactive, **1:1 with a connected account's negative balance** — not sized upfront as a percentage
+- **Cannot be released early**; returns when the account's balance recovers, or after 180 days
+- 🆕 **"Stripe may apply an onboarding or risk-based reserve to your platform account (a percentage of processing volume held for a rolling window, e.g., 60–90 days) if your risk profile warrants it at launch. The size and terms… are determined during underwriting and communicated to you via email."**
+
+That last one is a **working-capital item nobody had on the list.** A rolling 60–90 day hold on a percentage of volume at launch affects cashflow independently of profitability. Must be known before launch commitments.
+
+### Managed Risk — a strategic fork, not a config flag
+
+Confirmed: our accounts default to `controller.losses.payments = "application"` — **we carry negative balances today.** But switching is bigger than expected:
+
+- **Platform-level configuration, not a per-account flag** — "requires reconfiguring your Connect platform profile, not simply passing a different value when creating each `Account` object"
+- **"It is not compatible with your current fee model."** Under Managed Risk, Stripe collects processing fees directly from connected accounts (`fees_collector: account`), changing the fund flow from our setup where the platform is fees collector
+- Under Managed Risk we would **not** be billed the £2/month or the 0.25% + 10p
+
+So the fork is:
+
+| | Option A — today | Option B — Managed Risk |
+|---|---|---|
+| Loss liability | **WoCo** | **Stripe** |
+| £2/active account | yes | no |
+| 0.25% + 10p per payout | yes | no |
+| Fees collector | platform | account |
+| Our revenue mechanism | `application_fee_amount` | ⚠️ **UNKNOWN** |
+
+**Option B is worth ~£150/yr per £50k organiser plus removal of the entire cancelled-event liability.** That is a large prize.
+
+🚨 **THE ONE REMAINING QUESTION — do not guess it, and do not build tiering that assumes an answer:** *can we still take `application_fee_amount` under Managed Risk?* "Not compatible with your current fee model" may mean our 1.5% has to be earned some other way — the Managed Risk pricing page lists **"Revenue share"** as an economic model, which hints the platform's cut might come through Stripe rather than an application fee. If Option B cannot carry our 1.5%, it is unusable regardless of the savings. **This is worth a call with a Stripe account team, not a chat thread.**
+
+### Follow-up to send
+
+> Thanks, that's very helpful. Two follow-ups:
+>
+> 1. **Managed Risk and our revenue.** You said Managed Risk is "not compatible with your current fee model" and moves to `fees_collector: account`. Under Managed Risk, can our platform still collect `application_fee_amount` on each charge — that 1.5% is our entire revenue model. If not, how does a platform earn its margin under Managed Risk (revenue share?), and roughly what does that look like for a ticketing platform? We'd like to move to Managed Risk to remove the negative-balance liability, but not if it removes our ability to charge a platform fee.
+>
+> 2. **Maximum hold period.** With `interval: "manual"`, is there any maximum period we can hold a connected account's balance before Stripe requires a payout? Your automated assistant earlier said 90 days for UK accounts; I can't find that documented. We sell festival and early-bird tickets 6+ months ahead, so we need to know whether holding that long is permitted.
+>
+> Also — could you connect us with an account team? We have two decisions (Managed Risk, and any launch reserve on our platform account) that we'd rather get right before going live.
