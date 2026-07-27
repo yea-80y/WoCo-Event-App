@@ -176,26 +176,16 @@ STRIPE PAYMENTS (Card via Stripe Connect):
   first-line. Platform takes `application_fee_amount`. NOT destination charges (corrected 2026-07-26).
   CAVEAT: Express accounts = platform is responsible for unrecoverable negative balances, so WoCo
   carries residual chargeback exposure. See docs/legal/DATA_INVENTORY.md §5.1.
-- Platform fee: 1.5% (application_fee_amount) — matches escrow contract (150 bp)
-- Stripe processing on top, paid by the ORGANISER from their cut (verified 2026-07-27,
-  stripe.com/gb/pricing): UK cards 1.5% + 20p, UK premium 1.9% + 20p, EEA 2.5% + 20p,
-  international 3.25% + 20p (+2% on currency conversion). There is NO Connect uplift on
-  the processing rate — the earlier "~2% + 20p incl. Connect +0.5%" note was wrong.
-- Connect platform-side fees (£2/monthly active account + 0.25% + 10p per payout) apply only
-  under Stripe's "you handle pricing" model. We use DIRECT charges where the connected account
-  bears processing, which should put us on "Stripe handles pricing" = £0 platform fees.
-  UNVERIFIED — confirm from the Stripe dashboard billing page before publishing any pricing.
-  See docs/PRICING_AND_EMAIL.md §7.
+- Platform fee: 1.5% (application_fee_amount) — matches escrow contract (150 bp).
+  All other fee arithmetic (processing rates, Connect platform fees, who pays what):
+  `docs/PRICING_AND_EMAIL.md` §7/§15–§17. Do not restate rates here — they drift.
 - Account store: `.data/stripe-accounts.json` (file-backed, same pattern as tx-registry)
-- PAYOUTS ARE MANUAL + RELEASED AFTER THE EVENT (2026-07-27). Accounts are created with
-  `settings.payouts.schedule.interval = "manual"`; `.data/stripe-payout-ledger.json` holds one
-  entry per paid session with its release date; an hourly sweep pays out only what is DUE
-  (a connected account has ONE pooled balance across all its events — never pay out the raw
-  balance). NOT `delay_days` (self-serve caps at 7d). Two Stripe limits are load-bearing:
-  funds **cannot be held >90 days** (UK; per CHARGE not per event ⇒ early-bird money releases
-  before the event), and `manual` does **not** stop an Express organiser paying themselves —
-  full lockout needs a Stripe support grant. Never call it escrow (Stripe doesn't offer escrow).
-  Full detail: `docs/PAYOUTS.md`; decisions: `docs/PRICING_AND_EMAIL.md` §15–§17.
+- PAYOUTS ARE MANUAL + RELEASED AFTER THE EVENT (2026-07-27). Accounts are created
+  `interval: "manual"`; a per-sale ledger + hourly sweep release only what is DUE — a
+  connected account has ONE pooled balance across all its events, so never pay out the raw
+  balance. Two limits are load-bearing: funds cannot be held >90 days (UK; per CHARGE, so
+  early-bird money releases before its event), and `manual` does NOT stop an Express
+  organiser paying themselves. Never call it escrow. **Authority: `docs/PAYOUTS.md`.**
 - Webhook: checkout.session.completed auto-claims ticket via claimTicket()
   Webhook source: "Connected and v2 accounts" (NOT "Your account")
 - Onboarding opens in NEW TAB during event creation to preserve form data
@@ -318,16 +308,9 @@ MULTI-PAGE SITE BUILDER
 Builder UI lives at `#/build` inside the main WoCo app (App.svelte routes to it).
 Deployed sites are standalone BZZ collections on Swarm — no server at runtime.
 
-SCHEMA (packages/shared/src/site/types.ts):
-- `Site` — top-level config: theme, pages, nav, contact, socials, siteId (ULID)
-- `ThemeTokens` — brandName, logoSwarmRef, siteDescription (SEO), palette, font, radius
-- `Page` — slug, title, metaDescription, sections[]
-- `Section` — discriminated union: hero | richText | gallery | eventsGrid | featuredEvent |
-  openingHours | map | contactForm | embed
-- `SiteEventsIndex` — {siteId, events: SiteEventEntry[], updatedAt}
-- `SiteDirectoryEntry` — compact entry in creator's site directory feed
-- `SiteDirectory` — paged on-feed envelope (mirrors EventDirectory pattern)
-- `SiteRuntimeConfig` — injected as window.SITE_CONFIG at deploy time
+SCHEMA: `packages/shared/src/site/types.ts` is the single source of truth (Site,
+ThemeTokens, Page, Section union, SiteEventsIndex, SiteDirectory[Entry],
+SiteRuntimeConfig → injected as window.SITE_CONFIG at deploy time). Read it there.
 
 FEEDS:
 - woco/site/config/{siteId}           → Site JSON (config + theme + pages)
@@ -347,23 +330,15 @@ PUBLISH FLOW (two-step):
    gateway, re-upserts directory entry with feedHash + deployedUrl.
    Returns { contentHash, feedManifestHash, siteUrl }
 
-MY SITES DASHBOARD:
-- GET /api/sites/mine — auth-gated, reads creator's Swarm directory, returns SiteDirectoryEntry[]
-- Builder opens on "Your websites" landing screen (MySitesScreen.svelte) showing site cards
-- Cards seeded from localStorage (instant) then merged with API results (authoritative)
-- LocalStorage key woco:my-sites is a write-through cache; API is source of truth
-- "← My Sites" back button in builder header; "Load from another device" advanced toggle
-  for cross-device recovery via Site ID
+MY SITES: GET /api/sites/mine reads the creator's Swarm directory. localStorage
+`woco:my-sites` is a write-through cache seeded for instant paint; the API is truth.
 
-EVENT LOADING (deployed site):
-- GET /api/sites/:id/events-full — bundled endpoint, 5-min server-side cache + Cache-Control
-  headers for Cloudflare edge caching. Client uses 2h stale-while-revalidate localStorage cache.
-- Preview mode (window.SITE_CONFIG.previewEvents set): skips cache, fetches individually.
+EVENT LOADING (deployed site): GET /api/sites/:id/events-full — bundled, 5-min server
+cache + Cache-Control for CF edge; client 2h stale-while-revalidate. Preview mode
+(window.SITE_CONFIG.previewEvents) skips cache and fetches individually.
 
-SEO:
-- siteDescription (ThemeTokens) injected at deploy time: <meta name=description>,
-  og:title/description/image, twitter:card. ogImage = logo Swarm ref.
-- MultiSiteApp updates <meta name=description> per-page at runtime.
+SEO: siteDescription injected at deploy time (meta description, og:*, twitter:card;
+ogImage = logo Swarm ref); MultiSiteApp updates meta description per-page at runtime.
 
 TEMPLATE PRESET: pub-venue-v1 (only one so far). newSiteFromTemplate() in shared.
 
