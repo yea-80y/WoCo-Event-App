@@ -177,8 +177,13 @@ STRIPE PAYMENTS (Card via Stripe Connect):
   CAVEAT: Express accounts = platform is responsible for unrecoverable negative balances, so WoCo
   carries residual chargeback exposure. See docs/legal/DATA_INVENTORY.md §5.1.
 - Platform fee: 1.5% (application_fee_amount) — matches escrow contract (150 bp)
-- Stripe fee on top (paid by organiser from their cut):
-  UK/EU cards ~2% + 20p, international ~3.75% + 20p (includes Connect +0.5%)
+- Stripe processing on top, paid by the ORGANISER from their cut (verified 2026-07-27,
+  stripe.com/gb/pricing): UK cards 1.5% + 20p, UK premium 1.9% + 20p, EEA 2.5% + 20p,
+  international 3.25% + 20p (+2% on currency conversion). There is NO Connect uplift on
+  the processing rate — the earlier "~2% + 20p incl. Connect +0.5%" note was wrong.
+- Connect Express costs the PLATFORM, not the organiser: $2/month per ACTIVE connected
+  account + 0.25% + 25p per payout. This is a per-organiser fixed cost (~$24/yr if active
+  year-round) and it dominates our marginal cost per organiser — see docs/PRICING_AND_EMAIL.md §7.
 - Account store: `.data/stripe-accounts.json` (file-backed, same pattern as tx-registry)
 - Webhook: checkout.session.completed auto-claims ticket via claimTicket()
   Webhook source: "Connected and v2 accounts" (NOT "Your account")
