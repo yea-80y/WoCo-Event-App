@@ -251,14 +251,32 @@ email addresses, or any credential.
 - **File mode 0600**, directory 0700 on fresh installs; written write-then-rename so a
   crash cannot truncate it.
 
-> ⚠️ **Ops gap, needs a decision — pre-existing, not introduced here.** The live store at
-> `/opt/woco/woco-data` is directory `755` with files `644`: world-readable to any host
-> user, and it holds the marketing suppression list, gate bindings and Stripe account map
-> as well. Single-tenant VM with root-only SSH keeps practical exposure low, but `644` is
-> below standard for financial and personal data. Tightening it needs care because files
-> there are owned by a mix of `root` and uid `1000` — changing modes or ownership carelessly
-> can stop the container writing. There is also no encryption at rest beyond the provider's
-> disk, and no verified backup of `woco-data` (a lost ledger strands organiser funds).
+✅ **Host hardening done 2026-07-27.** The live store was directory `755` / files `644` —
+world-readable to any host account — as were `server.env` (which holds `FEED_PRIVATE_KEY`,
+both Stripe webhook secrets, `EMAIL_HASH_SECRET`, `PAYMENT_QUOTE_SECRET` and
+`SHOP_SPENDER_SECRET`) and the Cloudflare tunnel token, which sat on cloudflared's
+command line and so was readable from `/proc/<pid>/cmdline` by any user.
+
+| | Before | After |
+|---|---|---|
+| `/opt/woco/woco-data` | `755` dirs / `644` files | `700` / `600` |
+| `/opt/woco/server.env` | `644` | `600` |
+| `/opt/woco/docker-compose.yml` | `644` | `600` |
+| Tunnel token | `ExecStart --token …` (cmdline is world-readable `444`) | `EnvironmentFile=/etc/cloudflared/env` `600`; `environ` is `400` owner-only |
+
+Safe because the server container runs as **uid 0** — it bypasses the mode bits, so
+tightening them cannot stop it writing. Verified after the change: container write+read+
+delete inside `.data`, the payout audit reading `stripe-accounts.json`, both tunnel
+hostnames serving, and `setpriv` as an unprivileged uid denied on both paths. Rollback:
+`/root/woco-data.modes.bak.*` (exact prior modes) and `/root/cloudflared.service.bak.*`.
+
+> ⚠️ **If the Dockerfile ever gains a `USER` directive**, root-owned `600` files become
+> unreadable to the server and every store breaks at once. The mode tightening is only
+> safe while the container is root.
+
+> ⚠️ **Still open:** no encryption at rest beyond the provider's disk, and **no verified
+> backup of `woco-data`** — a lost ledger strands organiser funds. That is now the largest
+> remaining risk to this store, and it is a data-loss risk rather than an access one.
 
 ## 9. Operations
 
