@@ -10,12 +10,19 @@ import type { SealedBox } from "../crypto/types.js";
  * and are hashed-and-discarded — never stored.
  */
 
+/**
+ * Hard ceiling on a stored audience, enforced by POST /api/marketing/list.
+ * Shared so the import wizard can warn BEFORE the organiser commits, rather
+ * than surfacing a raw 400 after they have ticked the consent warranty.
+ */
+export const MARKETING_MAX_LIST_EMAILS = 20_000;
+
 export interface MarketingContact {
   email: string;
   firstName?: string;
   lastName?: string;
   postcode?: string;
-  /** ISO date string, as imported */
+  /** Verbatim from the source CSV — NOT normalised, because DD/MM vs MM/DD is unknowable */
   dob?: string;
   /** Provenance, e.g. "csv:contacts.csv" */
   source?: string;

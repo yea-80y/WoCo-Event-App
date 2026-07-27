@@ -32,10 +32,26 @@ export async function getMarketingList(): Promise<MarketingListResponse | null> 
   return resp.data ?? null;
 }
 
+/**
+ * Below the server's MARKETING_MAX_LIST_EMAILS ceiling — a single oversized
+ * request is rejected wholesale, which surfaced to importers as a bare
+ * "Validation failed" on any list past 20k.
+ */
+const CHECK_BATCH_SIZE = 5_000;
+
 export async function checkMarketingEmails(emails: string[]): Promise<MarketingCheckResult> {
-  const resp = await authPost<MarketingCheckResult>("/api/marketing/check", { emails });
-  if (!resp.data) throw new Error(resp.error || "Check failed");
-  return resp.data;
+  const suppressed: string[] = [];
+  const alreadyInList: string[] = [];
+
+  for (let i = 0; i < emails.length; i += CHECK_BATCH_SIZE) {
+    const batch = emails.slice(i, i + CHECK_BATCH_SIZE);
+    const resp = await authPost<MarketingCheckResult>("/api/marketing/check", { emails: batch });
+    if (!resp.data) throw new Error(resp.error || "Check failed");
+    suppressed.push(...resp.data.suppressed);
+    alreadyInList.push(...resp.data.alreadyInList);
+  }
+
+  return { suppressed, alreadyInList };
 }
 
 export async function suppressContacts(emails: string[]): Promise<void> {

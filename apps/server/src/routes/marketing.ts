@@ -13,6 +13,7 @@
 
 import { Hono } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
+import { MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
@@ -36,7 +37,7 @@ import { topicMarketingList } from "../lib/swarm/topics.js";
 const marketing = new Hono<AppEnv>();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MAX_LIST_EMAILS = 20_000;
+const MAX_LIST_EMAILS = MARKETING_MAX_LIST_EMAILS;
 /** Hex ciphertext ≈ 2× plaintext, so this is roughly a 3MB plaintext list. */
 const MAX_SEALED_JSON = 6_000_000;
 const MAX_BROADCAST_RECIPIENTS = 1000;

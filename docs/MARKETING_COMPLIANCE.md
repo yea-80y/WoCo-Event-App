@@ -33,6 +33,13 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   `woco/marketing/list/{addr}`. Server keeps only emailHashes. Plaintext emails transit
   import/check/broadcast bodies transiently (the client can't compute the server-secret HMAC)
   — hashed-and-discarded.
+- CSV IMPORT: no source platform (Skiddle/Fatsoma/RA/Eventbrite) publishes an export column
+  schema — RA's is promoter-selected per export, so there is no fixed shape at all. Header
+  auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always shows the
+  mapping dropdowns; decoy headers ("Email Opt In") are scored out so a flag can never be
+  imported as an address. Logic is pure + unit-tested (`apps/web/test/csv-import.test.ts`);
+  the fixtures are representative, not authoritative — a real export is still worth testing.
+  `MARKETING_MAX_LIST_EMAILS` (20k, shared) caps a stored list; `/check` is client-batched.
 - Organiser sending domains: Resend Domains API, verify-on-demand (no poller);
   `resolveMarketingFrom`: verified org domain → `RESEND_FROM_MARKETING` → `RESEND_FROM`.
   From-domain never bypasses suppression/headers.

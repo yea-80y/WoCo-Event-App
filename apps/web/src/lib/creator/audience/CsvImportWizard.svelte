@@ -1,6 +1,13 @@
 <script lang="ts">
-  import type { MarketingContact } from "@woco/shared";
+  import { MARKETING_MAX_LIST_EMAILS, type MarketingContact } from "@woco/shared";
   import { checkMarketingEmails } from "../../api/marketing.js";
+  import {
+    autoMapColumns,
+    buildImportReport,
+    emptyMapping,
+    type ColumnMapping,
+    type ImportField,
+  } from "./csv-import.js";
 
   interface Props {
     existingEmails: Set<string>;
@@ -21,8 +28,7 @@
   let rows = $state<Record<string, string>[]>([]);
 
   // Column mapping: field → header name (or "" = not mapped)
-  type Field = "email" | "firstName" | "lastName" | "postcode" | "dob";
-  let mapping = $state<Record<Field, string>>({ email: "", firstName: "", lastName: "", postcode: "", dob: "" });
+  let mapping = $state<ColumnMapping>(emptyMapping());
 
   // Validation report
   let checking = $state(false);
@@ -31,33 +37,7 @@
   let dupesInFile = $state(0);
   let dupesVsList = $state(0);
   let suppressedCount = $state(0);
-  let suppressedSet = $state<Set<string>>(new Set());
   let warrantyTicked = $state(false);
-
-  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-  const FIELD_HEURISTICS: Record<Field, RegExp> = {
-    email: /^e-?mail(address)?$/,
-    firstName: /^(first(name)?|given(name)?|forename)$/,
-    lastName: /^(last(name)?|surname|family(name)?)$/,
-    postcode: /^(post(al)?code|zip(code)?)$/,
-    dob: /^(dob|dateofbirth|birth(date|day)?)$/,
-  };
-
-  function normHeader(h: string): string {
-    return h.toLowerCase().replace(/[\s_.-]/g, "");
-  }
-
-  function autoMap(hdrs: string[]): void {
-    const next: Record<Field, string> = { email: "", firstName: "", lastName: "", postcode: "", dob: "" };
-    for (const h of hdrs) {
-      const n = normHeader(h);
-      for (const field of Object.keys(FIELD_HEURISTICS) as Field[]) {
-        if (!next[field] && FIELD_HEURISTICS[field].test(n)) next[field] = h;
-      }
-    }
-    mapping = next;
-  }
 
   async function handleFile(e: Event): Promise<void> {
     const input = e.target as HTMLInputElement;
@@ -85,7 +65,7 @@
         error = "That file has no rows we can read. Export a CSV with a header row and try again.";
         return;
       }
-      autoMap(headers);
+      mapping = autoMapColumns(headers);
       step = "map";
     } catch (err) {
       error = err instanceof Error ? err.message : "Could not read that file.";
@@ -103,43 +83,21 @@
     error = null;
     checking = true;
     try {
-      const addedAt = new Date().toISOString();
-      const source = `csv:${fileName}`;
-      const seen = new Set<string>();
-      const fresh: MarketingContact[] = [];
-      let invalid = 0;
-      let dupFile = 0;
-      let dupList = 0;
+      const report = buildImportReport(rows, mapping, existingEmails, {
+        source: `csv:${fileName}`,
+        addedAt: new Date().toISOString(),
+      });
+      const fresh = report.candidates;
 
-      for (const row of rows) {
-        const raw = (row[mapping.email] ?? "").trim().toLowerCase();
-        if (!EMAIL_RE.test(raw)) { invalid++; continue; }
-        if (seen.has(raw)) { dupFile++; continue; }
-        seen.add(raw);
-        if (existingEmails.has(raw)) { dupList++; continue; }
-        const pick = (f: Field) => (mapping[f] ? (row[mapping[f]] ?? "").trim() || undefined : undefined);
-        fresh.push({
-          email: raw,
-          firstName: pick("firstName"),
-          lastName: pick("lastName"),
-          postcode: pick("postcode"),
-          dob: pick("dob"),
-          source,
-          addedAt,
-        });
-      }
-
-      invalidRows = invalid;
-      dupesInFile = dupFile;
-      dupesVsList = dupList;
+      invalidRows = report.invalidRows;
+      dupesInFile = report.dupesInFile;
+      dupesVsList = report.dupesVsList;
 
       if (fresh.length === 0) {
         candidates = [];
         suppressedCount = 0;
-        suppressedSet = new Set();
       } else {
         const res = await checkMarketingEmails(fresh.map((c) => c.email));
-        suppressedSet = new Set(res.suppressed);
         suppressedCount = res.suppressed.length;
         candidates = fresh;
       }
@@ -154,9 +112,13 @@
 
   const willImport = $derived(candidates.length);
   const willNeverReceive = $derived(suppressedCount);
+  /** The stored list is capped server-side — say so here, not after the save 400s. */
+  const overCapBy = $derived(
+    Math.max(0, existingEmails.size + candidates.length - MARKETING_MAX_LIST_EMAILS),
+  );
 
   async function commit(): Promise<void> {
-    if (!warrantyTicked || candidates.length === 0) return;
+    if (!warrantyTicked || candidates.length === 0 || overCapBy > 0) return;
     error = null;
     try {
       // Suppressed contacts ARE imported (they may be in the list for records)
@@ -194,7 +156,7 @@
       {#each [["email", "Email (required)"], ["firstName", "First name"], ["lastName", "Last name"], ["postcode", "Postcode"], ["dob", "Date of birth"]] as [field, label] (field)}
         <label class="map-row" class:unmapped={field === "email" && !mapping.email}>
           <span class="map-label">{label}</span>
-          <select bind:value={mapping[field as Field]}>
+          <select bind:value={mapping[field as ImportField]}>
             <option value="">— not in this file —</option>
             {#each headers as h (h)}
               <option value={h}>{h}</option>
@@ -243,7 +205,14 @@
       {/if}
     </div>
 
-    {#if willImport > 0}
+    {#if overCapBy > 0}
+      <p class="wiz-error">
+        This import would take your audience to
+        {(existingEmails.size + willImport).toLocaleString()} contacts — {overCapBy.toLocaleString()}
+        over the {MARKETING_MAX_LIST_EMAILS.toLocaleString()} limit. Split the CSV into smaller
+        files, or remove contacts you no longer need, and try again.
+      </p>
+    {:else if willImport > 0}
       <!-- The legal moment: deliberate, not a buried tickbox -->
       <label class="warranty" class:ticked={warrantyTicked}>
         <input type="checkbox" bind:checked={warrantyTicked} />
@@ -260,7 +229,7 @@
 
     <div class="wiz-actions">
       <button class="btn-ghost" onclick={() => (step = "map")}>Back</button>
-      <button class="btn-primary" onclick={() => void commit()} disabled={!warrantyTicked || willImport === 0 || busy}>
+      <button class="btn-primary" onclick={() => void commit()} disabled={!warrantyTicked || willImport === 0 || overCapBy > 0 || busy}>
         {busy ? "Encrypting & saving…" : `Add ${willImport.toLocaleString()} contact${willImport === 1 ? "" : "s"}`}
       </button>
     </div>
