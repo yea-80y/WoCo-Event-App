@@ -339,7 +339,11 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 | 11 | **Transactional sending domain** — `resolveTransactionalFrom()`, separate subdomain, Venue+ | 6, 9 |
 | 12 | **Stripe Billing subscription rail** for tiers (Billing, not Connect — WoCo is merchant here) | §7 sign-off |
 
-**Correct `CLAUDE.md`:** the recorded Stripe figure ("UK/EU cards ~2% + 20p … includes Connect +0.5%") is wrong. Direct charges on connected accounts are **1.5% + 20p** for UK cards, 2.5% + 20p EEA, 3.25% + 20p international. Connect Express costs the **platform** $2/active account/month + 0.25% + 25p per payout — a per-organiser fixed cost, not a rate uplift.
+**`CLAUDE.md` corrected 2026-07-27:** the old figure ("UK/EU cards ~2% + 20p … includes Connect +0.5%") was wrong. Direct charges on connected accounts are **1.5% + 20p** UK cards, 1.9% + 20p UK premium, 2.5% + 20p EEA, 3.25% + 20p international (+2% on currency conversion). **No Connect uplift on the processing rate.** Platform-side Connect fees are a separate question still open with Stripe — see §11 and §13; do not build against a number until they answer.
+
+### Two independent tracks
+
+Items 0 and 7 and 12 are **payments**; items 1–6 and 8–11 are **email**. Only 5, 6 and 7 share a dependency (§7 tier sign-off). The email track is not blocked by the Stripe questions — see the split in §14.
 
 ## 9. Message to Resend support
 
@@ -443,3 +447,42 @@ The bot left four things open. Reply on the same thread asking for a human, refe
 > - What monthly processing volume would make us eligible for negotiated pricing, and would moving to negotiated pricing mean Managed Risk stops being free?
 >
 > Thanks.
+
+## 14. Email track — standalone to-do
+
+The Stripe questions block nothing here. This track can run to completion while Stripe support replies.
+
+### Ready now — no blockers
+
+| | Item | Detail |
+|---|---|---|
+| ✅ | **ESP seam** | Done `2eda035`. `lib/email/send.ts` is the single chokepoint. |
+| **E1** | **`Reply-To` source** | `TicketEmailOpts.replyTo` is plumbed but nothing populates it. Wire `SiteContact.email` (`packages/shared/src/site/types.ts:263`) when `siteId` is present → verified sending domain → omit. Both callers: `routes/tickets.ts:292`, `routes/stripe.ts:1173`. Attendee replies currently go nowhere. |
+| **E2** | **Fix the daily cap** | `MARKETING_DAILY_CAP` is a flat 2,000/day (`lib/marketing/send-cap.ts:27`). Blocks an organiser with 2,001 contacts from announcing an event. Split: attendee/event broadcasts get *rate* throttling only (no volume ceiling); marketing lists get a cap that is never below the contact allowance. Make the number a per-organiser lookup, defaulted, so E5 can drive it. |
+| **E3** | **Stripe receipt collision** | We pass `customer_email` (`routes/stripe.ts:626`) so buyers may get Stripe's receipt *and* our ticket email. Decide: suppress Stripe receipts on connected accounts, or document it. |
+
+### Blocked on the user
+
+| | Item | Why |
+|---|---|---|
+| **E4** | Message Resend (§9) | Confirms broadcast-over-transactional is acceptable |
+| **E6** | Open AWS + file SES production access | Sandbox is 200/day to verified addresses only. **File early — it gates E7–E9.** |
+
+### Blocked on tier sign-off (§7)
+
+| | Item |
+|---|---|
+| **E5** | **Entitlements store** — `.data/entitlements.json`, per-organiser tier. Contacts, storage, sites and the E2 cap all read from it. This is the keystone: nothing tiered can ship before it. |
+
+### Blocked on SES
+
+| | Item | Blocked on |
+|---|---|---|
+| **E7** | SES provider behind the seam (~half day) | E6 |
+| **E8** | SES domain verification — identities + DKIM + poll, replacing Resend's Domains API (**2–3 days, the real cost**) | E7 |
+| **E9** | SNS bounce/complaint webhook — reshape the existing handler | E7 |
+| **E10** | Transactional sending domain — `resolveTransactionalFrom()`, separate subdomain, Venue tier+ | E5, E8 |
+
+### Ordering note
+
+**Do not onboard a single organiser custom sending domain on Resend** (§6). Each needs two Resend domains, Pro caps at 10, and migrating them to SES means every organiser re-does their DNS. Own-domain sending ships with E10, after SES — not before.
