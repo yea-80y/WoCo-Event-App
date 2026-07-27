@@ -21,9 +21,23 @@ interface SendLogEntry {
 const log = new Map<string, SendLogEntry[]>();
 let loaded = false;
 
-function dailyCap(): number {
+function envDailyCap(): number {
   const n = Number(process.env.MARKETING_DAILY_CAP);
   return Number.isFinite(n) && n > 0 ? n : 2000;
+}
+
+/**
+ * A cap below the organiser's own list size is not a reputation guard, it is a
+ * product defect — it makes announcing an event impossible for anyone whose
+ * audience outgrew the flat default. Callers pass their stored list size as the
+ * floor so one full-list send per 24h is always permitted.
+ *
+ * At the entitlements step this floor becomes the tier's contact allowance
+ * (docs/PRICING_AND_EMAIL.md §14 E5); the env var stays as the default for
+ * organisers with no tier record.
+ */
+function effectiveDailyCap(minimumCap?: number): number {
+  return Math.max(envDailyCap(), minimumCap ?? 0);
 }
 
 function ensureLoaded(): void {
@@ -56,9 +70,9 @@ function recentEntries(organiserAddress: string): SendLogEntry[] {
   return recent;
 }
 
-export function capRemaining(organiserAddress: string): number {
+export function capRemaining(organiserAddress: string, minimumCap?: number): number {
   const used = recentEntries(organiserAddress).reduce((sum, e) => sum + e.count, 0);
-  return Math.max(0, dailyCap() - used);
+  return Math.max(0, effectiveDailyCap(minimumCap) - used);
 }
 
 export function recordSend(organiserAddress: string, count: number): void {

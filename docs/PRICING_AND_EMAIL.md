@@ -457,8 +457,8 @@ The Stripe questions block nothing here. This track can run to completion while 
 | | Item | Detail |
 |---|---|---|
 | ✅ | **ESP seam** | Done `2eda035`. `lib/email/send.ts` is the single chokepoint. |
-| **E1** | **`Reply-To` source** | `TicketEmailOpts.replyTo` is plumbed but nothing populates it. Wire `SiteContact.email` (`packages/shared/src/site/types.ts:263`) when `siteId` is present → verified sending domain → omit. Both callers: `routes/tickets.ts:292`, `routes/stripe.ts:1173`. Attendee replies currently go nowhere. |
-| **E2** | **Fix the daily cap** | `MARKETING_DAILY_CAP` is a flat 2,000/day (`lib/marketing/send-cap.ts:27`). Blocks an organiser with 2,001 contacts from announcing an event. Split: attendee/event broadcasts get *rate* throttling only (no volume ceiling); marketing lists get a cap that is never below the contact allowance. Make the number a per-organiser lookup, defaulted, so E5 can drive it. |
+| ✅ **E1** | **`Reply-To` source** | Done. `getSiteTheme` now also returns `contactEmail` (`lib/site/service.ts`); the Stripe webhook passes it as `replyTo` (`routes/stripe.ts`). From stays platform-owned — only replies redirect, so an organiser's domain reputation can never affect ticket delivery. The public `/send-email` route has no site context, so no reply-to there by design. |
+| ✅ **E2** | **Fix the daily cap** | Done. `capRemaining(org, minimumCap?)` takes a floor; `effectiveDailyCap` = `max(env, floor)`. `/broadcast` passes the organiser's stored list size, so one full-list send per 24h is always permitted — and the reported `capRemaining` uses the same floor so the UI can't understate the next allowance. At E5 the floor becomes the tier's contact allowance; the env var stays the default for organisers with no tier record. |
 | **E3** | **Stripe receipt collision** | We pass `customer_email` (`routes/stripe.ts:626`) so buyers may get Stripe's receipt *and* our ticket email. Decide: suppress Stripe receipts on connected accounts, or document it. |
 
 ### Blocked on the user

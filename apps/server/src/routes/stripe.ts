@@ -623,6 +623,13 @@ stripe.post("/create-checkout", async (c) => {
         },
         success_url: stripeSuccessUrl,
         cancel_url: stripeCancelUrl,
+        // Prefills the email field at checkout. Side effect: on a direct charge
+        // the connected account may also send Stripe's own payment receipt to
+        // this address, so the buyer can receive two emails — Stripe's receipt
+        // plus our ticket email. Receipts are the ORGANISER's dashboard setting
+        // (Settings → Business → Customer emails), not ours to suppress per
+        // session, so this is documented for organisers rather than fixed here.
+        // Removing customer_email would cost the prefill and not stop receipts.
         ...(claimerEmail ? { customer_email: claimerEmail } : {}),
       },
       { stripeAccount: organiserRecord.stripeAccountId },
@@ -1181,6 +1188,9 @@ async function handleSuccessfulPayment(
           buyerName,
           palette: siteTheme?.palette,
           siteId: metaSiteId || undefined,
+          // Attendee replies reach the organiser instead of a void. Absent for
+          // events with no site, or no contact email set on it.
+          replyTo: siteTheme?.contactEmail,
           // `to` here IS the verified purchase email (Stripe checkout) — the
           // only path allowed to mint Route A gate tokens. Skipped when a
           // signed-in buyer's single ticket was already bound at claim time;

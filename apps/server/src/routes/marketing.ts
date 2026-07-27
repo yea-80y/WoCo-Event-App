@@ -255,8 +255,10 @@ marketing.post("/broadcast", requireAuth, async (c) => {
         return { rejected: "Rate limit exceeded (2 marketing broadcasts per hour)" } as const;
       }
 
-      // Daily cap: explicit reject, never silent trimming
-      const remaining = capRemaining(org);
+      // Daily cap: explicit reject, never silent trimming. The organiser's own
+      // stored list size is the floor — the cap exists to slow cold-list
+      // blasting, not to make a full-audience announcement impossible.
+      const remaining = capRemaining(org, storedHashes.size);
       if (recipients.length > remaining) {
         return {
           rejected: `Daily marketing send cap reached (${remaining} of your daily allowance remaining). Try a smaller batch or wait.`,
@@ -293,7 +295,9 @@ marketing.post("/broadcast", requireAuth, async (c) => {
         sent: result.sent,
         suppressed: result.suppressed,
         failed: result.failed,
-        capRemaining: capRemaining(org),
+        // Same floor as the pre-send check, or the UI would report a smaller
+        // allowance than the next broadcast would actually be granted.
+        capRemaining: capRemaining(org, storedHashes.size),
         ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 10) } : {}),
       },
     });
