@@ -21,8 +21,11 @@ people or breaking consent?
 > - The audience UI now shows the three consent states and lets a contact be
 >   edited (`ConsentLedger`, `ContactDetail`).
 >
-> Still open: the drain itself (step 3 below), the provenance-ranked merge rule,
-> the single Art. 17 deletion path, and the `MARKETING_MAX_LIST_EMAILS` ceiling.
+> - The drain and the provenance-ranked merge rule are **BUILT**
+>   (`AttendeeImport.svelte`, `attendee-drain.ts`).
+>
+> Still open: the single Art. 17 deletion path, and the
+> `MARKETING_MAX_LIST_EMAILS` ceiling.
 
 Compliance posture is unchanged: **organiser = data controller, WoCo = processor.**
 Send-path guarantees live in `MARKETING_COMPLIANCE.md` — this note is about the
@@ -103,7 +106,9 @@ correct in principle. But blanket **"newest wins" is wrong**, for two reasons:
 2. **Absence is not an update.** A later import that omits a field must not blank a
    field an earlier one filled.
 
-Proposed rule — **provenance rank, then recency**:
+✅ **BUILT** — `provenanceRank` / `mergeContact` in `attendee-drain.ts`, unit-tested.
+
+Rule — **provenance rank, then recency**:
 
 ```
 self-reported at checkout  >  organiser edit  >  CSV import
@@ -135,14 +140,13 @@ already decrypts them. So:
    exact wording and a version tag captured alongside it.
 2. ✅ **BUILT.** The buyer's email is already sealed into the claim payload, and
    the answer travels with the claim on every path.
-3. ⬜ **STILL OPEN — the actual remaining work.** The Audience screen decrypts
-   claims (same mechanism as `Dashboard`) and offers "N attendees opted in — add
-   to your audience", deduped on lowercased email against the existing list.
-   Note the shape this has to take: the consent store holds HASHES, so the
-   server can never hand back an address. The organiser's browser decrypts the
-   claim data it already has access to, and `/api/marketing/check` tells it
-   which of those addresses carry a consent record (`consented`, already
-   shipped). Nothing new needs to cross the trust boundary.
+3. ✅ **BUILT** (`AttendeeImport.svelte` + `attendee-drain.ts`). The Audience
+   screen decrypts claims (same mechanism as `Dashboard`) and offers "N to add"
+   per event, deduped on lowercased email against the existing list. The shape
+   was forced by the trust model: the consent store holds HASHES, so the server
+   can never hand back an address. The organiser's browser decrypts the claim
+   data it already has the key for, and `/api/marketing/check` returns
+   `consented` for the addresses it found. Nothing new crosses the boundary.
 4. ✅ **BUILT.** The server records `hashEmail` + eventId + timestamp + the
    verbatim notice — no plaintext — as the demonstrability record
    (`consent-store.ts`). Same shape as the suppression store. Organiser holds
