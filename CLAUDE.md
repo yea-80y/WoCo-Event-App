@@ -57,11 +57,18 @@ Three identity layers:
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
 3. POD identity (ed25519, deterministic) — signs tickets + derives encryption key
 
-Login methods (all working):
-- Web3 wallet (MetaMask, WalletConnect)
-- Local browser account (secp256k1 in IndexedDB, AES-GCM encrypted)
-- Para embedded wallet (email → hosted iframe → EVM wallet, MPC)
-- Zupass — NOT YET (needs ed25519 adapter)
+Login methods. AUTHORITATIVE LIST = `AuthKind` in `packages/shared/src/auth/types.ts`
+(`"web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none"`) — read it there, this
+comment drifts:
+- `web3`     — browser wallet (MetaMask, WalletConnect)
+- `web3auth` — email/social → Web3Auth → Kernel smart account + paymaster
+- `passkey`  — WebAuthn PRF → Kernel ECDSA (gasless via paymaster)
+- `coinbase` — Coinbase Smart Wallet (signs on Base regardless of appChainIds)
+- `zupass`   — declared in the union, NOT implemented (needs ed25519 adapter)
+
+REMOVED — do not reintroduce from old docs: Para embedded wallet and the local browser
+account (secp256k1 in IndexedDB) were both deleted in `e127c97` to cut eager bundle size.
+`SiteLoginModal.svelte:3` and `backup-signer.ts:173` carry comments explaining why.
 
 Deferred signing: login just connects; EIP-712 `AuthorizeSession` is signed on first
 action that needs it (publish, claim, MyTickets). `ensureSession()` is the gate.
@@ -376,9 +383,8 @@ AUTH (frontend):
   apps/web/src/lib/auth/signing-request.svelte.ts     # EIP-712 confirm dialog trigger
   apps/web/src/lib/auth/session-delegation.ts         # session key + delegation
   apps/web/src/lib/auth/pod-identity.ts               # ed25519 POD derivation
-  apps/web/src/lib/auth/local-account.ts              # local browser account
-  apps/web/src/lib/auth/para-{client,account}.ts      # Para SDK + flow
-  apps/web/src/lib/auth/signers/{index,para-signer}.ts
+  apps/web/src/lib/auth/signers/{index,web3-signer,passkey-signer,coinbase-signer,local-signer}.ts
+  apps/web/src/lib/auth/{web3auth-account,passkey-account,kernel-account,coinbase-account}.ts
   apps/web/src/lib/api/client.ts                      # authPost/authGet + buildAuthHeaders
 
 AUTH (server):
@@ -426,26 +432,27 @@ EAS LIKES (#4):
 
 FRONTEND COMPONENTS:
   apps/web/src/App.svelte                             # shell: top bar + routing + bottom nav
-  apps/web/src/lib/components/auth/{LoginModal,SigningConfirmDialog,ParaLogin}.svelte
-  apps/web/src/lib/components/events/{ClaimButton,PublishButton,EventCard,EventDetail}.svelte
-  apps/web/src/lib/components/passport/MyTickets.svelte
-  apps/web/src/lib/components/dashboard/Dashboard.svelte
-  apps/web/src/lib/components/dashboard/StripeConnect.svelte     # Stripe panel on dashboard
-  apps/web/src/lib/components/dashboard/StripeConnectModal.svelte # modal for event creation
-  apps/web/src/lib/components/embed/EmbedSetup.svelte
+  apps/web/src/lib/components/auth/{LoginModal,SigningConfirmDialog}.svelte
+  apps/web/src/lib/attendee/events/{ClaimButton,EventCard,EventDetail}.svelte
+  apps/web/src/lib/creator/events/PublishButton.svelte
+  apps/web/src/lib/attendee/passport/MyTickets.svelte
+  apps/web/src/lib/creator/dashboard/Dashboard.svelte
+  apps/web/src/lib/creator/dashboard/StripeConnect.svelte     # Stripe panel on dashboard
+  apps/web/src/lib/creator/dashboard/StripeConnectModal.svelte # modal for event creation
+  apps/web/src/lib/creator/embed/EmbedSetup.svelte
   apps/web/src/lib/components/profile/{ProfilePage,UserAvatar,CreatorChip,WalletTab,ConnectWalletModal}.svelte
 
 MULTI-PAGE SITE BUILDER:
   apps/web/src/MultiSiteApp.svelte                              # deployed site runtime shell (hash router, theme)
-  apps/web/src/lib/components/builder/MultiSiteBuilder.svelte   # builder UI — My Sites screen + editor tabs
-  apps/web/src/lib/components/builder/MySitesScreen.svelte      # "Your websites" landing screen (site cards)
-  apps/web/src/lib/components/builder/types.ts                  # MySiteRecord = SiteDirectoryEntry alias
-  apps/web/src/lib/components/builder/tabs/BrandTab.svelte      # brand name, siteDescription, logo, palette
-  apps/web/src/lib/components/builder/tabs/PagesTab.svelte      # page CRUD + metaDescription
-  apps/web/src/lib/components/builder/tabs/NavTab.svelte        # nav item ordering
-  apps/web/src/lib/components/builder/tabs/EventsTab.svelte     # pick organiser events for site
-  apps/web/src/lib/components/builder/tabs/TemplateTab.svelte   # preset templates
-  apps/web/src/lib/components/builder/SectionEditor.svelte      # per-section inline editor
+  apps/web/src/lib/creator/builder/MultiSiteBuilder.svelte   # builder UI — My Sites screen + editor tabs
+  apps/web/src/lib/creator/builder/MySitesScreen.svelte      # "Your websites" landing screen (site cards)
+  apps/web/src/lib/creator/builder/types.ts                  # MySiteRecord = SiteDirectoryEntry alias
+  apps/web/src/lib/creator/builder/tabs/BrandTab.svelte      # brand name, siteDescription, logo, palette
+  apps/web/src/lib/creator/builder/tabs/PagesTab.svelte      # page CRUD + metaDescription
+  apps/web/src/lib/creator/builder/tabs/NavTab.svelte        # nav item ordering
+  apps/web/src/lib/creator/builder/tabs/EventsTab.svelte     # pick organiser events for site
+  apps/web/src/lib/creator/builder/tabs/TemplateTab.svelte   # preset templates
+  apps/web/src/lib/creator/builder/SectionEditor.svelte      # per-section inline editor
   apps/web/src/lib/components/site/sections/EventsGridSection.svelte  # grid renderer (cached, bundled fetch)
   apps/web/src/lib/components/site/sections/FeaturedEventSection.svelte # single featured event (cached)
   apps/web/src/lib/components/site/sections/SectionRenderer.svelte  # dispatches to correct renderer

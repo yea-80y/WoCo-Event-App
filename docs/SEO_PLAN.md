@@ -14,26 +14,52 @@ Three-part SEO model we're building the product around (external course, "non-wa
 All three assume *one page = one URL = one search intent*. WoCo currently breaks that
 assumption in the plumbing, so organiser copy quality is not the binding constraint yet.
 
-## Verified current state (2026-07-26)
+## Verified current state
 
-- Deployed sites ship `<title>Site</title>` — `apps/web/multi-site.html:6`. Deploy-time
+> **Re-audited 2026-07-27 against the code and the live web.** Two claims in the original
+> 2026-07-26 list were wrong and are corrected inline below (marked ⚠️). Everything else
+> was re-checked and holds. Line numbers drift — treat them as hints, not addresses.
+
+- Deployed sites ship `<title>Site</title>` — `apps/web/multi-site.html:6` (verified 2026-07-27). Deploy-time
   injection (`apps/server/src/routes/sites.ts:715-737`) writes `og:*`, `twitter:*` and
   `meta description` but **never `<title>`**. Real title is set only by JS at runtime
-  (`MultiSiteApp.svelte:105`).
-- **Hash routing** — `#/about`, `#/contact` (`MultiSiteApp.svelte:52-62`). Crawlers discard
+  (`MultiSiteApp.svelte`, `document.title = site.theme.brandName`).
+- **Hash routing** — `#/about`, `#/contact` (`MultiSiteApp.svelte` `parseHash()`). Crawlers discard
   the fragment, so an N-page site is ONE indexable URL. Parts 1+2 above have nowhere to land.
 - `Page.metaDescription` is defined (`packages/shared/src/site/types.ts:254`) and read at
-  runtime (`MultiSiteApp.svelte:217`) but **has no editor field anywhere in the builder**.
-- H1s are accidental: only `HeroSection.svelte:25` emits one. A page without a hero has no
+  runtime (`MultiSiteApp.svelte:219`) but **has no editor field anywhere in the builder**.
+- H1s are accidental: `HeroSection.svelte:25` emits one, and (⚠️ omitted originally)
+  `components/site/EventPage.svelte:618` emits `<h1 class="event-title">`. A page without a hero has no
   H1; `RichTextSection.svelte:14` turns a user's `# ` into a second H1. No warnings.
-- **No canonical, no robots.txt, no sitemap.xml, no JSON-LD** anywhere.
+- ⚠️ **CORRECTED 2026-07-27.** The original claim "no canonical, no JSON-LD anywhere" was
+  **false**. `apps/web/src/lib/seo/head.ts` (93 lines) implements `setJsonLd`,
+  `setCanonical`, `setMetaDescription` and `setTitle`, and is already used by
+  `attendee/events/EventDetail.svelte`, `components/site/EventPage.svelte`,
+  `EventsGridSection.svelte` and `FeaturedEventSection.svelte`.
+  **The gap is placement, not existence:** it all runs client-side at runtime, which the
+  standing rule below says is insufficient — non-rendering crawlers and social scrapers
+  never execute it. #70/#55 are therefore *move it to deploy-time injection*, *not* build
+  it from scratch. Still genuinely absent: **robots.txt** and **sitemap.xml**.
 - The bzz contentHash **changes on every republish** → the URL changes → indexing resets.
   A stable hostname in front is a precondition for any SEO at all.
 - `packages/edge-proxy/` **does not exist**. `docs/CUSTOM_DOMAINS_PLAN.md` describes it; it
   was never built. Server half IS built: registry, `GET /api/domains/resolve/:hostname`
   (public), CNAME verification poller, `DomainLinker` UI, contentHash auto-update on deploy.
-- eth.limo IS crawlable — `robots.txt` disallows only `/wiki/` paths; `woco.eth.limo` returns
-  200, no `x-robots-tag: noindex`. ENS hosting is not an indexing dead end.
+- eth.limo IS crawlable, and ⚠️ **more permissive than originally recorded.** The claim that
+  `robots.txt` "disallows only `/wiki/` paths" was **false**. Fetched 2026-07-27,
+  `https://eth.limo/robots.txt` is in full:
+
+  ```
+  User-agent: *
+  Allow: /
+
+  Sitemap: https://eth.limo/sitemap.xml
+  ```
+
+  Fully open, with a sitemap. `woco.eth.limo` returns `HTTP/2 200`, `content-type:
+  text/html`, no `x-robots-tag` header (so no `noindex`), `cache-control: max-age=300`.
+  **ENS hosting is not an indexing dead end** — that conclusion stands and is now on firmer
+  evidence than when it was written.
 
 ## Decisions
 
@@ -60,8 +86,25 @@ Rejected 2026-07-26. Reasons, strongest first:
 ### D3 — Sub-ENS dropped from the website builder entirely
 
 WoCo-issued sub-ENS (`{label}.woco.eth`) is **removed from the multi-page site builder**.
-Rationale: it built authority on `eth.limo` (a third-party shared root we don't control),
-and multiplied one page across four URLs with no canonical to disambiguate.
+
+⚠️ **Rationale corrected 2026-07-27 — the decision stands, one of its two reasons does not.**
+
+- **"It built authority on `eth.limo`, a third-party shared root we don't control"** —
+  **overstated as SEO theory.** Google treats subdomains as *separate entities* for
+  crawling, indexing and ranking: each builds its own authority rather than pooling with
+  the root. So `x.eth.limo` neither inherits eth.limo's authority nor is diluted by its
+  neighbours. The defensible residue is **dependency risk, not authority dilution**: we do
+  not control eth.limo's uptime, policy, or exposure to a registrable-domain-level action
+  (Safe Browsing *does* act at that level, unlike ranking). That is a real but much smaller
+  concern than originally written.
+- **"Multiplied one page across four URLs with no canonical to disambiguate"** — **holds,
+  and is the load-bearing reason.** Duplicate-URL dilution is the actual problem, and it is
+  fixed by canonicals, not by removing an address tier.
+
+**Do not cite the authority argument to justify moving WoCo's own canonical off
+`woco.eth.limo`.** That is a positioning decision, not one this document has evidence for.
+The measured argument for a conventional domain is the **~3.3s TTFB floor** in
+`PERF_BASELINE_ETH_LIMO.md` (Core Web Vitals), not domain authority.
 
 **Kept elsewhere — do not remove:**
 
@@ -93,7 +136,8 @@ instead of them and defeats the entire strategy.
 
 ### D6 — One CNAME path for everyone; no trial, no NS-migration funnel
 
-**Verified Cloudflare for SaaS pricing (2026-07-26):** 100 custom hostnames included free on
+**Cloudflare for SaaS pricing — re-verified 2026-07-27** against Cloudflare's own docs
+(100 included, $0.10/hostname beyond, 50,000 ceiling, standard certs included; all confirmed): 100 custom hostnames included free on
 Free/Pro/Business plans; **$0.10/month per hostname beyond 100**; certificates automatic at no
 extra cost; ceiling 50,000. Source: developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/
 
