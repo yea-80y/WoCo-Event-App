@@ -90,13 +90,29 @@ WoCo-issued sub-ENS (`{label}.woco.eth`) is **removed from the multi-page site b
 ⚠️ **Rationale corrected 2026-07-27 — the decision stands, one of its two reasons does not.**
 
 - **"It built authority on `eth.limo`, a third-party shared root we don't control"** —
-  **overstated as SEO theory.** Google treats subdomains as *separate entities* for
-  crawling, indexing and ranking: each builds its own authority rather than pooling with
-  the root. So `x.eth.limo` neither inherits eth.limo's authority nor is diluted by its
-  neighbours. The defensible residue is **dependency risk, not authority dilution**: we do
-  not control eth.limo's uptime, policy, or exposure to a registrable-domain-level action
-  (Safe Browsing *does* act at that level, unlike ranking). That is a real but much smaller
-  concern than originally written.
+  **UNPROVEN, and so is its opposite. Do not treat either as fact.**
+
+  Checked 2026-07-27 against Google's primary documentation: the URL-structure page
+  ([developers.google.com/search/docs/crawling-indexing/url-structure](https://developers.google.com/search/docs/crawling-indexing/url-structure))
+  **says nothing about subdomains vs subdirectories.** There is no Google-documented
+  support for the original claim, *nor* for the "subdomains build authority independently"
+  rebuttal — both are SEO-industry folklore, and the industry contradicts itself on it.
+  Note also that "Domain Authority" is a **Moz** metric; Google has publicly denied using
+  such a signal, which makes the whole frame unreliable.
+
+  **What is actually evidenced:**
+  - eth.limo subdomains *do* get indexed — `ensinterviews.eth.limo` surfaced unprompted in
+    two independent searches, and Similarweb publishes traffic analytics for
+    `liber3.eth.limo`. Evidence of indexing; **not** evidence of ranking well.
+  - eth.limo reports 2.5–3M req/day across tens of thousands of dWebsites at 99.999%
+    uptime (their claim, not independently verified) — which weakens "uptime dependency"
+    as an argument.
+  - The one durable residue: Safe Browsing and spam reputation **do** act at the
+    registrable-domain level, unlike ranking. That is a real, narrow risk.
+
+  **If this question ever becomes load-bearing, settle it with data, not argument:** put a
+  page on each surface, verify both in Search Console, and compare impressions. Anything
+  else is speculation dressed as a rationale.
 - **"Multiplied one page across four URLs with no canonical to disambiguate"** — **holds,
   and is the load-bearing reason.** Duplicate-URL dilution is the actual problem, and it is
   fixed by canonicals, not by removing an address tier.
