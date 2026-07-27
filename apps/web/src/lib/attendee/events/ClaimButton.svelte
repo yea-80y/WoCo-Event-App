@@ -576,6 +576,12 @@
         orderRef: preparedOrderRef,
         encryptedOrder: !preparedOrderRef ? inlineEncryptedOrder : undefined,
         reservationId: reservationHook.reservation?.reservationId,
+        // The form is still displayed at this point (handleStripeCheckout returns
+        // early to show it and is re-entered), so the opt-out WAS offered and an
+        // untouched box records as a refusal — same rule as the free/wallet paths.
+        // Without this the checkbox was rendered, ticked, and dropped on the one
+        // path most buyers actually take.
+        marketingConsent: claimMarketingConsent,
       });
       // Server has stamped reservationId into Stripe metadata; webhook
       // consumes it. Clear local state (incl. sessionStorage) so back-nav

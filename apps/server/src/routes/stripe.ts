@@ -24,7 +24,9 @@ import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { queueSeriesClaim } from "./claims.js";
-import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
+import { sealJson, buildTicketCanonicalMessage, MARKETING_CONSENT_NOTICE } from "@woco/shared";
+import { recordConsent } from "../lib/marketing/consent-store.js";
+import { suppressOrg } from "../lib/marketing/suppression-store.js";
 import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId } from "../lib/chain/event-contract.js";
@@ -361,7 +363,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, podPubKey: rawPodPubKey } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, podPubKey: rawPodPubKey, marketingConsent: rawMarketingConsent } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -380,8 +382,14 @@ stripe.post("/create-checkout", async (c) => {
     /** Attendee ed25519 POD pubkey (hex, no 0x) — claimed.v2. Only honoured
      *  when the request also carries a verified session (see metadata below). */
     podPubKey?: string;
+    /** The checkout opt-in control. `true` = granted, `false` = explicitly
+     *  declined, absent = never asked (the order form was not shown). All three
+     *  are different: a decline is written to suppression, an absence is not. */
+    marketingConsent?: boolean;
   };
   const siteId = typeof rawSiteId === "string" && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
+  const marketingConsent =
+    typeof rawMarketingConsent === "boolean" ? rawMarketingConsent : undefined;
   const podPubKey =
     typeof rawPodPubKey === "string" && /^[0-9a-f]{64}$/i.test(rawPodPubKey)
       ? rawPodPubKey.toLowerCase()
@@ -683,6 +691,13 @@ stripe.post("/create-checkout", async (c) => {
           // Site id — present when checkout comes from a deployed organiser site.
           // Webhook uses it to fetch the site theme for branded email + ticket PNG.
           ...(siteId ? { siteId } : {}),
+          // The buyer's answer to the marketing opt-in, carried to the webhook —
+          // it is the webhook, not this request, that knows the claim succeeded,
+          // and a consent record for a sale that never completed is worthless.
+          // Tri-state: "1" granted, "0" declined, absent means never asked.
+          ...(marketingConsent !== undefined
+            ? { marketingConsent: marketingConsent ? "1" : "0" }
+            : {}),
         },
         success_url: stripeSuccessUrl,
         cancel_url: stripeCancelUrl,
@@ -946,7 +961,12 @@ async function handleSuccessfulPayment(
   session: import("stripe").Stripe.Checkout.Session,
   webhookEventCreated: number,
 ): Promise<void> {
-  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId, siteId: metaSiteId, podPubKey: metaPodPubKey } = session.metadata ?? {};
+  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId, siteId: metaSiteId, podPubKey: metaPodPubKey, marketingConsent: metaConsent } = session.metadata ?? {};
+
+  // Tri-state, and the absent case is NOT a decline: it means the order form was
+  // never shown, so the buyer was never asked and nothing should be recorded.
+  const metaMarketingConsent =
+    metaConsent === "1" ? true : metaConsent === "0" ? false : undefined;
 
   if (!eventId || !seriesId) {
     console.error("[stripe-webhook] Missing eventId/seriesId in session metadata");
@@ -1323,6 +1343,33 @@ async function handleSuccessfulPayment(
       }
     } catch (refundErr) {
       console.error("[stripe-webhook] Auto-refund FAILED — manual intervention required:", refundErr);
+    }
+  }
+
+  // Record the checkout marketing decision — only now that a ticket actually
+  // landed. An abandoned or refunded-in-full purchase must not leave a marketing
+  // permission behind, which is why this lives in the webhook rather than at
+  // session creation.
+  //
+  // Mirrors the free/wallet claim path in routes/claims.ts: a GRANT goes to the
+  // consent store as Art. 7(1) evidence, a REFUSAL goes to suppression so it is
+  // enforced by the existing send-time check and survives a CSV re-upload.
+  // Before this, the checkbox was rendered, ticked, and silently dropped on the
+  // paid path — the buyer's answer was lost either way round.
+  if (metaMarketingConsent !== undefined && claimedResults.length > 0 && eventCreatorAddress) {
+    const consentHash =
+      identifier.type === "email" ? identifier.emailHash : identifier.secondaryEmailHash;
+    if (consentHash) {
+      if (metaMarketingConsent) {
+        recordConsent(consentHash, eventCreatorAddress, {
+          ts: claimedAt,
+          source: "checkout",
+          eventId,
+          notice: MARKETING_CONSENT_NOTICE,
+        });
+      } else {
+        suppressOrg(consentHash, eventCreatorAddress, "declined");
+      }
     }
   }
 
