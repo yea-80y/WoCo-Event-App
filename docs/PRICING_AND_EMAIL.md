@@ -567,3 +567,48 @@ So the fork is:
 > 2. **Maximum hold period.** With `interval: "manual"`, is there any maximum period we can hold a connected account's balance before Stripe requires a payout? Your automated assistant earlier said 90 days for UK accounts; I can't find that documented. We sell festival and early-bird tickets 6+ months ahead, so we need to know whether holding that long is permitted.
 >
 > Also — could you connect us with an account team? We have two decisions (Managed Risk, and any launch reserve on our platform account) that we'd rather get right before going live.
+
+## 16. DECISION REVERSED — resolve the Connect config BEFORE launch
+
+§15 closed with a recommendation to launch on the current setup (Option A) and revisit Managed Risk later. **That was wrong. Owner overruled it, correctly.**
+
+### Why the earlier reasoning failed
+
+It conflated two costs: **getting the answer** to the Managed Risk question (one email, days) and **doing the reconfiguration** (moderate work). Only the answer is on the critical path. Deferring the whole thing because part of it looked slow was the error.
+
+It also underweighted the operational argument. If connected accounts cannot be migrated, launching on Option A means:
+
+- Our **earliest** organisers — the ones most likely to grow with us — sit permanently on the worse terms
+- Two fee models and two liability profiles in code, reporting and reconciliation, indefinitely
+- The cost compounds exactly as the platform succeeds
+
+"Ship now, fix later" is right when the fix stays cheap. Here it is the inverse: **we are pre-launch with almost no live accounts, so this is the cheapest this decision will ever be.** Every organiser onboarded before it is resolved manufactures legacy.
+
+### The decision
+
+**Resolve the Connect configuration before onboarding real organisers.** Do not launch paid ticketing onto terms we already know are worse.
+
+| Answer to the blocking question | Action |
+|---|---|
+| **Managed Risk CAN carry `application_fee_amount`** | Reconfigure to Managed Risk before launch. Strictly better: no £2/active account, no 0.25% of payout volume, and Stripe carries the negative-balance liability instead of us. |
+| **It CANNOT** | Stay on Option A. Manual payouts become essential rather than merely correct, and the ~1.20% effective take is the model. |
+
+### On escalation
+
+A call with an account team is **not** required to resolve this — it is one specific technical question and support can answer it in writing on the existing thread. Escalate only if the answer is evasive. An account team conversation is still worth having later for underwriting, any launch reserve, and negotiated pricing, but **none of those block launch.** The earlier suggestion to open with a call was over-prescribed.
+
+### Question to send (existing thread)
+
+> One follow-up that determines our architecture, so I'd like to be certain before we launch:
+>
+> Under Stripe Managed Risk (`controller.losses.payments = "stripe"`, `fees_collector: account`), can our platform still collect `application_fee_amount` on each charge? Our entire revenue model is a 1.5% platform fee taken per ticket sale, so if Managed Risk removes our ability to charge that, it isn't viable for us regardless of the other benefits.
+>
+> If application fees are not available under Managed Risk, how does a platform earn its margin — is it revenue share, and what does that typically look like for a ticketing platform in the UK?
+>
+> We're pre-launch with very few live connected accounts, so we'd rather configure this correctly now than migrate later. If we do switch, does the platform-level reconfiguration apply to accounts we've already created, or only to new ones?
+
+That third question is unresolved and matters: the support **bot** said existing Express accounts cannot be migrated; the **human** said Managed Risk is a platform-level reconfiguration. Those may not be the same claim, and if existing accounts can be brought across, the urgency drops sharply.
+
+### What to build while waiting
+
+**Manual payouts, regardless of the answer.** Essential under Option A; still required under Option B, because an organiser paid before the event who then cancels leaves attendees unable to get refunded — reputational damage to WoCo whoever absorbs the accounting loss. **Not wasted work under either branch**, so it is the correct thing to be building during the wait.
