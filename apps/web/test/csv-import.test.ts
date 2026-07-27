@@ -416,6 +416,67 @@ test("a consent DATE is not the consent flag", () => {
   assert.equal(m.consent, "Marketing Opt In");
 });
 
+// ── Street address ─────────────────────────────────────────────────────────
+
+test("maps split address lines", () => {
+  const m = autoMapColumns(["Email", "Address 1", "Address 2", "Town", "Postcode"]);
+  assert.equal(m.address1, "Address 1");
+  assert.equal(m.address2, "Address 2");
+  assert.equal(m.city, "Town");
+  assert.equal(m.postcode, "Postcode");
+});
+
+test("maps the 'Address Line N' spelling", () => {
+  const m = autoMapColumns(["Email Address", "Address Line 1", "Address Line 2"]);
+  assert.equal(m.address1, "Address Line 1");
+  assert.equal(m.address2, "Address Line 2");
+});
+
+test("a single combined address column goes wholly to line 1", () => {
+  // Deliberately NOT split. A postal address has no reliable grammar, and a bad
+  // guess ends up on an envelope.
+  for (const header of ["Address", "Street Address", "Billing Address", "Shipping Address"]) {
+    const m = autoMapColumns(["Email", header]);
+    assert.equal(m.address1, header, header);
+    assert.equal(m.address2, "", header);
+  }
+});
+
+test("'Email Address' is never mapped as a street line", () => {
+  // "emailaddress" CONTAINS the "address" token. Email outscores it on its own,
+  // but the guard is what makes that safe rather than lucky — and it has to hold
+  // when no other column can absorb the header.
+  const m = autoMapColumns(["Email Address", "First Name"]);
+  assert.equal(m.email, "Email Address");
+  assert.equal(m.address1, "");
+  assert.equal(m.address2, "");
+});
+
+test("a wallet or IP column is not a street line", () => {
+  const m = autoMapColumns(["Email", "Wallet Address", "IP", "Address Type"]);
+  assert.equal(m.address1, "");
+  assert.equal(m.address2, "");
+});
+
+test("address line 2 does not steal the line 1 column", () => {
+  // "address2" contains the "address" token, so without the trailing-digit guard
+  // address1 could claim it and leave the real line 1 unmapped.
+  const m = autoMapColumns(["Email", "Address 2", "Address 1"]);
+  assert.equal(m.address1, "Address 1");
+  assert.equal(m.address2, "Address 2");
+});
+
+test("address lines carry through to the built contact verbatim", () => {
+  const report = buildImportReport(
+    [{ E: "a@b.com", A1: " Flat 2, 14 High St ", A2: "Chorlton" }],
+    mapped({ email: "E", address1: "A1", address2: "A2" }),
+    new Set(),
+    OPTS,
+  );
+  assert.equal(report.candidates[0].address1, "Flat 2, 14 High St");
+  assert.equal(report.candidates[0].address2, "Chorlton");
+});
+
 // ── Wider header guessing ──────────────────────────────────────────────────
 
 test("auto-maps a fuller event-platform export", () => {

@@ -23,6 +23,8 @@ export type ImportField =
   | "lastName"
   | "fullName"
   | "phone"
+  | "address1"
+  | "address2"
   | "postcode"
   | "city"
   | "country"
@@ -40,6 +42,8 @@ export const IMPORT_FIELDS: ImportField[] = [
   "lastName",
   "fullName",
   "phone",
+  "address1",
+  "address2",
   "postcode",
   "city",
   "country",
@@ -62,7 +66,8 @@ export interface FieldGroup {
 export const FIELD_GROUPS: FieldGroup[] = [
   { id: "identity", label: "Who they are", fields: ["email", "firstName", "lastName", "fullName"] },
   { id: "consent", label: "Consent", fields: ["consent"] },
-  { id: "contact", label: "Contact & location", fields: ["phone", "postcode", "city", "country"] },
+  // Postal order — the group reads as an address block once the street lines are in it.
+  { id: "contact", label: "Contact & location", fields: ["phone", "address1", "address2", "city", "postcode", "country"] },
   { id: "history", label: "History with you", fields: ["dob", "tags", "lastEventName", "lastEventDate", "ticketsBought", "totalSpend"] },
 ];
 
@@ -72,6 +77,8 @@ export const FIELD_LABELS: Record<ImportField, string> = {
   lastName: "Last name",
   fullName: "Full name",
   phone: "Phone",
+  address1: "Address line 1",
+  address2: "Address line 2",
   postcode: "Postcode",
   city: "Town / city",
   country: "Country",
@@ -89,6 +96,7 @@ export const FIELD_HINTS: Partial<Record<ImportField, string>> = {
   email: "Required — where the email goes",
   fullName: "Split into first and last automatically",
   consent: "Rows marked 'no' are excluded from the import",
+  address1: "One combined address column goes here whole",
   postcode: "Useful for targeting by area",
   lastEventName: "Useful for 'you came to X' campaigns",
 };
@@ -149,6 +157,18 @@ const FIELD_SPECS: Record<ImportField, FieldSpec> = {
   },
   phone: {
     tokens: ["mobilenumber", "phonenumber", "telephone", "mobile", "phone", "tel", "contactnumber"],
+  },
+  // "Email Address" normalises to "emailaddress", which CONTAINS the "address"
+  // token. `email` outscores it today (exact match, 304 vs 10x), but relying on
+  // that margin means a rename to "Contact Address (email)" quietly imports
+  // addresses as street lines. The guard makes it explicit instead.
+  address1: {
+    tokens: ["addressline1", "streetaddress", "billingaddress", "addressline", "address1", "addr1", "address", "street", "addr"],
+    decoy: /email|mail|ip$|url|web|wallet|eth|type|book|[23]$/,
+  },
+  address2: {
+    tokens: ["addressline2", "address2", "addr2"],
+    decoy: /email|mail|url|web|wallet|eth|type/,
   },
   postcode: { tokens: ["postcode", "postalcode", "zipcode", "postal", "zip"] },
   city: { tokens: ["towncity", "city", "town", "locality"] },
@@ -479,6 +499,8 @@ export function buildImportReport(
       firstName,
       lastName,
       phone: pick("phone"),
+      address1: pick("address1"),
+      address2: pick("address2"),
       postcode: pick("postcode"),
       city: pick("city"),
       country: pick("country"),

@@ -34,6 +34,15 @@ export interface MarketingContact {
   firstName?: string;
   lastName?: string;
   phone?: string;
+  /**
+   * Street address, carried verbatim. TWO lines and no parser: unlike a person's
+   * name, a postal address has no reliable grammar to split on ("Flat 2, 14 High
+   * St" vs "14 High St, Flat 2" vs "The Old Bakery, High St"), and a wrong guess
+   * lands on an envelope. A source file with one combined "Address" column maps
+   * wholly to `address1`.
+   */
+  address1?: string;
+  address2?: string;
   postcode?: string;
   city?: string;
   country?: string;

@@ -38,6 +38,8 @@ function contacts(n: number): unknown {
       email: `person.number${i}@example-mail-provider.com`,
       firstName: "Firstname",
       lastName: "Lastname",
+      address1: `${(i % 200) + 1} Alexandra Road South`,
+      address2: "Whalley Range",
       postcode: `M${(i % 40) + 1} 1AA`,
       dob: "01/02/1990",
       source: "csv:skiddle-customer-export-2026-07.csv",
