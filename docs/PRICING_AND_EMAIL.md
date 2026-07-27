@@ -491,6 +491,8 @@ The Stripe questions block nothing here. This track can run to completion while 
 
 **This section supersedes §7's "verify" caveats and §11's open items.** Answers from a Stripe support agent (not the bot) against §10/§13.
 
+> **Read the conditionals carefully.** Stripe's reply has two parts that look contradictory but are not. Their §1 describes **what we are billed today**. Their §4 describes **what we would be billed if we switched to Managed Risk** — a change we have not made. The payout fee is live for us now; it only disappears under a configuration we do not currently have.
+
 ### Our fee model — settled, and we DO pay
 
 We are on **"you handle pricing"**; our platform is the fees collector because we take `application_fee_amount`. Charged to our platform account:
