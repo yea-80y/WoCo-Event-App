@@ -6,8 +6,8 @@
     buildImportReport,
     emptyMapping,
     type ColumnMapping,
-    type ImportField,
   } from "./csv-import.js";
+  import ColumnMapper from "./ColumnMapper.svelte";
 
   interface Props {
     existingEmails: Set<string>;
@@ -37,6 +37,7 @@
   let dupesInFile = $state(0);
   let dupesVsList = $state(0);
   let suppressedCount = $state(0);
+  let declinedConsent = $state(0);
   let warrantyTicked = $state(false);
 
   async function handleFile(e: Event): Promise<void> {
@@ -92,6 +93,7 @@
       invalidRows = report.invalidRows;
       dupesInFile = report.dupesInFile;
       dupesVsList = report.dupesVsList;
+      declinedConsent = report.declinedConsent;
 
       if (fresh.length === 0) {
         candidates = [];
@@ -151,20 +153,11 @@
     <input id="csv-input" type="file" accept=".csv,text/csv" onchange={handleFile} hidden disabled={parsing} />
 
   {:else if step === "map"}
-    <p class="hint">From <strong>{fileName}</strong> — {rows.length.toLocaleString()} rows. We matched what we could; adjust if needed.</p>
-    <div class="map-grid">
-      {#each [["email", "Email (required)"], ["firstName", "First name"], ["lastName", "Last name"], ["postcode", "Postcode"], ["dob", "Date of birth"]] as [field, label] (field)}
-        <label class="map-row" class:unmapped={field === "email" && !mapping.email}>
-          <span class="map-label">{label}</span>
-          <select bind:value={mapping[field as ImportField]}>
-            <option value="">— not in this file —</option>
-            {#each headers as h (h)}
-              <option value={h}>{h}</option>
-            {/each}
-          </select>
-        </label>
-      {/each}
-    </div>
+    <p class="hint">
+      From <strong>{fileName}</strong> — {rows.length.toLocaleString()} rows.
+      Tap a column to change what it holds.
+    </p>
+    <ColumnMapper {headers} {rows} {mapping} onChange={(next) => (mapping = next)} />
     <div class="wiz-actions">
       <button class="btn-ghost" onclick={() => (step = "pick")}>Back</button>
       <button class="btn-primary" onclick={() => void buildReport()} disabled={checking || !mapping.email}>
@@ -183,6 +176,14 @@
         <div class="tally hold">
           <span class="tally-n">{willNeverReceive.toLocaleString()}</span>
           <span class="tally-l">previously unsubscribed — imported for your records, but they will <strong>never</strong> be emailed. Their unsubscribe stands.</span>
+        </div>
+      {/if}
+      {#if declinedConsent > 0}
+        <div class="tally hold">
+          <span class="tally-n">{declinedConsent.toLocaleString()}</span>
+          <span class="tally-l">
+            marked <strong>not consented</strong> in your file — excluded from the import entirely
+          </span>
         </div>
       {/if}
       {#if dupesVsList > 0}
@@ -303,31 +304,6 @@
   .drop-icon { font-size: 1.5rem; color: var(--text-muted); font-weight: 300; }
   .drop-text { color: var(--text-muted); font-size: 0.875rem; }
   .drop:hover .drop-icon, .drop:hover .drop-text { color: var(--accent-text); }
-
-  .map-grid { display: flex; flex-direction: column; gap: 0.5rem; }
-
-  .map-row {
-    display: grid;
-    grid-template-columns: 9.5rem 1fr;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .map-row.unmapped .map-label { color: var(--warning); }
-
-  .map-label { font-size: 0.8125rem; color: var(--text-secondary); }
-
-  .map-row select {
-    background: var(--bg-input);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: 0.5rem 0.625rem;
-    font-size: 0.8125rem;
-    width: 100%;
-    transition: border-color var(--transition);
-  }
-  .map-row select:focus { border-color: var(--accent); outline: none; }
 
   /* ── The manifest ─────────────────────────────────────────────────────── */
   .manifest {

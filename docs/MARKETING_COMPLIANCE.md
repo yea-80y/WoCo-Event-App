@@ -44,13 +44,42 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   `woco/marketing/list/{addr}`. Server keeps only emailHashes. Plaintext emails transit
   import/check/broadcast bodies transiently (the client can't compute the server-secret HMAC)
   — hashed-and-discarded.
+- **THE SEALED LIST IS GZIPPED BEFORE SEALING** (`sealJsonCompressed` / `openJsonAuto`,
+  measured 2026-07-27). Uncompressed, a 20k-contact list is ~4MB of JSON → ~8MB of hex
+  ciphertext, which **exceeds `MAX_SEALED_JSON` (6MB) — i.e. a max-size list was
+  unstorable**. Gzip puts it near 1MB even with every optional field set. `openJsonAuto`
+  sniffs the gzip magic number rather than a version field (framing must be decided before
+  the payload parses; JSON can never start with `0x1f8b`), so pre-compression blobs still
+  open — do not replace that sniff with a version check. Columnar encoding was measured and
+  rejected: it buys ~6% once gzip has already collapsed the repeated keys.
+- The whole list is re-sealed and re-uploaded on EVERY change (`commitList`). That is fine
+  at the 20k cap — one ~1MB atomic write, single writer, single reader — and is deliberately
+  NOT the paged/append-only shape the public events directory needs. Different problem:
+  one private blob rewritten by its owner vs. a many-writer public index.
 - CSV IMPORT: no source platform (Skiddle/Fatsoma/RA/Eventbrite) publishes an export column
   schema — RA's is promoter-selected per export, so there is no fixed shape at all. Header
-  auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always shows the
-  mapping dropdowns; decoy headers ("Email Opt In") are scored out so a flag can never be
+  auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always lets a
+  human correct it; decoy headers ("Email Opt In") are scored out so a flag can never be
   imported as an address. Logic is pure + unit-tested (`apps/web/test/csv-import.test.ts`);
   the fixtures are representative, not authoritative — a real export is still worth testing.
   `MARKETING_MAX_LIST_EMAILS` (20k, shared) caps a stored list; `/check` is client-batched.
+- Mapping step is COLUMN-FIRST (`ColumnMapper.svelte`): the organiser's own columns are the
+  objects, each showing real sample values, and a tap assigns a role. Tap, not drag —
+  drag targets are unreliable on touch and a `<button>` + listbox gets a11y for free.
+  Sample values are the point: a column named "Contact" holding phone numbers is obvious
+  from the data and invisible from the header.
+- `fullName` is a MAPPING-ONLY pseudo-field — it splits into firstName/lastName at build
+  time and never reaches `MarketingContact`. `splitFullName` is deliberately conservative
+  (particle-aware surnames, comma form inverted, titles/suffixes stripped); an unreadable
+  shape goes wholly to firstName, because a mail addressed to a full name reads fine and an
+  invented surname does not.
+- **CONSENT COLUMN GATES THE IMPORT**: a row whose mapped consent column reads an explicit
+  negative is EXCLUDED and counted in its own manifest bucket, ahead of the dupe checks.
+  Blank/unrecognised is `unknown`, NOT refusal — most exports omit the column and treating
+  silence as refusal would reject whole legitimate files. The consent warranty on the review
+  step remains the legal basis. `consent` is the one field exempt from the shared decoy
+  regex (a consent column is supposed to look like a flag) and carries its own guard so a
+  consent DATE is not mistaken for the flag.
 - Organiser sending domains: Resend Domains API, verify-on-demand (no poller);
   `resolveMarketingFrom`: verified org domain → `RESEND_FROM_MARKETING` → `RESEND_FROM`.
   From-domain never bypasses suppression/headers.
@@ -77,10 +106,13 @@ apps/server/src/lib/email/marketing-footer.ts # pure compliance block + text/pla
 apps/server/src/lib/marketing/{suppression-store,unsub-token,list-store,send-cap,
                                sending-domain-store,consumed-webhook-events}.ts
 apps/server/src/routes/{marketing,unsubscribe,resend-webhook}.ts
-apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ContactSearch,
-                                   MarketingComposer,SendingDomainPanel}.svelte
+apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ColumnMapper,
+                                   ContactSearch,MarketingComposer,SendingDomainPanel}.svelte
+apps/web/src/lib/creator/audience/csv-import.ts # PURE: header scoring, name split, consent,
+                                                # manifest. All import logic lives here.
 apps/web/src/lib/api/marketing.ts             # client wrappers
 packages/shared/src/marketing/types.ts        # MarketingContact, list payload, domain types
+packages/shared/src/crypto/compress.ts        # gzip over CompressionStream (no deps)
 ```
 
 ## Gotchas
