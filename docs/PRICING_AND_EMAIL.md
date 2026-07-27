@@ -202,6 +202,23 @@ The determinant is `controller.losses.payments` (Accounts v1) or `defaults.respo
 
 So we are the backstop of last resort, not the first payer — the onus *is* on the organiser, exactly as it should be. But Stripe freezes our money while chasing them, and we eat whatever is unrecoverable.
 
+#### Managed Risk — the named product that removes the liability
+
+Stripe's support bot supplied the correct term (2026-07-27). Verified against docs.stripe.com/connect/risk-management/managed-risk:
+
+> "an end-to-end business risk management solution for platforms where Stripe provides ongoing monitoring and mitigation for credit and fraud risk. Stripe also assumes risk of loss in the event of unrecoverable negative balances on connected accounts."
+
+> "You aren't liable for unrecoverable negative balances on your connected accounts."
+
+Requirements, quoted from the same page:
+- **"You must use direct charges."** — we already do ✅
+- **"you must request the `card_payment` capability and the `full` Stripe Service Agreement type"** — we currently request `card_payments` + `transfers` (`routes/stripe.ts:68`), and do not set a service agreement type
+
+Cost, quoted:
+> "The fees for Managed Risk depend on the economic model: **Revenue share**: …we include Managed Risk at no additional cost. **Buy rate** — **Listed pricing**: …we include Managed Risk at no additional cost. **Negotiated pricing**: Managed Risk incurs additional fees."
+
+So on listed pricing Managed Risk itself is free. **The docs do NOT say it removes the £2/monthly-active-account or payout fees** — the bot asserted that, unverified.
+
 #### Three ways to reduce it
 
 | | Control | Effect | Cost |
@@ -357,3 +374,38 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 > 4. **Loss liability.** We create accounts with `type: "express"` and no explicit `controller` block, so we believe `controller.losses.payments` is `application` — please confirm. Can we instead create accounts with `controller.losses.payments = "stripe"` so Stripe carries negative balances? If so: what else must change (we understand embedded components are required for onboarding and account management), does it affect our pricing or underwriting, and can existing Express accounts be migrated or must new `Account` objects be created?
 >
 > Thanks.
+
+## 11. Stripe support — bot reply assessment (2026-07-27)
+
+Stripe's automated chat answered §10. Sorted by whether it holds up.
+
+### Verified — accept
+
+| Claim | Status |
+|---|---|
+| Managed Risk exists and removes platform liability for unrecoverable negative balances | ✅ quoted in §7 |
+| Managed Risk requires direct charges | ✅ "You must use direct charges" — we already do |
+| Managed Risk is compatible with direct charges + application fees | ✅ direct charges required; application fees not contradicted |
+| `controller.losses.payments = "application"` on our accounts today | ✅ matches `routes/stripe.ts:66` (`type: "express"`, no controller block) |
+| Existing Express accounts cannot be migrated — new `Account` objects required | ✅ consistent with "Dashboard type is immutable" |
+| `delay_days` max 31 | ✅ "up to 31" |
+| Reserve sized 1:1 against connected-account negative balances, releases as they fall, visible on **Balance → Reserved funds** | plausible, consistent with the risk-management page's "pending the collection of the funds"; accept provisionally |
+
+### Contradicts our source — unresolved
+
+**Payout fee: bot says 0.25% + 25p "globally"; stripe.com/gb/connect/pricing says 0.25% + 10p.** The bot appears to be generalising the USD $0.25 figure. The GB page is country-specific and should win, but this needs a human to confirm. Do not price on either number yet.
+
+### Asserted but NOT in the documentation — treat as unknown
+
+1. **"90-day holding period for UK accounts — after 90 days you must pay out."** Nowhere in docs.stripe.com/connect/manage-payout-schedule. **If true this is an architectural constraint**: manual payouts could not hold funds for an event sold more than 90 days ahead — festivals, early-bird tiers. Must be confirmed before designing the hold policy.
+2. **"With Managed Risk you pay no Connect fees — no £2/account, no payout fees."** The Managed Risk page says only that Managed Risk *itself* is at no additional cost on listed pricing. It does not say the per-account or payout fees disappear.
+
+### Not answered
+
+**Q1, our fee model.** The bot said "you're under the 'you handle pricing' model" but then: "check your platform agreement or contact your account manager — some platforms negotiate custom pricing." It did not read our account. Still open, and still blocks publishing pricing.
+
+### The bot's recommendation is rejected
+
+It recommended keeping platform liability plus manual payouts, and budgeting for the Connect fees — having just stated that the alternative carries neither liability nor extra cost. Its stated reason is that Managed Risk "reduces your control over risk decisions" and Stripe "may pause payouts before an event completes."
+
+That concern is worth probing, but it does not outweigh the exposure. WoCo is pre-launch with no balance sheet to absorb a cancelled festival. Accepting an uncapped tail liability to preserve discretion over payout timing is the wrong trade at this stage. **Position: pursue Managed Risk for new accounts, and build delayed payouts regardless** — delayed payouts protect attendees' ability to actually get refunded, which matters whoever absorbs the accounting loss.
