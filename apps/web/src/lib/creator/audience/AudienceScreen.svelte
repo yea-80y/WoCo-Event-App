@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { MarketingContact, MarketingListMeta } from "@woco/shared";
-  import { deriveEncryptionKeypairFromPodSeed, sealJson, openJson } from "@woco/shared";
+  import { deriveEncryptionKeypairFromPodSeed, sealJsonCompressed, openJsonAuto } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -71,7 +71,7 @@
         loadError = "Sign in and unlock your identity to open your audience.";
         return;
       }
-      const payload = await openJson<MarketingListPayload>(keys.privateKey, resp.sealedList);
+      const payload = await openJsonAuto<MarketingListPayload>(keys.privateKey, resp.sealedList);
       contacts = payload.contacts;
       await refreshSuppressed(contacts);
     } catch (err) {
@@ -87,7 +87,7 @@
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {
-      const sealed = await sealJson(keys.publicKey, { version: 1, contacts: next } satisfies MarketingListPayload);
+      const sealed = await sealJsonCompressed(keys.publicKey, { version: 1, contacts: next } satisfies MarketingListPayload);
       meta = await uploadMarketingList(sealed, next.map((c) => c.email));
       contacts = next;
       if (next.length > 0 && auth.parent) markAudienceImported(auth.parent);

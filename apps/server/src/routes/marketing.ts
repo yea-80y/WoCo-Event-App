@@ -38,7 +38,14 @@ const marketing = new Hono<AppEnv>();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_LIST_EMAILS = MARKETING_MAX_LIST_EMAILS;
-/** Hex ciphertext ≈ 2× plaintext, so this is roughly a 3MB plaintext list. */
+/**
+ * Hex ciphertext ≈ 2× plaintext, so this allows ~3MB of sealed bytes.
+ *
+ * The client gzips before sealing (`sealJsonCompressed`), which puts a full
+ * 20k-contact list around 1MB sealed even with every optional field populated.
+ * Uncompressed it would be ~8MB — i.e. this cap is a backstop against a runaway
+ * blob, NOT the thing that makes a legitimate max-size list fit.
+ */
 const MAX_SEALED_JSON = 6_000_000;
 const MAX_BROADCAST_RECIPIENTS = 1000;
 

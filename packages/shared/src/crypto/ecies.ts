@@ -20,6 +20,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { SealedBox } from "./types.js";
 import { ECIES_INFO } from "./constants.js";
+import { compressionSupported, gzip, gunzip, isGzipped } from "./compress.js";
 
 // @noble/hashes v2 requires `info` as bytes; v1 accepted a string and UTF-8
 // encoded it internally. Encoding it here reproduces the identical derived key
@@ -165,4 +166,46 @@ export async function openJson<T = unknown>(
 ): Promise<T> {
   const plaintext = await open(recipientPrivateKey, box);
   return JSON.parse(decoder.decode(plaintext));
+}
+
+/**
+ * Encrypt a JSON payload, gzipping it first.
+ *
+ * For payloads that scale with a user's data. The ciphertext is hex-encoded (2x)
+ * and capped server-side, so a raw 20k-contact marketing list overflows the cap
+ * on its own; gzip brings it back to roughly a tenth of that.
+ *
+ * Compress-then-encrypt leaks a size signal about the plaintext. That is only
+ * exploitable by an adversary who can inject chosen content into the payload AND
+ * repeatedly observe the sealed size (CRIME/BREACH). For a list an organiser
+ * writes at their own pace, the channel is not reachable — and the alternative,
+ * a list too large to store, is a certain failure rather than a theoretical one.
+ *
+ * Falls back to uncompressed on engines without CompressionStream;
+ * `openJsonAuto` reads either form.
+ */
+export async function sealJsonCompressed(
+  recipientPublicKey: Uint8Array | string,
+  data: unknown,
+): Promise<SealedBox> {
+  const raw = encoder.encode(JSON.stringify(data));
+  const body = compressionSupported() ? await gzip(raw) : raw;
+  return seal(recipientPublicKey, body);
+}
+
+/**
+ * Decrypt a sealed JSON box written by either `sealJson` or `sealJsonCompressed`.
+ *
+ * Sniffs the gzip magic number rather than relying on a version field, because
+ * the framing has to be decided before the payload can be parsed. Serialised
+ * JSON can never begin with those bytes, so blobs sealed before compression
+ * existed keep opening unchanged.
+ */
+export async function openJsonAuto<T = unknown>(
+  recipientPrivateKey: Uint8Array | string,
+  box: SealedBox,
+): Promise<T> {
+  const plaintext = await open(recipientPrivateKey, box);
+  const json = isGzipped(plaintext) ? await gunzip(plaintext) : plaintext;
+  return JSON.parse(decoder.decode(json));
 }

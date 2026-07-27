@@ -17,20 +17,47 @@ import type { SealedBox } from "../crypto/types.js";
  */
 export const MARKETING_MAX_LIST_EMAILS = 20_000;
 
+/**
+ * One contact in an organiser's audience.
+ *
+ * Every field beyond `email` is optional and carried VERBATIM from the source
+ * export — no normalisation, because the source formats are unknowable (DD/MM vs
+ * MM/DD, "£12.00" vs "12", free-text tags). Normalising would destroy data the
+ * organiser may need to read back.
+ *
+ * Kept deliberately narrow: this is personal data the organiser controls and
+ * WoCo processes, so the schema covers what an event promoter actually segments
+ * on and stops there rather than absorbing whole source exports.
+ */
 export interface MarketingContact {
   email: string;
   firstName?: string;
   lastName?: string;
+  phone?: string;
   postcode?: string;
+  city?: string;
+  country?: string;
   /** Verbatim from the source CSV — NOT normalised, because DD/MM vs MM/DD is unknowable */
   dob?: string;
+  /** Free-text segment labels from the source export */
+  tags?: string;
+  lastEventName?: string;
+  lastEventDate?: string;
+  ticketsBought?: string;
+  totalSpend?: string;
   /** Provenance, e.g. "csv:contacts.csv" */
   source?: string;
   /** ISO timestamp when added to the list */
   addedAt: string;
 }
 
-/** The plaintext payload that gets sealed to the organiser's X25519 key. */
+/**
+ * The plaintext payload that gets sealed to the organiser's X25519 key.
+ *
+ * Sealed with `sealJsonCompressed` (gzip → ECIES) and read with `openJsonAuto`,
+ * which also opens the uncompressed blobs written before compression existed.
+ * Uncompressed, a full 20k list overflows the server's sealed-blob cap.
+ */
 export interface MarketingListPayload {
   version: 1;
   contacts: MarketingContact[];
