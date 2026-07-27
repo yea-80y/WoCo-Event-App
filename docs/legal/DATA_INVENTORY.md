@@ -77,6 +77,7 @@ Enumerated from source, not assumed:
 | `marketing-lists.json` | **Yes** (pseudonymous) | `emailHashes: string[]` only — `list-store.ts:17` |
 | `marketing-domains.json`, `marketing-send-log.json` | Indirect | Organiser sending domains; send counts for rate caps |
 | `stripe-accounts.json` | **Yes** | Organiser wallet address ↔ Stripe account id |
+| `stripe-payout-ledger.json` | **Yes** | Organiser wallet address + Stripe account/session/PaymentIntent ids, event id, sale and net amounts, release dates. Financial record of the organiser, not the buyer — no attendee identifier. Retained as accounting evidence (§5.2, `payout-ledger.ts`) |
 | `attendee-gate-bindings.json` | **Yes** (pseudonymous) | Ticket ↔ attendee binding |
 | `likes-index.json` | **Yes** | Wallet address ↔ liked subject. Cache of public on-chain attestations |
 | `sub-ens-owners.json` | **Yes** | Wallet address ↔ ENS label |
@@ -171,6 +172,34 @@ Consequences:
 > sessions" — any orders created under that model had WoCo as merchant of record and carry
 > different liability. Confirm whether any exist in production before relying on the agent model
 > retrospectively.
+
+### 5.2 Payout timing — a control, not a custody arrangement
+
+Connected accounts are created on a **manual payout schedule** and each event's takings are
+released after the event by a server-side job. Mechanism, constants and Stripe's own limits:
+`docs/PAYOUTS.md`.
+
+What matters for the legal documents:
+
+- **WoCo never holds organiser funds.** They settle into the organiser's own Stripe balance. We
+  control the timing of release and nothing else. Stripe is explicit that this is not escrow —
+  *"Escrow has a precise legal definition, and Stripe doesn't provide escrow services or support
+  escrow accounts."* No document may describe it as escrow, a client account, or funds we hold.
+- **The hold cannot be promised unconditionally.** Stripe requires payout within 90 days of the
+  charge for UK businesses (10 days Thailand, 2 years US), measured **per sale, not per event**, so
+  tickets sold more than ~90 days ahead are released to the organiser before their event.
+- **A manual schedule is not a lock.** Stripe's platform-controls documentation states connected
+  accounts can still initiate their own payouts; blocking that needs a support request we have not
+  yet been granted. Until then no attendee-facing statement may imply funds cannot move.
+
+`TERMS_OF_SERVICE.md` §4 and `ORGANISER_TERMS.md` §6 are written to these three limits. If the
+Stripe configuration changes — in particular a move to Managed Risk, which shifts negative-balance
+liability from WoCo to Stripe — both sections and §5.1's liability statement need re-reading.
+
+> ⚠️ **Liability caveat that survives all of the above.** Under our current configuration
+> (`controller.losses.payments = "application"`, the Express default) **WoCo absorbs unrecoverable
+> negative balances** on connected accounts. Delayed payouts reduce that exposure for sales close to
+> the event and do nothing for sales made long before it.
 
 ---
 

@@ -187,6 +187,15 @@ STRIPE PAYMENTS (Card via Stripe Connect):
   UNVERIFIED — confirm from the Stripe dashboard billing page before publishing any pricing.
   See docs/PRICING_AND_EMAIL.md §7.
 - Account store: `.data/stripe-accounts.json` (file-backed, same pattern as tx-registry)
+- PAYOUTS ARE MANUAL + RELEASED AFTER THE EVENT (2026-07-27). Accounts are created with
+  `settings.payouts.schedule.interval = "manual"`; `.data/stripe-payout-ledger.json` holds one
+  entry per paid session with its release date; an hourly sweep pays out only what is DUE
+  (a connected account has ONE pooled balance across all its events — never pay out the raw
+  balance). NOT `delay_days` (self-serve caps at 7d). Two Stripe limits are load-bearing:
+  funds **cannot be held >90 days** (UK; per CHARGE not per event ⇒ early-bird money releases
+  before the event), and `manual` does **not** stop an Express organiser paying themselves —
+  full lockout needs a Stripe support grant. Never call it escrow (Stripe doesn't offer escrow).
+  Full detail: `docs/PAYOUTS.md`; decisions: `docs/PRICING_AND_EMAIL.md` §15–§17.
 - Webhook: checkout.session.completed auto-claims ticket via claimTicket()
   Webhook source: "Connected and v2 accounts" (NOT "Your account")
 - Onboarding opens in NEW TAB during event creation to preserve form data
@@ -531,6 +540,10 @@ SVELTE 5 / BEE-JS / PARA:
 
 STRIPE:
 - `.data/stripe-accounts.json` MUST survive server restarts (same as tx-hashes, revoked-sessions)
+- Same for `.data/stripe-payout-ledger.json` — losing it either strands organiser funds in a
+  frozen balance or releases them with no record of which event they belong to. After deploying
+  payout changes run `npx tsx scripts/payout-schedule-audit.ts` (add `--fix`) — accounts created
+  before manual payouts shipped are on Stripe's automatic schedule and are NOT being held
 - Stripe onboarding redirects go back to the Origin host — ALLOWED_HOSTS must include it
 - Onboarding opens in new tab during event creation (preserves form state)
 - Webhook endpoint: POST /api/stripe/webhook — needs raw body for signature verification

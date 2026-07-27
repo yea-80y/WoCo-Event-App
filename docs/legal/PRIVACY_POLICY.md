@@ -247,6 +247,7 @@ We would rather you came to us first, but it is your right either way.
 | Account data | While your account is open, plus 90 days |
 | Suppression records | Indefinitely — required to honour your opt-out |
 | Transaction records | 6 years (Companies Act 2006, HMRC) |
+| Organiser sale and payout records | 6 years (Companies Act 2006, HMRC) — what sold, what we released and when. Accounting evidence; it contains no attendee identifier |
 | Security logs and IP records | [LOG RETENTION PERIOD — TO BE SET] |
 | On-chain records | Permanent — cannot be deleted |
 

@@ -87,6 +87,15 @@ to, we will: give you everything we hold that evidences your purchase; support a
 card issuer; and pass on any funds we are holding that are due to you. Your card chargeback rights
 are usually your strongest remedy, and we will not obstruct them.
 
+**What our payout timing does and does not do for you.** We generally do not release an organiser's
+takings to them until after their event has happened. That makes it more likely funds are still
+available if a refund becomes due, and it is deliberate. **It is not a guarantee, and it is not
+escrow or any form of protected client account.** Specifically: the money sits in the organiser's own
+account with our payment provider, not ours; the provider's rules do not allow funds to be held
+indefinitely, so tickets bought well in advance are paid to the organiser before the event; and an
+organiser may be able to withdraw their balance themselves. **Do not treat this as insurance against
+an organiser failing.** Your chargeback rights remain your strongest remedy.
+
 **Your statutory rights are unaffected.** Nothing here overrides the Consumer Rights Act 2015.
 
 **Cancellation rights.** Under the Consumer Contracts Regulations 2013, the 14-day cooling-off period

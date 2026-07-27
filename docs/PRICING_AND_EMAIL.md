@@ -612,3 +612,62 @@ That third question is unresolved and matters: the support **bot** said existing
 ### What to build while waiting
 
 **Manual payouts, regardless of the answer.** Essential under Option A; still required under Option B, because an organiser paid before the event who then cancels leaves attendees unable to get refunded — reputational damage to WoCo whoever absorbs the accounting loss. **Not wasted work under either branch**, so it is the correct thing to be building during the wait.
+
+## 17. RESOLVED — Managed Risk keeps our fee; two new hard limits found
+
+**Supersedes §16's open question.** 2026-07-27, same thread.
+
+### The blocking question is answered — Option B
+
+Stripe support, verbatim:
+
+> "Upon careful review here, I don't see any indications that will limit the collection of application fees while on Managed Risk. You are welcome to collect application fees accordingly."
+
+Per §16's decision table that is the **yes**: reconfigure to Managed Risk before onboarding real organisers. No £2/monthly active account, no 0.25% of payout volume, and Stripe carries the negative-balance liability instead of us — while our 1.5% survives.
+
+⚠️ **Record it as a support agent's read, not a documented guarantee.** "I don't see any indications" is weaker than "yes, confirmed". Get it restated in the migration thread before the reconfiguration lands, and do not let tier pricing depend on it until it is.
+
+### 🚨 New limit 1 — funds cannot be held beyond 90 days (UK)
+
+Found in Stripe's own documentation, so **this one needed no support reply**:
+[docs.stripe.com/connect/manual-payouts](https://docs.stripe.com/connect/manual-payouts) — *"You must pay out the funds within the time period specified below, based on the business's country."* Thailand 10 days, US 2 years, **all other countries 90 days**. **The support bot was right and the human simply didn't repeat it.**
+
+**It runs per charge, not per event.** So:
+
+- Sales inside ~90 days of the event → hold works, funds available for refunds.
+- Sales earlier than that → **released to the organiser before their event, by Stripe's rule, not our choice.** Festival and early-bird on-sales are structurally exposed.
+
+**This raises the value of Managed Risk rather than lowering it.** For the long-lead tail, delayed payouts protect nobody — who absorbs the negative balance is the *only* remaining control, and under Managed Risk that is Stripe. The two answers landing the same day point the same way.
+
+Product consequences, for the §7 tier decisions — none of these are code:
+
+- Cap how far ahead an unproven organiser may sell.
+- Partial reserve rather than full hold (shifts the size, not the 90-day deadline).
+- Require cancellation cover for festival-scale on-sales.
+
+### 🚨 New limit 2 — a manual schedule is not a lock
+
+[Platform controls](https://docs.stripe.com/connect/platform-controls-for-stripe-dashboard-accounts), verbatim:
+
+> "Connected accounts can still make manual payouts after you, as the platform, choose to restrict connected accounts from updating their own payout schedule."
+
+> "If you need full control over your connected accounts' payouts and want to restrict your connected accounts from being able to make their own payouts, contact us with a detailed description of your use case."
+
+So `interval: "manual"` removes the *automatic* payout — the common case, and worth having — but an Express organiser can still withdraw their own balance before the event. **Until Stripe grants that control, no attendee- or organiser-facing promise may be written as though funds cannot move.** The legal drafts have been written to this limit.
+
+### Still open with Stripe — send on the live thread
+
+1. **Grant the payout restriction** above (needs a use-case description: UK event ticketing, future delivery, funds held until after the event to protect attendee refunds).
+2. **Does Managed Risk preserve our control of the payout schedule?** The payout-control page conditions it on *"Platforms that manage fraud and dispute liability, or have platform controls"* — under Managed Risk **Stripe** carries that liability, not us. If the switch costs us the hold, the Option B trade changes shape.
+3. **Do existing connected accounts come across?** Bot said no; human called it a platform-level reconfiguration. Not obviously the same claim, and if they do migrate the pre-launch urgency drops.
+4. **UNVERIFIED, not stated on `docs.stripe.com/refunds`:** how long after a charge a refund can still be issued. Matters for long-lead events — if the window is shorter than the sales lead time, advance tickets may not be refundable through Stripe at all.
+
+### Also settled — not escrow
+
+> "Escrow has a precise legal definition, and Stripe doesn't provide escrow services or support escrow accounts."
+
+Funds sit in the organiser's own Stripe balance throughout; we control release timing only. No document may call it escrow, a client account, or money we hold. `TERMS_OF_SERVICE.md` §4, `ORGANISER_TERMS.md` §6 and `DATA_INVENTORY.md` §5.2 are written to this.
+
+### Built (row 00 complete)
+
+Manual payouts + post-event release. Mechanism, constants and ops: **`docs/PAYOUTS.md`**. 25 unit tests over the failure modes (early release, double payout, refunded sale, ceiling breach, stranded funds); server suite 66/66.

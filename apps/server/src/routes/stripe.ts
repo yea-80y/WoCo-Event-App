@@ -40,6 +40,13 @@ import { getReservation, consume as consumeReservation } from "../lib/event/rese
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
 import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } from "../lib/shop/service.js";
 import { sendShopOrderEmail } from "../lib/email/shop-receipt.js";
+import { ensureManualPayoutSchedule } from "../lib/stripe/payout-schedule.js";
+import { eventReleaseAfter, shopReleaseAfter } from "../lib/stripe/payout-policy.js";
+import {
+  recordHeld as recordHeldPayout,
+  markVoid as markPayoutVoid,
+  listByOrganiser as listPayoutsByOrganiser,
+} from "../lib/stripe/payout-ledger.js";
 
 const stripe = new Hono<AppEnv>();
 
@@ -69,6 +76,13 @@ stripe.post("/connect", requireAuth, async (c) => {
         card_payments: { requested: true },
         transfers: { requested: true },
       },
+      // Tickets are future delivery: the organiser's takings are held until the
+      // event has happened and released by the sweep in payout-release.ts. Set at
+      // creation so no account is ever briefly on Stripe's automatic schedule.
+      // NOTE: this stops automatic payouts only — an Express organiser can still
+      // pay themselves from their own dashboard until Stripe grants the platform
+      // control that blocks it. See lib/stripe/payout-schedule.ts + docs/PAYOUTS.md.
+      settings: { payouts: { schedule: { interval: "manual" } } },
       metadata: { organiserAddress },
     });
 
@@ -218,6 +232,55 @@ stripe.delete("/account", requireAuth, async (c) => {
     return c.json({ ok: false, error: "No Stripe account record found" }, 404);
   }
   return c.json({ ok: true });
+});
+
+/**
+ * GET /api/stripe/payouts — the organiser's own held and released takings.
+ *
+ * Organisers are on a manual payout schedule, so "where is my money" has to be
+ * answerable in the product rather than by asking us. Our terms commit to telling
+ * them when funds release; this is the endpoint that backs that promise.
+ *
+ * Amounts are minor units, as Stripe reports them.
+ */
+stripe.get("/payouts", requireAuth, async (c) => {
+  const organiserAddress = c.get("parentAddress").toLowerCase();
+  const entries = listPayoutsByOrganiser(organiserAddress);
+
+  const held = entries.filter((e) => e.status === "held");
+  const heldByCurrency: Record<string, number> = {};
+  for (const e of held) {
+    // Gross until the release sweep resolves net from the balance transaction —
+    // labelled as such in the response so the UI never presents it as final.
+    heldByCurrency[e.currency] = (heldByCurrency[e.currency] ?? 0) + (e.netAmount ?? e.grossAmount);
+  }
+
+  return c.json({
+    ok: true,
+    data: {
+      schedule: "manual",
+      heldByCurrency,
+      nextReleaseAt:
+        held.map((e) => e.releaseAfter).sort()[0] ?? null,
+      entries: entries.map((e) => ({
+        sessionId: e.sessionId,
+        kind: e.kind,
+        eventId: e.eventId,
+        shopId: e.shopId,
+        currency: e.currency,
+        grossAmount: e.grossAmount,
+        netAmount: e.netAmount ?? null,
+        netIsFinal: typeof e.netAmount === "number",
+        recordedAt: e.recordedAt,
+        releaseAfter: e.releaseAfter,
+        status: e.status,
+        releasedAt: e.releasedAt ?? null,
+        payoutId: e.payoutId ?? null,
+        forcedByCeiling: !!e.forcedByCeiling,
+        voidReason: e.voidReason ?? null,
+      })),
+    },
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -752,6 +815,18 @@ stripe.post("/webhook", async (c) => {
       const complete = !!(account.charges_enabled && account.payouts_enabled);
       updateOnboardingStatus(account.id, complete);
       console.log(`[stripe-webhook] Account ${account.id} updated: charges=${account.charges_enabled}, payouts=${account.payouts_enabled}`);
+
+      // Self-healing backfill for accounts created before manual payouts existed,
+      // and for any account whose schedule drifted back to automatic. The webhook
+      // payload already carries settings, so the check costs no API call and only
+      // the correction does. Without this, an older organiser's funds are paid out
+      // on Stripe's fast schedule and never held for their event.
+      if (account.settings?.payouts?.schedule?.interval !== "manual") {
+        console.warn(
+          `[stripe-webhook] Account ${account.id} is NOT on a manual payout schedule — correcting`,
+        );
+        void ensureManualPayoutSchedule(account.id);
+      }
       break;
     }
 
@@ -812,6 +887,36 @@ async function handleShopOrderPaid(
     `[stripe-webhook] Shop order ${updated ? "paid" : "update-failed"}: ` +
     `shop=${shopId.slice(0, 8)} order=${orderId.slice(0, 8)} total=${order.total} ${order.currency}`,
   );
+
+  // Shop takings need their own release rule. Merchants share ONE connected-account
+  // balance with their ticketing, and the manual schedule that holds ticket money
+  // until an event freezes shop money too — which would be wrong, since shop goods
+  // are delivered immediately and have no event to wait for. Without an entry here
+  // a merchant's shop revenue would never be released at all.
+  const shopAccountId = session.metadata?.connectedAccountId;
+  if (shopAccountId && session.amount_total && session.currency) {
+    const recordedAt = new Date().toISOString();
+    try {
+      recordHeldPayout({
+        sessionId: session.id,
+        stripeAccountId: shopAccountId,
+        organiserAddress: getOrganiserByStripeAccount(shopAccountId) ?? "",
+        kind: "shop",
+        shopId,
+        orderId,
+        currency: session.currency,
+        grossAmount: session.amount_total,
+        paymentIntentId:
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id,
+        recordedAt,
+        releaseAfter: shopReleaseAfter(recordedAt),
+      });
+    } catch (err) {
+      console.error("[stripe-webhook] FAILED to record shop payout ledger entry:", err);
+    }
+  }
 
   if (buyerEmail && updated) {
     void (async () => {
@@ -904,6 +1009,10 @@ async function handleSuccessfulPayment(
   let encryptedOrder: SealedBox | undefined;
   let eventTitle = "";
   let eventDate = "";
+  /** Event END — anchors when these takings may be paid out (payout-policy.ts). */
+  let eventEndDate = "";
+  /** Fallback organiser identity for the payout ledger if the account map misses. */
+  let eventCreatorAddress = "";
   let eventLocation = "";
   let seriesName = "";
   let totalSupply = 0;
@@ -923,6 +1032,8 @@ async function handleSuccessfulPayment(
       editionsCarrier = ev.creatorFeedSigner;
       eventTitle = ev.title;
       eventDate = ev.startDate;
+      eventEndDate = ev.endDate ?? "";
+      eventCreatorAddress = (ev.creatorAddress ?? "").toLowerCase();
       eventLocation = ev.location ?? "";
       const ser = ev.series.find((s) => s.seriesId === seriesId);
       if (ser) {
@@ -945,6 +1056,45 @@ async function handleSuccessfulPayment(
     }
   } catch (err) {
     console.warn("[stripe-webhook] Could not build encrypted order (non-fatal):", err);
+  }
+
+  // Register the sale as HELD organiser funds. The connected account is on a
+  // manual payout schedule, so nothing reaches the organiser until the release
+  // sweep decides it may (event end + grace, or Stripe's hold ceiling).
+  //
+  // Recorded BEFORE claiming, not after: if the claim fails and we refund below,
+  // the entry is voided — whereas a sale we never recorded is money sitting in a
+  // frozen balance with nothing scheduled to ever release it.
+  const payoutAccountId = session.metadata?.connectedAccountId;
+  if (payoutAccountId && session.amount_total && session.currency) {
+    try {
+      recordHeldPayout({
+        sessionId: session.id,
+        stripeAccountId: payoutAccountId,
+        organiserAddress:
+          getOrganiserByStripeAccount(payoutAccountId) ?? eventCreatorAddress ?? "",
+        kind: "event",
+        eventId,
+        seriesId,
+        currency: session.currency,
+        grossAmount: session.amount_total,
+        paymentIntentId:
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id,
+        recordedAt: claimedAt,
+        releaseAfter: eventReleaseAfter(claimedAt, eventEndDate, eventDate),
+      });
+    } catch (err) {
+      // Never fail a paid claim over bookkeeping. A missing entry means funds sit
+      // held until the ceiling sweep releases them — recoverable, and loud here.
+      console.error("[stripe-webhook] FAILED to record payout ledger entry:", err);
+    }
+  } else if (session.amount_total) {
+    console.error(
+      `[stripe-webhook] Paid session ${session.id} has no connectedAccountId in metadata — ` +
+        `funds are held with no release schedule. Manual payout required.`,
+    );
   }
 
   const claimedResults: Array<{ edition: number; qrContent: string }> = [];
@@ -1163,6 +1313,14 @@ async function handleSuccessfulPayment(
       console.log(
         `[stripe-webhook] Auto-refunded ${piId} (refund=${refund.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
       );
+      // A wholly refunded sale has no proceeds to release, so drop it from the
+      // payout schedule now rather than leaving it "held" and misreporting the
+      // organiser's pending balance. Partial refunds stay held on purpose: the
+      // release job reads the real balance transactions, so the remaining net is
+      // computed from Stripe rather than re-derived here.
+      if (claimedResults.length === 0) {
+        markPayoutVoid(session.id, `refunded — ${stoppedReason}`);
+      }
     } catch (refundErr) {
       console.error("[stripe-webhook] Auto-refund FAILED — manual intervention required:", refundErr);
     }
