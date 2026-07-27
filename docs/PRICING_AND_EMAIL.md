@@ -409,3 +409,37 @@ Stripe's automated chat answered §10. Sorted by whether it holds up.
 It recommended keeping platform liability plus manual payouts, and budgeting for the Connect fees — having just stated that the alternative carries neither liability nor extra cost. Its stated reason is that Managed Risk "reduces your control over risk decisions" and Stripe "may pause payouts before an event completes."
 
 That concern is worth probing, but it does not outweigh the exposure. WoCo is pre-launch with no balance sheet to absorb a cancelled festival. Accepting an uncapped tail liability to preserve discretion over payout timing is the wrong trade at this stage. **Position: pursue Managed Risk for new accounts, and build delayed payouts regardless** — delayed payouts protect attendees' ability to actually get refunded, which matters whoever absorbs the accounting loss.
+
+## 12. Negotiated pricing — real, but coupled
+
+Stripe formally documents three economic models for platforms (docs.stripe.com/connect/risk-management/managed-risk, quoted):
+
+> "The fees for Managed Risk depend on the economic model:
+> - **Revenue share**: …we include Managed Risk at no additional cost.
+> - **Buy rate** — **Listed pricing**: …we include Managed Risk at no additional cost.
+> - **Buy rate** — **Negotiated pricing**: Managed Risk incurs additional fees. For more information, contact Stripe Sales."
+
+So negotiation is a documented track, not a favour. **But note the coupling: negotiating your rate down is what makes Managed Risk cost extra.** On listed pricing or revenue share it is free. Do not assume "negotiate everything down" is strictly better — a lower processing rate could cost more than it saves once Managed Risk is priced in.
+
+Also: Stripe's support bot noted "some platforms negotiate custom pricing that differs from the published rates" and pointed at an account manager. Negotiating leverage is volume-based, and WoCo is pre-launch with none. Realistic position: ask what monthly processing volume unlocks a negotiated rate, and stay on listed pricing until then so Managed Risk stays free.
+
+## 13. Stripe follow-up — ask for a human
+
+The bot left four things open. Reply on the same thread asking for a human, referencing the terms it gave us.
+
+> Thanks — that helps, but four points are still open and I'd like a human to confirm them, as we're about to build against these answers.
+>
+> 1. **Payout fee — 25p or 10p?** You said 0.25% + 25p "globally", but stripe.com/gb/connect/pricing states **0.25% + 10p per payout sent** for the UK. We're a UK platform. Which applies to us?
+>
+> 2. **Maximum hold period.** You said UK accounts can only hold funds for 90 days with `interval: "manual"`, and must pay out after that. I can't find that documented anywhere — docs.stripe.com/connect/manage-payout-schedule doesn't mention it. Can you confirm whether a maximum holding period exists for UK connected accounts, and what it is? This is critical for us: festival and early-bird tickets sell more than 90 days before the event, and if we can't hold funds that long we need a different design.
+>
+> 3. **Managed Risk and Connect fees.** You said that with Managed Risk we'd pay no £2/monthly-active-account fee and no payout fees. The Managed Risk documentation only says Managed Risk *itself* is included at no additional cost on listed pricing or revenue share. Please confirm explicitly: under Managed Risk, are we still charged the per-active-account fee and per-payout fees, or not?
+>
+> 4. **Our actual fee schedule.** You said to check our platform agreement or speak to an account manager. We don't have an account manager. Can you tell us, or route us to someone who can, exactly which pricing model our platform is on and what Connect fees we will be charged in live mode?
+>
+> Also, two things for whoever picks this up:
+>
+> - We want **Managed Risk** for new connected accounts. We currently create them with `type: "express"` and no controller block. What exactly changes in our `accounts.create` call — we've seen we need the `card_payment` capability and the `full` Stripe Service Agreement type. Is Managed Risk something we need approving for, given we're an event ticketing platform, and is there an application process?
+> - What monthly processing volume would make us eligible for negotiated pricing, and would moving to negotiated pricing mean Managed Risk stops being free?
+>
+> Thanks.
