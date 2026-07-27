@@ -1,102 +1,144 @@
 <script lang="ts">
-  import type { MarketingContact } from "@woco/shared";
+  /**
+   * The contact list: search, the consent filter from the ledger above, and the
+   * way into one person's record.
+   *
+   * A row is a summary and a target, not a workbench — every edit and both
+   * destructive actions live in ContactDetail, so there is one place where a
+   * change to a person happens and one place to get that right.
+   */
+  import type { MarketingContact, ContactConsentState } from "@woco/shared";
+  import { contactConsentState } from "@woco/shared";
+  import ContactDetail from "./ContactDetail.svelte";
 
   interface Props {
     contacts: MarketingContact[];
     suppressedEmails: Set<string>;
+    consentedEmails: Set<string>;
+    filter: ContactConsentState | null;
     busy: boolean;
+    onSave: (email: string, next: MarketingContact) => Promise<void>;
     onDelete: (email: string, alsoSuppress: boolean) => Promise<void>;
   }
 
-  let { contacts, suppressedEmails, busy, onDelete }: Props = $props();
+  let {
+    contacts,
+    suppressedEmails,
+    consentedEmails,
+    filter,
+    busy,
+    onSave,
+    onDelete,
+  }: Props = $props();
 
   let query = $state("");
-  let confirmingEmail = $state<string | null>(null);
-  let alsoSuppress = $state(false);
-  let error = $state<string | null>(null);
+  let openEmail = $state<string | null>(null);
 
+  /** The list runs to 20k. Rendering all of it costs more than it tells anyone,
+   *  so the page shows a window and search is how you reach the rest. */
   const MAX_SHOWN = 100;
 
-  const filtered = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return contacts.slice(0, MAX_SHOWN);
-    return contacts
-      .filter((c) =>
-        c.email.includes(q) ||
-        (c.firstName ?? "").toLowerCase().includes(q) ||
-        (c.lastName ?? "").toLowerCase().includes(q) ||
-        (c.postcode ?? "").toLowerCase().includes(q),
-      )
-      .slice(0, MAX_SHOWN);
-  });
+  const stateOf = (c: MarketingContact): ContactConsentState =>
+    contactConsentState(c.email, suppressedEmails, consentedEmails);
 
-  function displayName(c: MarketingContact): string {
-    const name = [c.firstName, c.lastName].filter(Boolean).join(" ");
-    return name || "—";
+  /** Everything a person might type into the box, including the address they
+   *  are calling about. Built per contact, not per keystroke-per-field. */
+  function haystack(c: MarketingContact): string {
+    return [c.email, c.firstName, c.lastName, c.phone, c.address1, c.address2, c.city, c.postcode]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
   }
 
-  async function remove(email: string): Promise<void> {
-    error = null;
-    try {
-      await onDelete(email, alsoSuppress);
-      confirmingEmail = null;
-      alsoSuppress = false;
-    } catch (err) {
-      error = err instanceof Error ? err.message : "Delete failed.";
+  const matching = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    const out: MarketingContact[] = [];
+    for (const c of contacts) {
+      if (filter && stateOf(c) !== filter) continue;
+      if (q && !haystack(c).includes(q)) continue;
+      out.push(c);
     }
+    return out;
+  });
+
+  const shown = $derived(matching.slice(0, MAX_SHOWN));
+  const open = $derived(contacts.find((c) => c.email === openEmail) ?? null);
+
+  function displayName(c: MarketingContact): string {
+    return [c.firstName, c.lastName].filter(Boolean).join(" ") || "No name";
+  }
+
+  /** The line under the address: whatever this contact actually has. */
+  function subtitle(c: MarketingContact): string {
+    return [displayName(c), c.city || c.postcode, c.source?.replace(/^csv:/, "")]
+      .filter(Boolean)
+      .join(" · ");
   }
 </script>
 
-<section class="search" aria-label="Browse contacts">
+<section class="list" aria-label="Contacts">
   <input
     class="search-input"
     type="search"
-    placeholder="Search by email, name or postcode — also how you handle GDPR requests"
+    placeholder="Search name, email, address or postcode"
+    aria-label="Search contacts"
     bind:value={query}
   />
 
-  <div class="rows" role="list">
-    {#each filtered as c (c.email)}
-      <div class="row" role="listitem" class:suppressed={suppressedEmails.has(c.email)}>
-        <div class="row-main">
-          <span class="row-email">{c.email}</span>
-          <span class="row-meta">
-            {displayName(c)}{c.postcode ? ` · ${c.postcode}` : ""}
-            {#if c.source}<span class="row-source"> · {c.source.replace(/^csv:/, "")}</span>{/if}
-          </span>
-        </div>
-        {#if suppressedEmails.has(c.email)}
-          <span class="chip">unsubscribed</span>
-        {/if}
-        {#if confirmingEmail === c.email}
-          <div class="confirm">
-            <label class="confirm-suppress">
-              <input type="checkbox" bind:checked={alsoSuppress} />
-              <span class="tick" aria-hidden="true"></span>
-              also unsubscribe them
-            </label>
-            <button class="btn-danger" disabled={busy} onclick={() => void remove(c.email)}>
-              {busy ? "Removing…" : "Remove"}
-            </button>
-            <button class="btn-ghost sm" onclick={() => { confirmingEmail = null; alsoSuppress = false; }}>Keep</button>
-          </div>
-        {:else}
-          <button class="btn-ghost sm" onclick={() => { confirmingEmail = c.email; alsoSuppress = false; }}>Remove</button>
-        {/if}
-      </div>
-    {:else}
-      <p class="none">No contacts match "{query}".</p>
-    {/each}
-  </div>
-
-  {#if contacts.length > MAX_SHOWN && !query.trim()}
-    <p class="cap-note">Showing the first {MAX_SHOWN} of {contacts.length.toLocaleString()} — search to find anyone.</p>
+  {#if shown.length > 0}
+    <ul class="rows">
+      {#each shown as c (c.email)}
+        {@const s = stateOf(c)}
+        <li>
+          <button type="button" class="row" onclick={() => (openEmail = c.email)}>
+            <span class="dot dot--{s}" aria-hidden="true"></span>
+            <span class="row-main">
+              <span class="row-email">{c.email}</span>
+              <span class="row-meta">{subtitle(c)}</span>
+            </span>
+            {#if s === "unsubscribed"}
+              <span class="chip">unsubscribed</span>
+            {:else if s === "opted-in"}
+              <span class="chip chip--in">opted in</span>
+            {/if}
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {:else}
+    <p class="none">
+      {#if query.trim()}
+        Nothing matches "{query}".
+      {:else}
+        No contacts in this band.
+      {/if}
+    </p>
   {/if}
-  {#if error}<p class="err">{error}</p>{/if}
+
+  {#if matching.length > MAX_SHOWN}
+    <p class="cap-note">
+      Showing {MAX_SHOWN} of {matching.length.toLocaleString()} — keep typing to narrow it down.
+    </p>
+  {/if}
 </section>
 
+{#if open}
+  <!-- Keyed so a different contact gets a fresh edit buffer rather than
+       inheriting the last one's unsaved draft. -->
+  {#key open.email}
+  <ContactDetail
+    contact={open}
+    consent={stateOf(open)}
+    {busy}
+    onSave={async (next) => { await onSave(open!.email, next); openEmail = null; }}
+    onRemove={async (alsoSuppress) => { await onDelete(open!.email, alsoSuppress); openEmail = null; }}
+    onClose={() => (openEmail = null)}
+  />
+  {/key}
+{/if}
+
 <style>
-  .search {
+  .list {
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     background: var(--bg-surface);
@@ -116,100 +158,70 @@
     width: 100%;
     transition: border-color var(--transition);
   }
-  .search-input:focus { border-color: var(--accent); outline: none; }
+  .search-input:focus-visible { border-color: var(--accent); outline: none; }
   .search-input::placeholder { color: var(--text-dim); }
 
-  .rows { display: flex; flex-direction: column; }
+  /* A real <ul>/<li>, not roles on buttons — a <button> cannot be a listitem,
+     and `display: contents` on the <li> has a history of dropping it out of the
+     accessibility tree. The li stays a plain block and the button fills it. */
+  .rows { list-style: none; margin: 0; padding: 0; }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.625rem 0.25rem;
+    gap: 0.625rem;
+    padding: 0.625rem 0.5rem;
     border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
+    text-align: left;
+    width: 100%;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
   }
-  .row:last-child { border-bottom: none; }
-  .row.suppressed .row-email { color: var(--text-dim); text-decoration: line-through; }
+  .rows li:last-child .row { border-bottom: none; }
+  .row:hover { background: var(--bg-surface-hover); }
+  .row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
-  .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+  /* Repeats the ledger's key, so the band you filtered by and the rows you got
+     back are visibly the same thing. */
+  .dot { width: 6px; height: 6px; border-radius: 1px; flex: none; }
+  .dot--opted-in { background: var(--accent); }
+  .dot--imported { background: var(--border-hover); }
+  .dot--unsubscribed { background: repeating-linear-gradient(135deg, var(--error) 0 2px, transparent 2px 4px); }
+
+  .row-main { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; flex: 1; }
 
   .row-email {
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     color: var(--text);
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .row-meta { font-size: 0.75rem; color: var(--text-muted); }
-  .row-source { color: var(--text-dim); }
+  .row-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .chip {
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-muted);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 0.15rem 0.4rem;
-    white-space: nowrap;
+    padding: 0.15rem 0.35rem;
+    flex: none;
   }
+  .chip--in { color: var(--accent-text); border-color: var(--accent-subtle); }
 
-  .confirm { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; }
-
-  .confirm-suppress {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    cursor: pointer;
+  .none, .cap-note {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 0;
   }
-  .confirm-suppress input { position: absolute; opacity: 0; pointer-events: none; }
-  .tick {
-    width: 15px;
-    height: 15px;
-    border: 1.5px solid var(--border-hover);
-    border-radius: var(--radius-sm);
-    position: relative;
-    transition: background var(--transition), border-color var(--transition);
-  }
-  .confirm-suppress input:checked + .tick { background: var(--accent); border-color: var(--accent); }
-  .confirm-suppress input:checked + .tick::after {
-    content: "";
-    position: absolute;
-    left: 4px;
-    top: 0;
-    width: 4px;
-    height: 8px;
-    border: solid var(--accent-ink);
-    border-width: 0 2px 2px 0;
-    transform: rotate(45deg);
-  }
-  .confirm-suppress input:focus-visible + .tick { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-  .btn-danger {
-    background: var(--error-subtle);
-    color: var(--error);
-    border: 1px solid transparent;
-    font-size: 0.75rem;
-    font-weight: 600;
-    padding: 0.375rem 0.75rem;
-    border-radius: var(--radius-sm);
-    transition: border-color var(--transition);
-  }
-  .btn-danger:hover:not(:disabled) { border-color: var(--error); }
-  .btn-danger:disabled { opacity: 0.5; }
-
-  .btn-ghost {
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
-    border-radius: var(--radius-sm);
-    transition: border-color var(--transition), color var(--transition);
-  }
-  .btn-ghost:hover { border-color: var(--border-hover); color: var(--text); }
-  .btn-ghost.sm { font-size: 0.75rem; padding: 0.375rem 0.75rem; }
-
-  .none, .cap-note { color: var(--text-muted); font-size: 0.8125rem; margin: 0; }
-  .err { color: var(--error); font-size: 0.8125rem; margin: 0; }
 </style>

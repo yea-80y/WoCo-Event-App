@@ -42,6 +42,7 @@ const CHECK_BATCH_SIZE = 5_000;
 export async function checkMarketingEmails(emails: string[]): Promise<MarketingCheckResult> {
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
+  const consented: string[] = [];
 
   for (let i = 0; i < emails.length; i += CHECK_BATCH_SIZE) {
     const batch = emails.slice(i, i + CHECK_BATCH_SIZE);
@@ -49,9 +50,10 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
     if (!resp.data) throw new Error(resp.error || "Check failed");
     suppressed.push(...resp.data.suppressed);
     alreadyInList.push(...resp.data.alreadyInList);
+    consented.push(...(resp.data.consented ?? []));
   }
 
-  return { suppressed, alreadyInList };
+  return { suppressed, alreadyInList, consented };
 }
 
 export async function suppressContacts(emails: string[]): Promise<void> {

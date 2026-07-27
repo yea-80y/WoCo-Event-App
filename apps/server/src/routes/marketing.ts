@@ -20,6 +20,7 @@ import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
+import { consentedSubset } from "../lib/marketing/consent-store.js";
 import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
@@ -145,7 +146,7 @@ marketing.get("/list", requireAuth, async (c) => {
   }
 });
 
-/** Import-wizard validation: which of these emails are suppressed / already stored? */
+/** Which of these emails are suppressed / already stored / hold a consent record? */
 marketing.post("/check", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const body = c.get("body") as Record<string, unknown>;
@@ -161,15 +162,23 @@ marketing.post("/check", requireAuth, async (c) => {
 
   const suppressedHashes = new Set(suppressedSubset(org, hashes));
   const storedHashes = new Set(getList(org)?.emailHashes ?? []);
+  // Returned so the audience UI can tell a contact who ticked the box at
+  // checkout (evidence exists) from one imported under the organiser's own
+  // warranty. Only the caller's OWN organiser scope is consulted, and only for
+  // addresses they already hold — this cannot be used to probe whether someone
+  // consented to a different organiser.
+  const consentedHashes = new Set(consentedSubset(org, hashes));
 
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
+  const consented: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
     if (storedHashes.has(h)) alreadyInList.push(e);
+    if (consentedHashes.has(h)) consented.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */

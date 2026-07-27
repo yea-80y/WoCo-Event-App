@@ -90,6 +90,35 @@ export interface MarketingCheckResult {
   suppressed: string[];
   /** Normalized emails already present in the stored list */
   alreadyInList: string[];
+  /**
+   * Normalized emails holding a consent record for this organiser — they ticked
+   * the opt-in themselves and the Art. 7(1) evidence exists server-side. Absent
+   * from an older server, which is why {@link contactConsentState} treats a
+   * missing entry as `imported` rather than as a refusal.
+   */
+  consented?: string[];
+}
+
+/**
+ * How strong the permission behind one contact is.
+ *
+ * Three states, not two. `imported` is the one that matters and the one a binary
+ * subscribed/unsubscribed model hides: those contacts are mailable, but only on
+ * the strength of the warranty the organiser gave at import — there is no
+ * per-person evidence. Klaviyo shows the same middle state and tells the sender
+ * to exercise caution; the organiser cannot exercise anything they cannot see.
+ */
+export type ContactConsentState = "opted-in" | "imported" | "unsubscribed";
+
+/** Suppression wins over everything: an unsubscribe outranks any earlier grant. */
+export function contactConsentState(
+  email: string,
+  suppressed: ReadonlySet<string>,
+  consented: ReadonlySet<string>,
+): ContactConsentState {
+  const key = email.trim().toLowerCase();
+  if (suppressed.has(key)) return "unsubscribed";
+  return consented.has(key) ? "opted-in" : "imported";
 }
 
 export interface MarketingBroadcastResult {
