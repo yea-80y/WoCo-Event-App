@@ -6,7 +6,6 @@ import {
   SERVER_IP,
   rootDomain,
 } from "./service.js";
-import { getResend, getFromAddress } from "../email/client.js";
 
 const POLL_INTERVAL_MS = 15 * 60_000; // 15 minutes
 
@@ -31,24 +30,6 @@ async function checkDomain(hostname: string): Promise<boolean> {
   return false;
 }
 
-async function sendVerifiedEmail(
-  ownerAddress: string,
-  hostname: string,
-): Promise<void> {
-  try {
-    const resend = getResend();
-    await resend.emails.send({
-      from: `"WoCo" <${getFromAddress()}>`,
-      to: [ownerAddress], // ownerAddress is the wallet address — this won't deliver unless we have an email; skip silently
-      subject: `Your custom domain ${hostname} is now live`,
-      html: `<p>Your custom domain <strong>${hostname}</strong> is now configured and serving your WoCo site.</p>`,
-    });
-  } catch {
-    // Email is best-effort — wallet addresses aren't email addresses; this will
-    // succeed only for organisers who have an email address on file (future feature)
-  }
-}
-
 async function tick(): Promise<void> {
   let domains: Awaited<ReturnType<typeof getAllUnverifiedDomains>>;
   try {
@@ -64,8 +45,9 @@ async function tick(): Promise<void> {
 
       if (dnsOk) {
         await markDomainVerified(entry.hostname);
+        // No owner notification: identity here is a wallet address, and we hold
+        // no email for it. Restore once organiser contact addresses exist.
         console.log(`[domains/poller] verified: ${entry.hostname}`);
-        await sendVerifiedEmail(entry.ownerAddress, entry.hostname);
       }
     }),
   );

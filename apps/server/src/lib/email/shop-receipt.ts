@@ -1,5 +1,6 @@
 import type { Order, FiatCurrency } from "@woco/shared";
-import { getResend, getFromAddress } from "./client.js";
+import { getFromAddress } from "./client.js";
+import { sendEmail } from "./send.js";
 
 const SYMBOLS: Record<string, string> = { GBP: "£", USD: "$", EUR: "€" };
 
@@ -75,12 +76,11 @@ export async function sendShopOrderEmail(opts: {
   shopName: string;
   order: Order;
 }): Promise<void> {
-  const resend = getResend();
   const fromAddress = getFromAddress();
   const { to, shopName, order } = opts;
   const totalStr = fmtMoney(order.total, order.currency);
 
-  await resend.emails.send({
+  await sendEmail({
     from: `"${shopName.slice(0, 40)}" <${fromAddress}>`,
     to: [to],
     subject: `Your order ${order.code} — ${shopName} · ${totalStr}`,

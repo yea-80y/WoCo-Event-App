@@ -44,7 +44,8 @@ import {
   isTicketConsumed,
   verifyPendingCode,
 } from "../lib/gate/store.js";
-import { getResend, getFromAddress } from "../lib/email/client.js";
+import { getFromAddress } from "../lib/email/client.js";
+import { sendEmail } from "../lib/email/send.js";
 
 export const attendeeGate = new Hono<AppEnv>();
 
@@ -168,7 +169,7 @@ attendeeGate.post("/start", requireAuth, async (c) => {
     eventId: ref.eventId,
     emailHash: claimed.ownerEmailHash,
   });
-  await getResend().emails.send({
+  await sendEmail({
     from: `"WoCo" <${getFromAddress()}>`,
     to: [email],
     subject: `${code} is your WoCo verification code`,
