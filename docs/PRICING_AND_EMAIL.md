@@ -153,7 +153,14 @@ Partly, and it is entirely about **DNS records, not data**:
 
 **We are almost certainly on the first model.** WoCo uses direct charges, and Stripe's docs confirm the connected account bears processing: *"the charge amount—less the Stripe fees and application fee—is deposited into the connected account."* We never re-price processing; we add `application_fee_amount` on top. So the £2 and the payout fee should not apply to us.
 
-⚠️ **Not 100% from public docs — verify from our own Stripe invoices.** Third-party sources report the £2 applying to Express accounts generally, while Stripe's own pricing page lists it only under "you handle pricing". Stripe Connect is already live, so **the definitive answer is on our Stripe dashboard billing page in 60 seconds.** Do that before any pricing is published. Earlier drafts of this doc asserted $2/mo and 25p/payout as fact — both were third-party USD figures and at least the payout fixed fee was wrong (10p, not 25p).
+⚠️ **Which model our account is billed under is not publicly determinable, and invoices will not show it while we are in sandbox.** Test mode charges no real Connect fees. The general pricing structure *is* clearly published (the two models above); what is account-specific is which one our platform was configured for at setup — that is a property of our account, not a documented default.
+
+**Resolve it by asking Stripe support** (§10 has the message). Dashboard places to look first, though they will be empty until live charges exist:
+- **Settings → Connect → Platform settings** — account types and fee configuration
+- **Settings → Your fees / Pricing** — the platform's own Stripe fee schedule
+- **Balance → Fees**, or any monthly invoice under **Billing** — once out of sandbox, per-account fees appear here as line items if they apply
+
+Earlier drafts of this doc asserted $2/mo and 0.25% + 25p as fact; both were third-party USD figures and the payout fixed fee was wrong (10p GBP). Do not publish pricing on either number until Stripe confirms.
 
 Marginal cost per active organiser/year, assuming model 1 confirmed:
 
@@ -168,16 +175,37 @@ If the £2 does apply, add ~$24/yr and the total becomes ~$38/yr — enough to m
 
 Either way, **price on value not cost** — §7's anchors (Mailchimp $900/yr at 10k contacts, Squarespace £144/yr) set the price, not our margin floor.
 
-### Payout timing is a free USP we are not using
+### Payout timing is a RISK CONTROL, not a feature — LAUNCH BLOCKER
 
-| Platform | Organiser gets paid |
+An earlier draft of this doc proposed fast payouts as a USP. **That was wrong and it is retracted.** Paying organisers before their event happens transfers refund risk onto WoCo, and Stripe's docs are explicit that we carry it:
+
+> "for connected accounts where your platform is liable for negative balances (**including Custom and Express accounts**), **you're ultimately responsible for any disputes** involving those accounts." — docs.stripe.com/connect/disputes
+
+> "If your platform is responsible for negative connected account balances, Stripe also **holds funds in your platform account in reserve**, and if a connected account's balance remains negative for 180 days, we transfer funds from the platform reserve to cover the negative amount." — docs.stripe.com/connect/risk-management
+
+We use **Express** accounts, so this is us. `CLAUDE.md` already flagged it ("Express accounts = platform is responsible for unrecoverable negative balances, so WoCo carries residual chargeback exposure") but the consequence for payout timing was never drawn.
+
+**The failure mode, concretely:** organiser sells 500 × £25 = £12,500. Stripe pays it into their balance on the default daily schedule. They spend it. Event is cancelled. 500 chargebacks hit their account, balance goes to −£12,500, they don't top it up. Stripe recovers from **our** platform reserve. One cancelled mid-size event wipes out the platform fee from ~£830k of ticket sales.
+
+Note the onus *is* legally on the organiser — they are merchant of record, disputes are theirs to answer, and Stripe tries their external account first. But "legally liable" and "actually recoverable" are different things, and Stripe puts us last in line for the gap.
+
+**This is why the incumbents hold funds.** Eventbrite's 3-days-after-event + 20% reserve is not incumbent sluggishness, it is the correct control for exactly this scenario, and the earlier draft mischaracterised it as a weakness.
+
+#### How Eventbrite's 20% works
+
+They withhold 20% of net sales from payouts as a **rolling reserve**. If refunds, chargebacks or a cancellation arrive, they draw from the withheld amount instead of chasing the organiser or absorbing it. The remainder is released in the final payout once the event has happened and the refund window has largely closed. Standard payments-industry practice — acquirers impose the same on higher-risk merchants, and event ticketing is a "future delivery" category precisely because the service is delivered long after the money is taken.
+
+#### The controls Stripe gives us
+
+| Control | Detail |
 |---|---|
-| Eventbrite | 3 days **after** the event, **20% of net sales withheld** for refunds/chargebacks until final payout, then 6–10 business days to arrive. Instant payout costs 3% (US only). |
-| Skiddle | 3–5 business days after the event |
-| Fatsoma | ~3 business days after the event |
-| **WoCo** | **Direct charges land in the organiser's own Stripe balance on their normal Stripe payout schedule — money in hand before the event.** |
+| **`delay_days_override`** | Balance Settings API, `payments.settlement_timing.delay_days_override`, **max 31 days**. Available to platforms that own fraud and dispute liability — **we qualify**, because Express means we already do. |
+| **`interval: "manual"`** | Blocks automatic payouts entirely; platform releases funds via the Payouts API when it chooses. **The only control that covers events sold more than 31 days ahead** (festivals, early-bird). |
+| **Platform reserve** | Stripe already holds one against our platform account for this liability. |
 
-Being merchant of record is why the incumbents hold funds. Our direct-charge architecture means we never touch organiser money, so we can pay out faster than any of them at zero cost to us. **"Get paid before your event, not three weeks after"** is a stronger line for a cash-strapped promoter than any percentage.
+**Decision: default connected accounts to delayed payout, released after the event.** `delay_days_override` for short-lead events; `interval: "manual"` plus a post-event release job for anything beyond 31 days. Neither is built — this is a launch blocker for paid ticketing, ahead of every pricing item in §8.
+
+Open design questions for that work: whether to hold 100% until after the event or release a portion earlier for organisers with a track record; whether to add our own percentage reserve on top; and how a multi-date/recurring event defines "after the event".
 
 ### Can we charge Connect fees back?
 
@@ -251,6 +279,7 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 
 | # | Item | Blocked on |
 |---|---|---|
+| **0** | 🚨 **DELAYED PAYOUTS — launch blocker, ahead of everything else.** Default connected accounts to hold funds until after the event: `delay_days_override` (≤31 days) for short-lead events, `interval: "manual"` + a post-event release job beyond that. Without this, one cancelled mid-size event lands ~£12.5k on WoCo's platform reserve (§7). | design sign-off on hold policy |
 | 1 | ~~**Close the `lib/email/` seam**~~ ✅ 2026-07-27 `2eda035` — `lib/email/send.ts` single chokepoint, 5 call sites refactored, dead `poller.ts` send removed (recipient was a wallet address — always failed Resend validation). `build:server` clean, tests 41/41. | — |
 | 2 | **Ask Resend** about broadcast volume on the transactional plan (§9) | user |
 | 3 | **Open AWS account + file SES production-access request** — sandbox is 200/day | user |
@@ -281,5 +310,19 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 >
 > 1. Is sending marketing/newsletter volume through the transactional `/emails` endpoint acceptable on a Pro or Scale plan, or do you require Broadcasts for that traffic?
 > 2. We plan to let organisers send from their own verified domains via the Domains API — two subdomains each (one transactional, one marketing) to keep reputations separate. Any guidance on volume or domain count at that shape?
+>
+> Thanks.
+
+## 10. Message to Stripe support
+
+> Hi — we run an event ticketing platform on Connect. Express connected accounts, **direct charges** on the connected account with `application_fee_amount` for our platform fee (no `transfer_data`). We're UK-based, currently in sandbox, preparing to go live.
+>
+> Three questions:
+>
+> 1. **Connect fees to us.** Your Connect pricing page lists £2 per monthly active account and 0.25% + 10p per payout under the "you handle pricing" model, and no platform fees under "Stripe handles pricing". With direct charges where Stripe fees are netted from the connected account's balance, which model is our platform billed under? Please confirm the exact fee schedule on our account so we can price correctly — sandbox invoices don't show this.
+>
+> 2. **Payout timing controls.** As an event platform we need to hold organiser funds until after the event has happened, because we're liable for unrecoverable negative balances on Express accounts and a cancelled event would otherwise leave us carrying the refunds. Can we set `payments.settlement_timing.delay_days_override` on our Express accounts, and is `interval: "manual"` available to us for events sold more than 31 days ahead? Any recommended pattern for this in ticketing.
+>
+> 3. **Platform reserve.** What reserve, if any, will Stripe hold against our platform account for connected-account negative balance liability, and how is it sized?
 >
 > Thanks.
