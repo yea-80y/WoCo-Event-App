@@ -183,7 +183,36 @@ An earlier draft of this doc proposed fast payouts as a USP. **That was wrong an
 
 > "If your platform is responsible for negative connected account balances, Stripe also **holds funds in your platform account in reserve**, and if a connected account's balance remains negative for 180 days, we transfer funds from the platform reserve to cover the negative amount." — docs.stripe.com/connect/risk-management
 
-We use **Express** accounts, so this is us. `CLAUDE.md` already flagged it ("Express accounts = platform is responsible for unrecoverable negative balances, so WoCo carries residual chargeback exposure") but the consequence for payout timing was never drawn.
+### Liability is a CONFIGURATION, not a property of the account type
+
+This corrects an earlier claim in this doc that "Express means we own the liability". More precisely:
+
+> "Responsibility for your connected accounts' negative balances can belong to your platform or to Stripe, **depending on your integration**." — docs.stripe.com/connect/risk-management
+
+The determinant is `controller.losses.payments` (Accounts v1) or `defaults.responsibilities.losses_collector` (v2): **`application` = platform liable, `stripe` = Stripe liable.**
+
+**Where we stand today:** `routes/stripe.ts:66` creates accounts with `type: "express"` and no explicit `controller` block. The legacy `type` shorthand implies `losses.payments = "application"`. **So WoCo is liable, by default, because we never chose otherwise.**
+
+#### The recovery chain — the organiser genuinely is first
+
+1. Refund/chargeback debits the **connected account's Stripe balance** — the organiser's own money
+2. If insufficient, Stripe **debits their linked bank account**
+3. If that fails, the balance stays negative and Stripe **holds funds in our platform account in reserve**, pending collection
+4. **After 180 days negative, Stripe transfers from our reserve** to cover it
+
+So we are the backstop of last resort, not the first payer — the onus *is* on the organiser, exactly as it should be. But Stripe freezes our money while chasing them, and we eat whatever is unrecoverable.
+
+#### Three ways to reduce it
+
+| | Control | Effect | Cost |
+|---|---|---|---|
+| **A** | Create accounts with `controller.losses.payments = "stripe"` | **Stripe bears the loss, not us** | Must integrate **embedded components** for onboarding, account management and the notification banner, replacing our current hosted Account Links flow. Stripe may underwrite more strictly or price it in. |
+| **B** | **Delay payouts until after the event** (item 0) | Keeps funds in the organiser's balance so step 1 actually covers refunds | Payout-schedule config + a release job |
+| **C** | Own percentage reserve held past the event date | Covers the late-refund tail | Ledger work |
+
+**A and B are complementary, and B is required either way.** Even if Stripe bears the accounting loss, an organiser who has already spent the money means attendees struggle to get refunded — that is consumer harm and reputational damage to WoCo regardless of who absorbs the debit.
+
+⚠️ **Decide A now, not later. "Dashboard type is immutable — to change a connected account's dashboard, you must create a new `Account` object."** Existing organiser accounts cannot be reconfigured. Every organiser onboarded under the current `type: "express"` call is permanently on platform-liable terms. The cost of this decision grows with every signup.
 
 **The failure mode, concretely:** organiser sells 500 × £25 = £12,500. Stripe pays it into their balance on the default daily schedule. They spend it. Event is cancelled. 500 chargebacks hit their account, balance goes to −£12,500, they don't top it up. Stripe recovers from **our** platform reserve. One cancelled mid-size event wipes out the platform fee from ~£830k of ticket sales.
 
@@ -324,5 +353,7 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 > 2. **Payout timing controls.** As an event platform we need to hold organiser funds until after the event has happened, because we're liable for unrecoverable negative balances on Express accounts and a cancelled event would otherwise leave us carrying the refunds. Can we set `payments.settlement_timing.delay_days_override` on our Express accounts, and is `interval: "manual"` available to us for events sold more than 31 days ahead? Any recommended pattern for this in ticketing.
 >
 > 3. **Platform reserve.** What reserve, if any, will Stripe hold against our platform account for connected-account negative balance liability, and how is it sized?
+>
+> 4. **Loss liability.** We create accounts with `type: "express"` and no explicit `controller` block, so we believe `controller.losses.payments` is `application` — please confirm. Can we instead create accounts with `controller.losses.payments = "stripe"` so Stripe carries negative balances? If so: what else must change (we understand embedded components are required for onboarding and account management), does it affect our pricing or underwriting, and can existing Express accounts be migrated or must new `Account` objects be created?
 >
 > Thanks.
