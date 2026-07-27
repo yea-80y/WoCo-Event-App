@@ -181,9 +181,11 @@ STRIPE PAYMENTS (Card via Stripe Connect):
   stripe.com/gb/pricing): UK cards 1.5% + 20p, UK premium 1.9% + 20p, EEA 2.5% + 20p,
   international 3.25% + 20p (+2% on currency conversion). There is NO Connect uplift on
   the processing rate — the earlier "~2% + 20p incl. Connect +0.5%" note was wrong.
-- Connect Express costs the PLATFORM, not the organiser: $2/month per ACTIVE connected
-  account + 0.25% + 25p per payout. This is a per-organiser fixed cost (~$24/yr if active
-  year-round) and it dominates our marginal cost per organiser — see docs/PRICING_AND_EMAIL.md §7.
+- Connect platform-side fees (£2/monthly active account + 0.25% + 10p per payout) apply only
+  under Stripe's "you handle pricing" model. We use DIRECT charges where the connected account
+  bears processing, which should put us on "Stripe handles pricing" = £0 platform fees.
+  UNVERIFIED — confirm from the Stripe dashboard billing page before publishing any pricing.
+  See docs/PRICING_AND_EMAIL.md §7.
 - Account store: `.data/stripe-accounts.json` (file-backed, same pattern as tx-registry)
 - Webhook: checkout.session.completed auto-claims ticket via claimTicket()
   Webhook source: "Connected and v2 accounts" (NOT "Your account")

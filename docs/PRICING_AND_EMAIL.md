@@ -142,19 +142,46 @@ Partly, and it is entirely about **DNS records, not data**:
 
 ## 7. Pricing
 
-### Unit economics — corrected
+### Unit economics
 
-The dominant per-organiser cost is **Stripe Connect, not hosting or email**:
+**Stripe Connect has two pricing models, and which one we are on decides whether we pay anything at all** (stripe.com/gb/connect/pricing, UK figures):
 
-| Cost per active organiser / year | |
+| Model | Platform pays |
 |---|---|
-| Stripe Connect Express — **$2/month per active connected account** (platform pays) | **~$24** |
-| Payout fees — 0.25% + 25p per payout (platform pays) | ~$3–10 |
-| Email, SES, 5k contacts × 24 sends | ~$12 |
-| Hosting / CDN (edge-cached) | ~$2 |
-| **Total** | **~$41–48/yr** |
+| **"Stripe handles pricing"** — Stripe sets and collects processing fees from the connected account | **£0.** No per-account fee, no payout fees. |
+| **"You handle pricing"** — platform absorbs Stripe's cost and re-prices to sellers | **£2 per monthly active account** + **0.25% + 10p per payout**. "Active" = any month a payout is sent to their bank/debit card. |
 
-"Active" means an account with a charge or payout that month, so dormant organisers cost ~$0. This is materially higher than the ~$15–30/yr estimated earlier, and it means **$50/yr revenue against ~$45/yr cost is not a business.** Price above it.
+**We are almost certainly on the first model.** WoCo uses direct charges, and Stripe's docs confirm the connected account bears processing: *"the charge amount—less the Stripe fees and application fee—is deposited into the connected account."* We never re-price processing; we add `application_fee_amount` on top. So the £2 and the payout fee should not apply to us.
+
+⚠️ **Not 100% from public docs — verify from our own Stripe invoices.** Third-party sources report the £2 applying to Express accounts generally, while Stripe's own pricing page lists it only under "you handle pricing". Stripe Connect is already live, so **the definitive answer is on our Stripe dashboard billing page in 60 seconds.** Do that before any pricing is published. Earlier drafts of this doc asserted $2/mo and 25p/payout as fact — both were third-party USD figures and at least the payout fixed fee was wrong (10p, not 25p).
+
+Marginal cost per active organiser/year, assuming model 1 confirmed:
+
+| | |
+|---|---|
+| Email — SES, 5k contacts × 24 sends | ~$12 |
+| Hosting / CDN (edge-cached) | ~$2 |
+| Stripe Connect | **£0** (verify) |
+| **Total** | **~$14/yr** |
+
+If the £2 does apply, add ~$24/yr and the total becomes ~$38/yr — enough to make a $50/yr price break-even rather than a business. **This single dashboard check is the difference between those two worlds.**
+
+Either way, **price on value not cost** — §7's anchors (Mailchimp $900/yr at 10k contacts, Squarespace £144/yr) set the price, not our margin floor.
+
+### Payout timing is a free USP we are not using
+
+| Platform | Organiser gets paid |
+|---|---|
+| Eventbrite | 3 days **after** the event, **20% of net sales withheld** for refunds/chargebacks until final payout, then 6–10 business days to arrive. Instant payout costs 3% (US only). |
+| Skiddle | 3–5 business days after the event |
+| Fatsoma | ~3 business days after the event |
+| **WoCo** | **Direct charges land in the organiser's own Stripe balance on their normal Stripe payout schedule — money in hand before the event.** |
+
+Being merchant of record is why the incumbents hold funds. Our direct-charge architecture means we never touch organiser money, so we can pay out faster than any of them at zero cost to us. **"Get paid before your event, not three weeks after"** is a stronger line for a cash-strapped promoter than any percentage.
+
+### Can we charge Connect fees back?
+
+Only relevant if the dashboard check shows we are on model 2. Then yes, mechanically — raise `application_fee_amount`. £2/month ≈ 8 tickets at £25. But **do not itemise it**: Skiddle doesn't show organisers a line-item platform cost, and a visible surcharge invites resentment out of proportion to £2. Bake it into the headline percentage or absorb it.
 
 ### Competitive landscape
 
