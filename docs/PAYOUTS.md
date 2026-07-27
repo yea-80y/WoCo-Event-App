@@ -257,9 +257,15 @@ email addresses, or any credential.
 ## 9. Operations
 
 ```bash
-# Audit the payout schedule on every connected account (read-only)
+# Audit the payout schedule on every connected account (read-only), on the VM.
+# -w /app matters: the store is process.cwd()/.data and the server's cwd is /app.
+# From the wrong directory it finds no accounts — the script exits 1 rather than
+# reporting a clean audit of nothing.
+docker compose exec -w /app server npx tsx apps/server/scripts/payout-schedule-audit.ts
+docker compose exec -w /app server npx tsx apps/server/scripts/payout-schedule-audit.ts --fix
+
+# Locally against the dev store
 cd apps/server && npx tsx scripts/payout-schedule-audit.ts
-npx tsx scripts/payout-schedule-audit.ts --fix   # correct what it finds
 
 # Watch the sweep
 docker compose logs -f server | grep payout

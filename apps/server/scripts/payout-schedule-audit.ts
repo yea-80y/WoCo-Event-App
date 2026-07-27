@@ -9,36 +9,37 @@
  *
  * Read-only by default. Run with --fix to correct what it finds.
  *
- *   npx tsx scripts/payout-schedule-audit.ts
- *   npx tsx scripts/payout-schedule-audit.ts --fix
+ *   dev:  cd apps/server && npx tsx scripts/payout-schedule-audit.ts [--fix]
+ *   prod: docker compose exec -w /app server npx tsx apps/server/scripts/payout-schedule-audit.ts [--fix]
  *
- * Run from apps/server (it reads .data/stripe-accounts.json via process.cwd()).
+ * The store is resolved from process.cwd()/.data, so this MUST run from the same
+ * working directory as the server or it audits an empty store and reports "0
+ * accounts" — which looks like a pass. In the container that is /app, not
+ * /app/apps/server.
  */
 
 import "dotenv/config";
 import { getStripe } from "../src/lib/stripe/client.js";
 import { ensureManualPayoutSchedule } from "../src/lib/stripe/payout-schedule.js";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { listStripeAccounts } from "../src/lib/stripe/accounts.js";
 
 const FIX = process.argv.includes("--fix");
 
-interface AccountRecord {
-  stripeAccountId: string;
-  onboardingComplete: boolean;
-}
-
 function loadAccounts(): Array<{ organiser: string; stripeAccountId: string }> {
-  const file = join(process.cwd(), ".data", "stripe-accounts.json");
-  const store = JSON.parse(readFileSync(file, "utf-8")) as Record<string, AccountRecord>;
-  return Object.entries(store).map(([organiser, r]) => ({
-    organiser,
-    stripeAccountId: r.stripeAccountId,
+  return listStripeAccounts().map(({ organiserAddress, record }) => ({
+    organiser: organiserAddress,
+    stripeAccountId: record.stripeAccountId,
   }));
 }
 
 async function main(): Promise<void> {
   const accounts = loadAccounts();
+  if (accounts.length === 0) {
+    // An empty store and a wrong cwd are indistinguishable in the output otherwise.
+    console.error(`No accounts found in ${process.cwd()}/.data/stripe-accounts.json`);
+    console.error("If that path looks wrong, re-run from the server's working directory.");
+    process.exit(1);
+  }
   console.log(`Auditing ${accounts.length} connected account(s)${FIX ? " (WILL FIX)" : " (read-only)"}\n`);
 
   const s = getStripe();
