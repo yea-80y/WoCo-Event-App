@@ -1,8 +1,28 @@
 # Contact Management — attendees, marketing, and the one identity between them
 
-Design note, 2026-07-27. NOT YET BUILT. Written after the CSV-import work (PR #78)
-raised the question: how does a ticket buyer become a marketing contact without
-duplicating people or breaking consent?
+Design note, 2026-07-27. Written after the CSV-import work (PR #78) raised the
+question: how does a ticket buyer become a marketing contact without duplicating
+people or breaking consent?
+
+> **CORRECTED 2026-07-27, later the same day.** Two of the three findings below
+> were acted on and one was WRONG. Read this box before the rest of the note.
+>
+> - The broadcast hole is **FIXED** — `/api/events/:id/broadcast` now requires
+>   every recipient to hold a ticket (`lib/event/attendee-emails.ts`).
+> - "There is no marketing opt-in at purchase" was **incorrect**. The field is
+>   `marketingConsent`, not `marketingOptIn`; the original grep was for a name
+>   that never existed. The opt-in control, the versioned wording
+>   (`packages/shared/src/legal/consent.ts`) and the evidence store
+>   (`.data/marketing-consent.json`) all shipped in #75. What was genuinely
+>   broken is narrower and worse: `OrderForm` rendered the checkbox on the
+>   Stripe path and the answer was **silently dropped** — no grant recorded, and
+>   no refusal written to suppression either. Now wired through session metadata
+>   and recorded in the webhook.
+> - The audience UI now shows the three consent states and lets a contact be
+>   edited (`ConsentLedger`, `ContactDetail`).
+>
+> Still open: the drain itself (step 3 below), the provenance-ranked merge rule,
+> the single Art. 17 deletion path, and the `MARKETING_MAX_LIST_EMAILS` ceiling.
 
 Compliance posture is unchanged: **organiser = data controller, WoCo = processor.**
 Send-path guarantees live in `MARKETING_COMPLIANCE.md` — this note is about the
@@ -26,11 +46,12 @@ CSV import is currently the ONLY way in.
 
 ### Three findings
 
-- **There is no marketing opt-in at purchase.** `marketingOptIn` does not exist
-  anywhere in the codebase. There is currently *no lawful route* from ticket buyer
-  to marketing list — the CSV warranty is the only consent record the platform has.
-  This is the gap to close.
-- **`/api/events/:id/broadcast` does not verify recipients are attendees.** It
+- ~~**There is no marketing opt-in at purchase.**~~ **WRONG — see the box at the
+  top.** It exists under the name `marketingConsent` and has since #75. The real
+  defect was that the Stripe path collected the answer and threw it away.
+- ~~**`/api/events/:id/broadcast` does not verify recipients are attendees.**~~
+  **FIXED.** Kept below because the reasoning is what justifies the two
+  exemptions the endpoint still enjoys. It
   validates email *format* and organiser ownership, then sends. It never checks the
   addresses against the event's claims. `/api/marketing/broadcast` hash-checks every
   recipient against the stored list; this endpoint has no equivalent. So the
@@ -109,16 +130,23 @@ Recommended: **the opt-in rides in the already-sealed claim data.** Claims are
 already sealed to the organiser's X25519 key at claim time, and the Dashboard
 already decrypts them. So:
 
-1. Checkout collects a structured marketing opt-in — **unticked by default**
-   (pre-ticked boxes are not valid consent; CJEU *Planet49*), with the exact wording
-   and a version tag captured alongside it.
-2. That grant seals into the claim payload like `claimerEmail` already does.
-3. The Audience screen decrypts claims (same mechanism as `Dashboard`) and offers
-   "N attendees opted in — add to your audience", deduped on lowercased email
-   against the existing list.
-4. The server separately records **`hashEmail` + eventId + timestamp + consent-text
-   version** — no plaintext — as the demonstrability record. Same shape as the
-   suppression store. Organiser holds the usable data; platform holds the proof.
+1. ✅ **BUILT.** Checkout collects a structured marketing opt-in — unticked by
+   default (pre-ticked boxes are not valid consent; CJEU *Planet49*), with the
+   exact wording and a version tag captured alongside it.
+2. ✅ **BUILT.** The buyer's email is already sealed into the claim payload, and
+   the answer travels with the claim on every path.
+3. ⬜ **STILL OPEN — the actual remaining work.** The Audience screen decrypts
+   claims (same mechanism as `Dashboard`) and offers "N attendees opted in — add
+   to your audience", deduped on lowercased email against the existing list.
+   Note the shape this has to take: the consent store holds HASHES, so the
+   server can never hand back an address. The organiser's browser decrypts the
+   claim data it already has access to, and `/api/marketing/check` tells it
+   which of those addresses carry a consent record (`consented`, already
+   shipped). Nothing new needs to cross the trust boundary.
+4. ✅ **BUILT.** The server records `hashEmail` + eventId + timestamp + the
+   verbatim notice — no plaintext — as the demonstrability record
+   (`consent-store.ts`). Same shape as the suppression store. Organiser holds
+   the usable data; platform holds the proof.
 
 This adds no new server-side plaintext, reuses the existing seal, and keeps the
 client-first architecture intact.

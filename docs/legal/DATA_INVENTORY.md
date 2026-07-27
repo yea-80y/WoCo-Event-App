@@ -75,6 +75,7 @@ Enumerated from source, not assumed:
 |---|---|---|
 | `marketing-suppression.json` | **Yes** (pseudonymous) | HMAC-SHA256 email hashes + timestamp + source. Never plaintext — `suppression-store.ts` |
 | `marketing-lists.json` | **Yes** (pseudonymous) | `emailHashes: string[]` only — `list-store.ts:17` |
+| `marketing-consent.json` | **Yes** (pseudonymous) | Art. 7(1) evidence: email hash → `{ts, source, eventId, notice}`, where `notice` is the VERBATIM wording shown at collection. No plaintext — `consent-store.ts`. Losing it loses the lawful basis for every opt-in it records |
 | `marketing-domains.json`, `marketing-send-log.json` | Indirect | Organiser sending domains; send counts for rate caps |
 | `stripe-accounts.json` | **Yes** | Organiser wallet address ↔ Stripe account id |
 | `stripe-payout-ledger.json` | **Yes** | Organiser wallet address + Stripe account/session/PaymentIntent ids, event id, sale and net amounts, release dates. Financial record of the organiser, not the buyer — no attendee identifier. Retained as accounting evidence (§5.2, `payout-ledger.ts`) |
@@ -125,13 +126,24 @@ the event organiser holds. WoCo's servers store the encrypted result and have no
 
 **Two carve-outs that must not be glossed:**
 
-1. **Stripe fallback path.** `routes/stripe.ts:928` — when no client-sealed order was pre-uploaded,
-   the server seals a minimal record `{seriesId, claimerEmail, claimerAddress}` itself. The server
-   therefore momentarily holds that email in memory (it came from Stripe) and performs the encryption.
-   It still cannot re-open the result. Do **not** write "all data is encrypted before it reaches our
-   servers" — it is not true on this path.
+1. **Stripe fallback path.** `routes/stripe.ts` (search `Fallback minimal seal`) — when no
+   client-sealed order was pre-uploaded, the server seals a minimal record
+   `{seriesId, claimerEmail, claimerAddress}` itself. The server therefore momentarily holds that
+   email in memory (it came from Stripe) and performs the encryption. It still cannot re-open the
+   result. Do **not** write "all data is encrypted before it reaches our servers" — it is not true
+   on this path.
 2. **Email delivery.** The attendee's email address is necessarily in plaintext to send the ticket.
    It is not part of the sealed blob's protection.
+3. **Stripe holds the buyer's email regardless.** It is passed as `customer_email` (for the
+   checkout prefill) and stamped into session metadata so the webhook can identify the buyer. That
+   copy lives in Stripe under their retention, not ours, and no amount of client-side sealing
+   changes it. Listed here because "encrypted to the organiser" is otherwise read as "nobody else
+   has it".
+
+**On the key:** the organiser's POD identity is **ed25519**; sealing uses the **X25519** keypair
+derived from that same seed (`deriveEncryptionKeypairFromPodSeed`). ECIES is X25519 ECDH +
+HKDF-SHA256 + AES-256-GCM. Saying "encrypted with the organiser's ed25519 key" is loose — the
+signing key and the encryption key are different keys from one seed.
 
 ---
 

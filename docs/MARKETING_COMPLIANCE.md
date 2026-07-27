@@ -95,6 +95,29 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   `STRIPE_VERIFICATION_REQUIRED`. Import/read/suppress stay open; **event broadcasts are
   deliberately ungated** (attendee-relationship mail must not depend on Stripe). UI
   pre-checks via `StripeVerifyGate` in `AudienceScreen`.
+- **EVENT BROADCASTS ARE ATTENDEE-ONLY** (2026-07-27): `/api/events/:id/broadcast` HMAC-hashes
+  every recipient and requires it in the event's claimers feeds (`email:{hash}` handle or
+  `secondaryEmailHash`) — `lib/event/attendee-emails.ts`. This is what makes the two exemptions
+  above defensible; without it the endpoint reached arbitrary addresses outside the consent
+  warranty. Rejections report a COUNT, never the addresses (otherwise the error is an oracle for
+  "does this person hold a ticket"). v2 on-chain series keep the claimer identity inside the
+  sealed blob only, so membership is unprovable server-side — those fall back to
+  `isVerifiedOrganiser`.
+- **CONSENT AT CHECKOUT IS BUILT AND WIRED ON EVERY PATH.** The field is `marketingConsent`, NOT
+  `marketingOptIn` — grepping the latter finds nothing and has already produced one wrong "this
+  does not exist" write-up. Wording + version live in `packages/shared/src/legal/consent.ts`
+  (`MARKETING_CONSENT_NOTICE`, `MARKETING_CONSENT_VERSION`); client and server read the SAME
+  constant so the stored evidence matches what was shown. Unticked by default (Planet49, C-673/17).
+  Tri-state: grant → `recordConsent` (`.data/marketing-consent.json`); refusal → `suppressOrg`,
+  so "no" needs no new enforcement path; ABSENT means the order form was never shown, i.e. never
+  asked, and records nothing. Free/wallet claims record in `routes/claims.ts`; Stripe rides in
+  session metadata (`"1"`/`"0"`) and records in the WEBHOOK, after the claim lands — an abandoned
+  checkout must not leave a permission behind.
+- THREE CONSENT STATES, not two: `contactConsentState` in `packages/shared/src/marketing/types.ts`
+  (`opted-in` | `imported` | `unsubscribed`), suppression outranking any earlier grant.
+  `imported` is the one that matters — mailable only on the strength of the import warranty, with
+  no per-person evidence. `/check` returns `consented` so the UI can draw the distinction; own
+  organiser scope only, so it cannot probe consent given to anyone else.
 
 ---
 
@@ -103,11 +126,14 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
 ```
 apps/server/src/lib/email/marketing-send.ts   # THE non-transactional send path
 apps/server/src/lib/email/marketing-footer.ts # pure compliance block + text/plain part
-apps/server/src/lib/marketing/{suppression-store,unsub-token,list-store,send-cap,
+apps/server/src/lib/marketing/{suppression-store,consent-store,unsub-token,list-store,send-cap,
                                sending-domain-store,consumed-webhook-events}.ts
-apps/server/src/routes/{marketing,unsubscribe,resend-webhook}.ts
-apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ColumnMapper,
-                                   ContactSearch,MarketingComposer,SendingDomainPanel}.svelte
+apps/server/src/lib/event/attendee-emails.ts  # who may receive an EVENT broadcast
+apps/server/src/routes/{marketing,broadcast,unsubscribe,resend-webhook}.ts
+apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ColumnMapper,ConsentLedger,
+                                   ContactSearch,ContactDetail,MarketingComposer,
+                                   SendingDomainPanel}.svelte
+packages/shared/src/legal/consent.ts          # the wording, versioned — single source of truth
 apps/web/src/lib/creator/audience/csv-import.ts # PURE: header scoring, name split, consent,
                                                 # manifest. All import logic lives here.
 apps/web/src/lib/api/marketing.ts             # client wrappers
@@ -128,6 +154,8 @@ These `.data` stores MUST survive server restarts:
 
 - `.data/marketing-suppression.json` — **losing it = emailing people who unsubscribed, a
   legal breach**
+- `.data/marketing-consent.json` — **losing it = no Art. 7(1) evidence for any checkout opt-in.
+  The contacts survive in the organiser's sealed list; the proof they agreed does not**
 - `.data/marketing-lists.json`
 - `.data/marketing-domains.json`
 - `.data/marketing-send-log.json`
