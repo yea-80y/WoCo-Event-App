@@ -13,12 +13,14 @@
 
 import { Hono } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
+import { MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
+import { consentedSubset } from "../lib/marketing/consent-store.js";
 import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
@@ -36,8 +38,15 @@ import { topicMarketingList } from "../lib/swarm/topics.js";
 const marketing = new Hono<AppEnv>();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MAX_LIST_EMAILS = 20_000;
-/** Hex ciphertext ≈ 2× plaintext, so this is roughly a 3MB plaintext list. */
+const MAX_LIST_EMAILS = MARKETING_MAX_LIST_EMAILS;
+/**
+ * Hex ciphertext ≈ 2× plaintext, so this allows ~3MB of sealed bytes.
+ *
+ * The client gzips before sealing (`sealJsonCompressed`), which puts a full
+ * 20k-contact list around 1MB sealed even with every optional field populated.
+ * Uncompressed it would be ~8MB — i.e. this cap is a backstop against a runaway
+ * blob, NOT the thing that makes a legitimate max-size list fit.
+ */
 const MAX_SEALED_JSON = 6_000_000;
 const MAX_BROADCAST_RECIPIENTS = 1000;
 
@@ -137,7 +146,7 @@ marketing.get("/list", requireAuth, async (c) => {
   }
 });
 
-/** Import-wizard validation: which of these emails are suppressed / already stored? */
+/** Which of these emails are suppressed / already stored / hold a consent record? */
 marketing.post("/check", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const body = c.get("body") as Record<string, unknown>;
@@ -153,15 +162,23 @@ marketing.post("/check", requireAuth, async (c) => {
 
   const suppressedHashes = new Set(suppressedSubset(org, hashes));
   const storedHashes = new Set(getList(org)?.emailHashes ?? []);
+  // Returned so the audience UI can tell a contact who ticked the box at
+  // checkout (evidence exists) from one imported under the organiser's own
+  // warranty. Only the caller's OWN organiser scope is consulted, and only for
+  // addresses they already hold — this cannot be used to probe whether someone
+  // consented to a different organiser.
+  const consentedHashes = new Set(consentedSubset(org, hashes));
 
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
+  const consented: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
     if (storedHashes.has(h)) alreadyInList.push(e);
+    if (consentedHashes.has(h)) consented.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */

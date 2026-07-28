@@ -10,20 +10,63 @@ import type { SealedBox } from "../crypto/types.js";
  * and are hashed-and-discarded — never stored.
  */
 
+/**
+ * Hard ceiling on a stored audience, enforced by POST /api/marketing/list.
+ * Shared so the import wizard can warn BEFORE the organiser commits, rather
+ * than surfacing a raw 400 after they have ticked the consent warranty.
+ */
+export const MARKETING_MAX_LIST_EMAILS = 20_000;
+
+/**
+ * One contact in an organiser's audience.
+ *
+ * Every field beyond `email` is optional and carried VERBATIM from the source
+ * export — no normalisation, because the source formats are unknowable (DD/MM vs
+ * MM/DD, "£12.00" vs "12", free-text tags). Normalising would destroy data the
+ * organiser may need to read back.
+ *
+ * Kept deliberately narrow: this is personal data the organiser controls and
+ * WoCo processes, so the schema covers what an event promoter actually segments
+ * on and stops there rather than absorbing whole source exports.
+ */
 export interface MarketingContact {
   email: string;
   firstName?: string;
   lastName?: string;
+  phone?: string;
+  /**
+   * Street address, carried verbatim. TWO lines and no parser: unlike a person's
+   * name, a postal address has no reliable grammar to split on ("Flat 2, 14 High
+   * St" vs "14 High St, Flat 2" vs "The Old Bakery, High St"), and a wrong guess
+   * lands on an envelope. A source file with one combined "Address" column maps
+   * wholly to `address1`.
+   */
+  address1?: string;
+  address2?: string;
   postcode?: string;
-  /** ISO date string, as imported */
+  city?: string;
+  country?: string;
+  /** Verbatim from the source CSV — NOT normalised, because DD/MM vs MM/DD is unknowable */
   dob?: string;
+  /** Free-text segment labels from the source export */
+  tags?: string;
+  lastEventName?: string;
+  lastEventDate?: string;
+  ticketsBought?: string;
+  totalSpend?: string;
   /** Provenance, e.g. "csv:contacts.csv" */
   source?: string;
   /** ISO timestamp when added to the list */
   addedAt: string;
 }
 
-/** The plaintext payload that gets sealed to the organiser's X25519 key. */
+/**
+ * The plaintext payload that gets sealed to the organiser's X25519 key.
+ *
+ * Sealed with `sealJsonCompressed` (gzip → ECIES) and read with `openJsonAuto`,
+ * which also opens the uncompressed blobs written before compression existed.
+ * Uncompressed, a full 20k list overflows the server's sealed-blob cap.
+ */
 export interface MarketingListPayload {
   version: 1;
   contacts: MarketingContact[];
@@ -47,6 +90,35 @@ export interface MarketingCheckResult {
   suppressed: string[];
   /** Normalized emails already present in the stored list */
   alreadyInList: string[];
+  /**
+   * Normalized emails holding a consent record for this organiser — they ticked
+   * the opt-in themselves and the Art. 7(1) evidence exists server-side. Absent
+   * from an older server, which is why {@link contactConsentState} treats a
+   * missing entry as `imported` rather than as a refusal.
+   */
+  consented?: string[];
+}
+
+/**
+ * How strong the permission behind one contact is.
+ *
+ * Three states, not two. `imported` is the one that matters and the one a binary
+ * subscribed/unsubscribed model hides: those contacts are mailable, but only on
+ * the strength of the warranty the organiser gave at import — there is no
+ * per-person evidence. Klaviyo shows the same middle state and tells the sender
+ * to exercise caution; the organiser cannot exercise anything they cannot see.
+ */
+export type ContactConsentState = "opted-in" | "imported" | "unsubscribed";
+
+/** Suppression wins over everything: an unsubscribe outranks any earlier grant. */
+export function contactConsentState(
+  email: string,
+  suppressed: ReadonlySet<string>,
+  consented: ReadonlySet<string>,
+): ContactConsentState {
+  const key = email.trim().toLowerCase();
+  if (suppressed.has(key)) return "unsubscribed";
+  return consented.has(key) ? "opted-in" : "imported";
 }
 
 export interface MarketingBroadcastResult {

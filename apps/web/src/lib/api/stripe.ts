@@ -102,6 +102,10 @@ export async function createCheckoutSession(params: {
   /** Slot reservation id from POST /reserve. Server validates + stamps into
    *  Stripe session metadata; webhook consumes on successful claim. */
   reservationId?: string;
+  /** The checkout opt-in control. Left undefined when the order form was never
+   *  shown — "not asked" is not the same as "declined", and only the two
+   *  explicit answers are recorded. */
+  marketingConsent?: boolean;
 }): Promise<{ url: string }> {
   // Browsers strip the Referer path cross-origin (strict-origin-when-cross-origin),
   // so the server can't derive our full base. Pass it explicitly; server validates
@@ -129,6 +133,10 @@ export async function createCheckoutSession(params: {
     ...(params.orderRef ? { orderRef: params.orderRef } : {}),
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
     ...(params.reservationId ? { reservationId: params.reservationId } : {}),
+    // Tri-state — `false` is a real answer, so this cannot be a truthiness spread.
+    ...(params.marketingConsent !== undefined
+      ? { marketingConsent: params.marketingConsent }
+      : {}),
     ...(siteId ? { siteId } : {}),
     ...(returnUrl ? { returnUrl } : {}),
     ...(cancelUrl ? { cancelUrl } : {}),

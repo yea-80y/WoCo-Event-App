@@ -81,6 +81,22 @@ export function getConsent(emailHash: string, organiserAddress: string): Consent
   return consents[organiserAddress.toLowerCase()]?.[emailHash] ?? null;
 }
 
+/**
+ * Which of `hashes` hold a consent record for this organiser.
+ *
+ * Mirrors `suppressedSubset`. The two together give the audience UI its three
+ * states — a contact with a record opted in and the evidence exists; one with
+ * neither is on the list under the organiser's own import warranty; one in
+ * suppression is never mailed. Those are very different legal positions and the
+ * organiser cannot see which they are holding unless the UI tells them.
+ */
+export function consentedSubset(organiserAddress: string, hashes: string[]): string[] {
+  ensureLoaded();
+  const byHash = consents[organiserAddress.toLowerCase()];
+  if (!byHash) return [];
+  return hashes.filter((h) => byHash[h]);
+}
+
 /** Subject-access support: every organiser this address consented to. */
 export function consentsForEmailHash(emailHash: string): Array<{ org: string; record: ConsentRecord }> {
   ensureLoaded();

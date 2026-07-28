@@ -2,9 +2,12 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
+import { getAttendeeEmailHashes } from "../lib/event/attendee-emails.js";
+import { hashEmail } from "../lib/event/claim-service.js";
 import { getResend } from "../lib/email/client.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { resolveMarketingFrom } from "../lib/marketing/sending-domain-store.js";
+import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 
 const broadcast = new Hono<AppEnv>();
 
@@ -66,7 +69,9 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
       }
     }
 
-    // 4. Rate limiting
+    // 4. Rate limiting. Checked BEFORE the attendee verification below, which
+    // costs one Swarm feed read per series — a cheap guard has to come first or
+    // it cannot bound the expensive work.
     const now = Date.now();
     const timestamps = broadcastRateMap.get(parentAddress) ?? [];
     const recent = timestamps.filter((t) => now - t < BROADCAST_RATE_WINDOW);
@@ -74,7 +79,56 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Rate limit exceeded (5 broadcasts per hour)" }, 429);
     }
 
-    // 5. Send through the compliance path: suppression + List-Unsubscribe +
+    // 5. Every recipient must actually hold a ticket for THIS event.
+    //
+    // The organiser assembles the list by decrypting sealed order blobs in their
+    // own browser, so the server cannot re-derive it — it can only check what it
+    // is handed. Without this the endpoint is a send-to-anyone path: it is
+    // deliberately not Stripe-gated (attendee-relationship mail must not depend
+    // on Stripe) and it does not consume the marketing daily cap, both of which
+    // are only defensible while the recipients really are attendees. Suppression
+    // still applies inside sendMarketingBatch either way, so unsubscribers were
+    // never at risk — but the consent boundary was.
+    const { hashes: attendeeHashes, unverifiableSeries } = await getAttendeeEmailHashes(event);
+
+    if (unverifiableSeries > 0) {
+      // v2 on-chain series put the claimer identity inside the sealed blob and
+      // nothing hashed on chain, so membership is unprovable server-side. Fall
+      // back to the same abuse gate the marketing path uses rather than either
+      // rejecting real attendees or waving the recipients through. In practice
+      // this is a no-op: an on-chain series is a paid Stripe series, so its
+      // organiser is already charges_enabled.
+      if (!(await isVerifiedOrganiser(parentAddress))) {
+        return c.json(
+          {
+            ok: false,
+            error:
+              "Broadcasts for on-chain ticket series require a verified Stripe account",
+            code: "STRIPE_VERIFICATION_REQUIRED",
+          },
+          403,
+        );
+      }
+    } else {
+      const notAttendees = recipients.filter((r) => !attendeeHashes.has(hashEmail(r.email)));
+      if (notAttendees.length > 0) {
+        // Count only — echoing the addresses back would turn a rejection into an
+        // oracle for "does this person hold a ticket".
+        return c.json(
+          {
+            ok: false,
+            error:
+              `${notAttendees.length} of ${recipients.length} recipients have not claimed a ticket ` +
+              `for this event. Event broadcasts can only go to your attendees — use your marketing ` +
+              `audience for everyone else.`,
+            code: "RECIPIENTS_NOT_ATTENDEES",
+          },
+          403,
+        );
+      }
+    }
+
+    // 6. Send through the compliance path: suppression + List-Unsubscribe +
     // footer are unconditional for every non-transactional email. Event
     // broadcasts do NOT consume the marketing daily cap (attendee-relationship
     // mail, already bounded by 5/hr x 500).

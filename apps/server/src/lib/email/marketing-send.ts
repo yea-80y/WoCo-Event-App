@@ -5,17 +5,17 @@
  *   1. suppression check per recipient (server-side, regardless of what the
  *      client filtered)
  *   2. RFC 8058 List-Unsubscribe + List-Unsubscribe-Post headers
- *   3. visible unsubscribe link + provenance footer in the body
+ *   3. visible unsubscribe link + provenance + postal address in the body
+ *   4. a text/plain alternative part carrying the same three obligations
  * ESP seam: keep all Resend specifics here + client.ts so a future SES
  * migration touches only lib/email/.
  */
 
-import { sendEmail } from "./send.js";
+import { sendEmail, type OutboundEmail } from "./send.js";
+import { footerHtml, footerText, withFooter, htmlToPlainText } from "./marketing-footer.js";
 import { hashEmail } from "../event/claim-service.js";
 import { isSuppressed } from "../marketing/suppression-store.js";
 import { mintUnsubToken } from "../marketing/unsub-token.js";
-
-const API_BASE = (process.env.PUBLIC_API_BASE || "").replace(/\/$/, "");
 
 const SEND_CHUNK = 5;
 
@@ -37,28 +37,36 @@ export interface MarketingSendOptions {
   recipients: Array<{ email: string; name?: string }>;
 }
 
-function footerHtml(fromDisplayName: string, unsubUrl: string): string {
-  return `<div style="margin-top:32px;padding-top:16px;border-top:1px solid #33343f;color:#8a8b9a;font-size:12px;line-height:1.6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-You're receiving this because you opted in to updates from ${fromDisplayName}. Sent via WoCo.<br/>
-<a href="${unsubUrl}" style="color:#8a8b9a">Unsubscribe</a>
-</div>`;
+/**
+ * Injected outbound seam. Production always uses `sendEmail`; tests pass a
+ * recorder so the compliance invariants above can be asserted on the actual
+ * messages, not just on the footer builder in isolation. Same dependency-
+ * injection shape as `sendSponsorTx`.
+ */
+export interface MarketingSendDeps {
+  send: (msg: OutboundEmail) => Promise<void>;
 }
 
-/** Inject the compliance footer just before </body>, or append. */
-function withFooter(html: string, footer: string): string {
-  // Only treat </body> as the insertion point when it really ends the document —
-  // a mid-document </body> (e.g. inside a display:none div sent straight to the
-  // API) must not let a sender tuck the footer out of sight.
-  const m = /<\/body>\s*(<\/html>\s*)?$/i.exec(html);
-  if (!m) return html + footer;
-  return html.slice(0, m.index) + footer + html.slice(m.index);
-}
-
-export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<MarketingSendResult> {
-  if (!API_BASE) {
+export async function sendMarketingBatch(
+  opts: MarketingSendOptions,
+  deps: MarketingSendDeps = { send: sendEmail },
+): Promise<MarketingSendResult> {
+  const apiBase = (process.env.PUBLIC_API_BASE || "").replace(/\/$/, "");
+  if (!apiBase) {
     // Without a public base URL the unsubscribe links would be broken —
     // refuse to send marketing at all rather than send non-compliant mail.
     throw new Error("PUBLIC_API_BASE is not set — cannot build unsubscribe links");
+  }
+
+  // CAN-SPAM §7704(a)(5) requires a physical postal address in every
+  // commercial message, and mailbox providers check for one. Fail closed for
+  // the same reason as the unsubscribe URL: a send that cannot be compliant
+  // must not happen at all.
+  const postalAddress = (process.env.MARKETING_POSTAL_ADDRESS || "").replace(/\s+/g, " ").trim();
+  if (!postalAddress) {
+    throw new Error(
+      "MARKETING_POSTAL_ADDRESS is not set — commercial email requires a physical postal address",
+    );
   }
 
   const organiserAddress = opts.organiserAddress.toLowerCase();
@@ -86,18 +94,24 @@ export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<Ma
       continue;
     }
     const token = mintUnsubToken({ emailHash, organiserAddress });
-    prepared.push({ email: r.email, unsubUrl: `${API_BASE}/u/${token}` });
+    prepared.push({ email: r.email, unsubUrl: `${apiBase}/u/${token}` });
   }
+
+  // Rendered once — the organiser's body is identical for every recipient;
+  // only the per-recipient unsubscribe URL in the footer differs.
+  const bodyText = htmlToPlainText(opts.html);
 
   for (let i = 0; i < prepared.length; i += SEND_CHUNK) {
     const chunk = prepared.slice(i, i + SEND_CHUNK);
     const settled = await Promise.allSettled(
       chunk.map(async (p) => {
-        await sendEmail({
+        const ctx = { displayName, unsubUrl: p.unsubUrl, postalAddress };
+        await deps.send({
           from,
           to: [p.email],
           subject,
-          html: withFooter(opts.html, footerHtml(displayName, p.unsubUrl)),
+          html: withFooter(opts.html, footerHtml(ctx)),
+          text: bodyText + footerText(ctx),
           headers: {
             "List-Unsubscribe": `<${p.unsubUrl}>`,
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",

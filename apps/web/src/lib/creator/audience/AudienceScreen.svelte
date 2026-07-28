@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { MarketingContact, MarketingListMeta } from "@woco/shared";
-  import { deriveEncryptionKeypairFromPodSeed, sealJson, openJson } from "@woco/shared";
+  import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
+  import { deriveEncryptionKeypairFromPodSeed, sealJsonCompressed, openJsonAuto, contactConsentState } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -13,7 +13,9 @@
   } from "../../api/marketing.js";
   import { markAudienceImported } from "../home/onboarding.svelte.js";
   import CsvImportWizard from "./CsvImportWizard.svelte";
+  import ConsentLedger from "./ConsentLedger.svelte";
   import ContactSearch from "./ContactSearch.svelte";
+  import AttendeeImport from "./AttendeeImport.svelte";
   import MarketingComposer from "./MarketingComposer.svelte";
   import SendingDomainPanel from "./SendingDomainPanel.svelte";
   import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
@@ -23,9 +25,13 @@
   let meta = $state<MarketingListMeta | null>(null);
   let contacts = $state<MarketingContact[]>([]);
   let suppressedEmails = $state<Set<string>>(new Set());
+  /** Contacts who ticked the opt-in themselves — the server holds the evidence,
+   *  keyed by hash, so this is the only way the client can know. */
+  let consentedEmails = $state<Set<string>>(new Set());
   let saving = $state(false);
   let wizardOpen = $state(false);
-  let panel = $state<"contacts" | "compose" | null>(null);
+  let panel = $state<"contacts" | "compose" | "attendees" | null>(null);
+  let consentFilter = $state<ContactConsentState | null>(null);
   /** Abuse gate (#59): sending requires a Stripe-verified organiser. */
   let stripeVerified = $state<boolean | null>(null);
 
@@ -42,16 +48,21 @@
     return deriveEncryptionKeypairFromPodSeed(podSeed);
   }
 
-  async function refreshSuppressed(list: MarketingContact[]): Promise<void> {
+  /** One round trip gives both server-held states; the third (imported) is what
+   *  is left over, so it needs no call of its own. */
+  async function refreshConsentStates(list: MarketingContact[]): Promise<void> {
     if (list.length === 0) {
       suppressedEmails = new Set();
+      consentedEmails = new Set();
       return;
     }
     try {
       const res = await checkMarketingEmails(list.map((c) => c.email));
       suppressedEmails = new Set(res.suppressed);
+      consentedEmails = new Set(res.consented ?? []);
     } catch {
-      // Non-fatal — counts just show without the suppressed line
+      // Non-fatal — the ledger falls back to showing everyone as imported,
+      // which is the cautious reading rather than an optimistic one.
     }
   }
 
@@ -71,9 +82,9 @@
         loadError = "Sign in and unlock your identity to open your audience.";
         return;
       }
-      const payload = await openJson<MarketingListPayload>(keys.privateKey, resp.sealedList);
+      const payload = await openJsonAuto<MarketingListPayload>(keys.privateKey, resp.sealedList);
       contacts = payload.contacts;
-      await refreshSuppressed(contacts);
+      await refreshConsentStates(contacts);
     } catch (err) {
       loadError = err instanceof Error ? err.message : "Could not open your audience.";
     } finally {
@@ -87,11 +98,11 @@
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {
-      const sealed = await sealJson(keys.publicKey, { version: 1, contacts: next } satisfies MarketingListPayload);
+      const sealed = await sealJsonCompressed(keys.publicKey, { version: 1, contacts: next } satisfies MarketingListPayload);
       meta = await uploadMarketingList(sealed, next.map((c) => c.email));
       contacts = next;
       if (next.length > 0 && auth.parent) markAudienceImported(auth.parent);
-      await refreshSuppressed(next);
+      await refreshConsentStates(next);
     } finally {
       saving = false;
     }
@@ -108,11 +119,25 @@
     await commitList(contacts.filter((c) => c.email !== email));
     if (alsoSuppress) {
       await suppressContacts([email]);
-      await refreshSuppressed(contacts);
+      await refreshConsentStates(contacts);
     }
   }
 
-  const reachable = $derived(contacts.filter((c) => !suppressedEmails.has(c.email)).length);
+  /** Save one edited contact back into the list, keyed on the email (which the
+   *  detail panel never lets you change, for exactly this reason). */
+  async function handleSave(email: string, next: MarketingContact): Promise<void> {
+    await commitList(contacts.map((c) => (c.email === email ? next : c)));
+  }
+
+  const counts = $derived.by(() => {
+    const out: Record<ContactConsentState, number> = {
+      "opted-in": 0,
+      imported: 0,
+      unsubscribed: 0,
+    };
+    for (const c of contacts) out[contactConsentState(c.email, suppressedEmails, consentedEmails)]++;
+    return out;
+  });
 
   // Single-fire load once auth is ready (covers both mount-already-connected
   // and connect-after-mount without double-fetching).
@@ -129,7 +154,10 @@
   <header class="head">
     <div>
       <h2>Audience</h2>
-      <p class="sub">Your marketing list — encrypted to your identity, only you can read it.</p>
+      <p class="sub">
+        Your marketing list — encrypted to your identity, only you can read it.
+        {#if meta}<span class="when">Saved {new Date(meta.updatedAt).toLocaleDateString()}.</span>{/if}
+      </p>
     </div>
   </header>
 
@@ -152,37 +180,36 @@
         <h3>Bring your people with you</h3>
         <p class="muted">
           Import the customer lists you've exported from Skiddle, Fatsoma, RA or any other
-          platform. Contacts are encrypted before they're stored — and anyone who
-          unsubscribes stays unsubscribed, even if you re-import the same file.
+          platform, or pull in the ticket buyers who opted in at checkout. Contacts are
+          encrypted before they're stored — and anyone who unsubscribes stays unsubscribed,
+          even if you re-import the same file.
         </p>
-        <button class="btn-primary" onclick={() => (wizardOpen = true)}>Import contacts</button>
+        <div class="actions center">
+          <button class="btn-primary" onclick={() => (wizardOpen = true)}>Import contacts</button>
+          <button class="btn-ghost" onclick={() => (panel = "attendees")}>Add from your events</button>
+        </div>
       </div>
     {:else}
-      <div class="stats" role="group" aria-label="Audience summary">
-        <div class="stat">
-          <span class="stat-n">{contacts.length.toLocaleString()}</span>
-          <span class="stat-l">contacts</span>
-        </div>
-        <div class="stat">
-          <span class="stat-n">{reachable.toLocaleString()}</span>
-          <span class="stat-l">reachable</span>
-        </div>
-        <div class="stat" class:dim={suppressedEmails.size === 0}>
-          <span class="stat-n">{suppressedEmails.size.toLocaleString()}</span>
-          <span class="stat-l">unsubscribed</span>
-        </div>
-        {#if meta}
-          <div class="stat updated">
-            <span class="stat-n small">{new Date(meta.updatedAt).toLocaleDateString()}</span>
-            <span class="stat-l">last updated</span>
-          </div>
-        {/if}
-      </div>
+      <ConsentLedger
+        {counts}
+        filter={consentFilter}
+        onFilter={(next) => {
+          consentFilter = next;
+          // Filtering is only meaningful against the list, so open it — a
+          // filter that changes nothing you can see reads as a broken button.
+          if (next) panel = "contacts";
+        }}
+      />
 
       <div class="actions">
         <button class="btn-primary" onclick={() => (wizardOpen = !wizardOpen)}>
           {wizardOpen ? "Close import" : "Import contacts"}
         </button>
+        <button
+          class="btn-ghost"
+          class:active={panel === "attendees"}
+          onclick={() => (panel = panel === "attendees" ? null : "attendees")}
+        >Add from your events</button>
         <button
           class="btn-ghost"
           class:active={panel === "compose"}
@@ -191,7 +218,12 @@
         <button
           class="btn-ghost"
           class:active={panel === "contacts"}
-          onclick={() => (panel = panel === "contacts" ? null : "contacts")}
+          onclick={() => {
+            panel = panel === "contacts" ? null : "contacts";
+            // Closing the list drops the filter with it, so reopening never
+            // starts on a hidden subset of the audience.
+            if (panel !== "contacts") consentFilter = null;
+          }}
         >Browse contacts</button>
       </div>
     {/if}
@@ -205,8 +237,20 @@
       />
     {/if}
 
+    {#if panel === "attendees"}
+      <AttendeeImport {contacts} busy={saving} {getKeys} onCommit={commitList} />
+    {/if}
+
     {#if panel === "contacts" && contacts.length > 0}
-      <ContactSearch {contacts} {suppressedEmails} busy={saving} onDelete={handleDelete} />
+      <ContactSearch
+        {contacts}
+        {suppressedEmails}
+        {consentedEmails}
+        filter={consentFilter}
+        busy={saving}
+        onSave={handleSave}
+        onDelete={handleDelete}
+      />
     {/if}
 
     {#if panel === "compose" && contacts.length > 0}
@@ -282,45 +326,15 @@
   .muted { color: var(--text-muted); font-size: 0.875rem; }
   .err { color: var(--error); font-size: 0.875rem; }
 
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-  }
-
-  .stat {
-    padding: 0.875rem 1rem;
-    background: var(--bg-surface);
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-  }
-
-  .stat + .stat { border-left: 1px solid var(--border); }
-  .stat.dim .stat-n { color: var(--text-dim); }
-
-  .stat-n {
-    font-family: var(--font-mono);
-    font-size: 1.25rem;
-    color: var(--text);
-  }
-
-  .stat-n.small { font-size: 0.875rem; padding-top: 0.3rem; }
-
-  .stat-l {
-    font-size: 0.6875rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-  }
+  .when { color: var(--text-dim); }
 
   .actions {
     display: flex;
     gap: 0.5rem;
     flex-wrap: wrap;
   }
+
+  .actions.center { justify-content: center; }
 
   .btn-primary {
     background: var(--accent);
