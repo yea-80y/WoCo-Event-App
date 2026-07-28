@@ -342,7 +342,8 @@ SECURITY / AUTH:
 
 `.data/` FILES THAT MUST SURVIVE RESTARTS (loaded on startup — don't delete):
   consumed-tx-hashes.json · revoked-sessions.json · consumed-stripe-sessions.json
-  stripe-accounts.json · stripe-payout-ledger.json
+  stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
+  marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
   consumed-resend-events.json

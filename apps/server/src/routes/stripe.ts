@@ -254,7 +254,10 @@ stripe.get("/payouts", requireAuth, async (c) => {
   for (const e of held) {
     // Gross until the release sweep resolves net from the balance transaction —
     // labelled as such in the response so the UI never presents it as final.
-    heldByCurrency[e.currency] = (heldByCurrency[e.currency] ?? 0) + (e.netAmount ?? e.grossAmount);
+    // Keyed by the currency the funds actually sit in: netAmount is settlement-
+    // currency units whenever Stripe converted the charge.
+    const cur = e.settlementCurrency ?? e.currency;
+    heldByCurrency[cur] = (heldByCurrency[cur] ?? 0) + (e.netAmount ?? e.grossAmount);
   }
 
   return c.json({
@@ -270,9 +273,12 @@ stripe.get("/payouts", requireAuth, async (c) => {
         eventId: e.eventId,
         shopId: e.shopId,
         currency: e.currency,
+        settlementCurrency: e.settlementCurrency ?? null,
         grossAmount: e.grossAmount,
         netAmount: e.netAmount ?? null,
-        netIsFinal: typeof e.netAmount === "number",
+        // While held, netAmount is the LATEST resolution — a refund can still
+        // change it. It is only final once the entry has left "held".
+        netIsFinal: e.status !== "held" && typeof e.netAmount === "number",
         recordedAt: e.recordedAt,
         releaseAfter: e.releaseAfter,
         status: e.status,

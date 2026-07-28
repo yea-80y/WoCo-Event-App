@@ -37,16 +37,27 @@ export interface PayoutLedgerEntry {
   seriesId?: string;
   shopId?: string;
   orderId?: string;
-  /** Lowercase 3-letter ISO code, as Stripe reports it. */
+  /** Lowercase 3-letter ISO code of the CHARGE (presentment currency). */
   currency: string;
-  /** Minor units, `session.amount_total` — what the buyer paid. */
+  /**
+   * Lowercase ISO code the funds actually settled in, when it differs from
+   * `currency` — Stripe converts a charge whose currency has no matching bank
+   * account into the account's default currency. Set from the balance
+   * transaction; release grouping, balance reads and the payout itself all use
+   * this over `currency` once known. `netAmount` is in THIS currency.
+   */
+  settlementCurrency?: string;
+  /** Minor units, `session.amount_total` — what the buyer paid, in `currency`. */
   grossAmount: number;
   /** PaymentIntent id; the route to the balance transaction that gives us net. */
   paymentIntentId?: string;
   /**
    * Minor units actually credited to the connected account: gross minus Stripe
    * processing minus our application fee, minus any refunds. Resolved from the
-   * balance transaction at release time and cached here once known.
+   * balance transaction and REFRESHED on every sweep while the entry is held —
+   * a refund can land at any time before release, so this is a running record
+   * for reporting, never a value the sweep trusts without re-reading Stripe.
+   * Final only once the entry leaves "held".
    */
   netAmount?: number;
   recordedAt: string;
@@ -140,12 +151,19 @@ export function listByOrganiser(organiserAddress: string): PayoutLedgerEntry[] {
     .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
 }
 
-/** Cache the resolved net so a later run doesn't re-query Stripe for it. */
-export function setNetAmount(sessionId: string, netAmount: number): void {
+/**
+ * Record the latest resolved net (and, when the charge settled in a different
+ * currency, which one). Reporting only — the sweep re-resolves from Stripe on
+ * every run precisely so a refund landing between sweeps is never missed.
+ */
+export function setNetAmount(sessionId: string, netAmount: number, settlementCurrency?: string): void {
   ensureLoaded();
   const e = store[sessionId];
   if (!e) return;
   e.netAmount = netAmount;
+  if (settlementCurrency && settlementCurrency !== e.currency) {
+    e.settlementCurrency = settlementCurrency;
+  }
   persist();
 }
 
@@ -161,6 +179,30 @@ export function markReleased(
   e.payoutId = payoutId;
   e.releasedAt = new Date().toISOString();
   if (opts.forcedByCeiling) e.forcedByCeiling = true;
+  persist();
+}
+
+/**
+ * Mark a whole payout's entry set released in ONE persisted write. A per-entry
+ * loop can be interrupted half way, leaving already-paid entries "held" — a
+ * partial set that would be paid a second time under a fresh idempotency key.
+ */
+export function markManyReleased(
+  sessionIds: string[],
+  payoutId: string,
+  opts: { forcedSessionIds?: string[] } = {},
+): void {
+  ensureLoaded();
+  const forced = new Set(opts.forcedSessionIds ?? []);
+  const releasedAt = new Date().toISOString();
+  for (const sessionId of sessionIds) {
+    const e = store[sessionId];
+    if (!e) continue;
+    e.status = "released";
+    e.payoutId = payoutId;
+    e.releasedAt = releasedAt;
+    if (forced.has(sessionId)) e.forcedByCeiling = true;
+  }
   persist();
 }
 

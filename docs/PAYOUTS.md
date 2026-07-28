@@ -39,11 +39,12 @@ money".
 |---|---|
 | `lib/stripe/payout-policy.ts` | Every timing constant + Stripe's hold ceilings. The only place these numbers live. |
 | `lib/stripe/payout-ledger.ts` | `.data/stripe-payout-ledger.json` — one entry per paid session, with its release date. |
+| `lib/stripe/payout-intents.ts` | `.data/stripe-payout-intents.json` — write-ahead journal of in-flight payouts (see Crash safety). |
 | `lib/stripe/payout-release.ts` | The sweep: decides what is due, pays it, marks it. Hourly. |
 | `lib/stripe/payout-schedule.ts` | `ensureManualPayoutSchedule()` — sets `interval: "manual"`. |
 | `scripts/payout-schedule-audit.ts` | Audits (and with `--fix`, corrects) the schedule on every existing account. |
 | `GET /api/stripe/payouts` | Organiser's own held/released takings. Backs the terms' promise to tell them when funds release. |
-| `test/payout-release.test.ts` | 25 tests over the failure modes below. |
+| `test/payout-release.test.ts` | 36 tests over the failure modes below. |
 
 Wired into `routes/stripe.ts`: `interval: "manual"` at account creation; a self-healing
 correction on `account.updated`; a ledger entry on every paid session (tickets **and**
@@ -56,7 +57,7 @@ organiser with a gig next week and a festival in six months has both sets of tak
 the same pot. Paying out the available balance after the gig hands over the festival's
 advance too. The ledger is what makes "release only what *this* event earned" expressible.
 
-### Amounts are net, read from Stripe
+### Amounts are net, read from Stripe — fresh, every sweep
 
 Released amounts come from the charge's **balance transaction** (`bt.net`), not from our
 own arithmetic: gross − Stripe processing − our `application_fee_amount`, then minus each
@@ -64,13 +65,36 @@ refund's own (negative) balance transaction. Whether a refund returns the proces
 varies by region, and whether it returns our application fee depends on
 `refund_application_fee` — so we read what Stripe actually did rather than predict it.
 
-### Crash safety
+The ledger's `netAmount` is a **reporting cache only** — the sweep re-resolves from
+Stripe on every run while an entry is held, because a refund can land between sweeps
+(there is no `charge.refunded` webhook wired) and a trusted cache would pay out the
+pre-refund value.
 
-The sweep **selects the entry set, pays exactly its sum, then marks it released** — in
-that order. The payout's idempotency key is derived from the selected session ids, so a
-crash between the Stripe call and the ledger write re-selects the same set next run,
-replays the same key, and Stripe returns the original payout instead of making a second.
-(Stripe idempotency keys expire after 24h; the sweep runs hourly.)
+The balance transaction is also where the **settlement currency** comes from: a charge
+presented in a currency the account has no bank account for is converted to the
+account's default currency (verified against Stripe's payouts doc). Such an entry gets
+`settlementCurrency` recorded and regroups under it next sweep, so it releases from the
+balance the money actually sits in — instead of polling an empty balance until it
+breaches the hold ceiling.
+
+### Crash safety — the intent journal
+
+"Same selected set ⇒ same idempotency key" is not crash-safe on its own: if a new entry
+becomes due between the crash and the next sweep, the re-selected set differs, the key
+differs, and the original set is paid a second time. So the sweep **journals a payout
+intent** (`.data/stripe-payout-intents.json` — exact set, amount, key) BEFORE calling
+Stripe, tags the payout `metadata.woco_intent`, pays, then marks the whole set released
+in ONE ledger write and clears the intent.
+
+A pending intent must settle before anything new is paid for that account+currency:
+
+1. **Confirm** — `payouts.list` finds `woco_intent` ⇒ the payout happened; mark the
+   ORIGINAL set with its id.
+2. **Replay** — provably absent and the intent is <20h old ⇒ re-send verbatim under the
+   original key (Stripe prunes keys at 24h; 20h is the safety margin).
+3. **Abandon** — provably absent and past the window ⇒ clear the intent; entries are
+   still held and re-enter normal selection with freshly resolved nets.
+4. **Freeze** — the lookup itself failed ⇒ do nothing for this group this sweep.
 
 An entry is never released on a guess: an unresolvable net, an unreadable balance, or a
 failed payout all leave it held.
@@ -300,6 +324,10 @@ docker compose logs -f server | grep payout
 organiser funds in a frozen balance or releases them with no record of which event they
 belong to. It is written write-then-rename so a crash mid-write cannot truncate it into a
 file that reads back as "nothing held".
+
+`.data/stripe-payout-intents.json` is in the same class: it is the only record of an
+in-flight payout, and losing it between a Stripe call and the ledger write is exactly
+the double-pay window the journal exists to close.
 
 **Deploy note:** existing connected accounts were created before this shipped and are on
 Stripe's automatic schedule. Run the audit with `--fix` after deploying, or their funds
