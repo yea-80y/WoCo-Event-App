@@ -123,8 +123,9 @@ record (`p=none` with aggregate reporting while we establish a baseline).
   concurrent. A 1,000-recipient broadcast is a long request behind Cloudflare's 100s origin
   timeout, and reaching a full 20,000-contact list takes ~10 hours at 2 broadcasts/hour.
   A launch announcement cannot dribble out over 10 hours.
-- **No ESP batch API use.** `sendEmail` posts one message per call; Resend's default API
-  rate limit will throttle the 5-way concurrency long before the cap does. Verify the live
-  limit and move to a batch endpoint.
+- **No ESP batch API use.** `sendEmail` posts one message per call. Resend's limit is
+  10 req/s per team (`docs/PRICING_AND_EMAIL.md` §4); `SEND_CHUNK = 5` in flight at ~200ms
+  each is ~25 req/s, so a large broadcast will hit 429s — which are counted as `failed`,
+  not retried. Move to a batch endpoint and add backoff.
 - **No retry on transient send failures.** A 429 or 5xx from the ESP is counted as `failed`
   and the recipient is simply not mailed.
