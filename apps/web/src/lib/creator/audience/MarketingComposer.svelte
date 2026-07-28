@@ -1,6 +1,15 @@
 <script lang="ts">
-  import type { MarketingContact, MarketingBroadcastResult } from "@woco/shared";
+  import type { MarketingContact, MarketingBroadcastResult, EventDirectoryEntry } from "@woco/shared";
   import { sendMarketingBroadcast } from "../../api/marketing.js";
+  import { getEventsByCreator } from "../../api/events.js";
+  import { auth } from "../../auth/auth-store.svelte.js";
+  import { firstImageUrl } from "../../components/site/image-fallback.js";
+  import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
+  import {
+    buildEventAnnouncementHtml,
+    buildPlainMessageHtml,
+    publicEventUrl,
+  } from "./event-announcement.js";
 
   interface Props {
     contacts: MarketingContact[];
@@ -17,6 +26,48 @@
   let result = $state<MarketingBroadcastResult | null>(null);
   let error = $state<string | null>(null);
 
+  /** Attaching an event is what turns a message into an on-sale announcement —
+   *  the shape almost every broadcast takes. Optional: a plain note still works. */
+  let events = $state<EventDirectoryEntry[]>([]);
+  let selectedEventId = $state("");
+  let eventsLoaded = $state(false);
+
+  const selectedEvent = $derived(events.find((e) => e.eventId === selectedEventId) ?? null);
+
+  $effect(() => {
+    const owner = auth.parent;
+    if (!owner || eventsLoaded) return;
+    eventsLoaded = true;
+    void getEventsByCreator(owner)
+      .then((list) => {
+        // Newest first — an on-sale announcement is nearly always the latest.
+        events = [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      })
+      .catch(() => {
+        // Non-fatal: the composer still sends a plain message without a picker.
+        events = [];
+      });
+  });
+
+  function buildHtml(): string {
+    const brand = fromName.trim() || "Your brand";
+    const text = body.trim();
+    const ev = selectedEvent;
+    if (!ev) return buildPlainMessageHtml(brand, text);
+    return buildEventAnnouncementHtml({
+      brand,
+      message: text,
+      event: {
+        title: ev.title,
+        tagline: ev.tagline,
+        startDate: ev.startDate,
+        location: ev.location,
+        imageUrl: firstImageUrl(ev.imageHash, WOCO_GATEWAY_URL),
+      },
+      eventUrl: publicEventUrl(ev.eventId, window.location.origin),
+    });
+  }
+
   const recipients = $derived(
     contacts
       .filter((c) => !suppressedEmails.has(c.email))
@@ -25,22 +76,6 @@
         name: [c.firstName, c.lastName].filter(Boolean).join(" ") || undefined,
       })),
   );
-
-  function wrapHtmlEmail(text: string, brand: string): string {
-    const escaped = text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/\n/g, "<br>");
-    return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #e0e0e0; background: #1a1a2e; padding: 2rem;">
-  <div style="max-width: 600px; margin: 0 auto; background: #16213e; border-radius: 12px; padding: 2rem;">
-    <h2 style="color: #fff; margin: 0 0 1rem;">${brand}</h2>
-    <div style="color: #c0c0c0; line-height: 1.6; font-size: 15px;">${escaped}</div>
-  </div>
-</body></html>`;
-  }
 
   async function handleSend(): Promise<void> {
     error = null;
@@ -59,7 +94,7 @@
       result = await sendMarketingBroadcast(
         fromName.trim(),
         subject.trim(),
-        wrapHtmlEmail(body.trim(), fromName.trim()),
+        buildHtml(),
         recipients,
       );
       if (result.sent > 0) {
@@ -93,6 +128,24 @@
     <input type="text" bind:value={subject} maxlength="200" placeholder="What's happening?" />
   </label>
 
+  {#if events.length > 0}
+    <label class="field">
+      <span>Announce an event</span>
+      <select bind:value={selectedEventId}>
+        <option value="">No event — just a message</option>
+        {#each events as ev (ev.eventId)}
+          <option value={ev.eventId}>{ev.title}</option>
+        {/each}
+      </select>
+    </label>
+    {#if selectedEvent}
+      <p class="attached">
+        Adds the artwork, date, venue and a <strong>Get tickets</strong> button linking to
+        your event page. Write the words below — no need to repeat the details.
+      </p>
+    {/if}
+  {/if}
+
   <label class="field">
     <span>Message</span>
     <textarea bind:value={body} rows="8" placeholder="Write your update — new event, lineup news, anything worth their inbox."></textarea>
@@ -106,8 +159,12 @@
 
   {#if showPreview}
     <div class="preview">
-      <!-- eslint-disable-next-line svelte/no-at-html-tags -- preview of organiser's own content, escaped in wrapHtmlEmail -->
-      {@html wrapHtmlEmail(body.trim() || "Your message will appear here.", fromName.trim() || "Your brand")}
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -- organiser's own content, escaped by event-announcement.ts -->
+      {@html buildHtml()}
+      <p class="preview-note">
+        The unsubscribe link and postal address are added by the server on send, so
+        they are not shown here.
+      </p>
     </div>
   {/if}
 
@@ -161,6 +218,24 @@
     color: var(--text-muted);
   }
 
+  .attached {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: -0.375rem 0 0;
+  }
+  .attached strong { color: var(--text-secondary); }
+
+  .preview-note {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .field select,
   .field input, .field textarea {
     background: var(--bg-input);
     border: 1px solid var(--border);
