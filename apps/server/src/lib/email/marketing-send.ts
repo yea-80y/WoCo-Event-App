@@ -11,7 +11,7 @@
  * migration touches only lib/email/.
  */
 
-import { sendEmail } from "./send.js";
+import { sendEmail, type OutboundEmail } from "./send.js";
 import { footerHtml, footerText, withFooter, htmlToPlainText } from "./marketing-footer.js";
 import { hashEmail } from "../event/claim-service.js";
 import { isSuppressed } from "../marketing/suppression-store.js";
@@ -37,7 +37,20 @@ export interface MarketingSendOptions {
   recipients: Array<{ email: string; name?: string }>;
 }
 
-export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<MarketingSendResult> {
+/**
+ * Injected outbound seam. Production always uses `sendEmail`; tests pass a
+ * recorder so the compliance invariants above can be asserted on the actual
+ * messages, not just on the footer builder in isolation. Same dependency-
+ * injection shape as `sendSponsorTx`.
+ */
+export interface MarketingSendDeps {
+  send: (msg: OutboundEmail) => Promise<void>;
+}
+
+export async function sendMarketingBatch(
+  opts: MarketingSendOptions,
+  deps: MarketingSendDeps = { send: sendEmail },
+): Promise<MarketingSendResult> {
   const apiBase = (process.env.PUBLIC_API_BASE || "").replace(/\/$/, "");
   if (!apiBase) {
     // Without a public base URL the unsubscribe links would be broken —
@@ -93,7 +106,7 @@ export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<Ma
     const settled = await Promise.allSettled(
       chunk.map(async (p) => {
         const ctx = { displayName, unsubUrl: p.unsubUrl, postalAddress };
-        await sendEmail({
+        await deps.send({
           from,
           to: [p.email],
           subject,
