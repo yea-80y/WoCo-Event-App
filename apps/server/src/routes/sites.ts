@@ -39,7 +39,8 @@ import {
   SITE_SCHEMA_VERSION,
 } from "@woco/shared";
 import type { Site, SitePointer, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed, EventDirectoryEntry, Hex0x } from "@woco/shared";
-import { getResend, getFromAddress } from "../lib/email/client.js";
+import { getFromAddress } from "../lib/email/client.js";
+import { sendEmail } from "../lib/email/send.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { getLabelOwner, updateSubEnsContenthash } from "../lib/chain/sub-ens-contract.js";
@@ -603,9 +604,8 @@ sitesRouter.post("/:id/contact", async (c) => {
     // Record hit only after validation passes
     contactRateMap.set(ip, [...hits, now]);
 
-    const resend = getResend();
     const siteName = site.theme.brandName || siteId;
-    await resend.emails.send({
+    await sendEmail({
       from: `"WoCo Contact Form" <${getFromAddress()}>`,
       to: [contactSection.emailTo],
       replyTo: [email],

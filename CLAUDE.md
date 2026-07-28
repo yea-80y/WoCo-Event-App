@@ -57,11 +57,18 @@ Three identity layers:
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
 3. POD identity (ed25519, deterministic) — signs tickets + derives encryption key
 
-Login methods (all working):
-- Web3 wallet (MetaMask, WalletConnect)
-- Local browser account (secp256k1 in IndexedDB, AES-GCM encrypted)
-- Para embedded wallet (email → hosted iframe → EVM wallet, MPC)
-- Zupass — NOT YET (needs ed25519 adapter)
+Login methods. AUTHORITATIVE LIST = `AuthKind` in `packages/shared/src/auth/types.ts`
+(`"web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none"`) — read it there, this
+comment drifts:
+- `web3`     — browser wallet (MetaMask, WalletConnect)
+- `web3auth` — email/social → Web3Auth → Kernel smart account + paymaster
+- `passkey`  — WebAuthn PRF → Kernel ECDSA (gasless via paymaster)
+- `coinbase` — Coinbase Smart Wallet (signs on Base regardless of appChainIds)
+- `zupass`   — declared in the union, NOT implemented (needs ed25519 adapter)
+
+REMOVED — do not reintroduce from old docs: Para embedded wallet and the local browser
+account (secp256k1 in IndexedDB) were both deleted in `e127c97` to cut eager bundle size.
+`SiteLoginModal.svelte:3` and `backup-signer.ts:173` carry comments explaining why.
 
 Deferred signing: login just connects; EIP-712 `AuthorizeSession` is signed on first
 action that needs it (publish, claim, MyTickets). `ensureSession()` is the gate.
@@ -176,10 +183,16 @@ STRIPE PAYMENTS (Card via Stripe Connect):
   first-line. Platform takes `application_fee_amount`. NOT destination charges (corrected 2026-07-26).
   CAVEAT: Express accounts = platform is responsible for unrecoverable negative balances, so WoCo
   carries residual chargeback exposure. See docs/legal/DATA_INVENTORY.md §5.1.
-- Platform fee: 1.5% (application_fee_amount) — matches escrow contract (150 bp)
-- Stripe fee on top (paid by organiser from their cut):
-  UK/EU cards ~2% + 20p, international ~3.75% + 20p (includes Connect +0.5%)
+- Platform fee: 1.5% (application_fee_amount) — matches escrow contract (150 bp).
+  All other fee arithmetic (processing rates, Connect platform fees, who pays what):
+  `docs/PRICING_AND_EMAIL.md` §7/§15–§17. Do not restate rates here — they drift.
 - Account store: `.data/stripe-accounts.json` (file-backed, same pattern as tx-registry)
+- PAYOUTS ARE MANUAL + RELEASED AFTER THE EVENT (2026-07-27). Accounts are created
+  `interval: "manual"`; a per-sale ledger + hourly sweep release only what is DUE — a
+  connected account has ONE pooled balance across all its events, so never pay out the raw
+  balance. Two limits are load-bearing: funds cannot be held >90 days (UK; per CHARGE, so
+  early-bird money releases before its event), and `manual` does NOT stop an Express
+  organiser paying themselves. Never call it escrow. **Authority: `docs/PAYOUTS.md`.**
 - Webhook: checkout.session.completed auto-claims ticket via claimTicket()
   Webhook source: "Connected and v2 accounts" (NOT "Your account")
 - Onboarding opens in NEW TAB during event creation to preserve form data
@@ -302,16 +315,9 @@ MULTI-PAGE SITE BUILDER
 Builder UI lives at `#/build` inside the main WoCo app (App.svelte routes to it).
 Deployed sites are standalone BZZ collections on Swarm — no server at runtime.
 
-SCHEMA (packages/shared/src/site/types.ts):
-- `Site` — top-level config: theme, pages, nav, contact, socials, siteId (ULID)
-- `ThemeTokens` — brandName, logoSwarmRef, siteDescription (SEO), palette, font, radius
-- `Page` — slug, title, metaDescription, sections[]
-- `Section` — discriminated union: hero | richText | gallery | eventsGrid | featuredEvent |
-  openingHours | map | contactForm | embed
-- `SiteEventsIndex` — {siteId, events: SiteEventEntry[], updatedAt}
-- `SiteDirectoryEntry` — compact entry in creator's site directory feed
-- `SiteDirectory` — paged on-feed envelope (mirrors EventDirectory pattern)
-- `SiteRuntimeConfig` — injected as window.SITE_CONFIG at deploy time
+SCHEMA: `packages/shared/src/site/types.ts` is the single source of truth (Site,
+ThemeTokens, Page, Section union, SiteEventsIndex, SiteDirectory[Entry],
+SiteRuntimeConfig → injected as window.SITE_CONFIG at deploy time). Read it there.
 
 FEEDS:
 - woco/site/config/{siteId}           → Site JSON (config + theme + pages)
@@ -331,23 +337,15 @@ PUBLISH FLOW (two-step):
    gateway, re-upserts directory entry with feedHash + deployedUrl.
    Returns { contentHash, feedManifestHash, siteUrl }
 
-MY SITES DASHBOARD:
-- GET /api/sites/mine — auth-gated, reads creator's Swarm directory, returns SiteDirectoryEntry[]
-- Builder opens on "Your websites" landing screen (MySitesScreen.svelte) showing site cards
-- Cards seeded from localStorage (instant) then merged with API results (authoritative)
-- LocalStorage key woco:my-sites is a write-through cache; API is source of truth
-- "← My Sites" back button in builder header; "Load from another device" advanced toggle
-  for cross-device recovery via Site ID
+MY SITES: GET /api/sites/mine reads the creator's Swarm directory. localStorage
+`woco:my-sites` is a write-through cache seeded for instant paint; the API is truth.
 
-EVENT LOADING (deployed site):
-- GET /api/sites/:id/events-full — bundled endpoint, 5-min server-side cache + Cache-Control
-  headers for Cloudflare edge caching. Client uses 2h stale-while-revalidate localStorage cache.
-- Preview mode (window.SITE_CONFIG.previewEvents set): skips cache, fetches individually.
+EVENT LOADING (deployed site): GET /api/sites/:id/events-full — bundled, 5-min server
+cache + Cache-Control for CF edge; client 2h stale-while-revalidate. Preview mode
+(window.SITE_CONFIG.previewEvents) skips cache and fetches individually.
 
-SEO:
-- siteDescription (ThemeTokens) injected at deploy time: <meta name=description>,
-  og:title/description/image, twitter:card. ogImage = logo Swarm ref.
-- MultiSiteApp updates <meta name=description> per-page at runtime.
+SEO: siteDescription injected at deploy time (meta description, og:*, twitter:card;
+ogImage = logo Swarm ref); MultiSiteApp updates meta description per-page at runtime.
 
 TEMPLATE PRESET: pub-venue-v1 (only one so far). newSiteFromTemplate() in shared.
 
@@ -385,9 +383,8 @@ AUTH (frontend):
   apps/web/src/lib/auth/signing-request.svelte.ts     # EIP-712 confirm dialog trigger
   apps/web/src/lib/auth/session-delegation.ts         # session key + delegation
   apps/web/src/lib/auth/pod-identity.ts               # ed25519 POD derivation
-  apps/web/src/lib/auth/local-account.ts              # local browser account
-  apps/web/src/lib/auth/para-{client,account}.ts      # Para SDK + flow
-  apps/web/src/lib/auth/signers/{index,para-signer}.ts
+  apps/web/src/lib/auth/signers/{index,web3-signer,passkey-signer,coinbase-signer,local-signer}.ts
+  apps/web/src/lib/auth/{web3auth-account,passkey-account,kernel-account,coinbase-account}.ts
   apps/web/src/lib/api/client.ts                      # authPost/authGet + buildAuthHeaders
 
 AUTH (server):
@@ -435,26 +432,27 @@ EAS LIKES (#4):
 
 FRONTEND COMPONENTS:
   apps/web/src/App.svelte                             # shell: top bar + routing + bottom nav
-  apps/web/src/lib/components/auth/{LoginModal,SigningConfirmDialog,ParaLogin}.svelte
-  apps/web/src/lib/components/events/{ClaimButton,PublishButton,EventCard,EventDetail}.svelte
-  apps/web/src/lib/components/passport/MyTickets.svelte
-  apps/web/src/lib/components/dashboard/Dashboard.svelte
-  apps/web/src/lib/components/dashboard/StripeConnect.svelte     # Stripe panel on dashboard
-  apps/web/src/lib/components/dashboard/StripeConnectModal.svelte # modal for event creation
-  apps/web/src/lib/components/embed/EmbedSetup.svelte
+  apps/web/src/lib/components/auth/{LoginModal,SigningConfirmDialog}.svelte
+  apps/web/src/lib/attendee/events/{ClaimButton,EventCard,EventDetail}.svelte
+  apps/web/src/lib/creator/events/PublishButton.svelte
+  apps/web/src/lib/attendee/passport/MyTickets.svelte
+  apps/web/src/lib/creator/dashboard/Dashboard.svelte
+  apps/web/src/lib/creator/dashboard/StripeConnect.svelte     # Stripe panel on dashboard
+  apps/web/src/lib/creator/dashboard/StripeConnectModal.svelte # modal for event creation
+  apps/web/src/lib/creator/embed/EmbedSetup.svelte
   apps/web/src/lib/components/profile/{ProfilePage,UserAvatar,CreatorChip,WalletTab,ConnectWalletModal}.svelte
 
 MULTI-PAGE SITE BUILDER:
   apps/web/src/MultiSiteApp.svelte                              # deployed site runtime shell (hash router, theme)
-  apps/web/src/lib/components/builder/MultiSiteBuilder.svelte   # builder UI — My Sites screen + editor tabs
-  apps/web/src/lib/components/builder/MySitesScreen.svelte      # "Your websites" landing screen (site cards)
-  apps/web/src/lib/components/builder/types.ts                  # MySiteRecord = SiteDirectoryEntry alias
-  apps/web/src/lib/components/builder/tabs/BrandTab.svelte      # brand name, siteDescription, logo, palette
-  apps/web/src/lib/components/builder/tabs/PagesTab.svelte      # page CRUD + metaDescription
-  apps/web/src/lib/components/builder/tabs/NavTab.svelte        # nav item ordering
-  apps/web/src/lib/components/builder/tabs/EventsTab.svelte     # pick organiser events for site
-  apps/web/src/lib/components/builder/tabs/TemplateTab.svelte   # preset templates
-  apps/web/src/lib/components/builder/SectionEditor.svelte      # per-section inline editor
+  apps/web/src/lib/creator/builder/MultiSiteBuilder.svelte   # builder UI — My Sites screen + editor tabs
+  apps/web/src/lib/creator/builder/MySitesScreen.svelte      # "Your websites" landing screen (site cards)
+  apps/web/src/lib/creator/builder/types.ts                  # MySiteRecord = SiteDirectoryEntry alias
+  apps/web/src/lib/creator/builder/tabs/BrandTab.svelte      # brand name, siteDescription, logo, palette
+  apps/web/src/lib/creator/builder/tabs/PagesTab.svelte      # page CRUD + metaDescription
+  apps/web/src/lib/creator/builder/tabs/NavTab.svelte        # nav item ordering
+  apps/web/src/lib/creator/builder/tabs/EventsTab.svelte     # pick organiser events for site
+  apps/web/src/lib/creator/builder/tabs/TemplateTab.svelte   # preset templates
+  apps/web/src/lib/creator/builder/SectionEditor.svelte      # per-section inline editor
   apps/web/src/lib/components/site/sections/EventsGridSection.svelte  # grid renderer (cached, bundled fetch)
   apps/web/src/lib/components/site/sections/FeaturedEventSection.svelte # single featured event (cached)
   apps/web/src/lib/components/site/sections/SectionRenderer.svelte  # dispatches to correct renderer
@@ -524,6 +522,10 @@ SVELTE 5 / BEE-JS / PARA:
 
 STRIPE:
 - `.data/stripe-accounts.json` MUST survive server restarts (same as tx-hashes, revoked-sessions)
+- Same for `.data/stripe-payout-ledger.json` — losing it either strands organiser funds in a
+  frozen balance or releases them with no record of which event they belong to. After deploying
+  payout changes run `npx tsx scripts/payout-schedule-audit.ts` (add `--fix`) — accounts created
+  before manual payouts shipped are on Stripe's automatic schedule and are NOT being held
 - Stripe onboarding redirects go back to the Origin host — ALLOWED_HOSTS must include it
 - Onboarding opens in new tab during event creation (preserves form state)
 - Webhook endpoint: POST /api/stripe/webhook — needs raw body for signature verification

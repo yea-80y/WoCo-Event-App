@@ -128,9 +128,27 @@ suspension.
 
 - Our platform fee is **[FEE]%** of the ticket price, taken automatically at the point of sale.
 - Payment processing fees are charged by the payment provider on top and come out of your proceeds.
-- Payouts are made by the payment provider to your nominated account on their schedule.
-- **We may delay payouts until after your event has taken place.** This protects attendees and
-  limits chargeback exposure. We will tell you the applicable schedule before you sell.
+
+### When you get paid
+
+**Your ticket sales are paid out after your event has taken place, not when the ticket sells.**
+
+- Your sales settle into **your own account with our payment provider**. We do not hold your
+  money and this is not an escrow arrangement — we control the timing of the release, and
+  nothing else.
+- Your account is set to a manual payout schedule. We release each event's takings
+  **[RELEASE_DAYS] days after that event ends**, and you can see what is held and when it is
+  due to release in your dashboard at any time.
+- **Exception — sales more than [HOLD_LIMIT_DAYS] days before your event.** Our payment
+  provider does not permit funds to be held indefinitely: money must be paid out within
+  [HOLD_LIMIT_DAYS] days of the sale, wherever your event falls. Where you sell earlier than
+  that — early-bird or festival on-sales — those takings are released to you **before** your
+  event. Your refund obligation below is unchanged, so if you sell far in advance you must be
+  able to refund from your own funds.
+- Where we reasonably consider the risk warrants it we may hold a reserve against future
+  sales, or limit how far in advance you may sell.
+
+We will tell you the applicable schedule before you sell.
 
 ### Refunds and chargebacks
 
@@ -146,7 +164,8 @@ marketing law; and any claim brought by an attendee in relation to your event.
 
 **This is a real risk, not boilerplate.** If you cancel an event after payout, the chargebacks still
 arrive. We may recover those amounts from you, and we may hold a reserve against future sales where
-we reasonably consider the risk warrants it.
+we reasonably consider the risk warrants it. This risk is highest on sales made long before the
+event, because those funds must be released to you before it takes place (see "When you get paid").
 
 If you have any doubt about your ability to deliver an event, do not sell tickets for it.
 

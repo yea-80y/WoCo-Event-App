@@ -72,11 +72,20 @@ const _creatorSitesInFlight = new Map<string, Promise<SiteDirectoryEntry[]>>();
  * Fetch just the theme palette + brandName for a site. Used by the Stripe
  * webhook to theme ticket emails and PNG cards with the organiser's branding.
  */
-export async function getSiteTheme(siteId: string): Promise<{ palette: SitePalette; brandName: string } | null> {
+export async function getSiteTheme(
+  siteId: string,
+): Promise<{ palette: SitePalette; brandName: string; contactEmail?: string } | null> {
   try {
     const resolved = await resolveSiteConfig(siteId);
     if (!resolved?.site?.theme?.palette) return null;
-    return { palette: resolved.site.theme.palette, brandName: resolved.site.theme.brandName };
+    return {
+      palette: resolved.site.theme.palette,
+      brandName: resolved.site.theme.brandName,
+      // Reply-To for ticket email. The From stays platform-owned — only replies
+      // are redirected, so an organiser's domain reputation can never affect
+      // whether attendees receive their tickets (see lib/email/client.ts).
+      contactEmail: resolved.site.contact?.email,
+    };
   } catch {
     return null;
   }

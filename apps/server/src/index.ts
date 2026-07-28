@@ -42,6 +42,7 @@ import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
+import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -162,8 +163,10 @@ app.use(
   }),
 );
 
-// Health check
-app.get("/api/health", (c) => c.json({ ok: true }));
+// Health check. Includes payout-sweep liveness (no amounts — this endpoint is
+// public): if `payoutSweep.stale` is ever true, organiser money has stopped moving
+// and funds are drifting toward Stripe's hold ceiling. See docs/PAYOUTS.md.
+app.get("/api/health", (c) => c.json({ ok: true, payoutSweep: payoutSweepHealth() }));
 
 // ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
 app.get("/api/eth-price", async (c) => {
@@ -495,3 +498,8 @@ void listEvents().then(
 // rebuild: a fresh deploy leaves the snapshot as-is until a publish/list or the
 // ops rebuild endpoint runs the cutover, so the switch-over is deliberate.
 startSnapshotMaintenance();
+// Organiser takings sit on a manual payout schedule and are released after each
+// event by this sweep. If it stops running, no organiser gets paid — and funds
+// eventually breach Stripe's hold ceiling — so its absence is a production alarm,
+// not a degraded feature. See docs/PAYOUTS.md.
+startPayoutReleaseJob();

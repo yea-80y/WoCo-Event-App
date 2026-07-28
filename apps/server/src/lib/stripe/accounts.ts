@@ -88,6 +88,19 @@ export function updateOnboardingStatus(
   }
 }
 
+/**
+ * Every mapping in the store. Ops-only (payout-schedule-audit.ts) — request paths
+ * look accounts up by key. Exists so the audit reads the store through the same
+ * path resolution the server uses, rather than guessing .data's location itself.
+ */
+export function listStripeAccounts(): Array<{
+  organiserAddress: string;
+  record: StripeAccountRecord;
+}> {
+  ensureLoaded();
+  return Object.entries(store).map(([organiserAddress, record]) => ({ organiserAddress, record }));
+}
+
 export function getOrganiserByStripeAccount(stripeAccountId: string): string | undefined {
   ensureLoaded();
   for (const [address, record] of Object.entries(store)) {

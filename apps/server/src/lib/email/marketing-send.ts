@@ -10,7 +10,7 @@
  * migration touches only lib/email/.
  */
 
-import { getResend } from "./client.js";
+import { sendEmail } from "./send.js";
 import { hashEmail } from "../event/claim-service.js";
 import { isSuppressed } from "../marketing/suppression-store.js";
 import { mintUnsubToken } from "../marketing/unsub-token.js";
@@ -61,7 +61,6 @@ export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<Ma
     throw new Error("PUBLIC_API_BASE is not set — cannot build unsubscribe links");
   }
 
-  const resend = getResend();
   const organiserAddress = opts.organiserAddress.toLowerCase();
   // Strip control chars so caller-supplied strings can never smuggle header
   // material (Resend's API is JSON, but this seam must not depend on that).
@@ -94,7 +93,7 @@ export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<Ma
     const chunk = prepared.slice(i, i + SEND_CHUNK);
     const settled = await Promise.allSettled(
       chunk.map(async (p) => {
-        const { error } = await resend.emails.send({
+        await sendEmail({
           from,
           to: [p.email],
           subject,
@@ -104,7 +103,6 @@ export async function sendMarketingBatch(opts: MarketingSendOptions): Promise<Ma
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
           },
         });
-        if (error) throw new Error(error.message);
       }),
     );
     settled.forEach((s, j) => {

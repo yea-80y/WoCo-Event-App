@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import type { SitePalette } from "@woco/shared";
-import { getResend, getFromAddress } from "../lib/email/client.js";
+import { getFromAddress } from "../lib/email/client.js";
+import { sendEmail } from "../lib/email/send.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
 import { mintGateToken } from "../lib/gate/token.js";
 import { hashEmail } from "../lib/event/claim-service.js";
@@ -42,6 +43,10 @@ export interface TicketEmailOpts {
    *  and a gate token minted for an arbitrary inbox would let anyone holding
    *  a leaked /t link bind the ticket without knowing the purchase email. */
   profileCta?: boolean;
+  /** Organiser contact address for the Reply-To header. Only affects where
+   *  replies land — the From domain stays platform-owned so a bad organiser
+   *  campaign can never tank ticket-delivery reputation (see client.ts). */
+  replyTo?: string;
 }
 
 /** Canonical app host for email CTAs. Emails are rendered server-side with no
@@ -216,7 +221,6 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
  * passport QR, so any WoCo scanner at the door reads the same ticket.
  */
 export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
-  const resend = getResend();
   const fromAddress = getFromAddress();
   const { to, eventTitle, eventDate, eventLocation, tickets: tix, buyerName, palette } = opts;
   const subjectEdition = tix.length === 1 && tix[0].edition != null
@@ -245,12 +249,14 @@ export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
     }),
   );
 
-  await resend.emails.send({
+  await sendEmail({
     from: `"${eventTitle.slice(0, 40)}" <${fromAddress}>`,
     to: [to],
     subject: `Your ticket${subjectEdition} — ${eventTitle}`,
     html: buildTicketHtml(opts),
     attachments,
+    // Attendees reply to ticket email expecting the organiser, not a void.
+    ...(opts.replyTo ? { replyTo: [opts.replyTo] } : {}),
   });
 }
 
