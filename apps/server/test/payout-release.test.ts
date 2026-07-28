@@ -18,6 +18,7 @@ import { join } from "node:path";
 let ledger: typeof import("../src/lib/stripe/payout-ledger.js");
 let release: typeof import("../src/lib/stripe/payout-release.js");
 let policy: typeof import("../src/lib/stripe/payout-policy.js");
+let intents: typeof import("../src/lib/stripe/payout-intents.js");
 
 const ACCT = "acct_test_1";
 const ORG = "0xabc0000000000000000000000000000000000001";
@@ -28,19 +29,24 @@ const ORG = "0xabc0000000000000000000000000000000000001";
  * reset together, which is what resetLedger does.
  */
 let ledgerFile: string;
+let intentsFile: string;
 
 before(async () => {
   const dir = mkdtempSync(join(tmpdir(), "woco-payout-test-"));
   process.chdir(dir);
   ledgerFile = join(dir, ".data", "stripe-payout-ledger.json");
+  intentsFile = join(dir, ".data", "stripe-payout-intents.json");
   ledger = await import("../src/lib/stripe/payout-ledger.js");
   release = await import("../src/lib/stripe/payout-release.js");
   policy = await import("../src/lib/stripe/payout-policy.js");
+  intents = await import("../src/lib/stripe/payout-intents.js");
 });
 
 function resetLedger(): void {
   rmSync(ledgerFile, { force: true });
+  rmSync(intentsFile, { force: true });
   ledger.__resetForTests();
+  intents.__resetForTests();
 }
 
 beforeEach(() => resetLedger());
@@ -51,30 +57,53 @@ beforeEach(() => resetLedger());
 
 interface FakeOpts {
   nets?: Record<string, number | null>;
+  /** sessionId → currency the charge SETTLED in, when it differs from presentment. */
+  settlements?: Record<string, string>;
   available?: number | null;
   country?: string;
   failPayout?: boolean;
+  /** Simulate "couldn't ask Stripe whether the journalled payout exists". */
+  failFind?: boolean;
+}
+
+interface FakePayout {
+  id: string;
+  amount: number;
+  currency: string;
+  idempotencyKey: string;
+  metadata: Record<string, string>;
 }
 
 function fakeGateway(opts: FakeOpts = {}) {
-  const payouts: Array<{ amount: number; currency: string; idempotencyKey: string }> = [];
+  const payouts: FakePayout[] = [];
   let payoutSeq = 0;
   const gateway: import("../src/lib/stripe/payout-release.js").PayoutGateway = {
     async resolveNet(entry) {
       const v = opts.nets?.[entry.sessionId];
-      return v === undefined ? entry.grossAmount : v;
+      if (v === null) return null;
+      return {
+        net: v === undefined ? entry.grossAmount : v,
+        currency: opts.settlements?.[entry.sessionId] ?? entry.currency,
+      };
     },
     async availableBalance() {
       return opts.available === undefined ? Number.MAX_SAFE_INTEGER : opts.available;
     },
-    async createPayout({ amount, currency, idempotencyKey }) {
+    async createPayout({ amount, currency, idempotencyKey, metadata }) {
       if (opts.failPayout) throw new Error("stripe down");
-      // Replay an identical key instead of minting a second payout — this is the
-      // behaviour we rely on for crash safety, so the fake must model it.
+      // Replay an identical key returns the original payout instead of minting a
+      // second — this is the behaviour we rely on for crash safety, so the fake
+      // must model it.
       const existing = payouts.find((p) => p.idempotencyKey === idempotencyKey);
-      if (existing) return `po_replay_${idempotencyKey.slice(-6)}`;
-      payouts.push({ amount, currency, idempotencyKey });
-      return `po_${++payoutSeq}`;
+      if (existing) return existing.id;
+      const id = `po_${++payoutSeq}`;
+      payouts.push({ id, amount, currency, idempotencyKey, metadata });
+      return id;
+    },
+    async findPayoutByIntent(_acct, intentKey) {
+      if (opts.failFind) return null;
+      const found = payouts.find((p) => p.metadata.woco_intent === intentKey);
+      return { payoutId: found?.id ?? null };
     },
     async accountCountry() {
       return opts.country;
@@ -305,6 +334,206 @@ test("an unreadable balance defers instead of paying out blind", async () => {
   assert.equal(payouts.length, 0);
   assert.equal(outcome!.error, "balance unavailable");
   assert.equal(ledger.getEntry("cs_1")?.status, "held");
+});
+
+// ---------------------------------------------------------------------------
+// The intent journal — exactly-once where the idempotency key alone fails
+// ---------------------------------------------------------------------------
+
+function journal(key: string, sessionIds: string[], amount: number, createdAt: string): void {
+  intents.saveIntent({
+    stripeAccountId: ACCT,
+    currency: "gbp",
+    sessionIds,
+    forcedSessionIds: [],
+    amount,
+    idempotencyKey: key,
+    createdAt,
+  });
+}
+
+test("a crashed payout is recovered from the journal, not re-derived", async () => {
+  // Crash simulation: the payout reached Stripe, markReleased never ran. All
+  // that survives is the journalled intent and the payout at Stripe.
+  held("cs_a", { grossAmount: 5_000 });
+  held("cs_b", { grossAmount: 7_000 });
+  const key = "woco-payout-crashed";
+  const { gateway, payouts } = fakeGateway();
+  payouts.push({ id: "po_orig", amount: 12_000, currency: "gbp", idempotencyKey: key, metadata: { woco_intent: key } });
+  journal(key, ["cs_a", "cs_b"], 12_000, "2026-02-05T00:00:00.000Z");
+
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(payouts.length, 1, "no second payout");
+  assert.equal(ledger.getEntry("cs_a")?.status, "released");
+  assert.equal(ledger.getEntry("cs_b")?.status, "released");
+  assert.equal(ledger.getEntry("cs_a")?.payoutId, "po_orig");
+  assert.equal(intents.getIntent(ACCT, "gbp"), undefined, "intent settled");
+  assert.deepEqual(outcome!.released.slice().sort(), ["cs_a", "cs_b"]);
+});
+
+test("a newly due entry cannot drag a crashed set into a second payout", async () => {
+  // The double-pay the journal exists to prevent: {A,B} paid, crash before the
+  // ledger write, C becomes due. Without the journal the next sweep selects
+  // {A,B,C} under a NEW key and pays A and B a second time.
+  held("cs_a", { grossAmount: 5_000 });
+  held("cs_b", { grossAmount: 7_000 });
+  held("cs_c", { grossAmount: 3_000 });
+  const key = "woco-payout-crashed2";
+  const { gateway, payouts } = fakeGateway();
+  payouts.push({ id: "po_orig", amount: 12_000, currency: "gbp", idempotencyKey: key, metadata: { woco_intent: key } });
+  journal(key, ["cs_a", "cs_b"], 12_000, "2026-02-05T00:00:00.000Z");
+
+  await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(payouts.length, 2, "recovered payout + a fresh one");
+  const fresh = payouts[1]!;
+  assert.equal(fresh.amount, 3_000, "the new payout carries ONLY the new entry");
+  assert.equal(ledger.getEntry("cs_c")?.payoutId, fresh.id);
+});
+
+test("an unconfirmed intent inside the idempotency window replays the same key", async () => {
+  // Crash BEFORE the request reached Stripe: no payout exists. The journalled
+  // request is replayed verbatim — same set, same amount, same key.
+  held("cs_a", { grossAmount: 5_000 });
+  const key = "woco-payout-inflight";
+  const { gateway, payouts } = fakeGateway();
+  journal(key, ["cs_a"], 4_800, "2026-02-05T00:00:00.000Z");
+
+  await release.runReleaseSweep(gateway, at("2026-02-05T02:00:00.000Z"));
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.idempotencyKey, key, "journalled key, not a re-derived one");
+  assert.equal(payouts[0]!.amount, 4_800, "journalled amount, not re-resolved");
+  assert.equal(ledger.getEntry("cs_a")?.status, "released");
+});
+
+test("an expired unconfirmable intent is abandoned and re-selected with fresh nets", async () => {
+  // The payout provably never happened and the key has expired at Stripe. The
+  // entry returns to normal selection — and the refund that landed while the
+  // intent was stuck is honoured, because nets are re-read, never replayed.
+  held("cs_a", { grossAmount: 10_000 });
+  const key = "woco-payout-stale";
+  const { gateway, payouts } = fakeGateway({ nets: { cs_a: 4_840 } });
+  journal(key, ["cs_a"], 9_680, "2026-02-03T00:00:00.000Z"); // 48h before `now`
+
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.amount, 4_840, "post-refund net, not the journalled pre-refund amount");
+  assert.notEqual(payouts[0]!.idempotencyKey, key, "expired key is never reused");
+  assert.equal(ledger.getEntry("cs_a")?.status, "released");
+});
+
+test("a failed intent lookup freezes the group rather than risking a double pay", async () => {
+  held("cs_a");
+  const key = "woco-payout-unknown";
+  const { gateway, payouts } = fakeGateway({ failFind: true });
+  journal(key, ["cs_a"], 9_680, "2026-02-05T00:00:00.000Z");
+
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(payouts.length, 0);
+  assert.match(outcome!.error!, /lookup failed/);
+  assert.equal(ledger.getEntry("cs_a")?.status, "held");
+  assert.ok(intents.getIntent(ACCT, "gbp"), "intent stays until settled");
+});
+
+test("a failed payout journals its intent and settles it on the next sweep", async () => {
+  // End-to-end: the payout call throws (ambiguous — a timeout can mean Stripe
+  // processed it). The intent must survive, and the next sweep must settle it
+  // under the ORIGINAL key.
+  held("cs_a", { grossAmount: 5_000 });
+  const failing = fakeGateway({ failPayout: true });
+  const [first] = await release.runReleaseSweep(failing.gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(first!.error, "stripe down");
+  const journalled = intents.getIntent(ACCT, "gbp");
+  assert.ok(journalled, "intent survives the failure");
+
+  // Next sweep, Stripe healthy. A fresh fake: its payout store is empty, as if
+  // Stripe never saw the first request.
+  const healthy = fakeGateway();
+  await release.runReleaseSweep(healthy.gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(healthy.payouts.length, 1);
+  assert.equal(healthy.payouts[0]!.idempotencyKey, journalled!.idempotencyKey);
+  assert.equal(ledger.getEntry("cs_a")?.status, "released");
+  assert.equal(intents.getIntent(ACCT, "gbp"), undefined);
+});
+
+test("orphaned intents are settled even when nothing is held", async () => {
+  // Every entry of the crashed set is already settled or gone, so no held entry
+  // produces this group — the sweep must still visit and clear the journal.
+  const key = "woco-payout-orphan";
+  const { gateway, payouts } = fakeGateway();
+  payouts.push({ id: "po_orph", amount: 1_000, currency: "gbp", idempotencyKey: key, metadata: { woco_intent: key } });
+  journal(key, ["cs_gone"], 1_000, "2026-02-05T00:00:00.000Z");
+
+  await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(intents.getIntent(ACCT, "gbp"), undefined);
+  assert.equal(payouts.length, 1, "nothing new paid");
+});
+
+// ---------------------------------------------------------------------------
+// Refund freshness — the ledger's netAmount is reporting, never truth
+// ---------------------------------------------------------------------------
+
+test("a cached net is re-read every sweep, so a late refund shrinks the payout", async () => {
+  // The entry carries a stale netAmount from an earlier sweep (resolved, then
+  // deferred on an unsettled balance). The refund that landed since MUST win.
+  held("cs_a", { grossAmount: 10_000, netAmount: 9_680 });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_a: 4_840 } });
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 4_840, "fresh net, not the cached 9680");
+  assert.equal(ledger.getEntry("cs_a")?.netAmount, 4_840, "cache updated for reporting");
+});
+
+test("a fully refunded sale voids even after its net was cached", async () => {
+  held("cs_a", { grossAmount: 10_000, netAmount: 9_680 });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_a: -150 } });
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0);
+  assert.equal(ledger.getEntry("cs_a")?.status, "void");
+});
+
+test("the live resolver ignores the cached net and reports the settlement currency", async () => {
+  // Pins the actual regression: liveGateway used to short-circuit on
+  // entry.netAmount, which is what made late refunds invisible.
+  const calls: string[] = [];
+  const fakeStripe = {
+    paymentIntents: {
+      retrieve: async (id: string) => {
+        calls.push(`pi:${id}`);
+        return { latest_charge: { id: "ch_1", balance_transaction: "txn_1", amount_refunded: 0 } };
+      },
+    },
+    balanceTransactions: {
+      retrieve: async (id: string) => {
+        calls.push(`bt:${id}`);
+        return { net: 4_840, currency: "GBP" };
+      },
+    },
+  };
+  const entry = held("cs_live", { currency: "eur", netAmount: 9_680 });
+  const resolved = await release.resolveNetFromStripe(fakeStripe as never, entry);
+  assert.deepEqual(resolved, { net: 4_840, currency: "gbp" });
+  assert.deepEqual(calls, ["pi:pi_cs_live", "bt:txn_1"], "went to Stripe despite the cache");
+});
+
+// ---------------------------------------------------------------------------
+// Settlement currency — converted charges must pay from the right balance
+// ---------------------------------------------------------------------------
+
+test("a charge that settled in another currency regroups instead of deferring forever", async () => {
+  // EUR ticket on a GBP-only account: Stripe converts at charge time, so the
+  // EUR balance stays empty for ever. The sweep must move the entry to the GBP
+  // group — not poll an empty EUR balance until past the hold ceiling.
+  held("cs_eur", { currency: "eur", grossAmount: 10_000 });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_eur: 9_200 }, settlements: { cs_eur: "gbp" } });
+
+  const [first] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0, "first sweep only records the settlement currency");
+  assert.deepEqual(first!.deferred, ["cs_eur"]);
+  assert.equal(ledger.getEntry("cs_eur")?.settlementCurrency, "gbp");
+
+  await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.currency, "gbp", "paid from the settlement balance");
+  assert.equal(payouts[0]!.amount, 9_200);
 });
 
 // ---------------------------------------------------------------------------
