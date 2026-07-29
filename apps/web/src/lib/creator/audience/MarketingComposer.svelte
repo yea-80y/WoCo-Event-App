@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { MarketingContact, MarketingBroadcastResult, EventDirectoryEntry } from "@woco/shared";
-  import { sendMarketingBroadcast } from "../../api/marketing.js";
+  import { sendMarketingBroadcast, sendMarketingTest } from "../../api/marketing.js";
   import { getEventsByCreator } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { firstImageUrl } from "../../components/site/image-fallback.js";
@@ -14,9 +14,12 @@
   interface Props {
     contacts: MarketingContact[];
     suppressedEmails: Set<string>;
+    /** Preselects the event picker once events load — the post-publish
+     *  "Announce to your audience" deep-link (?announce=eventId). */
+    initialEventId?: string;
   }
 
-  let { contacts, suppressedEmails }: Props = $props();
+  let { contacts, suppressedEmails, initialEventId }: Props = $props();
 
   let fromName = $state("");
   let subject = $state("");
@@ -42,6 +45,9 @@
       .then((list) => {
         // Newest first — an on-sale announcement is nearly always the latest.
         events = [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        if (initialEventId && events.some((e) => e.eventId === initialEventId)) {
+          selectedEventId = initialEventId;
+        }
       })
       .catch(() => {
         // Non-fatal: the composer still sends a plain message without a picker.
@@ -76,6 +82,40 @@
         name: [c.firstName, c.lastName].filter(Boolean).join(" ") || undefined,
       })),
   );
+
+  /** Remembered across visits — the organiser tests into the same inbox every time. */
+  const TEST_EMAIL_KEY = "woco:test-send-email";
+  let testEmail = $state(localStorage.getItem(TEST_EMAIL_KEY) ?? "");
+  let testSending = $state(false);
+  let testNote = $state<string | null>(null);
+
+  async function handleSendTest(): Promise<void> {
+    error = null;
+    testNote = null;
+    if (!fromName.trim() || !subject.trim() || !body.trim()) {
+      error = "Fill in from, subject and message before sending a test.";
+      return;
+    }
+    const to = testEmail.trim();
+    if (!to) { error = "Enter the address to send the test to."; return; }
+
+    testSending = true;
+    try {
+      const res = await sendMarketingTest(fromName.trim(), subject.trim(), buildHtml(), to);
+      localStorage.setItem(TEST_EMAIL_KEY, to);
+      if (res.sent > 0) {
+        testNote = `Test sent to ${to} — check that inbox before broadcasting.`;
+      } else if (res.suppressed > 0) {
+        testNote = `${to} has unsubscribed from your emails, so nothing was sent. Test with a different address.`;
+      } else {
+        error = res.errors?.[0] ?? "Test send failed.";
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : "Test send failed.";
+    } finally {
+      testSending = false;
+    }
+  }
 
   async function handleSend(): Promise<void> {
     error = null;
@@ -167,6 +207,23 @@
       </p>
     </div>
   {/if}
+
+  <div class="test-row">
+    <input
+      type="email"
+      bind:value={testEmail}
+      placeholder="your@email.com"
+      aria-label="Test send address"
+    />
+    <button
+      class="btn-ghost"
+      disabled={testSending || !subject.trim() || !body.trim() || !fromName.trim() || !testEmail.trim()}
+      onclick={() => void handleSendTest()}
+    >
+      {testSending ? "Sending…" : "Send test"}
+    </button>
+  </div>
+  {#if testNote}<p class="test-note">{testNote}</p>{/if}
 
   {#if result}
     <div class="result" class:has-failures={result.failed > 0}>
@@ -268,6 +325,33 @@
     overflow: hidden;
     max-height: 340px;
     overflow-y: auto;
+  }
+
+  .test-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .test-row input {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    padding: 0.625rem 0.75rem;
+    font-size: 0.875rem;
+    font-family: var(--font-body);
+    transition: border-color var(--transition);
+  }
+  .test-row input:focus { border-color: var(--accent); outline: none; }
+  .test-row input::placeholder { color: var(--text-dim); }
+  .test-row .btn-ghost { white-space: nowrap; }
+  .test-row .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .test-note {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin: -0.375rem 0 0;
   }
 
   .result {
