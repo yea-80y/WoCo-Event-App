@@ -10,8 +10,9 @@
  * MUST survive server restarts — same rule as consumed-tx-hashes.json.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "./persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-suppression.json");
@@ -60,13 +61,8 @@ function ensureLoaded(): void {
   }
 }
 
-function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify(Object.fromEntries(entries)), "utf-8");
-  } catch (err) {
-    console.error("[suppression] Failed to persist to disk:", err);
-  }
+function persistToDisk(): boolean {
+  return writeJsonAtomic(STORE_FILE, Object.fromEntries(entries), "suppression");
 }
 
 function getOrCreate(emailHash: string): SuppressionEntry {
@@ -153,6 +149,21 @@ export function liftDeclineOnConsent(
   mark!.liftedBy = "consent";
   persistToDisk();
   return true;
+}
+
+/**
+ * Every mark held against this address. Subject-access support (Art. 15).
+ *
+ * Suppression marks are deliberately NOT erasable: under Art. 17(3)(b) the
+ * record of an objection is the thing that lets the controller keep honouring
+ * it. Deleting it would re-expose the person to the next CSV re-upload.
+ */
+export function marksFor(
+  emailHash: string,
+): { global?: SuppressionMark; orgs: Record<string, SuppressionMark> } | null {
+  ensureLoaded();
+  const entry = entries.get(emailHash);
+  return entry ? { ...(entry.global ? { global: entry.global } : {}), orgs: { ...entry.orgs } } : null;
 }
 
 /** Is this address suppressed for this organiser (globally or per-org)? */

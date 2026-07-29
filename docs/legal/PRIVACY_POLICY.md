@@ -245,7 +245,9 @@ We would rather you came to us first, but it is your right either way.
 | Your ticket / attendance record | **Indefinitely** — it is your record of having been there, yours to keep or erase |
 | Organiser's copy of attendee data | Event date + 90 days, then removed |
 | Account data | While your account is open, plus 90 days |
-| Suppression records | Indefinitely — required to honour your opt-out |
+| Suppression records | Indefinitely — required to honour your opt-out. This is the one record we keep *because* you asked us to stop: deleting it would let the next contact upload put you back |
+| Marketing consent records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you agreed to and when — it is how we can show your consent was real |
+| Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser |
 | Transaction records | 6 years (Companies Act 2006, HMRC) |
 | Organiser sale and payout records | 6 years (Companies Act 2006, HMRC) — what sold, what we released and when. Accounting evidence; it contains no attendee identifier |
 | Security logs and IP records | [LOG RETENTION PERIOD — TO BE SET] |

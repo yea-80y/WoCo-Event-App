@@ -54,7 +54,7 @@ notice; a policy link in the main app does not cover the other three.
 
 | # | Surface | Code | Collects | Notice status (2026-07-26) |
 |---|---|---|---|---|
-| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | Partial — one line, "Your info is encrypted", only shown when an order form exists; no policy link, no consent control |
+| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | **Compliant** (since `8ed69ec`) — the `consent-block` above the action buttons carries `TRANSACTIONAL_EMAIL_NOTICE`, an unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link. Wording is shared with the server via `packages/shared/src/legal/consent.ts` so the stored Art. 7(1) evidence cannot drift from what was shown |
 | 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **None** |
 | 3 | Organiser site deployed via WoCo | `apps/web/src/MultiSiteApp.svelte`, `contactForm` section (`packages/shared/src/site/types.ts:192`) | name, email, message | **None**, and the generated site has no privacy policy page at all |
 | 4 | Direct event page link | routes into surface 1 | as surface 1 | as surface 1 |
@@ -255,6 +255,34 @@ within the stated window.
 network; a third party may have retrieved, cached or pinned a chunk before erasure. Garbage
 collection is best-effort and not verifiable by us. This limitation must be disclosed *at the point
 of collection*, not buried.
+
+### Servicing a request — the actual procedure
+
+`apps/server/scripts/data-subject-request.ts`, run on the VM with the production
+`EMAIL_HASH_SECRET` and cwd set to the server working directory (the stores are keyed by HMAC hash,
+so the wrong secret reports "no data" for someone who has plenty).
+
+    npx tsx scripts/data-subject-request.ts --email <addr>                      # Art. 15 report
+    npx tsx scripts/data-subject-request.ts --email <addr> --erase              # Art. 17, all organisers
+    npx tsx scripts/data-subject-request.ts --email <addr> --erase --organiser 0x…   # scoped to one controller
+
+It is a script, not an admin HTTP route: there is no admin identity in this system, and inventing an
+admin bearer token guarding bulk erasure would be a worse attack surface than the problem it solves.
+SSH is already the admin boundary.
+
+**Suppression marks are never erased.** Under Art. 17(3)(b) the record of an objection is precisely
+what lets the controller keep honouring it — deleting it would re-expose the person to the
+organiser's next contact upload. The script therefore records a suppression mark *before* erasing
+anything, so a crash between the two steps over-suppresses rather than under-protects.
+
+**Three things the script cannot reach**, and which must be relayed to the subject:
+
+1. The organiser's **sealed contact blob** on Swarm is encrypted to them; only they can rewrite it.
+   They are the controller for their own list — forward the request. Removing the member from
+   WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
+   recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
+2. **Ticket records on Swarm** — crypto-erasure plus batch expiry, as above.
+3. **Stripe** holds its own payment records under its own retention obligations.
 
 ### International transfers
 
