@@ -73,13 +73,39 @@
      * resets this back to `null` after applying, so re-import works.
      */
     importedTiers?: ImportTier[] | null;
+    /**
+     * The event's start date (datetime-local string). Read only to warn about
+     * far-future on-sales — see `releasesBeforeEvent` (#87).
+     */
+    startDate?: string;
   }
 
   let {
     series = $bindable(),
     cryptoRecipientMissing = $bindable(false),
     importedTiers = $bindable(null),
+    startDate = "",
   }: Props = $props();
+
+  /**
+   * Stripe requires funds to be paid out within 90 days OF THE CHARGE, not of
+   * the event (UK; payout-policy.ts holds the table). The release sweep honours
+   * that with a 7-day safety margin, so a ticket sold more than 83 days before
+   * its event is released to the organiser BEFORE the event happens.
+   *
+   * This is Stripe's constraint, not a WoCo policy, and it is NOT blocked:
+   * early-bird and festival on-sales are legitimate. But an organiser who is
+   * paid months early and does not know why cannot plan for the refund
+   * obligation that ORGANISER_TERMS §6 still places on them — so say it here,
+   * at the moment they set the date, rather than only in the terms.
+   */
+  const CEILING_DAYS = 83;
+  const releasesBeforeEvent = $derived.by(() => {
+    if (!startDate) return false;
+    const start = new Date(startDate).getTime();
+    if (Number.isNaN(start)) return false;
+    return start - Date.now() > CEILING_DAYS * 86_400_000;
+  });
 
   let stripeModalOpen = $state(false);
   let stripeModalTierId = $state<string | null>(null);
@@ -89,6 +115,43 @@
   // null = not yet loaded, undefined = not authenticated
   let stripeStatus = $state<StripeAccountStatus | null>(null);
   let stripeStatusLoading = $state(true);
+
+  const ALL_CURRENCIES = ["GBP", "USD", "EUR"] as const;
+  type Ccy = (typeof ALL_CURRENCIES)[number];
+
+  /**
+   * Stripe pays each organiser out in ONE currency. Pricing in any other makes
+   * Stripe convert every sale and take its FX fee out of the organiser's
+   * proceeds — silently, and asymmetrically again on refunds (#84). So the
+   * picker offers only the payout currency once we know it.
+   *
+   * Unknown (mid-onboarding, or Stripe unreachable) keeps all three: an empty
+   * picker would block a legitimate organiser from pricing anything at all. The
+   * server applies the same rule and the same fail-open.
+   */
+  const payoutCurrency = $derived(
+    stripeStatus?.defaultCurrency?.toUpperCase() as Ccy | undefined,
+  );
+  const currencyOptions = $derived<readonly Ccy[]>(
+    payoutCurrency && (ALL_CURRENCIES as readonly string[]).includes(payoutCurrency)
+      ? [payoutCurrency]
+      : ALL_CURRENCIES,
+  );
+  /** True when the organiser banks in a currency WoCo does not sell in. */
+  const payoutCurrencyUnsupported = $derived(
+    !!payoutCurrency && !(ALL_CURRENCIES as readonly string[]).includes(payoutCurrency),
+  );
+
+  // Snap any tier already priced in a currency the picker no longer offers.
+  // Without this an editor opened before the status loaded keeps a stale value
+  // and the publish is rejected server-side with no visible cause.
+  $effect(() => {
+    const options = currencyOptions;
+    if (options.length !== 1) return;
+    for (const tier of tiers) {
+      if (tier.currency !== options[0]) tier.currency = options[0];
+    }
+  });
 
   /** Whether the current auth identity owns a real EVM wallet. */
   // EOA logins: the auth address is a self-custodied EOA usable on any EVM chain
@@ -494,13 +557,36 @@
               </label>
               <label class="field payment-currency-field">
                 <span class="field-label">Currency</span>
-                <select bind:value={tier.currency}>
-                  <option value="GBP">GBP</option>
-                  <option value="USD">USD</option>
-                  <option value="EUR">EUR</option>
+                <select bind:value={tier.currency} disabled={currencyOptions.length === 1}>
+                  {#each currencyOptions as ccy (ccy)}
+                    <option value={ccy}>{ccy}</option>
+                  {/each}
                 </select>
               </label>
             </div>
+
+            {#if currencyOptions.length === 1 && tier.stripeEnabled}
+              <p class="currency-note">
+                Your Stripe account pays out in {currencyOptions[0]}, so tickets are priced in
+                {currencyOptions[0]}. Pricing in another currency would make Stripe convert every
+                sale and charge you the conversion fee.
+              </p>
+            {:else if payoutCurrencyUnsupported && tier.stripeEnabled}
+              <p class="currency-note currency-note-warn">
+                Your Stripe account pays out in {payoutCurrency}, which WoCo doesn't sell in yet.
+                Stripe will convert each sale into {payoutCurrency} and take a conversion fee from
+                your proceeds.
+              </p>
+            {/if}
+
+            {#if releasesBeforeEvent && tier.stripeEnabled}
+              <p class="currency-note currency-note-warn">
+                This event is more than {CEILING_DAYS} days away. Stripe requires ticket money to be
+                paid out within 90 days of the sale, so takings from early sales reach you
+                <strong>before</strong> the event runs. Refunds are still your responsibility, so
+                keep enough back to cover them.
+              </p>
+            {/if}
 
             <div class="payment-methods">
               <span class="field-label">Payment methods</span>
@@ -1138,6 +1224,23 @@
   .payment-row {
     display: flex;
     gap: 0.5rem;
+  }
+
+  /* Money facts the organiser cannot infer from the form itself: which currency
+     they are locked to (#84) and when their takings actually land (#87). */
+  .currency-note {
+    margin: 0.5rem 0 0;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--text-muted);
+  }
+
+  .currency-note-warn {
+    padding: 0.5rem 0.625rem;
+    border-left: 2px solid var(--warning);
+    background: var(--bg-surface);
+    border-radius: var(--radius-sm);
+    color: var(--text);
   }
 
   .payment-price-field {

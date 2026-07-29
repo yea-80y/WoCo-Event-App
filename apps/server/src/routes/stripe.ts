@@ -16,6 +16,7 @@ import { getStripe } from "../lib/stripe/client.js";
 import {
   getStripeAccount,
   setStripeAccount,
+  setDefaultCurrency,
   updateOnboardingStatus,
   getOrganiserByStripeAccount,
   deleteStripeAccount,
@@ -147,8 +148,13 @@ stripe.get("/account-status", requireAuth, async (c) => {
     const account = await s.accounts.retrieve(record.stripeAccountId);
     const complete = !!(account.charges_enabled && account.payouts_enabled);
 
-    if (complete !== record.onboardingComplete) {
-      setStripeAccount(organiserAddress, record.stripeAccountId, complete);
+    // Cache the payout currency alongside the status. This is the one place
+    // that already retrieves the full Account on an organiser-initiated request,
+    // so it costs no extra call — and the currency decides what they may price
+    // tickets in (#84).
+    const defaultCurrency = account.default_currency ?? undefined;
+    if (complete !== record.onboardingComplete || defaultCurrency !== record.defaultCurrency) {
+      setStripeAccount(organiserAddress, record.stripeAccountId, complete, defaultCurrency);
     }
 
     // Extract verification requirements for the UI
@@ -201,6 +207,9 @@ stripe.get("/account-status", requireAuth, async (c) => {
       onboardingComplete: complete,
       chargesEnabled: account.charges_enabled,
       payoutsEnabled: account.payouts_enabled,
+      // Drives the pricing-currency picker (#84). Absent while Stripe has not
+      // assigned one yet — the client must then offer every currency, not none.
+      defaultCurrency,
       requirements: {
         currentlyDue,
         eventuallyDue,
@@ -221,6 +230,9 @@ stripe.get("/account-status", requireAuth, async (c) => {
       connected: true,
       stripeAccountId: record.stripeAccountId,
       onboardingComplete: record.onboardingComplete,
+      // Stripe is unreachable, so serve the cached value rather than none: an
+      // outage must not silently widen the currency picker back open.
+      defaultCurrency: record.defaultCurrency,
     });
   }
 });
@@ -834,6 +846,10 @@ stripe.post("/webhook", async (c) => {
       const account = event.data.object as import("stripe").Stripe.Account;
       const complete = !!(account.charges_enabled && account.payouts_enabled);
       updateOnboardingStatus(account.id, complete);
+      // Stripe assigns default_currency during onboarding and can change it if
+      // the organiser changes their payout bank account. Keeping the cache fresh
+      // here is what stops #84's restriction going stale against reality.
+      if (account.default_currency) setDefaultCurrency(account.id, account.default_currency);
       console.log(`[stripe-webhook] Account ${account.id} updated: charges=${account.charges_enabled}, payouts=${account.payouts_enabled}`);
 
       // Self-healing backfill for accounts created before manual payouts existed,

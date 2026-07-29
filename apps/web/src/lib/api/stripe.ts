@@ -18,6 +18,13 @@ export interface StripeAccountStatus {
   onboardingComplete?: boolean;
   chargesEnabled?: boolean;
   payoutsEnabled?: boolean;
+  /**
+   * The currency Stripe pays this organiser out in, lowercase. Tickets must be
+   * priced in it — anything else makes Stripe convert every sale and bill the
+   * organiser the FX fee (#84). Absent until Stripe assigns one during
+   * onboarding, in which case every currency stays offered.
+   */
+  defaultCurrency?: string;
   requirements?: {
     currentlyDue: string[];
     eventuallyDue: string[];

@@ -15,6 +15,7 @@ import { batchForDeploy } from "../lib/etherna/batch-router.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestDigest, bytesToHex0x } from "@woco/shared";
 import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
+import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
@@ -228,6 +229,21 @@ events.post("/", requireAuth, async (c) => {
     if (s.payment?.feePassedToCustomer && typeof s.payment.buyerFeePercent === "number"
         && s.payment.buyerFeePercent < BUYER_FEE_FLOOR_PCT) {
       return c.json({ ok: false, error: `Series ${s.seriesId}: buyer fee must be ≥ ${BUYER_FEE_FLOOR_PCT}%` }, 400);
+    }
+    // Pricing currency must match the organiser's Stripe payout currency, or
+    // Stripe silently converts every sale and bills the organiser the FX fee
+    // (#84). Server-side as well as in the picker: the UI restriction is a
+    // convenience, this is the rule. Fail-open when the account's default is
+    // not known yet — see lib/stripe/currency-policy.ts.
+    if (s.payment?.stripeEnabled && s.payment.currency) {
+      const verdict = currencyAllowedFor(parentAddress.toLowerCase(), s.payment.currency);
+      if (!verdict.allowed) {
+        return c.json(
+          { ok: false, error: `Series ${s.seriesId}: ${verdict.reason}`, code: "CURRENCY_NOT_ALLOWED",
+            data: { defaultCurrency: verdict.defaultCurrency } },
+          400,
+        );
+      }
     }
   }
 
