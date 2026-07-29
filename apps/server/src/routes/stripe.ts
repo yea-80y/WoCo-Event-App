@@ -24,9 +24,8 @@ import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { queueSeriesClaim } from "./claims.js";
-import { sealJson, buildTicketCanonicalMessage, MARKETING_CONSENT_NOTICE } from "@woco/shared";
-import { recordConsent } from "../lib/marketing/consent-store.js";
-import { suppressOrg } from "../lib/marketing/suppression-store.js";
+import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
+import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
 import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId } from "../lib/chain/event-contract.js";
@@ -1366,16 +1365,13 @@ async function handleSuccessfulPayment(
     const consentHash =
       identifier.type === "email" ? identifier.emailHash : identifier.secondaryEmailHash;
     if (consentHash) {
-      if (metaMarketingConsent) {
-        recordConsent(consentHash, eventCreatorAddress, {
-          ts: claimedAt,
-          source: "checkout",
-          eventId,
-          notice: MARKETING_CONSENT_NOTICE,
-        });
-      } else {
-        suppressOrg(consentHash, eventCreatorAddress, "declined");
-      }
+      captureCheckoutConsent({
+        emailHash: consentHash,
+        organiserAddress: eventCreatorAddress,
+        granted: metaMarketingConsent,
+        ts: claimedAt,
+        eventId,
+      });
     }
   }
 

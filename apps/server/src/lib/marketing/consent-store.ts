@@ -35,6 +35,13 @@ export interface ConsentRecord {
   /** Verbatim wording shown at the point of collection. Art. 7(1) evidence:
    *  a hash or paraphrase would not prove what was actually agreed to. */
   notice: string;
+  /**
+   * `MARKETING_CONSENT_VERSION` at capture time. The verbatim `notice` is the
+   * evidence; this is the cheap index for "which wording did this cohort agree
+   * to" once the text has changed more than once. Optional because records
+   * written before this field existed do not carry it.
+   */
+  version?: number;
 }
 
 /** organiserAddress → emailHash → record */
