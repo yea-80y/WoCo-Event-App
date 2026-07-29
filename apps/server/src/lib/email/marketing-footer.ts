@@ -40,11 +40,18 @@ export function footerHtml(ctx: FooterContext): string {
   const name = escapeHtml(ctx.displayName);
   const address = escapeHtml(ctx.postalAddress);
   const url = escapeHtml(ctx.unsubUrl);
-  return `<div style="margin-top:32px;padding-top:16px;border-top:1px solid #33343f;color:#8a8b9a;font-size:12px;line-height:1.6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+  // The footer is inserted AFTER the body's own centering table (withFooter
+  // targets the document-final </body>), so it must bring its own: without
+  // this wrapper it renders flush against the viewport edge instead of
+  // aligning under the 600px card every WoCo body draws.
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td align="center">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;"><tr><td style="padding:0 12px 24px;">
+<div style="margin-top:8px;padding-top:16px;border-top:1px solid #33343f;color:#8a8b9a;font-size:12px;line-height:1.6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
 You're receiving this because you opted in to updates from ${name}. Sent via WoCo.<br/>
 <a href="${url}" style="color:#8a8b9a">Unsubscribe</a><br/>
 <span style="color:#6c6d7c">${address}</span>
-</div>`;
+</div>
+</td></tr></table></td></tr></table>`;
 }
 
 /** Same three obligations, for the text/plain alternative part. */
@@ -78,6 +85,9 @@ export function htmlToPlainText(html: string): string {
     .replace(BLOCK_TAGS, "\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/gi, " ")
+    // Zero-width entities (preheader padding) have no text-part rendering —
+    // decoded they'd be invisible clutter, undecoded they'd be literal "&zwnj;".
+    .replace(/&(?:zwnj|zwj|#8203|#847);/gi, "")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')

@@ -120,6 +120,30 @@ test("a real origin is kept, trailing slash and all", () => {
   assert.match(publicEventUrl("e", "https://localhost.example.com"), /^https:\/\/localhost\.example\.com/);
 });
 
+test("preheader carries the tagline, hidden and escaped", () => {
+  const html = buildEventAnnouncementHtml(INPUT);
+  // The preview div must come before any visible text or clients scrape the
+  // brand row instead.
+  const preheaderIdx = html.indexOf("All night long");
+  const brandIdx = html.indexOf("The Fox &amp; Hound");
+  assert.ok(preheaderIdx !== -1 && preheaderIdx < brandIdx, "preheader missing or after visible content");
+  assert.match(html, /display:none[^>]*>All night long/, "preheader is not hidden");
+});
+
+test("preheader falls back to the organiser's opening line, escaped", () => {
+  const html = buildEventAnnouncementHtml({
+    ...INPUT,
+    message: `<b>Big</b> news tonight.\n\nMore below.`,
+    event: { ...EVENT, tagline: undefined },
+  });
+  assert.match(html, /display:none[^>]*>&lt;b&gt;Big&lt;\/b&gt; news tonight\./);
+});
+
+test("plain message preheader uses the first line", () => {
+  const html = buildPlainMessageHtml("Brand", "Doors moved to 9pm.\nSee you there.");
+  assert.match(html, /display:none[^>]*>Doors moved to 9pm\./);
+});
+
 test("no stylesheet or flexbox — Outlook renders through Word", () => {
   const html = buildEventAnnouncementHtml(INPUT);
   assert.ok(!/<style[\s>]/.test(html), "stylesheet block present");
