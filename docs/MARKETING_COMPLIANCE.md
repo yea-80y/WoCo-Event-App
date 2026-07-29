@@ -88,6 +88,15 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   secret unset → acknowledge-and-drop; `svix-id` dedupe.
 - **ESP SEAM**: all Resend calls live in `lib/email/` — a future SES migration touches only
   that directory.
+- **RESEND APPROVED THE MODEL IN WRITING** (email, 2026-07-29): *"As long as you're
+  properly adding Unsubscribe headers, and sending emails that are opted into via the
+  email API, this is okay on the transactional plan."* Marketing over `POST /emails` with
+  our own compliance layer is sanctioned — the residual policy risk from
+  `docs/PRICING_AND_EMAIL.md` §2/§9 is closed. Their two conditions are exactly what
+  `sendMarketingBatch` enforces unconditionally (RFC 8058 headers; suppression + consent).
+  Note their tiers: Free = **1 sending domain** (verified 2026-07-29 — the "10 on Free"
+  figure previously in PRICING_AND_EMAIL §2 was wrong; 10 is Pro), so the marketing
+  subdomain split requires the $20/mo Pro plan when an imported list makes it mandatory.
 - Marketing caps: 2 broadcasts/hr + `MARKETING_DAILY_CAP` (rolling 24h, default 2000) per
   organiser; explicit 429, never a silent trim.
 - ABUSE GATE (#59): `/broadcast` + `/domain(create)` require `isVerifiedOrganiser`

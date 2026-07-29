@@ -28,7 +28,13 @@ Two independent product lines. Subscribe to one or both.
 | **Transactional** (`emails.send`) | emails sent | Free 3k/mo (100/day) · Pro $20/50k · $35/100k · Scale $90/100k → $1,150/2.5M · overage $0.90/1k → $0.46/1k |
 | **Marketing** (Broadcasts) | **contacts stored** | Free 1k · $40 (5k) → $650 (150k) · **unlimited sends** |
 
-Other: API rate limit 10 req/s per team. Domains 10 on Free/Pro, **1,000 on Scale**. Dedicated IP $30/mo (Scale only). Monthly billing only.
+Other: API rate limit 10 req/s per team. Domains: **1 on Free** (verified against
+resend.com/pricing + the dashboard's upgrade prompt, 2026-07-29 — an earlier revision
+said 10), 10 on Pro, 1,000 on Scale. Dedicated IP $30/mo (Scale only). Monthly billing
+only. §9's question was answered in writing 2026-07-29: marketing over the transactional
+`/emails` endpoint is fine given unsubscribe headers + opt-in — see
+`docs/MARKETING_COMPLIANCE.md` for the quote. The Stripe side (§13/§17's open
+items) closed the same day — `docs/PAYOUTS.md` §6 is the record; build item is issue #90.
 
 "Unlimited sends" is the *marketing* product's per-contact deal. We are on transactional, where sends are metered but have no daily cap on paid plans.
 
@@ -672,6 +678,9 @@ So `interval: "manual"` removes the *automatic* payout — the common case, and 
 
 Funds sit in the organiser's own Stripe balance throughout; we control release timing only. No document may call it escrow, a client account, or money we hold. `TERMS_OF_SERVICE.md` §4, `ORGANISER_TERMS.md` §6 and `DATA_INVENTORY.md` §5.2 are written to this.
 
-### Built (row 00 complete)
+### Built (row 00 complete, then hardened)
 
-Manual payouts + post-event release. Mechanism, constants and ops: **`docs/PAYOUTS.md`**. 25 unit tests over the failure modes (early release, double payout, refunded sale, ceiling breach, stranded funds); server suite 66/66.
+Manual payouts + post-event release. Mechanism, constants and ops: **`docs/PAYOUTS.md`**
+(which also carries the 2026-07-29 resolutions in §3.2/§6). Hardened 2026-07-29: intent
+journal, nets re-read every sweep, settlement-currency regrouping (PR #86) + schedule-heal
+retry, shop attribution, past-ceiling alarm (#85). 45+ payout tests over the failure modes.
