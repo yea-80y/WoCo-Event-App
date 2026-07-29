@@ -234,10 +234,16 @@ re-verify onboarding → checkout → release on a fresh account.
 5. **Application fee: confirmed in writing, twice** — continues "regardless of account
    type and if they are under Managed Risk or not" (chat, 2026-07-29; also §17).
 
-**UNVERIFIED, worth confirming:** how long after a charge a refund can still be issued
-through Stripe. Not stated on `docs.stripe.com/refunds`. Matters for long-lead events: if
-there is a limit shorter than the sales window, tickets sold far in advance may not be
-refundable through Stripe at all, and refunds would have to be handled out of band.
+**Refund window — interim answer (Stripe AI assistant, 2026-07-29; NOT specialist-confirmed):**
+no published hard limit for card refunds — card networks "generally allow refunds for a
+considerable period (often up to 180 days or more, depending on the network)". Direct-debit
+methods are documented at 180 days (SEPA, Bacs, ACH; BECS 90). Their recommendation, adopted
+as our interim policy: treat **180 days from charge creation** as the safe refund horizon;
+a charge too old to refund through Stripe is reimbursed out of band (organiser bank
+transfer). Product implication: on-sales opening more than ~180 days before the event risk
+tickets that cannot be refunded through Stripe after a cancellation. Specialist
+confirmation of the exact card-network windows (Visa/Mastercard/Amex, UK) is pending —
+accept the bot's offer to connect a specialist and record the answer here.
 
 ---
 
