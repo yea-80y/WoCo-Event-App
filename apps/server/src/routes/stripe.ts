@@ -916,11 +916,28 @@ async function handleShopOrderPaid(
   const shopAccountId = session.metadata?.connectedAccountId;
   if (shopAccountId && session.amount_total && session.currency) {
     const recordedAt = new Date().toISOString();
+    // The accounts map is keyed by Stripe account id and can miss — a merchant
+    // whose record was rebuilt, or an account connected outside the normal
+    // onboarding path. The event path already falls back to the event's creator;
+    // the shop path had no fallback and recorded "". The entry still RELEASED
+    // correctly (the sweep is keyed by Stripe account, not by us), but it was
+    // invisible in GET /api/stripe/payouts, which is keyed by organiser — so the
+    // merchant could not see their own money.
+    // Strictly best-effort: this is a reporting nicety, and a Swarm read that
+    // throws here must never stop the entry being recorded. An unrecorded sale
+    // is money in a frozen balance with nothing scheduled to release it.
+    let shopOwner: string | undefined;
+    try {
+      shopOwner = (await getShop(shopId))?.ownerAddress?.toLowerCase();
+    } catch (err) {
+      console.warn("[stripe-webhook] Could not read shop owner for payout attribution:", err);
+    }
+
     try {
       recordHeldPayout({
         sessionId: session.id,
         stripeAccountId: shopAccountId,
-        organiserAddress: getOrganiserByStripeAccount(shopAccountId) ?? "",
+        organiserAddress: getOrganiserByStripeAccount(shopAccountId) ?? shopOwner ?? "",
         kind: "shop",
         shopId,
         orderId,

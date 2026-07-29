@@ -26,6 +26,7 @@ import type Stripe from "stripe";
 import { createHash } from "node:crypto";
 import { getStripe } from "./client.js";
 import { holdCeilingAt } from "./payout-policy.js";
+import { pendingScheduleHeals, retryPendingScheduleHeals } from "./payout-schedule.js";
 import {
   listHeld,
   markManyReleased,
@@ -536,6 +537,14 @@ export async function runReleaseSweep(
   }
   if (groups.size === 0) return [];
 
+  // Retry any manual-schedule correction that failed on an `account.updated`
+  // webhook. Those are fire-and-forget by necessity (a webhook must answer
+  // fast), so without a retry a transient Stripe error left the account on the
+  // automatic schedule until another webhook happened to arrive.
+  await retryPendingScheduleHeals().catch((err) => {
+    console.error("[payout-release] Schedule-heal retry threw:", err);
+  });
+
   const outcomes: ReleaseOutcome[] = [];
   for (const [key, entries] of groups) {
     const [stripeAccountId, currency] = key.split("|") as [string, string];
@@ -567,19 +576,60 @@ const health = {
  * Deliberately carries NO amounts: this is surfaced on the public health endpoint,
  * and organiser financials are not public.
  */
+/**
+ * Held entries that are already past the moment we were required to pay them
+ * out. Non-zero means a net could not be resolved (or a payout kept failing) for
+ * long enough to breach Stripe's documented ceiling — a compliance problem that
+ * the 7-day safety margin cannot help with, because it only buys time against a
+ * TRANSIENT block. Per-sweep error logs were the only signal before this.
+ *
+ * Synchronous, so it uses the country cache the sweep populates and falls back
+ * to the default ceiling for an account it has not seen yet. That can only make
+ * the alarm EARLY for a long-ceiling country (US, 730d) and never late for a
+ * short one, which is the right direction for a compliance deadline.
+ */
+export function heldPastCeiling(now: Date = new Date()): { count: number; oldestBreachedAt: string | null } {
+  const nowMs = now.getTime();
+  let count = 0;
+  let oldest: string | null = null;
+
+  for (const entry of listHeld()) {
+    const ceiling = holdCeilingAt(entry.recordedAt, countryCache.get(entry.stripeAccountId));
+    if (nowMs < new Date(ceiling).getTime()) continue;
+    count++;
+    if (!oldest || ceiling < oldest) oldest = ceiling;
+  }
+  return { count, oldestBreachedAt: oldest };
+}
+
 export function payoutSweepHealth(): {
   running: boolean;
   lastRunAt: string | null;
   runs: number;
   stale: boolean;
   lastError: string | null;
+  /** Count only, no amounts — this endpoint is public. */
+  heldPastCeiling: number;
+  oldestCeilingBreachAt: string | null;
+  /** Accounts still on Stripe's automatic schedule after a failed correction. */
+  pendingScheduleHeals: number;
 } {
   const running = timer !== null;
   // Two-and-a-half missed hourly runs. Measured from boot until the first run
   // completes, so a job that never runs at all still trips the alarm.
   const since = health.lastRunAt ?? health.startedAt;
   const stale = running && Date.now() - new Date(since).getTime() > RELEASE_INTERVAL_MS * 2.5;
-  return { running, lastRunAt: health.lastRunAt, runs: health.runs, stale, lastError: health.lastError };
+  const breached = heldPastCeiling();
+  return {
+    running,
+    lastRunAt: health.lastRunAt,
+    runs: health.runs,
+    stale,
+    lastError: health.lastError,
+    heldPastCeiling: breached.count,
+    oldestCeilingBreachAt: breached.oldestBreachedAt,
+    pendingScheduleHeals: pendingScheduleHeals().length,
+  };
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
