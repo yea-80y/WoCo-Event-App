@@ -70,10 +70,22 @@ far worse than a blank display field. Failed manual-schedule corrections now que
 and retry from the hourly sweep instead of waiting for another webhook that may
 never come. `heldPastCeiling()` feeds `/api/health` — counts only, no amounts.
 
-**Decisions taken with the owner:** #84 → restrict pricing to the organiser's
-Stripe `default_currency` (not yet built). #87 → warn at series creation, do NOT
-build a gate; near-term events are inside 90 days, and a verified-only gate would
-be code deleted once Managed Risk lands.
+**#84 — pricing currency restricted.** An organiser may now only price in their
+Stripe `default_currency`, cached on the accounts store and refreshed on
+`account.updated`. Enforced server-side at event creation and mirrored in the
+picker. The fail-open is the load-bearing part: Stripe assigns `default_currency`
+during onboarding, so "unknown" is the normal state for a new organiser and
+rejecting on it would block them from creating any paid event at all. An
+organiser banking outside usd/gbp/eur keeps the full picker rather than being
+locked out.
+
+**#87 — a warning, no gate.** Stripe's 90-day limit runs from the CHARGE, so a
+ticket sold >83 days before its event releases before the event runs.
+ORGANISER_TERMS §6 already covers the refund obligation; what was missing was
+telling the organiser at the moment they set a far-future date. No gate: near-term
+events are inside 90 days, and a verified-only gate would be code deleted once
+Managed Risk lands. The real control is the Managed Risk reconfiguration, which is
+Stripe-side.
 
 ---
 
