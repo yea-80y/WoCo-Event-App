@@ -237,18 +237,54 @@ test("held money reads as an estimate while any net is unresolved", () => {
 
 // ── 4. Dates ───────────────────────────────────────────────────────────────
 
+/**
+ * Date maths counts the VIEWER'S calendar days, so these tests pin the
+ * timezone explicitly. Node re-reads process.env.TZ on Linux (dev + CI here);
+ * restore it so the ambient-TZ tests below stay honest.
+ */
+function withTZ(tz: string, fn: () => void): void {
+  const prev = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.TZ;
+    else process.env.TZ = prev;
+  }
+}
+
 test("day counts are calendar days, so a few hours never reads as a whole day", () => {
-  assert.equal(daysUntil("2026-08-01T23:59:00.000Z", NOW), 0);
-  assert.equal(daysUntil("2026-08-02T00:01:00.000Z", NOW), 1);
-  assert.equal(daysUntil("2026-08-10T10:00:00.000Z", NOW), 9);
-  assert.equal(daysUntil("not-a-date", NOW), null);
+  withTZ("UTC", () => {
+    assert.equal(daysUntil("2026-08-01T23:59:00.000Z", NOW), 0);
+    assert.equal(daysUntil("2026-08-02T00:01:00.000Z", NOW), 1);
+    assert.equal(daysUntil("2026-08-10T10:00:00.000Z", NOW), 9);
+    assert.equal(daysUntil("not-a-date", NOW), null);
+  });
+});
+
+test("day counts follow the organiser's wall clock, not UTC", () => {
+  // NOW is 2026-08-01T12:00Z. In Auckland (UTC+12) that is already 2 Aug, so a
+  // release at 14:00Z the "same" UTC day lands tomorrow-for-UTC but TODAY for
+  // the person reading the screen.
+  withTZ("Pacific/Auckland", () => {
+    assert.equal(daysUntil("2026-08-01T14:00:00.000Z", NOW), 0);
+    assert.equal(releaseCountdown("2026-08-01T14:00:00.000Z", NOW), "today");
+  });
+  // In Los Angeles (UTC-7) NOW is 05:00 on 1 Aug, and a release at 02:00Z on
+  // 2 Aug is 19:00 the same evening — "today", where UTC maths said "tomorrow".
+  withTZ("America/Los_Angeles", () => {
+    assert.equal(daysUntil("2026-08-02T02:00:00.000Z", NOW), 0);
+    assert.equal(releaseCountdown("2026-08-02T02:00:00.000Z", NOW), "today");
+  });
 });
 
 test("release countdowns speak plainly at every boundary", () => {
-  assert.equal(releaseCountdown("2026-08-01T18:00:00.000Z", NOW), "today");
-  assert.equal(releaseCountdown("2026-08-02T09:00:00.000Z", NOW), "tomorrow");
-  assert.equal(releaseCountdown("2026-08-10T10:00:00.000Z", NOW), "in 9 days");
-  assert.equal(releaseCountdown("2026-09-30T10:00:00.000Z", NOW, "en-GB"), "on 30 Sept");
+  withTZ("UTC", () => {
+    assert.equal(releaseCountdown("2026-08-01T18:00:00.000Z", NOW), "today");
+    assert.equal(releaseCountdown("2026-08-02T09:00:00.000Z", NOW), "tomorrow");
+    assert.equal(releaseCountdown("2026-08-10T10:00:00.000Z", NOW), "in 9 days");
+    assert.equal(releaseCountdown("2026-09-30T10:00:00.000Z", NOW, "en-GB"), "on 30 Sept");
+  });
 });
 
 test("a release date that has passed reads as in-flight, never as negative days", () => {
@@ -259,10 +295,12 @@ test("a release date that has passed reads as in-flight, never as negative days"
 
 test("row labels distinguish held, paid out, early release and refunded", () => {
   assert.equal(entryStatusLabel(entry({ status: "held" }), NOW).tone, "held");
-  assert.equal(
-    entryStatusLabel(entry({ status: "held", releaseAfter: "2026-08-02T00:00:00.000Z" }), NOW).detail,
-    "Releases tomorrow",
-  );
+  withTZ("UTC", () => {
+    assert.equal(
+      entryStatusLabel(entry({ status: "held", releaseAfter: "2026-08-02T00:00:00.000Z" }), NOW).detail,
+      "Releases tomorrow",
+    );
+  });
 
   const paid = entryStatusLabel(
     entry({ status: "released", releasedAt: "2026-07-30T09:00:00.000Z" }),

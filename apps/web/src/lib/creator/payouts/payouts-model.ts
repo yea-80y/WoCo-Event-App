@@ -250,12 +250,21 @@ export function summarisePayouts(res: PayoutsResponse): PayoutSummary {
 
 const DAY_MS = 86_400_000;
 
-/** Whole days from `now` to `iso`, counted in calendar days (UTC-normalised). */
+/**
+ * Whole days from `now` to `iso`, counted in the VIEWER'S calendar days. UTC
+ * arithmetic here would tell an organiser in Auckland "today" for money that
+ * lands after their midnight — the countdown must agree with the wall clock
+ * they will check it against (and with `formatDate`, which renders local).
+ */
 export function daysUntil(iso: string, now: number): number | null {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return null;
-  const startOf = (ms: number) => Math.floor(ms / DAY_MS);
-  return startOf(t) - startOf(now);
+  const target = new Date(t);
+  target.setHours(0, 0, 0, 0);
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  // Round, not floor: a DST shift makes one day 23 or 25 hours long.
+  return Math.round((target.getTime() - today.getTime()) / DAY_MS);
 }
 
 /** "12 Aug" — short, and only shows the year when it isn't this one. */
