@@ -200,18 +200,18 @@ What matters for the legal documents:
 - **The hold cannot be promised unconditionally.** Stripe requires payout within 90 days of the
   charge for UK businesses (10 days Thailand, 2 years US), measured **per sale, not per event**, so
   tickets sold more than ~90 days ahead are released to the organiser before their event.
-- **A manual schedule is not a lock.** Stripe's platform-controls documentation states connected
-  accounts can still initiate their own payouts; blocking that needs a support request we have not
-  yet been granted. Until then no attendee-facing statement may imply funds cannot move.
+- **On a manual schedule, only the platform can move funds.** Stripe confirmed in writing
+  (2026-07-29, `PAYOUTS.md` §3.2) that the Express Dashboard cannot self-initiate payouts and
+  schedule editing is a platform capability we have not enabled. The earlier "not a lock" caveat
+  here is retired.
 
-`TERMS_OF_SERVICE.md` §4 and `ORGANISER_TERMS.md` §6 are written to these three limits. If the
-Stripe configuration changes — in particular a move to Managed Risk, which shifts negative-balance
-liability from WoCo to Stripe — both sections and §5.1's liability statement need re-reading.
+`TERMS_OF_SERVICE.md` §4 and `ORGANISER_TERMS.md` §6 are written to these limits.
 
-> ⚠️ **Liability caveat that survives all of the above.** Under our current configuration
-> (`controller.losses.payments = "application"`, the Express default) **WoCo absorbs unrecoverable
-> negative balances** on connected accounts. Delayed payouts reduce that exposure for sales close to
-> the event and do nothing for sales made long before it.
+> **Liability under Managed Risk (issue #90).** Accounts are created with controller properties
+> and `controller.losses.payments = "stripe"` (`PAYOUTS.md` §4): a refund or dispute debits the
+> organiser's connected balance first, and the unrecoverable remainder falls on **Stripe**, not
+> WoCo. Delayed payouts still matter — they keep attendees refundable for sales within ~90 days
+> of the event; for earlier sales the liability configuration is the only control.
 
 ---
 

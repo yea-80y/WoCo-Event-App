@@ -22,6 +22,7 @@ import "dotenv/config";
 import { getStripe } from "../src/lib/stripe/client.js";
 import { ensureManualPayoutSchedule } from "../src/lib/stripe/payout-schedule.js";
 import { listStripeAccounts } from "../src/lib/stripe/accounts.js";
+import { isPlatformLiable } from "../src/lib/stripe/account-params.js";
 
 const FIX = process.argv.includes("--fix");
 
@@ -47,12 +48,20 @@ async function main(): Promise<void> {
   let wrong = 0;
   let fixed = 0;
   let errored = 0;
+  let legacy = 0;
 
   for (const { organiser, stripeAccountId } of accounts) {
     try {
       const account = await s.accounts.retrieve(stripeAccountId);
       const interval = account.settings?.payouts?.schedule?.interval;
-      const label = `${stripeAccountId}  ${organiser.slice(0, 10)}…  country=${account.country ?? "?"}`;
+      // Liability cannot be fixed after creation — a platform-liable account
+      // (pre-#90 `type: "express"`) can only be retired, never converted.
+      // See scripts/retire-legacy-accounts.ts.
+      const liable = isPlatformLiable(account);
+      if (liable) legacy++;
+      const label =
+        `${stripeAccountId}  ${organiser.slice(0, 10)}…  country=${account.country ?? "?"}` +
+        `  losses=${account.controller?.losses?.payments ?? "?"}${liable ? " ⚠️ PLATFORM-LIABLE" : ""}`;
 
       if (interval === "manual") {
         manual++;
@@ -76,11 +85,17 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\nmanual=${manual} wrong=${wrong}${FIX ? ` fixed=${fixed}` : ""} errors=${errored}`,
+    `\nmanual=${manual} wrong=${wrong}${FIX ? ` fixed=${fixed}` : ""} legacy=${legacy} errors=${errored}`,
   );
   if (wrong > 0 && !FIX) console.log("Re-run with --fix to correct these.");
+  if (legacy > 0) {
+    console.log(
+      "Platform-liable accounts found — these must never belong to a real organiser. " +
+        "Retire them: npx tsx scripts/retire-legacy-accounts.ts",
+    );
+  }
   // Non-zero exit when something is wrong and we didn't fix it — usable in a check.
-  if (wrong > fixed) process.exitCode = 1;
+  if (wrong > fixed || legacy > 0) process.exitCode = 1;
 }
 
 void main();
