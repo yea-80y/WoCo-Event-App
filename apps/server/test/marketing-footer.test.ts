@@ -58,6 +58,19 @@ test("ampersands in a brand name are escaped once, not doubled", () => {
   assert.ok(footerHtml(CTX).includes("The Fox &amp; Hound"));
 });
 
+test("footer centres itself under the 600px card", () => {
+  // withFooter inserts after the body's own centering table, so the footer
+  // must bring its own — without it the compliance block hugs the viewport
+  // edge and reads as detached from the email above it.
+  const html = footerHtml(CTX);
+  assert.match(html, /<td align="center">/, "no centering cell");
+  assert.match(html, /width="600"/, "not constrained to the card width");
+});
+
+test("plain text drops zero-width preheader padding entities", () => {
+  assert.equal(htmlToPlainText("<p>Hi&zwnj;&zwnj;&#8203; there</p>"), "Hi there");
+});
+
 test("footer is inserted inside a document-final </body>", () => {
   const out = withFooter("<html><body><p>Hi</p></body></html>", "<i>FOOT</i>");
   assert.ok(out.includes("<i>FOOT</i></body></html>"));

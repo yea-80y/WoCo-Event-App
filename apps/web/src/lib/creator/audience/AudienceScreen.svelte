@@ -12,6 +12,7 @@
     suppressContacts,
   } from "../../api/marketing.js";
   import { markAudienceImported } from "../home/onboarding.svelte.js";
+  import { router } from "../../router/router.svelte.js";
   import CsvImportWizard from "./CsvImportWizard.svelte";
   import ConsentLedger from "./ConsentLedger.svelte";
   import ContactSearch from "./ContactSearch.svelte";
@@ -32,6 +33,14 @@
   let saving = $state(false);
   let wizardOpen = $state(false);
   let panel = $state<"contacts" | "compose" | "attendees" | null>(null);
+
+  /** ?announce={eventId} — the post-publish prompt: open the composer with
+   *  that event preselected. (With no contacts yet, the import invite shows
+   *  instead, which is the right first step anyway.) */
+  const announceEventId = $derived(router.params.announce);
+  $effect(() => {
+    if (announceEventId) panel = "compose";
+  });
   let consentFilter = $state<ContactConsentState | null>(null);
   /** Abuse gate (#59): sending requires a Stripe-verified organiser. */
   let stripeVerified = $state<boolean | null>(null);
@@ -261,7 +270,7 @@
         sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Your contact list is yours either way: importing and managing it needs nothing."
       />
       {#if stripeVerified}
-        <MarketingComposer {contacts} {suppressedEmails} />
+        <MarketingComposer {contacts} {suppressedEmails} initialEventId={announceEventId} />
       {/if}
     {/if}
 

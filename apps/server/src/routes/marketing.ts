@@ -343,6 +343,88 @@ marketing.post("/broadcast", requireAuth, async (c) => {
   }
 });
 
+/** Test sends: enough to iterate on a draft, useless as a bulk sender. */
+const testSendRateMap = new Map<string, number[]>();
+const TEST_SEND_RATE_LIMIT = 5;
+
+/**
+ * Send the draft to one address the organiser types (their own inbox) before
+ * committing to the whole audience — a broadcast cannot be recalled.
+ *
+ * There is deliberately NO imported-list membership check: the point is
+ * previewing in an inbox that may not be in the audience. What keeps this from
+ * becoming a send-to-anyone path instead: the Stripe-verified-sender gate, one
+ * recipient per call, 5/hour, an unremovable "[Test]" subject prefix, and the
+ * full compliance path (suppression + unsubscribe + footer) like any other send.
+ * It does not consume the daily cap — iterating on a draft must not eat the
+ * allowance the real broadcast needs.
+ */
+marketing.post("/broadcast/test", requireAuth, async (c) => {
+  const org = c.get("parentAddress").toLowerCase();
+  const body = c.get("body") as Record<string, unknown>;
+
+  try {
+    try { getResend(); } catch {
+      return c.json({ ok: false, error: "Email not configured (RESEND_API_KEY missing)" }, 500);
+    }
+
+    const gate = await requireVerifiedSender(org);
+    if (gate) return gate;
+
+    const fromName = body.fromName as string;
+    const subject = body.subject as string;
+    const htmlBody = body.htmlBody as string;
+    const email = body.email as string;
+
+    if (!fromName || typeof fromName !== "string" || fromName.length > 100) {
+      return c.json({ ok: false, error: "fromName required (max 100 chars)" }, 400);
+    }
+    if (!subject || typeof subject !== "string" || subject.length > 200) {
+      return c.json({ ok: false, error: "Subject required (max 200 chars)" }, 400);
+    }
+    if (!htmlBody || typeof htmlBody !== "string" || htmlBody.length > 50_000) {
+      return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
+    }
+    if (!email || typeof email !== "string" || !EMAIL_RE.test(email)) {
+      return c.json({ ok: false, error: "A valid test address is required" }, 400);
+    }
+
+    const now = Date.now();
+    const timestamps = testSendRateMap.get(org) ?? [];
+    const recent = timestamps.filter((t) => now - t < BROADCAST_RATE_WINDOW);
+    if (recent.length >= TEST_SEND_RATE_LIMIT) {
+      return c.json({ ok: false, error: "Rate limit exceeded (5 test sends per hour)" }, 429);
+    }
+
+    const result = await sendMarketingBatch({
+      organiserAddress: org,
+      fromDisplayName: fromName,
+      fromAddress: resolveMarketingFrom(org),
+      subject: `[Test] ${subject}`,
+      html: htmlBody,
+      recipients: [{ email }],
+    });
+
+    recent.push(now);
+    testSendRateMap.set(org, recent);
+
+    return c.json({
+      ok: true,
+      data: {
+        sent: result.sent,
+        // A suppressed test address is a real answer, not a failure: it means
+        // this inbox unsubscribed from this organiser at some point.
+        suppressed: result.suppressed,
+        failed: result.failed,
+        ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 1) } : {}),
+      },
+    });
+  } catch (err) {
+    console.error("[marketing] test send error:", err);
+    return c.json({ ok: false, error: err instanceof Error ? err.message : "Test send failed" }, 500);
+  }
+});
+
 // ── Organiser sending domain (Resend Domains API) ──────────────────────────
 
 const HOSTNAME_RE = /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;

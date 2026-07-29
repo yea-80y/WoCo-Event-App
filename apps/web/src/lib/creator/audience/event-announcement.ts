@@ -103,11 +103,23 @@ export function formatEventWhen(iso: string): string {
     .replace(" at ", ", ");
 }
 
-function shell(inner: string): string {
+/**
+ * Inbox preview line, invisible in the opened email. Without one, Gmail and
+ * Apple Mail scrape whatever text renders first — the small-caps brand row —
+ * as the message preview. The trailing &nbsp;&zwnj; padding stops clients
+ * that want a longer preview from continuing into the visible body.
+ */
+function preheaderHtml(text: string): string {
+  const t = text.trim().replace(/\s+/g, " ").slice(0, 140);
+  if (!t) return "";
+  return `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${escapeHtml(t)}${"&nbsp;&zwnj;".repeat(24)}</div>`;
+}
+
+function shell(inner: string, preheader = ""): string {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><meta name="color-scheme" content="dark" /></head>
 <body style="margin:0;padding:0;background:${BG};">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${BG};padding:24px 12px;">
+${preheaderHtml(preheader)}<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${BG};padding:24px 12px;">
 <tr><td align="center">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;background:${SURFACE};border:1px solid ${BORDER};border-radius:16px;overflow:hidden;font-family:${FONT};">
 ${inner}
@@ -157,6 +169,10 @@ export function buildEventAnnouncementHtml(input: EventAnnouncementInput): strin
     )
     .join("");
 
+  // Preview: the curated tagline when there is one, else the organiser's own
+  // opening line — both beat the brand row the client would scrape otherwise.
+  const preview = event.tagline || message.split("\n")[0] || "";
+
   return shell(`${hero}
 ${brandRow(brand)}
 <tr><td style="padding:16px 28px 28px;">
@@ -170,7 +186,7 @@ ${messageHtml(message)}
 </td></tr>
 </table>
 <p style="margin:14px 0 0;color:#6c6d7c;font-size:12px;line-height:1.5;">Or open <a href="${href}" style="color:#6c6d7c;">${href}</a></p>
-</td></tr>`);
+</td></tr>`, preview);
 }
 
 /** No event attached — the organiser's message on its own. */
@@ -178,5 +194,5 @@ export function buildPlainMessageHtml(brand: string, message: string): string {
   return shell(`${brandRow(brand)}
 <tr><td style="padding:14px 28px 28px;">
 ${messageHtml(message)}
-</td></tr>`);
+</td></tr>`, message.split("\n")[0] ?? "");
 }

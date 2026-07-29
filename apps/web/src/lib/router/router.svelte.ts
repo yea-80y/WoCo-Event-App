@@ -74,7 +74,12 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
   if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
   if (path === "/creator/pods") return { route: "creator-pods", params: {}, surface: "creator" };
-  if (path === "/creator/audience") return { route: "audience", params: {}, surface: "creator" };
+  if (path === "/creator/audience") {
+    // ?announce={eventId} — the post-publish prompt lands here with the
+    // composer open and that event preselected.
+    const announce = new URLSearchParams(query).get("announce");
+    return { route: "audience", params: announce ? { announce } : {}, surface: "creator" };
+  }
   if (path === "/creator/profile") return { route: "profile", params: {}, surface: "creator" };
 
   const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);

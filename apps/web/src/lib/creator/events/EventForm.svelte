@@ -7,12 +7,12 @@
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./ImportUrlPanel.svelte";
   import { localInputFromNow } from "./date.js";
   import { onMount } from "svelte";
+  import { navigate } from "../../router/router.svelte.js";
 
-  interface Props {
-    onpublished?: (eventId: string) => void;
-  }
-
-  let { onpublished }: Props = $props();
+  /** Set on publish success — swaps the form for the what-next card. Publishing
+   *  used to navigate straight to the event page, which buried the one moment
+   *  an organiser is primed to announce the event to their audience. */
+  let publishedEventId = $state<string | null>(null);
 
   let title = $state("");
   let tagline = $state("");
@@ -63,6 +63,25 @@
 </script>
 
 <div class="event-form">
+  {#if publishedEventId}
+    <div class="published-card">
+      <span class="mark" aria-hidden="true"></span>
+      <h2>Your event is live</h2>
+      <p class="published-sub">
+        Tickets are on sale now. Tell the people who already know you — announcing
+        to your audience is what sells the first wave.
+      </p>
+      <div class="published-actions">
+        <button
+          class="btn-announce"
+          onclick={() => navigate(`/creator/audience?announce=${encodeURIComponent(publishedEventId!)}`)}
+        >Announce to your audience</button>
+        <button class="btn-view" onclick={() => navigate(`/event/${publishedEventId}`)}>
+          View event page
+        </button>
+      </div>
+    </div>
+  {:else}
   <h2>Create Event</h2>
 
   {#if anyCardEnabled}
@@ -111,8 +130,9 @@
       : cryptoRecipientMissing
         ? "Connect a wallet for crypto payouts above, or disable crypto on all tiers."
         : undefined}
-    {onpublished}
+    onpublished={(id) => (publishedEventId = id)}
   />
+  {/if}
 </div>
 
 <style>
@@ -131,4 +151,59 @@
     font-weight: 700;
     letter-spacing: -0.01em;
   }
+
+  .published-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.875rem;
+  }
+
+  .published-card .mark {
+    width: 12px;
+    height: 12px;
+    background: var(--accent);
+    transform: rotate(45deg);
+  }
+
+  .published-sub {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    line-height: 1.55;
+    max-width: 42ch;
+    margin: 0;
+  }
+
+  .published-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-top: 0.25rem;
+  }
+
+  .btn-announce {
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 700;
+    font-size: 0.875rem;
+    padding: 0.625rem 1.125rem;
+    border-radius: var(--radius-md);
+    transition: background var(--transition);
+  }
+  .btn-announce:hover { background: var(--accent-hover); }
+
+  .btn-view {
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    padding: 0.625rem 1.125rem;
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition), color var(--transition);
+  }
+  .btn-view:hover { border-color: var(--border-hover); color: var(--text); }
 </style>
