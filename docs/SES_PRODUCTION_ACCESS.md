@@ -117,6 +117,30 @@ record (`p=none` with aggregate reporting while we establish a baseline).
 
 ---
 
+## The sending domain resolves — apex redirect added 2026-07-27
+
+A reviewer opening the sending domain and finding nothing is a standard rejection trigger,
+and `woco-net.com` served nothing: the apex A record was DNS-only (grey cloud) pointing at
+the VM, where Caddy 404s it and declines a cert. Fixed in Cloudflare:
+
+- apex + `www` → A `192.0.2.1` (reserved TEST-NET-1), **Proxied**
+- Redirect Rule `apex to app` — Hostname **is in** {`woco-net.com`, `www.woco-net.com`}
+  → static **302** → `https://woco.eth.limo`, preserve query string
+
+Three things worth knowing if this is ever revisited:
+
+- **A grey-cloud record cannot be redirected.** Redirect Rules only run on traffic that
+  reaches Cloudflare's edge; DNS-only sends it straight to Hetzner. An earlier attempt at
+  this rule silently did nothing for exactly that reason — check proxy status first.
+- **The rule must match hostname `is in`, never "contains".** "Contains woco-net.com" also
+  matches `events-api.woco-net.com` and would 302 Stripe's webhooks, silently stopping
+  ticket email. `sites.woco-net.com` must likewise stay DNS-only
+  (`CUSTOM_DOMAINS_HANDOVER.md` §68/§95).
+- **302, not 301, on purpose.** This is a review artifact, not a positioning decision —
+  `woco.eth` remains the canonical public URL. Whether `woco-net.com` should ever serve
+  the site is left open in `SEO_PLAN.md` D3, and a 301 would be cached in users' browsers
+  permanently, foreclosing that.
+
 ## Known gaps — fix before these become claims
 
 - **No background job queue for broadcasts.** Sends run inline in the HTTP request, 5
