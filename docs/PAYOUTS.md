@@ -234,16 +234,28 @@ re-verify onboarding → checkout → release on a fresh account.
 5. **Application fee: confirmed in writing, twice** — continues "regardless of account
    type and if they are under Managed Risk or not" (chat, 2026-07-29; also §17).
 
-**Refund window — interim answer (Stripe AI assistant, 2026-07-29; NOT specialist-confirmed):**
-no published hard limit for card refunds — card networks "generally allow refunds for a
-considerable period (often up to 180 days or more, depending on the network)". Direct-debit
-methods are documented at 180 days (SEPA, Bacs, ACH; BECS 90). Their recommendation, adopted
-as our interim policy: treat **180 days from charge creation** as the safe refund horizon;
-a charge too old to refund through Stripe is reimbursed out of band (organiser bank
-transfer). Product implication: on-sales opening more than ~180 days before the event risk
-tickets that cannot be refunded through Stripe after a cancellation. Specialist
-confirmation of the exact card-network windows (Visa/Mastercard/Amex, UK) is pending —
-accept the bot's offer to connect a specialist and record the answer here.
+**Refund window — RESOLVED (Stripe support, in writing, 2026-07-29):** there is **no
+technical time limit** on issuing a refund via the API or dashboard. Reliability, not
+permission, is the constraint:
+
+> "We're confident that up to 90 days, any refund you issue will behave as expected.
+> Refunds issued a little while after this — say, 100 or 120 days instead of 90 days —
+> will very likely work fine. Refunds issued much longer after this — say, 6 months
+> later — will have a sharply increased likelihood of experiencing some issue."
+
+The common failure is a closed/changed customer account; banks often recover (some mail
+the former cardholder a check), some don't. A refund can never be routed to a different
+payment method. Stripe's guidance for old charges: check with the customer that the card
+is still active first; if not, the merchant settles up directly (organiser bank transfer).
+FAQ: support.stripe.com/questions/refunds-faq.
+
+**What this means for us:** the reliable-refund window (~90 days from charge) aligns
+exactly with the §3.1 payout hold — every sale the hold protects is also reliably
+refundable. The exposed long-lead tail is exposed twice: those funds release to the
+organiser pre-event AND their refunds get less reliable with age (materially so from
+~6 months). Reinforces the §3.1 product levers on very long on-sale windows; organiser
+out-of-band reimbursement is the documented fallback and is the organiser's obligation
+either way (ORGANISER_TERMS §6).
 
 ---
 
