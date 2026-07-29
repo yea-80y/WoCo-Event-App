@@ -44,7 +44,11 @@ money".
 | `lib/stripe/payout-schedule.ts` | `ensureManualPayoutSchedule()` — sets `interval: "manual"`. |
 | `scripts/payout-schedule-audit.ts` | Audits (and with `--fix`, corrects) the schedule on every existing account. |
 | `GET /api/stripe/payouts` | Organiser's own held/released takings. Backs the terms' promise to tell them when funds release. |
-| `test/payout-release.test.ts` | 36 tests over the failure modes below. |
+| `lib/stripe/payout-view.ts` | Ledger → the organiser-facing response. `netIsFinal` + settlement-currency keying live here. |
+| `POST /api/stripe/dashboard-link` | Single-use Express Dashboard login link ("Manage bank details"). Minted per click, never stored or emailed — Stripe's own rule. |
+| `creator/payouts/PayoutsScreen.svelte` | The organiser's Payouts screen at `#/creator/payouts` (issue #93). |
+| `creator/payouts/payouts-model.ts` | Pure grouping/totalling/labelling for that screen. |
+| `test/payout-release.test.ts` · `test/payout-view.test.ts` | 36 tests over the failure modes below; 13 over the organiser-facing response. |
 
 Wired into `routes/stripe.ts`: `interval: "manual"` at account creation; a self-healing
 correction on `account.updated`; a ledger entry on every paid session (tickets **and**
@@ -76,6 +80,23 @@ account's default currency (verified against Stripe's payouts doc). Such an entr
 `settlementCurrency` recorded and regroups under it next sweep, so it releases from the
 balance the money actually sits in — instead of polling an empty balance until it
 breaches the hold ceiling.
+
+### What the organiser sees (issue #93)
+
+`#/creator/payouts`: held / next release / paid-out-to-date per currency, then
+every sale grouped under the event that earned it. Three things it must keep
+doing, because each is a promise about real money:
+
+- **Held totals are labelled estimates** while any `netIsFinal` is false. A refund
+  can still land before release, so a held figure is never stated as fact.
+- **Ceiling-forced releases are visible**, badged "Released early" with the reason.
+  §3.1 sales are where attendee protection does not hold; silence there is the
+  failure mode.
+- **A converted charge shows its settlement currency**, matching how the server
+  keys `heldByCurrency` — otherwise the tiles stop equalling the rows.
+
+Amounts are integer minor units end to end, divided once at the formatting edge
+(`formatMinor`). The copy says "delayed payouts", never "escrow" (§1).
 
 ### Crash safety — the intent journal
 

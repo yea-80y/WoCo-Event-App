@@ -20,11 +20,14 @@
 
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import type { PayoutEntryStatus } from "@woco/shared";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const LEDGER_FILE = join(DATA_DIR, "stripe-payout-ledger.json");
 
-export type PayoutEntryStatus = "held" | "released" | "void";
+// The organiser-facing view of this ledger is a shared type (the payouts screen
+// reads it), and status is the one field both sides must agree on.
+export type { PayoutEntryStatus };
 
 export interface PayoutLedgerEntry {
   /** Stripe Checkout Session id — the natural idempotency key for a sale. */

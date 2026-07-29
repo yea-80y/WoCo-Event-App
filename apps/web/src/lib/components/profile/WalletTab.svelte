@@ -1,6 +1,7 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnect from "../../creator/dashboard/StripeConnect.svelte";
+  import { navigate } from "../../router/router.svelte.js";
 </script>
 
 <div class="wallet-tab">
@@ -34,6 +35,9 @@
         Connect Stripe to accept card payments for your events. Payouts go straight to your Stripe balance.
       </p>
       <StripeConnect />
+      <button class="payouts-link" onclick={() => navigate("/creator/payouts")}>
+        See what you've earned and when it lands →
+      </button>
     </section>
   {/if}
 </div>
@@ -45,6 +49,16 @@
     gap: 1.5rem;
     padding-top: 0.5rem;
   }
+
+  /* Spacing comes from .stripe-section's flex gap — no margin here. */
+  .payouts-link {
+    align-self: flex-start;
+    font-size: 0.8125rem;
+    color: var(--accent-text);
+    transition: color var(--transition);
+  }
+
+  .payouts-link:hover { color: var(--accent); }
 
   .identity-card {
     border: 1px solid var(--border);

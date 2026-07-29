@@ -29,7 +29,7 @@ import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-ch
 import { queueSeriesClaim } from "./claims.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
 import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
-import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
+import type { SealedBox, SeriesManifestBlob, PayoutsResponse } from "@woco/shared";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId } from "../lib/chain/event-contract.js";
 import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
@@ -52,6 +52,8 @@ import {
   markVoid as markPayoutVoid,
   listByOrganiser as listPayoutsByOrganiser,
 } from "../lib/stripe/payout-ledger.js";
+import { buildPayoutsResponse } from "../lib/stripe/payout-view.js";
+import { RateWindow } from "../lib/marketing/rate-window.js";
 
 const stripe = new Hono<AppEnv>();
 
@@ -247,48 +249,77 @@ stripe.delete("/account", requireAuth, async (c) => {
  */
 stripe.get("/payouts", requireAuth, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
-  const entries = listPayoutsByOrganiser(organiserAddress);
+  try {
+    const data: PayoutsResponse = buildPayoutsResponse(listPayoutsByOrganiser(organiserAddress));
+    return c.json({ ok: true, data });
+  } catch (err) {
+    // A thrown route hands Hono's plain-text 500 to a client that is parsing
+    // JSON — the payouts screen would show "unexpected token" where it should
+    // say "we couldn't load this, try again".
+    console.error("[stripe] Failed to build payouts response:", err);
+    return c.json({ ok: false, error: "Could not read your payouts right now" }, 500);
+  }
+});
 
-  const held = entries.filter((e) => e.status === "held");
-  const heldByCurrency: Record<string, number> = {};
-  for (const e of held) {
-    // Gross until the release sweep resolves net from the balance transaction —
-    // labelled as such in the response so the UI never presents it as final.
-    // Keyed by the currency the funds actually sit in: netAmount is settlement-
-    // currency units whenever Stripe converted the charge.
-    const cur = e.settlementCurrency ?? e.currency;
-    heldByCurrency[cur] = (heldByCurrency[cur] ?? 0) + (e.netAmount ?? e.grossAmount);
+/**
+ * POST /api/stripe/dashboard-link — a single-use Express Dashboard login link.
+ *
+ * The organiser's only route to their own bank details, payment history and
+ * balance after onboarding ends. Stripe requires this to be created on the
+ * PLATFORM key against the connected account id (no Stripe-Account header),
+ * and requires it to be used immediately: "Only redirect users to login links
+ * from within your platform. Don't share them externally through email, text,
+ * or other channels" (docs.stripe.com/connect/integrate-express-dashboard).
+ * So we mint per click and never store or email the URL.
+ *
+ * The account id comes from the caller's VERIFIED parentAddress — never the
+ * request body — so an organiser can only ever open their own dashboard.
+ */
+// Friction, not accounting: every click mints a Stripe API call, and the shared
+// platform API quota shouldn't be spendable by one stuck client loop. Generous —
+// a person re-clicking a slow button never hits it.
+const dashboardLinkRate = new RateWindow(10, 5 * 60 * 1000);
+
+stripe.post("/dashboard-link", requireAuth, async (c) => {
+  const organiserAddress = c.get("parentAddress").toLowerCase();
+  if (dashboardLinkRate.isLimited(organiserAddress)) {
+    return c.json({ ok: false, error: "Too many attempts — try again in a few minutes." }, 429);
+  }
+  dashboardLinkRate.record(organiserAddress);
+  const record = getStripeAccount(organiserAddress);
+  if (!record) {
+    return c.json({ ok: false, error: "No Stripe account found. Connect Stripe first." }, 400);
   }
 
-  return c.json({
-    ok: true,
-    data: {
-      schedule: "manual",
-      heldByCurrency,
-      nextReleaseAt:
-        held.map((e) => e.releaseAfter).sort()[0] ?? null,
-      entries: entries.map((e) => ({
-        sessionId: e.sessionId,
-        kind: e.kind,
-        eventId: e.eventId,
-        shopId: e.shopId,
-        currency: e.currency,
-        settlementCurrency: e.settlementCurrency ?? null,
-        grossAmount: e.grossAmount,
-        netAmount: e.netAmount ?? null,
-        // While held, netAmount is the LATEST resolution — a refund can still
-        // change it. It is only final once the entry has left "held".
-        netIsFinal: e.status !== "held" && typeof e.netAmount === "number",
-        recordedAt: e.recordedAt,
-        releaseAfter: e.releaseAfter,
-        status: e.status,
-        releasedAt: e.releasedAt ?? null,
-        payoutId: e.payoutId ?? null,
-        forcedByCeiling: !!e.forcedByCeiling,
-        voidReason: e.voidReason ?? null,
-      })),
-    },
-  });
+  try {
+    const s = getStripe();
+    const link = await s.accounts.createLoginLink(record.stripeAccountId);
+    // The URL itself is a bearer credential for the organiser's Stripe account —
+    // returned to the caller who authenticated for it, and logged nowhere.
+    return c.json({ ok: true, url: link.url });
+  } catch (err: any) {
+    // The account was deleted on Stripe's side. Same self-heal as
+    // /account-status: drop the stale record so the UI offers "connect" rather
+    // than looping on a dashboard that cannot exist.
+    if (err?.statusCode === 404 || err?.code === "resource_missing") {
+      deleteStripeAccount(organiserAddress);
+      console.log(`[stripe] Account ${record.stripeAccountId} missing — removed local record`);
+      return c.json({ ok: false, error: "Your Stripe account is no longer connected. Connect Stripe again." }, 400);
+    }
+    console.error("[stripe] Failed to create login link:", err);
+    // Stripe refuses a login link until onboarding has been submitted, and for
+    // accounts that aren't on the Express Dashboard. Those are "finish setup"
+    // prompts, not outages — a 4xx from Stripe must not surface as our 500.
+    const status = typeof err?.statusCode === "number" ? err.statusCode : 500;
+    // 429 is Stripe telling US to slow down, not the organiser to verify.
+    if (status >= 400 && status < 500 && status !== 429) {
+      return c.json(
+        { ok: false, error: "Stripe won't open your dashboard yet — finish verification first." },
+        400,
+      );
+    }
+    return c.json({ ok: false, error: "Stripe is unavailable right now. Try again shortly." }, 502);
+  }
 });
 
 // ---------------------------------------------------------------------------

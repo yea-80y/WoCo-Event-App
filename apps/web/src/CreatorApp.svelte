@@ -16,6 +16,7 @@
   import ShopPosShell from "./lib/creator/shops/ShopPosShell.svelte";
   import PodManager from "./lib/components/pod/PodManager.svelte";
   import AudienceScreen from "./lib/creator/audience/AudienceScreen.svelte";
+  import PayoutsScreen from "./lib/creator/payouts/PayoutsScreen.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";
 
   $effect(() => {
@@ -78,6 +79,8 @@
     <PodManager />
   {:else if router.route === "audience"}
     <AudienceScreen />
+  {:else if router.route === "payouts"}
+    <PayoutsScreen />
   {:else if router.route === "profile"}
     <ProfilePage address={router.params.address} />
   {:else if router.route === "stripe-return"}
