@@ -157,31 +157,38 @@ Support also confirmed (same chat): **payout schedules are unaffected by Managed
 
 ---
 
-## 4. Our Connect configuration
+## 4. Our Connect configuration — Managed Risk (shipped, issue #90)
 
-| | Current (Option A) | Managed Risk (Option B) |
+Since #90, `POST /api/stripe/connect` creates every account with **controller
+properties**, never `type` (`lib/stripe/account-params.ts`, pinned by
+`test/account-params.test.ts`):
+
+| | Value | Meaning |
 |---|---|---|
-| Account type | `express`, Accounts v1 | platform-level reconfiguration |
-| `controller.losses.payments` | `application` — **WoCo** carries negative balances | `stripe` |
-| Fees collector | platform | account |
-| `application_fee_amount` | yes, 1.5% | **yes** — Stripe support, 2026-07-27 |
-| £2/monthly active account | yes | no |
-| 0.25% + 10p per payout | yes | no |
-| Payout schedule | `manual`, set by us | **UNVERIFIED** — see §6 |
+| `controller.stripe_dashboard.type` | `express` | Stripe-hosted Express Dashboard |
+| `controller.fees.payer` | `account` | organiser pays Stripe processing fees |
+| `controller.losses.payments` | `stripe` | **Stripe** absorbs unrecoverable negative balances |
+| `controller.requirement_collection` | `stripe` | Stripe-hosted onboarding collects KYC |
+| Payout schedule | `manual` at creation | unaffected by Managed Risk (chat, 2026-07-29) |
 
-**Status 2026-07-27:** Stripe confirmed application fees survive Managed Risk (*"I don't
-see any indications that will limit the collection of application fees while on Managed
-Risk. You are welcome to collect application fees accordingly."*). Per
-`PRICING_AND_EMAIL.md` §16 that resolves the launch blocker in favour of **Option B**.
-Record it as a support agent's read, not a documented guarantee.
+The £2/monthly-active and 0.25%+10p payout fees fall away (`fees.payer=account`);
+`application_fee_amount` (1.5%) continues — confirmed in writing, twice (§6.5).
 
-The §3.1 finding **strengthens** that decision: for long-lead sales the payout hold
-cannot protect anyone, so who carries the negative balance is the only real control — and
-under Managed Risk that is Stripe.
+The loss waterfall for a refund/dispute on an empty balance: the organiser's
+connected account is debited first (they are merchant of record on direct
+charges); the unrecoverable remainder is **Stripe's**, not WoCo's. The §3.1
+finding is why this matters: for long-lead sales the payout hold cannot protect
+anyone, so who carries the negative balance is the only real control.
 
-Everything in §2 is required under **both** options: an organiser paid before their event
-who then cancels leaves attendees unrefundable regardless of who absorbs the accounting
-loss.
+**`type: "express"` is incompatible with Managed Risk** — it bakes in
+`controller.losses.payments = "application"` permanently; such an account can
+only be retired, never converted. `payout-schedule-audit.ts` flags any
+platform-liable account; `retire-legacy-accounts.ts` deletes zero-balance ones
+(pre-launch test accounts — the organiser re-onboards via /connect).
+
+Everything in §2 is still required: an organiser paid before their event who
+then cancels leaves attendees unrefundable regardless of who absorbs the
+accounting loss.
 
 ---
 
@@ -202,10 +209,12 @@ Its absence is a production alarm, not a degraded feature.
 
 ---
 
-## 6. RESOLVED with Stripe (chat + specialist email, 2026-07-29) — build item is #90
+## 6. RESOLVED with Stripe (chat + specialist email, 2026-07-29) — built as #90
 
-Both halves of the old ask are answered; what remains is a **code change**, tracked as
-issue #90 (launch-blocker):
+Both halves of the old ask are answered; the code change shipped as issue #90
+(§4 is the configuration record). Remaining ops: verify Radar is enabled for
+connected transactions (dashboard), retire the legacy test accounts, and
+re-verify onboarding → checkout → release on a fresh account.
 
 1. **Self-payout restriction: not needed.** Express Dashboard cannot initiate payouts and
    we have not enabled schedule editing — §3.2 has the verbatim confirmation.

@@ -60,21 +60,23 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
 
 ## Stripe payments (card via Stripe Connect) — the only live rail
 
-- Stripe Connect Express accounts, hosted onboarding (Account Links)
+- Managed Risk accounts (issue #90): created with controller properties
+  (`stripe_dashboard.type=express · fees.payer=account · losses.payments=stripe ·
+  requirement_collection=stripe`), hosted onboarding (Account Links). NEVER `type:
+  "express"` — that shape is permanently platform-liable and cannot be converted.
 - DIRECT charges on the connected account (`{stripeAccount}`, no `transfer_data`): the
   ORGANISER is merchant of record — their name on checkout + the buyer's statement, their
   dispute liability first-line. Platform takes `application_fee_amount`. NOT destination
-  charges (corrected 2026-07-26).
-  CAVEAT: Express accounts = platform is responsible for unrecoverable negative balances,
-  so WoCo carries residual chargeback exposure. See `docs/legal/DATA_INVENTORY.md` §5.1.
+  charges (corrected 2026-07-26). Unrecoverable negative balances fall on STRIPE under
+  Managed Risk. See `docs/legal/DATA_INVENTORY.md` §5.1–5.2.
 - Platform fee: 1.5% (`application_fee_amount`) — matches escrow contract (150 bp).
 - Account store: `.data/stripe-accounts.json` (file-backed, same pattern as tx-registry)
 - PAYOUTS ARE MANUAL + RELEASED AFTER THE EVENT (2026-07-27). Accounts are created
   `interval: "manual"`; a per-sale ledger + hourly sweep release only what is DUE — a
   connected account has ONE pooled balance across all its events, so never pay out the raw
-  balance. Two limits are load-bearing: funds cannot be held >90 days (UK; per CHARGE, so
-  early-bird money releases before its event), and `manual` does NOT stop an Express
-  organiser paying themselves. Never call it escrow. **Authority: `docs/PAYOUTS.md`.**
+  balance. Load-bearing limit: funds cannot be held >90 days (UK; per CHARGE, so
+  early-bird money releases before its event). On manual, only the platform can initiate
+  payouts (confirmed 2026-07-29). Never call it escrow. **Authority: `docs/PAYOUTS.md`.**
 - Webhook: `checkout.session.completed` auto-claims ticket via `claimTicket()`.
   Webhook source: "Connected and v2 accounts" (NOT "Your account")
 - Onboarding opens in NEW TAB during event creation to preserve form data
