@@ -142,17 +142,6 @@
     !!payoutCurrency && !(ALL_CURRENCIES as readonly string[]).includes(payoutCurrency),
   );
 
-  // Snap any tier already priced in a currency the picker no longer offers.
-  // Without this an editor opened before the status loaded keeps a stale value
-  // and the publish is rejected server-side with no visible cause.
-  $effect(() => {
-    const options = currencyOptions;
-    if (options.length !== 1) return;
-    for (const tier of tiers) {
-      if (tier.currency !== options[0]) tier.currency = options[0];
-    }
-  });
-
   /** Whether the current auth identity owns a real EVM wallet. */
   // EOA logins: the auth address is a self-custodied EOA usable on any EVM chain
   // (web3 = injected wallet).
@@ -272,6 +261,18 @@
   }
 
   let tierGroups = $state<TierGroup[]>([newTier()]);
+
+  // Snap any tier already priced in a currency the picker no longer offers.
+  // Without this an editor opened before the Stripe status loaded keeps a stale
+  // value and the publish is rejected server-side with no visible cause.
+  // Declared AFTER tierGroups so it reads the real state, not a stale binding.
+  $effect(() => {
+    const options = currencyOptions;
+    if (options.length !== 1) return;
+    for (const tier of tierGroups) {
+      if (tier.currency !== options[0]) tier.currency = options[0];
+    }
+  });
 
   // Apply imported tiers (Skiddle/Fatsoma/Eventbrite) exactly once per assignment.
   $effect(() => {
