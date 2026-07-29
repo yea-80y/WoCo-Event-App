@@ -6,15 +6,10 @@
  * Stripe's support recommended exactly this for future-delivery businesses like
  * ticketing (docs/PRICING_AND_EMAIL.md §15).
  *
- * ⚠️ WHAT THIS DOES NOT DO — read before relying on it as a control.
- * A manual schedule stops AUTOMATIC payouts. It does not stop the organiser from
- * initiating their own payout from the Express Dashboard. Stripe, verbatim:
- * "Connected accounts can still make manual payouts after you, as the platform,
- * choose to restrict connected accounts from updating their own payout schedule."
- * Locking that down is not self-serve — it needs a support request
- * (https://docs.stripe.com/connect/platform-controls-for-stripe-dashboard-accounts).
- * Until Stripe grants it, this is the DEFAULT funds sit under, not a guarantee
- * they stay there. Tracked in docs/PAYOUTS.md §"Open with Stripe".
+ * On a manual schedule only the platform can move funds: the Express Dashboard
+ * cannot self-initiate payouts, and schedule editing is a platform-configurable
+ * capability we have not enabled — confirmed in writing by Stripe, 2026-07-29
+ * (docs/PAYOUTS.md §3.2). Payout schedules are unaffected by Managed Risk.
  */
 
 import { getStripe } from "./client.js";
@@ -22,8 +17,9 @@ import { getStripe } from "./client.js";
 /**
  * Set `settings.payouts.schedule.interval = "manual"`.
  *
- * We stay on Accounts v1 (`type: "express"`), so this uses the v1 `settings.payouts`
- * hash rather than the newer Balance Settings API. Stripe supports both: "If you're
+ * We stay on Accounts v1 (controller-created, Express Dashboard — see
+ * lib/stripe/account-params.ts), so this uses the v1 `settings.payouts` hash
+ * rather than the newer Balance Settings API. Stripe supports both: "If you're
  * currently using settings.payouts on Accounts v1, you can continue to do so."
  *
  * Idempotent and safe to call repeatedly — setting an already-manual schedule is a

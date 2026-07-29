@@ -5,8 +5,10 @@
  * Payments use DIRECT charges on the organiser's connected account via Stripe
  * Checkout Sessions — session created with `{stripeAccount}` and no
  * `transfer_data`, so the organiser is merchant of record and carries
- * first-line dispute liability. Express accounts mean the PLATFORM still
- * absorbs unrecoverable negative balances; see docs/legal/DATA_INVENTORY.md §5.1.
+ * first-line dispute liability. Accounts are created under Managed Risk
+ * (controller properties, `losses.payments = "stripe"` — lib/stripe/account-params.ts),
+ * so unrecoverable negative balances fall on Stripe, not the platform.
+ * See docs/legal/DATA_INVENTORY.md §5.1 and docs/PAYOUTS.md §4/§6.
  */
 
 import { Hono } from "hono";
@@ -43,6 +45,7 @@ import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/s
 import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } from "../lib/shop/service.js";
 import { sendShopOrderEmail } from "../lib/email/shop-receipt.js";
 import { ensureManualPayoutSchedule } from "../lib/stripe/payout-schedule.js";
+import { buildConnectedAccountParams } from "../lib/stripe/account-params.js";
 import { eventReleaseAfter, shopReleaseAfter } from "../lib/stripe/payout-policy.js";
 import {
   recordHeld as recordHeldPayout,
@@ -72,21 +75,7 @@ stripe.post("/connect", requireAuth, async (c) => {
 
   try {
     const s = getStripe();
-    const account = await s.accounts.create({
-      type: "express",
-      capabilities: {
-        card_payments: { requested: true },
-        transfers: { requested: true },
-      },
-      // Tickets are future delivery: the organiser's takings are held until the
-      // event has happened and released by the sweep in payout-release.ts. Set at
-      // creation so no account is ever briefly on Stripe's automatic schedule.
-      // NOTE: this stops automatic payouts only — an Express organiser can still
-      // pay themselves from their own dashboard until Stripe grants the platform
-      // control that blocks it. See lib/stripe/payout-schedule.ts + docs/PAYOUTS.md.
-      settings: { payouts: { schedule: { interval: "manual" } } },
-      metadata: { organiserAddress },
-    });
+    const account = await s.accounts.create(buildConnectedAccountParams(organiserAddress));
 
     setStripeAccount(organiserAddress, account.id, false);
 
