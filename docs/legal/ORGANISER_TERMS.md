@@ -126,7 +126,7 @@ suspension.
 
 **Read this section carefully — it is where your financial exposure sits.**
 
-- Our platform fee is **[FEE]%** of the ticket price, taken automatically at the point of sale.
+- Our platform fee is **1.5%** of the ticket price, taken automatically at the point of sale.
 - Payment processing fees are charged by the payment provider on top and come out of your proceeds.
 
 ### When you get paid
@@ -137,11 +137,11 @@ suspension.
   money and this is not an escrow arrangement — we control the timing of the release, and
   nothing else.
 - Your account is set to a manual payout schedule. We release each event's takings
-  **[RELEASE_DAYS] days after that event ends**, and you can see what is held and when it is
+  **2 days after that event ends**, and you can see what is held and when it is
   due to release in your dashboard at any time.
-- **Exception — sales more than [HOLD_LIMIT_DAYS] days before your event.** Our payment
+- **Exception — sales more than 90 days before your event.** Our payment
   provider does not permit funds to be held indefinitely: money must be paid out within
-  [HOLD_LIMIT_DAYS] days of the sale, wherever your event falls. Where you sell earlier than
+  90 days of the sale, wherever your event falls. Where you sell earlier than
   that — early-bird or festival on-sales — those takings are released to you **before** your
   event. Your refund obligation below is unchanged, so if you sell far in advance you must be
   able to refund from your own funds.

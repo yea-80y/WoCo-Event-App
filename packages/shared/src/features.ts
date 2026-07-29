@@ -21,6 +21,13 @@ export const FEATURES = {
   // cryptoPaymentsAllowed because it is a separate decision — and because a live money
   // path needs a kill switch that is not a code change.
   agentCommerceAllowed: true,
+  // Organiser custom sending domains. OFF for launch, for two independent
+  // reasons: the production Resend key is send-only, so the Domains API 401s and
+  // the panel could only ever show an error; and PRICING_AND_EMAIL.md §6 forbids
+  // onboarding organiser domains on Resend at all — 2 domains each against a Pro
+  // cap of 10, and migrating to SES later would make every organiser redo their
+  // DNS. Turn on with the SES provider work (§14 E10), not before.
+  organiserSendingDomains: false,
 } as const;
 
 /** Minimum buyer-pays fee % (3% Stripe + 1.5% WoCo). UI snaps below this back up. */

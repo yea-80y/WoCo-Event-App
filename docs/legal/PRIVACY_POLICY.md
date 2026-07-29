@@ -37,7 +37,7 @@ company number [NUMBER], registered office [REGISTERED OFFICE ADDRESS].
 We are registered with the Information Commissioner's Office, registration number
 [ICO REGISTRATION NUMBER].
 
-**Privacy contact:** [PRIVACY EMAIL]
+**Privacy contact:** privacy@woco-net.com
 
 If we ever appoint a Data Protection Officer we will name them here. We are not currently required
 to appoint one.
@@ -222,7 +222,7 @@ transfers rely on the UK International Data Transfer Addendum or an adequacy dec
 Under UK GDPR you have the right to: **access** your data; have it **corrected**; have it **erased**;
 **restrict** or **object** to processing; **portability**; and to **withdraw consent** at any time.
 
-**Exercise them by emailing [PRIVACY EMAIL].** We respond within one month.
+**Exercise them by emailing privacy@woco-net.com.** We respond within one month.
 
 Three honest caveats:
 
@@ -250,7 +250,7 @@ We would rather you came to us first, but it is your right either way.
 | Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser |
 | Transaction records | 6 years (Companies Act 2006, HMRC) |
 | Organiser sale and payout records | 6 years (Companies Act 2006, HMRC) — what sold, what we released and when. Accounting evidence; it contains no attendee identifier |
-| Security logs and IP records | [LOG RETENTION PERIOD — TO BE SET] |
+| Security logs and IP records | 30 days. If a log is part of an active security, fraud or abuse investigation we keep it until that closes |
 | On-chain records | Permanent — cannot be deleted |
 
 Your ticket is deliberately long-lived. It is intended as a lasting record of what you attended,
@@ -297,4 +297,4 @@ in-app notice before they take effect. The version and date are at the top.
 
 [COMPANY LEGAL NAME]
 [REGISTERED OFFICE ADDRESS]
-[PRIVACY EMAIL]
+privacy@woco-net.com

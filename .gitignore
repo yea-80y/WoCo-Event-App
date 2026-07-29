@@ -31,6 +31,10 @@ deploy/secrets/
 
 # Scripts / artifacts
 *.sh
+# `*.sh` excludes ad-hoc helpers. Operational scripts under apps/server/scripts
+# are not that: they run in production (from cron on the VM), reach the VM via
+# the deploy rsync, and must be reviewable and revertable like any other code.
+!apps/server/scripts/*.sh
 *.tar
 *.tar.gz
 

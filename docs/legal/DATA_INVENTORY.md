@@ -372,9 +372,10 @@ organiser's and Stripe's obligation, not something WoCo needs to hold separately
 |---|---|---|
 | 1 | Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination | Claude |
 | 2 | Confirm whether legacy destination-charge orders exist in production | user |
-| 3 | Define + implement log retention for Cloudflare and host logs (currently undefined) | user |
+| 3 | **Configure** log rotation to match the 30-day period now STATED in PRIVACY_POLICY §10. Stating a period does not create one: Docker's `json-file` driver rotates on nothing unless `max-size`/`max-file` are set in compose, and Cloudflare's retention depends on the plan — check it rather than assume. A policy claiming 30 days over infrastructure that keeps logs forever is worse than the placeholder was | user |
 | 4 | Decide + implement the separate attendee postage batch and manifest-driven erasure | Fable |
 | 5 | Solicitor sign-off on the Swarm international-transfer position (§6) | user |
 | 6 | ICO registration (data protection fee) before processing begins | user |
 | 7 | Point-of-collection notices on all four surfaces (§2) | Claude |
 | 8 | Generated organiser sites need a privacy policy page | Claude |
+| 9 | **Organiser privacy contact.** `privacy@woco-net.com` is WoCo's contact *as controller* and stays WoCo's — it is not an organiser-facing setting. But §3 tells the attendee their order-form rights are exercised against the ORGANISER, and today the only identification of that organiser is their display name at checkout. They need a reachable contact of their own. Deliberately not built yet: it wants a verified address, which is the same problem SES domain verification solves (PRICING_AND_EMAIL §6 forbids onboarding organiser domains on Resend). Slot it in as an organiser-profile field once SES lands — the point-of-collection notice and the generated-site policy page (item 8) both read it | Claude, after SES |
