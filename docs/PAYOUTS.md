@@ -133,26 +133,27 @@ configuration (§4). The remaining levers are product ones, not code: limit how 
 an unproven organiser may sell, hold a partial reserve, or require cancellation cover for
 festival-scale on-sales. Those belong to the §7 tier decisions.
 
-### 3.2 A manual schedule is NOT a lock 🚨
+### 3.2 The manual schedule IS the lock for Express — confirmed 2026-07-29
 
-[Platform controls](https://docs.stripe.com/connect/platform-controls-for-stripe-dashboard-accounts),
-verbatim:
+Earlier revisions of this section treated the platform-controls page's warning
+("connected accounts can still make manual payouts…") as applying to us and called the
+hold advisory. **Stripe support corrected this in writing (live chat, 2026-07-29):**
 
-> "Connected accounts can still make manual payouts after you, as the platform, choose to
-> restrict connected accounts from updating their own payout schedule."
+> "Express Dashboards has limited capabilities … Even if the payout plan is set to
+> manual, it doesn't mean that they will have the ability to process or initiate payout
+> from their Express Dashboard. Rather, the platform has to manually process the payout."
 
-> "If you need full control over your connected accounts' payouts and want to restrict
-> your connected accounts from being able to make their own payouts, contact us with a
-> detailed description of your use case."
+The [Express Dashboard doc](https://docs.stripe.com/connect/express-dashboard) squares the
+two: schedule editing and self-payout exist for Express **only "if you've enabled it"** —
+platform-configurable capabilities, and we have NOT enabled them. The stronger warning on
+the platform-controls page concerns dashboards where those capabilities are on.
 
-So `interval: "manual"` stops **automatic** payouts. An Express organiser can still pay
-themselves out of their own Express Dashboard, before their event. **Until Stripe grants
-the platform control that blocks this, the hold is the default funds sit under — not a
-guarantee they stay there.** Open with Stripe (§6).
+So for our accounts: on `interval: "manual"`, only the platform can move funds. No support
+grant is needed. Defence-in-depth stays regardless: the `account.updated` self-heal
+re-applies a manual schedule, and the sweep retries failed heals (#85) — a config drift
+must correct itself, not wait to be noticed.
 
-This does not make the build pointless: it removes the automatic fast payout that is the
-common case, and it is a precondition for the lock. But no attendee-facing or
-organiser-facing promise may be written as though funds cannot move.
+Support also confirmed (same chat): **payout schedules are unaffected by Managed Risk.**
 
 ---
 
@@ -201,28 +202,28 @@ Its absence is a production alarm, not a degraded feature.
 
 ---
 
-## 6. Open with Stripe
+## 6. RESOLVED with Stripe (chat + specialist email, 2026-07-29) — build item is #90
 
-Send on the existing thread — all three are cheap to ask while it is live.
+Both halves of the old ask are answered; what remains is a **code change**, tracked as
+issue #90 (launch-blocker):
 
-**One ask, two parts** — they are the same conversation and should not be split:
-
-1. **Restrict connected accounts from self-initiating payouts** (§3.2). Requires a support
-   request with a use-case description. Without it our hold is advisory. Use case: UK
-   event ticketing, future delivery, funds held until after the event to protect attendee
-   refunds on cancellation.
-2. **Does that restriction survive Managed Risk?** The payout-control page says *"Platforms
-   that manage fraud and dispute liability, **or** have platform controls, can adjust the
-   payout interval."* That is a disjunction: granting (1) should satisfy the second limb
-   independently of who carries liability. **Our reading, not Stripe's words — get it
-   confirmed**, because if the hold does not survive, Option B removes our attendee
-   protection entirely and the trade changes shape.
-
-> ~~3. Do existing connected accounts migrate?~~ **DEAD — do not ask.** We are pre-launch.
-> The 12 connected accounts are test accounts at zero balance (verified 2026-07-27 before
-> the schedule fix). If they cannot migrate we discard them. The question has no decision
-> attached to it, and asking it invites Stripe to treat us as a live platform with an
-> installed base — which is the opposite of the position we want going into this.
+1. **Self-payout restriction: not needed.** Express Dashboard cannot initiate payouts and
+   we have not enabled schedule editing — §3.2 has the verbatim confirmation.
+2. **Schedules survive Managed Risk: confirmed.** "Payout schedule is not affected by
+   Managed Risk" (chat, 2026-07-29).
+3. **The Managed Risk recipe (specialist email):** `type: "express"` is INCOMPATIBLE with
+   Managed Risk (`controller.losses.payments = "application"` is baked in). Accounts must
+   be CREATED with controller properties instead:
+   `controller[stripe_dashboard][type]=express · controller[fees][payer]=account ·
+   controller[losses][payments]=stripe · controller[requirement_collection]=stripe`,
+   plus Radar configured on connected transactions. **Never onboard a real organiser on
+   `type: "express"`** — such an account is permanently platform-liable.
+4. **Disputes** (same email): Stripe debits the connected account's balance first; with
+   `losses.payments = "stripe"` the unrecoverable remainder is Stripe's. Express
+   Dashboard has no dispute UI — Connect embedded components can provide it in our UI
+   later; the platform can also respond via API.
+5. **Application fee: confirmed in writing, twice** — continues "regardless of account
+   type and if they are under Managed Risk or not" (chat, 2026-07-29; also §17).
 
 **UNVERIFIED, worth confirming:** how long after a charge a refund can still be issued
 through Stripe. Not stated on `docs.stripe.com/refunds`. Matters for long-lead events: if
