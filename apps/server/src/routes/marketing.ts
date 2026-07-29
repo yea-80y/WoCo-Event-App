@@ -12,8 +12,9 @@
  */
 
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
-import { MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import { FEATURES, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
@@ -36,6 +37,23 @@ import { writeFeedPage, encodeJsonFeed } from "../lib/swarm/feeds.js";
 import { topicMarketingList } from "../lib/swarm/topics.js";
 
 const marketing = new Hono<AppEnv>();
+
+/**
+ * Custom sending domains are gated by FEATURES.organiserSendingDomains, in
+ * lockstep with the UI — hiding the panel alone would leave the endpoints
+ * reachable by an older client or a direct call, and every one of them either
+ * 401s against the send-only Resend key or burns a slot on the Pro domain cap
+ * that SES migration would then have to undo (PRICING_AND_EMAIL.md §6).
+ */
+const domainsGate: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (!FEATURES.organiserSendingDomains) {
+    return c.json(
+      { ok: false, error: "Custom sending domains aren't available yet", code: "FEATURE_OFF" },
+      403,
+    );
+  }
+  await next();
+};
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_LIST_EMAILS = MARKETING_MAX_LIST_EMAILS;
@@ -426,7 +444,7 @@ function toInfo(entry: SendingDomainEntry): Record<string, unknown> {
   };
 }
 
-marketing.post("/domain", requireAuth, async (c) => {
+marketing.post("/domain", domainsGate, requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const body = c.get("body") as Record<string, unknown>;
 
@@ -472,13 +490,13 @@ marketing.post("/domain", requireAuth, async (c) => {
   }
 });
 
-marketing.get("/domain", requireAuth, (c) => {
+marketing.get("/domain", domainsGate, requireAuth, (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const entry = getDomain(org);
   return c.json({ ok: true, data: entry ? toInfo(entry) : null });
 });
 
-marketing.post("/domain/verify", requireAuth, async (c) => {
+marketing.post("/domain/verify", domainsGate, requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   try {
     const entry = getDomain(org);
@@ -506,7 +524,7 @@ marketing.post("/domain/verify", requireAuth, async (c) => {
   }
 });
 
-marketing.delete("/domain", requireAuth, async (c) => {
+marketing.delete("/domain", domainsGate, requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   try {
     const entry = getDomain(org);

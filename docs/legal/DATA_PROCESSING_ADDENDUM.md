@@ -12,7 +12,7 @@ This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
 It applies whenever we process personal data on your behalf.
 
 It is incorporated automatically when you create an event — you do not need to sign anything. If
-your organisation requires a countersigned copy, contact [PRIVACY EMAIL].
+your organisation requires a countersigned copy, contact privacy@woco-net.com.
 
 ---
 

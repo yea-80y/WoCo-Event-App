@@ -69,6 +69,6 @@ which can set third-party cookies outside our control and outside the organiser'
 
 ## Contact
 
-Questions: [PRIVACY EMAIL]
+Questions: privacy@woco-net.com
 
 See also the [Privacy Policy](./PRIVACY_POLICY.md).

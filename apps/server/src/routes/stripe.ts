@@ -16,6 +16,7 @@ import { getStripe } from "../lib/stripe/client.js";
 import {
   getStripeAccount,
   setStripeAccount,
+  setDefaultCurrency,
   updateOnboardingStatus,
   getOrganiserByStripeAccount,
   deleteStripeAccount,
@@ -24,9 +25,8 @@ import { getEvent } from "../lib/event/service.js";
 import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { queueSeriesClaim } from "./claims.js";
-import { sealJson, buildTicketCanonicalMessage, MARKETING_CONSENT_NOTICE } from "@woco/shared";
-import { recordConsent } from "../lib/marketing/consent-store.js";
-import { suppressOrg } from "../lib/marketing/suppression-store.js";
+import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
+import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
 import type { SealedBox, SeriesManifestBlob } from "@woco/shared";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId } from "../lib/chain/event-contract.js";
@@ -148,8 +148,13 @@ stripe.get("/account-status", requireAuth, async (c) => {
     const account = await s.accounts.retrieve(record.stripeAccountId);
     const complete = !!(account.charges_enabled && account.payouts_enabled);
 
-    if (complete !== record.onboardingComplete) {
-      setStripeAccount(organiserAddress, record.stripeAccountId, complete);
+    // Cache the payout currency alongside the status. This is the one place
+    // that already retrieves the full Account on an organiser-initiated request,
+    // so it costs no extra call — and the currency decides what they may price
+    // tickets in (#84).
+    const defaultCurrency = account.default_currency ?? undefined;
+    if (complete !== record.onboardingComplete || defaultCurrency !== record.defaultCurrency) {
+      setStripeAccount(organiserAddress, record.stripeAccountId, complete, defaultCurrency);
     }
 
     // Extract verification requirements for the UI
@@ -202,6 +207,9 @@ stripe.get("/account-status", requireAuth, async (c) => {
       onboardingComplete: complete,
       chargesEnabled: account.charges_enabled,
       payoutsEnabled: account.payouts_enabled,
+      // Drives the pricing-currency picker (#84). Absent while Stripe has not
+      // assigned one yet — the client must then offer every currency, not none.
+      defaultCurrency,
       requirements: {
         currentlyDue,
         eventuallyDue,
@@ -222,6 +230,9 @@ stripe.get("/account-status", requireAuth, async (c) => {
       connected: true,
       stripeAccountId: record.stripeAccountId,
       onboardingComplete: record.onboardingComplete,
+      // Stripe is unreachable, so serve the cached value rather than none: an
+      // outage must not silently widen the currency picker back open.
+      defaultCurrency: record.defaultCurrency,
     });
   }
 });
@@ -835,6 +846,10 @@ stripe.post("/webhook", async (c) => {
       const account = event.data.object as import("stripe").Stripe.Account;
       const complete = !!(account.charges_enabled && account.payouts_enabled);
       updateOnboardingStatus(account.id, complete);
+      // Stripe assigns default_currency during onboarding and can change it if
+      // the organiser changes their payout bank account. Keeping the cache fresh
+      // here is what stops #84's restriction going stale against reality.
+      if (account.default_currency) setDefaultCurrency(account.id, account.default_currency);
       console.log(`[stripe-webhook] Account ${account.id} updated: charges=${account.charges_enabled}, payouts=${account.payouts_enabled}`);
 
       // Self-healing backfill for accounts created before manual payouts existed,
@@ -917,11 +932,28 @@ async function handleShopOrderPaid(
   const shopAccountId = session.metadata?.connectedAccountId;
   if (shopAccountId && session.amount_total && session.currency) {
     const recordedAt = new Date().toISOString();
+    // The accounts map is keyed by Stripe account id and can miss — a merchant
+    // whose record was rebuilt, or an account connected outside the normal
+    // onboarding path. The event path already falls back to the event's creator;
+    // the shop path had no fallback and recorded "". The entry still RELEASED
+    // correctly (the sweep is keyed by Stripe account, not by us), but it was
+    // invisible in GET /api/stripe/payouts, which is keyed by organiser — so the
+    // merchant could not see their own money.
+    // Strictly best-effort: this is a reporting nicety, and a Swarm read that
+    // throws here must never stop the entry being recorded. An unrecorded sale
+    // is money in a frozen balance with nothing scheduled to release it.
+    let shopOwner: string | undefined;
+    try {
+      shopOwner = (await getShop(shopId))?.ownerAddress?.toLowerCase();
+    } catch (err) {
+      console.warn("[stripe-webhook] Could not read shop owner for payout attribution:", err);
+    }
+
     try {
       recordHeldPayout({
         sessionId: session.id,
         stripeAccountId: shopAccountId,
-        organiserAddress: getOrganiserByStripeAccount(shopAccountId) ?? "",
+        organiserAddress: getOrganiserByStripeAccount(shopAccountId) ?? shopOwner ?? "",
         kind: "shop",
         shopId,
         orderId,
@@ -1366,16 +1398,13 @@ async function handleSuccessfulPayment(
     const consentHash =
       identifier.type === "email" ? identifier.emailHash : identifier.secondaryEmailHash;
     if (consentHash) {
-      if (metaMarketingConsent) {
-        recordConsent(consentHash, eventCreatorAddress, {
-          ts: claimedAt,
-          source: "checkout",
-          eventId,
-          notice: MARKETING_CONSENT_NOTICE,
-        });
-      } else {
-        suppressOrg(consentHash, eventCreatorAddress, "declined");
-      }
+      captureCheckoutConsent({
+        emailHash: consentHash,
+        organiserAddress: eventCreatorAddress,
+        granted: metaMarketingConsent,
+        ts: claimedAt,
+        eventId,
+      });
     }
   }
 

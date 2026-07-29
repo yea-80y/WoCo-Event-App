@@ -160,3 +160,35 @@ These `.data` stores MUST survive server restarts:
 - `.data/marketing-domains.json`
 - `.data/marketing-send-log.json`
 - `.data/consumed-resend-events.json`
+
+---
+
+## Verification gate: fail-open on a Stripe outage
+
+`isVerifiedOrganiser` (`lib/stripe/verification.ts`) falls back to the cached
+`onboardingComplete` flag when the Stripe API is unreachable, rather than refusing the send.
+That is a deliberate availability choice, documented in the file itself but previously not
+here — an organiser mid-event should not lose the ability to mail their own attendees because
+Stripe is having a bad afternoon.
+
+The exposure is bounded: the fallback can only re-affirm an account that already completed
+onboarding at some point. It cannot admit an organiser who was never verified, and it cannot
+bypass suppression, which is re-checked per recipient inside `sendMarketingBatch` regardless.
+
+## Data-subject requests
+
+Art. 15 / Art. 17 servicing is `apps/server/scripts/data-subject-request.ts`
+(policy + tests in `lib/marketing/subject-request.ts`). Procedure and the three things
+outside its reach: `docs/legal/DATA_INVENTORY.md` §6.
+
+**Suppression marks are never erased** — Art. 17(3)(b): the record of an objection is what
+lets the controller keep honouring it. Erasing it would re-expose the person to the
+organiser's next contact upload.
+
+## Store durability
+
+`marketing-suppression.json`, `marketing-consent.json` and `marketing-lists.json` are written
+through `lib/marketing/persist.ts` — temp-file + fsync + atomic rename, so a crash or full disk
+cannot leave a truncated file that the loaders would silently read as "no data". A store that
+stops persisting is reported on `GET /api/health` as `compliancePersistence`; alarm on it the
+same way as on `payoutSweep.stale`.

@@ -26,9 +26,7 @@ import { verifyQuote, consumeQuote } from "../lib/payment/quote.js";
 import { formatUnits } from "ethers";
 import { extractDelegation, verifyDelegation } from "../lib/auth/verify-delegation.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
-import { recordConsent } from "../lib/marketing/consent-store.js";
-import { suppressOrg } from "../lib/marketing/suppression-store.js";
-import { MARKETING_CONSENT_NOTICE } from "@woco/shared";
+import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
 
 const claims = new Hono<AppEnv>();
 
@@ -562,17 +560,13 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
       const consentHash =
         identifier.type === "email" ? identifier.emailHash : identifier.secondaryEmailHash;
       if (consentHash) {
-        const organiser = event.creatorAddress.toLowerCase();
-        if (marketingConsent) {
-          recordConsent(consentHash, organiser, {
-            ts: new Date().toISOString(),
-            source: "checkout",
-            eventId,
-            notice: MARKETING_CONSENT_NOTICE,
-          });
-        } else {
-          suppressOrg(consentHash, organiser, "declined");
-        }
+        captureCheckoutConsent({
+          emailHash: consentHash,
+          organiserAddress: event.creatorAddress.toLowerCase(),
+          granted: marketingConsent,
+          ts: new Date().toISOString(),
+          eventId,
+        });
       }
     }
 

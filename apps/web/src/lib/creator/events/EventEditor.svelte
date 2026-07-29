@@ -124,7 +124,7 @@
 <LocationPicker bind:geo bind:location />
 <GenreTagPicker bind:tags />
 
-<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers />
+<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers {startDate} />
 
 {#if FEATURES.cryptoPaymentsAllowed}
   <fieldset class="claim-mode-section">

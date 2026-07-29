@@ -125,8 +125,15 @@ export async function sendMarketingBatch(
       } else {
         result.failed++;
         const msg = s.reason instanceof Error ? s.reason.message : "Unknown error";
+        // The returned error keeps the plaintext address: it goes back to the
+        // organiser, who is the controller and supplied it. The LOG must not —
+        // docker logs persist far longer than the send, which would quietly
+        // undo the hashed-and-discarded posture the rest of this path keeps.
         result.errors.push(`${chunk[j].email}: ${msg}`);
-        console.error(`[marketing-send] Failed to send to ${chunk[j].email}:`, msg);
+        console.error(
+          `[marketing-send] Failed to send to ${hashEmail(chunk[j].email).slice(0, 8)}…:`,
+          msg,
+        );
       }
     });
   }

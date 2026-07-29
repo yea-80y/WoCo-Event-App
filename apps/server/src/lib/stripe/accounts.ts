@@ -20,6 +20,21 @@ interface StripeAccountRecord {
   createdAt: string;
   /** Last updated (e.g. after webhook) */
   updatedAt: string;
+  /**
+   * Stripe's `default_currency` for this account, lowercase (e.g. "gbp").
+   *
+   * Cached because it decides what the organiser may PRICE in. A charge in a
+   * currency the account has no bank account for is auto-converted by Stripe
+   * into this one, with Stripe's conversion fee taken out of the organiser's
+   * proceeds — silently, on every sale, and asymmetrically on refunds. Pricing
+   * is restricted to this currency rather than surfacing the fee (#84).
+   *
+   * Optional: accounts created before this field existed, and accounts whose
+   * onboarding has not reached the point where Stripe assigns one, have none.
+   * An absent value must NEVER be treated as "reject everything" — see
+   * `currencyAllowedFor`.
+   */
+  defaultCurrency?: string;
 }
 
 /** organiserAddress (lowercase) → StripeAccountRecord */
@@ -56,6 +71,7 @@ export function setStripeAccount(
   organiserAddress: string,
   stripeAccountId: string,
   onboardingComplete: boolean,
+  defaultCurrency?: string,
 ): void {
   ensureLoaded();
   const key = organiserAddress.toLowerCase();
@@ -66,8 +82,27 @@ export function setStripeAccount(
     onboardingComplete,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
+    // Never clear a known currency with an absent one: callers that don't have
+    // it (account creation, before Stripe assigns one) must not wipe a value a
+    // later refresh already learned.
+    ...((defaultCurrency ?? existing?.defaultCurrency)
+      ? { defaultCurrency: (defaultCurrency ?? existing?.defaultCurrency)!.toLowerCase() }
+      : {}),
   };
   persist();
+}
+
+/** Record the account's default currency without touching onboarding state. */
+export function setDefaultCurrency(stripeAccountId: string, defaultCurrency: string): void {
+  ensureLoaded();
+  const lower = defaultCurrency.toLowerCase();
+  for (const [key, record] of Object.entries(store)) {
+    if (record.stripeAccountId !== stripeAccountId) continue;
+    if (record.defaultCurrency === lower) return;
+    store[key] = { ...record, defaultCurrency: lower, updatedAt: new Date().toISOString() };
+    persist();
+    return;
+  }
 }
 
 export function updateOnboardingStatus(

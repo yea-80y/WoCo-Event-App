@@ -18,8 +18,9 @@
  * soft opt-in send that depends on it.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "./persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-consent.json");
@@ -35,6 +36,13 @@ export interface ConsentRecord {
   /** Verbatim wording shown at the point of collection. Art. 7(1) evidence:
    *  a hash or paraphrase would not prove what was actually agreed to. */
   notice: string;
+  /**
+   * `MARKETING_CONSENT_VERSION` at capture time. The verbatim `notice` is the
+   * evidence; this is the cheap index for "which wording did this cohort agree
+   * to" once the text has changed more than once. Optional because records
+   * written before this field existed do not carry it.
+   */
+  version?: number;
 }
 
 /** organiserAddress → emailHash → record */
@@ -56,13 +64,8 @@ function ensureLoaded(): void {
   }
 }
 
-function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify(consents), "utf-8");
-  } catch (err) {
-    console.error("[consent] Failed to persist to disk:", err);
-  }
+function persistToDisk(): boolean {
+  return writeJsonAtomic(STORE_FILE, consents, "consent");
 }
 
 export function recordConsent(
@@ -120,4 +123,19 @@ export function forgetEmailHash(emailHash: string): number {
   }
   if (removed) persistToDisk();
   return removed;
+}
+
+/**
+ * Erasure scoped to one controller. An Art. 17 request usually names the
+ * organiser the person actually dealt with, and erasing their record with every
+ * OTHER organiser would destroy those organisers' lawful-basis evidence for
+ * sends the subject never objected to.
+ */
+export function forgetEmailHashForOrg(emailHash: string, organiserAddress: string): boolean {
+  ensureLoaded();
+  const byHash = consents[organiserAddress.toLowerCase()];
+  if (!byHash?.[emailHash]) return false;
+  delete byHash[emailHash];
+  persistToDisk();
+  return true;
 }

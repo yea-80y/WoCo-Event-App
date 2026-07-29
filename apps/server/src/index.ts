@@ -43,6 +43,7 @@ import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
+import { persistHealth } from "./lib/marketing/persist.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -166,7 +167,14 @@ app.use(
 // Health check. Includes payout-sweep liveness (no amounts — this endpoint is
 // public): if `payoutSweep.stale` is ever true, organiser money has stopped moving
 // and funds are drifting toward Stripe's hold ceiling. See docs/PAYOUTS.md.
-app.get("/api/health", (c) => c.json({ ok: true, payoutSweep: payoutSweepHealth() }));
+//
+// `compliancePersistence` covers the marketing stores. If one stops persisting,
+// every write after that point exists only in memory and is lost on the next
+// restart — for the suppression list that means mailing people who unsubscribed.
+// Store names only, no subject data: this endpoint is public.
+app.get("/api/health", (c) =>
+  c.json({ ok: true, payoutSweep: payoutSweepHealth(), compliancePersistence: persistHealth() }),
+);
 
 // ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
 app.get("/api/eth-price", async (c) => {

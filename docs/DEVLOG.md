@@ -4,6 +4,91 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Pre-launch review follow-ups: #80, #82, #83, #81, #85 (2026-07-29)
+
+Five issues from the 2026-07-28 pre-launch review, each verified against source
+before any code was written. Five commits, 61 new tests (server 159/159, shared
+102/102, build:web clean).
+
+**#80 — consent dead-end (the one with a real victim).** `ClaimButton` records a
+shown-but-untouched opt-in box as an explicit refusal (deliberate PECR reg. 22
+posture), and the suppression store had no way back: first mark wins, forever.
+Ignore the box at event A, tick it at event B, and you got an Art. 7(1) consent
+record that every send silently contradicted. Marks now carry `liftedAt` instead
+of being deleted — the refusal survives as the audit record while no longer
+suppressing — and `liftDeclineOnConsent` lifts ONLY a per-org `"declined"` mark
+on strictly newer evidence. `unsub`/`bounce`/`complaint`/global are untouchable;
+resubscribe stays the double-opt-in flow in #60. Building it surfaced a second
+defect: `suppressOrg` stamped the WRITE time, so a card sale recorded minutes
+later in the Stripe webhook looked newer than the decision and swallowed the very
+opt-in that should have lifted it. It now takes the decision timestamp.
+`consent-capture.ts` is the single writer for both call sites — the drift between
+them is what caused this.
+
+**#82 — broadcast hardening.** Rate-limit TOCTOU (checked at the top, recorded
+after a slow send, no lock — N concurrent requests all passed) now runs
+check-and-consume under `withOrgLock` before the send. Rate map lowercased. And
+the v2 fallback was scoped: ONE on-chain series used to disable the
+per-recipient attendee check for the WHOLE event, so a verified organiser could
+mail arbitrary addresses through any event with an on-chain series attached.
+Membership is proven against the v1 claimers feeds first; only the unaccounted-for
+remainder reaches the verification gate.
+
+**#83 — Art. 17 wired.** `forgetEmailHash` had zero callers; erasure meant
+hand-editing `.data/*.json`. `lib/marketing/subject-request.ts` +
+`scripts/data-subject-request.ts` (a script, not an admin route — there is no
+admin identity here and inventing one is a worse surface). Suppress FIRST, then
+erase: a crash between the two over-suppresses rather than leaving an erased
+consent record with nothing barring the next contact upload. Scoped erasure so a
+request naming one controller does not destroy every other organiser's evidence.
+Log hygiene: a failed send logged the plaintext recipient into docker logs.
+
+Production hardening that fell out of it: the three compliance stores used plain
+`writeFileSync`, which truncates before writing. A crash or full disk mid-write
+leaves an unparseable file, and every loader treats unparseable as "doesn't exist
+yet" — the suppression list would come back EMPTY and silently, i.e. mailing
+people who unsubscribed. Now temp-file + fsync + atomic rename
+(`lib/marketing/persist.ts`), with failures counted per store and surfaced on
+`/api/health` as `compliancePersistence`.
+
+**#81 — launch checklist, code half.** Legal placeholders filled from the
+constants that make them true (`PLATFORM_FEE_BP=150` → 1.5%,
+`POST_EVENT_RELEASE_DAYS=2`, `MAX_HOLD_DAYS_DEFAULT=90`); `[PRIVACY EMAIL]` →
+privacy@woco-net.com in 5 places across 4 files (the issue said 3). Log retention
+stated at 30 days + an active-investigation carve-out, with DATA_INVENTORY §8
+rewritten to say what must still be CONFIGURED — docker's json-file driver
+rotates on nothing unless told to, and a policy claiming 30 days over
+infrastructure that keeps logs forever is worse than the placeholder was. Custom
+sending domains closed behind `FEATURES.organiserSendingDomains`, gating UI and
+the four `/api/marketing/domain` routes in lockstep. `scripts/backup-data.sh`:
+snapshot-then-archive, refuses an empty source, verifies the tar reads back.
+
+**#85 — payout follow-ups.** Shop ledger entries fall back to the shop's
+`ownerAddress` (they released fine, but were invisible in the organiser-keyed
+`GET /api/stripe/payouts`); the read is best-effort because an unrecorded sale is
+far worse than a blank display field. Failed manual-schedule corrections now queue
+and retry from the hourly sweep instead of waiting for another webhook that may
+never come. `heldPastCeiling()` feeds `/api/health` — counts only, no amounts.
+
+**#84 — pricing currency restricted.** An organiser may now only price in their
+Stripe `default_currency`, cached on the accounts store and refreshed on
+`account.updated`. Enforced server-side at event creation and mirrored in the
+picker. The fail-open is the load-bearing part: Stripe assigns `default_currency`
+during onboarding, so "unknown" is the normal state for a new organiser and
+rejecting on it would block them from creating any paid event at all. An
+organiser banking outside usd/gbp/eur keeps the full picker rather than being
+locked out.
+
+**#87 — a warning, no gate.** Stripe's 90-day limit runs from the CHARGE, so a
+ticket sold >83 days before its event releases before the event runs.
+ORGANISER_TERMS §6 already covers the refund obligation; what was missing was
+telling the organiser at the moment they set a far-future date. No gate: near-term
+events are inside 90 days, and a verified-only gate would be code deleted once
+Managed Risk lands. The real control is the Managed Risk reconfiguration, which is
+Stripe-side.
+
+---
+
 ## Marketing audience + email compliance (2026-07-18, PR #58)
 
 Organiser marketing stack: CSV import wizard (papaparse, consent-warranty gate),

@@ -19,6 +19,7 @@
   import AttendeeImport from "./AttendeeImport.svelte";
   import MarketingComposer from "./MarketingComposer.svelte";
   import SendingDomainPanel from "./SendingDomainPanel.svelte";
+  import { FEATURES } from "@woco/shared";
   import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
 
   let loading = $state(true);
@@ -273,7 +274,9 @@
       {/if}
     {/if}
 
-    {#if stripeVerified !== false}
+    <!-- Custom sending domains are off until SES (FEATURES.organiserSendingDomains).
+         The panel is kept, not deleted: the flag is one line from turning it back on. -->
+    {#if FEATURES.organiserSendingDomains && stripeVerified !== false}
       <SendingDomainPanel />
     {/if}
   {/if}
