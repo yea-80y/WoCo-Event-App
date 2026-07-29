@@ -53,7 +53,7 @@
   {#if router.route === "creator-home"}
     <CreatorHome />
   {:else if router.route === "create"}
-    <EventForm onpublished={(id) => navigate(`/event/${id}`)} />
+    <EventForm />
   {:else if router.route === "dashboard-index"}
     <DashboardIndex />
   {:else if router.route === "dashboard"}

@@ -508,6 +508,25 @@
         <p class="output-hint">Sign in with your wallet to view orders and manage approvals. Bookmark this.</p>
       </div>
 
+      <!-- Announce — the moment the event goes live is the moment the organiser
+           is primed to tell their list about it. -->
+      {#if createdEventId}
+        <div class="output-section">
+          <div class="output-section-header">
+            <span class="output-section-title">Announce it</span>
+          </div>
+          <p class="output-hint">
+            Email the contacts in your audience — the composer opens with this event's
+            artwork, date and ticket link already attached.
+          </p>
+          <button
+            class="btn-primary"
+            style="margin-top: 0.5rem;"
+            onclick={() => router.navigate(`/creator/audience?announce=${encodeURIComponent(createdEventId!)}`)}
+          >Announce to your audience</button>
+        </div>
+      {/if}
+
       <BackupNudge />
 
       <!-- ENS -->
