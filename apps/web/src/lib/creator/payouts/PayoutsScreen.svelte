@@ -12,7 +12,7 @@
 -->
 <script lang="ts">
   import type { EventDirectoryEntry, ShopDirectoryEntry, PayoutsResponse } from "@woco/shared";
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getPayoutsSWR, getStripeDashboardUrl } from "../../api/payouts.js";
@@ -208,20 +208,28 @@
   });
 
   $effect(() => {
+    // Track ONLY the identity. load() synchronously reads state it also
+    // writes (eventTitles via applyEventTitles when the session is already
+    // live), and a tracked read-write here is an infinite effect loop that
+    // re-fires the API calls until the browser starves (found in testing:
+    // effect_update_depth_exceeded + ERR_INSUFFICIENT_RESOURCES storm).
     const addr = auth.parent;
-    if (!auth.isConnected || !addr) {
-      reset();
-      return;
-    }
-    // Stripe status decides between the "connect Stripe" gate and the real
-    // screen; a failure here must not hide payouts we already hold.
-    getStripeAccountStatus()
-      .then((s) => {
-        stripeVerified = !!s.onboardingComplete;
-        if (s.defaultCurrency) payoutCurrency = s.defaultCurrency;
-      })
-      .catch(() => { stripeVerified = null; });
-    void load(addr.toLowerCase());
+    const connected = auth.isConnected;
+    untrack(() => {
+      if (!connected || !addr) {
+        reset();
+        return;
+      }
+      // Stripe status decides between the "connect Stripe" gate and the real
+      // screen; a failure here must not hide payouts we already hold.
+      getStripeAccountStatus()
+        .then((s) => {
+          stripeVerified = !!s.onboardingComplete;
+          if (s.defaultCurrency) payoutCurrency = s.defaultCurrency;
+        })
+        .catch(() => { stripeVerified = null; });
+      void load(addr.toLowerCase());
+    });
   });
 </script>
 
