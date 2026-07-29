@@ -94,6 +94,12 @@ export const TTL = {
   /** Merchant's own shop list. */
   CREATOR_SHOPS: 24 * 60 * 60,
   /**
+   * Organiser payouts. Short: this is money, and a held sale can be released or
+   * refunded between visits. Long enough that flicking back to the screen paints
+   * instantly instead of spinning.
+   */
+  PAYOUTS: 60,
+  /**
    * Confirmed "no profile published for this address". Suppresses the SOC probe
    * fan-out (gateway 403 + server 404 per miss) that floods the console; short
    * TTL so a freshly published profile appears within minutes.
@@ -138,6 +144,8 @@ export const cacheKey = {
   creatorShops: (address: string) => `creator-shops:${address.toLowerCase()}`,
   /** Negative profile-lookup record — see TTL.PROFILE_MISS. */
   profileMiss: (address: string) => `profile-miss:${address.toLowerCase()}`,
+  /** Organiser's own held/released takings — keyed by organiser address. */
+  payouts: (address: string) => `payouts:${address.toLowerCase()}`,
 };
 
 // ---------------------------------------------------------------------------
@@ -167,6 +175,9 @@ export function cacheClearByPrefix(prefixes: string[]): void {
  * Immutable per-event/per-ticket caches are intentionally retained.
  */
 export const USER_SCOPED_PREFIXES = [
+  // Financial data — the strongest case on this list for never surviving a
+  // sign-out on a shared device.
+  "payouts:",
   "creator-events:",
   "creator-sites:",
   "event-orders:",

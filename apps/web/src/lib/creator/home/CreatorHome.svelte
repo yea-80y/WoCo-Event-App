@@ -32,6 +32,7 @@
   import CodeSquare from "lucide-svelte/icons/code-xml";
   import Webhook from "lucide-svelte/icons/webhook";
   import Wallet from "lucide-svelte/icons/wallet";
+  import Banknote from "lucide-svelte/icons/banknote";
   import Settings from "lucide-svelte/icons/settings-2";
   import Plus from "lucide-svelte/icons/plus";
   import AlertCircle from "lucide-svelte/icons/circle-alert";
@@ -673,10 +674,18 @@
         </div>
       </button>
 
+      <button class="tool" onclick={() => navigate("/creator/payouts")}>
+        <Banknote size={20} strokeWidth={2.25} />
+        <div>
+          <span class="tool-label">Payouts</span>
+          <span class="tool-desc">What you've earned, and when it lands.</span>
+        </div>
+      </button>
+
       <button class="tool" onclick={() => navigate(auth.parent ? `/creator/profile/${auth.parent.toLowerCase()}` : "/creator/profile")}>
         <Wallet size={20} strokeWidth={2.25} />
         <div>
-          <span class="tool-label">Wallet & payouts</span>
+          <span class="tool-label">Wallet & accounts</span>
           <span class="tool-desc">Crypto and Stripe accounts.</span>
         </div>
       </button>

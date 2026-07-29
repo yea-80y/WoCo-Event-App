@@ -27,6 +27,7 @@
  *     /creator/shops                    my-shops
  *     /creator/shops/:shopId            shop-editor
  *     /creator/shops/:shopId/pos        shop-pos
+ *     /creator/payouts                  payouts
  *     /creator/profile/:addr            profile (creator surface)
  *     /dashboard, /dashboard/:id        dashboard-index / dashboard (legacy)
  *     /event/:id/dashboard              dashboard (legacy)
@@ -74,6 +75,7 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
   if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
   if (path === "/creator/pods") return { route: "creator-pods", params: {}, surface: "creator" };
+  if (path === "/creator/payouts") return { route: "payouts", params: {}, surface: "creator" };
   if (path === "/creator/audience") {
     // ?announce={eventId} — the post-publish prompt lands here with the
     // composer open and that event preselected.

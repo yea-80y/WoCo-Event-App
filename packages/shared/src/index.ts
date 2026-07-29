@@ -30,3 +30,4 @@ export * from "./likes/index.js";
 export * from "./campaign/index.js";
 export * from "./marketing/index.js";
 export * from "./legal/consent.js";
+export * from "./payouts/types.js";
