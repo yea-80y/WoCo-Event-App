@@ -77,6 +77,22 @@ export async function sendMarketingBroadcast(
   return resp.data;
 }
 
+/** Send the draft to one inbox (usually the organiser's own) before the real
+ *  broadcast. The server prefixes the subject with "[Test]". */
+export async function sendMarketingTest(
+  fromName: string,
+  subject: string,
+  htmlBody: string,
+  email: string,
+): Promise<{ sent: number; suppressed: number; failed: number; errors?: string[] }> {
+  const resp = await authPost<{ sent: number; suppressed: number; failed: number; errors?: string[] }>(
+    "/api/marketing/broadcast/test",
+    { fromName, subject, htmlBody, email },
+  );
+  if (!resp.data) throw new Error(resp.error || "Test send failed");
+  return resp.data;
+}
+
 // ── Sending domain ──────────────────────────────────────────────────────────
 
 export async function getSendingDomain(): Promise<SendingDomainInfo | null> {
