@@ -212,11 +212,24 @@ inside an HTTP request. The queue is the only shape that works.
 | 14/s (full grant) | 71s ✓ | 1,429s ✗ |
 | 100/s (hypothetical) | 10s ✓ | 200s ✗ |
 
-Interim guard: `maxInlineRecipients()` = `90s × effective rate` (900 today) rejects an
-oversized broadcast up front with a clear message, instead of letting the organiser hit a
-generic 524 with no idea how many people were mailed. It is derived from the rate rather
-than hardcoded because the dangerous case is **lowering** `SES_MAX_SEND_RATE` for warm-up:
-at 5/s a 1,000-recipient send takes 200s. Delete the guard with the inline path.
+Interim guard: `maxInlineRecipients()` = `90s × effective rate` rejects an oversized
+broadcast up front with a clear message, instead of letting the organiser hit a generic 524
+with no idea how many people were mailed. Delete it with the inline path.
+
+| `SES_MAX_SEND_RATE` | Guard allows | vs `MAX_BROADCAST_RECIPIENTS` (1,000) |
+|---|---|---|
+| 5/s (cautious warm-up) | **450** | binds — this is the case the guard exists for |
+| **12/s (default)** | **1,080** | **no effect: the full 1,000 cap stays usable** |
+| 14/s (full grant) | 1,260 | no effect |
+
+At the default rate the guard changes nothing an organiser can do today — a 1,000-contact
+list still sends in one go, in ~83s. It is derived from the rate rather than hardcoded
+because the dangerous case is not someone raising the recipient cap, it is someone
+**lowering** the send rate for warm-up, which §2 step 9 explicitly recommends. At 5/s a
+1,000-recipient broadcast takes 200s and would 524.
+
+*(The commit message for `14f181a` says "900 today" — that was arithmetic done in prose
+rather than in code. The value is 1,080; `email-delivery-guarantees.test.ts` asserts it.)*
 
 - **No background job queue for broadcasts.** Sends still run inline in the HTTP request.
   The rate limiter makes a large broadcast *slower*, not faster — 1,000 recipients at 12/s
