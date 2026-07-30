@@ -268,17 +268,37 @@ Mitigations to design in, not bolt on: encrypt the job payload at rest with a ke
 in process memory; delete each chunk as it drains rather than on job completion; hard TTL
 that destroys the payload whether or not the job finished.
 
-**Why the 20,000 cap is not arbitrary.** Three limits meet there:
+**The 20,000 cap IS arbitrary — corrected.** An earlier draft of this section claimed the
+6MB sealed-blob cap binds at 20k. It does not, and
+`docs/CONTACT_MANAGEMENT_DESIGN.md` already said so in an open question nobody closed:
 
-| Limit | Where | Nature |
+> "Does raising `MARKETING_MAX_LIST_EMAILS` above 20k make sense now that gzip put the
+> storage ceiling near **175k**? Browser memory, not storage, is the new limit."
+
+`MARKETING_MAX_LIST_EMAILS = 20_000` was set **before** payload compression existed
+(`types.ts` still explains that uncompressed, a 20k list overflowed the blob cap). Gzip moved
+the real ceiling by roughly 9×; the constant was never revisited. So:
+
+| Ceiling | Value | Status |
 |---|---|---|
-| `MAX_SEALED_JSON = 6_000_000` | `routes/marketing.ts:69` | 6MB sealed blob per request |
-| Whole-blob rewrite per edit | `list-store.ts` `putList` | O(n) write amplification on every contact change |
-| Client must unseal the WHOLE list to broadcast | sealing model | browser memory + upload size |
+| `MARKETING_MAX_LIST_EMAILS` | 20,000 | **Stale conservatism.** No technical basis at this level |
+| `MAX_SEALED_JSON = 6_000_000` | ~175,000 contacts gzipped | The real storage ceiling |
+| Whole-blob rewrite per edit | O(n) | Real, but an *editing* cost, not a sending one |
+| Browser memory on unseal | unquantified | The genuine unknown — **measure before raising** |
+| Broadcast upload size | 1,000/request today | **What actually blocks big organisers**, and what the queue fixes |
 
-Raising the cap means solving all three, and the third is the one with the privacy
-consequence above. **This is why "just build for 100k now" is not the cheap option** — it is
-a client-side paging change to the sealing model, not a server tuning exercise.
+**So the honest sequencing is better than "build paging for the future":**
+
+1. **Queue with a chunked job API** — removes the per-request broadcast ceiling. This is the
+   real blocker for a 20k organiser today, and it is the work already planned.
+2. **Then raise `MARKETING_MAX_LIST_EMAILS`** — up to ~175k this is close to a constant
+   change, gated on measuring client-side unseal memory on a mid-range phone, not on new
+   architecture.
+3. **Paged sealed blobs** — only needed above ~175k, and only worth building when a real
+   organiser is near it.
+
+Do not build step 3 now. Do build step 1 so it does not foreclose steps 2 and 3 — which is
+exactly what the chunked job API buys.
 
 **Recommended split.** Do not build paging now; do not let the queue foreclose it. Concretely:
 the job API should accept recipients in **chunks against a job id** (`POST /jobs` →
