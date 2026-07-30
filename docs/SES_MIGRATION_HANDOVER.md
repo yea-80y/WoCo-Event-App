@@ -223,7 +223,7 @@ at all (so an access report omitted the one store holding the subject's plaintex
 the `DATA_INVENTORY` cap wording predated the eviction exemption.
 
 Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + drain worker) ·
-**#101** (list cap). Rows 9–13 are tracked in **#102**. Phase 2 sending domains: **#103**.
+**#101** (list cap). Rows 9–13 stay **here**, not on GitHub — they are a comment, an assertion and a cosmetic field, and six issues for that is noise while one bucket issue is unclosable. Rows 11 and the batched-persist note are natural pickups for #100's drain worker. The one exception is the SNS cert-fetch hardening, which is standalone security work: **#104**. Phase 2 sending domains: **#103**.
 
 ### Finding 1 — the half of the bug that is still open
 
