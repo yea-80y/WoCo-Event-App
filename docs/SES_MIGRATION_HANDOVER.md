@@ -239,3 +239,51 @@ rather than in code. The value is 1,080; `email-delivery-guarantees.test.ts` ass
 - **No batch API use.** `SendEmail` is one message per call. SESv2 has `SendBulkEmail`, but
   it requires templates, which our per-recipient unsubscribe footer does not fit without
   restructuring.
+
+---
+
+## 6. Queue design note — the sealing model, not the send rate, is the constraint
+
+Written down because it was nearly lost as a passing remark, and because the first version
+of it was **wrong** in a way worth recording.
+
+**The wrong version.** "With a queue, change the API from a client-supplied recipient array
+to *send to list N*, and let the server enumerate." That cannot be built. Contact lists are
+ECIES-sealed **client-side** to the organiser's X25519 key
+(`packages/shared/src/marketing/types.ts`). The server holds an opaque sealed blob plus a
+set of `emailHash`es — it cannot decrypt, so it cannot enumerate. The client posting
+plaintext recipients is not an accident of the current design; it is the only party that
+*can*.
+
+**What that forces.** A background job has to take the recipients up front from the client
+and hold them until it drains. Today those addresses exist server-side only for the life of
+one HTTP request — "hashed-and-discarded", the posture `PRICING_AND_EMAIL.md` §2 defends at
+length when rejecting Resend Broadcasts for "converting transient exposure into a durable
+third-party copy". A job that runs for 28 minutes converts it into a durable **first-party**
+copy. That is defensible where the Resend one was not — we are the processor the organiser
+already trusts with the list — but it is a real change and it belongs in
+`docs/legal/DATA_INVENTORY.md`, decided rather than assumed.
+
+Mitigations to design in, not bolt on: encrypt the job payload at rest with a key held only
+in process memory; delete each chunk as it drains rather than on job completion; hard TTL
+that destroys the payload whether or not the job finished.
+
+**Why the 20,000 cap is not arbitrary.** Three limits meet there:
+
+| Limit | Where | Nature |
+|---|---|---|
+| `MAX_SEALED_JSON = 6_000_000` | `routes/marketing.ts:69` | 6MB sealed blob per request |
+| Whole-blob rewrite per edit | `list-store.ts` `putList` | O(n) write amplification on every contact change |
+| Client must unseal the WHOLE list to broadcast | sealing model | browser memory + upload size |
+
+Raising the cap means solving all three, and the third is the one with the privacy
+consequence above. **This is why "just build for 100k now" is not the cheap option** — it is
+a client-side paging change to the sealing model, not a server tuning exercise.
+
+**Recommended split.** Do not build paging now; do not let the queue foreclose it. Concretely:
+the job API should accept recipients in **chunks against a job id** (`POST /jobs` →
+`POST /jobs/:id/chunk` → `POST /jobs/:id/start`) rather than one array in one request. That
+shape works unchanged when a sealed list later arrives in pages, and it removes the
+per-request cap without anyone having to decide the list ceiling first. The
+plaintext-at-rest question, by contrast, **must** be settled before the job store is
+written, because it determines what that store holds.
