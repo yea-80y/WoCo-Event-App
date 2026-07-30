@@ -10,7 +10,7 @@ import { consentsForEmailHash, forgetEmailHash, forgetEmailHashForOrg, type Cons
 import { listsContaining, removeFromLists } from "./list-store.js";
 import { persistFailureCount } from "./persist.js";
 import { marksFor, suppressGlobal, suppressOrg } from "./suppression-store.js";
-import { eraseRecipient } from "../email/failure-ledger.js";
+import { eraseRecipient, listFailures, type EmailFailure } from "../email/failure-ledger.js";
 
 export interface SubjectReport {
   emailHash: string;
@@ -20,6 +20,13 @@ export interface SubjectReport {
   lists: string[];
   /** Every suppression mark held. Reported, never erased. */
   marks: ReturnType<typeof marksFor>;
+  /**
+   * Undelivered-email records held for this address. Art. 15 requires
+   * disclosing what we hold, and this is the ONE store keeping a plaintext
+   * address — omitting it would make the access report wrong about precisely
+   * the data the subject is most entitled to know about.
+   */
+  emailFailures: EmailFailure[];
 }
 
 export interface ErasureResult {
@@ -50,6 +57,13 @@ export function reportSubject(emailHash: string, organiser?: string): SubjectRep
     consents: consentsForEmailHash(emailHash).filter((c) => !org || c.org === org),
     lists: listsContaining(emailHash).filter((o) => !org || o === org),
     marks: marksFor(emailHash),
+    // Platform-level, like the ledger itself: an organiser-scoped request does
+    // not reach it, matching how `eraseSubject` treats it.
+    emailFailures: org
+      ? []
+      : listFailures({ includeResolved: true, limit: Number.MAX_SAFE_INTEGER }).filter(
+          (e) => e.recipientHash === emailHash,
+        ),
   };
 }
 

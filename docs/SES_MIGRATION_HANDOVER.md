@@ -216,6 +216,15 @@ record; do not close a row without a commit reference.
 | 12 | Forged-message fetch amplification: any POST with a novel valid-host `SigningCertURL` triggers an outbound fetch from an unauthenticated endpoint | 🟡 Open — pin path to `/SimpleNotificationService-*.pem` and/or rate-limit |
 | 13 | Webhook consumes the `MessageId` **before** processing, so a crash between the two loses the bounce permanently | 🟡 Accepted trade (suppression is idempotent) — wants a comment so nobody "fixes" it |
 
+**Re-verified 2026-07-30** (`760a015..HEAD`): all seven actioned items confirmed fixed, no new
+problems introduced, and nothing in them obstructs finding 1. Two residuals from that pass were
+closed in the same sweep — the Art. 15 report and the operator script did not surface the ledger
+at all (so an access report omitted the one store holding the subject's plaintext address), and
+the `DATA_INVENTORY` cap wording predated the eviction exemption.
+
+Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + drain worker) ·
+**#101** (list cap). Rows 9–13 are tracked in **#102**.
+
 ### Finding 1 — the half of the bug that is still open
 
 **This must land before `EMAIL_PROVIDER=ses`.** The scenario the whole branch exists
