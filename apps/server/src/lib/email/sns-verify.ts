@@ -81,12 +81,19 @@ export function isSnsAwsHttpsUrl(url: string): boolean {
 }
 
 /**
- * The canonical string to sign.
+ * The canonical string to sign: `name\nvalue\n` per field, in the documented
+ * order, INCLUDING the trailing newline after the last pair.
  *
- * @param trailingNewline see `verifySnsSignature` — the AWS reference is
- *   ambiguous here and we accept either encoding.
+ * The AWS prose ("Do not add a newline character at the end of the string")
+ * reads as if the final `\n` should be dropped, but its own shell example pipes
+ * the result through `echo -e`, which appends one — and both AWS-authored
+ * validators build the trailing form directly:
+ *   aws-js-sns-message-validator:  `field + "\n" + message[field] + "\n"`
+ *   aws-php-sns-message-validator: `"{$key}\n{$message[$key]}\n"`
+ * Read correctly, the prose means "no EXTRA newline beyond the pairs".
+ * Settled 2026-07-30; an earlier revision verified against both encodings.
  */
-export function buildStringToSign(msg: Record<string, unknown>, trailingNewline: boolean): string {
+export function buildStringToSign(msg: Record<string, unknown>): string {
   const fields = msg.Type === "Notification" ? NOTIFICATION_FIELDS : CONFIRMATION_FIELDS;
   const parts: string[] = [];
   for (const field of fields) {
@@ -95,8 +102,7 @@ export function buildStringToSign(msg: Record<string, unknown>, trailingNewline:
     if (value === undefined || value === null) continue;
     parts.push(`${field}\n${String(value)}\n`);
   }
-  const joined = parts.join("");
-  return trailingNewline ? joined : joined.slice(0, -1);
+  return parts.join("");
 }
 
 interface CachedCert {
@@ -204,19 +210,10 @@ export async function verifySnsSignature(
   const { key } = await loadCert(msg.SigningCertURL, fetchImpl);
   const algorithm = version === "2" ? "RSA-SHA256" : "RSA-SHA1";
 
-  // The AWS reference is genuinely ambiguous about the trailing newline: the
-  // prose says "Do not add a newline character at the end of the string", but
-  // its own shell example pipes the result through `echo -e`, which appends
-  // one — and every long-standing AWS SDK validator signs the trailing-newline
-  // form. Rather than guess, accept either exact encoding. This is not a
-  // weakening: both are precise strings, and forging a signature over either
-  // still requires Amazon's private key.
-  for (const trailingNewline of [true, false]) {
-    const verifier = createVerify(algorithm);
-    verifier.update(buildStringToSign(msg as unknown as Record<string, unknown>, trailingNewline), "utf-8");
-    verifier.end();
-    if (verifier.verify(key, signature)) return;
-  }
+  const verifier = createVerify(algorithm);
+  verifier.update(buildStringToSign(msg as unknown as Record<string, unknown>), "utf-8");
+  verifier.end();
+  if (verifier.verify(key, signature)) return;
 
   throw new SnsVerificationError("Signature does not verify against the SNS signing certificate");
 }

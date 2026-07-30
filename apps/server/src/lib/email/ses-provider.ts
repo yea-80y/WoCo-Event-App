@@ -103,8 +103,13 @@ export function encodeFromAddress(from: string): string {
   const [, rawName, addr] = match;
   const name = (rawName ?? "").trim();
   if (!name) return addr!.trim();
-  // eslint-disable-next-line no-control-regex
-  if (/^[\x20-\x7e]*$/.test(name)) return `"${name.replace(/"/g, "'")}" <${addr!.trim()}>`;
+  if (/^[\x20-\x7e]*$/.test(name)) {
+    // Trailing backslashes must go before quoting: inside a quoted string a
+    // backslash escapes the next character, so `Acme \` would escape its own
+    // closing quote and malform the header.
+    const safe = name.replace(/"/g, "'").replace(/\\+$/, "").trim();
+    return safe ? `"${safe}" <${addr!.trim()}>` : addr!.trim();
+  }
   const b64 = Buffer.from(name, "utf-8").toString("base64");
   return `=?UTF-8?B?${b64}?= <${addr!.trim()}>`;
 }
@@ -157,7 +162,9 @@ export function toSesHeaders(headers: Record<string, string>): MessageHeader[] {
     if (!HEADER_NAME_RE.test(name) || name.length > MAX_HEADER_NAME_LEN) {
       throw new EmailSendError(`Header name is not valid for SES: "${name}"`, { retryable: false });
     }
-    if (!HEADER_VALUE_RE.test(value) || value.length > MAX_HEADER_VALUE_LEN) {
+    // SES requires Value length >= 1. Caught locally so an empty header is a
+    // clear error here rather than a round-trip BadRequestException.
+    if (value.length < 1 || !HEADER_VALUE_RE.test(value) || value.length > MAX_HEADER_VALUE_LEN) {
       throw new EmailSendError(`Header value is not valid for SES: "${name}"`, { retryable: false });
     }
     if (name.length + value.length > MAX_HEADER_COMBINED_LEN) {

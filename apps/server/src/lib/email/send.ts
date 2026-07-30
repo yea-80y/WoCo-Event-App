@@ -170,6 +170,8 @@ export interface SendDeps {
   /** Transactional-only failover target, or null for none. */
   secondary: EmailProvider | null;
   sleep: (ms: number) => Promise<void>;
+  /** Defaults to the shared account-wide token bucket. */
+  acquire?: (priority: SendPriority) => Promise<void>;
 }
 
 /** One provider, with retries. Resolves on success, returns the final error otherwise. */
@@ -179,15 +181,21 @@ async function attemptWithRetries(
   priority: SendPriority,
   maxAttempts: number,
   sleepFn: (ms: number) => Promise<void>,
+  acquire: (priority: SendPriority) => Promise<void>,
 ): Promise<EmailSendError | null> {
   let lastError: EmailSendError | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    // Acquire per ATTEMPT, not once per message: a retry is another message on
-    // the wire and must be counted against the same account-wide budget.
-    await sendRateLimiter().acquire(priority);
-
     try {
+      // Acquire per ATTEMPT, not once per message: a retry is another message on
+      // the wire and must be counted against the same account-wide budget.
+      //
+      // INSIDE the try deliberately. A QueueOverflowError thrown out of this
+      // function would skip `recordFailure` entirely and land in the Stripe
+      // webhook's catch — which is precisely the silently-lost ticket this
+      // module was written to eliminate. Unreachable at today's volumes; the
+      // ledger exists for the days that are not today.
+      await acquire(priority);
       await p.send(msg);
       if (attempt > 1) {
         console.log(`[email] Delivered via ${p.name} on attempt ${attempt}/${maxAttempts}`);
@@ -236,7 +244,9 @@ export async function sendVia(
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
   const active = deps.primary;
 
-  let failure = await attemptWithRetries(active, msg, priority, maxAttempts, deps.sleep);
+  const acquire = deps.acquire ?? ((pri: SendPriority) => sendRateLimiter().acquire(pri));
+
+  let failure = await attemptWithRetries(active, msg, priority, maxAttempts, deps.sleep, acquire);
   if (!failure) return;
 
   let usedProvider = active.name;
@@ -250,7 +260,9 @@ export async function sendVia(
     console.warn(
       `[email] ${active.name} exhausted ${maxAttempts} attempts — failing over to ${secondary.name}`,
     );
-    const secondaryFailure = await attemptWithRetries(secondary, msg, priority, maxAttempts, deps.sleep);
+    const secondaryFailure = await attemptWithRetries(
+      secondary, msg, priority, maxAttempts, deps.sleep, acquire,
+    );
     if (!secondaryFailure) {
       console.warn(`[email] Delivered via failover provider ${secondary.name}`);
       return;

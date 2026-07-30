@@ -79,7 +79,7 @@ async function post(sesEvent: unknown, messageId?: string): Promise<Response> {
     SigningCertURL: CERT_URL,
   };
   const signer = createSign("RSA-SHA256");
-  signer.update(snsVerify.buildStringToSign(envelope, true), "utf-8");
+  signer.update(snsVerify.buildStringToSign(envelope), "utf-8");
   signer.end();
   envelope.Signature = signer.sign(privateKeyPem, "base64");
 

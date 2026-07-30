@@ -243,6 +243,90 @@ describe("failure ledger", () => {
   });
 });
 
+describe("regressions found in review", () => {
+  test("a rate-limiter queue overflow is LEDGERED, not thrown past recordFailure", async () => {
+    // The acquire() call sat outside the try, so a QueueOverflowError skipped
+    // the ledger entirely and landed in the Stripe webhook's console.error —
+    // re-creating the exact silently-lost ticket this module exists to prevent.
+    const overflowing: EmailProvider = {
+      name: "ses",
+      async send() {
+        throw new Error("never reached");
+      },
+    };
+    await assert.rejects(
+      send.sendVia(
+        {
+          primary: overflowing,
+          secondary: null,
+          sleep: noSleep,
+          acquire: async () => { throw new QueueOverflowError(10_000); },
+        },
+        MSG,
+        { maxAttempts: 1 },
+      ),
+    );
+    const [entry] = ledger.listFailures();
+    assert.ok(entry, "the overflow must reach the ledger");
+    assert.equal(entry.kind, "transactional");
+    assert.match(entry.error, /queue is full/i);
+  });
+
+  test("a marketing flood cannot evict an unresolved transactional failure", async () => {
+    // Newest-1000 pruning meant one failed 1,000-recipient broadcast pushed
+    // every transactional entry out and flipped failureHealth() back to ok.
+    // Cap shrunk so the flood is 30 writes, not 1,200. Each write fsyncs the
+    // whole array, so flooding at the real 1,000 cap is O(n^2) and takes ~100s.
+    ledger._setMaxEntriesForTest(20);
+    // Always-fails: `flakyProvider(_, 99, _)` would start SUCCEEDING on call 100.
+    const failing = flakyProvider("ses", Number.MAX_SAFE_INTEGER, retryable);
+    const deps = { primary: failing.provider, secondary: null, sleep: noSleep };
+
+    await assert.rejects(
+      send.sendVia(deps, { ...MSG, to: ["paid@example.com"] }, { maxAttempts: 1 }),
+    );
+    assert.equal(ledger.failureHealth().unresolvedTransactional, 1);
+
+    for (let i = 0; i < 30; i++) {
+      await assert.rejects(
+        send.sendVia(deps, { ...MSG, to: [`bulk${i}@example.com`] }, {
+          maxAttempts: 1,
+          priority: "marketing",
+        }),
+      );
+    }
+
+    const health = ledger.failureHealth();
+    assert.equal(health.unresolvedTransactional, 1, "the paid ticket must survive the flood");
+    assert.equal(health.ok, false, "and the alarm must stay lit");
+    const survivor = ledger.listFailures({ limit: 5000 }).find((e) => e.recipient === "paid@example.com");
+    assert.ok(survivor, "with the recipient still recoverable");
+  });
+
+  test("erasure redacts the plaintext recipient but keeps the operational record", async () => {
+    const failing = flakyProvider("ses", 99, retryable);
+    await assert.rejects(
+      send.sendVia({ primary: failing.provider, secondary: null, sleep: noSleep }, MSG, { maxAttempts: 1 }),
+    );
+    const [before] = ledger.listFailures();
+    assert.equal(before?.recipient, "buyer@example.com");
+
+    assert.equal(ledger.eraseRecipient(before!.recipientHash), 1);
+
+    const all = ledger.listFailures({ includeResolved: true });
+    const after = all.find((e) => e.id === before!.id);
+    assert.ok(after);
+    assert.equal(after.recipient, undefined, "plaintext must be gone");
+    assert.equal(after.recipientHash, before!.recipientHash, "the hash stays so re-erasure matches");
+    assert.equal(after.resolvedBy, "erasure");
+    assert.equal(ledger.failureHealth().ok, true, "an erased subject cannot be chased, so the alarm clears");
+  });
+
+  test("erasing an address we hold no failures for is a no-op", () => {
+    assert.equal(ledger.eraseRecipient("0".repeat(64)), 0);
+  });
+});
+
 describe("rate limiter", () => {
   /** Controllable clock + scheduler so no test waits on wall-clock time. */
   function harness(ratePerSecond: number, burst?: number) {

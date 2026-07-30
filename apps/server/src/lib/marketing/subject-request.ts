@@ -10,6 +10,7 @@ import { consentsForEmailHash, forgetEmailHash, forgetEmailHashForOrg, type Cons
 import { listsContaining, removeFromLists } from "./list-store.js";
 import { persistFailureCount } from "./persist.js";
 import { marksFor, suppressGlobal, suppressOrg } from "./suppression-store.js";
+import { eraseRecipient } from "../email/failure-ledger.js";
 
 export interface SubjectReport {
   emailHash: string;
@@ -25,6 +26,14 @@ export interface ErasureResult {
   consentsErased: number;
   listsRemovedFrom: string[];
   suppression: "global" | "organiser";
+  /**
+   * Entries in the undelivered-email ledger whose plaintext recipient was
+   * redacted. That store is the ONE place the platform keeps a plaintext
+   * address (transactional only — see failure-ledger.ts), so an erasure that
+   * skipped it would leave the subject's address on disk while reporting
+   * success.
+   */
+  emailFailuresRedacted: number;
   /**
    * False if ANY store failed to write. The operator must know: an erasure that
    * only happened in memory reverts on the next restart, and by then they have
@@ -75,9 +84,16 @@ export function eraseSubject(emailHash: string, organiser?: string, at: string =
 
   const listsRemovedFrom = removeFromLists(emailHash, org);
 
+  // Unscoped: the ledger is platform-level, not per-organiser — a transactional
+  // ticket failure belongs to no organiser's marketing relationship. A scoped
+  // request therefore leaves it alone rather than erasing evidence outside the
+  // named controller's scope, matching how consent records are handled above.
+  const emailFailuresRedacted = org ? 0 : eraseRecipient(emailHash);
+
   return {
     consentsErased,
     listsRemovedFrom,
+    emailFailuresRedacted,
     suppression: org ? "organiser" : "global",
     persisted: persistFailureCount() === failuresBefore,
   };

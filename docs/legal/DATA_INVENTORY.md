@@ -87,13 +87,17 @@ Enumerated from source, not assumed:
 | `storage-ledger.json` | Indirect | Bytes uploaded per owner address |
 | `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend event ids — replay prevention |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
+| `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver after every retry. `transactional` entries store the buyer's plaintext address: it is the only copy on disk (the claimers feed stores `emailHash`) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention, 1,000-entry cap; covered by the erasure procedure (§6) — `failure-ledger.ts` |
 
-**Notably absent: any store of plaintext email addresses.** Verified by inspection of every store above.
+**Notably absent: any store of plaintext email addresses, with one narrow exception** —
+`email-failures.json` retains the plaintext recipient of an undelivered *transactional* email
+until remediated or 90 days, whichever is sooner. Verified by inspection of every store above.
 
 ### 3.2 Transient (in memory, not persisted)
 
 - **Plaintext attendee email.** Arrives in the claim request body or from Stripe, is used to (a) send
-  the ticket via Resend and (b) compute `hashEmail()`. Not written to disk in plaintext.
+  the ticket via the active ESP and (b) compute `hashEmail()`. Not written to disk in plaintext,
+  **except** when every delivery attempt fails — see `email-failures.json` (§3.1).
   `hashEmail()` = HMAC-SHA256 keyed on `EMAIL_HASH_SECRET` — `claim-service.ts:126`.
 - **Plaintext marketing emails** transit `/api/marketing/import|check|broadcast` bodies because the
   client cannot compute a server-secret HMAC. Hashed and discarded.

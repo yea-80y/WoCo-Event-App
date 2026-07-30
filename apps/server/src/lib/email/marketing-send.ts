@@ -21,9 +21,18 @@ import { mintUnsubToken } from "../marketing/unsub-token.js";
  * In-flight concurrency, NOT a rate limit. The account-wide messages/second cap
  * is enforced by the token bucket in `send.ts`, which also makes transactional
  * mail overtake this loop — so a broadcast can no longer delay a paid ticket.
- * Keep this modest anyway: each in-flight send holds its rendered body in memory.
+ *
+ * It does have to be large enough for the limiter to be the binding constraint,
+ * because `maxInlineRecipients()` sizes a broadcast against the token rate.
+ * Real throughput is `min(rate, SEND_CHUNK / latency)`, so at 12/s the limiter
+ * only binds while mean latency stays under `SEND_CHUNK / 12`. At 5 that was
+ * 417ms — inside SES's p50 but not its tail, and a broadcast sized for 12/s
+ * that actually ran at 10/s could reach the edge timeout. At 10 the threshold
+ * is 833ms, which the tail comfortably clears.
+ *
+ * Not raised further: each in-flight send holds its rendered body in memory.
  */
-const SEND_CHUNK = 5;
+const SEND_CHUNK = 10;
 
 export interface MarketingSendResult {
   sent: number;

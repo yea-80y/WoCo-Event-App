@@ -32,7 +32,8 @@ const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "email-failures.json");
 
 /** Newest-first cap. Bounds the file; older detail is in the logs. */
-const MAX_ENTRIES = 1000;
+const DEFAULT_MAX_ENTRIES = 1000;
+let MAX_ENTRIES = DEFAULT_MAX_ENTRIES;
 /** Entries older than this are pruned on write. */
 const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -97,10 +98,34 @@ function persist(): boolean {
   return ok;
 }
 
+/**
+ * Age out old entries, then cap the file — but NEVER evict an unresolved
+ * transactional failure by size.
+ *
+ * A plain newest-1000 slice had a nasty property: one failed 1,000-recipient
+ * broadcast (SES account paused — exactly when transactional sends are failing
+ * too) writes 1,000 marketing entries, pushes every prior transactional entry
+ * out, and `failureHealth()` flips back to `ok: true`. Unrelated bulk failures
+ * would silently clear the alarm for "somebody paid and has no ticket".
+ *
+ * Retention still applies to everything: an unresolved entry ages out at 90
+ * days like any other, so this cannot grow without bound.
+ */
 function prune(nowMs: number): void {
   const cutoff = nowMs - RETENTION_MS;
   entries = entries.filter((e) => Date.parse(e.ts) >= cutoff);
-  if (entries.length > MAX_ENTRIES) entries = entries.slice(0, MAX_ENTRIES);
+  if (entries.length <= MAX_ENTRIES) return;
+
+  const protectedEntries: EmailFailure[] = [];
+  const evictable: EmailFailure[] = [];
+  for (const e of entries) {
+    (e.kind === "transactional" && !e.resolvedAt ? protectedEntries : evictable).push(e);
+  }
+  const room = Math.max(0, MAX_ENTRIES - protectedEntries.length);
+  // Rebuild newest-first across both groups so the file stays chronological.
+  entries = [...protectedEntries, ...evictable.slice(0, room)].sort(
+    (a, b) => Date.parse(b.ts) - Date.parse(a.ts),
+  );
 }
 
 export interface RecordFailureInput {
@@ -194,12 +219,51 @@ export function failureHealth(): FailureHealth {
   };
 }
 
+/**
+ * Art. 17 erasure: strip the plaintext recipient from every entry for this
+ * address, keeping the hash and the operational record.
+ *
+ * Redaction rather than deletion, for the same reason suppression marks are
+ * never deleted: the fact that a delivery failed is an operational record we
+ * are entitled to keep, while the address is the personal data the subject
+ * asked us to erase. Keeping the hash also means a later erasure request for
+ * the same address still matches. Entries are marked resolved because the
+ * remediation path — contacting the buyer — is exactly what erasure forecloses.
+ *
+ * @returns how many entries were redacted.
+ */
+export function eraseRecipient(emailHash: string): number {
+  ensureLoaded();
+  let redacted = 0;
+  for (const entry of entries) {
+    if (entry.recipientHash !== emailHash || entry.recipient === undefined) continue;
+    delete entry.recipient;
+    if (!entry.resolvedAt) {
+      entry.resolvedAt = new Date().toISOString();
+      entry.resolvedBy = "erasure";
+    }
+    redacted++;
+  }
+  if (redacted) persist();
+  return redacted;
+}
+
 /** Tests only — clears memory AND disk, so suites start from empty. */
 export function _resetForTest(): void {
   entries = [];
   loaded = true;
   seq = 0;
+  MAX_ENTRIES = DEFAULT_MAX_ENTRIES;
   persist();
+}
+
+/**
+ * Tests only — shrink the cap so eviction behaviour can be exercised without
+ * writing 1,000+ entries. Each write is an fsync over the whole array, so
+ * flooding at the real cap is O(n²) and takes ~100s.
+ */
+export function _setMaxEntriesForTest(n: number): void {
+  MAX_ENTRIES = n;
 }
 
 /**

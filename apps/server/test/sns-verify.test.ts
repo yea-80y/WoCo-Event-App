@@ -63,7 +63,7 @@ const certFetch = (async () =>
 /** Build a correctly-signed envelope, then let callers corrupt one field. */
 function signedEnvelope(
   overrides: Partial<SnsEnvelope> = {},
-  opts: { trailingNewline?: boolean; version?: "1" | "2" } = {},
+  opts: { version?: "1" | "2" } = {},
 ): SnsEnvelope {
   const version = opts.version ?? "2";
   const msg: SnsEnvelope = {
@@ -77,10 +77,7 @@ function signedEnvelope(
     SigningCertURL: CERT_URL,
     ...overrides,
   };
-  const stringToSign = buildStringToSign(
-    msg as unknown as Record<string, unknown>,
-    opts.trailingNewline ?? true,
-  );
+  const stringToSign = buildStringToSign(msg as unknown as Record<string, unknown>);
   const signer = createSign(version === "2" ? "RSA-SHA256" : "RSA-SHA1");
   signer.update(stringToSign, "utf-8");
   signer.end();
@@ -99,37 +96,32 @@ describe("canonical string", () => {
   test("uses the documented field order for a Notification", () => {
     const s = buildStringToSign(
       { Type: "Notification", MessageId: "m", TopicArn: "t", Message: "body", Timestamp: "ts" },
-      false,
     );
-    assert.equal(s, "Message\nbody\nMessageId\nm\nTimestamp\nts\nTopicArn\nt\nType\nNotification");
+    // Trailing newline after the final pair — the form both AWS validators sign.
+    assert.equal(s, "Message\nbody\nMessageId\nm\nTimestamp\nts\nTopicArn\nt\nType\nNotification\n");
   });
 
   test("includes Subject in position only when present", () => {
     const withSubject = buildStringToSign(
       { Type: "Notification", MessageId: "m", TopicArn: "t", Message: "b", Timestamp: "ts", Subject: "s" },
-      false,
     );
     assert.equal(withSubject.includes("Subject\ns\nTimestamp"), true);
     const without = buildStringToSign(
       { Type: "Notification", MessageId: "m", TopicArn: "t", Message: "b", Timestamp: "ts" },
-      false,
     );
     assert.equal(without.includes("Subject"), false);
   });
 
   test("uses the confirmation field set for SubscriptionConfirmation", () => {
-    const s = buildStringToSign(
-      {
-        Type: "SubscriptionConfirmation",
-        MessageId: "m",
-        TopicArn: "t",
-        Message: "b",
-        Timestamp: "ts",
-        Token: "tok",
-        SubscribeURL: "https://sns.eu-west-2.amazonaws.com/x",
-      },
-      false,
-    );
+    const s = buildStringToSign({
+      Type: "SubscriptionConfirmation",
+      MessageId: "m",
+      TopicArn: "t",
+      Message: "b",
+      Timestamp: "ts",
+      Token: "tok",
+      SubscribeURL: "https://sns.eu-west-2.amazonaws.com/x",
+    });
     assert.equal(s.includes("SubscribeURL\nhttps://sns.eu-west-2.amazonaws.com/x"), true);
     assert.equal(s.includes("Token\ntok"), true);
   });
@@ -138,7 +130,6 @@ describe("canonical string", () => {
     // "Only the explicitly required fields must be included."
     const s = buildStringToSign(
       { Type: "Notification", MessageId: "m", TopicArn: "t", Message: "b", Timestamp: "ts", Evil: "x" },
-      false,
     );
     assert.equal(s.includes("Evil"), false);
   });
@@ -172,9 +163,17 @@ describe("verifySnsSignature", () => {
     await verify(signedEnvelope({}, { version: "1" }));
   });
 
-  test("accepts either trailing-newline encoding — the AWS reference is ambiguous", async () => {
-    await verify(signedEnvelope({}, { trailingNewline: true }));
-    await verify(signedEnvelope({}, { trailingNewline: false }));
+  test("REJECTS the no-trailing-newline encoding — settled, only one form is signed", async () => {
+    // Both AWS-authored validators build `name\nvalue\n` per field including
+    // the last, so the trailing form is the real one. An earlier revision
+    // accepted both while the reference looked ambiguous.
+    const msg = signedEnvelope();
+    const signer = createSign("RSA-SHA256");
+    const canonical = buildStringToSign(msg as unknown as Record<string, unknown>);
+    signer.update(canonical.slice(0, -1), "utf-8");
+    signer.end();
+    msg.Signature = signer.sign(privateKeyPem, "base64");
+    await assert.rejects(verify(msg), /does not verify/);
   });
 
   test("REJECTS a tampered Message body", async () => {
@@ -256,7 +255,7 @@ describe("verifySnsSignature", () => {
     );
     const msg = signedEnvelope();
     const signer = createSign("RSA-SHA256");
-    signer.update(buildStringToSign(msg as unknown as Record<string, unknown>, true), "utf-8");
+    signer.update(buildStringToSign(msg as unknown as Record<string, unknown>), "utf-8");
     signer.end();
     msg.Signature = signer.sign(readFileSync(otherKey, "utf-8"), "base64");
     await assert.rejects(verify(msg), /does not verify/);
