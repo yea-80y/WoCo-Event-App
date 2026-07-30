@@ -223,7 +223,7 @@ at all (so an access report omitted the one store holding the subject's plaintex
 the `DATA_INVENTORY` cap wording predated the eviction exemption.
 
 Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + drain worker) ·
-**#101** (list cap). Rows 9–13 are tracked in **#102**.
+**#101** (list cap). Rows 9–13 are tracked in **#102**. Phase 2 sending domains: **#103**.
 
 ### Finding 1 — the half of the bug that is still open
 
