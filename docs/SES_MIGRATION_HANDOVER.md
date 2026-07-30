@@ -202,7 +202,7 @@ record; do not close a row without a commit reference.
 
 | # | Finding | Status |
 |---|---|---|
-| **1** | **ASYNC BOUNCES NEVER REACH THE LEDGER** — see below | 🔴 **OPEN — blocks cutover** |
+| **1** | **ASYNC BOUNCES NEVER REACH THE LEDGER** — see below | 🔴 **OPEN — #99, blocks LAUNCH (not cutover)** |
 | 2 | `QueueOverflowError` bypassed the ledger: `acquire()` sat outside the `try`, so a full queue threw past `recordFailure` into the Stripe webhook's `console.error` — the original bug, re-created | ✅ `757d57e` |
 | 3 | A marketing flood evicted unresolved transactional evidence *and* cleared the health alarm: `prune()` sliced newest-1000 regardless of kind | ✅ `757d57e` |
 | 4 | `eraseSubject` did not cover `email-failures.json` — Art. 17 gap on the only plaintext store | ✅ `757d57e` |
@@ -227,7 +227,13 @@ Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + dra
 
 ### Finding 1 — the half of the bug that is still open
 
-**This must land before `EMAIL_PROVIDER=ses`.** The scenario the whole branch exists
+**Blocks LAUNCH, not the cutover — corrected 2026-07-30.** `routes/resend-webhook.ts` has the
+identical gap: it suppresses the hash and never ledgers. So this is **pre-existing on both
+providers**, not introduced by the migration, and cutting over to SES is neutral with respect to
+it. Holding the cutover would burn the low-volume warm-up window that was the whole reason for
+migrating early. Ship the cutover; land this before real buyers are paying.
+
+The scenario the whole branch exists
 to fix — buyer paid, turned away at the door — most often starts with a **typo'd email
 at checkout**. SES *accepts* that send: `sesProvider.send()` resolves, no retry, no
 failover, **no ledger entry**. It hard-bounces minutes later, `ses-webhook.ts` suppresses
