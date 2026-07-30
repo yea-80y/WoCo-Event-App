@@ -20,6 +20,7 @@ in `apps/server/.env`, and it must not be flipped until §2 is done.
 | `lib/email/consumed-sns-events.ts` | Bounded exactly-once registry |
 | `routes/ses-webhook.ts` | `POST /api/ses/webhook` — bounces/complaints → global suppression |
 | `send.ts` | Provider selection, retry, failover, ledger. `sendVia()` is the injectable seam |
+| `maxInlineRecipients()` | **Temporary** broadcast-size guard, deleted with the inline send path |
 
 New dependency: `@aws-sdk/client-sesv2` only. Tests: 89 added, 277/277 green.
 
@@ -31,12 +32,11 @@ list with `ContentId` and `ContentDisposition: INLINE`, which is exactly what
 would have been a correctness liability whose failure mode is "renders in Gmail, not
 Outlook". No `nodemailer`, no MIME builder.
 
-**Resend is kept, deliberately scoped.** It is the operator rollback lever
-(`EMAIL_PROVIDER=resend`) *and* the automatic failover for **transactional mail only**
-(`EMAIL_FALLBACK_PROVIDER=resend`). Ticket email runs under 1,000/month, so Resend's free
-tier absorbs an SES outage; a single 1,000-recipient broadcast would exhaust the 100/day
-allowance and start a cold domain on bulk mail. Hence marketing never fails over. It stays
-on the **free** tier — we do not pay for two ESPs.
+**Resend is kept, deliberately scoped, and the failover ships OFF.** It is the operator
+rollback lever (`EMAIL_PROVIDER=resend`) and, opt-in only, a failover for **transactional
+mail only** (`EMAIL_FALLBACK_PROVIDER=resend`, commented out in `.env.example`). Marketing
+never fails over. Read **§3a** before enabling it — the reasoning changed once the DNS was
+actually checked. It stays on the **free** tier; we do not pay for two ESPs.
 
 **The failure ledger keeps plaintext for transactional only.** Remediating a failed *ticket*
 means contacting the buyer, and nothing else on disk can recover their address (the claimers
@@ -199,9 +199,29 @@ is unbounded and grows forever — the SNS one is capped), the `resend` dependen
 
 Still open from `SES_PRODUCTION_ACCESS.md`, and not addressed here:
 
+**Raising limits does not fix this — checked, not assumed.** Cloudflare's 524 timeout can
+only be raised on **Enterprise** (up to 6,000s), and Cloudflare's own advice is to move
+long-running work off the request instead. Nor does a bigger SES quota help: our own
+`MARKETING_MAX_LIST_EMAILS = 20_000` means that even at **100/s — 7× the current grant —**
+a full-list send takes 200s and still dies. There is no rate at which a bulk send fits
+inside an HTTP request. The queue is the only shape that works.
+
+| Rate | 1,000 recipients | 20,000 (list cap) |
+|---|---|---|
+| 12/s (today) | 83s ✓ | 1,667s ✗ |
+| 14/s (full grant) | 71s ✓ | 1,429s ✗ |
+| 100/s (hypothetical) | 10s ✓ | 200s ✗ |
+
+Interim guard: `maxInlineRecipients()` = `90s × effective rate` (900 today) rejects an
+oversized broadcast up front with a clear message, instead of letting the organiser hit a
+generic 524 with no idea how many people were mailed. It is derived from the rate rather
+than hardcoded because the dangerous case is **lowering** `SES_MAX_SEND_RATE` for warm-up:
+at 5/s a 1,000-recipient send takes 200s. Delete the guard with the inline path.
+
 - **No background job queue for broadcasts.** Sends still run inline in the HTTP request.
   The rate limiter makes a large broadcast *slower*, not faster — 1,000 recipients at 12/s
-  is ~83s, which is now uncomfortably close to Cloudflare's 100s origin timeout. **This is
+  is ~83s against Cloudflare's 125s origin timeout — ~34% headroom before rendering,
+  suppression checks and latency variance. Survivable, not comfortable. **This is
   the next thing to fix**, and it is more urgent than it was before this change.
 - **No batch API use.** `SendEmail` is one message per call. SESv2 has `SendBulkEmail`, but
   it requires templates, which our per-recipient unsubscribe footer does not fit without

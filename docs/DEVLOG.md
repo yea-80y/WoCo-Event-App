@@ -33,7 +33,7 @@ limiter would let a broadcast and a burst of ticket email each stay under it
 while together blowing through. Transactional drains ahead of marketing, so a
 1,000-recipient broadcast can no longer queue ahead of the buyer who just checked
 out. The cost: that broadcast now takes ~83s at 12/s, uncomfortably close to
-Cloudflare's 100s origin timeout. The old code was faster and wrong; this is
+Cloudflare's 125s origin timeout. The old code was faster and wrong; this is
 correct and slow. **The background broadcast queue is now the most urgent gap.**
 
 **SESv2 `Simple` content, not `Raw`.** Simple content carries an `Attachments`

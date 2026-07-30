@@ -177,14 +177,43 @@ export class RateLimiter {
  */
 export const DEFAULT_SEND_RATE = 12;
 
+/** The rate actually in force, from env or the default. */
+export function effectiveSendRate(): number {
+  const configured = Number(process.env.SES_MAX_SEND_RATE);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_SEND_RATE;
+}
+
+/**
+ * Seconds a broadcast may spend inside one HTTP request.
+ *
+ * Cloudflare's default origin-response timeout is **125s** (Error 524), and
+ * raising it is Enterprise-only — Cloudflare's own advice is to move
+ * long-running work off the request instead. 90s leaves ~35s for rendering,
+ * per-recipient suppression checks, unsubscribe-token minting and provider
+ * latency variance, none of which the rate calculation covers.
+ */
+const INLINE_SEND_BUDGET_S = 90;
+
+/**
+ * Largest broadcast that can finish inside one HTTP request at the current rate.
+ *
+ * TEMPORARY. This exists only because broadcasts still send inline; the fix is
+ * the background queue, and this guard goes with it. Delete both together.
+ *
+ * Derived rather than hardcoded on purpose, because the dangerous case is not
+ * an operator raising the recipient cap — it is one LOWERING the send rate.
+ * Warm-up guidance says to start SES slower than the granted 14/s, and at 5/s a
+ * 1,000-recipient broadcast takes 200s and dies at the edge with the organiser
+ * seeing a generic 524 and no idea how many people were mailed.
+ */
+export function maxInlineRecipients(): number {
+  return Math.floor(INLINE_SEND_BUDGET_S * effectiveSendRate());
+}
+
 let shared: RateLimiter | null = null;
 
 export function sendRateLimiter(): RateLimiter {
-  if (!shared) {
-    const configured = Number(process.env.SES_MAX_SEND_RATE);
-    const rate = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_SEND_RATE;
-    shared = new RateLimiter({ ratePerSecond: rate });
-  }
+  if (!shared) shared = new RateLimiter({ ratePerSecond: effectiveSendRate() });
   return shared;
 }
 

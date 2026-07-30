@@ -23,6 +23,7 @@ import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
 import { consentedSubset } from "../lib/marketing/consent-store.js";
 import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
+import { maxInlineRecipients } from "../lib/email/rate-limiter.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
 import {
@@ -261,6 +262,21 @@ marketing.post("/broadcast", requireAuth, async (c) => {
     }
     if (recipients.length > MAX_BROADCAST_RECIPIENTS) {
       return c.json({ ok: false, error: `Maximum ${MAX_BROADCAST_RECIPIENTS} recipients per broadcast` }, 400);
+    }
+    // TEMPORARY, paired with the background queue (docs/SES_MIGRATION_HANDOVER.md
+    // §5): sends run inline, so a broadcast the send rate cannot finish in time
+    // dies at Cloudflare's 524 with the organiser seeing a generic gateway error
+    // and no idea how many people were mailed. Refusing up front is the honest
+    // failure. Delete this with the inline send path.
+    const inlineMax = maxInlineRecipients();
+    if (recipients.length > inlineMax) {
+      return c.json({
+        ok: false,
+        error:
+          `This broadcast is too large to send in one go right now — ${recipients.length} ` +
+          `recipients, current maximum ${inlineMax}. Split it, or wait for scheduled ` +
+          `sending which removes this limit.`,
+      }, 400);
     }
     for (const r of recipients) {
       if (!r?.email || typeof r.email !== "string" || !EMAIL_RE.test(r.email)) {

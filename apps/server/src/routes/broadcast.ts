@@ -6,6 +6,7 @@ import { getAttendeeEmailHashes } from "../lib/event/attendee-emails.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getResend } from "../lib/email/client.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
+import { maxInlineRecipients } from "../lib/email/rate-limiter.js";
 import { resolveMarketingFrom } from "../lib/marketing/sending-domain-store.js";
 import { withOrgLock } from "../lib/marketing/list-store.js";
 import { RateWindow } from "../lib/marketing/rate-window.js";
@@ -63,6 +64,20 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
 
     if (recipients.length > MAX_RECIPIENTS) {
       return c.json({ ok: false, error: `Maximum ${MAX_RECIPIENTS} recipients per broadcast` }, 400);
+    }
+
+    // Same inline-duration guard as the marketing broadcast — see the comment
+    // there. Attendee broadcasts cap at 500, so this only bites if the send rate
+    // is turned down (warm-up) or MAX_RECIPIENTS is raised.
+    const inlineMax = maxInlineRecipients();
+    if (recipients.length > inlineMax) {
+      return c.json({
+        ok: false,
+        error:
+          `This broadcast is too large to send in one go right now — ${recipients.length} ` +
+          `recipients, current maximum ${inlineMax}. Split it, or wait for scheduled ` +
+          `sending which removes this limit.`,
+      }, 400);
     }
 
     // Validate email format
