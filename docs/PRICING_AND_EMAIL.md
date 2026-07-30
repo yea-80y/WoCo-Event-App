@@ -99,37 +99,78 @@ Agreed: an organiser with their own domain will not accept platform-branded tick
 
 `Reply-To`: currently only on the site contact form (`sites.ts:611`). `TicketEmailOpts.replyTo` is now plumbed but unsourced — wire `SiteContact.email` (`packages/shared/src/site/types.ts:263`) when `siteId` is present, else the verified sending domain, else omit.
 
-## 6. SES migration
+## 6. SES migration — DECIDED, SES is the platform ESP
 
-### Cost
+**Production access granted 2026-07-30**: **50,000/day, 14 messages/second, eu-west-2 (London)**, account out of sandbox. That closes §17 item 3.
+
+**Decision (2026-07-30): SES is the only funded ESP.** Resend stays in the tree as an
+`EMAIL_PROVIDER=resend` rollback lever on the **free** tier — it is an incident escape
+hatch, not a fallback. It cannot absorb production volume (100/day, 1 domain) so nothing
+may be designed to fail over to it automatically.
+
+### Cost — verified against aws.amazon.com/ses/pricing 2026-07-30
 
 | Item | Cost |
 |---|---|
-| Outbound, à la carte | **$0.10/1k** (no base fee) |
-| Outbound, Essentials plan | $0.16/1k (no base fee) |
+| Outbound, **Essentials** (our default, see below) | **$0.16/1k**, no base fee — 0–10M/mo band |
+| Outbound, à la carte | $0.10/1k, no base fee — switchable in-console any time |
 | Attachment data | $0.12/GB — ~100KB PNG per ticket, so 100k tickets ≈ 10GB ≈ **$1.20** |
-| Dedicated IP (managed) | $15/mo — not needed initially |
+| Dedicated IP (managed) | $15/mo + $0.08/1k — not needed initially |
 | Virtual Deliverability Manager | $0.07/1k — optional, useful once organiser domains are live |
-| Setup / account | **£0** |
+| Pro plan | $105/mo/region — **do not enable**, nothing in it we use |
+| Setup / account / minimum | **£0** |
 
-| Monthly volume | Resend | SES |
+**We are on Essentials, not à la carte.** Per the AWS pricing-plans announcement, *"all new
+SES accounts begin on the Essentials plan"* from **21 July 2026**; only accounts that sent
+through SES on or after 1 June 2025 stay on à la carte. Our account is newer, so the
+default is $0.16/1k. Switching to à la carte saves ~37% and costs nothing — check the SES
+console Account dashboard before assuming a figure.
+
+**There is no SES free tier for us.** The SES-specific 3,000 messages/month-for-12-months
+free tier was **discontinued for new customers effective 21 July 2026**. What remains is the
+general AWS Free Tier credit ($100 on signup + up to $100 earned, expiring 12 months after
+account creation) — a credit, not an allowance. The old "62,000/month free from EC2" tier is
+long dead; do not plan against it.
+
+| Monthly volume | Resend | SES (Essentials) |
 |---|---|---|
-| 50k | $20 | ~$5 |
-| 100k | $35 | ~$10 |
-| 500k | $350 | ~$50 |
+| 50k | $20 | **$8** |
+| 100k | $35 | **$16** |
+| 500k | $350 | **$80** |
+
+⚠️ **Account-plan risk:** if the AWS account sits on the Free *plan* rather than the Paid
+plan, AWS closes it *"6 months after you open it or when your credits run out, whichever
+comes first"*. A closed account is a total ticket-delivery outage. Confirm Paid plan in
+Billing → Free Tier.
 
 ### Engineering cost
 
-| Work | Est. |
-|---|---|
-| SES provider behind the §8.1 seam | ~half day (seam done) |
-| Per-organiser domain verification — verified identities + DKIM record generation + verification poll, replacing Resend's Domains API | **2–3 days** |
-| SNS → bounce/complaint webhook (reshape existing handler) | ~1 day |
-| Warmup + reputation monitoring | ongoing ops |
+| Work | Est. | State |
+|---|---|---|
+| SES provider behind the §8.1 seam | ~half day | **done 2026-07-30** |
+| Send-rate limiter + retry + durable failure ledger | ~half day | **done 2026-07-30** |
+| SNS → bounce/complaint webhook (new, signature-verified) | ~1 day | **done 2026-07-30** |
+| Per-organiser domain verification — `CreateEmailIdentity` + DKIM tokens + verification poll, replacing Resend's Domains API | **2–3 days** | phase 2 |
+| Warmup + reputation monitoring | ongoing ops | ongoing |
+
+See `docs/SES_MIGRATION_HANDOVER.md` for what shipped, the console/DNS steps, and the
+phase-2 design.
+
+### The 14/s rate ceiling is lower than our old send loop
+
+`SEND_CHUNK = 5` in flight at ~200ms each is ~25 req/s — **above** the granted 14/s. SES
+answers `TooManyRequestsException` and the old code counted that as `failed` with no retry,
+so recipients were silently not mailed. Fixed by the token-bucket limiter at the `sendEmail`
+chokepoint (`SES_MAX_SEND_RATE`, default 12/s — deliberately under the granted 14 so a burst
+of transactional mail cannot push a broadcast over). Raise it only in step with the quota
+shown in the SES console.
 
 ### Sandbox is not a scaling limit
 
-New SES accounts are capped at **200/day to verified addresses only** until you request production access — a one-time support request. Production accounts start around 50k/day and the quota rises automatically with volume and good reputation. **File this the week we open the AWS account**, not the week we need it.
+New SES accounts are capped at **200/day to verified addresses only** until you request
+production access — a one-time support request. ~~File this the week we open the AWS
+account.~~ **Granted 2026-07-30**; the quota now rises automatically with volume and good
+reputation. Ask for more *before* it binds, not after.
 
 ### Does launching on Resend create migration debt?
 
@@ -144,7 +185,13 @@ Partly, and it is entirely about **DNS records, not data**:
 
 **Sequencing decision: launch on Resend for platform-sent email only (tickets, event broadcasts from `events@woco-net.com`) — that carries zero migration debt. Do NOT onboard organiser custom sending domains until SES is live.** Since custom sending domain is a paid-tier feature anyway, this gates cleanly: ship the paid tier when SES ships.
 
-**Migrate when either trigger fires:** Resend bill > ~$100/mo, **or** the first paid-tier organiser wants their own sending domain. The second will almost certainly come first.
+~~**Migrate when either trigger fires:** Resend bill > ~$100/mo, **or** the first paid-tier
+organiser wants their own sending domain.~~ **Superseded 2026-07-30 — migrated early, before
+either trigger fired.** The reason is not cost, it is reputation: a cold SES domain warms on
+volume history, and the cheapest time to accumulate that history is pre-launch when volume is
+near zero. Discovering deliverability problems during launch week is the failure this avoids.
+The debt table above still holds and is now **zero** — no organiser custom sending domain was
+ever onboarded on Resend, so nobody has DNS to redo.
 
 ## 7. Pricing
 
@@ -334,14 +381,14 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 | **0** | 🚨 **DELAYED PAYOUTS — launch blocker, ahead of everything else.** Default connected accounts to hold funds until after the event: `delay_days_override` (≤31 days) for short-lead events, `interval: "manual"` + a post-event release job beyond that. Without this, one cancelled mid-size event lands ~£12.5k on WoCo's platform reserve (§7). | design sign-off on hold policy |
 | 1 | ~~**Close the `lib/email/` seam**~~ ✅ 2026-07-27 `2eda035` — `lib/email/send.ts` single chokepoint, 5 call sites refactored, dead `poller.ts` send removed (recipient was a wallet address — always failed Resend validation). `build:server` clean, tests 41/41. | — |
 | 2 | **Ask Resend** about broadcast volume on the transactional plan (§9) | user |
-| 3 | **Open AWS account + file SES production-access request** — sandbox is 200/day | user |
+| 3 | ~~**Open AWS account + file SES production-access request**~~ ✅ 2026-07-30 — granted 50k/day, 14/s, eu-west-2, out of sandbox | — |
 | 4 | **`Reply-To` source** — `SiteContact.email` when `siteId` present → sending domain → omit. Wire at both `sendTicketEmail` callers. | nothing |
 | 5 | **Fix `MARKETING_DAILY_CAP`** — per-tier, and never below the contact allowance (§3). Split attendee-broadcast throttling (rate) from marketing caps (volume). | §7 sign-off |
 | 6 | **Entitlements store** — `.data/entitlements.json`, per-organiser tier; contacts / storage / sites / caps all read from it | §7 sign-off |
 | 7 | **Per-ticket fee cap** — 1.5% capped at £1.00 in `application_fee_amount` (`routes/stripe.ts`); keep in sync with the 150bp escrow contract | §7 sign-off |
-| 8 | **SES provider** behind the §8.1 seam | 3 |
-| 9 | **SES domain verification** — verified identities + DKIM + poll, replacing Resend Domains API | 8 |
-| 10 | **SNS bounce/complaint webhook** — reshape existing handler | 8 |
+| 8 | ~~**SES provider** behind the §8.1 seam~~ ✅ 2026-07-30 — `lib/email/ses-provider.ts`, SESv2 `Simple` content (native inline attachments), + send-rate limiter, retry classification and durable failure ledger | — |
+| 9 | **SES domain verification** — verified identities + DKIM + poll, replacing Resend Domains API. **Phase 2**, design in `SES_MIGRATION_HANDOVER.md` | 8 |
+| 10 | ~~**SNS bounce/complaint webhook**~~ ✅ 2026-07-30 — `routes/ses-webhook.ts` + `lib/email/sns-verify.ts`, signature-verified, Permanent-only bounce suppression | — |
 | 11 | **Transactional sending domain** — `resolveTransactionalFrom()`, separate subdomain, Venue+ | 6, 9 |
 | 12 | **Stripe Billing subscription rail** for tiers (Billing, not Connect — WoCo is merchant here) | §7 sign-off |
 

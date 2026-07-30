@@ -11,12 +11,18 @@
  * migration touches only lib/email/.
  */
 
-import { sendEmail, type OutboundEmail } from "./send.js";
+import { sendEmail, type OutboundEmail, type SendEmailOptions } from "./send.js";
 import { footerHtml, footerText, withFooter, htmlToPlainText } from "./marketing-footer.js";
 import { hashEmail } from "../event/claim-service.js";
 import { isSuppressed } from "../marketing/suppression-store.js";
 import { mintUnsubToken } from "../marketing/unsub-token.js";
 
+/**
+ * In-flight concurrency, NOT a rate limit. The account-wide messages/second cap
+ * is enforced by the token bucket in `send.ts`, which also makes transactional
+ * mail overtake this loop — so a broadcast can no longer delay a paid ticket.
+ * Keep this modest anyway: each in-flight send holds its rendered body in memory.
+ */
 const SEND_CHUNK = 5;
 
 export interface MarketingSendResult {
@@ -44,7 +50,7 @@ export interface MarketingSendOptions {
  * injection shape as `sendSponsorTx`.
  */
 export interface MarketingSendDeps {
-  send: (msg: OutboundEmail) => Promise<void>;
+  send: (msg: OutboundEmail, opts?: SendEmailOptions) => Promise<void>;
 }
 
 export async function sendMarketingBatch(
@@ -106,17 +112,22 @@ export async function sendMarketingBatch(
     const settled = await Promise.allSettled(
       chunk.map(async (p) => {
         const ctx = { displayName, unsubUrl: p.unsubUrl, postalAddress };
-        await deps.send({
-          from,
-          to: [p.email],
-          subject,
-          html: withFooter(opts.html, footerHtml(ctx)),
-          text: bodyText + footerText(ctx),
-          headers: {
-            "List-Unsubscribe": `<${p.unsubUrl}>`,
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        await deps.send(
+          {
+            from,
+            to: [p.email],
+            subject,
+            html: withFooter(opts.html, footerHtml(ctx)),
+            text: bodyText + footerText(ctx),
+            headers: {
+              "List-Unsubscribe": `<${p.unsubUrl}>`,
+              "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            },
           },
-        });
+          // Yields the send-rate budget to transactional mail, and keeps this
+          // batch off the transactional-only failover path.
+          { priority: "marketing", context: { organiser: organiserAddress } },
+        );
       }),
     );
     settled.forEach((s, j) => {

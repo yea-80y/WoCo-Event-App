@@ -4,6 +4,67 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## SES migration + the silent ticket-email failure (2026-07-30)
+
+AWS granted production access that morning — 50k/day, 14 msg/s, eu-west-2, out of
+sandbox — so the migration was pulled forward ahead of both triggers in
+`PRICING_AND_EMAIL.md` §6. The reason was not cost: a cold SES domain warms on
+volume history, and the cheapest time to accumulate that is pre-launch when
+volume is near zero. Full handover, including the AWS console steps that must
+happen before the flag is flipped, in `docs/SES_MIGRATION_HANDOVER.md`.
+
+**The bug worth naming.** `stripe.ts` fired ticket email with
+`.catch(err => console.error(...))`. A buyer paid, the send failed, the evidence
+went to docker logs, and nobody found out until they were turned away at the
+door. Three things now have to hold: transient failures retry with jittered
+backoff, transactional mail fails over to a secondary provider, and anything
+finally abandoned lands in `.data/email-failures.json` — which flips
+`/api/health` on any unresolved *transactional* failure, because one person who
+paid and has no ticket is already an incident. The webhook still returns 2xx to
+Stripe (non-2xx would redeliver and re-run the whole claim path over an email
+problem) but the loss is no longer invisible.
+
+**Rate, and a regression I am flagging rather than hiding.** `SEND_CHUNK = 5` at
+~200ms each is ~25 req/s against a 14/s grant, and SES answers
+`TooManyRequestsException`, which the old marketing loop counted as `failed` with
+no retry. A token bucket at the `sendEmail` chokepoint now shapes all traffic
+against one account-wide budget — the limit is per-account, so a per-caller
+limiter would let a broadcast and a burst of ticket email each stay under it
+while together blowing through. Transactional drains ahead of marketing, so a
+1,000-recipient broadcast can no longer queue ahead of the buyer who just checked
+out. The cost: that broadcast now takes ~83s at 12/s, uncomfortably close to
+Cloudflare's 100s origin timeout. The old code was faster and wrong; this is
+correct and slow. **The background broadcast queue is now the most urgent gap.**
+
+**SESv2 `Simple` content, not `Raw`.** Simple content carries an `Attachments`
+list with `ContentId` + `ContentDisposition: INLINE`, which is what
+`cid:woco-card-0` in the ticket email needs — so SES assembles the MIME and we
+added no MIME builder and no `nodemailer`. One new dependency:
+`@aws-sdk/client-sesv2`.
+
+**SNS bounce/complaint webhook.** AWS required bounce handling as a condition of
+production access. `lib/email/sns-verify.ts` verifies signatures with
+`node:crypto` — the whole job is a canonical string plus an RSA verify against a
+cert from a host-allowlisted HTTPS URL, and a package for that is more
+supply-chain surface than code saved. Unconditional, because a forged complaint
+would globally suppress an arbitrary address. Policy: every `Permanent` bounce
+subtype and every complaint suppress; `Transient` and `Undetermined` do not —
+permanently blocking someone over a full mailbox means they never get a ticket
+again. The topic ARN is pinned and the route **fails closed** without it: a
+genuine SNS signature only proves Amazon sent the message, and any AWS customer
+can get one by publishing on their own topic.
+
+**Resend kept, scoped, and dated for deletion.** It stays on the free tier as the
+operator rollback lever and as automatic failover for transactional mail only.
+Ticket email runs under 1,000/month so the free tier absorbs an SES outage; one
+broadcast would exhaust the 100/day allowance and start a cold domain on bulk
+mail, so marketing never fails over. Delete when phase 2 (per-organiser sending
+domains, SES-only) ships, or 2026-10-01, whichever is first.
+
+89 tests added, 277/277 server green, `build:server` clean. Not yet cut over —
+`EMAIL_PROVIDER` still defaults to `resend`, deliberately: flipping the default
+would take email down on any VM whose env lacks AWS credentials.
+
 ## Pre-launch review follow-ups: #80, #82, #83, #81, #85 (2026-07-29)
 
 Five issues from the 2026-07-28 pre-launch review, each verified against source

@@ -13,6 +13,7 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1098.0",
     "@ethersphere/bee-js": "^11.0.0",
     "@hono/node-server": "^1.14.0",
     "@resvg/resvg-js": "^2.6.2",

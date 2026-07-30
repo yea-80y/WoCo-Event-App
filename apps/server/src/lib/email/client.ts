@@ -11,8 +11,13 @@ export function getResend(): Resend {
   return _resend;
 }
 
+/**
+ * `EMAIL_FROM` is the provider-neutral name; `RESEND_FROM` is still read so the
+ * SES cutover does not require an env rename in the same change. Drop the
+ * fallback when the Resend adapter goes.
+ */
 export function getFromAddress(): string {
-  return process.env.RESEND_FROM || "events@woco-net.com";
+  return process.env.EMAIL_FROM || process.env.RESEND_FROM || "events@woco-net.com";
 }
 
 /**
@@ -22,5 +27,5 @@ export function getFromAddress(): string {
  * BEFORE the first imported cold list is emailed).
  */
 export function getMarketingFromAddress(): string {
-  return process.env.RESEND_FROM_MARKETING || getFromAddress();
+  return process.env.EMAIL_FROM_MARKETING || process.env.RESEND_FROM_MARKETING || getFromAddress();
 }
