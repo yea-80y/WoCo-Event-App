@@ -61,7 +61,27 @@ broadcast would exhaust the 100/day allowance and start a cold domain on bulk
 mail, so marketing never fails over. Delete when phase 2 (per-organiser sending
 domains, SES-only) ships, or 2026-10-01, whichever is first.
 
-89 tests added, 277/277 server green, `build:server` clean. Not yet cut over —
+**Reviewed, and the review earned its keep.** Fable found four defects. Two were
+mine re-creating the bug I was fixing: `acquire()` sat outside the `try`, so a
+full send queue threw straight past `recordFailure` into the Stripe webhook's
+`console.error`; and `prune()` sliced newest-1000 regardless of kind, so one
+failed 1,000-recipient broadcast — which happens precisely when transactional
+sends are also failing — evicted every paid-ticket failure and flipped
+`failureHealth()` back to green. Also an Art. 17 gap (`eraseSubject` did not
+cover the new plaintext store) and two now-false sentences in
+`DATA_INVENTORY.md`. All fixed in `757d57e`.
+
+It also settled the SNS canonical-string ambiguity — both AWS-authored validators
+build `name\nvalue\n` including the final pair, so the trailing form is correct
+and the dual-encoding branch is gone.
+
+**One finding is still open and blocks cutover.** Async bounces never reach the
+ledger: a typo'd email at checkout is *accepted* by SES, so the send resolves with
+no ledger entry, and the hard bounce minutes later only suppresses a hash. The
+silent-failure fix therefore covers synchronous API failures — about half the
+failure surface. Status board and fix shape in `SES_MIGRATION_HANDOVER.md` §4a.
+
+93 tests added, 285/285 server green, `build:server` clean. Not yet cut over —
 `EMAIL_PROVIDER` still defaults to `resend`, deliberately: flipping the default
 would take email down on any VM whose env lacks AWS credentials.
 

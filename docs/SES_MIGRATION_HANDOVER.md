@@ -195,6 +195,46 @@ is unbounded and grows forever — the SNS one is capped), the `resend` dependen
 
 ---
 
+## 4a. Review findings — status board
+
+Fable reviewed the branch on 2026-07-30 and found four defects. This table is the
+record; do not close a row without a commit reference.
+
+| # | Finding | Status |
+|---|---|---|
+| **1** | **ASYNC BOUNCES NEVER REACH THE LEDGER** — see below | 🔴 **OPEN — blocks cutover** |
+| 2 | `QueueOverflowError` bypassed the ledger: `acquire()` sat outside the `try`, so a full queue threw past `recordFailure` into the Stripe webhook's `console.error` — the original bug, re-created | ✅ `757d57e` |
+| 3 | A marketing flood evicted unresolved transactional evidence *and* cleared the health alarm: `prune()` sliced newest-1000 regardless of kind | ✅ `757d57e` |
+| 4 | `eraseSubject` did not cover `email-failures.json` — Art. 17 gap on the only plaintext store | ✅ `757d57e` |
+| 5 | `DATA_INVENTORY.md` §3.1/§3.2 asserted no plaintext email store — false on merge | ✅ `757d57e` |
+| 6 | SNS canonical string ambiguity | ✅ Settled: trailing newline. `757d57e` |
+| 7 | `SEND_CHUNK = 5` meant the limiter only bound under 417ms latency, so `maxInlineRecipients()` oversized broadcasts | ✅ `757d57e` (→ 10, threshold 833ms) |
+| 8 | Empty header value / trailing-backslash display name / `.env.example` selecting SES with empty creds | ✅ `757d57e` |
+| 9 | Ledger records only `msg.to[0]`; a future multi-recipient transactional send would lose recipients 2..n | 🟡 Open, latent |
+| 10 | `attempts` in the ledger is approximate (`retryable ? maxAttempts : 1`), ignores failover attempts | 🟡 Open, cosmetic — but it is an evidence record |
+| 11 | No ops surface: `listFailures`/`resolveFailure` have no route, so remediation means editing `.data/` over SSH | 🟡 Open — the drain worker wants this read anyway |
+| 12 | Forged-message fetch amplification: any POST with a novel valid-host `SigningCertURL` triggers an outbound fetch from an unauthenticated endpoint | 🟡 Open — pin path to `/SimpleNotificationService-*.pem` and/or rate-limit |
+| 13 | Webhook consumes the `MessageId` **before** processing, so a crash between the two loses the bounce permanently | 🟡 Accepted trade (suppression is idempotent) — wants a comment so nobody "fixes" it |
+
+### Finding 1 — the half of the bug that is still open
+
+**This must land before `EMAIL_PROVIDER=ses`.** The scenario the whole branch exists
+to fix — buyer paid, turned away at the door — most often starts with a **typo'd email
+at checkout**. SES *accepts* that send: `sesProvider.send()` resolves, no retry, no
+failover, **no ledger entry**. It hard-bounces minutes later, `ses-webhook.ts` suppresses
+the hash and logs a count, and nothing records that a *paid ticket* went undelivered.
+`failureHealth()` stays green. Same for an address already on the SES account-level
+suppression list: accepted, silently dropped by AWS, surfaced only as
+`Permanent/OnAccountSuppressionList`.
+
+So the silent-failure fix currently covers **synchronous API failures only — roughly half
+the failure surface.**
+
+Fix shape: tag transactional sends with configuration-set message tags (or match the
+bounced hash against recently-sent transactional messages), then write a ledger entry
+from the bounce handler carrying the Stripe/event context. Pairs naturally with the
+queue work, since both need per-message identity.
+
 ## 5. Known gaps — unchanged by this work
 
 Still open from `SES_PRODUCTION_ACCESS.md`, and not addressed here:
