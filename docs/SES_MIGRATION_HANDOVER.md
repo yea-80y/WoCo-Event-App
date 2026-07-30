@@ -58,9 +58,20 @@ whole claim path over an email problem), but the loss is no longer invisible.
 
 Nothing here is optional. Steps 3–5 are what AWS required when it granted production access.
 
-1. **Confirm the account is on the AWS *Paid* plan** (Billing → Free Tier). A Free-plan
-   account self-closes at 6 months or when credits run out — that is a total ticket-delivery
-   outage. See `PRICING_AND_EMAIL.md` §6.
+0. **Set `SES_MAX_SEND_RATE=8` NOW, before the next deploy.** ✅ done 2026-07-30.
+   The limiter shipped in #98 applies to whichever provider is active, and until cutover
+   that is **Resend, which caps at 10 req/s per team** — while the code default is 12.
+   (This is still an improvement: the old path ran ~25 req/s into that same limit.) Raise
+   it to 12 **at** cutover, not before.
+1. **Confirm the account is on the AWS *Paid* plan.** A Free-plan account self-closes at
+   6 months or when credits run out — a total ticket-delivery outage. See
+   `PRICING_AND_EMAIL.md` §6.
+   **Seeing the $100 credit does NOT settle this** (checked 2026-07-30): both plan types
+   receive up to $200, so the Credits page is consistent with either. Check **Billing and
+   Cost Management → Payment preferences** for an attached payment method instead. Strong
+   circumstantial evidence we are already on Paid: a direct-debit mandate was set up, and
+   AWS granted production SES access at 50k/day, which Free-plan service restrictions
+   would not allow.
 2. **Check the SES plan** (SES console → Account dashboard). New accounts default to
    Essentials; switching to à la carte is free and ~37% cheaper.
 3. **Create an IAM user** with *only* `ses:SendEmail` on the identity, and put the key in
