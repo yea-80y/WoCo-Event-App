@@ -30,6 +30,7 @@ import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
 import { unsubscribe } from "./routes/unsubscribe.js";
 import { resendWebhook } from "./routes/resend-webhook.js";
+import { sesWebhook } from "./routes/ses-webhook.js";
 import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
@@ -44,6 +45,8 @@ import { listEvents } from "./lib/event/service.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { persistHealth } from "./lib/marketing/persist.js";
+import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
+import { failureHealth } from "./lib/email/failure-ledger.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -172,8 +175,16 @@ app.use(
 // every write after that point exists only in memory and is lost on the next
 // restart — for the suppression list that means mailing people who unsubscribed.
 // Store names only, no subject data: this endpoint is public.
+// `email` reports the live ESP and any send we abandoned. An unresolved
+// TRANSACTIONAL failure means somebody paid and has no ticket, so it is an
+// alarm, not a statistic. Counts and store names only — this endpoint is public.
 app.get("/api/health", (c) =>
-  c.json({ ok: true, payoutSweep: payoutSweepHealth(), compliancePersistence: persistHealth() }),
+  c.json({
+    ok: true,
+    payoutSweep: payoutSweepHealth(),
+    compliancePersistence: persistHealth(),
+    email: { provider: activeEmailProvider(), undelivered: failureHealth() },
+  }),
 );
 
 // ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
@@ -464,6 +475,10 @@ app.route("/api/tickets", tickets);
 // Resend delivery webhooks (bounce/complaint → global suppression)
 app.route("/api/resend", resendWebhook);
 
+// SES bounce/complaint events, delivered via SNS. Signature-verified inside;
+// no auth middleware, because SNS cannot present our session credentials.
+app.route("/api/ses", sesWebhook);
+
 // Organiser marketing audience (sealed contact lists + broadcasts)
 app.route("/api/marketing", marketing);
 
@@ -493,6 +508,9 @@ app.get("/woco-embed.js", (c) => {
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 serve({ fetch: app.fetch, port });
+// Surfaces a missing SES credential at boot rather than leaving it to be found
+// by the first buyer whose ticket never arrived. Non-fatal by design.
+checkEmailProviderConfig();
 startDomainPoller();
 void logSponsorReadiness();
 // Prime the directory-snapshot read cache (#37: 1 pointer + 1 blob) so the first

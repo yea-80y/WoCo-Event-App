@@ -11,13 +11,28 @@
  * migration touches only lib/email/.
  */
 
-import { sendEmail, type OutboundEmail } from "./send.js";
+import { sendEmail, type OutboundEmail, type SendEmailOptions } from "./send.js";
 import { footerHtml, footerText, withFooter, htmlToPlainText } from "./marketing-footer.js";
 import { hashEmail } from "../event/claim-service.js";
 import { isSuppressed } from "../marketing/suppression-store.js";
 import { mintUnsubToken } from "../marketing/unsub-token.js";
 
-const SEND_CHUNK = 5;
+/**
+ * In-flight concurrency, NOT a rate limit. The account-wide messages/second cap
+ * is enforced by the token bucket in `send.ts`, which also makes transactional
+ * mail overtake this loop — so a broadcast can no longer delay a paid ticket.
+ *
+ * It does have to be large enough for the limiter to be the binding constraint,
+ * because `maxInlineRecipients()` sizes a broadcast against the token rate.
+ * Real throughput is `min(rate, SEND_CHUNK / latency)`, so at 12/s the limiter
+ * only binds while mean latency stays under `SEND_CHUNK / 12`. At 5 that was
+ * 417ms — inside SES's p50 but not its tail, and a broadcast sized for 12/s
+ * that actually ran at 10/s could reach the edge timeout. At 10 the threshold
+ * is 833ms, which the tail comfortably clears.
+ *
+ * Not raised further: each in-flight send holds its rendered body in memory.
+ */
+const SEND_CHUNK = 10;
 
 export interface MarketingSendResult {
   sent: number;
@@ -44,7 +59,7 @@ export interface MarketingSendOptions {
  * injection shape as `sendSponsorTx`.
  */
 export interface MarketingSendDeps {
-  send: (msg: OutboundEmail) => Promise<void>;
+  send: (msg: OutboundEmail, opts?: SendEmailOptions) => Promise<void>;
 }
 
 export async function sendMarketingBatch(
@@ -106,17 +121,22 @@ export async function sendMarketingBatch(
     const settled = await Promise.allSettled(
       chunk.map(async (p) => {
         const ctx = { displayName, unsubUrl: p.unsubUrl, postalAddress };
-        await deps.send({
-          from,
-          to: [p.email],
-          subject,
-          html: withFooter(opts.html, footerHtml(ctx)),
-          text: bodyText + footerText(ctx),
-          headers: {
-            "List-Unsubscribe": `<${p.unsubUrl}>`,
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        await deps.send(
+          {
+            from,
+            to: [p.email],
+            subject,
+            html: withFooter(opts.html, footerHtml(ctx)),
+            text: bodyText + footerText(ctx),
+            headers: {
+              "List-Unsubscribe": `<${p.unsubUrl}>`,
+              "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            },
           },
-        });
+          // Yields the send-rate budget to transactional mail, and keeps this
+          // batch off the transactional-only failover path.
+          { priority: "marketing", context: { organiser: organiserAddress } },
+        );
       }),
     );
     settled.forEach((s, j) => {

@@ -144,7 +144,7 @@ Three things worth knowing if this is ever revisited:
 ## Known gaps — fix before these become claims
 
 - **No background job queue for broadcasts.** Sends run inline in the HTTP request, 5
-  concurrent. A 1,000-recipient broadcast is a long request behind Cloudflare's 100s origin
+  concurrent. A 1,000-recipient broadcast is a long request behind Cloudflare's 125s origin
   timeout, and reaching a full 20,000-contact list takes ~10 hours at 2 broadcasts/hour.
   A launch announcement cannot dribble out over 10 hours.
 - **No ESP batch API use.** `sendEmail` posts one message per call. Resend's limit is

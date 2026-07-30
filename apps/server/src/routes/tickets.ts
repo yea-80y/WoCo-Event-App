@@ -47,6 +47,10 @@ export interface TicketEmailOpts {
    *  replies land — the From domain stays platform-owned so a bad organiser
    *  campaign can never tank ticket-delivery reputation (see client.ts). */
   replyTo?: string;
+  /** Breadcrumbs stored with the failure if this send is finally abandoned, so
+   *  an undelivered PAID ticket can be traced back to its order rather than
+   *  being an anonymous line in the ledger. */
+  failureContext?: Record<string, string>;
 }
 
 /** Canonical app host for email CTAs. Emails are rendered server-side with no
@@ -249,15 +253,21 @@ export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
     }),
   );
 
-  await sendEmail({
-    from: `"${eventTitle.slice(0, 40)}" <${fromAddress}>`,
-    to: [to],
-    subject: `Your ticket${subjectEdition} — ${eventTitle}`,
-    html: buildTicketHtml(opts),
-    attachments,
-    // Attendees reply to ticket email expecting the organiser, not a void.
-    ...(opts.replyTo ? { replyTo: [opts.replyTo] } : {}),
-  });
+  await sendEmail(
+    {
+      from: `"${eventTitle.slice(0, 40)}" <${fromAddress}>`,
+      to: [to],
+      subject: `Your ticket${subjectEdition} — ${eventTitle}`,
+      html: buildTicketHtml(opts),
+      attachments,
+      // Attendees reply to ticket email expecting the organiser, not a void.
+      ...(opts.replyTo ? { replyTo: [opts.replyTo] } : {}),
+    },
+    {
+      priority: "transactional",
+      ...(opts.failureContext ? { context: opts.failureContext } : {}),
+    },
+  );
 }
 
 tickets.post("/send-email", async (c) => {

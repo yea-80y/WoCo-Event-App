@@ -1456,10 +1456,23 @@ async function handleSuccessfulPayment(
           // signed-in buyer's single ticket was already bound at claim time;
           // multi-ticket orders keep the per-ticket links for forwarding.
           profileCta: !accountClaim || claimedResults.length > 1,
+          // The buyer has paid. If every retry and the failover both fail, this
+          // is what makes the undelivered ticket findable — see
+          // lib/email/failure-ledger.ts.
+          failureContext: {
+            stripeSessionId: session.id,
+            eventId,
+            ...(metaSiteId ? { siteId: metaSiteId } : {}),
+          },
         }),
       )
       .catch((err) => {
-        console.error("[stripe-webhook] Auto-email failed (non-fatal):", err);
+        // Still non-fatal to the webhook — returning non-2xx to Stripe would
+        // make it redeliver and re-run the whole claim path over an email
+        // problem. It is no longer SILENT though: sendEmail has already written
+        // the failure to .data/email-failures.json, which flips /api/health,
+        // so this log line is a breadcrumb rather than the only record.
+        console.error("[stripe-webhook] Auto-email failed (recorded in email-failures):", err);
       });
   }
 }

@@ -71,6 +71,17 @@ if (!marks) {
   }
 }
 
+console.log(`\nUNDELIVERED EMAIL RECORDS (${report.emailFailures.length})`);
+for (const f of report.emailFailures) {
+  console.log(
+    `  ${f.ts}  ${f.kind}  ${f.recipient ? "PLAINTEXT HELD" : "hash only"}` +
+      `${f.resolvedAt ? `  resolved ${f.resolvedAt} by ${f.resolvedBy}` : "  UNRESOLVED"}  ${f.error}`,
+  );
+}
+if (organiser) {
+  console.log("  (not searched — organiser-scoped request; the ledger is platform-level)");
+}
+
 if (!erase) {
   console.log("\n(read-only — pass --erase to action an Art. 17 request)\n");
   process.exit(0);
@@ -81,6 +92,10 @@ const result = eraseSubject(h, organiser);
 console.log(`  suppression: ${result.suppression === "global" ? "GLOBAL mark recorded" : `organiser-scoped mark recorded for ${organiser}`}`);
 console.log(`  consent records erased: ${result.consentsErased}`);
 console.log(`  removed from list index of: ${result.listsRemovedFrom.length ? result.listsRemovedFrom.join(", ") : "no organiser"}`);
+console.log(
+  `  undelivered-email records redacted: ${result.emailFailuresRedacted}` +
+    (organiser ? "  (skipped — organiser-scoped request; the ledger is platform-level)" : ""),
+);
 
 if (!result.persisted) {
   console.error(`

@@ -32,7 +32,7 @@ export const BEE_CALL_TIMEOUT_MS = 60_000;
 /**
  * Per-call timeout for a Bee /bzz tar collection upload. Higher than the
  * single-chunk timeout because tars can be megabytes (whole site bundle) and
- * legitimately take longer. Kept under Cloudflare's 100s edge timeout so a
+ * legitimately take longer. Kept under Cloudflare's 125s edge timeout so a
  * stuck upload surfaces as a JSON error to the client instead of a 524.
  */
 export const BEE_COLLECTION_TIMEOUT_MS = 90_000;
