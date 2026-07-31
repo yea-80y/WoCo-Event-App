@@ -235,11 +235,16 @@ replaces `POST /api/stripe/dashboard-link` (deleted), and `StripeAccountPanel`
 mounts `notification-banner` + `account-management` on the payouts screen. Both
 work for `express` accounts too, so the order is safe.
 
-**`account-params.ts` is deliberately NOT flipped yet** — held for Nice's
-answers to the 7-question `type=none` email and the 3-question Radar addendum
-(sent 2026-07-31). Do not onboard a real organiser until it is flipped and a
-fresh-account e2e passes: an account created on the wrong controller block can
-only be retired, never converted.
+**FLIPPED 2026-07-31**, after Nice's third email confirmed the type=none plan
+on all seven points (no enablement step needed — answer 6). One new empirical
+fact from the flip: controller-created accounts **require `country` at
+creation** (`type: "express"` used to default it; the block is rejected
+without it). Country is immutable post-creation — `GB` is hardcoded, and
+non-UK organisers are a product decision, not a payload tweak. Verified against
+the sandbox (`acct_1TzHY2Rbv1SuWiuC`): create → controller block stored
+verbatim → manual schedule → onboarding link mints. The Radar question
+(answer 8, disputed — PRICING_AND_EMAIL.md §18) blocks onboarding REAL organisers, not the
+sandbox e2e.
 
 ### 4.2 Requirements do not surface themselves
 

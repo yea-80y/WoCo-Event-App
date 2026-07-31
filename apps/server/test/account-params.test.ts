@@ -4,8 +4,8 @@
  *
  * An account created with the wrong controller block is wrong FOREVER: Stripe
  * cannot convert it, and `type: "express"` silently bakes in platform
- * liability for every negative balance. These tests pin the exact
- * configuration from Stripe's specialist email (2026-07-29, PAYOUTS.md §6) so
+ * liability for every negative balance. These tests pin the fully embedded
+ * configuration confirmed by Stripe support (2026-07-31, PAYOUTS.md §4.1) so
  * a well-meaning refactor cannot drift it.
  */
 
@@ -21,11 +21,15 @@ test("creates accounts with the Managed Risk controller block, never type", () =
 
   assert.equal("type" in params, false, "`type` is incompatible with Managed Risk");
   assert.deepEqual(params.controller, {
-    stripe_dashboard: { type: "express" },
+    stripe_dashboard: { type: "none" },
     fees: { payer: "account" },
     losses: { payments: "stripe" },
     requirement_collection: "stripe",
   });
+});
+
+test("country is explicit — controller-created accounts reject the block without it", () => {
+  assert.equal(buildConnectedAccountParams(ORG).country, "GB");
 });
 
 test("manual payout schedule is set at creation", () => {
