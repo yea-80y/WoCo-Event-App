@@ -46,6 +46,11 @@ import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } fro
 import { sendShopOrderEmail } from "../lib/email/shop-receipt.js";
 import { ensureManualPayoutSchedule } from "../lib/stripe/payout-schedule.js";
 import { buildConnectedAccountParams } from "../lib/stripe/account-params.js";
+import {
+  buildAccountSessionParams,
+  classifyAccountSessionError,
+  resolvePublishableKey,
+} from "../lib/stripe/account-session.js";
 import { eventReleaseAfter, shopReleaseAfter } from "../lib/stripe/payout-policy.js";
 import {
   recordHeld as recordHeldPayout,
@@ -262,63 +267,64 @@ stripe.get("/payouts", requireAuth, async (c) => {
 });
 
 /**
- * POST /api/stripe/dashboard-link — a single-use Express Dashboard login link.
+ * POST /api/stripe/account-session — a client secret for Connect embedded components.
  *
- * The organiser's only route to their own bank details, payment history and
- * balance after onboarding ends. Stripe requires this to be created on the
- * PLATFORM key against the connected account id (no Stripe-Account header),
- * and requires it to be used immediately: "Only redirect users to login links
- * from within your platform. Don't share them externally through email, text,
- * or other channels" (docs.stripe.com/connect/integrate-express-dashboard).
- * So we mint per click and never store or email the URL.
+ * The organiser's only route to their own bank details and account status.
+ * This REPLACED `POST /dashboard-link`: under Managed Risk with
+ * `stripe_dashboard.type = "none"` there is no Express Dashboard, and
+ * `accounts.createLoginLink` returns "does not have access to the Express
+ * Dashboard" — so the login-link door is not deprecated, it is closed.
+ *
+ * The client secret is single-use and expires in minutes, and connect.js calls
+ * this again whenever it needs a fresh one. So it is minted per request and
+ * never stored, logged or emailed — it is a bearer credential for the
+ * organiser's Stripe account.
  *
  * The account id comes from the caller's VERIFIED parentAddress — never the
- * request body — so an organiser can only ever open their own dashboard.
+ * request body — so an organiser can only ever open their own account.
  */
-// Friction, not accounting: every click mints a Stripe API call, and the shared
-// platform API quota shouldn't be spendable by one stuck client loop. Generous —
-// a person re-clicking a slow button never hits it.
-const dashboardLinkRate = new RateWindow(10, 5 * 60 * 1000);
+// Friction, not accounting: every call mints a Stripe API call, and the shared
+// platform API quota shouldn't be spendable by one stuck client loop. Higher
+// than the login link it replaces because connect.js re-fetches on its own
+// schedule (secret expiry, component remount) rather than only on a click.
+const accountSessionRate = new RateWindow(30, 5 * 60 * 1000);
 
-stripe.post("/dashboard-link", requireAuth, async (c) => {
+stripe.post("/account-session", requireAuth, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
-  if (dashboardLinkRate.isLimited(organiserAddress)) {
+  if (accountSessionRate.isLimited(organiserAddress)) {
     return c.json({ ok: false, error: "Too many attempts — try again in a few minutes." }, 429);
   }
-  dashboardLinkRate.record(organiserAddress);
+  accountSessionRate.record(organiserAddress);
   const record = getStripeAccount(organiserAddress);
   if (!record) {
     return c.json({ ok: false, error: "No Stripe account found. Connect Stripe first." }, 400);
   }
 
+  // Fail here, with a log an operator can read, rather than handing the browser
+  // a key that cannot work with this secret key.
+  const keys = resolvePublishableKey(process.env.STRIPE_SECRET_KEY, process.env.STRIPE_PUBLISHABLE_KEY);
+  if (!keys.ok) {
+    console.error(`[stripe] Cannot serve account sessions: ${keys.reason}`);
+    return c.json({ ok: false, error: "Stripe is unavailable right now. Try again shortly." }, 502);
+  }
+
   try {
     const s = getStripe();
-    const link = await s.accounts.createLoginLink(record.stripeAccountId);
-    // The URL itself is a bearer credential for the organiser's Stripe account —
-    // returned to the caller who authenticated for it, and logged nowhere.
-    return c.json({ ok: true, url: link.url });
-  } catch (err: any) {
-    // The account was deleted on Stripe's side. Same self-heal as
-    // /account-status: drop the stale record so the UI offers "connect" rather
-    // than looping on a dashboard that cannot exist.
-    if (err?.statusCode === 404 || err?.code === "resource_missing") {
+    const session = await s.accountSessions.create(buildAccountSessionParams(record.stripeAccountId));
+    return c.json({
+      ok: true,
+      clientSecret: session.client_secret,
+      expiresAt: session.expires_at,
+      publishableKey: keys.publishableKey,
+    });
+  } catch (err) {
+    console.error("[stripe] Failed to create account session:", err);
+    const failure = classifyAccountSessionError(err);
+    if (failure.dropRecord) {
       deleteStripeAccount(organiserAddress);
       console.log(`[stripe] Account ${record.stripeAccountId} missing — removed local record`);
-      return c.json({ ok: false, error: "Your Stripe account is no longer connected. Connect Stripe again." }, 400);
     }
-    console.error("[stripe] Failed to create login link:", err);
-    // Stripe refuses a login link until onboarding has been submitted, and for
-    // accounts that aren't on the Express Dashboard. Those are "finish setup"
-    // prompts, not outages — a 4xx from Stripe must not surface as our 500.
-    const status = typeof err?.statusCode === "number" ? err.statusCode : 500;
-    // 429 is Stripe telling US to slow down, not the organiser to verify.
-    if (status >= 400 && status < 500 && status !== 429) {
-      return c.json(
-        { ok: false, error: "Stripe won't open your dashboard yet — finish verification first." },
-        400,
-      );
-    }
-    return c.json({ ok: false, error: "Stripe is unavailable right now. Try again shortly." }, 502);
+    return c.json({ ok: false, error: failure.message }, failure.status);
   }
 });
 

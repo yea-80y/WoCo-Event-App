@@ -15,10 +15,11 @@
   import { onMount, onDestroy, untrack } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { getPayoutsSWR, getStripeDashboardUrl } from "../../api/payouts.js";
+  import { getPayoutsSWR } from "../../api/payouts.js";
   import { getMyEventsSWR, getMyShopsSWR } from "../../api/creator-cache.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
+  import StripeAccountPanel from "./StripeAccountPanel.svelte";
   import {
     groupPayouts,
     summarisePayouts,
@@ -34,7 +35,6 @@
   } from "./payouts-model.js";
   import Banknote from "lucide-svelte/icons/banknote";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
-  import ExternalLink from "lucide-svelte/icons/external-link";
   import AlertCircle from "lucide-svelte/icons/circle-alert";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
 
@@ -55,9 +55,6 @@
   let eventTitles = $state<Map<string, string>>(new Map());
   let shopTitles = $state<Map<string, string>>(new Map());
   let expanded = $state<Set<string>>(new Set());
-
-  let dashboardBusy = $state(false);
-  let dashboardError = $state<string | null>(null);
 
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
@@ -171,21 +168,6 @@
     eventTitles = new Map();
     shopTitles = new Map();
     expanded = new Set();
-    dashboardError = null;
-  }
-
-  async function openDashboard(): Promise<void> {
-    dashboardBusy = true;
-    dashboardError = null;
-    const res = await getStripeDashboardUrl();
-    if (res.ok) {
-      // Stripe requires login links to be used immediately and never shared, so
-      // we redirect the moment we have one and hold nothing.
-      window.location.href = res.url;
-      return;
-    }
-    dashboardError = res.error.message;
-    dashboardBusy = false;
   }
 
   // Refresh when the organiser comes back to the tab — this is money, and they
@@ -317,10 +299,6 @@
     </p>
 
     <div class="actions">
-      <button class="btn btn--ghost" onclick={openDashboard} disabled={dashboardBusy}>
-        {#if dashboardBusy}Opening Stripe…{:else}Manage bank details{/if}
-        <ExternalLink size={14} strokeWidth={2.25} />
-      </button>
       <button
         class="link-quiet"
         onclick={() => auth.parent && load(auth.parent.toLowerCase(), { silent: true })}
@@ -330,10 +308,6 @@
         {refreshing ? "Refreshing…" : "Refresh"}
       </button>
     </div>
-
-    {#if dashboardError}
-      <p class="err" role="alert">{dashboardError}</p>
-    {/if}
 
     {#if staleError}
       <div class="notice notice--warn" role="status">
@@ -350,6 +324,12 @@
         Some sales were charged in a different currency to your payout currency. Stripe
         converts those, and the amount shown is what reached your balance.
       </p>
+    {/if}
+
+    <!-- Above the sales list on purpose: if Stripe needs something from the
+         organiser, payouts stop, and that has to be seen without scrolling. -->
+    {#if auth.parent}
+      <StripeAccountPanel identity={auth.parent.toLowerCase()} />
     {/if}
 
     <!-- ── Sales ────────────────────────────────────────────────────────── -->
@@ -560,12 +540,6 @@
     font-size: 0.75rem;
     line-height: 1.55;
     color: var(--text-muted);
-  }
-
-  .err {
-    margin: 0;
-    font-size: 0.8125rem;
-    color: var(--error);
   }
 
   .notice {
