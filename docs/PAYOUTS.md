@@ -211,6 +211,52 @@ Everything in §2 is still required: an organiser paid before their event who
 then cancels leaves attendees unrefundable regardless of who absorbs the
 accounting loss.
 
+### 4.1 The dashboard is moving to `none` — DECIDED, not yet flipped
+
+The `express` row above is what the code still ships. It is wrong, and Stripe
+said so: `stripe_dashboard.type = "express"` with `losses.payments = "stripe"`
+is **rejected by `accounts.create`** ("your platform must collect fees and be
+liable…", 2026-07-30), and the specialist's second email withdrew the recipe
+that recommended it. The chosen replacement is `stripe_dashboard.type = "none"`
+— structurally no self-payout, versus `full`, where platform schedule controls
+do **not** stop one-off manual payouts.
+
+Proven against a live sandbox account (`acct_1Tz5bc…`, 2026-07-31):
+
+| Question | Answer |
+|---|---|
+| Does `accounts.create` accept `none` + `losses.payments=stripe`? | **Yes** — the identical block that `express` rejects |
+| Do login links still work? | **No.** `createLoginLink` → "does not have access to the Express Dashboard". The Express door is closed, not deprecated |
+| Do embedded components render on our origins? | **Yes**, on `gateway.woco-net.com` and `woco.eth.limo`. Neither sets a CSP or COOP that blocks them; no rule in EasyList, EasyPrivacy or the uBlock lists targets `connect-js.stripe.com` |
+| Can we skip the Stripe sign-in? | **No.** `disable_stripe_user_authentication` is only accepted when `requirement_collection = "application"`; ours is `"stripe"`. Account details sit behind a Stripe sign-in and that is Stripe's gate, not ours |
+
+The UI half shipped ahead of the flip: `POST /api/stripe/account-session`
+replaces `POST /api/stripe/dashboard-link` (deleted), and `StripeAccountPanel`
+mounts `notification-banner` + `account-management` on the payouts screen. Both
+work for `express` accounts too, so the order is safe.
+
+**FLIPPED 2026-07-31**, after Nice's third email confirmed the type=none plan
+on all seven points (no enablement step needed — answer 6). One new empirical
+fact from the flip: controller-created accounts **require `country` at
+creation** (`type: "express"` used to default it; the block is rejected
+without it). Country is immutable post-creation — `GB` is hardcoded, and
+non-UK organisers are a product decision, not a payload tweak. Verified against
+the sandbox (`acct_1TzHY2Rbv1SuWiuC`): create → controller block stored
+verbatim → manual schedule → onboarding link mints. The Radar question
+(answer 8, disputed — PRICING_AND_EMAIL.md §18) blocks onboarding REAL organisers, not the
+sandbox e2e.
+
+### 4.2 Requirements do not surface themselves
+
+Stripe can raise a new requirement long after onboarding, and payouts stop when
+it does. With no Stripe dashboard, the organiser has nothing to check. So
+`account.updated` chases them by email — deduplicated on the outstanding set
+with a 72h cooldown, and recorded in `.data/stripe-requirement-nudges.json`
+with a `firstDueAt` that survives a change of requirement. That file is the
+liveness view: `listOutstanding()` answers "who is blocked, and since when".
+An organiser with no email on file is recorded but cannot be chased — that is
+the case needing a human.
+
 ---
 
 ## 5. Timing constants
@@ -233,9 +279,18 @@ Its absence is a production alarm, not a degraded feature.
 ## 6. RESOLVED with Stripe (chat + specialist email, 2026-07-29) — built as #90
 
 Both halves of the old ask are answered; the code change shipped as issue #90
-(§4 is the configuration record). Remaining ops: verify Radar is enabled for
-connected transactions (dashboard), retire the legacy test accounts, and
-re-verify onboarding → checkout → release on a fresh account.
+(§4 is the configuration record).
+
+**Status of the remaining ops, as of 2026-07-31:** the legacy test accounts
+were retired 2026-07-29. Radar platform controls for direct charges are
+**parked, not enabled** — the dashboard warns that switching them on applies
+Radar Pro pricing (£0.08/screened txn), which contradicts both the 2026-07-30
+support chat ("no specific Radar plan required — Radar Lite satisfies it") and
+the 2026-07-31 Radar repricing email. Per-transaction Radar pricing is close to
+existential for the unit economics (see PRICING_AND_EMAIL.md §7), so this waits
+for Nice. The fresh-account e2e still has not passed: the 2026-07-30 attempt
+failed on `accounts.create`, and the fix is §4.1's controller change, which is
+itself gated on the same reply.
 
 1. **Self-payout restriction: not needed.** Express Dashboard cannot initiate payouts and
    we have not enabled schedule editing — §3.2 has the verbatim confirmation.
@@ -248,6 +303,11 @@ re-verify onboarding → checkout → release on a fresh account.
    controller[losses][payments]=stripe · controller[requirement_collection]=stripe`,
    plus Radar configured on connected transactions. **Never onboard a real organiser on
    `type: "express"`** — such an account is permanently platform-liable.
+   **SUPERSEDED 2026-07-30/31 — see §4.1.** The `stripe_dashboard=express` half of this
+   recipe is wrong: `accounts.create` rejects it alongside `losses.payments=stripe`, and
+   the specialist withdrew it in a second email. `none` is the shipped decision and is
+   verified to be accepted. The rest of the row (fees, losses, requirement_collection)
+   stands.
 4. **Disputes** (same email): Stripe debits the connected account's balance first; with
    `losses.payments = "stripe"` the unrecoverable remainder is Stripe's. Express
    Dashboard has no dispute UI — Connect embedded components can provide it in our UI

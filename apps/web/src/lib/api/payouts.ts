@@ -1,6 +1,6 @@
 /**
  * Payouts API — the organiser's own held and released takings, plus the door to
- * their Stripe Express Dashboard.
+ * their own Stripe account details.
  *
  * Every call here can fail in a way the organiser has to be told about, so
  * nothing throws past this boundary: loads return a result the screen can render
@@ -51,21 +51,35 @@ export function getPayoutsSWR(address: string): {
   return { cached, refresh };
 }
 
+export interface AccountSession {
+  clientSecret: string;
+  publishableKey: string;
+}
+
 /**
- * Mint a single-use Express Dashboard login link and return its URL.
+ * Mint a client secret for the Stripe Connect embedded components.
  *
- * Stripe requires this to be used immediately and never shared out of band, so
- * the caller redirects straight away and we never persist it. Minted per click —
- * there is deliberately no caching here.
+ * Replaces the Express Dashboard login link: under Managed Risk with
+ * `stripe_dashboard.type = "none"` there is no Express Dashboard to link to.
+ *
+ * The secret is single-use and lives about two minutes, and connect.js calls
+ * this again whenever it needs a fresh one — so it is minted per request and
+ * never cached. The publishable key comes back with it so the two can never be
+ * mismatched by a stale frontend build.
  */
-export async function getStripeDashboardUrl(): Promise<
-  { ok: true; url: string } | { ok: false; error: PayoutsFailure }
+export async function getAccountSession(): Promise<
+  { ok: true; session: AccountSession } | { ok: false; error: PayoutsFailure }
 > {
   try {
-    const resp = await authPost<never>("/api/stripe/dashboard-link", {});
-    const data = resp as { ok: boolean; url?: string; error?: string };
-    if (!data.ok || !data.url) {
-      const failure = classifyFailure(data.error ?? "No dashboard link returned");
+    const resp = await authPost<never>("/api/stripe/account-session", {});
+    const data = resp as {
+      ok: boolean;
+      clientSecret?: string;
+      publishableKey?: string;
+      error?: string;
+    };
+    if (!data.ok || !data.clientSecret || !data.publishableKey) {
+      const failure = classifyFailure(data.error ?? "No account session returned");
       return {
         ok: false,
         // The server's 400s here are actionable organiser-facing sentences
@@ -76,7 +90,10 @@ export async function getStripeDashboardUrl(): Promise<
           : failure,
       };
     }
-    return { ok: true, url: data.url };
+    return {
+      ok: true,
+      session: { clientSecret: data.clientSecret, publishableKey: data.publishableKey },
+    };
   } catch (err) {
     return { ok: false, error: classifyFailure(err) };
   }

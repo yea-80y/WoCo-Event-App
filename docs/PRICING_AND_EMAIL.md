@@ -731,3 +731,61 @@ Manual payouts + post-event release. Mechanism, constants and ops: **`docs/PAYOU
 (which also carries the 2026-07-29 resolutions in §3.2/§6). Hardened 2026-07-29: intent
 journal, nets re-read every sweep, settlement-currency regrouping (PR #86) + schedule-heal
 retry, shop attribution, past-ceiling alarm (#85). 45+ payout tests over the failure modes.
+
+---
+
+## 18. Radar and Connect fees under Managed Risk — settled in writing (2026-07-30/31)
+
+Two live-chat confirmations plus one live test. These replace the §15/§17
+"verify" caveats about what Managed Risk costs.
+
+### Radar — no plan required, and per-transaction pricing is NOT accepted
+
+> Managed Risk requires **no specific Radar plan**. Radar Lite (included, £0) with
+> "platform controls for direct charges" set to "Only my platform" satisfies it.
+> — Stripe live chat, 2026-07-30 (transcript on file)
+
+The £0.08/screened-transaction + £3.75/connected-account quote seen earlier is
+**Radar Pro only**, and belongs to the platform-liable branch we are not taking.
+
+⚠️ **Not enabled, deliberately.** The dashboard toggle for platform controls
+warns that switching it on applies Radar Pro pricing — contradicting both the
+chat above and the 2026-07-31 Radar repricing email. Held for Nice's answer
+(3-question addendum sent 2026-07-31).
+
+**Why this is not a detail.** At a £20 ticket our 1.5% fee is 30p, and the 40%
+referral campaign takes that to ~18p net. A £0.08 per-transaction Radar charge
+would eat close to half of what is left. Per-transaction risk pricing is close
+to existential for the unit economics in §7 — it must be confirmed before any
+real organiser is onboarded, not after.
+
+**Diary item:** the platform's own Radar is on a Standard trial that starts
+billing **£0.04/txn on 22 Jan 2027**. Switch the platform to Radar Lite before
+then (2026-07-31 repricing email).
+
+### Connect fees — organisers are Stripe-billed, and we pay nothing
+
+> Connected accounts are "Stripe Configuration": Stripe handles their pricing
+> directly, there are **no fees for the platform** and no standing or monthly
+> charges. Organisers pay standard processing (1.5% + 20p) on their own sales;
+> WoCo receives the application fee.
+> — Stripe live chat, 2026-07-30
+
+This confirms `PAYOUTS.md` §4: under `controller.fees.payer = "account"` the £2
+monthly-active-account fee and the 0.25% + 10p payout fee **fall away**. The §15
+table showing Connect fees eating ~20% of gross ticketing revenue described the
+old `type: "express"` configuration and no longer applies once the controller
+block ships.
+
+`application_fee_amount` (1.5%) continues regardless — confirmed in writing twice
+(§17, `PAYOUTS.md` §6.5).
+
+### One cost that is not money
+
+Under `requirement_collection = "stripe"`, organisers must **sign in to Stripe**
+to view or change their bank details. `disable_stripe_user_authentication` is
+only accepted when requirement collection is `"application"` (verified against
+the live API, 2026-07-31). So "organisers never touch Stripe" is not achievable
+on this configuration — the reachable goal is that they never *administer*
+through Stripe, which embedded components do deliver. Worth knowing before it
+appears in marketing copy.
