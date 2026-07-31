@@ -51,6 +51,12 @@ import {
   classifyAccountSessionError,
   resolvePublishableKey,
 } from "../lib/stripe/account-session.js";
+import {
+  decideRequirementNudge,
+  getNudgeState,
+  setNudgeState,
+} from "../lib/stripe/requirement-nudge.js";
+import { sendRequirementNudge } from "../lib/email/requirement-nudge.js";
 import { eventReleaseAfter, shopReleaseAfter } from "../lib/stripe/payout-policy.js";
 import {
   recordHeld as recordHeldPayout,
@@ -889,6 +895,16 @@ stripe.post("/webhook", async (c) => {
         );
         void ensureManualPayoutSchedule(account.id);
       }
+
+      // Stripe can raise new requirements long after onboarding, and the
+      // organiser's payouts stop the moment it does. They have no reason to
+      // open a Stripe UI unprompted, so we chase them — deduplicated, and
+      // recorded so a stuck account is visible rather than merely emailed.
+      void handleRequirementNudge(account, getFrontendUrl(c)).catch((err) => {
+        // Never fail the webhook for an email: Stripe would retry the whole
+        // event, re-running the payout-schedule correction above.
+        console.error("[stripe-webhook] Requirement nudge failed:", err);
+      });
       break;
     }
 
@@ -909,6 +925,43 @@ stripe.post("/webhook", async (c) => {
 
   return c.json({ received: true });
 });
+
+/**
+ * Decide whether this `account.updated` deserves an email, send it, and record
+ * the outcome.
+ *
+ * The decision is deliberately somewhere else and pure (requirement-nudge.ts);
+ * this only performs it. The state is written even when nothing is sent — that
+ * record is what makes "who has been blocked, and for how long" answerable.
+ */
+async function handleRequirementNudge(
+  account: import("stripe").Stripe.Account,
+  frontendUrl: string,
+): Promise<void> {
+  const decision = decideRequirementNudge(account, getNudgeState(account.id), new Date());
+
+  if (decision.send && account.email) {
+    await sendRequirementNudge({
+      to: account.email,
+      due: decision.due,
+      disabledReason: decision.disabledReason,
+      payoutsUrl: `${frontendUrl}/#/creator/payouts`,
+    });
+    console.log(
+      `[stripe-nudge] Emailed ${account.id} (${decision.reason}): ${decision.due.length} outstanding`,
+    );
+  } else if (decision.reason === "no-email") {
+    // Unreachable by email and blocked by Stripe — the worst combination, and
+    // the one case that needs a human.
+    console.warn(
+      `[stripe-nudge] Account ${account.id} has ${decision.due.length} outstanding requirements and NO email on file`,
+    );
+  }
+
+  // Written last: a failed send must not record a nudge that never went out,
+  // or the cooldown would suppress the retry.
+  setNudgeState(account.id, decision.nextState);
+}
 
 /**
  * Mark a shop order paid after a confirmed Checkout Session.

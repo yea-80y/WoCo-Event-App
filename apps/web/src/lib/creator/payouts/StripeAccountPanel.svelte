@@ -11,14 +11,18 @@
     account-management  — bank details, business details, verification
 
   Both are Stripe-hosted iframes. We own the loading, the failure states and the
-  frame around them; we do not own what is inside, and cannot style it with CSS
-  (only Stripe's appearance variables — see connect-embed.ts).
+  frame around them; we do not own what is inside, and cannot style it with CSS —
+  only Stripe's appearance variables, which connect-embed.ts feeds from the same
+  design tokens as this file, so the iframe renders dark rather than as a white
+  card dropped into a dark screen (verified 2026-07-31).
 
-  Note for anyone reading this expecting a seamless experience: account details
-  sit behind a Stripe sign-in. `disable_stripe_user_authentication` is only
-  accepted when `controller.requirement_collection` is "application"; ours is
-  "stripe". That gate is Stripe's, not ours, and it cannot be turned off from
-  here.
+  The left edge carries state, matching the sales groups on this screen: acid
+  while Stripe is waiting on the organiser, quiet once there is nothing to do.
+
+  Note for anyone expecting a seamless experience: account details sit behind a
+  Stripe sign-in. `disable_stripe_user_authentication` is only accepted when
+  `controller.requirement_collection` is "application"; ours is "stripe". That
+  gate is Stripe's, not ours, and it cannot be turned off from here.
 -->
 <script lang="ts">
   import { onDestroy } from "svelte";
@@ -36,8 +40,8 @@
 
   interface Props {
     /**
-     * Bumped by the parent when the organiser's identity changes, so the panel
-     * tears down rather than showing the previous account's details.
+     * Changes when the organiser does, so the panel tears down rather than
+     * showing the previous account's details.
      */
     identity: string;
   }
@@ -49,8 +53,8 @@
 
   let status = $state<"idle" | "loading" | "ready" | "failed">("idle");
   let failure = $state<ConnectFailure | null>(null);
-  /** Stripe tells us how many things it needs; 0 means "nothing to do". */
-  let actionRequired = $state(0);
+  /** What Stripe is waiting on. 0 total means the banner renders nothing at all. */
+  let notifications = $state({ total: 0, actionRequired: 0 });
 
   let instance: ConnectInstance | null = null;
   let mounted: ConnectComponent[] = [];
@@ -61,7 +65,7 @@
     for (const el of mounted) el.remove();
     mounted = [];
     instance = null;
-    actionRequired = 0;
+    notifications = { total: 0, actionRequired: 0 };
   }
 
   async function mount(): Promise<void> {
@@ -74,8 +78,8 @@
       await loadConnectScript();
       if (token !== mountToken) return;
 
-      // Proven before anything is rendered: no point loading Stripe's UI to
-      // then discover we cannot authorise it.
+      // Proven before anything renders: no point loading Stripe's UI to then
+      // discover we cannot authorise it.
       const first = await getAccountSession();
       if (token !== mountToken) return;
       if (!first.ok) {
@@ -87,7 +91,7 @@
       instance = window.StripeConnect!.init({
         publishableKey: first.session.publishableKey,
         // Called again by connect.js whenever the secret expires (~2 minutes),
-        // so it must re-mint rather than replay the one we already used.
+        // so it must re-mint rather than replay the one already used.
         // Returning undefined is Stripe's documented "I could not get one".
         fetchClientSecret: async () => {
           const next = await getAccountSession();
@@ -100,22 +104,22 @@
 
       const banner = instance.create("notification-banner");
       banner.setOnNotificationsChange?.((e) => {
-        if (token === mountToken) actionRequired = e.actionRequired;
+        if (token === mountToken) notifications = { total: e.total, actionRequired: e.actionRequired };
       });
       banner.setOnLoadError?.((e) => {
+        // Cosmetic next to account-management: the organiser can still reach
+        // their details, they just lose the shortcut to the thing that needs doing.
         console.warn("[stripe-connect] notification-banner load error:", e.error?.message);
       });
 
       const management = instance.create("account-management");
       management.setOnLoadError?.((e) => {
-        // The banner failing is cosmetic; account management failing means the
-        // organiser cannot reach their bank details, which they must be told.
         if (token !== mountToken) return;
         failure = connectFailure("unknown", e.error?.message ?? "account-management failed to load");
         status = "failed";
       });
 
-      // Only attach once both are built — a half-mounted panel reads as broken.
+      // Attach only once both exist — a half-mounted panel reads as broken.
       bannerHost?.appendChild(banner);
       managementHost?.appendChild(management);
       mounted = [banner, management];
@@ -130,7 +134,7 @@
     }
   }
 
-  // Remount on identity change, and only once the hosts exist.
+  // Remount on identity change, once the hosts exist.
   $effect(() => {
     const id = identity;
     if (!id || !bannerHost || !managementHost) return;
@@ -140,30 +144,37 @@
   onDestroy(teardown);
 </script>
 
-<section class="panel">
-  <header class="panel-head">
-    <h2 class="panel-title mono">YOUR STRIPE ACCOUNT</h2>
-    {#if status === "ready" && actionRequired > 0}
-      <span class="pill pill--warn">
-        {actionRequired} {actionRequired === 1 ? "action needed" : "actions needed"}
-      </span>
+<section
+  class="account"
+  class:account--waiting={status === "ready" && notifications.actionRequired > 0}
+>
+  <header class="head">
+    <h2 class="label mono">YOUR STRIPE ACCOUNT</h2>
+    <!-- Only ever an assertion we can stand behind. Stripe reports zero
+         notifications for a signed-out organiser too, so "nothing to do" would
+         claim a clean bill of health we have not actually been told — on the
+         screen where that claim costs the most. -->
+    {#if status === "ready" && notifications.actionRequired > 0}
+      <span class="status">{notifications.actionRequired} to do</span>
     {/if}
   </header>
 
-  <p class="panel-note">
+  <p class="blurb">
     Stripe holds your bank details and verifies your business — WoCo never sees them.
-    You'll be asked to sign in to Stripe to view or change them.
+    Stripe asks you to sign in before showing or changing them.
   </p>
 
-  <!-- Kept in the DOM across states: Stripe mounts into these nodes, and
-       recreating them on every status flip would detach a live iframe. -->
+  <!-- Both hosts stay in the DOM across every state: Stripe mounts live iframes
+       into these nodes, and removing them would tear the iframe out. Collapsed
+       with a class instead — including the banner, which renders nothing at all
+       when Stripe is waiting on nothing. -->
   <div class="embed" class:embed--hidden={status !== "ready"}>
-    <div bind:this={bannerHost}></div>
+    <div class="banner" class:banner--empty={notifications.total === 0} bind:this={bannerHost}></div>
     <div bind:this={managementHost}></div>
   </div>
 
   {#if status === "loading"}
-    <p class="embed-state">Loading your Stripe account…</p>
+    <p class="loading mono" aria-live="polite">LOADING YOUR STRIPE ACCOUNT…</p>
   {/if}
 
   {#if status === "failed" && failure}
@@ -179,89 +190,115 @@
 </section>
 
 <style>
-  .panel {
-    margin-top: 1.5rem;
-    padding: 1.25rem;
+  /* Same object language as the sales groups: flat surface, hairline border,
+     2px left edge carrying state. */
+  .account {
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-left: 2px solid var(--border-hover);
+    border-radius: var(--radius-md);
+    padding: 1.125rem 1.25rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    transition: border-color var(--transition);
   }
 
-  .panel-head {
+  /* Acid only when Stripe is actually waiting on the organiser — the one place
+     on this screen where the accent means "you need to act". */
+  .account--waiting {
+    border-left-color: var(--accent);
+  }
+
+  .head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     justify-content: space-between;
     gap: 0.75rem;
   }
 
-  .panel-title {
+  .label {
     margin: 0;
-    font-size: 0.75rem;
-    letter-spacing: 0.08em;
+    font-size: 0.625rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
     color: var(--text-muted);
   }
 
-  .panel-note {
-    margin: 0.5rem 0 1rem;
-    font-size: 0.85rem;
-    line-height: 1.5;
-    color: var(--text-secondary);
-  }
-
-  .pill {
-    padding: 0.15rem 0.5rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    font-weight: 600;
+  /* Only rendered when Stripe is waiting on something, so it is always the
+     accent — this is the one place on the screen where acid means "act". */
+  .status {
+    font-size: 0.6875rem;
+    color: var(--accent);
     white-space: nowrap;
   }
 
-  .pill--warn {
-    background: var(--error-subtle);
-    color: var(--error);
+  .blurb {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.55;
+    color: var(--text-muted);
+    max-width: 60ch;
   }
 
-  /* Hidden, not unmounted — see the comment on .embed above. */
-  .embed--hidden {
+  .embed {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .embed--hidden,
+  /* Stripe renders an empty element when there is nothing to notify about;
+     without this the panel shows a gap where a banner never appears. */
+  .banner--empty {
     display: none;
   }
 
-  .embed-state {
+  .loading {
     margin: 0;
-    font-size: 0.85rem;
-    color: var(--text-muted);
+    font-size: 0.625rem;
+    letter-spacing: 0.14em;
+    color: var(--text-dim);
   }
 
   .notice {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    font-size: 0.85rem;
+    gap: 0.625rem;
+    padding: 0.625rem 0.875rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    line-height: 1.45;
   }
 
   .notice--warn {
-    color: var(--text-secondary);
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 25%, var(--border));
   }
 
-  .notice--warn :global(svg) {
-    color: var(--warning);
-    flex-shrink: 0;
+  .notice--warn span {
+    flex: 1;
+    min-width: 0;
   }
 
   .link-quiet {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.375rem;
     padding: 0;
     background: none;
     border: none;
-    color: var(--accent-text);
     font: inherit;
+    font-size: 0.75rem;
+    color: var(--warning);
+    text-decoration: underline;
     cursor: pointer;
+    white-space: nowrap;
   }
 
-  .link-quiet:hover {
-    text-decoration: underline;
+  .link-quiet:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 </style>
