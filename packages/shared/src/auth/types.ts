@@ -1,3 +1,5 @@
+import type { AuthErrorCode } from "../types.js";
+
 export type AuthKind = "web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none";
 
 /** Callback that signs EIP-712 typed data — used by session delegation + POD identity */
@@ -53,4 +55,8 @@ export interface VerifyDelegationResult {
   parentAddress?: string;
   sessionAddress?: string;
   error?: string;
+  /** Machine-readable classification for the caller's response envelope.
+   *  Defaults to SESSION_INVALID at the middleware; set explicitly only where a
+   *  rejection is NOT fixable by minting a fresh delegation. */
+  code?: AuthErrorCode;
 }

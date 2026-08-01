@@ -1486,6 +1486,29 @@ async function login(method?: "web3" | "passkey"): Promise<boolean> {
 // Deferred signing: ensureSession (lazy EIP-712 session delegation)
 // ---------------------------------------------------------------------------
 
+/**
+ * Discard the stored session delegation so the next `ensureSession()` mints a
+ * fresh one. Login state, POD identity and feed signer are all untouched.
+ *
+ * This exists for ONE case: the server rejected a delegation that every
+ * client-side check still considers valid (`AuthErrorCode.SESSION_INVALID`).
+ * The local checks in `restoreSession()` cover expiry, host and parent — but
+ * they cannot see server-side truth (revocation, on-chain Kernel owner reads,
+ * ALLOWED_HOSTS). Before this existed, that divergence wedged the client
+ * permanently: it kept re-sending a delegation the server would never accept,
+ * and only a manual sign-out/sign-in cleared it.
+ *
+ * Deliberately NOT a logout — the user keeps their identity and is at worst
+ * asked to re-sign the session authorization.
+ */
+async function resetSession(): Promise<void> {
+  // Let any in-flight mint finish first, or we would clear the blobs it is
+  // about to write and leave the store holding a session the server never saw.
+  if (_sessionInFlight) await _sessionInFlight.catch(() => {});
+  _sessionAddress = null;
+  await clearSession();
+}
+
 async function ensureSession(): Promise<boolean> {
   if (hasSession) return true;
   if (!isConnected || !_parent) return false;
@@ -2234,6 +2257,7 @@ export const auth = {
   prefetchPasskeySdk,
   prefetchWeb3AuthSdk,
   ensureSession,
+  resetSession,
   logout,
   ensurePodIdentity,
   ensureWocoSessionKey,

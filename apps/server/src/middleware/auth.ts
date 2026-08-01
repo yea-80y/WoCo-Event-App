@@ -1,6 +1,7 @@
 import type { Context, Next } from "hono";
 import { verifyMessage } from "ethers";
 import { createHash } from "node:crypto";
+import { AuthErrorCode } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import {
   verifyDelegation,
@@ -89,6 +90,59 @@ function markNonceOrReject(
   return false;
 }
 
+/**
+ * Log an auth rejection and build the response envelope.
+ *
+ * Every 401/403 out of this middleware used to return silently, which made a
+ * user report of "it says the signature is invalid" impossible to diagnose
+ * after the fact — the four distinct rejection reasons are indistinguishable
+ * from the outside and nothing recorded which one fired. One line per
+ * rejection, with enough context (reason, route, session address) to tell them
+ * apart in production logs, and never any signature or delegation material.
+ */
+/**
+ * Make an untrusted value safe to put in a log line.
+ *
+ * The session address header and the host/session fields echoed into reason
+ * strings are all caller-controlled and unvalidated — a newline or an ANSI
+ * escape in them would let an attacker forge convincing `[auth]` lines in the
+ * very log we added to diagnose attacks. Collapse control characters and cap
+ * the length; these fields are addresses and hostnames, never prose.
+ */
+function safeForLog(value: string, max = 120): string {
+  const flattened = value.replace(/[\p{Cc}\p{Cf}]/gu, " ");
+  return flattened.length > max ? `${flattened.slice(0, max)}…` : flattened;
+}
+
+function logAuthReject(
+  c: Context<AppEnv>,
+  reason: string,
+  status: number | null,
+  code?: AuthErrorCode,
+): void {
+  const method = c.req.method.toUpperCase();
+  // pathname only — the query string is caller-controlled and can carry
+  // identifiers we have no business writing to disk. The signed challenge
+  // still commits to pathname + search; this is only the log.
+  const path = new URL(c.req.url).pathname;
+  const session = safeForLog(c.req.header("x-session-address") ?? "<none>", 48);
+  console.warn(
+    `[auth] reject ${status ?? "soft"} ${method} ${path} session=${session} ` +
+      `reason="${safeForLog(reason)}"` +
+      (code ? ` code=${code}` : ""),
+  );
+}
+
+function rejectAuth(
+  c: Context<AppEnv>,
+  reason: string,
+  status: 401 | 403,
+  code?: AuthErrorCode,
+) {
+  logAuthReject(c, reason, status, code);
+  return c.json({ ok: false, error: reason, ...(code ? { code } : {}) }, status);
+}
+
 export async function requireAuth(c: Context<AppEnv>, next: Next) {
   const method = c.req.method.toUpperCase();
   const path = new URL(c.req.url).pathname + new URL(c.req.url).search;
@@ -110,13 +164,18 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   // Session address — header only (body-based session field is no longer honoured)
   const sessionAddress = c.req.header("x-session-address");
   if (!sessionAddress) {
-    return c.json({ ok: false, error: "Missing X-Session-Address header" }, 401);
+    return rejectAuth(c, "Missing X-Session-Address header", 401);
   }
 
   // Delegation — header only (base64 JSON)
   const delegation = extractDelegation(c.req.raw);
   if (!delegation) {
-    return c.json({ ok: false, error: "Missing or invalid X-Session-Delegation" }, 401);
+    return rejectAuth(
+      c,
+      "Missing or invalid X-Session-Delegation",
+      401,
+      AuthErrorCode.SESSION_INVALID,
+    );
   }
 
   // Mandatory per-request session signature components
@@ -125,8 +184,9 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   const sessionTimestamp = c.req.header("x-session-timestamp");
 
   if (!sessionSig || !sessionNonce || !sessionTimestamp) {
-    return c.json(
-      { ok: false, error: "Missing session signature headers (X-Session-Sig / X-Session-Nonce / X-Session-Timestamp)" },
+    return rejectAuth(
+      c,
+      "Missing session signature headers (X-Session-Sig / X-Session-Nonce / X-Session-Timestamp)",
       401,
     );
   }
@@ -134,18 +194,32 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   // Timestamp freshness check (prevents indefinite replay of captured sigs)
   const tsNum = Number(sessionTimestamp);
   if (!Number.isFinite(tsNum)) {
-    return c.json({ ok: false, error: "Invalid X-Session-Timestamp" }, 401);
+    return rejectAuth(c, "Invalid X-Session-Timestamp", 401);
   }
   const skew = Math.abs(Date.now() - tsNum);
   if (skew > MAX_TIMESTAMP_SKEW_MS) {
-    return c.json({ ok: false, error: "Session timestamp out of window" }, 401);
+    // Report the measured skew: re-signing cannot fix a wrong device clock, so
+    // this number is the whole diagnosis when a user says "it stopped working".
+    return rejectAuth(
+      c,
+      `Session timestamp out of window (device clock is ${Math.round(skew / 1000)}s from server time)`,
+      401,
+      AuthErrorCode.SESSION_CLOCK_SKEW,
+    );
   }
 
   // Verify the delegation bundle (parent EIP-712 sig, sessionProof, expiry, host, revocation)
   const allowedHosts = getAllowedHosts();
   const result = await verifyDelegation(delegation, sessionAddress, allowedHosts);
   if (!result.valid) {
-    return c.json({ ok: false, error: result.error }, 403);
+    // verifyDelegation classifies the rejections a re-mint cannot fix (clock
+    // skew); everything else is delegation-level and worth re-minting.
+    return rejectAuth(
+      c,
+      result.error ?? "Invalid delegation",
+      403,
+      result.code ?? AuthErrorCode.SESSION_INVALID,
+    );
   }
 
   // Rebuild the canonical challenge and verify the per-request signature.
@@ -163,17 +237,22 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   try {
     const signerAddress = verifyMessage(challenge, sessionSig);
     if (signerAddress.toLowerCase() !== result.sessionAddress!.toLowerCase()) {
-      return c.json({ ok: false, error: "Session signature does not match session key" }, 403);
+      return rejectAuth(
+        c,
+        "Session signature does not match session key",
+        403,
+        AuthErrorCode.SESSION_INVALID,
+      );
     }
   } catch {
-    return c.json({ ok: false, error: "Invalid session signature" }, 403);
+    return rejectAuth(c, "Invalid session signature", 403, AuthErrorCode.SESSION_INVALID);
   }
 
   // Replay protection: only mark the nonce as seen AFTER the signature has
   // verified. Marking earlier would let an unauthenticated attacker grief
   // the map by burning nonces a legitimate client might later present.
   if (markNonceOrReject(result.sessionAddress!, sessionNonce, tsNum)) {
-    return c.json({ ok: false, error: "Nonce replay detected" }, 403);
+    return rejectAuth(c, "Nonce replay detected", 403, AuthErrorCode.SESSION_REPLAY);
   }
 
   // Make parent + session + parsed body available to downstream handlers
@@ -209,9 +288,19 @@ export async function tryVerifyAuth(
   rawBody: string,
 ): Promise<
   | { ok: true; parentAddress: string; sessionAddress: string }
-  | { ok: false; error: string }
+  | { ok: false; error: string; code?: AuthErrorCode }
   | null
 > {
+  /** Log, then shape the failure return. Mirrors requireAuth's rejectAuth —
+   *  this variant hands the failure back to the caller instead of responding,
+   *  but must be just as visible in the logs: these are the money paths.
+   *  Status is `null`, not a number: the CALLER picks it (shops answers 403,
+   *  stripe answers 401), so claiming one here would put a lie in the log. */
+  const fail = (error: string, code?: AuthErrorCode) => {
+    logAuthReject(c, error, null, code);
+    return { ok: false as const, error, ...(code ? { code } : {}) };
+  };
+
   const sessionAddress = c.req.header("x-session-address");
   const sessionSig = c.req.header("x-session-sig");
   const sessionNonce = c.req.header("x-session-nonce");
@@ -224,23 +313,31 @@ export async function tryVerifyAuth(
   }
 
   // Partial headers → malformed request, reject
-  if (!sessionAddress) return { ok: false, error: "Missing X-Session-Address header" };
+  if (!sessionAddress) return fail("Missing X-Session-Address header");
   if (!sessionSig || !sessionNonce || !sessionTimestamp) {
-    return { ok: false, error: "Missing session signature headers" };
+    return fail("Missing session signature headers");
   }
 
   const delegation = extractDelegation(c.req.raw);
-  if (!delegation) return { ok: false, error: "Missing or invalid X-Session-Delegation" };
+  if (!delegation) {
+    return fail("Missing or invalid X-Session-Delegation", AuthErrorCode.SESSION_INVALID);
+  }
 
   const tsNum = Number(sessionTimestamp);
-  if (!Number.isFinite(tsNum)) return { ok: false, error: "Invalid X-Session-Timestamp" };
-  if (Math.abs(Date.now() - tsNum) > MAX_TIMESTAMP_SKEW_MS) {
-    return { ok: false, error: "Session timestamp out of window" };
+  if (!Number.isFinite(tsNum)) return fail("Invalid X-Session-Timestamp");
+  const skew = Math.abs(Date.now() - tsNum);
+  if (skew > MAX_TIMESTAMP_SKEW_MS) {
+    return fail(
+      `Session timestamp out of window (device clock is ${Math.round(skew / 1000)}s from server time)`,
+      AuthErrorCode.SESSION_CLOCK_SKEW,
+    );
   }
 
   const allowedHosts = getAllowedHosts();
   const result = await verifyDelegation(delegation, sessionAddress, allowedHosts);
-  if (!result.valid) return { ok: false, error: result.error ?? "Invalid delegation" };
+  if (!result.valid) {
+    return fail(result.error ?? "Invalid delegation", result.code ?? AuthErrorCode.SESSION_INVALID);
+  }
 
   const method = c.req.method.toUpperCase();
   const path = new URL(c.req.url).pathname + new URL(c.req.url).search;
@@ -257,14 +354,17 @@ export async function tryVerifyAuth(
   try {
     const signerAddress = verifyMessage(challenge, sessionSig);
     if (signerAddress.toLowerCase() !== result.sessionAddress!.toLowerCase()) {
-      return { ok: false, error: "Session signature does not match session key" };
+      return fail(
+        "Session signature does not match session key",
+        AuthErrorCode.SESSION_INVALID,
+      );
     }
   } catch {
-    return { ok: false, error: "Invalid session signature" };
+    return fail("Invalid session signature", AuthErrorCode.SESSION_INVALID);
   }
 
   if (markNonceOrReject(result.sessionAddress!, sessionNonce, tsNum)) {
-    return { ok: false, error: "Nonce replay detected" };
+    return fail("Nonce replay detected", AuthErrorCode.SESSION_REPLAY);
   }
 
   return {
