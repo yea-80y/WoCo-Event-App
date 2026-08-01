@@ -24,7 +24,8 @@ import {
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
-import { claimTicket, hashEmail, claimHandleMatches, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import { claimTicket, hashEmail, claimHandleMatches, enqueueClaimersAttach, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import { readAllClaimers } from "../lib/event/claimers-feed.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { queueSeriesClaim } from "./claims.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
@@ -1588,11 +1589,8 @@ stripe.post("/save-order", async (c) => {
       if (attempt > 0) {
         await new Promise((r) => setTimeout(r, retryDelays[attempt - 1]));
       }
-      const page = await readFeedPage(topicClaimers(seriesId));
-      if (!page) continue;
-      const feed = decodeJsonFeed<ClaimersFeed>(page);
-      if (!feed) continue;
-      observed = feed.claimers.filter(
+      const claimers = await readAllClaimers(seriesId);
+      observed = claimers.filter(
         (e) => claimHandleMatches(e.claimerAddress, claimerKey, seriesId),
       ).length;
       if (observed >= expected) break;
@@ -1608,34 +1606,16 @@ stripe.post("/save-order", async (c) => {
       );
     }
 
-    // Now enter the queue for a quick read-modify-write. Claims 2..N that were
-    // queued before or after us will each read/write the feed; our write is
-    // atomic relative to theirs.
+    // The attach runs on the per-series CLAIMERS queue (not the slot-
+    // allocation queue) so it serialises against the webhook's claimers
+    // appends — the paged feed is a multi-page read-modify-write.
     //
-    // IMPORTANT: only attach to entries that don't already have an orderRef.
-    // The webhook is the canonical writer and attaches a per-purchase orderRef
-    // when each ticket is claimed. Without this guard, a repeat buyer's later
-    // /save-order call would overwrite the orderRef on every past entry that
-    // shares their email, collapsing all historical orders onto the latest
-    // form data in the dashboard.
-    let matchCount = 0;
-    await queueSeriesClaim(seriesId, async () => {
-      const page = await readFeedPage(topicClaimers(seriesId));
-      const feed = page ? decodeJsonFeed<ClaimersFeed>(page) : null;
-      if (!feed) throw new Error("Claimers feed not found");
-
-      let dirty = false;
-      for (const e of feed.claimers) {
-        if (!claimHandleMatches(e.claimerAddress, claimerKey, seriesId)) continue;
-        if (e.orderRef) continue;
-        e.orderRef = orderRef;
-        matchCount++;
-        dirty = true;
-      }
-      if (!dirty) return;
-      feed.updatedAt = new Date().toISOString();
-      await writeFeedPage(topicClaimers(seriesId), encodeJsonFeed(feed));
-    });
+    // Only entries without an orderRef are touched: the webhook is the
+    // canonical writer and attaches a per-purchase orderRef at claim time.
+    // Without that guard, a repeat buyer's later /save-order call would
+    // overwrite the orderRef on every past entry sharing their email,
+    // collapsing all historical orders onto the latest form data.
+    const matchCount = await enqueueClaimersAttach(seriesId, claimerKey, orderRef);
 
     console.log(`[stripe/save-order] Order data attached to ${matchCount} claimer entries for ${claimerKey}, series ${seriesId}`);
     return c.json({ ok: true });

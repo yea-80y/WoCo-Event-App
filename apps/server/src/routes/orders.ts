@@ -1,11 +1,10 @@
 import { Hono } from "hono";
-import type { ClaimersFeed, OrderEntry, SealedBox } from "@woco/shared";
+import type { OrderEntry, SealedBox } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
-import { readFeedPage, decodeJsonFeed } from "../lib/swarm/feeds.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { topicClaimers } from "../lib/swarm/topics.js";
+import { readAllClaimers } from "../lib/event/claimers-feed.js";
 import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
@@ -112,14 +111,11 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           }
         }
       } else {
-        // ── v1: Swarm claimers feed ──────────────────────────────────────────
-        const page = await readFeedPage(topicClaimers(series.seriesId));
-        if (!page) continue;
+        // ── v1: Swarm claimers feed (paged) ─────────────────────────────────
+        const claimers = await readAllClaimers(series.seriesId);
+        if (claimers.length === 0) continue;
 
-        const feed = decodeJsonFeed<ClaimersFeed>(page);
-        if (!feed?.claimers) continue;
-
-        for (const claimer of feed.claimers) {
+        for (const claimer of claimers) {
           let encryptedOrder: SealedBox | undefined;
 
           if (claimer.orderRef) {

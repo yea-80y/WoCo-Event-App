@@ -18,7 +18,6 @@
 import { Hono, type Context } from "hono";
 import { createHash } from "node:crypto";
 import type {
-  ClaimersFeed,
   ClaimedTicket,
   CheckinPack,
   CheckinSeries,
@@ -28,9 +27,8 @@ import type {
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
-import { readFeedPage, decodeJsonFeed } from "../lib/swarm/feeds.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { topicClaimers } from "../lib/swarm/topics.js";
+import { readAllClaimers } from "../lib/event/claimers-feed.js";
 import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
 import {
   issueDoorPass,
@@ -204,9 +202,7 @@ checkin.get("/:eventId/pack", async (c) => {
         entry.slotOwners = owners;
       } else {
         // v1 — claim ledger with sig hashes from the claimed-ticket blobs
-        const page = await readFeedPage(topicClaimers(s.seriesId)).catch(() => null);
-        const feed = page ? decodeJsonFeed<ClaimersFeed>(page) : null;
-        const claimers = feed?.claimers ?? [];
+        const claimers = await readAllClaimers(s.seriesId).catch(() => []);
         entry.claimedEditions = await mapWithConcurrency(
           claimers,
           SLOT_READ_CONCURRENCY,

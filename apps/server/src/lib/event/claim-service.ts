@@ -36,6 +36,7 @@ import {
   PAGE_N_CAPACITY,
 } from "../swarm/topics.js";
 import { heldFor } from "./reservation-store.js";
+import { appendClaimerEntry, attachOrderRefToClaimers, readAllClaimers } from "./claimers-feed.js";
 import { sealClaimer, unsealClaimer } from "./claimer-seal.js";
 import { bindTicket } from "../gate/store.js";
 import { signOwnerBinding } from "../ticket/owner-binding.js";
@@ -262,10 +263,9 @@ export async function claimTicket(opts: {
   // or Stripe payment_intent settled). Free/approval series keep the one-per-
   // identifier rule to stop spam.
   if (!paid) {
-    const existingClaimersPage = await readFeedPage(topicClaimers(seriesId));
-    if (existingClaimersPage) {
-      const existingFeed = decodeJsonFeed<ClaimersFeed>(existingClaimersPage);
-      const duplicate = existingFeed?.claimers.some((c) => {
+    const existingClaimers = await readAllClaimers(seriesId);
+    {
+      const duplicate = existingClaimers.some((c) => {
         if (claimHandleMatches(c.claimerAddress, claimerKey, seriesId)) return true;
         if (secondaryEmailHash) {
           if (c.claimerAddress.toLowerCase() === `email:${secondaryEmailHash}`) return true;
@@ -1009,35 +1009,49 @@ function editionToPageSlot(edition: number): { page: number; slot: number } {
  */
 const claimersTail = new Map<string, Promise<void>>();
 
-function enqueueClaimersUpdate(seriesId: string, entry: ClaimerEntry): Promise<void> {
+/**
+ * Serialise ANY claimers-feed mutation on the per-series chain. The paged
+ * feed is a read-modify-write over multiple pages, so every writer — claim
+ * appends AND save-order attaches — must go through here or interleaved
+ * writers lose entries. (save-order previously rewrote the feed on the
+ * slot-allocation queue, racing this chain; routing it here closes that.)
+ */
+function enqueueClaimersOp<T>(seriesId: string, op: () => Promise<T>): Promise<T> {
   const prev = claimersTail.get(seriesId) ?? Promise.resolve();
   const next = prev
     .catch(() => undefined) // never let one failure poison the chain
-    .then(() => updateClaimersFeed(seriesId, entry));
+    .then(op);
   // Tail keeps the chain alive but absorbs errors so subsequent .then()s run
-  claimersTail.set(seriesId, next.catch(() => undefined));
+  claimersTail.set(
+    seriesId,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
   return next;
 }
 
-async function updateClaimersFeed(seriesId: string, entry: ClaimerEntry): Promise<void> {
-  const page = await readFeedPage(topicClaimers(seriesId));
-  const feed: ClaimersFeed = page
-    ? decodeJsonFeed<ClaimersFeed>(page) ?? { v: 1, seriesId, claimers: [], updatedAt: "" }
-    : { v: 1, seriesId, claimers: [], updatedAt: "" };
+function enqueueClaimersUpdate(seriesId: string, entry: ClaimerEntry): Promise<void> {
+  return enqueueClaimersOp(seriesId, () => appendClaimerEntry(seriesId, entry));
+}
 
-  // Idempotent by edition — each edition is unique per series, so this
-  // protects against duplicate writes from the same claim operation while
-  // still allowing the same identifier to hold multiple editions of a paid
-  // series (claimerAddress is no longer unique per entry).
-  if (feed.claimers.some((c) => c.edition === entry.edition)) {
-    return;
-  }
-
-  feed.claimers.push(entry);
-  feed.updatedAt = new Date().toISOString();
-
-  await writeFeedPage(topicClaimers(seriesId), encodeJsonFeed(feed));
-  console.log(`[claim] Claimers feed updated: ${feed.claimers.length} claims`);
+/**
+ * Attach an orderRef to every entry of `claimerKey` (raw lowercase address or
+ * "email:{hash}") that lacks one. Returns the number of entries updated.
+ */
+export function enqueueClaimersAttach(
+  seriesId: string,
+  claimerKey: string,
+  orderRef: string,
+): Promise<number> {
+  return enqueueClaimersOp(seriesId, () =>
+    attachOrderRefToClaimers(
+      seriesId,
+      (c) => claimHandleMatches(c.claimerAddress, claimerKey, seriesId),
+      orderRef,
+    ),
+  );
 }
 
 export async function addToUserCollection(ethAddress: string, entry: CollectionEntry): Promise<void> {
