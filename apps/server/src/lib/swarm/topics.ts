@@ -85,8 +85,17 @@ export const topicCreatorDirectory = (ethAddress: string, page = 0) =>
       : `${EVENT_NS}/creator/${ethAddress.toLowerCase()}/p${page}`,
   );
 
-export const topicPendingClaims = (seriesId: string) =>
-  Topic.fromString(`${POD_NS}/pending-claims/${seriesId}`);
+/**
+ * Pending-claims feed topic. Same scheme as claimers: page 0 is the base topic
+ * — pre-paging v1 feeds ARE page 0, so no migration — and overflow spills onto
+ * `/pN` (see lib/event/pending-claims-feed.ts).
+ */
+export const topicPendingClaims = (seriesId: string, page = 0) =>
+  Topic.fromString(
+    page === 0
+      ? `${POD_NS}/pending-claims/${seriesId}`
+      : `${POD_NS}/pending-claims/${seriesId}/p${page}`,
+  );
 
 // ---------------------------------------------------------------------------
 // Profile feeds
