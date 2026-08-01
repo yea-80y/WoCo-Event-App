@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, hkdfSync, randomUUID } from "node:crypto";
 import type {
   Hex0x,
   ClaimedTicket,
@@ -36,6 +36,7 @@ import {
   PAGE_N_CAPACITY,
 } from "../swarm/topics.js";
 import { heldFor } from "./reservation-store.js";
+import { sealClaimer, unsealClaimer } from "./claimer-seal.js";
 import { bindTicket } from "../gate/store.js";
 import { signOwnerBinding } from "../ticket/owner-binding.js";
 
@@ -133,6 +134,59 @@ export function hashEmail(email: string): string {
   return createHmac("sha256", secret).update(normalized).digest("hex");
 }
 
+/** Prefix for HMAC-hashed wallet handles on public feeds (claimers, pending). */
+export const WALLET_HANDLE_PREFIX = "wallet:";
+
+/**
+ * Hash a wallet address for public-feed storage, same rationale as hashEmail:
+ * the claimers/pending feeds sit at derivable public addresses, and a raw
+ * wallet address there is a publicly-linkable record of who attended a named
+ * event.
+ *
+ * Two properties are load-bearing:
+ * - KEY separation, not input separation: hashEmail HMACs attacker-chosen
+ *   strings under EMAIL_HASH_SECRET with no prefix (legacy format, frozen by
+ *   every stored hash), so no input convention can stop a crafted "email"
+ *   from colliding with a wallet hash under the same key. Wallet hashing
+ *   therefore uses its own HKDF-derived key — the two PRFs are independent.
+ * - the seriesId salt makes the same wallet produce a DIFFERENT handle in
+ *   every series, so public observers cannot link one person's attendance
+ *   across events. Every comparison in this codebase is within one series,
+ *   so the salt costs nothing functionally. Do not remove it to "simplify" —
+ *   a global handle rebuilds the cross-event profile this exists to prevent.
+ *
+ * Rotating EMAIL_HASH_SECRET breaks dedup continuity for wallet claims
+ * exactly as it does for email claims.
+ */
+export function hashWalletAddress(address: string, seriesId: string): string {
+  const secret = process.env.EMAIL_HASH_SECRET;
+  if (!secret) {
+    throw new Error("EMAIL_HASH_SECRET is not set");
+  }
+  const walletKey = hkdfSync("sha256", secret, "", "woco/wallet-hash/v1", 32);
+  return createHmac("sha256", Buffer.from(walletKey))
+    .update(`${seriesId}:${address.trim().toLowerCase()}`)
+    .digest("hex");
+}
+
+/** Public-feed claim handle for a wallet address: "wallet:{hmac}". */
+export function walletHandle(address: string, seriesId: string): string {
+  return WALLET_HANDLE_PREFIX + hashWalletAddress(address, seriesId);
+}
+
+/**
+ * Does a feed entry's claim handle refer to the given internal claimer key
+ * (lowercase wallet address, or "email:{hash}")? Matches the hashed form and,
+ * for wallet keys, the bare-address form written before 2026-08-01.
+ */
+export function claimHandleMatches(entryHandle: string, claimerKey: string, seriesId: string): boolean {
+  const entry = entryHandle.toLowerCase();
+  const key = claimerKey.toLowerCase();
+  if (entry === key) return true; // email:{hash} equality, or legacy bare address
+  if (key.startsWith("email:") || key.startsWith(WALLET_HANDLE_PREFIX)) return false;
+  return entry === walletHandle(key, seriesId);
+}
+
 // ---------------------------------------------------------------------------
 // Claim a ticket
 // ---------------------------------------------------------------------------
@@ -212,10 +266,9 @@ export async function claimTicket(opts: {
     if (existingClaimersPage) {
       const existingFeed = decodeJsonFeed<ClaimersFeed>(existingClaimersPage);
       const duplicate = existingFeed?.claimers.some((c) => {
-        const key = c.claimerAddress.toLowerCase();
-        if (key === claimerKey) return true;
+        if (claimHandleMatches(c.claimerAddress, claimerKey, seriesId)) return true;
         if (secondaryEmailHash) {
-          if (key === `email:${secondaryEmailHash}`) return true;
+          if (c.claimerAddress.toLowerCase() === `email:${secondaryEmailHash}`) return true;
           if (c.secondaryEmailHash === secondaryEmailHash) return true;
         }
         if (identifier.type === "email") {
@@ -248,7 +301,7 @@ export async function claimTicket(opts: {
   if (approvalRequired) {
     const pendingFeed = await getPendingClaimsFeed(seriesId);
     if (pendingFeed?.pending.some(
-      (e) => e.claimerKey === claimerKey && e.status === "pending",
+      (e) => claimHandleMatches(e.claimerKey, claimerKey, seriesId) && e.status === "pending",
     )) {
       throw new Error("Already requested");
     }
@@ -337,7 +390,10 @@ export async function claimTicket(opts: {
     creator: originalTicket.data.creator,
     mintedAt: originalTicket.data.mintedAt,
     ...(ownerBound ? { owner: ownerPodPubKey } : {}),
-    ownerAddress: identifier.type === "wallet" ? identifier.address : undefined,
+    // Public blob (reachable via the claims feed) — never the raw address.
+    ...(identifier.type === "wallet"
+      ? { ownerAddressHash: hashWalletAddress(identifier.address, seriesId) }
+      : {}),
     ownerEmailHash:
       identifier.type === "email"
         ? identifier.emailHash
@@ -381,7 +437,11 @@ export async function claimTicket(opts: {
   timings.claimsFeedWrite = lap();
 
   // 8. Approval gate or instant completion
-  const claimerAddress = identifier.type === "wallet" ? identifier.address : `email:${identifier.emailHash}`;
+  // Public claim handle — hashed for wallets, never the raw address (the
+  // claimers and pending feeds sit at publicly derivable SOC addresses).
+  const claimerAddress = identifier.type === "wallet"
+    ? walletHandle(identifier.address, seriesId)
+    : `email:${identifier.emailHash}`;
 
   let orderRef: string | undefined = prefetchedOrderRef;
   if (!orderRef && encryptedOrder) {
@@ -398,16 +458,21 @@ export async function claimTicket(opts: {
   }
 
   if (approvalRequired) {
-    // Pending path: store in pending-claims feed, skip claimers/collection
+    // Pending path: store in pending-claims feed, skip claimers/collection.
+    // claimerKey on the feed is the PUBLIC handle; the raw wallet address the
+    // approve path needs (gate binding + collection topic) rides sealed.
     const pendingId = randomUUID();
     await createPendingClaimEntry(seriesId, {
       pendingId,
-      claimerKey,
+      claimerKey: claimerAddress,
+      ...(identifier.type === "wallet"
+        ? { claimerSealed: sealClaimer(identifier.address.toLowerCase(), seriesId, pendingId) }
+        : {}),
       requestedAt: claimedTicket.claimedAt,
       orderRef,
       claimedRef,
       status: "pending",
-    });
+    }, claimerKey);
     console.log(`[claim] Pending claim created: ${pendingId} for edition ${editionNumber}`);
     return { ...claimedTicket, _pendingId: pendingId };
   }
@@ -580,9 +645,15 @@ export async function getClaimStatus(
   const userEditions: number[] = [];
   if (wantUserLookup && ticketReads.length > 0) {
     const tickets = await Promise.all(ticketReads);
+    const userAddressHash = userAddress ? hashWalletAddress(userAddress, seriesId) : undefined;
     for (const ct of tickets) {
       if (ct.approvalStatus === "pending") continue;
-      if (userAddress && ct.ownerAddress?.toLowerCase() === userAddress.toLowerCase()) {
+      const walletMatch = userAddress && (
+        ct.ownerAddressHash === userAddressHash ||
+        // Legacy tickets (pre-2026-08-01) carry the raw address.
+        ct.ownerAddress?.toLowerCase() === userAddress.toLowerCase()
+      );
+      if (walletMatch) {
         if (typeof ct.edition === "number") userEditions.push(ct.edition);
       } else if (userEmailHash && ct.ownerEmailHash === userEmailHash) {
         if (typeof ct.edition === "number") userEditions.push(ct.edition);
@@ -596,7 +667,7 @@ export async function getClaimStatus(
       ? userAddress.toLowerCase()
       : `email:${userEmailHash}`;
     const entry = pendingFeed?.pending.find(
-      (e) => e.claimerKey === claimerKey && e.status === "pending",
+      (e) => claimHandleMatches(e.claimerKey, claimerKey, seriesId) && e.status === "pending",
     );
     if (entry) userPendingId = entry.pendingId;
   }
@@ -732,14 +803,20 @@ export async function getPendingClaimsFeed(seriesId: string): Promise<PendingCla
   return decodeJsonFeed<PendingClaimsFeed>(page);
 }
 
-async function createPendingClaimEntry(seriesId: string, entry: PendingClaimEntry): Promise<void> {
+async function createPendingClaimEntry(
+  seriesId: string,
+  entry: PendingClaimEntry,
+  // Internal claimer key (raw lowercase address or "email:{hash}") — needed to
+  // match legacy pending entries that stored the bare address.
+  rawClaimerKey: string,
+): Promise<void> {
   const page = await readFeedPage(topicPendingClaims(seriesId));
   const feed: PendingClaimsFeed = page
     ? decodeJsonFeed<PendingClaimsFeed>(page) ?? { v: 1, seriesId, pending: [], updatedAt: "" }
     : { v: 1, seriesId, pending: [], updatedAt: "" };
 
   // Idempotent: reject duplicate pending requests for same claimerKey
-  if (feed.pending.some((e) => e.claimerKey === entry.claimerKey && e.status === "pending")) {
+  if (feed.pending.some((e) => claimHandleMatches(e.claimerKey, rawClaimerKey, seriesId) && e.status === "pending")) {
     throw new Error("Already requested");
   }
 
@@ -777,19 +854,34 @@ export async function approvePendingClaim(
   const newClaimedRef = await uploadToBytes(JSON.stringify(approvedTicket));
   console.log(`[approve] Approved ticket uploaded: ${newClaimedRef}, edition ${editionNumber}`);
 
+  // Recover the raw wallet address for this pending claim: sealed on entries
+  // written since 2026-08-01 (public feeds carry only HMAC handles); legacy
+  // entries carried it bare in claimerKey; legacy tickets in ownerAddress.
+  const rawClaimer =
+    (entry.claimerSealed ? unsealClaimer(entry.claimerSealed, seriesId, entry.pendingId) : null) ??
+    (!entry.claimerKey.startsWith("email:") && !entry.claimerKey.startsWith(WALLET_HANDLE_PREFIX)
+      ? entry.claimerKey
+      : null) ??
+    approvedTicket.ownerAddress ?? null;
+  if (entry.claimerSealed && !rawClaimer) {
+    console.error(
+      `[approve] claimerSealed failed to unseal for ${entry.pendingId} — gate binding and collection skipped`,
+    );
+  }
+
   // Identity-issued (claimed.v2) pending claim: the gate binding was deferred
   // until approval — bind now to the wallet the ticket was claimed with.
-  if (approvedTicket.owner && approvedTicket.ownerAddress) {
+  if (approvedTicket.owner && rawClaimer) {
     const bound = bindTicket({
       seriesId,
       edition: editionNumber,
       eventId: approvedTicket.eventId,
-      parentAddress: approvedTicket.ownerAddress,
+      parentAddress: rawClaimer,
       podPubKey: approvedTicket.owner,
       route: "claim",
     });
     if (bound) {
-      console.log(`[gate] bound ${seriesId}#${editionNumber} → ${approvedTicket.ownerAddress} (claim, on approve)`);
+      console.log(`[gate] bound ${seriesId}#${editionNumber} → ${rawClaimer} (claim, on approve)`);
     }
   }
 
@@ -813,9 +905,10 @@ export async function approvePendingClaim(
     orderRef: entry.orderRef,
   });
 
-  // 6. Update user collection if wallet claim
-  if (!entry.claimerKey.startsWith("email:")) {
-    addToUserCollection(entry.claimerKey as Hex0x, {
+  // 6. Update user collection if wallet claim (topic is keyed by the RAW
+  //    address — the collection is the holder's own passport feed)
+  if (rawClaimer) {
+    addToUserCollection(rawClaimer as Hex0x, {
       seriesId,
       eventId: approvedTicket.eventId,
       edition: editionNumber,

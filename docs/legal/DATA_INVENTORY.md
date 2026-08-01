@@ -1,7 +1,8 @@
 # Data Inventory — UK GDPR Article 30 Record of Processing Activities
 
-**Status:** verified against source, 2026-07-26. **Not** a draft from memory — every claim below
-cites the file that makes it true. Re-verify before each material release.
+**Status:** verified against source, 2026-07-26; citations re-verified and fee model corrected
+2026-08-01. **Not** a draft from memory — every claim below cites the file that makes it true.
+Re-verify before each material release.
 
 This is the evidence base. The Privacy Policy, DPA and Organiser Terms all derive from it and must
 never claim more (or less) than this document supports.
@@ -118,10 +119,11 @@ a stated policy** (see §8).
 
 - Sealing and opening live in `packages/shared/src/crypto/ecies.ts` (X25519 ECDH + AES-256-GCM):
   `seal`, `open`, `sealJson`, `openJson`.
-- `apps/server` imports **`sealJson` only** (`routes/stripe.ts:23`). It never imports `open` or
+- `apps/server` imports **`sealJson` only** (`routes/stripe.ts:30`). It never imports `open` or
   `openJson`. Grep-verified.
-- The only callers of `openJson` are in the organiser's browser:
-  `Dashboard.svelte:380,398` (orders) and `AudienceScreen.svelte:74` (contact list).
+- The only callers of the ECIES open functions are in the organiser's browser:
+  `Dashboard.svelte:380,398` (orders, `openJson`), `AudienceScreen.svelte:95` (contact list,
+  `openJsonAuto`) and `AttendeeImport.svelte:68` (imported attendee orders, `openJson`).
 - The decryption key is derived from the organiser's POD seed, itself derived client-side from a
   wallet signature (`apps/web/src/lib/auth/pod-identity.ts`). The seed never leaves the browser.
 
@@ -172,7 +174,7 @@ processing is not currently live — but EAS likes and event registration on Arb
 
 ### 5.1 Stripe charge model — CORRECTED
 
-`apps/server/src/routes/stripe.ts:624` creates the Checkout Session with
+`apps/server/src/routes/stripe.ts:680` creates the Checkout Session with
 `{ stripeAccount: organiserRecord.stripeAccountId }`, with `application_fee_amount` set and
 **no `transfer_data`**. That is a Stripe **direct charge**, not a destination charge.
 
@@ -180,14 +182,21 @@ Consequences:
 - The **organiser is the merchant of record**. Their business name appears at checkout and on the
   buyer's card statement.
 - The **organiser bears chargeback and dispute liability**, not WoCo.
-- WoCo is a **disclosed agent / platform intermediary** taking a 1.5% application fee.
+- WoCo is a **disclosed agent / platform intermediary**. Fee model (RESOLVED 2026-08-01,
+  `lib/stripe/checkout-fees.ts` + `checkout-fees.test.ts`): the organiser chooses per series
+  whether a booking fee (`buyerFeePercent`, default 10%, floor 4.5%) is added to the buyer's total
+  or absorbed; `application_fee_amount` = **1.5% of the ticket subtotal** (`PLATFORM_FEE_BP`);
+  Stripe's processing fee is charged to the connected account (`fees.payer = "account"`,
+  `account-params.ts:40`). Confirmed against Stripe's direct-charge docs: connected account nets
+  charge − processing fee − application fee. `ORGANISER_TERMS.md` §6 carries the worked example.
 - Card data never touches WoCo infrastructure.
 
-> ⚠️ **`CLAUDE.md` and the header comment at `stripe.ts:5` both still say "destination charges".
-> They are stale and must be corrected.** `stripe.ts:662` also refers to "legacy destination-charge
-> sessions" — any orders created under that model had WoCo as merchant of record and carry
-> different liability. Confirm whether any exist in production before relying on the agent model
-> retrospectively.
+> ⚠️ **Two dated caveats.** (1) Between 2026-04-26 (`26394b8`) and 2026-08-01 the card path
+> charged a flat 10% buyer fee regardless of the organiser's setting, with
+> `application_fee = min(estimated Stripe cost, buyer fee)` — sales in that window followed those
+> figures, not §6. (2) `stripe.ts:783` handles "legacy destination-charge sessions" — any orders
+> created under that model had WoCo as merchant of record and carry different liability. Confirm
+> whether any exist in production before relying on the agent model retrospectively.
 
 ### 5.2 Payout timing — a control, not a custody arrangement
 
@@ -228,7 +237,9 @@ independent nodes worldwide:
 
 | Item | Form | Personal data? |
 |---|---|---|
-| `ClaimerEntry.claimerAddress` | lowercase wallet address, **or** `email:{HMAC hash}` | **Yes** — pseudonymous. `packages/shared/src/event/types.ts:582` |
+| `ClaimerEntry.claimerAddress` | `wallet:{HMAC hash}` or `email:{HMAC hash}` — never a raw address since 2026-08-01. Wallet hashes are keyed (HKDF-separated from the email key) AND salted per series, so the same wallet is unlinkable across events (`hashWalletAddress`, `claim-service.ts`). Legacy entries hold bare lowercase addresses until test-data cleanup | **Yes** — pseudonymous. `packages/shared/src/event/types.ts:598` |
+| `ClaimedTicket.ownerAddressHash` (ticket blobs via claims feed) | per-series keyed hash; raw `ownerAddress` only on pre-2026-08-01 blobs | **Yes** — pseudonymous |
+| Pending-claims feed `claimerKey` + `claimerSealed` | same hashed handle; raw address rides only AES-256-GCM-sealed to the server (approve path needs it) | **Yes** — sealed/pseudonymous |
 | `ClaimerEntry.orderRef` | Swarm ref → ECIES ciphertext of order answers | **Yes**, encrypted |
 | `ClaimerEntry.secondaryEmailHash` | HMAC hash | **Yes** — pseudonymous |
 | Ticket editions / claims feeds | edition number, timestamps, refs | Indirect |
@@ -240,16 +251,30 @@ GDPR because WoCo holds the key / can re-link them. The policy must treat them a
 
 ### Erasure — the mechanism we actually have
 
-Swarm chunks are **immutable and cannot be individually deleted**. Two mechanisms combine to give a
-genuine, defensible erasure story:
+Swarm chunks are **immutable and cannot be individually deleted**.
 
-1. **Crypto-erasure (immediate).** Destroy or rotate the decryption key and the ciphertext becomes
-   permanently unreadable. Effective from the moment of the request. This is the ICO-recognised
-   approach where deletion of the ciphertext is not technically possible.
-2. **Postage-batch expiry (within the retention window).** Swarm chunks persist only while a postage
-   batch pays for them. Stop re-stamping a chunk and nodes garbage-collect it. The hash manifest
-   already built for batch migration is the enumeration mechanism: migrate the hashes to keep, omit
-   the hashes to erase, let the old batch die.
+> ⚠️ **CORRECTED 2026-08-01 after Fable review.** This section previously claimed crypto-erasure —
+> "destroy or rotate the decryption key" — as mechanism 1. **That capability does not exist.** The
+> order-sealing key is HKDF-derived from a POD seed derived client-side from the organiser's wallet
+> signature (`packages/shared/src/crypto/keys.ts:71-87`,
+> `apps/web/src/lib/auth/pod-identity.ts:36-59`). WoCo never holds it, no key-destruction code
+> exists, and it is deterministically re-derivable on any device — so it cannot be destroyed at all.
+> There is also only ONE static X25519 key per organiser, so it could never erase a single
+> attendee's record. Do not reintroduce this claim anywhere.
+
+1. **Removal from the platform (immediate).** The record stops being served or used — organiser
+   dashboard, feeds, ticket lookups. This is what a data subject actually experiences on the day.
+   Note this is removal from *use*, not from the network.
+2. **Postage-batch expiry.** Swarm chunks persist only while a postage batch pays for them. Stop
+   re-stamping a chunk and nodes garbage-collect it — protocol-defined: chunks with expired stamps
+   cannot be used as proof in the redistribution game, so storers stop being rewarded and drop them.
+   The hash manifest built for batch migration is the enumeration mechanism: migrate the hashes to
+   keep, omit the hashes to erase, let the old batch die.
+
+> ⚠️ **Mechanism 2 is NOT operable per-subject today.** One platform batch stamps attendee data AND
+> tickets, profiles, site pointers and recovery data — letting it lapse destroys the platform, not
+> one person's record. The separate attendee batch (§7, open item 4) is a prerequisite. Until it is
+> built, no published document may describe per-subject storage expiry in the present tense.
 
 **What we may honestly claim:** we cease to store the data, we render it permanently unreadable
 immediately, and we stop paying for its persistence so it is garbage-collected from the network
@@ -285,7 +310,8 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
    They are the controller for their own list — forward the request. Removing the member from
    WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
    recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
-2. **Ticket records on Swarm** — crypto-erasure plus batch expiry, as above.
+2. **Ticket records on Swarm** — removal from the platform, plus batch expiry once the separate
+   attendee batch exists. See the two warnings above.
 3. **Stripe** holds its own payment records under its own retention obligations.
 
 ### International transfers
@@ -328,8 +354,8 @@ but it is **operationally dangerous**. One failed top-up and every live ticket d
   the safety margin; the manifest is the delete mechanism.
 - Retention clock tied to **event date**, not claim date. A ticket must survive until the event plus
   a dispute window. Proposal: **event date + 90 days**, then the hash drops out of the manifest.
-- Erasure on request: key destroyed immediately (access ends same-day), hash omitted from the next
-  migration, chunk garbage-collected **within 30 days**.
+- Erasure on request: removed from the platform immediately (access ends same-day), hash omitted
+  from the next migration, chunk garbage-collected **within 30 days**.
 
 ### Stated erasure window: 90 days (owner decision, 2026-07-26)
 
@@ -337,8 +363,8 @@ UK GDPR Art. 12(3) requires a *response* without undue delay and within one mont
 require the technical erasure to complete in that window, provided the response explains the
 timeline. **We state 90 days**, matching Eventbrite. Rationale: a shorter public commitment buys no
 commercial advantage and removes operational headroom on a batch-migration mechanism that has
-already failed once in testing. Access ends immediately via crypto-erasure regardless, which is the
-part a data subject actually feels.
+already failed once in testing. Removal from the platform happens immediately regardless, which is
+the part a data subject actually feels.
 
 Publishing 90 does not stop the practical window being shorter — it usually will be.
 
@@ -374,7 +400,7 @@ organiser's and Stripe's obligation, not something WoCo needs to hold separately
 
 | # | Item | Owner |
 |---|---|---|
-| 1 | Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination | Claude |
+| 1 | ~~Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination~~ **Done 2026-08-01** — both now say direct charges | Claude |
 | 2 | Confirm whether legacy destination-charge orders exist in production | user |
 | 3 | **Configure** log rotation to match the 30-day period now STATED in PRIVACY_POLICY §10. Stating a period does not create one: Docker's `json-file` driver rotates on nothing unless `max-size`/`max-file` are set in compose, and Cloudflare's retention depends on the plan — check it rather than assume. A policy claiming 30 days over infrastructure that keeps logs forever is worse than the placeholder was | user |
 | 4 | Decide + implement the separate attendee postage batch and manifest-driven erasure | Fable |

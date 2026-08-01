@@ -177,7 +177,9 @@ read before you buy a ticket.
 
 **What goes onto the public network.** Ticket records are stored on Swarm, a public decentralised
 storage network. For each ticket this includes an edition number, timestamps, and an identifier for
-the holder — either a wallet address, or a keyed one-way hash of an email address. Where an order
+the holder — a keyed one-way hash of a wallet address or email address, never the address itself.
+Wallet hashes are additionally salted per event, so your attendance at one event cannot be linked
+to your attendance at another by anyone reading the network. Where an order
 form was used, it also includes the encrypted answers.
 
 **What this means in practice:**
@@ -189,17 +191,31 @@ form was used, it also includes the encrypted answers.
   pseudonymous identifiers.
 - **We cannot delete an individual item.** No one can. The network is designed that way.
 
-**So how does deletion work?** Two mechanisms together:
+**So how does deletion work?** Two stages:
 
-1. **We destroy the key.** The encrypted data becomes permanently unreadable, immediately. This takes
-   effect on the day we action your request, not at the end of any window.
-2. **We stop paying for storage.** Data persists on Swarm only while storage is paid for. We stop
-   renewing it and it is garbage-collected by the network — within **90 days**.
+1. **We remove it from WoCo, straight away.** Your record stops being shown or used anywhere on the
+   platform — the organiser's dashboard, our feeds, ticket lookups. This takes effect on the day we
+   action your request, not at the end of any window.
+2. **Its storage is left to expire.** Data persists on Swarm only while its storage is paid for.
+   When the storage covering an erased record lapses without being renewed, the network's own
+   garbage collection removes it: chunks whose storage has lapsed stop earning their storers any
+   reward, so they are dropped. We complete this within 90 days of your request.
 
-**What we cannot honestly promise.** We cannot guarantee that every copy everywhere is destroyed.
-Swarm is public; someone could have retrieved or kept a copy before erasure, and we have no way to
-verify garbage collection network-wide. What we can commit to is that we stop storing it, we make it
-permanently unreadable, and we stop paying to keep it alive.
+> **⚠️ INTERNAL — RESOLVE BEFORE PUBLICATION (correction 3).** Stage 2 is not operable per person
+> today: attendee records share one postage batch with tickets, profiles and platform data, so one
+> record's storage cannot be allowed to lapse on its own. The separate attendee batch +
+> manifest-driven omission (`DATA_INVENTORY.md` §7, open item 4) must exist before this section —
+> and the 90-day commitment above — is published.
+
+**What we cannot honestly promise.** Two things, and we would rather say them plainly:
+
+- **Records already written to the network stay there until their storage lapses.** We cannot reach
+  in and delete an individual item mid-cycle — nobody can, including us. What we control is whether
+  we keep paying to keep it alive.
+- **We cannot guarantee every copy everywhere is gone.** Someone could have retrieved a copy while
+  it was live, and we have no way to verify garbage collection across a network we do not operate.
+  This is true of any system — a website, a cloud provider, any other ticketing platform — but on a
+  public network we would rather state it than let you assume otherwise.
 
 **On-chain records are permanent and cannot be erased at all.** If you use likes or follows, or
 register an event on-chain, that record is public and permanent by design. Please treat anything you
@@ -224,13 +240,16 @@ Under UK GDPR you have the right to: **access** your data; have it **corrected**
 
 **Exercise them by emailing privacy@woco-net.com.** We respond within one month.
 
-Three honest caveats:
+Four honest caveats:
 
 1. **For attendee data, the organiser decides.** They are the controller. We will pass your request on
    and help, but we cannot grant it for them — and for encrypted order data, we cannot read it.
-2. **Erasure works as described in section 8.** Immediate crypto-erasure, storage expiry within 90
-   days, no guarantee of destruction of every copy on a public network.
-3. **Some records we must keep.** Suppression records (forgetting them would defeat their purpose)
+2. **Erasure works as described in section 8.** Immediate removal from the platform; storage lapses
+   within 90 days after that; no guarantee that every copy on a public network is gone.
+3. **Correction has the same limit.** We can publish a corrected record, and that is what the
+   platform will use from then on. The earlier version remains publicly retrievable from the
+   network — correcting does not hide it — until its storage lapses.
+4. **Some records we must keep.** Suppression records (forgetting them would defeat their purpose)
    and transaction records required for six years by tax and company law.
 
 **You can complain to the ICO** at [ico.org.uk](https://ico.org.uk/make-a-complaint/) or 0303 123 1113.
@@ -240,6 +259,12 @@ We would rather you came to us first, but it is your right either way.
 
 ## 10. How long we keep things
 
+> **⚠️ INTERNAL — RESOLVE BEFORE PUBLICATION (correction 4).** Nothing currently enforces the
+> attendee-copy, account-data or marketing-consent periods, and the 30-day log rotation is not yet
+> configured on the host or checked against Cloudflare's plan (`DATA_INVENTORY.md` §8, item 3).
+> Build the expiry or reword those rows before this table is published. The suppression, ticket,
+> contact-list, transaction, failed-delivery and on-chain rows describe what the code does today.
+
 | Data | Retention |
 |---|---|
 | Your ticket / attendance record | **Indefinitely** — it is your record of having been there, yours to keep or erase |
@@ -248,6 +273,7 @@ We would rather you came to us first, but it is your right either way.
 | Suppression records | Indefinitely — required to honour your opt-out. This is the one record we keep *because* you asked us to stop: deleting it would let the next contact upload put you back |
 | Marketing consent records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you agreed to and when — it is how we can show your consent was real |
 | Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser |
+| Failed ticket-delivery records | Until put right, or 90 days at most. If every attempt to email your ticket fails, we keep your address on a restricted ledger — the one case where we hold an email in plaintext — so a human can still get you the ticket you paid for |
 | Transaction records | 6 years (Companies Act 2006, HMRC) |
 | Organiser sale and payout records | 6 years (Companies Act 2006, HMRC) — what sold, what we released and when. Accounting evidence; it contains no attendee identifier |
 | Security logs and IP records | 30 days. If a log is part of an active security, fraud or abuse investigation we keep it until that closes |
@@ -264,7 +290,10 @@ Order-form answers and contact lists are encrypted in the browser using X25519 k
 AES-256-GCM, to a key derived from the organiser's own credentials. Our servers can create these
 encrypted records but have no code path to open them.
 
-Email addresses are stored as keyed HMAC-SHA256 hashes rather than plaintext. Requests are
+Email addresses are stored as keyed HMAC-SHA256 hashes rather than plaintext, with one narrow
+exception: when every attempt to deliver a ticket email fails, we keep the address on a
+restricted failure ledger — the only plaintext copy we hold — until the delivery is put right, or
+for at most 90 days, so that we can still get you the ticket you paid for. Requests are
 authenticated with per-request signatures. All traffic uses TLS.
 
 No system is perfectly secure. We will notify you and the ICO of a qualifying breach within the

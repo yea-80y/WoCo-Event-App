@@ -84,8 +84,8 @@ We process attendee data only on your instructions, as set out in our
 [Data Processing Addendum](./DATA_PROCESSING_ADDENDUM.md), which forms part of these terms.
 
 **Understand the storage model before you collect anything.** Attendee records are stored on a public
-decentralised network. Records cannot be individually deleted; erasure works by destroying decryption
-keys and letting storage expire. The full mechanism and its limits are in the
+decentralised network. Records cannot be individually deleted; erasure works by removing the record
+from the platform immediately and then letting its storage on the network expire. The full mechanism and its limits are in the
 [Privacy Policy](./PRIVACY_POLICY.md) section 8. **You are responsible for telling your attendees
 this** where you collect data outside our checkout — for example on your own website.
 
@@ -126,8 +126,24 @@ suspension.
 
 **Read this section carefully — it is where your financial exposure sits.**
 
-- Our platform fee is **1.5%** of the ticket price, taken automatically at the point of sale.
-- Payment processing fees are charged by the payment provider on top and come out of your proceeds.
+- **You choose whether to add a booking fee.** When you create a ticket you decide whether a
+  booking fee — your chosen percentage, 10% by default, minimum 4.5% — is added on top of your
+  ticket price and paid by the buyer, or whether the buyer pays your ticket price alone. Either
+  way the buyer sees the full total before paying.
+- **Our platform fee is 1.5% of your ticket price** (the booking fee is not fee'd), collected
+  automatically from each sale.
+- **Card processing fees are charged to your connected account** by the payment provider, at the
+  provider's published rates for the card used.
+- **Whatever remains of the booking fee after those deductions is yours**, on top of your ticket
+  price.
+
+**Worked example** — £20 ticket, 10% booking fee, standard UK consumer card: the buyer pays
+£22.00; our platform fee is £0.30 (1.5% of £20); card processing is £0.53 (1.5% + 20p on £22.00);
+you receive **£21.17**. With the booking fee switched off, the buyer pays £20.00 and you receive
+**£19.20**. Processing rates vary by card type — the example uses the provider's standard UK
+consumer-card rate at the time of writing.
+
+We will give reasonable notice before changing this structure.
 
 ### When you get paid
 

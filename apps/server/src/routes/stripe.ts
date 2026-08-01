@@ -24,7 +24,7 @@ import {
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
-import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import { claimTicket, hashEmail, claimHandleMatches, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { queueSeriesClaim } from "./claims.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
@@ -1593,7 +1593,7 @@ stripe.post("/save-order", async (c) => {
       const feed = decodeJsonFeed<ClaimersFeed>(page);
       if (!feed) continue;
       observed = feed.claimers.filter(
-        (e) => e.claimerAddress.toLowerCase() === claimerKey.toLowerCase(),
+        (e) => claimHandleMatches(e.claimerAddress, claimerKey, seriesId),
       ).length;
       if (observed >= expected) break;
     }
@@ -1626,7 +1626,7 @@ stripe.post("/save-order", async (c) => {
 
       let dirty = false;
       for (const e of feed.claimers) {
-        if (e.claimerAddress.toLowerCase() !== claimerKey.toLowerCase()) continue;
+        if (!claimHandleMatches(e.claimerAddress, claimerKey, seriesId)) continue;
         if (e.orderRef) continue;
         e.orderRef = orderRef;
         matchCount++;

@@ -5,7 +5,9 @@
 
 > **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
 > review. This is the Article 28 contract; its content is largely prescribed by statute, so
-> deviations should be deliberate.
+> deviations should be deliberate. Section 5.3's storage-expiry step (and its 90-day window) is
+> gated on the separate attendee postage batch — see the internal warning in `PRIVACY_POLICY.md` §8
+> before publishing either document.
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
 [COMPANY LEGAL NAME] ("**Processor**", "we") and the organiser ("**Controller**", "you").
@@ -97,21 +99,32 @@ You acknowledge and instruct us that:
 1. **Attendee data is stored on Swarm**, a public decentralised storage network operated by
    independent third parties worldwide. It is not a conventional hosted database.
 2. **Data is split into chunks and replicated** across nodes we do not operate and cannot identify.
-3. **Individual records cannot be deleted.** Erasure is achieved by (a) destroying the decryption key,
-   rendering data permanently unreadable, and (b) ceasing to renew storage, so chunks are
-   garbage-collected — within **90 days**.
+3. **Individual records cannot be deleted mid-cycle.** Erasure is achieved by (a) removing the record
+   from the platform immediately, so it is no longer shown or used, and (b) allowing its storage to
+   expire without renewal, after which the network's garbage collection drops it — completed within
+   90 days of the request. **There is no decryption key we
+   can destroy on your behalf** — the key that seals your attendee data is derived from your own
+   credentials, exists only in your browser, and is re-derivable by you on any device. It is also a
+   single key per organiser, so it could not be used to erase one attendee's record in any event.
 4. **We cannot guarantee destruction of every copy.** A third party may have retrieved or retained
    data before erasure. We cannot verify network-wide garbage collection.
 5. **Order-form data and contact lists are encrypted client-side to your key.** We cannot read them.
    This means we **cannot** retrieve, correct, export or inspect that content on your behalf — you
    must do so through your dashboard. **If you lose your credentials, the data is unrecoverable.**
-6. **This constitutes a restricted international transfer** for which no adequacy decision exists and
+6. **Correction is by supersession, not overwrite.** A corrected record is published as a new version
+   and is what the platform uses from then on. The earlier version remains publicly retrievable
+   from the network — supersession does not hide prior versions — until its storage lapses.
+7. **Attendee identifiers are pseudonymised, not encrypted, at network level.** Ticket records carry
+   keyed one-way hashes of a wallet address or email address on a public network; wallet hashes are
+   salted per event series so records cannot be linked across events. Order-form content is
+   encrypted; these identifiers are hashed but not encrypted.
+8. **This constitutes a restricted international transfer** for which no adequacy decision exists and
    standard contractual clauses are not achievable, there being no identifiable counterparty. The
    safeguard relied upon is **technical**: client-side encryption before data leaves the browser, so
    what is transferred is ciphertext and pseudonymous identifiers.
-7. **On-chain records are permanent** and cannot be erased by anyone.
+9. **On-chain records are permanent** and cannot be erased by anyone.
 
-**You are responsible for informing your data subjects** of points 1–4 and 7 in your own privacy
+**You are responsible for informing your data subjects** of points 1–4, 6, 7 and 9 in your own privacy
 notice. Our checkout displays a summary, but where you collect data through your own website, embed
 widget or other channel, that disclosure is yours to make.
 
@@ -126,7 +139,10 @@ We implement appropriate technical and organisational measures, including:
 
 - **Client-side encryption** of order data and contact lists (X25519 key agreement, AES-256-GCM) to a
   key derived from your credentials. Our servers have no code path to decrypt.
-- **Email addresses stored as keyed HMAC-SHA256 hashes** rather than plaintext.
+- **Email addresses stored as keyed HMAC-SHA256 hashes** rather than plaintext — except that the
+  recipient of a transactional email that could not be delivered after every retry is retained in
+  plaintext on an access-restricted failure ledger, solely to remediate that delivery, until
+  resolved or for at most 90 days.
 - **Per-request cryptographic authentication** of API calls; session delegation with expiry and
   revocation.
 - **TLS** for all data in transit.

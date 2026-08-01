@@ -480,8 +480,14 @@ export interface ClaimedTicket {
    *  issued-to-identity attestation covering (eventId, seriesId, edition,
    *  owner, claimedAt). */
   ownerSig?: Hex0x;
-  /** Wallet address (for wallet-based claims) */
+  /** LEGACY (pre-2026-08-01) — raw wallet address. Ticket blobs are publicly
+   *  reachable via the claims feed, so new tickets carry ownerAddressHash
+   *  instead. Readers must accept both. */
   ownerAddress?: Hex0x;
+  /** HMAC-SHA256 hash of the claiming wallet address (wallet-based claims).
+   *  Replaces ownerAddress so the public ticket blob does not link a wallet
+   *  to event attendance. */
+  ownerAddressHash?: string;
   /** HMAC-SHA256 hash of email.
    *  - Email-only claim: primary identifier.
    *  - Wallet + Stripe dual-identity: secondary identifier (email from Stripe,
@@ -581,7 +587,14 @@ export interface SeriesClaimStatus {
 /** Single entry in the claimers JSON feed */
 export interface ClaimerEntry {
   edition: number;
-  /** Primary claim handle — lowercase wallet address, or "email:{hmacHash}" */
+  /** Primary claim handle — "wallet:{hmacHash}" or "email:{hmacHash}".
+   *  This feed sits at a derivable public address (SOC = hash(topic, owner);
+   *  the topic scheme and platform owner are public), so a raw wallet address
+   *  here is a publicly-linkable attendance record. Identifiers are therefore
+   *  keyed HMAC hashes; the organiser's readable copy of the claimer identity
+   *  travels in the sealed order blob (orderRef), never here. Entries written
+   *  before 2026-08-01 hold bare lowercase wallet addresses — readers must
+   *  match both forms. */
   claimerAddress: string;
   claimedRef: string;
   claimedAt: string;
@@ -630,8 +643,15 @@ export interface OrderEntry {
 export interface PendingClaimEntry {
   /** Random UUID assigned at request time */
   pendingId: string;
-  /** Wallet address (lowercase) or "email:{sha256hash}" — pseudonymous */
+  /** Claim handle — "wallet:{hmacHash}" or "email:{hmacHash}" (bare lowercase
+   *  wallet address on legacy entries). Pseudonymous: this feed is publicly
+   *  derivable, same as the claimers feed. */
   claimerKey: string;
+  /** Server-sealed (AES-256-GCM) raw wallet address, present on wallet claims.
+   *  The approve path needs the raw address for gate binding and the user's
+   *  collection feed, and it must not ride in public plaintext — only the
+   *  server can open this. */
+  claimerSealed?: string;
   requestedAt: string;
   /** Swarm ref to ECIES-encrypted order data (same format as claimers feed orderRef) */
   orderRef?: string;
