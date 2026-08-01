@@ -54,7 +54,7 @@ notice; a policy link in the main app does not cover the other three.
 
 | # | Surface | Code | Collects | Notice status (2026-07-26) |
 |---|---|---|---|---|
-| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | Partial — one line, "Your info is encrypted", only shown when an order form exists; no policy link, no consent control |
+| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | **Compliant** (since `8ed69ec`) — the `consent-block` above the action buttons carries `TRANSACTIONAL_EMAIL_NOTICE`, an unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link. Wording is shared with the server via `packages/shared/src/legal/consent.ts` so the stored Art. 7(1) evidence cannot drift from what was shown |
 | 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **None** |
 | 3 | Organiser site deployed via WoCo | `apps/web/src/MultiSiteApp.svelte`, `contactForm` section (`packages/shared/src/site/types.ts:192`) | name, email, message | **None**, and the generated site has no privacy policy page at all |
 | 4 | Direct event page link | routes into surface 1 | as surface 1 | as surface 1 |
@@ -75,8 +75,10 @@ Enumerated from source, not assumed:
 |---|---|---|
 | `marketing-suppression.json` | **Yes** (pseudonymous) | HMAC-SHA256 email hashes + timestamp + source. Never plaintext — `suppression-store.ts` |
 | `marketing-lists.json` | **Yes** (pseudonymous) | `emailHashes: string[]` only — `list-store.ts:17` |
+| `marketing-consent.json` | **Yes** (pseudonymous) | Art. 7(1) evidence: email hash → `{ts, source, eventId, notice}`, where `notice` is the VERBATIM wording shown at collection. No plaintext — `consent-store.ts`. Losing it loses the lawful basis for every opt-in it records |
 | `marketing-domains.json`, `marketing-send-log.json` | Indirect | Organiser sending domains; send counts for rate caps |
 | `stripe-accounts.json` | **Yes** | Organiser wallet address ↔ Stripe account id |
+| `stripe-payout-ledger.json` | **Yes** | Organiser wallet address + Stripe account/session/PaymentIntent ids, event id, sale and net amounts, release dates. Financial record of the organiser, not the buyer — no attendee identifier. Retained as accounting evidence (§5.2, `payout-ledger.ts`) |
 | `attendee-gate-bindings.json` | **Yes** (pseudonymous) | Ticket ↔ attendee binding |
 | `likes-index.json` | **Yes** | Wallet address ↔ liked subject. Cache of public on-chain attestations |
 | `sub-ens-owners.json` | **Yes** | Wallet address ↔ ENS label |
@@ -85,13 +87,17 @@ Enumerated from source, not assumed:
 | `storage-ledger.json` | Indirect | Bytes uploaded per owner address |
 | `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend event ids — replay prevention |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
+| `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver after every retry. `transactional` entries store the buyer's plaintext address: it is the only copy on disk (the claimers feed stores `emailHash`) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure — `failure-ledger.ts` |
 
-**Notably absent: any store of plaintext email addresses.** Verified by inspection of every store above.
+**Notably absent: any store of plaintext email addresses, with one narrow exception** —
+`email-failures.json` retains the plaintext recipient of an undelivered *transactional* email
+until remediated or 90 days, whichever is sooner. Verified by inspection of every store above.
 
 ### 3.2 Transient (in memory, not persisted)
 
 - **Plaintext attendee email.** Arrives in the claim request body or from Stripe, is used to (a) send
-  the ticket via Resend and (b) compute `hashEmail()`. Not written to disk in plaintext.
+  the ticket via the active ESP and (b) compute `hashEmail()`. Not written to disk in plaintext,
+  **except** when every delivery attempt fails — see `email-failures.json` (§3.1).
   `hashEmail()` = HMAC-SHA256 keyed on `EMAIL_HASH_SECRET` — `claim-service.ts:126`.
 - **Plaintext marketing emails** transit `/api/marketing/import|check|broadcast` bodies because the
   client cannot compute a server-secret HMAC. Hashed and discarded.
@@ -124,13 +130,24 @@ the event organiser holds. WoCo's servers store the encrypted result and have no
 
 **Two carve-outs that must not be glossed:**
 
-1. **Stripe fallback path.** `routes/stripe.ts:928` — when no client-sealed order was pre-uploaded,
-   the server seals a minimal record `{seriesId, claimerEmail, claimerAddress}` itself. The server
-   therefore momentarily holds that email in memory (it came from Stripe) and performs the encryption.
-   It still cannot re-open the result. Do **not** write "all data is encrypted before it reaches our
-   servers" — it is not true on this path.
+1. **Stripe fallback path.** `routes/stripe.ts` (search `Fallback minimal seal`) — when no
+   client-sealed order was pre-uploaded, the server seals a minimal record
+   `{seriesId, claimerEmail, claimerAddress}` itself. The server therefore momentarily holds that
+   email in memory (it came from Stripe) and performs the encryption. It still cannot re-open the
+   result. Do **not** write "all data is encrypted before it reaches our servers" — it is not true
+   on this path.
 2. **Email delivery.** The attendee's email address is necessarily in plaintext to send the ticket.
    It is not part of the sealed blob's protection.
+3. **Stripe holds the buyer's email regardless.** It is passed as `customer_email` (for the
+   checkout prefill) and stamped into session metadata so the webhook can identify the buyer. That
+   copy lives in Stripe under their retention, not ours, and no amount of client-side sealing
+   changes it. Listed here because "encrypted to the organiser" is otherwise read as "nobody else
+   has it".
+
+**On the key:** the organiser's POD identity is **ed25519**; sealing uses the **X25519** keypair
+derived from that same seed (`deriveEncryptionKeypairFromPodSeed`). ECIES is X25519 ECDH +
+HKDF-SHA256 + AES-256-GCM. Saying "encrypted with the organiser's ed25519 key" is loose — the
+signing key and the encryption key are different keys from one seed.
 
 ---
 
@@ -163,7 +180,11 @@ Consequences:
 - The **organiser is the merchant of record**. Their business name appears at checkout and on the
   buyer's card statement.
 - The **organiser bears chargeback and dispute liability**, not WoCo.
-- WoCo is a **disclosed agent / platform intermediary** taking a 1.5% application fee.
+- WoCo is a **disclosed agent / platform intermediary**. Fee model (verified 2026-08-01,
+  `stripe.ts:613-631`): buyer pays ticket × 1.10; `application_fee_amount =
+  min(estimated Stripe cost, buyer fee)`. **NOT 1.5%** — that figure was stale.
+  ⚠️ The organiser's net does not reconcile with the code comment's "~7% above ticket price";
+  see the warning in `ORGANISER_TERMS.md` §6. Unresolved.
 - Card data never touches WoCo infrastructure.
 
 > ⚠️ **`CLAUDE.md` and the header comment at `stripe.ts:5` both still say "destination charges".
@@ -171,6 +192,34 @@ Consequences:
 > sessions" — any orders created under that model had WoCo as merchant of record and carry
 > different liability. Confirm whether any exist in production before relying on the agent model
 > retrospectively.
+
+### 5.2 Payout timing — a control, not a custody arrangement
+
+Connected accounts are created on a **manual payout schedule** and each event's takings are
+released after the event by a server-side job. Mechanism, constants and Stripe's own limits:
+`docs/PAYOUTS.md`.
+
+What matters for the legal documents:
+
+- **WoCo never holds organiser funds.** They settle into the organiser's own Stripe balance. We
+  control the timing of release and nothing else. Stripe is explicit that this is not escrow —
+  *"Escrow has a precise legal definition, and Stripe doesn't provide escrow services or support
+  escrow accounts."* No document may describe it as escrow, a client account, or funds we hold.
+- **The hold cannot be promised unconditionally.** Stripe requires payout within 90 days of the
+  charge for UK businesses (10 days Thailand, 2 years US), measured **per sale, not per event**, so
+  tickets sold more than ~90 days ahead are released to the organiser before their event.
+- **On a manual schedule, only the platform can move funds.** Stripe confirmed in writing
+  (2026-07-29, `PAYOUTS.md` §3.2) that the Express Dashboard cannot self-initiate payouts and
+  schedule editing is a platform capability we have not enabled. The earlier "not a lock" caveat
+  here is retired.
+
+`TERMS_OF_SERVICE.md` §4 and `ORGANISER_TERMS.md` §6 are written to these limits.
+
+> **Liability under Managed Risk (issue #90).** Accounts are created with controller properties
+> and `controller.losses.payments = "stripe"` (`PAYOUTS.md` §4): a refund or dispute debits the
+> organiser's connected balance first, and the unrecoverable remainder falls on **Stripe**, not
+> WoCo. Delayed payouts still matter — they keep attendees refundable for sales within ~90 days
+> of the event; for earlier sales the liability configuration is the only control.
 
 ---
 
@@ -195,16 +244,30 @@ GDPR because WoCo holds the key / can re-link them. The policy must treat them a
 
 ### Erasure — the mechanism we actually have
 
-Swarm chunks are **immutable and cannot be individually deleted**. Two mechanisms combine to give a
-genuine, defensible erasure story:
+Swarm chunks are **immutable and cannot be individually deleted**.
 
-1. **Crypto-erasure (immediate).** Destroy or rotate the decryption key and the ciphertext becomes
-   permanently unreadable. Effective from the moment of the request. This is the ICO-recognised
-   approach where deletion of the ciphertext is not technically possible.
-2. **Postage-batch expiry (within the retention window).** Swarm chunks persist only while a postage
-   batch pays for them. Stop re-stamping a chunk and nodes garbage-collect it. The hash manifest
-   already built for batch migration is the enumeration mechanism: migrate the hashes to keep, omit
-   the hashes to erase, let the old batch die.
+> ⚠️ **CORRECTED 2026-08-01 after Fable review.** This section previously claimed crypto-erasure —
+> "destroy or rotate the decryption key" — as mechanism 1. **That capability does not exist.** The
+> order-sealing key is HKDF-derived from a POD seed derived client-side from the organiser's wallet
+> signature (`packages/shared/src/crypto/keys.ts:71-87`,
+> `apps/web/src/lib/auth/pod-identity.ts:36-59`). WoCo never holds it, no key-destruction code
+> exists, and it is deterministically re-derivable on any device — so it cannot be destroyed at all.
+> There is also only ONE static X25519 key per organiser, so it could never erase a single
+> attendee's record. Do not reintroduce this claim anywhere.
+
+1. **Removal from the platform (immediate).** The record stops being served or used — organiser
+   dashboard, feeds, ticket lookups. This is what a data subject actually experiences on the day.
+   Note this is removal from *use*, not from the network.
+2. **Postage-batch expiry.** Swarm chunks persist only while a postage batch pays for them. Stop
+   re-stamping a chunk and nodes garbage-collect it — protocol-defined: chunks with expired stamps
+   cannot be used as proof in the redistribution game, so storers stop being rewarded and drop them.
+   The hash manifest built for batch migration is the enumeration mechanism: migrate the hashes to
+   keep, omit the hashes to erase, let the old batch die.
+
+> ⚠️ **Mechanism 2 is NOT operable per-subject today.** One platform batch stamps attendee data AND
+> tickets, profiles, site pointers and recovery data — letting it lapse destroys the platform, not
+> one person's record. The separate attendee batch (§7, open item 4) is a prerequisite. Until it is
+> built, no published document may describe per-subject storage expiry in the present tense.
 
 **What we may honestly claim:** we cease to store the data, we render it permanently unreadable
 immediately, and we stop paying for its persistence so it is garbage-collected from the network
@@ -214,6 +277,35 @@ within the stated window.
 network; a third party may have retrieved, cached or pinned a chunk before erasure. Garbage
 collection is best-effort and not verifiable by us. This limitation must be disclosed *at the point
 of collection*, not buried.
+
+### Servicing a request — the actual procedure
+
+`apps/server/scripts/data-subject-request.ts`, run on the VM with the production
+`EMAIL_HASH_SECRET` and cwd set to the server working directory (the stores are keyed by HMAC hash,
+so the wrong secret reports "no data" for someone who has plenty).
+
+    npx tsx scripts/data-subject-request.ts --email <addr>                      # Art. 15 report
+    npx tsx scripts/data-subject-request.ts --email <addr> --erase              # Art. 17, all organisers
+    npx tsx scripts/data-subject-request.ts --email <addr> --erase --organiser 0x…   # scoped to one controller
+
+It is a script, not an admin HTTP route: there is no admin identity in this system, and inventing an
+admin bearer token guarding bulk erasure would be a worse attack surface than the problem it solves.
+SSH is already the admin boundary.
+
+**Suppression marks are never erased.** Under Art. 17(3)(b) the record of an objection is precisely
+what lets the controller keep honouring it — deleting it would re-expose the person to the
+organiser's next contact upload. The script therefore records a suppression mark *before* erasing
+anything, so a crash between the two steps over-suppresses rather than under-protects.
+
+**Three things the script cannot reach**, and which must be relayed to the subject:
+
+1. The organiser's **sealed contact blob** on Swarm is encrypted to them; only they can rewrite it.
+   They are the controller for their own list — forward the request. Removing the member from
+   WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
+   recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
+2. **Ticket records on Swarm** — removal from the platform, plus batch expiry once the separate
+   attendee batch exists. See the two warnings above.
+3. **Stripe** holds its own payment records under its own retention obligations.
 
 ### International transfers
 
@@ -264,8 +356,8 @@ UK GDPR Art. 12(3) requires a *response* without undue delay and within one mont
 require the technical erasure to complete in that window, provided the response explains the
 timeline. **We state 90 days**, matching Eventbrite. Rationale: a shorter public commitment buys no
 commercial advantage and removes operational headroom on a batch-migration mechanism that has
-already failed once in testing. Access ends immediately via crypto-erasure regardless, which is the
-part a data subject actually feels.
+already failed once in testing. Removal from the platform happens immediately regardless, which is
+the part a data subject actually feels.
 
 Publishing 90 does not stop the practical window being shorter — it usually will be.
 
@@ -303,9 +395,10 @@ organiser's and Stripe's obligation, not something WoCo needs to hold separately
 |---|---|---|
 | 1 | Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination | Claude |
 | 2 | Confirm whether legacy destination-charge orders exist in production | user |
-| 3 | Define + implement log retention for Cloudflare and host logs (currently undefined) | user |
+| 3 | **Configure** log rotation to match the 30-day period now STATED in PRIVACY_POLICY §10. Stating a period does not create one: Docker's `json-file` driver rotates on nothing unless `max-size`/`max-file` are set in compose, and Cloudflare's retention depends on the plan — check it rather than assume. A policy claiming 30 days over infrastructure that keeps logs forever is worse than the placeholder was | user |
 | 4 | Decide + implement the separate attendee postage batch and manifest-driven erasure | Fable |
 | 5 | Solicitor sign-off on the Swarm international-transfer position (§6) | user |
 | 6 | ICO registration (data protection fee) before processing begins | user |
 | 7 | Point-of-collection notices on all four surfaces (§2) | Claude |
 | 8 | Generated organiser sites need a privacy policy page | Claude |
+| 9 | **Organiser privacy contact.** `privacy@woco-net.com` is WoCo's contact *as controller* and stays WoCo's — it is not an organiser-facing setting. But §3 tells the attendee their order-form rights are exercised against the ORGANISER, and today the only identification of that organiser is their display name at checkout. They need a reachable contact of their own. Deliberately not built yet: it wants a verified address, which is the same problem SES domain verification solves (PRICING_AND_EMAIL §6 forbids onboarding organiser domains on Resend). Slot it in as an organiser-profile field once SES lands — the point-of-collection notice and the generated-site policy page (item 8) both read it | Claude, after SES |

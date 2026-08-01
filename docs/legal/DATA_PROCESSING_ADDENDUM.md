@@ -97,21 +97,30 @@ You acknowledge and instruct us that:
 1. **Attendee data is stored on Swarm**, a public decentralised storage network operated by
    independent third parties worldwide. It is not a conventional hosted database.
 2. **Data is split into chunks and replicated** across nodes we do not operate and cannot identify.
-3. **Individual records cannot be deleted.** Erasure is achieved by (a) destroying the decryption key,
-   rendering data permanently unreadable, and (b) ceasing to renew storage, so chunks are
-   garbage-collected — within **90 days**.
+3. **Individual records cannot be deleted mid-cycle.** Erasure is achieved by (a) removing the record
+   from the platform immediately, so it is no longer shown or used, and (b) ceasing to renew its
+   storage, after which the network's garbage collection drops it. **There is no decryption key we
+   can destroy on your behalf** — the key that seals your attendee data is derived from your own
+   credentials, exists only in your browser, and is re-derivable by you on any device. It is also a
+   single key per organiser, so it could not be used to erase one attendee's record in any event.
 4. **We cannot guarantee destruction of every copy.** A third party may have retrieved or retained
    data before erasure. We cannot verify network-wide garbage collection.
 5. **Order-form data and contact lists are encrypted client-side to your key.** We cannot read them.
    This means we **cannot** retrieve, correct, export or inspect that content on your behalf — you
    must do so through your dashboard. **If you lose your credentials, the data is unrecoverable.**
-6. **This constitutes a restricted international transfer** for which no adequacy decision exists and
+6. **Correction is by supersession, not overwrite.** A corrected record is published as a new version
+   and is what the platform uses from then on. The earlier version remains retrievable from the
+   network until its storage lapses.
+7. **Attendee identifiers are not encrypted at network level.** Ticket records carry a wallet address
+   or a keyed hash of an email address as plain text on a public network. Order-form content is
+   encrypted; these identifiers are not.
+8. **This constitutes a restricted international transfer** for which no adequacy decision exists and
    standard contractual clauses are not achievable, there being no identifiable counterparty. The
    safeguard relied upon is **technical**: client-side encryption before data leaves the browser, so
    what is transferred is ciphertext and pseudonymous identifiers.
-7. **On-chain records are permanent** and cannot be erased by anyone.
+9. **On-chain records are permanent** and cannot be erased by anyone.
 
-**You are responsible for informing your data subjects** of points 1–4 and 7 in your own privacy
+**You are responsible for informing your data subjects** of points 1–4, 6, 7 and 9 in your own privacy
 notice. Our checkout displays a summary, but where you collect data through your own website, embed
 widget or other channel, that disclosure is yours to make.
 

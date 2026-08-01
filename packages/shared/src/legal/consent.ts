@@ -34,12 +34,21 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
  * things a buyer cannot infer from a generic policy link:
  *   1. the organiser — not WoCo — is the one who receives their details;
  *   2. answers are encrypted in-browser to a key only the organiser holds;
- *   3. records on a public decentralised network cannot be individually
- *      deleted, only rendered unreadable and left to expire.
+ *   3. records already written to a public decentralised network stay there
+ *      until their storage expires.
  * (3) in particular must be disclosed BEFORE submission, not buried in a policy.
+ *
+ * DO NOT reintroduce any claim that WoCo destroys a decryption key on request.
+ * It was here until 2026-08-01 and was false three ways: WoCo never holds that
+ * key (it is HKDF-derived from a POD seed derived client-side from the
+ * organiser's wallet signature); no key-destruction code exists; and the key is
+ * deterministically re-derivable on any device, so it cannot be destroyed at
+ * all. There is also only ONE static X25519 key per organiser, so there is no
+ * per-record key even in principle. Stating a capability we do not have, at the
+ * point of collection, is the worst place to get this wrong.
  */
 export const CHECKOUT_PRIVACY_SUMMARY =
   "Your details go to the event organiser, who is responsible for them. Anything you enter here is " +
-  "encrypted in your browser to a key only they hold — WoCo cannot read it. Ticket records are kept " +
-  "on a public decentralised storage network, so they cannot be individually deleted; on request we " +
-  "destroy the key that makes them readable and stop renewing their storage.";
+  "encrypted in your browser to a key only they hold — WoCo cannot read it. Your ticket record is " +
+  "kept on a public decentralised storage network: on request we remove it from WoCo and stop " +
+  "renewing its storage, but records already written to the network remain until that storage expires.";

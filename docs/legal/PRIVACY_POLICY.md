@@ -189,17 +189,24 @@ form was used, it also includes the encrypted answers.
   pseudonymous identifiers.
 - **We cannot delete an individual item.** No one can. The network is designed that way.
 
-**So how does deletion work?** Two mechanisms together:
+**So how does deletion work?** Two stages:
 
-1. **We destroy the key.** The encrypted data becomes permanently unreadable, immediately. This takes
-   effect on the day we action your request, not at the end of any window.
-2. **We stop paying for storage.** Data persists on Swarm only while storage is paid for. We stop
-   renewing it and it is garbage-collected by the network — within **90 days**.
+1. **We remove it from WoCo, straight away.** Your record stops being shown or used anywhere on the
+   platform — the organiser's dashboard, our feeds, ticket lookups. This takes effect on the day we
+   action your request, not at the end of any window.
+2. **We stop paying for its storage.** Data persists on Swarm only while its storage is paid for.
+   Once we stop renewing it, the network's own garbage collection removes it: chunks whose storage
+   has lapsed stop earning their storers any reward, so they are dropped.
 
-**What we cannot honestly promise.** We cannot guarantee that every copy everywhere is destroyed.
-Swarm is public; someone could have retrieved or kept a copy before erasure, and we have no way to
-verify garbage collection network-wide. What we can commit to is that we stop storing it, we make it
-permanently unreadable, and we stop paying to keep it alive.
+**What we cannot honestly promise.** Two things, and we would rather say them plainly:
+
+- **Records already written to the network stay there until their storage lapses.** We cannot reach
+  in and delete an individual item mid-cycle — nobody can, including us. What we control is whether
+  we keep paying to keep it alive.
+- **We cannot guarantee every copy everywhere is gone.** Someone could have retrieved a copy while
+  it was live, and we have no way to verify garbage collection across a network we do not operate.
+  This is true of any system — a website, a cloud provider, any other ticketing platform — but on a
+  public network we would rather state it than let you assume otherwise.
 
 **On-chain records are permanent and cannot be erased at all.** If you use likes or follows, or
 register an event on-chain, that record is public and permanent by design. Please treat anything you
@@ -224,13 +231,15 @@ Under UK GDPR you have the right to: **access** your data; have it **corrected**
 
 **Exercise them by emailing [PRIVACY EMAIL].** We respond within one month.
 
-Three honest caveats:
+Four honest caveats:
 
 1. **For attendee data, the organiser decides.** They are the controller. We will pass your request on
    and help, but we cannot grant it for them — and for encrypted order data, we cannot read it.
-2. **Erasure works as described in section 8.** Immediate crypto-erasure, storage expiry within 90
-   days, no guarantee of destruction of every copy on a public network.
-3. **Some records we must keep.** Suppression records (forgetting them would defeat their purpose)
+2. **Erasure works as described in section 8.** Immediate removal from the platform; storage lapses
+   after that; no guarantee that every copy on a public network is gone.
+3. **Correction has the same limit.** We can publish a corrected record, and that is what the
+   platform will use from then on. The earlier version stays on the network until its storage lapses.
+4. **Some records we must keep.** Suppression records (forgetting them would defeat their purpose)
    and transaction records required for six years by tax and company law.
 
 **You can complain to the ICO** at [ico.org.uk](https://ico.org.uk/make-a-complaint/) or 0303 123 1113.

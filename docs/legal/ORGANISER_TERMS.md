@@ -126,11 +126,46 @@ suspension.
 
 **Read this section carefully — it is where your financial exposure sits.**
 
-- Our platform fee is **[FEE]%** of the ticket price, taken automatically at the point of sale.
-- Payment processing fees are charged by the payment provider on top and come out of your proceeds.
-- Payouts are made by the payment provider to your nominated account on their schedule.
-- **We may delay payouts until after your event has taken place.** This protects attendees and
-  limits chargeback exposure. We will tell you the applicable schedule before you sell.
+> **⚠️ UNRESOLVED — DO NOT PUBLISH THIS SECTION UNTIL CONFIRMED.** The figures below are verified
+> against `stripe.ts:613-631` and `account-params.ts:40`, but the resulting **organiser net does not
+> reconcile with the code's own comment** (which claims the organiser receives ~7% above ticket
+> price). On a £20 ticket the buyer pays £22.00, the platform's application fee is £0.84, and Stripe's
+> processing cost is ~£0.84 — and because `controller.fees.payer = "account"` the organiser bears the
+> Stripe cost as well, netting **£20.32 (+1.6%)**, not the ~£21.40 the comment implies. Either the
+> comment is wrong or `fees.payer` interacts with `application_fee_amount` differently than read here.
+> **Resolve before this goes in front of an organiser** — a published fee that misstates what someone
+> receives is a consumer-law problem, and this is the exact class of error this document set exists to
+> prevent.
+
+- **The buyer pays a 10% booking fee** on top of your ticket price. You set the ticket price; the
+  buyer sees the full total before paying.
+- **Our platform fee is taken from that booking fee** and is capped at our estimated card processing
+  cost for the transaction — so it never exceeds the booking fee the buyer paid.
+- **Card processing fees are charged to your connected account** by the payment provider.
+- The remainder of the booking fee is yours, on top of your ticket price.
+
+We will give reasonable notice before changing this structure.
+
+### When you get paid
+
+**Your ticket sales are paid out after your event has taken place, not when the ticket sells.**
+
+- Your sales settle into **your own account with our payment provider**. We do not hold your
+  money and this is not an escrow arrangement — we control the timing of the release, and
+  nothing else.
+- Your account is set to a manual payout schedule. We release each event's takings
+  **2 days after that event ends**, and you can see what is held and when it is
+  due to release in your dashboard at any time.
+- **Exception — sales more than 90 days before your event.** Our payment
+  provider does not permit funds to be held indefinitely: money must be paid out within
+  90 days of the sale, wherever your event falls. Where you sell earlier than
+  that — early-bird or festival on-sales — those takings are released to you **before** your
+  event. Your refund obligation below is unchanged, so if you sell far in advance you must be
+  able to refund from your own funds.
+- Where we reasonably consider the risk warrants it we may hold a reserve against future
+  sales, or limit how far in advance you may sell.
+
+We will tell you the applicable schedule before you sell.
 
 ### Refunds and chargebacks
 
@@ -146,7 +181,8 @@ marketing law; and any claim brought by an attendee in relation to your event.
 
 **This is a real risk, not boilerplate.** If you cancel an event after payout, the chargebacks still
 arrive. We may recover those amounts from you, and we may hold a reserve against future sales where
-we reasonably consider the risk warrants it.
+we reasonably consider the risk warrants it. This risk is highest on sales made long before the
+event, because those funds must be released to you before it takes place (see "When you get paid").
 
 If you have any doubt about your ability to deliver an event, do not sell tickets for it.
 
