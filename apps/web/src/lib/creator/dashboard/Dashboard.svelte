@@ -142,7 +142,9 @@
       const dec = decryptedOrders.get(ordersResponse!.orders.indexOf(order));
       return [
         String(order.edition),
-        order.claimerAddress.startsWith("email:") ? "" : order.claimerAddress,
+        order.claimerAddress.startsWith("email:") || order.claimerAddress.startsWith("wallet:")
+          ? dec?.claimerAddress ?? ""
+          : order.claimerAddress,
         dec?.claimerEmail ?? "",
         order.via ?? "",
         order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "",
@@ -188,7 +190,7 @@
       eventId,
       series: order.seriesName,
       edition: order.edition,
-      claimerAddress: order.claimerAddress,
+      claimerAddress: dec.claimerAddress ?? order.claimerAddress,
       ...(dec.claimerEmail ? { claimerEmail: dec.claimerEmail } : {}),
       claimedAt: order.claimedAt,
       fields: labeledFields,
@@ -1045,6 +1047,14 @@
                           {/if}
                         {:else if dec?.claimerEmail}
                           <span class="claim-email">{dec.claimerEmail}</span>
+                        {:else if order.claimerAddress.startsWith("wallet:")}
+                          <!-- Feed handle is a privacy hash; the readable address
+                               lives in the sealed order blob (organiser-only). -->
+                          {#if dec?.claimerAddress}
+                            {dec.claimerAddress.slice(0, 6)}...{dec.claimerAddress.slice(-4)}
+                          {:else}
+                            <span class="claim-type">Wallet claim</span>
+                          {/if}
                         {:else}
                           {order.claimerAddress.slice(0, 6)}...{order.claimerAddress.slice(-4)}
                         {/if}

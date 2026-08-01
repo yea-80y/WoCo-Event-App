@@ -177,7 +177,9 @@ read before you buy a ticket.
 
 **What goes onto the public network.** Ticket records are stored on Swarm, a public decentralised
 storage network. For each ticket this includes an edition number, timestamps, and an identifier for
-the holder — either a wallet address, or a keyed one-way hash of an email address. Where an order
+the holder — a keyed one-way hash of a wallet address or email address, never the address itself.
+Wallet hashes are additionally salted per event, so your attendance at one event cannot be linked
+to your attendance at another by anyone reading the network. Where an order
 form was used, it also includes the encrypted answers.
 
 **What this means in practice:**

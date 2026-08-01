@@ -114,9 +114,10 @@ You acknowledge and instruct us that:
 6. **Correction is by supersession, not overwrite.** A corrected record is published as a new version
    and is what the platform uses from then on. The earlier version remains publicly retrievable
    from the network — supersession does not hide prior versions — until its storage lapses.
-7. **Attendee identifiers are not encrypted at network level.** Ticket records carry a wallet address
-   or a keyed hash of an email address as plain text on a public network. Order-form content is
-   encrypted; these identifiers are not.
+7. **Attendee identifiers are pseudonymised, not encrypted, at network level.** Ticket records carry
+   keyed one-way hashes of a wallet address or email address on a public network; wallet hashes are
+   salted per event series so records cannot be linked across events. Order-form content is
+   encrypted; these identifiers are hashed but not encrypted.
 8. **This constitutes a restricted international transfer** for which no adequacy decision exists and
    standard contractual clauses are not achievable, there being no identifiable counterparty. The
    safeguard relied upon is **technical**: client-side encryption before data leaves the browser, so

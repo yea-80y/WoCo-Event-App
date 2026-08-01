@@ -237,7 +237,9 @@ independent nodes worldwide:
 
 | Item | Form | Personal data? |
 |---|---|---|
-| `ClaimerEntry.claimerAddress` | lowercase wallet address, **or** `email:{HMAC hash}` | **Yes** — pseudonymous. `packages/shared/src/event/types.ts:582` |
+| `ClaimerEntry.claimerAddress` | `wallet:{HMAC hash}` or `email:{HMAC hash}` — never a raw address since 2026-08-01. Wallet hashes are keyed (HKDF-separated from the email key) AND salted per series, so the same wallet is unlinkable across events (`hashWalletAddress`, `claim-service.ts`). Legacy entries hold bare lowercase addresses until test-data cleanup | **Yes** — pseudonymous. `packages/shared/src/event/types.ts:598` |
+| `ClaimedTicket.ownerAddressHash` (ticket blobs via claims feed) | per-series keyed hash; raw `ownerAddress` only on pre-2026-08-01 blobs | **Yes** — pseudonymous |
+| Pending-claims feed `claimerKey` + `claimerSealed` | same hashed handle; raw address rides only AES-256-GCM-sealed to the server (approve path needs it) | **Yes** — sealed/pseudonymous |
 | `ClaimerEntry.orderRef` | Swarm ref → ECIES ciphertext of order answers | **Yes**, encrypted |
 | `ClaimerEntry.secondaryEmailHash` | HMAC hash | **Yes** — pseudonymous |
 | Ticket editions / claims feeds | edition number, timestamps, refs | Indirect |
