@@ -180,7 +180,11 @@ Consequences:
 - The **organiser is the merchant of record**. Their business name appears at checkout and on the
   buyer's card statement.
 - The **organiser bears chargeback and dispute liability**, not WoCo.
-- WoCo is a **disclosed agent / platform intermediary** taking a 1.5% application fee.
+- WoCo is a **disclosed agent / platform intermediary**. Fee model (verified 2026-08-01,
+  `stripe.ts:613-631`): buyer pays ticket × 1.10; `application_fee_amount =
+  min(estimated Stripe cost, buyer fee)`. **NOT 1.5%** — that figure was stale.
+  ⚠️ The organiser's net does not reconcile with the code comment's "~7% above ticket price";
+  see the warning in `ORGANISER_TERMS.md` §6. Unresolved.
 - Card data never touches WoCo infrastructure.
 
 > ⚠️ **`CLAUDE.md` and the header comment at `stripe.ts:5` both still say "destination charges".
@@ -240,16 +244,30 @@ GDPR because WoCo holds the key / can re-link them. The policy must treat them a
 
 ### Erasure — the mechanism we actually have
 
-Swarm chunks are **immutable and cannot be individually deleted**. Two mechanisms combine to give a
-genuine, defensible erasure story:
+Swarm chunks are **immutable and cannot be individually deleted**.
 
-1. **Crypto-erasure (immediate).** Destroy or rotate the decryption key and the ciphertext becomes
-   permanently unreadable. Effective from the moment of the request. This is the ICO-recognised
-   approach where deletion of the ciphertext is not technically possible.
-2. **Postage-batch expiry (within the retention window).** Swarm chunks persist only while a postage
-   batch pays for them. Stop re-stamping a chunk and nodes garbage-collect it. The hash manifest
-   already built for batch migration is the enumeration mechanism: migrate the hashes to keep, omit
-   the hashes to erase, let the old batch die.
+> ⚠️ **CORRECTED 2026-08-01 after Fable review.** This section previously claimed crypto-erasure —
+> "destroy or rotate the decryption key" — as mechanism 1. **That capability does not exist.** The
+> order-sealing key is HKDF-derived from a POD seed derived client-side from the organiser's wallet
+> signature (`packages/shared/src/crypto/keys.ts:71-87`,
+> `apps/web/src/lib/auth/pod-identity.ts:36-59`). WoCo never holds it, no key-destruction code
+> exists, and it is deterministically re-derivable on any device — so it cannot be destroyed at all.
+> There is also only ONE static X25519 key per organiser, so it could never erase a single
+> attendee's record. Do not reintroduce this claim anywhere.
+
+1. **Removal from the platform (immediate).** The record stops being served or used — organiser
+   dashboard, feeds, ticket lookups. This is what a data subject actually experiences on the day.
+   Note this is removal from *use*, not from the network.
+2. **Postage-batch expiry.** Swarm chunks persist only while a postage batch pays for them. Stop
+   re-stamping a chunk and nodes garbage-collect it — protocol-defined: chunks with expired stamps
+   cannot be used as proof in the redistribution game, so storers stop being rewarded and drop them.
+   The hash manifest built for batch migration is the enumeration mechanism: migrate the hashes to
+   keep, omit the hashes to erase, let the old batch die.
+
+> ⚠️ **Mechanism 2 is NOT operable per-subject today.** One platform batch stamps attendee data AND
+> tickets, profiles, site pointers and recovery data — letting it lapse destroys the platform, not
+> one person's record. The separate attendee batch (§7, open item 4) is a prerequisite. Until it is
+> built, no published document may describe per-subject storage expiry in the present tense.
 
 **What we may honestly claim:** we cease to store the data, we render it permanently unreadable
 immediately, and we stop paying for its persistence so it is garbage-collected from the network
@@ -285,7 +303,8 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
    They are the controller for their own list — forward the request. Removing the member from
    WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
    recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
-2. **Ticket records on Swarm** — crypto-erasure plus batch expiry, as above.
+2. **Ticket records on Swarm** — removal from the platform, plus batch expiry once the separate
+   attendee batch exists. See the two warnings above.
 3. **Stripe** holds its own payment records under its own retention obligations.
 
 ### International transfers
@@ -337,8 +356,8 @@ UK GDPR Art. 12(3) requires a *response* without undue delay and within one mont
 require the technical erasure to complete in that window, provided the response explains the
 timeline. **We state 90 days**, matching Eventbrite. Rationale: a shorter public commitment buys no
 commercial advantage and removes operational headroom on a batch-migration mechanism that has
-already failed once in testing. Access ends immediately via crypto-erasure regardless, which is the
-part a data subject actually feels.
+already failed once in testing. Removal from the platform happens immediately regardless, which is
+the part a data subject actually feels.
 
 Publishing 90 does not stop the practical window being shorter — it usually will be.
 

@@ -126,8 +126,25 @@ suspension.
 
 **Read this section carefully — it is where your financial exposure sits.**
 
-- Our platform fee is **1.5%** of the ticket price, taken automatically at the point of sale.
-- Payment processing fees are charged by the payment provider on top and come out of your proceeds.
+> **⚠️ UNRESOLVED — DO NOT PUBLISH THIS SECTION UNTIL CONFIRMED.** The figures below are verified
+> against `stripe.ts:613-631` and `account-params.ts:40`, but the resulting **organiser net does not
+> reconcile with the code's own comment** (which claims the organiser receives ~7% above ticket
+> price). On a £20 ticket the buyer pays £22.00, the platform's application fee is £0.84, and Stripe's
+> processing cost is ~£0.84 — and because `controller.fees.payer = "account"` the organiser bears the
+> Stripe cost as well, netting **£20.32 (+1.6%)**, not the ~£21.40 the comment implies. Either the
+> comment is wrong or `fees.payer` interacts with `application_fee_amount` differently than read here.
+> **Resolve before this goes in front of an organiser** — a published fee that misstates what someone
+> receives is a consumer-law problem, and this is the exact class of error this document set exists to
+> prevent.
+
+- **The buyer pays a 10% booking fee** on top of your ticket price. You set the ticket price; the
+  buyer sees the full total before paying.
+- **Our platform fee is taken from that booking fee** and is capped at our estimated card processing
+  cost for the transaction — so it never exceeds the booking fee the buyer paid.
+- **Card processing fees are charged to your connected account** by the payment provider.
+- The remainder of the booking fee is yours, on top of your ticket price.
+
+We will give reasonable notice before changing this structure.
 
 ### When you get paid
 
