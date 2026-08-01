@@ -84,8 +84,8 @@ We process attendee data only on your instructions, as set out in our
 [Data Processing Addendum](./DATA_PROCESSING_ADDENDUM.md), which forms part of these terms.
 
 **Understand the storage model before you collect anything.** Attendee records are stored on a public
-decentralised network. Records cannot be individually deleted; erasure works by destroying decryption
-keys and letting storage expire. The full mechanism and its limits are in the
+decentralised network. Records cannot be individually deleted; erasure works by removing the record
+from the platform immediately and then letting its storage on the network expire. The full mechanism and its limits are in the
 [Privacy Policy](./PRIVACY_POLICY.md) section 8. **You are responsible for telling your attendees
 this** where you collect data outside our checkout — for example on your own website.
 
@@ -126,23 +126,22 @@ suspension.
 
 **Read this section carefully — it is where your financial exposure sits.**
 
-> **⚠️ UNRESOLVED — DO NOT PUBLISH THIS SECTION UNTIL CONFIRMED.** The figures below are verified
-> against `stripe.ts:613-631` and `account-params.ts:40`, but the resulting **organiser net does not
-> reconcile with the code's own comment** (which claims the organiser receives ~7% above ticket
-> price). On a £20 ticket the buyer pays £22.00, the platform's application fee is £0.84, and Stripe's
-> processing cost is ~£0.84 — and because `controller.fees.payer = "account"` the organiser bears the
-> Stripe cost as well, netting **£20.32 (+1.6%)**, not the ~£21.40 the comment implies. Either the
-> comment is wrong or `fees.payer` interacts with `application_fee_amount` differently than read here.
-> **Resolve before this goes in front of an organiser** — a published fee that misstates what someone
-> receives is a consumer-law problem, and this is the exact class of error this document set exists to
-> prevent.
+- **You choose whether to add a booking fee.** When you create a ticket you decide whether a
+  booking fee — your chosen percentage, 10% by default, minimum 4.5% — is added on top of your
+  ticket price and paid by the buyer, or whether the buyer pays your ticket price alone. Either
+  way the buyer sees the full total before paying.
+- **Our platform fee is 1.5% of your ticket price** (the booking fee is not fee'd), collected
+  automatically from each sale.
+- **Card processing fees are charged to your connected account** by the payment provider, at the
+  provider's published rates for the card used.
+- **Whatever remains of the booking fee after those deductions is yours**, on top of your ticket
+  price.
 
-- **The buyer pays a 10% booking fee** on top of your ticket price. You set the ticket price; the
-  buyer sees the full total before paying.
-- **Our platform fee is taken from that booking fee** and is capped at our estimated card processing
-  cost for the transaction — so it never exceeds the booking fee the buyer paid.
-- **Card processing fees are charged to your connected account** by the payment provider.
-- The remainder of the booking fee is yours, on top of your ticket price.
+**Worked example** — £20 ticket, 10% booking fee, standard UK consumer card: the buyer pays
+£22.00; our platform fee is £0.30 (1.5% of £20); card processing is £0.53 (1.5% + 20p on £22.00);
+you receive **£21.17**. With the booking fee switched off, the buyer pays £20.00 and you receive
+**£19.20**. Processing rates vary by card type — the example uses the provider's standard UK
+consumer-card rate at the time of writing.
 
 We will give reasonable notice before changing this structure.
 

@@ -1,7 +1,8 @@
 # Data Inventory — UK GDPR Article 30 Record of Processing Activities
 
-**Status:** verified against source, 2026-07-26. **Not** a draft from memory — every claim below
-cites the file that makes it true. Re-verify before each material release.
+**Status:** verified against source, 2026-07-26; citations re-verified and fee model corrected
+2026-08-01. **Not** a draft from memory — every claim below cites the file that makes it true.
+Re-verify before each material release.
 
 This is the evidence base. The Privacy Policy, DPA and Organiser Terms all derive from it and must
 never claim more (or less) than this document supports.
@@ -118,10 +119,11 @@ a stated policy** (see §8).
 
 - Sealing and opening live in `packages/shared/src/crypto/ecies.ts` (X25519 ECDH + AES-256-GCM):
   `seal`, `open`, `sealJson`, `openJson`.
-- `apps/server` imports **`sealJson` only** (`routes/stripe.ts:23`). It never imports `open` or
+- `apps/server` imports **`sealJson` only** (`routes/stripe.ts:30`). It never imports `open` or
   `openJson`. Grep-verified.
-- The only callers of `openJson` are in the organiser's browser:
-  `Dashboard.svelte:380,398` (orders) and `AudienceScreen.svelte:74` (contact list).
+- The only callers of the ECIES open functions are in the organiser's browser:
+  `Dashboard.svelte:380,398` (orders, `openJson`), `AudienceScreen.svelte:95` (contact list,
+  `openJsonAuto`) and `AttendeeImport.svelte:68` (imported attendee orders, `openJson`).
 - The decryption key is derived from the organiser's POD seed, itself derived client-side from a
   wallet signature (`apps/web/src/lib/auth/pod-identity.ts`). The seed never leaves the browser.
 
@@ -172,7 +174,7 @@ processing is not currently live — but EAS likes and event registration on Arb
 
 ### 5.1 Stripe charge model — CORRECTED
 
-`apps/server/src/routes/stripe.ts:624` creates the Checkout Session with
+`apps/server/src/routes/stripe.ts:680` creates the Checkout Session with
 `{ stripeAccount: organiserRecord.stripeAccountId }`, with `application_fee_amount` set and
 **no `transfer_data`**. That is a Stripe **direct charge**, not a destination charge.
 
@@ -180,18 +182,21 @@ Consequences:
 - The **organiser is the merchant of record**. Their business name appears at checkout and on the
   buyer's card statement.
 - The **organiser bears chargeback and dispute liability**, not WoCo.
-- WoCo is a **disclosed agent / platform intermediary**. Fee model (verified 2026-08-01,
-  `stripe.ts:613-631`): buyer pays ticket × 1.10; `application_fee_amount =
-  min(estimated Stripe cost, buyer fee)`. **NOT 1.5%** — that figure was stale.
-  ⚠️ The organiser's net does not reconcile with the code comment's "~7% above ticket price";
-  see the warning in `ORGANISER_TERMS.md` §6. Unresolved.
+- WoCo is a **disclosed agent / platform intermediary**. Fee model (RESOLVED 2026-08-01,
+  `lib/stripe/checkout-fees.ts` + `checkout-fees.test.ts`): the organiser chooses per series
+  whether a booking fee (`buyerFeePercent`, default 10%, floor 4.5%) is added to the buyer's total
+  or absorbed; `application_fee_amount` = **1.5% of the ticket subtotal** (`PLATFORM_FEE_BP`);
+  Stripe's processing fee is charged to the connected account (`fees.payer = "account"`,
+  `account-params.ts:40`). Confirmed against Stripe's direct-charge docs: connected account nets
+  charge − processing fee − application fee. `ORGANISER_TERMS.md` §6 carries the worked example.
 - Card data never touches WoCo infrastructure.
 
-> ⚠️ **`CLAUDE.md` and the header comment at `stripe.ts:5` both still say "destination charges".
-> They are stale and must be corrected.** `stripe.ts:662` also refers to "legacy destination-charge
-> sessions" — any orders created under that model had WoCo as merchant of record and carry
-> different liability. Confirm whether any exist in production before relying on the agent model
-> retrospectively.
+> ⚠️ **Two dated caveats.** (1) Between 2026-04-26 (`26394b8`) and 2026-08-01 the card path
+> charged a flat 10% buyer fee regardless of the organiser's setting, with
+> `application_fee = min(estimated Stripe cost, buyer fee)` — sales in that window followed those
+> figures, not §6. (2) `stripe.ts:783` handles "legacy destination-charge sessions" — any orders
+> created under that model had WoCo as merchant of record and carry different liability. Confirm
+> whether any exist in production before relying on the agent model retrospectively.
 
 ### 5.2 Payout timing — a control, not a custody arrangement
 
@@ -347,8 +352,8 @@ but it is **operationally dangerous**. One failed top-up and every live ticket d
   the safety margin; the manifest is the delete mechanism.
 - Retention clock tied to **event date**, not claim date. A ticket must survive until the event plus
   a dispute window. Proposal: **event date + 90 days**, then the hash drops out of the manifest.
-- Erasure on request: key destroyed immediately (access ends same-day), hash omitted from the next
-  migration, chunk garbage-collected **within 30 days**.
+- Erasure on request: removed from the platform immediately (access ends same-day), hash omitted
+  from the next migration, chunk garbage-collected **within 30 days**.
 
 ### Stated erasure window: 90 days (owner decision, 2026-07-26)
 
@@ -393,7 +398,7 @@ organiser's and Stripe's obligation, not something WoCo needs to hold separately
 
 | # | Item | Owner |
 |---|---|---|
-| 1 | Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination | Claude |
+| 1 | ~~Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination~~ **Done 2026-08-01** — both now say direct charges | Claude |
 | 2 | Confirm whether legacy destination-charge orders exist in production | user |
 | 3 | **Configure** log rotation to match the 30-day period now STATED in PRIVACY_POLICY §10. Stating a period does not create one: Docker's `json-file` driver rotates on nothing unless `max-size`/`max-file` are set in compose, and Cloudflare's retention depends on the plan — check it rather than assume. A policy claiming 30 days over infrastructure that keeps logs forever is worse than the placeholder was | user |
 | 4 | Decide + implement the separate attendee postage batch and manifest-driven erasure | Fable |

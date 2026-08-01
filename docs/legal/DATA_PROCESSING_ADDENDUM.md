@@ -5,7 +5,9 @@
 
 > **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
 > review. This is the Article 28 contract; its content is largely prescribed by statute, so
-> deviations should be deliberate.
+> deviations should be deliberate. Section 5.3's storage-expiry step (and its 90-day window) is
+> gated on the separate attendee postage batch — see the internal warning in `PRIVACY_POLICY.md` §8
+> before publishing either document.
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
 [COMPANY LEGAL NAME] ("**Processor**", "we") and the organiser ("**Controller**", "you").
@@ -98,8 +100,9 @@ You acknowledge and instruct us that:
    independent third parties worldwide. It is not a conventional hosted database.
 2. **Data is split into chunks and replicated** across nodes we do not operate and cannot identify.
 3. **Individual records cannot be deleted mid-cycle.** Erasure is achieved by (a) removing the record
-   from the platform immediately, so it is no longer shown or used, and (b) ceasing to renew its
-   storage, after which the network's garbage collection drops it. **There is no decryption key we
+   from the platform immediately, so it is no longer shown or used, and (b) allowing its storage to
+   expire without renewal, after which the network's garbage collection drops it — completed within
+   90 days of the request. **There is no decryption key we
    can destroy on your behalf** — the key that seals your attendee data is derived from your own
    credentials, exists only in your browser, and is re-derivable by you on any device. It is also a
    single key per organiser, so it could not be used to erase one attendee's record in any event.
@@ -109,8 +112,8 @@ You acknowledge and instruct us that:
    This means we **cannot** retrieve, correct, export or inspect that content on your behalf — you
    must do so through your dashboard. **If you lose your credentials, the data is unrecoverable.**
 6. **Correction is by supersession, not overwrite.** A corrected record is published as a new version
-   and is what the platform uses from then on. The earlier version remains retrievable from the
-   network until its storage lapses.
+   and is what the platform uses from then on. The earlier version remains publicly retrievable
+   from the network — supersession does not hide prior versions — until its storage lapses.
 7. **Attendee identifiers are not encrypted at network level.** Ticket records carry a wallet address
    or a keyed hash of an email address as plain text on a public network. Order-form content is
    encrypted; these identifiers are not.
@@ -135,7 +138,10 @@ We implement appropriate technical and organisational measures, including:
 
 - **Client-side encryption** of order data and contact lists (X25519 key agreement, AES-256-GCM) to a
   key derived from your credentials. Our servers have no code path to decrypt.
-- **Email addresses stored as keyed HMAC-SHA256 hashes** rather than plaintext.
+- **Email addresses stored as keyed HMAC-SHA256 hashes** rather than plaintext — except that the
+  recipient of a transactional email that could not be delivered after every retry is retained in
+  plaintext on an access-restricted failure ledger, solely to remediate that delivery, until
+  resolved or for at most 90 days.
 - **Per-request cryptographic authentication** of API calls; session delegation with expiry and
   revocation.
 - **TLS** for all data in transit.
