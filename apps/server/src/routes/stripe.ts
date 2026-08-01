@@ -1360,17 +1360,19 @@ async function handleSuccessfulPayment(
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[stripe-webhook] Failed to claim ticket${ticketNum}:`, msg);
 
-        const isUnrecoverable =
-          msg.includes("Already claimed") ||
-          msg.includes("Already requested") ||
-          msg.includes("No tickets available") ||
-          msg.includes("Series not found") ||
-          msg.includes("Series has no metadata");
-
-        if (isUnrecoverable) {
-          stoppedReason = msg;
-          break;
-        }
+        // ANY failure stops the batch and records why, because `stoppedReason`
+        // is what drives the refund and `markPayoutVoid` below.
+        //
+        // This used to stop only for an allowlist of "unrecoverable" messages
+        // and silently continue otherwise. That left the buyer with no ticket,
+        // no refund and no payout void whenever the claim failed for a reason
+        // nobody had enumerated — a transient Swarm read or feed write, say.
+        // The session is already consumed and 200 already returned, so Stripe
+        // never redelivers and nothing retries: the money simply stayed taken.
+        // Continuing also could not help, since the next ticket in the batch
+        // would hit the same infrastructure.
+        stoppedReason = msg;
+        break;
       }
     }
   }

@@ -14,11 +14,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 
-import {
-  readClaimsPageStrict,
-  selectFreeSlot,
-  type ClaimsPagePair,
-} from "../src/lib/event/claims-feed.js";
+import { readClaimsPageStrict, selectFreeSlot } from "../src/lib/event/claims-feed.js";
+import type { FeedReadStrictResult } from "../src/lib/swarm/feeds.js";
 
 const SERIES = "series-test";
 
@@ -35,7 +32,13 @@ function editionsPage(count = 128): Uint8Array {
 }
 
 describe("readClaimsPageStrict", () => {
-  const reader = (result: unknown) => async () => result as never;
+  /** Typed so a mistyped status literal fails at compile time. */
+  const reader = (...results: FeedReadStrictResult[]) => {
+    let i = 0;
+    return async () => results[Math.min(i++, results.length - 1)];
+  };
+  const err = { status: "error", error: new Error("bee 503") } as const;
+  const NO_RETRY: number[] = [];
 
   it("returns the page bytes when the read succeeds", async () => {
     const data = claimsPage([1]);
@@ -48,18 +51,52 @@ describe("readClaimsPageStrict", () => {
     assert.equal(page, null);
   });
 
-  it("THROWS on a read error rather than reporting an empty page", async () => {
+  it("THROWS on a persistent read error rather than reporting an empty page", async () => {
     await assert.rejects(
-      () => readClaimsPageStrict(SERIES, 0, reader({ status: "error", error: new Error("bee 503") })),
+      () => readClaimsPageStrict(SERIES, 0, reader(err), NO_RETRY),
       /Could not read the claims feed/,
     );
   });
 
+  it("retries a transient error and returns the page once it reads", async () => {
+    // On the card rail a throw here stops the batch and refunds the buyer, so a
+    // one-off blip must not surface.
+    const data = claimsPage([1, 2]);
+    const page = await readClaimsPageStrict(SERIES, 0, reader(err, err, { status: "ok", data }), [1, 1]);
+    assert.equal(page, data);
+  });
+
+  it("retries into an absent answer without throwing", async () => {
+    const page = await readClaimsPageStrict(SERIES, 0, reader(err, { status: "absent" }), [1, 1]);
+    assert.equal(page, null);
+  });
+
+  it("gives up after the configured number of retries", async () => {
+    let calls = 0;
+    const counting = async () => {
+      calls++;
+      return err;
+    };
+    await assert.rejects(() => readClaimsPageStrict(SERIES, 0, counting, [1, 1]), /try again/);
+    assert.equal(calls, 3); // initial attempt + 2 retries
+  });
+
+  it("never retries an absent page — absent is an answer, not a failure", async () => {
+    let calls = 0;
+    const counting = async (): Promise<FeedReadStrictResult> => {
+      calls++;
+      return { status: "absent" };
+    };
+    assert.equal(await readClaimsPageStrict(SERIES, 0, counting, [1, 1]), null);
+    assert.equal(calls, 1);
+  });
+
   it("does not leak the underlying error text to the caller", async () => {
     // The message reaches the HTTP client via routes/claims.ts.
+    const leaky = { status: "error", error: new Error("http://bee-node:1633 refused") } as const;
     await assert.rejects(
-      () => readClaimsPageStrict(SERIES, 0, reader({ status: "error", error: new Error("http://bee-node:1633 refused") })),
-      (err: Error) => !err.message.includes("bee-node"),
+      () => readClaimsPageStrict(SERIES, 0, reader(leaky), NO_RETRY),
+      (e: Error) => !e.message.includes("bee-node"),
     );
   });
 });
@@ -123,16 +160,11 @@ describe("selectFreeSlot", () => {
     assert.equal(free?.ticketRef, expected);
   });
 
-  it("a sold-out page never re-allocates an edition just because a later page is free", () => {
-    // Regression shape of the bug: page 0 full, page 1 empty. Allocation must
-    // move forward, never reopen page 0's editions.
-    const full = claimsPage(Array.from({ length: 128 }, (_, i) => i));
-    for (let i = 0; i < 5; i++) {
-      const free = selectFreeSlot([
-        { claims: full, editions: editionsPage() },
-        { claims: null, editions: editionsPage() },
-      ]);
-      assert.equal(free?.page, 1);
-    }
+  it("respects a partial editions page rather than running to slot 127", () => {
+    // A series whose last page is not full: slots past the editions run must
+    // never be allocated, or the claim would reference an empty ticket ref.
+    const editions = editionsPage(5); // metadata + editions at slots 1..4
+    const free = selectFreeSlot([{ claims: claimsPage([1, 2, 3, 4]), editions }]);
+    assert.equal(free, null);
   });
 });

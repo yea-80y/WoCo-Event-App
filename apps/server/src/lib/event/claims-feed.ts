@@ -22,6 +22,16 @@ import type { FeedReadStrictResult } from "../swarm/feeds.js";
 export type StrictPageReader = (seriesId: string, page: number) => Promise<FeedReadStrictResult>;
 
 /**
+ * Retry schedule for a page that errors. Swarm reads are routinely flaky, and
+ * throwing is expensive here — on the card rail it stops the batch and refunds
+ * the buyer. Absorb the blip rather than surface it; a sustained outage still
+ * fails after ~1.2s, which the callers handle.
+ *
+ * Only "error" is retried. "absent" is an answer, not a failure.
+ */
+const RETRY_DELAYS_MS = [300, 900];
+
+/**
  * One claims page, or null when it has genuinely never been written. Throws
  * when the page exists but would not read — the caller must not proceed to
  * allocate or rewrite a slot on state it could not see.
@@ -31,14 +41,22 @@ export async function readClaimsPageStrict(
   page: number,
   /** Injectable so the absent-vs-error rule is testable without a bee node. */
   readPage: StrictPageReader = (id, p) => readFeedPageStrict(topicClaims(id, p)),
+  delaysMs: number[] = RETRY_DELAYS_MS,
 ): Promise<Uint8Array | null> {
-  const result = await readPage(seriesId, page);
-  if (result.status === "absent") return null;
-  if (result.status === "error") {
-    console.error(`[claim] claims page ${page} unreadable for series ${seriesId}:`, result.error);
-    throw new Error("Could not read the claims feed — try again");
+  for (let attempt = 0; ; attempt++) {
+    const result = await readPage(seriesId, page);
+    if (result.status === "absent") return null;
+    if (result.status === "ok") return result.data;
+
+    if (attempt >= delaysMs.length) {
+      console.error(
+        `[claim] claims page ${page} unreadable for series ${seriesId} after ${attempt + 1} attempts:`,
+        result.error,
+      );
+      throw new Error("Could not read the claims feed — try again");
+    }
+    await new Promise((r) => setTimeout(r, delaysMs[attempt]));
   }
-  return result.data;
 }
 
 /** A claims page paired with the editions page holding its ticket refs. */
