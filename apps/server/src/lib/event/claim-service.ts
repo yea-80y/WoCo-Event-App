@@ -30,13 +30,18 @@ import {
   topicClaims,
   topicClaimers,
   topicUserCollection,
-  topicPendingClaims,
   editionPageCount,
   PAGE_0_CAPACITY,
   PAGE_N_CAPACITY,
 } from "../swarm/topics.js";
 import { heldFor } from "./reservation-store.js";
 import { appendClaimerEntry, attachOrderRefToClaimers, readAllClaimers } from "./claimers-feed.js";
+import {
+  readPendingPages,
+  mergePendingPages,
+  appendPendingEntry,
+  markPendingDecided,
+} from "./pending-claims-feed.js";
 import { sealClaimer, unsealClaimer } from "./claimer-seal.js";
 import { bindTicket } from "../gate/store.js";
 import { signOwnerBinding } from "../ticket/owner-binding.js";
@@ -797,52 +802,47 @@ export async function stampTicketOwner(
 // Pending claims feed
 // ---------------------------------------------------------------------------
 
+/** Every page of the pending feed flattened into one view. Null when the feed
+ *  has never been written. */
 export async function getPendingClaimsFeed(seriesId: string): Promise<PendingClaimsFeed | null> {
-  const page = await readFeedPage(topicPendingClaims(seriesId));
-  if (!page) return null;
-  return decodeJsonFeed<PendingClaimsFeed>(page);
+  return mergePendingPages(seriesId, await readPendingPages(seriesId));
 }
 
-async function createPendingClaimEntry(
+/** The still-pending entry with this id, or null. Read only — the write that
+ *  acts on it re-checks inside the pending queue. */
+async function findPendingEntry(
+  seriesId: string,
+  pendingId: string,
+): Promise<PendingClaimEntry | null> {
+  const pages = await readPendingPages(seriesId);
+  return (
+    pages
+      .flatMap((p) => p.pending)
+      .find((e) => e.pendingId === pendingId && e.status === "pending") ?? null
+  );
+}
+
+function createPendingClaimEntry(
   seriesId: string,
   entry: PendingClaimEntry,
   // Internal claimer key (raw lowercase address or "email:{hash}") — needed to
   // match legacy pending entries that stored the bare address.
   rawClaimerKey: string,
 ): Promise<void> {
-  const page = await readFeedPage(topicPendingClaims(seriesId));
-  const feed: PendingClaimsFeed = page
-    ? decodeJsonFeed<PendingClaimsFeed>(page) ?? { v: 1, seriesId, pending: [], updatedAt: "" }
-    : { v: 1, seriesId, pending: [], updatedAt: "" };
-
-  // Idempotent: reject duplicate pending requests for same claimerKey
-  if (feed.pending.some((e) => claimHandleMatches(e.claimerKey, rawClaimerKey, seriesId) && e.status === "pending")) {
-    throw new Error("Already requested");
-  }
-
-  feed.pending.push(entry);
-  feed.updatedAt = new Date().toISOString();
-
-  await writeFeedPage(topicPendingClaims(seriesId), encodeJsonFeed(feed));
-  console.log(`[claim] Pending claims feed updated: ${feed.pending.length} entries`);
+  return enqueuePendingOp(seriesId, () =>
+    appendPendingEntry(seriesId, entry, (e) =>
+      claimHandleMatches(e.claimerKey, rawClaimerKey, seriesId),
+    ),
+  );
 }
 
 export async function approvePendingClaim(
   seriesId: string,
   pendingId: string,
 ): Promise<void> {
-  // 1. Read pending-claims feed, find the entry
-  const pendingPage = await readFeedPage(topicPendingClaims(seriesId));
-  const pendingFeed: PendingClaimsFeed = pendingPage
-    ? decodeJsonFeed<PendingClaimsFeed>(pendingPage) ?? { v: 1, seriesId, pending: [], updatedAt: "" }
-    : { v: 1, seriesId, pending: [], updatedAt: "" };
-
-  const entryIdx = pendingFeed.pending.findIndex(
-    (e) => e.pendingId === pendingId && e.status === "pending",
-  );
-  if (entryIdx < 0) throw new Error("Pending claim not found");
-
-  const entry = pendingFeed.pending[entryIdx];
+  // 1. Find the entry across the pending feed's pages
+  const entry = await findPendingEntry(seriesId, pendingId);
+  if (!entry) throw new Error("Pending claim not found");
 
   // 2. Download the reserved ClaimedTicket
   const ticketJson = await downloadFromBytes(entry.claimedRef);
@@ -885,10 +885,15 @@ export async function approvePendingClaim(
     }
   }
 
-  // 4. Update claims feed slot with approved ref
+  // 4. Update claims feed slot with approved ref. The page always exists (the
+  //    claim reserved this slot), so a null read is a transient failure, never
+  //    "absent" — starting from a blank page would erase every other claim on it.
   const { page: claimPage, slot: claimSlot } = editionToPageSlot(editionNumber);
   const claimsPageData = await readFeedPage(topicClaims(seriesId, claimPage));
-  const claimsData = claimsPageData ? new Uint8Array(claimsPageData) : new Uint8Array(4096);
+  if (!claimsPageData) {
+    throw new Error("Could not read the claims feed — try again");
+  }
+  const claimsData = new Uint8Array(claimsPageData);
   claimsData.set(hexToBytes32(newClaimedRef), claimSlot * 32);
   await writeFeedPage(topicClaims(seriesId, claimPage), claimsData);
 
@@ -917,14 +922,20 @@ export async function approvePendingClaim(
     }).catch((err) => console.error("[approve] Failed to update user collection:", err));
   }
 
-  // 7. Mark entry as approved
-  pendingFeed.pending[entryIdx] = {
-    ...entry,
-    status: "approved",
-    decidedAt: new Date().toISOString(),
-  };
-  pendingFeed.updatedAt = new Date().toISOString();
-  await writeFeedPage(topicPendingClaims(seriesId), encodeJsonFeed(pendingFeed));
+  // 7. Mark entry as approved. Queued and re-read rather than written back from
+  //    the step-1 snapshot: a claim-time append between the two would otherwise
+  //    be erased by a whole-feed overwrite.
+  const marked = await enqueuePendingOp(seriesId, () =>
+    markPendingDecided(seriesId, pendingId, {
+      status: "approved",
+      decidedAt: new Date().toISOString(),
+    }),
+  );
+  if (!marked) {
+    // The ticket IS approved (claims feed written above) — only the audit entry
+    // is missing, so don't fail the organiser's request.
+    console.error(`[approve] Pending entry ${pendingId} vanished before the decision was recorded`);
+  }
   console.log(`[approve] Pending claim ${pendingId} approved`);
 }
 
@@ -933,41 +944,52 @@ export async function rejectPendingClaim(
   pendingId: string,
   reason?: string,
 ): Promise<void> {
-  // 1. Read pending-claims feed, find the entry
-  const pendingPage = await readFeedPage(topicPendingClaims(seriesId));
-  const pendingFeed: PendingClaimsFeed = pendingPage
-    ? decodeJsonFeed<PendingClaimsFeed>(pendingPage) ?? { v: 1, seriesId, pending: [], updatedAt: "" }
-    : { v: 1, seriesId, pending: [], updatedAt: "" };
-
-  const entryIdx = pendingFeed.pending.findIndex(
-    (e) => e.pendingId === pendingId && e.status === "pending",
-  );
-  if (entryIdx < 0) throw new Error("Pending claim not found");
-
-  const entry = pendingFeed.pending[entryIdx];
+  // 1. Find the entry across the pending feed's pages
+  const entry = await findPendingEntry(seriesId, pendingId);
+  if (!entry) throw new Error("Pending claim not found");
 
   // 2. Download pending ticket to get edition number
   const ticketJson = await downloadFromBytes(entry.claimedRef);
   const pendingTicket = JSON.parse(ticketJson) as ClaimedTicket;
   const editionNumber = pendingTicket.edition;
 
-  // 3. Clear the reserved slot in claims feed (makes it available again)
+  // 3. Clear the reserved slot in claims feed (makes it available again), but
+  //    ONLY while it still holds this request's reserved ticket. If the slot has
+  //    moved on — an approve that stamped the approved ref before its pending
+  //    entry was marked decided, leaving a phantom "pending" record — zeroing it
+  //    would revoke an issued ticket AND put the edition back up for sale.
+  //    A page that won't read is likewise never rewritten: the lenient reader
+  //    returns null for a transient error too, and writing a fresh zeroed page
+  //    would erase every other claim on it.
   const { page: claimPage, slot: claimSlot } = editionToPageSlot(editionNumber);
   const claimsPageData = await readFeedPage(topicClaims(seriesId, claimPage));
-  const claimsData = claimsPageData ? new Uint8Array(claimsPageData) : new Uint8Array(4096);
+  if (!claimsPageData) {
+    throw new Error("Could not read the claims feed — try again");
+  }
+  const slotRef = decode4096Claims(claimsPageData)[claimSlot];
+  if (slotRef.toLowerCase() !== entry.claimedRef.toLowerCase()) {
+    console.error(
+      `[reject] slot ${seriesId}#${editionNumber} holds ${slotRef || "(empty)"}, not the reserved ${entry.claimedRef} — refusing to clear it`,
+    );
+    throw new Error("This request has already been decided");
+  }
+  const claimsData = new Uint8Array(claimsPageData);
   claimsData.set(new Uint8Array(32), claimSlot * 32); // zero out the slot
   await writeFeedPage(topicClaims(seriesId, claimPage), claimsData);
   console.log(`[reject] Cleared slot page ${claimPage}, slot ${claimSlot} for edition ${editionNumber}`);
 
-  // 4. Mark entry as rejected
-  pendingFeed.pending[entryIdx] = {
-    ...entry,
-    status: "rejected",
-    decidedAt: new Date().toISOString(),
-    ...(reason ? { rejectionReason: reason } : {}),
-  };
-  pendingFeed.updatedAt = new Date().toISOString();
-  await writeFeedPage(topicPendingClaims(seriesId), encodeJsonFeed(pendingFeed));
+  // 4. Mark entry as rejected (queued + re-read — see the approve path)
+  const marked = await enqueuePendingOp(seriesId, () =>
+    markPendingDecided(seriesId, pendingId, {
+      status: "rejected",
+      decidedAt: new Date().toISOString(),
+      ...(reason ? { rejectionReason: reason } : {}),
+    }),
+  );
+  if (!marked) {
+    // The slot is already freed; only the audit entry is missing.
+    console.error(`[reject] Pending entry ${pendingId} vanished before the decision was recorded`);
+  }
   console.log(`[reject] Pending claim ${pendingId} rejected`);
 }
 
@@ -1023,6 +1045,32 @@ function enqueueClaimersOp<T>(seriesId: string, op: () => Promise<T>): Promise<T
     .then(op);
   // Tail keeps the chain alive but absorbs errors so subsequent .then()s run
   claimersTail.set(
+    seriesId,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
+/**
+ * Serialise ANY pending-claims mutation on a per-series chain, for the same
+ * reason as the claimers chain: the paged feed is a read-modify-write over
+ * multiple pages. Here the interleaving writers sit on DIFFERENT outer queues —
+ * claim-time appends run on the slot-allocation queue (`queueSeriesClaim`, and
+ * not even that for the agent rail), organiser decisions on the approvals
+ * queue — so this chain is the only thing that orders them against each other.
+ *
+ * Never awaited from inside `queueSeriesClaim`-held code that this chain in
+ * turn waits on: pending ops only touch the pending feed, so no cycle exists.
+ */
+const pendingTail = new Map<string, Promise<void>>();
+
+function enqueuePendingOp<T>(seriesId: string, op: () => Promise<T>): Promise<T> {
+  const prev = pendingTail.get(seriesId) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(op);
+  pendingTail.set(
     seriesId,
     next.then(
       () => undefined,
