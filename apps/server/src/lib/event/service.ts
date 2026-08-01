@@ -27,8 +27,8 @@ import {
 import {
   topicCreatorDirectory,
   topicEvent,
-  topicPendingClaims,
 } from "../swarm/topics.js";
+import { readPendingPagesStrict } from "./pending-claims-feed.js";
 
 /**
  * Batch routing for a LEGACY (platform-signed) event detail feed restamp —
@@ -648,17 +648,17 @@ export async function deleteEventIfNoOrders(opts: {
       }
       if (claimed > 0) blockers.push(`"${s.name}": ${claimed} ticket(s) issued`);
 
-      // Strict read — the lenient reader collapses transient Swarm errors into
-      // null, which here would read as "no pending requests". Fail closed instead.
-      const pendingPage = await readFeedPageStrict(topicPendingClaims(s.seriesId));
-      if (pendingPage.status === "error") {
-        console.error(`[event] delete pending-check failed for series ${s.seriesId}:`, pendingPage.error);
+      // Strict read across every page — the lenient reader collapses transient
+      // Swarm errors into null, which here would read as "no pending requests".
+      // Fail closed instead.
+      const pendingRead = await readPendingPagesStrict(s.seriesId);
+      if (pendingRead.status === "error") {
+        console.error(`[event] delete pending-check failed for series ${s.seriesId}:`, pendingRead.error);
         throw new Error("Could not verify order status — try again");
       }
-      const pendingFeed = pendingPage.status === "absent"
-        ? null
-        : decodeJsonFeed<import("@woco/shared").PendingClaimsFeed>(pendingPage.data);
-      const pendingCount = pendingFeed?.pending.filter((p) => p.status === "pending").length ?? 0;
+      const pendingCount = pendingRead.pages
+        .flatMap((p) => p.pending)
+        .filter((p) => p.status === "pending").length;
       if (pendingCount > 0) blockers.push(`"${s.name}": ${pendingCount} approval request(s) pending`);
 
       const held = heldFor(s.seriesId);
