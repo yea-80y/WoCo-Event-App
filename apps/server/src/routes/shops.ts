@@ -580,7 +580,7 @@ shopsRouter.post("/:id/orders/:orderId/quote", async (c) => {
           401,
         );
       }
-      if (!auth.ok) return c.json({ ok: false, error: auth.error }, 403);
+      if (!auth.ok) return c.json({ ok: false, error: auth.error, code: auth.code }, 403);
       const decision = await checkProductGates(products, order.lines, auth.parentAddress);
       if (!decision.ok) return c.json({ ok: false, gated: true, error: decision.reason }, 403);
     }
@@ -710,7 +710,7 @@ shopsRouter.post("/:id/orders/:orderId/pay-crypto", async (c) => {
     const auth = await tryVerifyAuth(c, rawBody);
     if (auth && !auth.ok) {
       // Auth headers present but invalid — never silently downgrade to anonymous.
-      return c.json({ ok: false, error: auth.error }, 403);
+      return c.json({ ok: false, error: auth.error, code: auth.code }, 403);
     }
     if (auth) {
       expectedFrom = auth.parentAddress.toLowerCase() as Hex0x;
