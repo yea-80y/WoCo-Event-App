@@ -17,8 +17,7 @@
  */
 
 import type { ClaimersFeed, EventFeed } from "@woco/shared";
-import { readFeedPage, decodeJsonFeed } from "../swarm/feeds.js";
-import { topicClaimers } from "../swarm/topics.js";
+import { readClaimersPages } from "./claimers-feed.js";
 
 /** Prefix used by `ClaimerEntry.claimerAddress` for email-identified claims. */
 const EMAIL_HANDLE_PREFIX = "email:";
@@ -41,8 +40,9 @@ export interface AttendeeEmailSet {
 export type ClaimersReader = (seriesId: string) => Promise<ClaimersFeed | null>;
 
 const readClaimersFromSwarm: ClaimersReader = async (seriesId) => {
-  const page = await readFeedPage(topicClaimers(seriesId));
-  return page ? decodeJsonFeed<ClaimersFeed>(page) : null;
+  const pages = await readClaimersPages(seriesId);
+  if (pages.length === 0) return null;
+  return { ...pages[0], claimers: pages.flatMap((p) => p.claimers) };
 };
 
 /**

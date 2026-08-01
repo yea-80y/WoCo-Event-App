@@ -46,8 +46,17 @@ export const topicClaims = (seriesId: string, page = 0) =>
       : `${POD_NS}/claims/${seriesId}/p${page}`,
   );
 
-export const topicClaimers = (seriesId: string) =>
-  Topic.fromString(`${POD_NS}/claimers/${seriesId}`);
+/**
+ * Claimers feed topic. Page 0 is the base topic — pre-paging v1 feeds ARE
+ * page 0, so no migration — and overflow spills onto `/pN` (see
+ * lib/event/claimers-feed.ts).
+ */
+export const topicClaimers = (seriesId: string, page = 0) =>
+  Topic.fromString(
+    page === 0
+      ? `${POD_NS}/claimers/${seriesId}`
+      : `${POD_NS}/claimers/${seriesId}/p${page}`,
+  );
 
 /**
  * User collection feed topic. Page 0 is the base topic; overflow entries
