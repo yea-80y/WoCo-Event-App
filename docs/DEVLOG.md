@@ -4,6 +4,50 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Claim feeds: page them, and stop lenient reads driving writes (2026-08-01)
+
+`encodeJsonFeed` pads a JSON document into ONE 4096-byte feed page and throws once
+gzip cannot make it fit. Two per-series feeds were sitting under that ceiling with
+no paging: claimers (~30 entries, PR #112) and pending-claims (~16 — an entry
+carries a UUID, an AES-GCM sealed address and two Swarm refs). Pending is the
+worse of the two because decided requests are kept as history, so it only grows.
+Both now use the user-collection idiom: the existing v1 page IS page 0, overflow
+spills to `/pN`, readers probe to the first gap, and the spill/move logic lives in
+pure planners with the encoder injected as a `fits` callback.
+
+**The finding that mattered came from the review, not the feature.** The paging
+code read pages with `readFeedPage`, which collapses a transient Swarm error into
+the same `null` it uses for "never written" — and a writer that believes a page is
+missing *replaces* it. One read blip would publish a page holding only the new
+entry and drop every request already on it, leaving them undecidable with their
+claims slots reserved forever. `feeds.ts` already spelled the rule out ("write
+paths that read-modify-write a directory MUST use the strict variant"); the code
+did not follow it. Write paths are strict now, and the fail-closed semantics are
+under test rather than asserted in a comment.
+
+Two more came out of the same read. Reject cleared a claims slot without checking
+it still held that request's reserved ticket — against a phantom "pending" record
+that revoked an issued ticket and put the edition back up for sale. And both
+decision paths fell back to a *blank* claims page when the read returned null,
+which erased every other claim on it. Both fixed.
+
+**Serialisation.** The pending feed had two writers on two unrelated queues, and
+approve/reject read the whole document, did seconds of Swarm work, then wrote that
+stale snapshot back — a claim landing in the window was erased. One per-series
+chain now, and decisions re-read inside it and patch the entry.
+
+Moving an entry between pages is safe because `claimerSealed`'s AAD binds
+`{seriesId, pendingId}` — per-entry context, not per-page. A test asserts the
+ciphertext is byte-identical after a move.
+
+Left open, each with an issue rather than a fix, because they are the hot claim
+path and deserve their own review: #113 (an unreadable claims page reads as empty
+in `claimTicket`'s slot scan — wipes claims and double-assigns editions), #114
+(the same lenient-read hole in `claimers-feed.ts`), #115 (approve/reject rewrite
+claims pages outside `queueSeriesClaim`), #116 (agent rail bypasses that queue).
+
+---
+
 ## SES migration + the silent ticket-email failure (2026-07-30)
 
 AWS granted production access that morning — 50k/day, 14 msg/s, eu-west-2, out of
