@@ -493,7 +493,7 @@ stripe.post("/create-checkout", async (c) => {
   let verifiedAddress: string | undefined;
   if (authResult) {
     if (!authResult.ok) {
-      return c.json({ ok: false, error: authResult.error }, 401);
+      return c.json({ ok: false, error: authResult.error, code: authResult.code }, 401);
     }
     verifiedAddress = authResult.parentAddress.toLowerCase();
   }

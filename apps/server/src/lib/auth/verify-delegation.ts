@@ -2,6 +2,7 @@ import { verifyMessage, verifyTypedData, getAddress, type TypedDataField } from 
 import {
   SESSION_DOMAIN,
   SESSION_TYPES,
+  AuthErrorCode,
   type SessionDelegation,
   type VerifyDelegationResult,
 } from "@woco/shared";
@@ -49,10 +50,24 @@ export async function verifyDelegation(
       return { valid: false, error: "Session delegation has expired" };
     }
 
-    // Not future-dated
+    // Not future-dated. A device clock 61s–300s FAST is the interesting case:
+    // it slips through the ±5min request-timestamp window in the middleware,
+    // but stamps every freshly minted delegation with issuedAt > server+60s and
+    // lands here. That is a clock fault, not a bad delegation — minting another
+    // one reproduces it exactly, so it must NOT be reported as SESSION_INVALID
+    // or the client's recovery would re-prompt the user for a signature on
+    // every action, forever. Classify it as skew and let the client say so.
     const issuedAt = new Date(message.issuedAt).getTime();
-    if (isNaN(issuedAt) || issuedAt > Date.now() + 60_000) {
-      return { valid: false, error: "Delegation issuedAt is in the future" };
+    if (isNaN(issuedAt)) {
+      return { valid: false, error: "Delegation issuedAt is not a valid date" };
+    }
+    const futureBy = issuedAt - Date.now();
+    if (futureBy > 60_000) {
+      return {
+        valid: false,
+        error: `Delegation issuedAt is ${Math.round(futureBy / 1000)}s in the future — device clock is ahead of server time`,
+        code: AuthErrorCode.SESSION_CLOCK_SKEW,
+      };
     }
 
     // Host check
