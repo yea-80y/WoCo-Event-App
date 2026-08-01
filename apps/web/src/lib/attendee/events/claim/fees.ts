@@ -1,16 +1,14 @@
 import type { PaymentConfig } from "@woco/shared";
-import { PLATFORM_FEE_BP, FEATURES } from "@woco/shared";
+import { PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT } from "@woco/shared";
 import { CURRENCY_SYMBOLS } from "./helpers.js";
-
-/** Buyer always sees ticket × 1.10 on card payments.
- * Crypto path uses the escrow contract's 1.5% (PLATFORM_FEE_BP). */
-export const FLAT_BUYER_FEE_RATE = 0.10;
 
 export interface BuyerFees {
   qty: number;
   baseLabel: string;
   base: string;
   unit: string;
+  /** Booking-fee % the buyer pays; 0 when the organiser absorbs fees (no receipt row). */
+  feePercent: number;
   fee: string;
   /** Crypto platform fee (PLATFORM_FEE_BP), formatted — shown on the crypto receipt. */
   platform: string;
@@ -29,16 +27,26 @@ export function calculateBuyerFees(
   const subtotal = unit * qty;
   const sym = CURRENCY_SYMBOLS[payment.currency] ?? "";
   const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
-  const cardFee = subtotal * FLAT_BUYER_FEE_RATE;
+  // Booking fee is the organiser's per-series choice; the floor clamp matches
+  // the server (routes/stripe.ts) so the receipt shows what Stripe will charge.
+  const feePercent = payment.feePassedToCustomer
+    ? Math.max(BUYER_FEE_FLOOR_PCT, payment.buyerFeePercent ?? BUYER_FEE_DEFAULT_PCT)
+    : 0;
+  // Integer cents, rounded per unit — the server's arithmetic exactly.
+  const unitCents = Math.round(unit * 100);
+  const feeCentsPerUnit = Math.round((unitCents * feePercent) / 100);
+  const cardFee = (feeCentsPerUnit * qty) / 100;
+  const cardTotal = ((unitCents + feeCentsPerUnit) * qty) / 100;
   const cryptoPlatformFee = (subtotal * PLATFORM_FEE_BP) / 10_000;
   return {
     qty,
-    baseLabel: qty > 1 ? `Tickets (\u00d7${qty})` : "Ticket",
+    baseLabel: qty > 1 ? `Tickets (×${qty})` : "Ticket",
     base: fmt(subtotal),
     unit: fmt(unit),
+    feePercent,
     fee: fmt(cardFee),
     platform: fmt(cryptoPlatformFee),
-    cardTotal: payment.stripeEnabled ? fmt(subtotal + cardFee) : null,
+    cardTotal: payment.stripeEnabled ? fmt(cardTotal) : null,
     cryptoTotal:
       FEATURES.cryptoPaymentsAllowed && payment.cryptoEnabled ? fmt(subtotal + cryptoPlatformFee) : null,
   };

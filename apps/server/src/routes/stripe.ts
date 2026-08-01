@@ -28,6 +28,7 @@ import { claimTicket, hashEmail, getClaimStatus, type ClaimIdentifier } from "..
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { queueSeriesClaim } from "./claims.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
+import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
 import type { SealedBox, SeriesManifestBlob, PayoutsResponse } from "@woco/shared";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
@@ -610,25 +611,7 @@ stripe.post("/create-checkout", async (c) => {
 
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"
 
-  // Flat 10% buyer-fee policy: buyer always pays ticket × 1.10.
-  // application_fee equals the estimated Stripe processing cost so the
-  // platform breaks even, organiser receives the remainder (~7% above ticket
-  // price after Stripe takes its ~3%). This overrides series.feePassedToCustomer
-  // and PLATFORM_FEE_BP for the card path; crypto/escrow path is unchanged.
-  const STRIPE_PERCENT = 0.029;
-  const STRIPE_FIXED: Record<string, number> = { gbp: 0.20, usd: 0.30, eur: 0.25 };
-  const FLAT_BUYER_FEE_BP = 1000; // 10%
-
-  const baseAmount = Math.round(priceFloat * 100);
-  const buyerFeeAmount = Math.round(baseAmount * FLAT_BUYER_FEE_BP / 10_000);
-  const chargeAmount = baseAmount + buyerFeeAmount; // per unit
-  const totalCharge = chargeAmount * quantity;
-  const stripeFixedCents = Math.round((STRIPE_FIXED[stripeCurrency] ?? 0.20) * 100);
-  // Stripe's fixed component is per CHARGE (not per unit), so apply once per session.
-  const totalStripeEstimate = Math.round(totalCharge * STRIPE_PERCENT) + stripeFixedCents;
-  const totalBuyerFee = buyerFeeAmount * quantity;
-  // Capped at total buyer fee so organiser is never net-negative on this policy.
-  const totalApplicationFee = Math.min(totalStripeEstimate, totalBuyerFee);
+  const { chargeAmount, totalApplicationFee } = computeCardFees(series.payment, priceFloat, quantity);
 
   // Find the organiser's connected account
   const organiserRecord = getStripeAccount(event.creatorAddress.toLowerCase());

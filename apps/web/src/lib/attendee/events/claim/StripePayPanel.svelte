@@ -34,7 +34,9 @@
   {#if buyerFees}
     <div class="pay-receipt">
       <div class="pay-receipt-row"><span>{buyerFees.baseLabel}</span><span>{buyerFees.base}</span></div>
-      <div class="pay-receipt-row pay-receipt-fee"><span>Service fee (10%)</span><span>{buyerFees.fee}</span></div>
+      {#if buyerFees.feePercent > 0}
+        <div class="pay-receipt-row pay-receipt-fee"><span>Booking fee ({buyerFees.feePercent}%)</span><span>{buyerFees.fee}</span></div>
+      {/if}
       <div class="pay-receipt-row pay-receipt-total"><span>Total</span><span>{buyerFees.cardTotal ?? priceLabel}</span></div>
     </div>
   {/if}
