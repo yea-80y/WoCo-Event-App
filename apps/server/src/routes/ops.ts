@@ -14,10 +14,14 @@
  * surface over the one store holding buyer plaintext is not a trade worth
  * making for convenience.
  *
- * Plaintext addresses are withheld unless `?reveal=1` is passed explicitly, and
- * every reveal is logged. The token alone should not turn an idle `curl` into a
- * dump of every buyer address we hold; remediation is a deliberate act and can
- * afford a deliberate flag.
+ * The LIST never carries plaintext. Addresses come one entry at a time from
+ * `/:id/recipients`, and every such fetch is logged. An operator triaging an
+ * incident polls the list; if that response streamed every buyer address, the
+ * routine act would be the disclosing one. Chasing a specific buyer is the
+ * deliberate act, so it is the one that costs an extra request.
+ *
+ * A bad token gets 404, not 401. There is nothing to be gained by confirming to
+ * an unauthenticated caller that an operator surface exists here at all.
  */
 
 import { Hono } from "hono";
@@ -41,20 +45,41 @@ function tokenMatches(presented: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+/**
+ * Bounds guessing. A 32-byte token is not brute-forceable over HTTP, but a
+ * wrong-token flood is also the only signal we would ever get that someone is
+ * trying, so it must be cheap to serve and loud in the log.
+ */
+const FAILED_ATTEMPT_LIMIT = 10;
+const FAILED_ATTEMPT_WINDOW_MS = 60_000;
+let failedAttempts: number[] = [];
+
 const requireOpsToken: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const notFound = () => c.json({ ok: false, error: "Not found" }, 404);
+
   const expected = process.env.OPS_TOKEN || "";
   if (!expected) {
     console.error("[ops] OPS_TOKEN is not set — refusing the request");
-    return c.json(
-      { ok: false, error: "Operator endpoints are not configured", code: "OPS_DISABLED" },
-      503,
-    );
+    return notFound();
   }
+
+  const now = Date.now();
+  failedAttempts = failedAttempts.filter((t) => now - t < FAILED_ATTEMPT_WINDOW_MS);
+  if (failedAttempts.length >= FAILED_ATTEMPT_LIMIT) {
+    console.error(
+      `[ops] ${failedAttempts.length} failed operator-token attempts in the last minute — locked out`,
+    );
+    return notFound();
+  }
+
   const header = c.req.header("Authorization") || "";
   const presented = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (!presented || !tokenMatches(presented, expected)) {
+    failedAttempts.push(now);
+    // Never the presented value: it would put a near-miss of the real token,
+    // or the real token itself after a copy-paste slip, into the docker logs.
     console.warn("[ops] Rejected a request with a bad or missing operator token");
-    return c.json({ ok: false, error: "Unauthorized" }, 401);
+    return notFound();
   }
   await next();
 };
@@ -69,31 +94,52 @@ function redact(entry: EmailFailure): EmailFailure {
 /**
  * GET /api/ops/email-failures
  *
- * Unresolved entries newest-first by default. `?includeResolved=1` for the full
- * record, `?reveal=1` to include the buyer's address (needed to actually chase
- * a ticket), `?limit=` to bound the response.
+ * Unresolved entries newest-first by default, ALWAYS redacted.
+ * `?includeResolved=1` for the full record, `?limit=` to bound the response.
  */
 ops.get("/email-failures", (c) => {
   const includeResolved = c.req.query("includeResolved") === "1";
-  const reveal = c.req.query("reveal") === "1";
   const limitRaw = Number(c.req.query("limit"));
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 100;
 
   const rows = listFailures({ includeResolved, limit });
-  if (reveal) {
-    const withPlaintext = rows.filter((e) => e.recipients.some((r) => r.address)).length;
-    // Access to buyer addresses is a disclosure event; leave a trail of it.
-    console.warn(
-      `[ops] Operator revealed plaintext recipients on ${withPlaintext} of ${rows.length} ledger entries`,
-    );
-  }
+  return c.json({
+    ok: true,
+    data: { health: failureHealth(), count: rows.length, entries: rows.map(redact) },
+  });
+});
 
+/**
+ * GET /api/ops/email-failures/:id/recipients
+ *
+ * The buyer's actual address, for the one entry being chased. Separate from the
+ * list so that reading plaintext is always a distinct, logged act rather than a
+ * side effect of looking at the queue.
+ *
+ * An entry whose plaintext was redacted under Art. 17 returns an empty list, not
+ * an error: the record still exists, the address deliberately does not.
+ */
+ops.get("/email-failures/:id/recipients", (c) => {
+  const id = c.req.param("id");
+  const entry = listFailures({ includeResolved: true, limit: Number.MAX_SAFE_INTEGER }).find(
+    (e) => e.id === id,
+  );
+  if (!entry) return c.json({ ok: false, error: "No such ledger entry" }, 404);
+
+  console.warn(
+    `[ops] Operator read plaintext recipients for ledger entry ${id} ` +
+      `(${entry.kind}, ${entry.recipients.length} addressee(s))`,
+  );
   return c.json({
     ok: true,
     data: {
-      health: failureHealth(),
-      count: rows.length,
-      entries: reveal ? rows : rows.map(redact),
+      id: entry.id,
+      kind: entry.kind,
+      subject: entry.subject,
+      // Marketing entries never held one; a redacted transactional entry no
+      // longer does. Both come back as hash-only rather than as an error.
+      recipients: entry.recipients,
+      ...(entry.context ? { context: entry.context } : {}),
     },
   });
 });
@@ -124,5 +170,10 @@ ops.post("/email-failures/:id/resolve", async (c) => {
   console.log(`[ops] Ledger entry ${id} marked resolved by ${by}`);
   return c.json({ ok: true, data: { resolved: true, health: failureHealth() } });
 });
+
+/** Tests only — clears the failed-attempt window between cases. */
+export function _resetOpsLockoutForTest(): void {
+  failedAttempts = [];
+}
 
 export { ops };

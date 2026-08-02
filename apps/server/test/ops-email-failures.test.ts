@@ -35,6 +35,7 @@ after(() => {
 
 beforeEach(() => {
   ledger._resetForTest();
+  ops._resetOpsLockoutForTest();
   process.env.OPS_TOKEN = TOKEN;
 });
 
@@ -65,50 +66,72 @@ describe("ops ledger surface — auth", () => {
     delete process.env.OPS_TOKEN;
     seedTransactionalFailure();
     const res = await authed("/email-failures");
-    assert.equal(res.status, 503);
-    const body = (await res.json()) as { code?: string };
-    assert.equal(body.code, "OPS_DISABLED");
+    assert.equal(res.status, 404, "unconfigured must never mean unguarded");
   });
 
   test("rejects a missing token", async () => {
-    assert.equal((await call("/email-failures")).status, 401);
+    assert.equal((await call("/email-failures")).status, 404);
   });
 
   test("rejects a wrong token of the same length", async () => {
     // Same length so the comparison is the thing under test, not the guard.
     const wrong = "x".repeat(TOKEN.length);
     const res = await call("/email-failures", { headers: { Authorization: `Bearer ${wrong}` } });
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 404);
   });
 
   test("rejects a token that is merely a prefix of the real one", async () => {
     const res = await call("/email-failures", {
       headers: { Authorization: `Bearer ${TOKEN.slice(0, 8)}` },
     });
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 404);
+  });
+
+  test("a flood of wrong tokens locks the surface out for the window", async () => {
+    const wrong = { headers: { Authorization: `Bearer ${"x".repeat(TOKEN.length)}` } };
+    for (let i = 0; i < 10; i++) await call("/email-failures", wrong);
+    // Even the RIGHT token now gets nothing — guessing must not be cheap, and a
+    // lockout is the only signal we would ever get that someone is trying.
+    assert.equal((await authed("/email-failures")).status, 404);
   });
 });
 
 describe("ops ledger surface — reading", () => {
-  test("withholds plaintext addresses unless reveal is asked for explicitly", async () => {
+  test("the list NEVER carries plaintext, whatever is asked for", async () => {
     seedTransactionalFailure();
-    const res = await authed("/email-failures");
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as {
-      data: { entries: Array<{ recipients: Array<{ hash: string; address?: string }> }> };
-    };
-    const [entry] = body.data.entries;
-    assert.equal(entry?.recipients[0]?.hash, "hash-of-buyer", "triage still needs the hash");
-    assert.equal(entry?.recipients[0]?.address, undefined, "a bare GET must not dump addresses");
+    for (const q of ["", "?reveal=1", "?includeResolved=1"]) {
+      const res = await authed(`/email-failures${q}`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        data: { entries: Array<{ recipients: Array<{ hash: string; address?: string }> }> };
+      };
+      const [entry] = body.data.entries;
+      assert.equal(entry?.recipients[0]?.hash, "hash-of-buyer", "triage still needs the hash");
+      assert.equal(
+        entry?.recipients[0]?.address,
+        undefined,
+        `polling the queue must not disclose addresses (query "${q}")`,
+      );
+    }
   });
 
-  test("reveal=1 returns the address, because chasing the buyer needs it", async () => {
-    seedTransactionalFailure();
-    const res = await authed("/email-failures?reveal=1");
+  test("the per-entry route returns the address, because chasing the buyer needs it", async () => {
+    const entry = seedTransactionalFailure();
+    const res = await authed(`/email-failures/${entry.id}/recipients`);
     const body = (await res.json()) as {
-      data: { entries: Array<{ recipients: Array<{ address?: string }> }> };
+      data: { recipients: Array<{ address?: string }>; context?: Record<string, string> };
     };
-    assert.equal(body.data.entries[0]?.recipients[0]?.address, "buyer@example.com");
+    assert.equal(body.data.recipients[0]?.address, "buyer@example.com");
+    assert.equal(body.data.context?.stripeSessionId, "cs_test_1", "with the order it belongs to");
+  });
+
+  test("an erased entry yields the hash and no address, not an error", async () => {
+    const entry = seedTransactionalFailure();
+    ledger.eraseRecipient("hash-of-buyer");
+    const res = await authed(`/email-failures/${entry.id}/recipients`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { data: { recipients: Array<{ address?: string }> } };
+    assert.equal(body.data.recipients[0]?.address, undefined);
   });
 
   test("unresolved only by default; includeResolved brings back the rest", async () => {

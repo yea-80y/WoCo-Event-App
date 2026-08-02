@@ -193,7 +193,9 @@ broadcast.post("/:id/broadcast", requireAuth, async (c) => {
         failedCount: result.failed,
         suppressedCount: result.suppressed,
         totalRecipients: recipients.length,
-        ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 10) } : {}),
+        ...(result.failures.length > 0
+          ? { errors: result.failures.slice(0, 10).map((f) => `${f.email}: ${f.message}`) }
+          : {}),
       },
     });
   } catch (err) {

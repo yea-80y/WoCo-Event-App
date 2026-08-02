@@ -34,11 +34,33 @@ import { mintUnsubToken } from "../marketing/unsub-token.js";
  */
 const SEND_CHUNK = 10;
 
+/**
+ * One recipient the batch could not deliver to.
+ *
+ * Structured rather than a pre-formatted string because the two callers need
+ * different things from it and neither should be re-parsing prose: the test-send
+ * route echoes the address back to the organiser who just typed it, while the
+ * background queue persists the hash only (see the PLAINTEXT POLICY in
+ * failure-ledger.ts — a stored broadcast error must not become the plaintext
+ * copy the rest of the marketing path avoids).
+ */
+export interface MarketingSendFailure {
+  email: string;
+  hash: string;
+  message: string;
+}
+
 export interface MarketingSendResult {
   sent: number;
   suppressed: number;
   failed: number;
-  errors: string[];
+  failures: MarketingSendFailure[];
+  /**
+   * Hashes actually delivered. The background queue records these durably so a
+   * job killed mid-drain can be resumed without mailing anyone twice — the
+   * counters alone cannot answer "which of the 20,000".
+   */
+  sentHashes: string[];
 }
 
 export interface MarketingSendOptions {
@@ -50,6 +72,17 @@ export interface MarketingSendOptions {
   subject: string;
   html: string;
   recipients: Array<{ email: string; name?: string }>;
+  /**
+   * Stops the batch between in-flight groups. A 1,000-recipient chunk takes
+   * ~83s at the account send rate, so without this an organiser's "cancel" (or
+   * a job hitting its TTL) would not take effect for over a minute — long
+   * enough that they press it again and assume it is broken.
+   *
+   * Deliberately checked BETWEEN groups, never mid-flight: a message already
+   * handed to SES cannot be recalled, and pretending otherwise in the counters
+   * would report as unsent something the recipient is reading.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -91,10 +124,17 @@ export async function sendMarketingBatch(
   const subject = opts.subject.replace(/[\r\n\x00-\x1f]+/g, " ").trim();
   const from = `"${displayName}" <${opts.fromAddress}>`;
 
-  const result: MarketingSendResult = { sent: 0, suppressed: 0, failed: 0, errors: [] };
+  const result: MarketingSendResult = {
+    sent: 0,
+    suppressed: 0,
+    failed: 0,
+    failures: [],
+    sentHashes: [],
+  };
 
   interface Prepared {
     email: string;
+    emailHash: string;
     unsubUrl: string;
   }
   const prepared: Prepared[] = [];
@@ -109,7 +149,7 @@ export async function sendMarketingBatch(
       continue;
     }
     const token = mintUnsubToken({ emailHash, organiserAddress });
-    prepared.push({ email: r.email, unsubUrl: `${apiBase}/u/${token}` });
+    prepared.push({ email: r.email, emailHash, unsubUrl: `${apiBase}/u/${token}` });
   }
 
   // Rendered once — the organiser's body is identical for every recipient;
@@ -117,6 +157,7 @@ export async function sendMarketingBatch(
   const bodyText = htmlToPlainText(opts.html);
 
   for (let i = 0; i < prepared.length; i += SEND_CHUNK) {
+    if (opts.signal?.aborted) break;
     const chunk = prepared.slice(i, i + SEND_CHUNK);
     const settled = await Promise.allSettled(
       chunk.map(async (p) => {
@@ -140,20 +181,19 @@ export async function sendMarketingBatch(
       }),
     );
     settled.forEach((s, j) => {
+      const p = chunk[j]!;
       if (s.status === "fulfilled") {
         result.sent++;
+        result.sentHashes.push(p.emailHash);
       } else {
         result.failed++;
         const msg = s.reason instanceof Error ? s.reason.message : "Unknown error";
-        // The returned error keeps the plaintext address: it goes back to the
+        // The returned failure keeps the plaintext address: it goes back to the
         // organiser, who is the controller and supplied it. The LOG must not —
         // docker logs persist far longer than the send, which would quietly
         // undo the hashed-and-discarded posture the rest of this path keeps.
-        result.errors.push(`${chunk[j].email}: ${msg}`);
-        console.error(
-          `[marketing-send] Failed to send to ${hashEmail(chunk[j].email).slice(0, 8)}…:`,
-          msg,
-        );
+        result.failures.push({ email: p.email, hash: p.emailHash, message: msg });
+        console.error(`[marketing-send] Failed to send to ${p.emailHash.slice(0, 8)}…:`, msg);
       }
     });
   }

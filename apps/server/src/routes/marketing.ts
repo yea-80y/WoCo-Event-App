@@ -349,7 +349,9 @@ marketing.post("/broadcast", requireAuth, async (c) => {
         // Same floor as the pre-send check, or the UI would report a smaller
         // allowance than the next broadcast would actually be granted.
         capRemaining: capRemaining(org, storedHashes.size),
-        ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 10) } : {}),
+        ...(result.failures.length > 0
+          ? { errors: result.failures.slice(0, 10).map((f) => `${f.email}: ${f.message}`) }
+          : {}),
       },
     });
   } catch (err) {
@@ -432,7 +434,11 @@ marketing.post("/broadcast/test", requireAuth, async (c) => {
         // this inbox unsubscribed from this organiser at some point.
         suppressed: result.suppressed,
         failed: result.failed,
-        ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 1) } : {}),
+        // Plaintext is right here: it is the one address the organiser just
+        // typed into the box, and they are the controller of it.
+        ...(result.failures.length > 0
+          ? { errors: result.failures.slice(0, 1).map((f) => `${f.email}: ${f.message}`) }
+          : {}),
       },
     });
   } catch (err) {
