@@ -235,6 +235,7 @@ describe("readPendingPagesStrict — fail-closed", () => {
 
   const readerFor = (results: Array<ReturnType<typeof ok> | typeof absent | typeof error>) =>
     async (_id: string, i: number) => results[i] ?? absent;
+  const NO_RETRY: number[] = [];
 
   it("returns every contiguous page", async () => {
     const read = await readPendingPagesStrict(
@@ -252,8 +253,35 @@ describe("readPendingPagesStrict — fail-closed", () => {
   });
 
   it("aborts when page 0 errors — never reports an empty feed", async () => {
-    const read = await readPendingPagesStrict(SERIES, readerFor([error]));
+    const read = await readPendingPagesStrict(SERIES, readerFor([error]), NO_RETRY);
     assert.equal(read.status, "error");
+  });
+
+  it("retries a transient page error before giving up", async () => {
+    // On the paid approval path this read runs AFTER the claims slot is
+    // written, so a blip that reaches the caller refunds a buyer whose seat is
+    // already reserved — and strands that seat.
+    let calls = 0;
+    const flaky = async (_id: string, i: number) => {
+      if (i > 0) return absent; // one-page feed
+      calls++;
+      return calls === 1 ? error : ok(page([entry("p1")]));
+    };
+    const read = await readPendingPagesStrict(SERIES, flaky, [1, 1]);
+    assert.equal(read.status, "ok");
+    assert.equal(read.status === "ok" && read.pages.length, 1);
+    assert.equal(calls, 2);
+  });
+
+  it("gives up after the configured retries", async () => {
+    let calls = 0;
+    const failing = async () => {
+      calls++;
+      return error;
+    };
+    const read = await readPendingPagesStrict(SERIES, failing, [1, 1]);
+    assert.equal(read.status, "error");
+    assert.equal(calls, 3); // initial attempt + 2 retries
   });
 
   it("aborts on a mid-chain error instead of returning a short view", async () => {
@@ -262,6 +290,7 @@ describe("readPendingPagesStrict — fail-closed", () => {
     const read = await readPendingPagesStrict(
       SERIES,
       readerFor([ok(page([entry("p1")])), ok(page([entry("p2")])), error]),
+      NO_RETRY,
     );
     assert.equal(read.status, "error");
   });

@@ -36,6 +36,7 @@ import {
 } from "../swarm/topics.js";
 import { heldFor } from "./reservation-store.js";
 import { appendClaimerEntry, attachOrderRefToClaimers, readAllClaimers } from "./claimers-feed.js";
+import { readClaimsPageStrict, selectFreeSlot } from "./claims-feed.js";
 import {
   readPendingPages,
   mergePendingPages,
@@ -313,47 +314,24 @@ export async function claimTicket(opts: {
     timings.pendingCheck = lap();
   }
 
-  // 2. Find next unclaimed slot — fetch all pages in parallel, then scan
-  let foundPage = -1;
-  let foundSlot = -1;
-  let ticketRef = "";
-  let cachedClaimsPageData: Uint8Array | null = null;
-
-  // Parallel fetch of all claims + editions pages
+  // 2. Find next unclaimed slot. Parallel fetch of all claims + editions pages;
+  //    a claims page that will not read rejects here, before anything is
+  //    allocated, rather than reading as 128 free slots.
   const pageResults = await Promise.all(
-    Array.from({ length: pageCount }, (_, p) =>
-      Promise.all([
-        readFeedPage(topicClaims(seriesId, p)),
+    Array.from({ length: pageCount }, async (_, p) => {
+      const [claims, editions] = await Promise.all([
+        readClaimsPageStrict(seriesId, p),
         p === 0 ? Promise.resolve(editionsPage0) : readEditionsPage(seriesId, p, carrier),
-      ]),
-    ),
+      ]);
+      return { claims, editions };
+    }),
   );
 
-  for (let p = 0; p < pageCount; p++) {
-    const [claimsPage, editionsPageData] = pageResults[p];
-    const claims = claimsPage ? decode4096Claims(claimsPage) : new Array(128).fill("");
-
-    if (!editionsPageData) continue;
-
-    const editionRefs = decode4096(editionsPageData);
-    const startSlot = p === 0 ? 1 : 0; // Skip metadata slot on page 0
-
-    for (let s = startSlot; s < editionRefs.length; s++) {
-      if (claims[s] === "") {
-        foundPage = p;
-        foundSlot = s;
-        ticketRef = editionRefs[s];
-        cachedClaimsPageData = claimsPage;
-        break;
-      }
-    }
-
-    if (foundPage >= 0) break;
-  }
-
-  if (foundPage < 0 || !ticketRef) {
+  const free = selectFreeSlot(pageResults);
+  if (!free || !free.ticketRef) {
     throw new Error("No tickets available");
   }
+  const { page: foundPage, slot: foundSlot, ticketRef, claimsPage: cachedClaimsPageData } = free;
   timings.findSlot = lap();
 
   // 3. Calculate edition number from page + slot
@@ -432,7 +410,10 @@ export async function claimTicket(opts: {
   console.log(`[claim] Uploaded claimed ticket: ${claimedRef}`);
   timings.ticketUp = lap();
 
-  // 7. Write claim hash to claims feed at the found slot — reserves the slot
+  // 7. Write claim hash to claims feed at the found slot — reserves the slot.
+  //    Starting from a blank page is only safe because the scan used the strict
+  //    reader: a null here means the page has never been written, so there is
+  //    nothing on it to preserve.
   const claimsData = cachedClaimsPageData ? new Uint8Array(cachedClaimsPageData) : new Uint8Array(4096);
   const refBytes = hexToBytes32(claimedRef);
   claimsData.set(refBytes, foundSlot * 32);
@@ -486,17 +467,26 @@ export async function claimTicket(opts: {
   // profile is unlocked with the ticket — no Route A/B dance. Sync file write;
   // an already-consumed edition is a silent no-op (nullifier semantics).
   if (accountClaim) {
-    const bound = bindTicket({
-      seriesId,
-      edition: editionNumber,
-      eventId: originalTicket.data.eventId,
-      parentAddress: accountClaim.parentAddress,
-      podPubKey: ownerBound ? ownerPodPubKey : undefined,
-      paid: !!paid,
-      route: "claim",
-    });
-    if (bound) {
-      console.log(`[gate] bound ${seriesId}#${editionNumber} → ${accountClaim.parentAddress} (claim)`);
+    // Never let this throw: the slot is already written, so the ticket exists.
+    // A throw here would propagate to the Stripe webhook, which stops the batch
+    // and refunds — handing the buyer their money back while they keep a
+    // discoverable, door-valid ticket. The bind is best-effort by design; the
+    // attendee gate can rebind later.
+    try {
+      const bound = bindTicket({
+        seriesId,
+        edition: editionNumber,
+        eventId: originalTicket.data.eventId,
+        parentAddress: accountClaim.parentAddress,
+        podPubKey: ownerBound ? ownerPodPubKey : undefined,
+        paid: !!paid,
+        route: "claim",
+      });
+      if (bound) {
+        console.log(`[gate] bound ${seriesId}#${editionNumber} → ${accountClaim.parentAddress} (claim)`);
+      }
+    } catch (err) {
+      console.error(`[gate] bind failed for ${seriesId}#${editionNumber} — ticket stands:`, err);
     }
   }
 
@@ -610,8 +600,11 @@ export async function getClaimStatus(
   // parallel. Per-page Swarm reads are independent; serialising them was the
   // largest avoidable latency for events with multiple pages.
   const wantUserLookup = !!(userAddress || userEmailHash);
+  // Strict, because `available` here is what /reserve hands checkout holds
+  // against: a page read as empty under-counts `claimed`, oversells the series,
+  // and the buyer pays for a ticket the claim path then cannot issue.
   const claimPagesPromise = Promise.all(
-    Array.from({ length: pageCount }, (_, p) => readFeedPage(topicClaims(seriesId, p))),
+    Array.from({ length: pageCount }, (_, p) => readClaimsPageStrict(seriesId, p)),
   );
   const pendingPromise: Promise<PendingClaimsFeed | null> = wantUserLookup
     ? getPendingClaimsFeed(seriesId)
@@ -754,7 +747,8 @@ export async function getClaimedTicketByEdition(
 ): Promise<ClaimedTicket | null> {
   if (!Number.isInteger(edition) || edition < 1) return null;
   const { page, slot } = editionToPageSlot(edition);
-  const claimsPage = await readFeedPage(topicClaims(seriesId, page));
+  // Strict: a gate check must not read a transient failure as "no such ticket".
+  const claimsPage = await readClaimsPageStrict(seriesId, page);
   if (!claimsPage) return null;
   const ref = decode4096Claims(claimsPage)[slot];
   if (!ref) return null;
@@ -780,7 +774,9 @@ export async function stampTicketOwner(
   podPubKey: string,
 ): Promise<StampResult> {
   const { page, slot } = editionToPageSlot(edition);
-  const claimsPageData = await readFeedPage(topicClaims(seriesId, page));
+  // Strict: this rewrites the page, and "not-found" on a transient failure
+  // would silently skip the owner bind rather than let the caller retry.
+  const claimsPageData = await readClaimsPageStrict(seriesId, page);
   if (!claimsPageData) return "not-found";
   const ref = decode4096Claims(claimsPageData)[slot];
   if (!ref) return "not-found";
@@ -889,8 +885,9 @@ export async function approvePendingClaim(
   //    claim reserved this slot), so a null read is a transient failure, never
   //    "absent" — starting from a blank page would erase every other claim on it.
   const { page: claimPage, slot: claimSlot } = editionToPageSlot(editionNumber);
-  const claimsPageData = await readFeedPage(topicClaims(seriesId, claimPage));
+  const claimsPageData = await readClaimsPageStrict(seriesId, claimPage);
   if (!claimsPageData) {
+    // Absent, yet the claim reserved a slot on it — the feed is inconsistent.
     throw new Error("Could not read the claims feed — try again");
   }
   const claimsData = new Uint8Array(claimsPageData);
@@ -962,8 +959,9 @@ export async function rejectPendingClaim(
   //    returns null for a transient error too, and writing a fresh zeroed page
   //    would erase every other claim on it.
   const { page: claimPage, slot: claimSlot } = editionToPageSlot(editionNumber);
-  const claimsPageData = await readFeedPage(topicClaims(seriesId, claimPage));
+  const claimsPageData = await readClaimsPageStrict(seriesId, claimPage);
   if (!claimsPageData) {
+    // Absent, yet the claim reserved a slot on it — the feed is inconsistent.
     throw new Error("Could not read the claims feed — try again");
   }
   const slotRef = decode4096Claims(claimsPageData)[claimSlot];

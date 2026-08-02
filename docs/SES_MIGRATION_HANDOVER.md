@@ -72,17 +72,35 @@ Nothing here is optional. Steps 3–5 are what AWS required when it granted prod
    circumstantial evidence we are already on Paid: a direct-debit mandate was set up, and
    AWS granted production SES access at 50k/day, which Free-plan service restrictions
    would not allow.
-2. **Check the SES plan** (SES console → Account dashboard). New accounts default to
-   Essentials; switching to à la carte is free and ~37% cheaper.
-3. **Create an IAM user** with *only* `ses:SendEmail` on the identity, and put the key in
-   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Do not reuse an admin key.
+2. **Check the SES plan** (SES console → **Pricing plan** page — per-region, not the
+   Account dashboard). We were defaulted to Essentials; **Cancel plan** returns the
+   account to à la carte (verified against the SES dev guide 2026-07-30: for a
+   defaulted account the *first* cancellation takes effect immediately, later changes
+   at the next billing cycle). ~37% cheaper per §6. Before cancelling, confirm on that
+   page that no feature we actually use is plan-gated — we use none of the bundled
+   ones today. Never Pro. (Do not confuse the two: "do NOT switch" applies to **Pro**;
+   à la carte is available and cheaper.)
+3. **Create an IAM user** with *only* `ses:SendEmail`, and put the key in
+   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Do not reuse an admin key. The
+   `Resource` list MUST name **both** the identity ARN and the configuration-set ARN
+   (`identity/woco-net.com` + `configuration-set/woco-events`): SESv2 authorises
+   `SendEmail` against the configuration set too once `ConfigurationSetName` is set —
+   which we stamp on every send — and an identity-only policy is denied at that point
+   (verified 2026-07-31: the AccessDenied names the configuration-set resource).
 4. **Create a configuration set** named to match `SES_CONFIGURATION_SET` (e.g.
    `woco-events`). **Without it no bounce or complaint events are emitted at all**, so
    nothing feeds suppression — this is the step that is easy to skip and expensive to miss.
 5. **Add an SNS event destination** on that configuration set for `Bounce` and `Complaint`
    (add `Reject`, `DeliveryDelay` if useful — the route ignores them safely). Create the SNS
-   topic, then subscribe `https://events-api.woco-net.com/api/ses/webhook` as an **HTTPS**
-   endpoint. Put the topic ARN in `SES_SNS_TOPIC_ARN` **and restart the server before
+   topic (**Standard** — SES does not support FIFO), then **edit the topic's access policy
+   to allow SES to publish — the console does NOT add this automatically** (SES dev guide,
+   "Set up an Amazon SNS event destination", verified 2026-07-31): a statement with
+   `Principal: {Service: ses.amazonaws.com}`, `Action: sns:Publish`, `Resource: <topic ARN>`,
+   `Condition: StringEquals {AWS:SourceAccount: <account id>, AWS:SourceArn:
+   arn:aws:ses:eu-west-2:<account id>:configuration-set/woco-events}`. Skipping this is the
+   second silent killer: the event destination exists, SNS denies every publish, no events
+   arrive, and nothing on our side errors. Then subscribe
+   `https://events-api.woco-net.com/api/ses/webhook` as an **HTTPS** endpoint. Put the topic ARN in `SES_SNS_TOPIC_ARN` **and restart the server before
    subscribing** — the webhook fails closed without it, so the confirmation would be
    rejected. The route auto-confirms the subscription once the ARN is set.
 6. **Enable SignatureVersion 2** on the topic, then set `SNS_REQUIRE_SIGNATURE_V2=true`.

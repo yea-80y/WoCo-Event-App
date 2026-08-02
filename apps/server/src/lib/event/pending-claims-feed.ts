@@ -119,10 +119,18 @@ export async function readPendingPagesStrict(
   seriesId: string,
   /** Injectable so the fail-closed semantics are testable without a bee node. */
   readPage: StrictPageReader = (id, page) => readFeedPageStrict(topicPendingClaims(id, page)),
+  /** Retry backoff for an errored page, mirroring the claims feed. On the paid
+   *  approval path this read runs AFTER the claims slot is written, so failing
+   *  it refunds a buyer whose seat is already reserved and strands that seat. */
+  delaysMs: number[] = [300, 900],
 ): Promise<PendingPagesRead> {
   const pages: PendingClaimsFeed[] = [];
   for (let i = 0; i < PENDING_MAX_PAGES; i++) {
-    const page = await readPage(seriesId, i);
+    let page = await readPage(seriesId, i);
+    for (let attempt = 0; page.status === "error" && attempt < delaysMs.length; attempt++) {
+      await new Promise((r) => setTimeout(r, delaysMs[attempt]));
+      page = await readPage(seriesId, i);
+    }
     if (page.status === "absent") break;
     if (page.status === "error") return { status: "error", error: page.error };
     const parsed = decodeJsonFeed<PendingClaimsFeed>(page.data);
