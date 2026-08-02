@@ -15,6 +15,7 @@ import { orders } from "./routes/orders.js";
 import { approvals } from "./routes/approvals.js";
 import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
+import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
@@ -420,6 +421,10 @@ app.route("/api/collection", collection);
 // Admin / setup routes (unauthenticated — no private data exposed)
 app.route("/api/admin", admin);
 app.route("/api/site", siteRoute);
+
+// Operator surface — bearer token, NOT wallet auth, and refuses when OPS_TOKEN
+// is unset. Reaches the one store holding buyer plaintext addresses.
+app.route("/api/ops", ops);
 
 // Multi-page site builder: config + events index CRUD
 app.route("/api/sites", sitesRouter);
