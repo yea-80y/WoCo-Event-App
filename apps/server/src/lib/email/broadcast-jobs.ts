@@ -41,6 +41,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import { effectiveSendRate } from "./rate-limiter.js";
 
@@ -52,10 +53,28 @@ const CHUNKS_DIR = join(DATA_DIR, "broadcast-chunks");
 // Bounds
 // ---------------------------------------------------------------------------
 
+/**
+ * The ONE recipient ceiling in this system, and it is not this module's to set.
+ *
+ * `MARKETING_MAX_LIST_EMAILS` is the organiser's list cap, which
+ * docs/SES_MIGRATION_HANDOVER.md §6 records as stale conservatism — it predates
+ * payload compression, and the real storage ceiling is nearer 175,000. Raising
+ * it is #101's job. Deriving from it here means that when it moves, this moves,
+ * instead of leaving a lower ceiling buried in the queue for someone to
+ * rediscover the hard way.
+ */
+export const MAX_JOB_RECIPIENTS = MARKETING_MAX_LIST_EMAILS;
+
 /** Recipients per chunk upload. Also the blast radius of a mid-chunk crash. */
 export const MAX_CHUNK_RECIPIENTS = 500;
-/** Chunks per job — 200 × 500 = 100,000, comfortably above the 20k list cap. */
-export const MAX_CHUNKS = 200;
+
+/**
+ * Chunk-count bound — a guard against a client uploading one recipient per
+ * request, not a limit on how many people can be mailed. Derived from the
+ * recipient cap with 4x headroom, so a client sending smaller chunks than the
+ * maximum is not punished and nothing here binds before the cap above does.
+ */
+export const MAX_CHUNKS = Math.ceil(MAX_JOB_RECIPIENTS / MAX_CHUNK_RECIPIENTS) * 4;
 
 /**
  * How long a half-uploaded job may keep plaintext before it is destroyed.
@@ -596,10 +615,16 @@ export function deleteChunk(jobId: string, index: number): void {
   }
 }
 
-/** Every remaining chunk. Used by cancel, expiry and boot. */
-export function destroyPayload(jobId: string): number {
+/**
+ * Every remaining chunk. Used by cancel, expiry and boot.
+ *
+ * Scans one past `chunkCount`: `appendChunk` writes the file before it
+ * increments the counter, so a crash between the two leaves a chunk the record
+ * does not know about, and it holds real recipients.
+ */
+export function destroyPayload(jobId: string, chunkCount: number): number {
   let removed = 0;
-  for (let i = 0; i < MAX_CHUNKS; i++) {
+  for (let i = 0; i <= chunkCount; i++) {
     const file = chunkFile(jobId, i);
     if (!existsSync(file)) continue;
     try {
@@ -655,7 +680,7 @@ export function finishJob(
   job.finishedAt = new Date().toISOString();
   if (reason) job.reason = reason;
   persist(job);
-  destroyPayload(job.id);
+  destroyPayload(job.id, job.chunkCount);
   acceptedHashes.delete(job.id);
   attendeeSnapshots.delete(job.id);
 }

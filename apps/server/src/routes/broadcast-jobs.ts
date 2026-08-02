@@ -29,7 +29,6 @@
  */
 
 import { Hono } from "hono";
-import { MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { hashEmail } from "../lib/event/claim-service.js";
@@ -53,6 +52,7 @@ import {
   listJobsForOrg,
   markReserved,
   MAX_CHUNK_RECIPIENTS,
+  MAX_JOB_RECIPIENTS,
   sealAndQueue,
   withJobLock,
   type BroadcastJob,
@@ -71,17 +71,11 @@ const RATE_WINDOW_MS = 3_600_000;
 const marketingRate = new RateWindow(MARKETING_PER_HOUR, RATE_WINDOW_MS);
 const eventRate = new RateWindow(EVENT_PER_HOUR, RATE_WINDOW_MS);
 
-/**
- * Ceiling on one job.
- *
- * The former per-request caps (1,000 marketing, 500 attendee) existed because
- * the send ran inside the request; with a queue they measure nothing. What
- * bounds an event broadcast now is the attendee snapshot — you cannot mail
- * someone who does not hold a ticket — and what bounds a marketing broadcast is
- * the organiser's own stored list. This is a backstop against a runaway client,
- * not a product limit.
- */
-const MAX_JOB_RECIPIENTS = MARKETING_MAX_LIST_EMAILS;
+// The former per-request caps (1,000 marketing, 500 attendee) existed only
+// because the send ran inside the request; with a queue they measure nothing.
+// What bounds a broadcast now is who may be mailed — the attendee snapshot, or
+// the organiser's own stored list — and MAX_JOB_RECIPIENTS, which the job store
+// derives from the single list-cap constant rather than inventing a second one.
 
 /** What the organiser is shown. No plaintext, and no `html` — they wrote it. */
 function jobView(job: BroadcastJob) {

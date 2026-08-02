@@ -391,4 +391,14 @@ describe("ownership and bounds", () => {
     }
     assert.throws(() => jobs.appendChunk(job.id, [{ email: "over@example.com" }], hash), /Too many chunks/);
   });
+
+  test("the chunk bound never binds before the recipient cap does", () => {
+    // The trap this closes: a fixed MAX_CHUNKS becomes a SECOND, lower ceiling
+    // that #101 would not think to move when it raises the list cap, and a
+    // 150,000-contact organiser would hit a limit nothing documents.
+    assert.ok(
+      jobs.MAX_CHUNKS * jobs.MAX_CHUNK_RECIPIENTS > jobs.MAX_JOB_RECIPIENTS,
+      "chunk capacity must exceed the recipient cap, not sit under it",
+    );
+  });
 });

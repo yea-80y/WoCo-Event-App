@@ -452,28 +452,8 @@ export async function webhookRelay(
 // Email broadcast
 // ---------------------------------------------------------------------------
 
-export interface BroadcastResponse {
-  sentCount: number;
-  failedCount: number;
-  /** Recipients skipped because they unsubscribed (or bounced/complained) */
-  suppressedCount: number;
-  totalRecipients: number;
-  errors?: string[];
-}
-
-export async function sendBroadcast(
-  eventId: string,
-  subject: string,
-  htmlBody: string,
-  recipients: Array<{ email: string; name?: string }>,
-): Promise<BroadcastResponse> {
-  const resp = await authPost<BroadcastResponse>(
-    `/api/events/${eventId}/broadcast`,
-    { subject, htmlBody, recipients },
-  );
-  if (!resp.data) throw new Error(resp.error || "Broadcast failed");
-  return resp.data;
-}
+// Attendee broadcasts moved to the background queue — see `broadcasts.ts`,
+// `kind: "event"`. The inline endpoint now returns 410.
 
 // ---------------------------------------------------------------------------
 // Organizer approval flow

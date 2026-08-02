@@ -2,7 +2,9 @@
   import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, openJson } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
-  import { getEventOrders, webhookRelay, approvePendingClaim, rejectPendingClaim, sendBroadcast, type EventOrdersResponse, type PendingClaimEntry, type BroadcastResponse } from "../../api/events.js";
+  import { getEventOrders, webhookRelay, approvePendingClaim, rejectPendingClaim, type EventOrdersResponse, type PendingClaimEntry } from "../../api/events.js";
+  import { startBroadcast, pollBroadcast, type BroadcastJobStatus } from "../../api/broadcasts.js";
+  import BroadcastProgress from "../audience/BroadcastProgress.svelte";
   import { getEventSWR, getEventOrdersSWR, getPendingClaimsSWR } from "../../api/creator-cache.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -60,7 +62,7 @@
   let broadcastSubject = $state("");
   let broadcastBody = $state("");
   let broadcastSending = $state(false);
-  let broadcastResult = $state<BroadcastResponse | null>(null);
+  let broadcastJob = $state<BroadcastJobStatus | null>(null);
   let broadcastError = $state<string | null>(null);
   let broadcastSeriesFilter = $state<string>("all");
   let showPreview = $state(false);
@@ -291,7 +293,6 @@
   async function handleSendBroadcast() {
     if (!event || broadcastSending) return;
     broadcastError = null;
-    broadcastResult = null;
 
     const recipients = getEmailRecipients(broadcastSeriesFilter);
     if (recipients.length === 0) {
@@ -313,19 +314,31 @@
       ? "all series"
       : event.series.find((s) => s.seriesId === broadcastSeriesFilter)?.name ?? "selected series";
 
-    if (!confirm(`Send "${broadcastSubject.trim()}" to ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?`)) {
+    const verb = resumeOf ? "Send again to the attendees who missed it" : `Send "${broadcastSubject.trim()}"`;
+    if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?`)) {
       return;
     }
 
     broadcastSending = true;
+    broadcastJob = null;
     try {
       const htmlBody = wrapHtmlEmail(broadcastBody.trim(), event.title);
-      broadcastResult = await sendBroadcast(eventId, broadcastSubject.trim(), htmlBody, recipients);
-      if (broadcastResult.sentCount > 0) {
-        broadcastSubject = "";
-        broadcastBody = "";
-        showPreview = false;
-      }
+      // Returns once the send is QUEUED. It runs on the server from here, so a
+      // large attendee list no longer has to finish inside this request.
+      broadcastJob = await startBroadcast({
+        kind: "event",
+        eventId,
+        subject: broadcastSubject.trim(),
+        htmlBody,
+        recipients,
+        ...(resumeOf ? { resumeOf } : {}),
+      });
+      broadcastSubject = "";
+      broadcastBody = "";
+      showPreview = false;
+      void pollBroadcast(broadcastJob.jobId, (update) => { broadcastJob = update; }).catch(() => {
+        // A dropped poll says nothing about a send running on the server.
+      });
     } catch (err) {
       broadcastError = err instanceof Error ? err.message : "Failed to send broadcast";
     } finally {
@@ -763,16 +776,12 @@
             <p class="broadcast-error">{broadcastError}</p>
           {/if}
 
-          {#if broadcastResult}
-            <div class="broadcast-result" class:has-failures={broadcastResult.failedCount > 0}>
-              Sent to {broadcastResult.sentCount} of {broadcastResult.totalRecipients} recipient{broadcastResult.totalRecipients !== 1 ? "s" : ""}.
-              {#if broadcastResult.suppressedCount > 0}
-                <br>{broadcastResult.suppressedCount} skipped (unsubscribed).
-              {/if}
-              {#if broadcastResult.failedCount > 0}
-                <br>{broadcastResult.failedCount} failed.
-              {/if}
-            </div>
+          {#if broadcastJob}
+            <BroadcastProgress
+              job={broadcastJob}
+              onResume={(dead) => void handleSendBroadcast(dead.jobId)}
+              onDismiss={() => { broadcastJob = null; }}
+            />
           {/if}
 
           <!-- Send button -->
@@ -780,10 +789,10 @@
             <button
               class="btn-broadcast"
               disabled={broadcastSending || emailRecipients.length === 0 || !broadcastSubject.trim() || !broadcastBody.trim()}
-              onclick={handleSendBroadcast}
+              onclick={() => void handleSendBroadcast()}
             >
               {#if broadcastSending}
-                Sending...
+                Starting…
               {:else}
                 Send to {emailRecipients.length} recipient{emailRecipients.length !== 1 ? "s" : ""}
               {/if}
@@ -1864,22 +1873,6 @@
     font-size: 0.8125rem;
     color: var(--error);
     margin: 0 0 1rem;
-  }
-
-  .broadcast-result {
-    font-size: 0.875rem;
-    color: var(--success);
-    padding: 0.75rem 1rem;
-    background: color-mix(in srgb, var(--success) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--success) 20%, var(--border));
-    border-radius: var(--radius-sm);
-    margin-bottom: 1rem;
-  }
-
-  .broadcast-result.has-failures {
-    color: var(--warning);
-    background: color-mix(in srgb, var(--warning) 8%, transparent);
-    border-color: color-mix(in srgb, var(--warning) 20%, var(--border));
   }
 
   .broadcast-actions {
