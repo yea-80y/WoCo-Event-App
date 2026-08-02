@@ -26,7 +26,11 @@ import {
   sweep,
   type BroadcastJob,
 } from "./broadcast-jobs.js";
-import { sendMarketingBatch, type MarketingSendResult } from "./marketing-send.js";
+import {
+  sendMarketingBatch,
+  type MarketingSendDeps,
+  type MarketingSendResult,
+} from "./marketing-send.js";
 import { resendAbandoned } from "./send.js";
 import { hashEmail } from "../event/claim-service.js";
 import { bumpRetry, resolveFailure } from "./failure-ledger.js";
@@ -35,6 +39,14 @@ import { forgetRetries, requeue, takeDue, retryQueueStats } from "./retry-queue.
 
 /** How often the worker looks for something to do when it is otherwise idle. */
 const TICK_MS = 2_000;
+
+/**
+ * Outbound seam, matching `MarketingSendDeps` elsewhere in this directory.
+ * Production is `undefined`, which makes `sendMarketingBatch` use the real
+ * chokepoint; tests substitute a recorder so a full multi-chunk drain can be
+ * asserted without AWS credentials or real time passing.
+ */
+let sendDeps: MarketingSendDeps | undefined;
 
 /**
  * Failures that mean the ACCOUNT cannot send, not that this message was bad.
@@ -114,14 +126,17 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
 
   let result: MarketingSendResult;
   try {
-    result = await sendMarketingBatch({
-      organiserAddress: job.org,
-      fromDisplayName: job.fromDisplayName,
-      fromAddress: job.fromAddress,
-      subject: job.subject,
-      html: job.html,
-      recipients: fresh,
-    });
+    result = await sendMarketingBatch(
+      {
+        organiserAddress: job.org,
+        fromDisplayName: job.fromDisplayName,
+        fromAddress: job.fromAddress,
+        subject: job.subject,
+        html: job.html,
+        recipients: fresh,
+      },
+      sendDeps,
+    );
   } catch (err) {
     // sendMarketingBatch only throws when it CANNOT be compliant (no public API
     // base, no postal address). Retrying that per chunk would mail nobody and
@@ -258,7 +273,8 @@ export async function _pumpOnceForTest(): Promise<void> {
 }
 
 /** Tests only — clears the rotation cursor between cases. */
-export function _resetDrainWorkerForTest(): void {
+export function _resetDrainWorkerForTest(deps?: MarketingSendDeps): void {
   lastServed = null;
   lastSweep = Date.now();
+  sendDeps = deps;
 }
