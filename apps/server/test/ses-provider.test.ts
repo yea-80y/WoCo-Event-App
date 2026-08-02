@@ -9,7 +9,7 @@
  * rendering in the body while the email still "sent" successfully.
  */
 
-import { test, describe } from "node:test";
+import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -17,6 +17,8 @@ import {
   encodeFromAddress,
   toSesHeaders,
   classifySesError,
+  getSesClient,
+  _resetSesClientForTest,
 } from "../src/lib/email/ses-provider.js";
 import { EmailSendError, type OutboundEmail } from "../src/lib/email/types.js";
 
@@ -239,5 +241,36 @@ describe("classifySesError", () => {
   test("an already-classified EmailSendError passes through unchanged", () => {
     const original = new EmailSendError("local guard", { retryable: false });
     assert.equal(classifySesError(original), original);
+  });
+});
+
+/**
+ * The SDK's retry configuration is not a style preference here: it is what
+ * decides whether a broadcast can delay a paid buyer's ticket.
+ */
+describe("SDK retry configuration", () => {
+  before(() => {
+    process.env.AWS_REGION = process.env.AWS_REGION || "eu-west-2";
+    _resetSesClientForTest();
+  });
+
+  test("uses standard retry, never adaptive", async () => {
+    // Adaptive mode's rate limiter is per-CLIENT and can delay the INITIAL
+    // request. One client serves ticket email and broadcasts, so adaptive would
+    // let a marketing throttle stall transactional mail underneath the priority
+    // queue in rate-limiter.ts. AWS: "Adaptive mode is not recommended as a
+    // general default."
+    // Assert on the strategy the SDK actually resolved, not the string we
+    // passed in — an unrecognised mode would silently fall back.
+    const strategy = await getSesClient().config.retryStrategy();
+    assert.equal((strategy as { mode?: string }).mode, "standard");
+    assert.equal(strategy.constructor.name, "StandardRetryStrategy");
+  });
+
+  test("leaves retrying to send.ts rather than doing it twice", async () => {
+    // Two retriers compose multiplicatively: the ledger would record 3 attempts
+    // for a message the provider was called 9 times about, and the token bucket
+    // would never see the calls the SDK absorbed.
+    assert.equal(await getSesClient().config.maxAttempts(), 1);
   });
 });
