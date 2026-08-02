@@ -377,6 +377,42 @@ export function isTerminal(job: BroadcastJob): boolean {
   return TERMINAL_STATES.includes(job.state);
 }
 
+export interface BroadcastRecord {
+  jobId: string;
+  org: string;
+  kind: BroadcastJobKind;
+  ts: string;
+  state: BroadcastJobState;
+}
+
+/**
+ * Art. 15 — every broadcast record naming this address.
+ *
+ * `reportSubject` claims to cover everything we hold about a subject, so a
+ * store it cannot see makes the access report wrong rather than incomplete.
+ * The record is hash-only: it says an organiser's broadcast reached this
+ * address on this date, which is the fact the subject is entitled to.
+ *
+ * There is deliberately NO erasure counterpart. Removing a hash from
+ * `sentHashes` would make a resumed job mail the person who asked to be
+ * forgotten — the mechanical opposite of the request. Erasure is effective by a
+ * different route: `eraseSubject` suppresses FIRST, and suppression is
+ * re-checked per recipient at send time, so a live job stops mailing them
+ * immediately. The record itself ages out with the 7-day retention.
+ */
+export function broadcastsContaining(emailHash: string): BroadcastRecord[] {
+  ensureLoaded();
+  return [...jobs.values()]
+    .filter((j) => j.sentHashes.includes(emailHash))
+    .map((j) => ({
+      jobId: j.id,
+      org: j.org,
+      kind: j.kind,
+      ts: j.startedAt ?? j.createdAt,
+      state: j.state,
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Creation
 // ---------------------------------------------------------------------------

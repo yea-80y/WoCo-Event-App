@@ -82,6 +82,15 @@ if (organiser) {
   console.log("  (not searched — organiser-scoped request; the ledger is platform-level)");
 }
 
+console.log(`\nBROADCASTS THAT MAILED THIS ADDRESS (${report.broadcasts.length})`);
+for (const b of report.broadcasts) {
+  console.log(`  ${b.ts}  ${b.kind}  org=${b.org}  ${b.state}`);
+}
+console.log(
+  "  (hash-only records, 7-day retention. NOT erased on request: removing the hash" +
+    " would make a resumed broadcast mail them again — the suppression mark is what stops that)",
+);
+
 if (!erase) {
   console.log("\n(read-only — pass --erase to action an Art. 17 request)\n");
   process.exit(0);

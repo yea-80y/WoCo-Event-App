@@ -402,3 +402,38 @@ describe("ownership and bounds", () => {
     );
   });
 });
+
+describe("data-subject reachability", () => {
+  test("a broadcast that mailed an address is disclosable", () => {
+    // reportSubject claims to cover everything we hold. A store it cannot see
+    // makes the Art. 15 report WRONG, not merely incomplete — the same defect
+    // as review finding 5 on the failure ledger.
+    const job = newJob();
+    jobs.appendChunk(job.id, people(2), hash);
+    jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 2 });
+    jobs.recordChunkDrained(job, {
+      sent: 1, suppressed: 0, failed: 0,
+      sentHashes: [hash("p0@example.com")],
+      errors: [],
+    });
+
+    const found = jobs.broadcastsContaining(hash("p0@example.com"));
+    assert.equal(found.length, 1);
+    assert.equal(found[0]?.jobId, job.id);
+    assert.equal(found[0]?.org, "0xorganiser");
+
+    assert.equal(jobs.broadcastsContaining(hash("p1@example.com")).length, 0, "unsent means unrecorded");
+  });
+
+  test("there is deliberately no way to erase a hash from the sent record", () => {
+    // Removing it would make a resumed job mail the person who asked to be
+    // forgotten. Erasure works through suppression instead, which the drain
+    // re-checks per recipient. This asserts the ABSENCE is intentional: if
+    // someone adds an eraser here, this test should be the thing that stops them.
+    assert.equal(
+      "eraseFromBroadcasts" in jobs,
+      false,
+      "erasure is by suppression — see broadcastsContaining's comment before adding one",
+    );
+  });
+});

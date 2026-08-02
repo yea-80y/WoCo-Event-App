@@ -89,10 +89,26 @@ Enumerated from source, not assumed:
 | `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend event ids — replay prevention |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
 | `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver after every retry. `transactional` entries store the buyer's plaintext address: it is the only copy on disk (the claimers feed stores `emailHash`) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure — `failure-ledger.ts` |
+| `broadcast-jobs/{jobId}.json` | **Yes** (pseudonymous) | One file per background broadcast. HMAC `emailHash`es of everyone it delivered to, plus counters, subject and the organiser's own message body. **No plaintext addresses, ever.** Purpose: send-once accounting — it is what lets a broadcast killed by a restart be resumed without mailing anyone twice. Mode 0600. Retention **7 days** (the resume window), and at most 20 records per organiser. Disclosed under Art. 15 (`broadcastsContaining`, surfaced by the §6 procedure). **Deliberately NOT erased under Art. 17**: removing a hash would make a resumed broadcast mail the person who asked to be forgotten. Erasure is effective by the suppression mark instead, which the send path re-checks per recipient — so a request stops a *live* job immediately — and the record itself expires in 7 days. `broadcast-jobs.ts` |
+| `broadcast-chunks/*.bin` | **Yes — plaintext, encrypted at rest** | The recipients of a broadcast that has not finished sending. Contact lists are ECIES-sealed to the organiser client-side, so the server cannot enumerate one; the client posting plaintext addresses is the only way a bulk send can happen at all, and a background job must hold them while it drains. **AES-256-GCM under a key generated at process start and never written to disk** — a backup, VM snapshot or disk image that captures these files captures ciphertext for which no key exists anywhere, including here. A restart therefore destroys them permanently, by design. Each chunk is deleted as it drains, not at job completion; a hard TTL (2× expected drain time, floored at 15 min, capped at 4 h) destroys the payload whether or not the job finished, and an abandoned half-uploaded job is destroyed after 15 minutes idle. Mode 0600. Basis: processor acting on the organiser's documented instruction — same data, same purpose as the former in-request handling, bounded in time (§6 of `docs/SES_MIGRATION_HANDOVER.md`). Art. 15/17: individual records inside a live chunk are not separately addressable; erasure takes effect through the suppression re-check at send time. `broadcast-jobs.ts` |
 
-**Notably absent: any store of plaintext email addresses, with one narrow exception** —
-`email-failures.json` retains the plaintext recipient of an undelivered *transactional* email
-until remediated or 90 days, whichever is sooner. Verified by inspection of every store above.
+**Plaintext email addresses on disk — the complete list, verified by inspection:**
+
+1. `email-failures.json` — the recipient of an undelivered *transactional* email, until remediated
+   or 90 days, whichever is sooner. Readable at rest.
+2. `broadcast-chunks/*.bin` — the recipients of an in-flight broadcast, **encrypted under a
+   process-memory key**, deleted per chunk as it drains and destroyed by TTL regardless. Not
+   readable at rest, and not recoverable after a restart.
+
+There are no others.
+
+**What changed, and why it is not the thing §2 of `PRICING_AND_EMAIL.md` rejected.** That section
+refused Resend Broadcasts for "converting transient exposure into a durable **third-party** copy" of
+the contact list. Item 2 is a **first-party** copy, held by the processor the organiser already
+instructed, for the same purpose, for minutes rather than indefinitely, encrypted under a key that
+does not survive the process. The distinction is the one the objection actually turned on. It is
+recorded here because it is a real change to what the platform holds, and an inventory that still
+claimed "no plaintext store but one" would be false on merge.
 
 ### 3.2 Transient (in memory, not persisted)
 
@@ -100,8 +116,12 @@ until remediated or 90 days, whichever is sooner. Verified by inspection of ever
   the ticket via the active ESP and (b) compute `hashEmail()`. Not written to disk in plaintext,
   **except** when every delivery attempt fails — see `email-failures.json` (§3.1).
   `hashEmail()` = HMAC-SHA256 keyed on `EMAIL_HASH_SECRET` — `claim-service.ts:126`.
-- **Plaintext marketing emails** transit `/api/marketing/import|check|broadcast` bodies because the
-  client cannot compute a server-secret HMAC. Hashed and discarded.
+- **Plaintext marketing emails** transit `/api/marketing/import|check` bodies because the client
+  cannot compute a server-secret HMAC. Hashed and discarded.
+- **Broadcast recipients are NO LONGER transient.** They arrive at
+  `/api/broadcasts/jobs/:id/chunk` and are held — encrypted — until the send drains. See
+  `broadcast-chunks/*.bin` in §3.1. This is the one place the "hashed-and-discarded" description
+  above stopped being true, and it is stated here rather than left to be inferred.
 
 ### 3.3 IP addresses
 
