@@ -127,9 +127,14 @@
 
   async function handleSend(resumeOf?: string): Promise<void> {
     error = null;
-    if (!fromName.trim()) { error = "Add the name this email is from (your brand)."; return; }
-    if (!subject.trim()) { error = "Subject is required."; return; }
-    if (!body.trim()) { error = "Message body is required."; return; }
+    // A resume re-sends the message the server already holds, so there is
+    // nothing to validate here — the compose box was cleared when the first
+    // job queued, which is exactly why the content cannot come from it.
+    if (!resumeOf) {
+      if (!fromName.trim()) { error = "Add the name this email is from (your brand)."; return; }
+      if (!subject.trim()) { error = "Subject is required."; return; }
+      if (!body.trim()) { error = "Message body is required."; return; }
+    }
     if (recipients.length === 0) { error = "No reachable contacts to send to."; return; }
 
     const verb = resumeOf ? "Send again to the contacts who missed it" : `Send "${subject.trim()}"`;
@@ -145,12 +150,11 @@
       // the server, which is the whole point — the organiser can walk away.
       job = await startBroadcast({
         kind: "marketing",
-        fromName: fromName.trim(),
-        subject: subject.trim(),
-        htmlBody: buildHtml(),
         recipients,
-        ...(resumeOf ? { resumeOf } : {}),
         onUpload: (n) => { uploaded = n; },
+        ...(resumeOf
+          ? { resumeOf }
+          : { fromName: fromName.trim(), subject: subject.trim(), htmlBody: buildHtml() }),
       });
       // Clear the draft as soon as it is safely queued: leaving it in the box
       // invites a second send of the same message.

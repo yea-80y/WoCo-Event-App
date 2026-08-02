@@ -300,14 +300,17 @@
       return;
     }
 
-    if (!broadcastSubject.trim()) {
-      broadcastError = "Subject is required.";
-      return;
-    }
-
-    if (!broadcastBody.trim()) {
-      broadcastError = "Message body is required.";
-      return;
+    // A resume re-sends what the server already holds; the compose box was
+    // cleared when the first job queued, so there is nothing here to validate.
+    if (!resumeOf) {
+      if (!broadcastSubject.trim()) {
+        broadcastError = "Subject is required.";
+        return;
+      }
+      if (!broadcastBody.trim()) {
+        broadcastError = "Message body is required.";
+        return;
+      }
     }
 
     const seriesLabel = broadcastSeriesFilter === "all"
@@ -322,16 +325,18 @@
     broadcastSending = true;
     broadcastJob = null;
     try {
-      const htmlBody = wrapHtmlEmail(broadcastBody.trim(), event.title);
       // Returns once the send is QUEUED. It runs on the server from here, so a
       // large attendee list no longer has to finish inside this request.
       broadcastJob = await startBroadcast({
         kind: "event",
         eventId,
-        subject: broadcastSubject.trim(),
-        htmlBody,
         recipients,
-        ...(resumeOf ? { resumeOf } : {}),
+        ...(resumeOf
+          ? { resumeOf }
+          : {
+              subject: broadcastSubject.trim(),
+              htmlBody: wrapHtmlEmail(broadcastBody.trim(), event.title),
+            }),
       });
       broadcastSubject = "";
       broadcastBody = "";

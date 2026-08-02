@@ -68,8 +68,9 @@ const CHUNK_SIZE = 500;
 
 export interface StartBroadcastInput {
   kind: BroadcastJobKind;
-  subject: string;
-  htmlBody: string;
+  /** Omitted on a resume — the server re-sends the message it already holds. */
+  subject?: string;
+  htmlBody?: string;
   recipients: BroadcastRecipient[];
   /** `marketing` only — the display name the email is from. */
   fromName?: string;
@@ -88,8 +89,8 @@ export interface StartBroadcastInput {
 export async function startBroadcast(input: StartBroadcastInput): Promise<BroadcastJobStatus> {
   const created = await authPost<BroadcastJobStatus>("/api/broadcasts/jobs", {
     kind: input.kind,
-    subject: input.subject,
-    htmlBody: input.htmlBody,
+    ...(input.subject ? { subject: input.subject } : {}),
+    ...(input.htmlBody ? { htmlBody: input.htmlBody } : {}),
     ...(input.fromName ? { fromName: input.fromName } : {}),
     ...(input.eventId ? { eventId: input.eventId } : {}),
     ...(input.resumeOf ? { resumeOf: input.resumeOf } : {}),

@@ -437,3 +437,26 @@ describe("data-subject reachability", () => {
     );
   });
 });
+
+describe("resume content", () => {
+  test("a resumed job re-sends the SAME message, whatever the caller supplies", () => {
+    // Two reasons this is not negotiable. The client cleared its compose box the
+    // moment the first job queued, so it has nothing left to send — and a resume
+    // carries the prior job's delivered set as a skip list, so letting a
+    // different body ride that list would be a way to send a message while
+    // silently excluding chosen recipients.
+    const first = newJob({ subject: "Doors open at 8", html: "<p>see you there</p>" });
+    jobs.appendChunk(first.id, people(2), hash);
+    jobs.sealAndQueue(first.id, { chunkCount: 1, totalRecipients: 2 });
+    jobs.finishJob(first, "died", "restart");
+
+    // The route resolves content from the prior job; the store just records it.
+    const resumed = newJob({
+      resumeOf: first.id,
+      subject: first.subject,
+      html: first.html,
+    });
+    assert.equal(resumed.subject, "Doors open at 8");
+    assert.equal(resumed.html, "<p>see you there</p>");
+  });
+});

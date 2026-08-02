@@ -145,22 +145,14 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     return c.json({ ok: false, error: "kind must be 'marketing' or 'event'" }, 400);
   }
 
-  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
-  const htmlBody = typeof body.htmlBody === "string" ? body.htmlBody : "";
-  if (!subject || subject.length > 200) {
-    return c.json({ ok: false, error: "Subject required (max 200 chars)" }, 400);
-  }
-  if (!htmlBody || htmlBody.length > 50_000) {
-    return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
-  }
-
   // A resume inherits the prior job's delivered set, so it must be the SAME
   // organiser's job — otherwise a stranger's job id would seed one broadcast's
   // skip list from another's, which is both a leak and a way to silently
   // suppress recipients.
   const resumeOf = typeof body.resumeOf === "string" ? body.resumeOf : undefined;
+  let prior: BroadcastJob | null = null;
   if (resumeOf) {
-    const prior = ownedJob(resumeOf, org);
+    prior = ownedJob(resumeOf, org);
     if (!prior) return c.json({ ok: false, error: "No such broadcast to resume" }, 404);
     if (!isTerminal(prior)) {
       return c.json({ ok: false, error: "That broadcast is still running" }, 409);
@@ -168,6 +160,21 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     if (prior.kind !== kind) {
       return c.json({ ok: false, error: "Cannot resume a broadcast of a different kind" }, 400);
     }
+  }
+
+  // A resume is the SAME message, always: the content comes from the job being
+  // resumed and anything supplied is ignored. Two reasons. The client cleared
+  // its compose box the moment the first job queued — it has nothing left to
+  // send — and, more importantly, a resume carries the prior job's delivered
+  // set as a skip list. Letting a different body ride that skip list would be a
+  // way to send a message while silently excluding chosen recipients.
+  const subject = prior ? prior.subject : typeof body.subject === "string" ? body.subject.trim() : "";
+  const htmlBody = prior ? prior.html : typeof body.htmlBody === "string" ? body.htmlBody : "";
+  if (!subject || subject.length > 200) {
+    return c.json({ ok: false, error: "Subject required (max 200 chars)" }, 400);
+  }
+  if (!htmlBody || htmlBody.length > 50_000) {
+    return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
   }
 
   let fromDisplayName: string;
@@ -187,7 +194,9 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
         403,
       );
     }
-    fromDisplayName = typeof body.fromName === "string" ? body.fromName.trim() : "";
+    fromDisplayName = prior
+      ? prior.fromDisplayName
+      : typeof body.fromName === "string" ? body.fromName.trim() : "";
     if (!fromDisplayName || fromDisplayName.length > 100) {
       return c.json({ ok: false, error: "fromName required (max 100 chars)" }, 400);
     }
