@@ -254,7 +254,7 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
       html: htmlBody,
       fromDisplayName,
       fromAddress: resolveMarketingFrom(org),
-      attendees: { hashes, allowUnproven },
+      attendees: { hashes, allowUnproven, hasUnverifiableSeries: unverifiableSeries > 0 },
       ...(resumeOf ? { resumeOf } : {}),
     });
   }
@@ -337,17 +337,28 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
           },
           403,
         )
-      : c.json(
-          {
-            ok: false,
-            error:
-              `${unproven.length} of ${recipients.length} recipients have not claimed a ticket for ` +
-              `this event. Event broadcasts can only go to your attendees — use your marketing ` +
-              `audience for everyone else.`,
-            code: "RECIPIENTS_NOT_ATTENDEES",
-          },
-          403,
-        );
+      : attendeeSnapshot(job.id)?.hasUnverifiableSeries
+        ? c.json(
+            {
+              ok: false,
+              error:
+                "Broadcasts for on-chain ticket series require a verified Stripe account — " +
+                "this event has a series whose ticket holders we cannot check for you.",
+              code: "STRIPE_VERIFICATION_REQUIRED",
+            },
+            403,
+          )
+        : c.json(
+            {
+              ok: false,
+              error:
+                `${unproven.length} of ${recipients.length} recipients have not claimed a ticket for ` +
+                `this event. Event broadcasts can only go to your attendees — use your marketing ` +
+                `audience for everyone else.`,
+              code: "RECIPIENTS_NOT_ATTENDEES",
+            },
+            403,
+          );
   }
 
   try {

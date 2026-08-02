@@ -189,6 +189,28 @@ describe("fairness", () => {
   });
 });
 
+describe("event membership", () => {
+  test("an unverifiable series without Stripe verification says the RIGHT no", async () => {
+    // The organiser's recipients may well hold tickets — an on-chain series
+    // records the claimer only inside the sealed order blob, so the server
+    // cannot check. Telling them "these people have not claimed a ticket" sends
+    // them to fix the wrong problem. (#82 item 3.)
+    const job = jobs.createJob({
+      org: "0xvenue",
+      kind: "event",
+      eventId: "evt_onchain",
+      subject: "Doors moved",
+      html: "<p>7pm</p>",
+      fromDisplayName: "Venue",
+      fromAddress: "news@woco-net.com",
+      attendees: { hashes: new Set<string>(), allowUnproven: false, hasUnverifiableSeries: true },
+    });
+    const snapshot = jobs.attendeeSnapshot(job.id);
+    assert.equal(snapshot?.hasUnverifiableSeries, true);
+    assert.equal(snapshot?.allowUnproven, false, "unverified organisers still fail closed");
+  });
+});
+
 describe("stopping", () => {
   test("an account-level failure stops the job instead of grinding through it", async () => {
     // Sending paused or the daily quota exhausted: 19,000 more attempts would

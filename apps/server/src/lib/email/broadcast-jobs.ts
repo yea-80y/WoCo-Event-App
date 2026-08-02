@@ -260,6 +260,16 @@ export interface AttendeeSnapshot {
    * route used, not a general escape hatch.
    */
   allowUnproven: boolean;
+  /**
+   * Whether the event HAS a series whose membership is unprovable server-side.
+   *
+   * Separate from `allowUnproven` so a rejection can say the right thing. With
+   * an on-chain series present but the organiser unverified, the recipients are
+   * not "not attendees" — they may well be — the organiser simply has not met
+   * the gate that lets us take their word for it. Telling them the wrong one
+   * sends them to fix the wrong problem.
+   */
+  hasUnverifiableSeries: boolean;
 }
 const attendeeSnapshots = new Map<string, AttendeeSnapshot>();
 
