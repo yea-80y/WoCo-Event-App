@@ -907,10 +907,24 @@ export function sweep(now = Date.now()): BroadcastJob[] {
     list.push(job);
     byOrg.set(job.org, list);
   }
+  const resumed = new Set(
+    [...jobs.values()].map((j) => j.resumeOf).filter(Boolean) as string[],
+  );
   for (const list of byOrg.values()) {
     list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     list.forEach((job, i) => {
-      const tooOld = now - Date.parse(job.createdAt) > RECORD_RETENTION_MS;
+      // Retention runs from the END of the job, not its creation — a job
+      // created on Friday and marked dead when the server came back much later
+      // gets its full resume window from the death, the same long-outage
+      // correction `broadcastQueueHealth` makes for the alarm.
+      const tooOld = now - Date.parse(job.finishedAt ?? job.createdAt) > RECORD_RETENTION_MS;
+      // A died job nobody has resumed is not bookkeeping. It IS the /api/health
+      // alarm, and its `sentHashes` are what a resume needs to skip the people
+      // already mailed — evicting it under the per-org cap clears the alarm and
+      // destroys the remedy in one stroke. Same rule as the failure ledger's
+      // prune: unresolved evidence is exempt from the size bound and limited by
+      // retention alone.
+      if (job.state === "died" && !resumed.has(job.id) && !tooOld) return;
       if (!tooOld && i < RECORDS_PER_ORG) return;
       jobs.delete(job.id);
       try {

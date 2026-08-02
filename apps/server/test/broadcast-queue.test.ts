@@ -348,6 +348,70 @@ describe("the TTL sweep", () => {
     jobs.sweep(Date.now() + 8 * 24 * 60 * 60_000);
     assert.equal(jobs.getJob(job.id), null, "the resume window is 7 days, not forever");
   });
+
+  test("later broadcasts cannot evict a died job nobody resumed", () => {
+    // The record cap treated a fresh death record like any other bookkeeping,
+    // so twenty later terminal records — completed sends, or just abandoned
+    // drafts, which nothing rate-limits — deleted it: /api/health went green
+    // with the broadcast still half-sent, and the resume 404'd because the
+    // `sentHashes` it needs went with the record. Review finding on #100,
+    // same shape as §4a row 3.
+    const dead = newJob();
+    jobs.appendChunk(dead.id, people(10), hash);
+    jobs.sealAndQueue(dead.id, { chunkCount: 1, totalRecipients: 10 });
+    jobs._reloadForTest();
+    jobs.reconcileOnBoot();
+
+    for (let i = 0; i < 25; i++) {
+      const j = newJob();
+      jobs.appendChunk(j.id, people(1, `later${i}-`), hash);
+      jobs.sealAndQueue(j.id, { chunkCount: 1, totalRecipients: 1 });
+      jobs.finishJob(j, "completed");
+    }
+    jobs.sweep();
+
+    assert.notEqual(jobs.getJob(dead.id), null, "a resume needs this record");
+    assert.equal(jobs.broadcastQueueHealth().ok, false, "the alarm must survive the sweep");
+  });
+
+  test("a resumed death record is ordinary bookkeeping again", () => {
+    const dead = newJob();
+    jobs.appendChunk(dead.id, people(10), hash);
+    jobs.sealAndQueue(dead.id, { chunkCount: 1, totalRecipients: 10 });
+    jobs._reloadForTest();
+    jobs.reconcileOnBoot();
+    newJob({ resumeOf: dead.id });
+
+    for (let i = 0; i < 25; i++) {
+      const j = newJob();
+      jobs.appendChunk(j.id, people(1, `later${i}-`), hash);
+      jobs.sealAndQueue(j.id, { chunkCount: 1, totalRecipients: 1 });
+      jobs.finishJob(j, "completed");
+    }
+    jobs.sweep();
+
+    assert.equal(jobs.getJob(dead.id), null, "once resumed, the record cap applies");
+  });
+
+  test("a death record's retention runs from the death, not the creation", () => {
+    // The boot after a long outage marks jobs died with a creation time days in
+    // the past. Keyed on `createdAt`, the very next sweep — sixty seconds later
+    // — would delete the record while the alarm and the resume window should
+    // both be open. `broadcastQueueHealth` already keys the alarm on
+    // `finishedAt` for exactly this case; retention has to agree with it.
+    const dead = newJob();
+    jobs.appendChunk(dead.id, people(10), hash);
+    jobs.sealAndQueue(dead.id, { chunkCount: 1, totalRecipients: 10 });
+    jobs._reloadForTest();
+    jobs.reconcileOnBoot();
+    jobs.getJob(dead.id)!.createdAt = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString();
+
+    jobs.sweep();
+    assert.notEqual(jobs.getJob(dead.id), null, "died minutes ago — the window starts now");
+
+    jobs.sweep(Date.now() + 8 * 24 * 60 * 60_000);
+    assert.equal(jobs.getJob(dead.id), null, "the exemption ends with retention");
+  });
 });
 
 describe("the daily-cap reservation", () => {
