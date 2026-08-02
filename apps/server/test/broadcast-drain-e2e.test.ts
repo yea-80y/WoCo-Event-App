@@ -229,6 +229,60 @@ describe("stopping", () => {
     assert.equal(readdirSync(CHUNKS_DIR()).length, 0, "and destroyed the recipients it never used");
   });
 
+  /**
+   * Reachable because the marketing from-address is now mandatory (#96): that
+   * guard checks a value is PRESENT, and presence is not verification. A typo,
+   * or setting it before DNS propagates, rejects every single message — and
+   * before this it was not an account-level stop, so a 20,000-recipient job
+   * would have ground through all 20,000 rejections one at a time.
+   */
+  for (const [label, message] of [
+    ["an unverified sending domain", "SES MailFromDomainNotVerifiedException: domain is not verified"],
+    [
+      "an unverified from-address",
+      "SES MessageRejected: Email address is not verified. The following identities failed the check in region EU-WEST-1: news@news.woco-net.com",
+    ],
+  ] as const) {
+    test(`${label} stops the job rather than rejecting every recipient`, async () => {
+      const rec = recorder(() => message);
+      worker._resetDrainWorkerForTest(rec.deps);
+      const job = seed(people(2_000, "unverified"));
+
+      await drainAll();
+
+      const final = jobs.getJob(job.id)!;
+      assert.equal(final.state, "died");
+      assert.match(final.reason ?? "", /not verified/i);
+      assert.doesNotMatch(
+        final.reason ?? "",
+        /paused|quota/i,
+        "an operator must not be told to wait for a quota that was never the problem",
+      );
+      assert.ok(final.nextChunk < final.chunkCount, "it stopped early rather than running to the end");
+      assert.equal(readdirSync(CHUNKS_DIR()).length, 0, "and destroyed the recipients it never used");
+    });
+  }
+
+  /**
+   * The stop only fires when EVERY attempted recipient failed the same way.
+   * One rejection among successes is a bad address, not an outage, and killing
+   * a healthy broadcast over it would be far worse than the grind it prevents.
+   */
+  test("a lone rejection among successes does not stop the job", async () => {
+    const rec = recorder((to) =>
+      to === "bad0@example.com" ? "SES MessageRejected: Email address is not verified" : null,
+    );
+    worker._resetDrainWorkerForTest(rec.deps);
+    const job = seed([{ email: "bad0@example.com" }, ...people(30, "ok")]);
+
+    await drainAll();
+
+    const final = jobs.getJob(job.id)!;
+    assert.equal(final.state, "completed");
+    assert.equal(final.sent, 30);
+    assert.equal(final.failed, 1);
+  });
+
   test("stored errors carry the hash, never the address", async () => {
     const rec = recorder((to) => (to === "bad0@example.com" ? "MessageRejected" : null));
     worker._resetDrainWorkerForTest(rec.deps);

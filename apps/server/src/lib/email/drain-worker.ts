@@ -60,13 +60,52 @@ let sendDeps: MarketingSendDeps | undefined;
 const ACCOUNT_LEVEL_STOP =
   /SendingPausedException|AccountSuspendedException|ACCOUNT_SENDING_PAUSED|Daily message quota exceeded|ACCOUNT_DAILY_QUOTA_EXCEEDED/i;
 
-function looksAccountLevel(result: MarketingSendResult): boolean {
-  if (result.failed === 0) return false;
-  // Every attempted recipient failing the same account-level way is the signal.
-  // One such failure among many successes is noise; all of them is an outage.
-  return (
-    result.sent === 0 && result.failures.every((f) => ACCOUNT_LEVEL_STOP.test(f.message))
-  );
+/**
+ * The from-address is not a sending identity the provider will accept.
+ *
+ * Same "no recipient in this job can succeed" shape as the account-level stops,
+ * different cause and different fix, so it carries its own message rather than
+ * telling an operator to wait for a quota that was never the problem.
+ *
+ * `MailFromDomainNotVerifiedException` is SES's named exception ("The message
+ * can't be sent because the sending domain isn't verified"); an unverified
+ * address surfaces instead as `MessageRejected` carrying "Email address is not
+ * verified", so match that text rather than the exception name — plain
+ * `MessageRejected` also covers genuinely per-message content rejections.
+ *
+ * This became reachable when the marketing from-address turned mandatory (#96):
+ * the guard there checks that a value is PRESENT, and presence is not
+ * verification. A typo, or setting it before DNS propagates, lands here.
+ */
+const FROM_IDENTITY_STOP =
+  /MailFromDomainNotVerifiedException|Email address is not verified|not verified in region/i;
+
+/**
+ * A failure every attempted recipient shares is an outage, not bad addresses —
+ * one such failure among many successes is noise. Grinding the remaining 19,000
+ * recipients through it burns the retry budget, fills the ledger with identical
+ * entries, and delays the only thing that helps: an operator noticing.
+ *
+ * Returns the organiser-facing reason to settle the job with, or null to carry on.
+ */
+function stopReason(result: MarketingSendResult): string | null {
+  if (result.failed === 0 || result.sent > 0) return null;
+  const all = (re: RegExp) => result.failures.every((f) => re.test(f.message));
+
+  if (all(ACCOUNT_LEVEL_STOP)) {
+    return (
+      "Sending is paused on the account or the daily quota is exhausted — " +
+      "the broadcast was stopped rather than run into a wall. Resume it once sending is restored."
+    );
+  }
+  if (all(FROM_IDENTITY_STOP)) {
+    return (
+      "The address this broadcast sends from is not verified with our email provider, so " +
+      "every message was rejected. Nothing further was sent. Resume it once the sending " +
+      "address is verified."
+    );
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,14 +217,10 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
   // they stopped had finished normally.
   if (isTerminal(job)) return;
 
-  if (looksAccountLevel(result)) {
-    settle(
-      job,
-      "died",
-      "Sending is paused on the account or the daily quota is exhausted — " +
-        "the broadcast was stopped rather than run into a wall. Resume it once sending is restored.",
-    );
-    console.error(`[drain-worker] job ${job.id} stopped: account-level send failure`);
+  const stop = stopReason(result);
+  if (stop) {
+    settle(job, "died", stop);
+    console.error(`[drain-worker] job ${job.id} stopped: ${stop}`);
     return;
   }
 
