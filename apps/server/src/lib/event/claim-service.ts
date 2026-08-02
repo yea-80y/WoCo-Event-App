@@ -467,17 +467,26 @@ export async function claimTicket(opts: {
   // profile is unlocked with the ticket — no Route A/B dance. Sync file write;
   // an already-consumed edition is a silent no-op (nullifier semantics).
   if (accountClaim) {
-    const bound = bindTicket({
-      seriesId,
-      edition: editionNumber,
-      eventId: originalTicket.data.eventId,
-      parentAddress: accountClaim.parentAddress,
-      podPubKey: ownerBound ? ownerPodPubKey : undefined,
-      paid: !!paid,
-      route: "claim",
-    });
-    if (bound) {
-      console.log(`[gate] bound ${seriesId}#${editionNumber} → ${accountClaim.parentAddress} (claim)`);
+    // Never let this throw: the slot is already written, so the ticket exists.
+    // A throw here would propagate to the Stripe webhook, which stops the batch
+    // and refunds — handing the buyer their money back while they keep a
+    // discoverable, door-valid ticket. The bind is best-effort by design; the
+    // attendee gate can rebind later.
+    try {
+      const bound = bindTicket({
+        seriesId,
+        edition: editionNumber,
+        eventId: originalTicket.data.eventId,
+        parentAddress: accountClaim.parentAddress,
+        podPubKey: ownerBound ? ownerPodPubKey : undefined,
+        paid: !!paid,
+        route: "claim",
+      });
+      if (bound) {
+        console.log(`[gate] bound ${seriesId}#${editionNumber} → ${accountClaim.parentAddress} (claim)`);
+      }
+    } catch (err) {
+      console.error(`[gate] bind failed for ${seriesId}#${editionNumber} — ticket stands:`, err);
     }
   }
 
