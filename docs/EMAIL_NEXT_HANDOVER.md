@@ -55,7 +55,9 @@ on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
   `Permanent/OnAccountSuppressionList`, which IS ledgered.
 - **Untagged bounces are recorded hash-only**, never guessed into
   `transactional`. The alarm for that case is `email.bounceLedger.untagged` on
-  `/api/health`, not a per-message health flip.
+  `/api/health`, not a per-message health flip. It counts UNRESOLVED entries, so
+  resolving them is how it is cleared — expect a benign burst on the first
+  deploy, because every message in flight at that moment was sent untagged.
 - **`woco_ctx_` is a separate namespace from `woco_kind`** because a context key
   called `kind` already exists (`requirement-nudge.ts`).
 
@@ -68,8 +70,19 @@ on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
 - **AWS-side wiring is unverifiable from code.** Tags are published only through
   a **configuration-set event destination** — identity-level feedback
   notifications carry none — and `Reject` must be enabled on that destination to
-  be delivered at all. If `email.bounceLedger.untagged` is nonzero after the
-  first real bounce, that is the wiring, not the code.
+  be delivered at all. If `email.bounceLedger.untagged` keeps climbing after the
+  in-flight burst has been resolved, that is the wiring, not the code.
+- **Do NOT point identity-level notifications at this endpoint alongside the
+  config set.** Both copies carry the same `mail.messageId`; the code keys them
+  apart so the tagged one is never lost, but the cost is a duplicate ledger row
+  per bounce.
+- **AWS documents the `mail.tags` block on Bounce and Complaint records but the
+  worked examples for those two show only `ses:*` entries** — the Delivery, Send,
+  Reject and Subscription examples show custom tags. The page's prose says a
+  config set publishes tags for all event types, so this should be a gap in the
+  examples rather than in the behaviour. One send to
+  `bounce@simulator.amazonses.com` after deploy settles it; the untagged counter
+  is the detector either way.
 
 **Research kept — do not re-derive:**
 
