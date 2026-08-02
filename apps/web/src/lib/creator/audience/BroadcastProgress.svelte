@@ -29,6 +29,8 @@
 
   let cancelling = $state(false);
   let cancelError = $state<string | null>(null);
+  /** One resume per finished job. A second click would mail the remainder twice. */
+  let resuming = $state(false);
 
   const finished = $derived(isBroadcastFinished(job));
   const total = $derived(Math.max(job.accepted, 1));
@@ -164,8 +166,13 @@
       </button>
     {:else}
       {#if job.resumable && missed > 0 && onResume}
-        <button type="button" class="btn-primary" onclick={() => onResume(job)}>
-          Send to the {missed.toLocaleString()} who missed it
+        <button
+          type="button"
+          class="btn-primary"
+          disabled={resuming}
+          onclick={() => { resuming = true; onResume(job); }}
+        >
+          {resuming ? "Starting…" : `Send to the ${missed.toLocaleString()} who missed it`}
         </button>
       {/if}
       {#if onDismiss}
@@ -286,7 +293,8 @@
     border-radius: var(--radius-md);
     transition: background var(--transition);
   }
-  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .btn-ghost {
     border: 1px solid var(--border);

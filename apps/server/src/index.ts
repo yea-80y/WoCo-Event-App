@@ -49,8 +49,13 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { failureHealth } from "./lib/email/failure-ledger.js";
-import { reconcileOnBoot } from "./lib/email/broadcast-jobs.js";
-import { drainWorkerHealth, settleReservation, startDrainWorker } from "./lib/email/drain-worker.js";
+import { reconcileOnBoot, recordShutdown } from "./lib/email/broadcast-jobs.js";
+import {
+  drainWorkerHealth,
+  settleReservation,
+  startDrainWorker,
+  stopDrainWorker,
+} from "./lib/email/drain-worker.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -522,7 +527,39 @@ app.get("/woco-embed.js", (c) => {
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
-serve({ fetch: app.fetch, port });
+const server = serve({ fetch: app.fetch, port });
+
+/**
+ * Graceful shutdown.
+ *
+ * `docker compose up -d server` sends SIGTERM and waits before killing. Without
+ * a handler the process vanishes mid-broadcast and the only record of it is
+ * reconstructed at the NEXT boot — fine when the container comes straight back,
+ * wrong when it does not: an organiser is left looking at "Sending" forever,
+ * `/api/health` says nothing, and there is no resume button, because nothing has
+ * run to say the job died.
+ *
+ * So the truth is written at the moment of death, and `reconcileOnBoot` remains
+ * as the belt to this braces — it has to produce the same outcome for a kill -9,
+ * an OOM or a power cut, where no handler ever runs.
+ */
+let shuttingDown = false;
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} — stopping the broadcast worker`);
+  // First: no new chunks, and abort whatever is in flight. `finishJob` fires
+  // each job's AbortController, so a send stops at its next group rather than
+  // being cut off mid-request.
+  stopDrainWorker();
+  for (const job of recordShutdown()) settleReservation(job);
+  server.close(() => process.exit(0));
+  // Backstop: never hang past the container's grace period holding open a
+  // keep-alive connection. The records above are already on disk by here.
+  setTimeout(() => process.exit(0), 5_000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 // Surfaces a missing SES credential at boot rather than leaving it to be found
 // by the first buyer whose ticket never arrived. Non-fatal by design.
 checkEmailProviderConfig();

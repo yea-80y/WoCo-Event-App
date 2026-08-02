@@ -460,3 +460,74 @@ describe("resume content", () => {
     assert.equal(resumed.html, "<p>see you there</p>");
   });
 });
+
+describe("stopping cleanly", () => {
+  test("a shutdown records the death at the time it happens", async () => {
+    // Not at the next boot. A container stopped and left down would otherwise
+    // leave the organiser looking at "Sending" indefinitely, with /api/health
+    // silent and no resume button, because nothing had run to say otherwise.
+    const job = newJob();
+    jobs.appendChunk(job.id, people(10), hash);
+    jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 10 });
+
+    const killed = jobs.recordShutdown();
+
+    assert.equal(killed.length, 1);
+    assert.equal(jobs.getJob(job.id)?.state, "died");
+    assert.match(jobs.getJob(job.id)?.reason ?? "", /10 recipient\(s\) were not mailed/);
+    assert.equal(readdirSync(CHUNKS_DIR()).length, 0, "and destroys the payload on the way out");
+    assert.equal(jobs.broadcastQueueHealth().ok, false, "and lights the alarm immediately");
+  });
+
+  test("a kill -9 reaches the same state at boot", () => {
+    // recordShutdown never runs on an OOM or a power cut, so the boot path has
+    // to produce an identical outcome or the guarantee is conditional on a
+    // clean exit.
+    const job = newJob();
+    jobs.appendChunk(job.id, people(10), hash);
+    jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 10 });
+
+    jobs._reloadForTest();
+    const killed = jobs.reconcileOnBoot();
+
+    assert.equal(killed.length, 1);
+    assert.equal(killed[0]?.state, "died");
+    assert.match(killed[0]?.reason ?? "", /10 recipient\(s\) were not mailed/);
+  });
+
+  test("the death alarm is keyed on when the job died, not when it started", () => {
+    // A job created Friday, killed by a crash, and marked dead when the server
+    // returns on Monday has a three-day-old createdAt — so keying the 24h
+    // window on that made the alarm blind to the long-outage restart, which is
+    // the likeliest producer of dead jobs there is.
+    const job = newJob();
+    jobs.appendChunk(job.id, people(4), hash);
+    jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 4 });
+    job.createdAt = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
+    jobs.recordShutdown();
+
+    assert.equal(jobs.broadcastQueueHealth().diedUnresumed, 1);
+    assert.equal(jobs.broadcastQueueHealth().ok, false);
+  });
+
+  test("a cancel that lands mid-chunk is not overwritten by 'completed'", () => {
+    // `finishJob` sets state unconditionally, so a worker finishing the last
+    // chunk after the organiser cancelled would tell them the send they stopped
+    // had completed normally.
+    const job = newJob();
+    jobs.appendChunk(job.id, people(3), hash);
+    jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 3 });
+
+    jobs.cancelJob(job);
+    // The chunk that was in flight lands afterwards; its counts must be kept —
+    // those messages really did go out — without resurrecting the job.
+    jobs.recordChunkDrained(job, {
+      sent: 2, suppressed: 0, failed: 0,
+      sentHashes: [hash("p0@example.com"), hash("p1@example.com")],
+      errors: [],
+    });
+
+    assert.equal(jobs.getJob(job.id)?.state, "cancelled", "the organiser's stop stands");
+    assert.equal(jobs.getJob(job.id)?.sent, 2, "and the count tells the truth about what went out");
+  });
+});

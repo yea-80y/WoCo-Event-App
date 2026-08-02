@@ -210,3 +210,35 @@ describe("the ledger under retry", () => {
     );
   });
 });
+
+describe("what does NOT go in the retry queue", () => {
+  test("a failed broadcast recipient is left to the job's own resume", async () => {
+    // The double-send this prevents: an SES throttle fails 30 recipients
+    // mid-chunk, the retry queue delivers them 60s later, their hashes never
+    // reach the job's sentHashes — so the UI offers "send to the 30 who missed
+    // it" and the organiser mails them a second time. A broadcast already has a
+    // retry mechanism and it is the resume.
+    await assert.rejects(
+      send.sendVia({ primary: alwaysFails(retryable), secondary: null, sleep: noSleep }, MSG, {
+        maxAttempts: 1,
+        priority: "marketing",
+      }),
+    );
+    assert.equal(ledger.listFailures().length, 1, "still recorded");
+    assert.equal(
+      queue.retryQueueStats().pending,
+      0,
+      "but never redelivered outside the job that owns it",
+    );
+  });
+
+  test("a transactional failure still is queued — that is the case this exists for", async () => {
+    await assert.rejects(
+      send.sendVia({ primary: alwaysFails(retryable), secondary: null, sleep: noSleep }, MSG, {
+        maxAttempts: 1,
+        priority: "transactional",
+      }),
+    );
+    assert.equal(queue.retryQueueStats().pending, 1);
+  });
+});

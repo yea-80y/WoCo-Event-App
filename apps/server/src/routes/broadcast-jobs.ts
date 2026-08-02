@@ -40,7 +40,7 @@ import { capRemaining, reserveSend } from "../lib/marketing/send-cap.js";
 import { resolveMarketingFrom } from "../lib/marketing/sending-domain-store.js";
 import { RateWindow } from "../lib/marketing/rate-window.js";
 import { checkEmailProviderConfig } from "../lib/email/send.js";
-import { kickDrainWorker } from "../lib/email/drain-worker.js";
+import { kickDrainWorker, settleReservation } from "../lib/email/drain-worker.js";
 import {
   appendChunk,
   attendeeSnapshot,
@@ -434,11 +434,19 @@ broadcastJobs.post("/jobs/:id/start", requireAuth, async (c) => {
         }
       }
 
+      // `sealAndQueue` is idempotent, but everything after it is not: a client
+      // retry after a lost response — or a second tab — would otherwise burn
+      // the hourly window again AND append a second reservation under the same
+      // jobId, only the first of which `reconcileReservation` can find. Do the
+      // side effects only on the transition.
+      const wasDraft = job.state === "draft";
       const queued = sealAndQueue(job.id, { chunkCount, totalRecipients });
-      rate.record(org);
-      if (queued.kind === "marketing") {
-        reserveSend(org, queued.accepted, queued.id);
-        markReserved(queued, queued.accepted);
+      if (wasDraft) {
+        rate.record(org);
+        if (queued.kind === "marketing") {
+          reserveSend(org, queued.accepted, queued.id);
+          markReserved(queued, queued.accepted);
+        }
       }
       return { queued } as const;
     });
@@ -486,6 +494,12 @@ broadcastJobs.post("/jobs/:id/cancel", requireAuth, (c) => {
   // Stops what has not been sent. Mail already handed to SES cannot be
   // recalled, and the response says so rather than implying otherwise.
   cancelJob(job);
+  // And hands back the unspent allowance. Without this a cancel at 5% leaves
+  // the full reservation standing for 24 hours and every later broadcast is
+  // refused — the organiser punished for stopping a send they got wrong, which
+  // is the same "accounting blocks its own remedy" trap the died/expired paths
+  // already close.
+  settleReservation(job);
   return c.json({
     ok: true,
     data: {

@@ -307,11 +307,23 @@ export async function sendVia(
       ...(opts.context ? { context: opts.context } : {}),
     });
 
-    // Hand a transient failure to the drain worker. Only transient: a rejected
-    // address or an unverified domain would fail identically on every retry,
-    // and queueing it would occupy budget a recoverable message needs. The
-    // queue holds the MESSAGE, which nothing on disk can reconstruct.
-    if (failure.retryable) enqueueRetry(entry.id, msg, priority);
+    // Hand a transient failure to the drain worker. Two conditions, both
+    // load-bearing.
+    //
+    // TRANSIENT only: a rejected address or an unverified domain would fail
+    // identically on every retry and would occupy budget a recoverable message
+    // needs.
+    //
+    // TRANSACTIONAL only: a broadcast already has a retry mechanism, and it is
+    // the job's own resume. Queueing a marketing failure here would deliver it
+    // outside the job — so its hash would never reach `sentHashes`, the job
+    // would still offer "send to the N who missed it", and those N would be
+    // mailed TWICE. It would also skip the suppression re-check that
+    // `sendMarketingBatch` performs and DATA_INVENTORY relies on, mailing
+    // someone who unsubscribed between the failure and the retry.
+    if (failure.retryable && priority !== "marketing") {
+      enqueueRetry(entry.id, msg, priority);
+    }
   }
 
   throw failure;

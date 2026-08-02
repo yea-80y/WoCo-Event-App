@@ -47,13 +47,23 @@ function tokenMatches(presented: string, expected: string): boolean {
 }
 
 /**
- * Bounds guessing. A 32-byte token is not brute-forceable over HTTP, but a
- * wrong-token flood is also the only signal we would ever get that someone is
- * trying, so it must be cheap to serve and loud in the log.
+ * Guess-throttling that CANNOT lock out the real operator.
+ *
+ * The first version counted failures before checking the token, so ten bad
+ * requests a minute shut the door on everyone — an unauthenticated attacker
+ * could disable the remediation surface during exactly the incident it exists
+ * for. A 32-byte token is not brute-forceable over HTTP anyway; what the
+ * counter is really for is the log line that says somebody is trying.
+ *
+ * So: a valid token always passes and resets the counter. An invalid one pays a
+ * delay that grows with recent failures, which makes guessing expensive without
+ * making the endpoint deniable.
  */
-const FAILED_ATTEMPT_LIMIT = 10;
 const FAILED_ATTEMPT_WINDOW_MS = 60_000;
+const MAX_PENALTY_MS = 2_000;
 let failedAttempts: number[] = [];
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const requireOpsToken: MiddlewareHandler<AppEnv> = async (c, next) => {
   const notFound = () => c.json({ ok: false, error: "Not found" }, 404);
@@ -64,25 +74,26 @@ const requireOpsToken: MiddlewareHandler<AppEnv> = async (c, next) => {
     return notFound();
   }
 
-  const now = Date.now();
-  failedAttempts = failedAttempts.filter((t) => now - t < FAILED_ATTEMPT_WINDOW_MS);
-  if (failedAttempts.length >= FAILED_ATTEMPT_LIMIT) {
-    console.error(
-      `[ops] ${failedAttempts.length} failed operator-token attempts in the last minute — locked out`,
-    );
-    return notFound();
-  }
-
   const header = c.req.header("Authorization") || "";
   const presented = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!presented || !tokenMatches(presented, expected)) {
-    failedAttempts.push(now);
-    // Never the presented value: it would put a near-miss of the real token,
-    // or the real token itself after a copy-paste slip, into the docker logs.
-    console.warn("[ops] Rejected a request with a bad or missing operator token");
-    return notFound();
+  const now = Date.now();
+  failedAttempts = failedAttempts.filter((t) => now - t < FAILED_ATTEMPT_WINDOW_MS);
+
+  if (presented && tokenMatches(presented, expected)) {
+    failedAttempts = [];
+    await next();
+    return;
   }
-  await next();
+
+  failedAttempts.push(now);
+  // Never log the presented value: it would put a near-miss of the real token,
+  // or the real token itself after a copy-paste slip, into the docker logs.
+  console.warn(
+    `[ops] Rejected a request with a bad or missing operator token ` +
+      `(${failedAttempts.length} in the last minute)`,
+  );
+  await sleep(Math.min(MAX_PENALTY_MS, failedAttempts.length * 100));
+  return notFound();
 };
 
 ops.use("*", requireOpsToken);
@@ -170,7 +181,8 @@ ops.post("/email-failures/:id/resolve", async (c) => {
 
   // Drop any queued automatic retry: the operator has just said this is
   // handled, and a backoff timer firing afterwards would re-send mail they may
-  // already have sent by hand.
+  // already have sent by hand. The worker re-reads the ledger for the same
+  // reason, covering the window where an item has already left the queue.
   forgetRetries(id);
 
   console.log(`[ops] Ledger entry ${id} marked resolved by ${by}`);

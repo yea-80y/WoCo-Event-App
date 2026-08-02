@@ -20,6 +20,7 @@ import {
   broadcastQueueHealth,
   finishJob,
   isTerminal,
+  jobSignal,
   readChunk,
   recordChunkDrained,
   runnableJobs,
@@ -33,7 +34,7 @@ import {
 } from "./marketing-send.js";
 import { resendAbandoned } from "./send.js";
 import { hashEmail } from "../event/claim-service.js";
-import { bumpRetry, resolveFailure } from "./failure-ledger.js";
+import { bumpRetry, listFailures, resolveFailure } from "./failure-ledger.js";
 import { reconcileReservation } from "../marketing/send-cap.js";
 import { forgetRetries, requeue, takeDue, retryQueueStats } from "./retry-queue.js";
 
@@ -134,6 +135,9 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
         subject: job.subject,
         html: job.html,
         recipients: fresh,
+        // Stops between in-flight groups, so a cancel or a TTL expiry takes
+        // effect within ten messages instead of after the whole chunk.
+        ...(jobSignal(job.id) ? { signal: jobSignal(job.id)! } : {}),
       },
       sendDeps,
     );
@@ -147,7 +151,10 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
     return;
   }
 
-  recordChunkDrained(job, {
+  // Recorded even if the job was cancelled mid-chunk: those messages really did
+  // go out, and a counter that omitted them would tell the organiser fewer
+  // people were mailed than actually were.
+  const persisted = recordChunkDrained(job, {
     sent: result.sent,
     suppressed: result.suppressed,
     failed: result.failed,
@@ -157,6 +164,19 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
     // stored broadcast never becomes a plaintext copy of the list.
     errors: result.failures.map((f) => `${f.hash.slice(0, 8)}…: ${f.message}`),
   });
+
+  if (!persisted) {
+    // The sent record did not reach disk, so continuing would widen the gap
+    // between what we sent and what we can prove. Stop and say so.
+    settle(job, "died", "Could not record what was sent — the broadcast was stopped to avoid duplicates");
+    return;
+  }
+
+  // A cancel (or a TTL expiry) may have landed while this chunk was in flight.
+  // `finishJob` sets state unconditionally, so falling through to the completed
+  // branch below would overwrite "cancelled" and tell the organiser the send
+  // they stopped had finished normally.
+  if (isTerminal(job)) return;
 
   if (looksAccountLevel(result)) {
     settle(
@@ -184,7 +204,17 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
 
 async function runDueRetries(): Promise<void> {
   const due = takeDue();
+  if (due.length === 0) return;
+  // An operator may have resolved an entry by hand in the window between it
+  // becoming due and this loop reaching it. `forgetRetries` cannot help there —
+  // the item has already left the queue — so the entry is re-read here, and a
+  // resolved one is dropped rather than re-sent on top of a manual resend.
+  const unresolved = new Set(
+    listFailures({ limit: Number.MAX_SAFE_INTEGER }).map((e) => e.id),
+  );
+
   for (const item of due) {
+    if (!unresolved.has(item.entryId)) continue;
     const failure = await resendAbandoned(item.msg, item.priority);
     if (!failure) {
       resolveFailure(item.entryId, "drain-worker");
@@ -215,22 +245,29 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let lastSweep = 0;
 const SWEEP_INTERVAL_MS = 60_000;
 
+function maybeSweep(): void {
+  const now = Date.now();
+  if (now - lastSweep < SWEEP_INTERVAL_MS) return;
+  lastSweep = now;
+  // Draft jobs are why this exists at all: nothing else ever visits a
+  // half-uploaded broadcast, so without a sweep its plaintext recipients would
+  // sit on disk until the next restart, well past the TTL the inventory states.
+  for (const expired of sweep(now)) settleReservation(expired);
+}
+
 async function pump(): Promise<void> {
   if (pumping) return;
   pumping = true;
   try {
-    const now = Date.now();
-    if (now - lastSweep >= SWEEP_INTERVAL_MS) {
-      lastSweep = now;
-      // Draft jobs are the reason this runs on a timer rather than only inside
-      // the drain loop: nothing else ever visits a half-uploaded broadcast, so
-      // without a sweep its recipients would sit on disk until the next restart.
-      for (const expired of sweep(now)) settleReservation(expired);
-    }
-
-    await runDueRetries();
-
+    // BETWEEN EVERY CHUNK, not once per tick. A 20,000-recipient job occupies
+    // this loop for ~28 minutes; running the sweep and the ticket retries only
+    // on entry meant an abandoned draft outlived its 15-minute TTL exactly when
+    // the system was busiest, and a paid buyer's ticket retry due in 60 seconds
+    // waited half an hour behind a marketing blast — inverting the one rule
+    // this whole subsystem is built on.
     for (;;) {
+      maybeSweep();
+      await runDueRetries();
       const job = pickNext();
       if (!job || isTerminal(job)) break;
       await drainOneChunk(job);

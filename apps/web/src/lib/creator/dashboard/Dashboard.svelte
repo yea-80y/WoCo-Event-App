@@ -290,7 +290,7 @@
 </body></html>`;
   }
 
-  async function handleSendBroadcast() {
+  async function handleSendBroadcast(resumeOf?: string) {
     if (!event || broadcastSending) return;
     broadcastError = null;
 

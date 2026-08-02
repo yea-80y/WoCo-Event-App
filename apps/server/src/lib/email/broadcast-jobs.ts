@@ -263,6 +263,14 @@ export interface AttendeeSnapshot {
 }
 const attendeeSnapshots = new Map<string, AttendeeSnapshot>();
 
+/**
+ * Fired when a job stops. The worker hands the signal to `sendMarketingBatch`,
+ * which checks it between in-flight groups, so a cancel takes effect within ten
+ * messages rather than after the whole chunk — up to 500 more sends, ~42s at the
+ * account rate, all of them after the organiser was told it had stopped.
+ */
+const jobAborts = new Map<string, AbortController>();
+
 let loaded = false;
 
 // ---------------------------------------------------------------------------
@@ -492,6 +500,11 @@ export function createJob(input: CreateJobInput): BroadcastJob {
   return job;
 }
 
+/** Aborts between in-flight groups once the job stops. Null if it never started. */
+export function jobSignal(jobId: string): AbortSignal | undefined {
+  return jobAborts.get(jobId)?.signal;
+}
+
 /** The membership snapshot taken when an `event` job was created. */
 export function attendeeSnapshot(jobId: string): AttendeeSnapshot | null {
   return attendeeSnapshots.get(jobId) ?? null;
@@ -622,6 +635,7 @@ export function sealAndQueue(
 
   job.state = "queued";
   job.startedAt = new Date().toISOString();
+  jobAborts.set(job.id, new AbortController());
   job.expiresAt = new Date(Date.now() + drainTtlMs(job.accepted)).toISOString();
   // The draft-time dedupe set has done its job; drop a 20k-entry Set per job.
   acceptedHashes.delete(jobId);
@@ -707,7 +721,7 @@ export interface ChunkOutcome {
  * failure (persisted, not yet unlinked) leaves an orphan ciphertext file that
  * the boot sweep removes, and costs nothing.
  */
-export function recordChunkDrained(job: BroadcastJob, outcome: ChunkOutcome): void {
+export function recordChunkDrained(job: BroadcastJob, outcome: ChunkOutcome): boolean {
   const index = job.nextChunk;
   job.sent += outcome.sent;
   job.suppressed += outcome.suppressed;
@@ -715,9 +729,24 @@ export function recordChunkDrained(job: BroadcastJob, outcome: ChunkOutcome): vo
   job.sentHashes.push(...outcome.sentHashes);
   job.errors = [...job.errors, ...outcome.errors].slice(0, MAX_STORED_ERRORS);
   job.nextChunk = index + 1;
+  // NOT an unconditional assignment: a cancel may have landed while this chunk
+  // was in flight, and overwriting `cancelled` with `running` would tell the
+  // organiser their stopped broadcast is still going.
   if (job.state === "queued") job.state = "running";
-  persist(job);
+
+  if (!persist(job)) {
+    // Disk full, or worse. The sent record exists only in memory, so deleting
+    // the chunk now would leave a restart with no way to know who was mailed —
+    // and a resume would re-deliver up to a full chunk. Keeping the ciphertext
+    // costs nothing; the boot sweep removes it either way.
+    console.error(
+      `[broadcast-jobs] Could not persist job ${job.id} after chunk ${index} — ` +
+        `keeping the chunk rather than risking a duplicate send on resume`,
+    );
+    return false;
+  }
   deleteChunk(job.id, index);
+  return true;
 }
 
 /**
@@ -731,6 +760,10 @@ export function finishJob(
   state: Extract<BroadcastJobState, "completed" | "cancelled" | "died" | "expired">,
   reason?: string,
 ): void {
+  // Before the state flip, so a worker already inside `sendMarketingBatch`
+  // stops at its next group rather than finishing the chunk.
+  jobAborts.get(job.id)?.abort();
+  jobAborts.delete(job.id);
   job.state = state;
   job.finishedAt = new Date().toISOString();
   if (reason) job.reason = reason;
@@ -754,9 +787,51 @@ export function cancelJob(job: BroadcastJob, reason = "Cancelled by the organise
 // ---------------------------------------------------------------------------
 
 /**
+ * Record the death of every live job, at the moment it dies.
+ *
+ * Called from the SIGTERM/SIGINT handler. Without it the only record of an
+ * interrupted broadcast is reconstructed at the NEXT boot — which is fine when
+ * the process comes straight back and wrong when it does not: a container that
+ * is stopped and not restarted for a day leaves the organiser with a job stuck
+ * on "Sending", the health endpoint silent, and no resume button, because
+ * nothing has run to say otherwise.
+ *
+ * Deliberately synchronous and small: it runs inside the shutdown grace period.
+ *
+ * @returns the jobs it marked, so the caller can settle their cap reservations.
+ */
+export function recordShutdown(): BroadcastJob[] {
+  ensureLoaded();
+  const killed: BroadcastJob[] = [];
+  for (const job of jobs.values()) {
+    if (isTerminal(job)) continue;
+    const unsent = Math.max(0, job.accepted - job.sent - job.suppressed - job.failed);
+    finishJob(
+      job,
+      "died",
+      job.state === "draft"
+        ? "The server was restarted before this broadcast was started"
+        : `The server was restarted mid-send — ${unsent} recipient(s) were not mailed. ` +
+            `Resume to reach exactly those.`,
+    );
+    killed.push(job);
+  }
+  if (killed.length) {
+    console.warn(
+      `[broadcast-jobs] Shutting down with ${killed.length} live broadcast job(s) — ` +
+        `marked died with their unsent counts so the organiser can resume`,
+    );
+  }
+  return killed;
+}
+
+/**
  * Called once at boot. Every chunk on disk is ciphertext under a key that died
  * with the previous process, so there is nothing to recover: wipe the payload
  * and mark the jobs that were in flight.
+ *
+ * `recordShutdown` normally gets there first on a clean stop; this is the path
+ * for a kill -9, an OOM, or a power loss, and it must produce the same outcome.
  *
  * @returns the jobs that were killed, so the caller can reconcile their cap
  *   reservations and log loudly.
@@ -861,7 +936,11 @@ export function broadcastQueueHealth(now = Date.now()): BroadcastQueueHealth {
     (j) =>
       j.state === "died" &&
       !resumed.has(j.id) &&
-      now - Date.parse(j.createdAt) < 24 * 60 * 60_000,
+      // `finishedAt`, NOT `createdAt`. A job created on Friday, killed by a
+      // crash, and marked dead when the server came back on Monday has a
+      // three-day-old creation time — so keying on that made the alarm blind to
+      // the long-outage restart, which is the likeliest producer of dead jobs.
+      now - Date.parse(j.finishedAt ?? j.createdAt) < 24 * 60 * 60_000,
   ).length;
   const live = all.filter((j) => j.state === "queued" || j.state === "running");
   return {
@@ -881,6 +960,7 @@ export function _resetForTest(): void {
   jobs.clear();
   acceptedHashes.clear();
   attendeeSnapshots.clear();
+  jobAborts.clear();
   jobLocks.clear();
   loaded = true;
   try {
@@ -895,5 +975,6 @@ export function _reloadForTest(): void {
   jobs.clear();
   acceptedHashes.clear();
   attendeeSnapshots.clear();
+  jobAborts.clear();
   loaded = false;
 }

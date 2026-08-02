@@ -87,12 +87,20 @@ describe("ops ledger surface — auth", () => {
     assert.equal(res.status, 404);
   });
 
-  test("a flood of wrong tokens locks the surface out for the window", async () => {
+  test("a flood of wrong tokens cannot lock the real operator out", async () => {
+    // The first version counted failures BEFORE checking the token, so ten bad
+    // requests a minute shut the door on everyone — an unauthenticated attacker
+    // could disable the remediation surface during exactly the incident it
+    // exists for. Guessing is throttled; the operator is never denied.
     const wrong = { headers: { Authorization: `Bearer ${"x".repeat(TOKEN.length)}` } };
-    for (let i = 0; i < 10; i++) await call("/email-failures", wrong);
-    // Even the RIGHT token now gets nothing — guessing must not be cheap, and a
-    // lockout is the only signal we would ever get that someone is trying.
-    assert.equal((await authed("/email-failures")).status, 404);
+    for (let i = 0; i < 12; i++) {
+      assert.equal((await call("/email-failures", wrong)).status, 404);
+    }
+    assert.equal(
+      (await authed("/email-failures")).status,
+      200,
+      "the operator must still get in while somebody is hammering the door",
+    );
   });
 });
 

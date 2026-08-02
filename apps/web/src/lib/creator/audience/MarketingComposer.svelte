@@ -126,6 +126,11 @@
   }
 
   async function handleSend(resumeOf?: string): Promise<void> {
+    // The send button is disabled while `sending`, but the resume button in
+    // BroadcastProgress is a different control — and the blocking `confirm()`
+    // below lets a second click through at the first await, which would create
+    // two resume jobs and mail the remainder twice.
+    if (sending) return;
     error = null;
     // A resume re-sends the message the server already holds, so there is
     // nothing to validate here — the compose box was cleared when the first
