@@ -265,6 +265,22 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
   const body = c.get("body") as Record<string, unknown>;
   const job = ownedJob(c.req.param("id"), org);
   if (!job) return c.json({ ok: false, error: "No such broadcast" }, 404);
+  // State BEFORE membership. A job killed by a restart would otherwise fall
+  // through to the membership check — whose snapshot died with it — and be told
+  // its recipients are strangers, which is both false and unactionable.
+  if (job.state !== "draft") {
+    return c.json(
+      {
+        ok: false,
+        error:
+          job.state === "died"
+            ? "This broadcast was interrupted before it started. Start a new one."
+            : `This broadcast is ${job.state} and is no longer taking recipients.`,
+        code: "NOT_DRAFT",
+      },
+      409,
+    );
+  }
 
   const raw = body.recipients;
   if (!Array.isArray(raw) || raw.length === 0) {
@@ -297,7 +313,11 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
   // it is deliberate: a silent skip would move a consent boundary into a number
   // nobody reads. The count is echoed, never the addresses — that would turn a
   // rejection into an oracle for "does this person hold a ticket".
-  const unproven = recipients.filter((r) => !isMember(job, r.email));
+  //
+  // The predicate is built ONCE per chunk. Resolving the member set per
+  // recipient rebuilds a 20,000-entry Set five hundred times per request.
+  const isMember = memberTest(job);
+  const unproven = recipients.filter((r) => !isMember(r.email));
   if (unproven.length > 0) {
     return job.kind === "marketing"
       ? c.json(
@@ -335,15 +355,24 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
   }
 });
 
-/** Whether this address may be mailed by this job. */
-function isMember(job: BroadcastJob, email: string): boolean {
-  const hash = hashEmail(email);
+/**
+ * Who this job may mail. Resolved once, then applied per recipient.
+ *
+ * Marketing reads the organiser's stored list index; event reads the attendee
+ * snapshot taken when the job was created. Both are point-in-time by design —
+ * the organiser is mailing the audience as it stood when they pressed send.
+ */
+function memberTest(job: BroadcastJob): (email: string) => boolean {
   if (job.kind === "marketing") {
-    return new Set(getList(job.org)?.emailHashes ?? []).has(hash);
+    const members = new Set(getList(job.org)?.emailHashes ?? []);
+    return (email) => members.has(hashEmail(email));
   }
   const snapshot = attendeeSnapshot(job.id);
-  if (!snapshot) return false; // Snapshot lost to a restart — the job is dead anyway.
-  return snapshot.hashes.has(hash) || snapshot.allowUnproven;
+  // Snapshot lost to a restart. The job is dead and the guard above has already
+  // said so, but fail closed rather than waving recipients through.
+  if (!snapshot) return () => false;
+  if (snapshot.allowUnproven) return () => true;
+  return (email) => snapshot.hashes.has(hashEmail(email));
 }
 
 // ---------------------------------------------------------------------------
