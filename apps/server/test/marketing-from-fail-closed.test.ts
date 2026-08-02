@@ -231,6 +231,30 @@ describe("createJob", () => {
   });
 });
 
+// ── The alarm an operator reads ───────────────────────────────────────────
+
+describe("marketingSenderHealth", () => {
+  test("is not ok while the platform marketing address is unset", () => {
+    const health = client.marketingSenderHealth();
+    assert.equal(health.ok, false);
+    assert.match(health.reason ?? "", /EMAIL_FROM_MARKETING/, "names the key to set");
+  });
+
+  test("is ok once configured", () => {
+    process.env.EMAIL_FROM_MARKETING = "news@news.woco-net.com";
+    assert.deepEqual(client.marketingSenderHealth(), { ok: true });
+  });
+
+  /** /api/health is public — the flag is actionable, the address is nobody's business. */
+  test("never leaks the address on a public endpoint", () => {
+    process.env.EMAIL_FROM_MARKETING = "secret-alias@news.woco-net.com";
+    assert.doesNotMatch(JSON.stringify(client.marketingSenderHealth()), /secret-alias/);
+    clearFromEnv();
+    process.env.EMAIL_FROM = "events@woco-net.com";
+    assert.doesNotMatch(JSON.stringify(client.marketingSenderHealth()), /events@woco-net\.com/);
+  });
+});
+
 // ── The refusal the organiser actually reads ──────────────────────────────
 
 describe("MARKETING_SENDER_UNCONFIGURED", () => {

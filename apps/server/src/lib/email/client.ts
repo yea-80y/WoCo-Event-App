@@ -44,3 +44,34 @@ export function getMarketingFromAddress(): string | null {
   const configured = (process.env.EMAIL_FROM_MARKETING || process.env.RESEND_FROM_MARKETING || "").trim();
   return configured || null;
 }
+
+/**
+ * `/api/health` → `email.marketingSender`. A fail-closed nobody can see is a
+ * mystery outage: without this, "why can no organiser broadcast" is answered by
+ * reading source. Reports the flag and the key to set, never the address —
+ * this endpoint is public.
+ *
+ * Organisers with their own verified domain are unaffected either way, so
+ * `ok: false` means the PLATFORM marketing lane is refusing, not that every
+ * send is.
+ */
+export function marketingSenderHealth(): { ok: boolean; reason?: string } {
+  if (getMarketingFromAddress()) return { ok: true };
+  return {
+    ok: false,
+    reason: "EMAIL_FROM_MARKETING is not set — platform marketing sends are refused",
+  };
+}
+
+/**
+ * Boot-time counterpart, logged beside the provider check. The health flag
+ * needs somebody to curl it; the deploy log is what an operator is already
+ * watching at STEP 3. Non-fatal by design — transactional email is unaffected.
+ */
+export function checkMarketingSenderConfig(): boolean {
+  const health = marketingSenderHealth();
+  if (!health.ok) {
+    console.warn(`[email] ${health.reason} (organisers with a verified domain are unaffected)`);
+  }
+  return health.ok;
+}
