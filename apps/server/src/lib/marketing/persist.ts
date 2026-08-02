@@ -23,8 +23,38 @@
  * rename itself can be lost on power failure.
  */
 
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  fchmodSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
+
+/**
+ * Owner-only, applied HERE so it cannot be forgotten per-store.
+ *
+ * Every file written through this function is a `.data` store holding personal
+ * data or replay state — suppression hashes, Art. 7(1) consent evidence, buyer
+ * addresses, consumed event ids. They were landing at the process umask (0644 in
+ * the container) unless the individual store remembered to chmod itself, and
+ * twice it did not: `marketing-lists.json` shipped at 0644, and
+ * `consumed-sns-events.json` did too — which stopped being merely untidy when
+ * #99 started keying it on recipient email hashes.
+ *
+ * The mode goes on the TEMP file rather than on the destination, because
+ * `renameSync` replaces the inode: whatever mode the temp file carries is the
+ * mode the store ends up with. Setting it after the rename would leave a window
+ * at 0644, and would silently do nothing on the write that matters — the first
+ * one, which creates the file.
+ */
+const STORE_FILE_MODE = 0o600;
+/** Same reasoning one level up; matches the payout stores' existing 0700. */
+const STORE_DIR_MODE = 0o700;
 
 /** tag → consecutive failures. Zeroed by the next success. */
 const failures = new Map<string, number>();
@@ -51,10 +81,15 @@ export function writeJsonAtomic(file: string, value: unknown, tag: string): bool
   const tmp = `${file}.tmp`;
   let fd: number | undefined;
   try {
-    mkdirSync(dirname(file), { recursive: true });
+    mkdirSync(dirname(file), { recursive: true, mode: STORE_DIR_MODE });
 
-    fd = openSync(tmp, "w");
+    fd = openSync(tmp, "w", STORE_FILE_MODE);
     writeSync(fd, JSON.stringify(value));
+    // `openSync`'s mode argument only applies when it CREATES the file, and it
+    // is masked by the umask. A temp file left behind by a crashed write is
+    // reopened at whatever mode it already had, so set it explicitly on the
+    // descriptor rather than trusting the open.
+    fchmodSync(fd, STORE_FILE_MODE);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;

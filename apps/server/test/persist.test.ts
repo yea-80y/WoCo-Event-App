@@ -9,7 +9,14 @@
 
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +32,48 @@ test("a value round-trips through the file", () => {
   const file = join(dir, "round-trip.json");
   assert.equal(persist.writeJsonAtomic(file, { a: 1, b: ["x"] }, "t1"), true);
   assert.deepEqual(JSON.parse(readFileSync(file, "utf-8")), { a: 1, b: ["x"] });
+});
+
+/**
+ * Every file written here is a `.data` store holding personal data or replay
+ * state. They were landing at the process umask — 0644 in the container —
+ * unless the individual store remembered to chmod itself, and twice one did
+ * not: `marketing-lists.json` shipped 0644, and so did
+ * `consumed-sns-events.json`, which stopped being merely untidy once #99 began
+ * keying it on recipient email hashes (#128).
+ */
+const mode = (f: string) => statSync(f).mode & 0o777;
+
+test("a new store is created owner-only, without the caller asking", () => {
+  const file = join(dir, "modes", "fresh.json");
+  assert.equal(persist.writeJsonAtomic(file, { secret: true }, "m1"), true);
+  assert.equal(mode(file), 0o600);
+});
+
+test("the directory it creates is owner-only too", () => {
+  const file = join(dir, "mode-dir", "store.json");
+  persist.writeJsonAtomic(file, {}, "m2");
+  assert.equal(mode(join(dir, "mode-dir")), 0o700);
+});
+
+/** The production case: a store that already shipped at 0644 must be tightened. */
+test("overwriting a world-readable store tightens it", () => {
+  const file = join(dir, "was-644.json");
+  writeFileSync(file, "{}", { mode: 0o644 });
+  assert.equal(mode(file), 0o644, "precondition");
+
+  assert.equal(persist.writeJsonAtomic(file, { now: "tight" }, "m3"), true);
+  assert.equal(mode(file), 0o600);
+});
+
+/** A crashed write can leave a loose temp file; reopening it must not inherit that. */
+test("a leftover temp file at a loose mode does not leak its mode to the store", () => {
+  const file = join(dir, "stale-tmp.json");
+  writeFileSync(`${file}.tmp`, "garbage", { mode: 0o666 });
+
+  assert.equal(persist.writeJsonAtomic(file, { recovered: true }, "m4"), true);
+  assert.equal(mode(file), 0o600);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf-8")), { recovered: true });
 });
 
 test("missing parent directories are created", () => {
