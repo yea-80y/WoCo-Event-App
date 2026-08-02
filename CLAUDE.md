@@ -340,6 +340,12 @@ SECURITY / AUTH:
   parse/re-stringify, and the client must hash the exact bytes it sends
 - SESSION_DOMAIN has NO chainId — ALLOWED_HOSTS is the host security guard
 
+`.data/broadcast-chunks/` is the OPPOSITE case — it must NOT survive. Broadcast recipients
+are encrypted under a key held only in the running process, so a restart makes them
+permanently unreadable and the boot sweep deletes them. A deploy therefore kills in-flight
+broadcasts; the organiser resumes from the builder. Check for running jobs before deploying:
+`curl https://events-api.woco-net.com/api/health | jq .email.broadcasts`
+
 `.data/` FILES THAT MUST SURVIVE RESTARTS (loaded on startup — don't delete):
   consumed-tx-hashes.json · revoked-sessions.json · consumed-stripe-sessions.json
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
@@ -347,6 +353,8 @@ SECURITY / AUTH:
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
   consumed-resend-events.json
+  broadcast-jobs/*.json (hash-only send accounting — losing it loses the "resume the
+    broadcast that died" path AND the /api/health alarm that says one did)
   event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
   reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
   directory, but that only recovers events already in a snapshot

@@ -284,7 +284,27 @@ function chunkFile(id: string, index: number): string {
   return join(CHUNKS_DIR, `${id}.${index}.bin`);
 }
 
-/** New `.data` stores land at the process umask (0644). Tighten every write. */
+/**
+ * New `.data` stores land at the process umask, which is 0644 in the container
+ * — `marketing-lists.json` shipped that way. The operator sweep in
+ * CLAUDE.local.md exists because that has been missed before, so both the
+ * directories and every file written into them are tightened here rather than
+ * left to it.
+ */
+function ensureDirs(): void {
+  mkdirSync(JOBS_DIR, { recursive: true, mode: 0o700 });
+  mkdirSync(CHUNKS_DIR, { recursive: true, mode: 0o700 });
+  // `recursive: true` does NOT apply the mode to a directory that already
+  // exists, so an upgrade from an earlier deploy would keep 0755 without this.
+  for (const dir of [JOBS_DIR, CHUNKS_DIR]) {
+    try {
+      chmodSync(dir, 0o700);
+    } catch {
+      /* best effort — the per-file mode is the control that matters */
+    }
+  }
+}
+
 function tighten(file: string): void {
   try {
     chmodSync(file, 0o600);
@@ -304,8 +324,7 @@ function persist(job: BroadcastJob): boolean {
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
-  mkdirSync(JOBS_DIR, { recursive: true });
-  mkdirSync(CHUNKS_DIR, { recursive: true });
+  ensureDirs();
   let names: string[] = [];
   try {
     names = readdirSync(JOBS_DIR).filter((n) => n.endsWith(".json"));
@@ -524,7 +543,7 @@ export function appendChunk(
 
   const index = job.chunkCount;
   if (fresh.length > 0) {
-    mkdirSync(CHUNKS_DIR, { recursive: true });
+    ensureDirs();
     const file = chunkFile(jobId, index);
     writeFileSync(file, sealChunk(jobId, index, fresh), { mode: 0o600 });
     tighten(file);
@@ -747,7 +766,7 @@ export function reconcileOnBoot(): BroadcastJob[] {
   try {
     rmSync(CHUNKS_DIR, { recursive: true, force: true });
   } catch { /* nothing to remove */ }
-  mkdirSync(CHUNKS_DIR, { recursive: true });
+  ensureDirs();
 
   const killed: BroadcastJob[] = [];
   for (const job of jobs.values()) {
@@ -868,8 +887,7 @@ export function _resetForTest(): void {
     rmSync(JOBS_DIR, { recursive: true, force: true });
     rmSync(CHUNKS_DIR, { recursive: true, force: true });
   } catch { /* nothing to remove */ }
-  mkdirSync(JOBS_DIR, { recursive: true });
-  mkdirSync(CHUNKS_DIR, { recursive: true });
+  ensureDirs();
 }
 
 /** Tests only — drops the in-memory copy WITHOUT touching disk. Models a restart. */
