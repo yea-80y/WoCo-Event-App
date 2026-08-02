@@ -136,13 +136,20 @@ function ledgerAsyncFailure(opts: {
   if (!addresses.length) return false;
 
   const hashes = addresses.map(hashEmail);
+  const { kind, context } = readMessageTags(payload.mail?.tags);
   const messageId = payload.mail?.messageId;
   if (messageId) {
-    const key = `ledger:${messageId}:${eventType}:${[...hashes].sort().join(",")}`;
+    // The TAGGED and UNTAGGED copies of one failure key separately, on purpose.
+    // In the dual-wiring topology above, the identity-level copy carries the
+    // same `mail.messageId` and NO tags. A single key would let whichever
+    // arrived first win, so an unlucky ordering would record a paid ticket's
+    // bounce as hash-only marketing — no health alarm, no address, and
+    // nondeterministically so. Keying them apart means the worst case is a
+    // duplicate row rather than a silently downgraded one, which is the same
+    // trade the paragraph above already takes.
+    const key = `ledger:${messageId}:${eventType}:${kind ? "t" : "u"}:${[...hashes].sort().join(",")}`;
     if (!checkAndConsumeSnsEvent(key)) return false;
   }
-
-  const { kind, context } = readMessageTags(payload.mail?.tags);
   if (!kind && !warnedUntagged) {
     warnedUntagged = true;
     console.error(

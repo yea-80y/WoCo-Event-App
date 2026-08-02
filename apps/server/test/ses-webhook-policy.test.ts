@@ -419,6 +419,18 @@ describe("the failure ledger (#99)", () => {
     assert.equal(ledger.listFailures().length, 1);
   });
 
+  /** Deduping the LEDGER write must not also skip the suppression it protects. */
+  test("the second copy still suppresses even though it does not ledger", async () => {
+    const email = "dual-suppress@example.com";
+    const event = bounceEvent({ email, kind: "marketing", messageId: "ses-dual-supp" });
+    await post(event, "env-a");
+    const res = await post(event, "env-b");
+
+    const json = (await res.json()) as { data: { suppressed: number; ledgered: boolean } };
+    assert.equal(json.data.ledgered, false, "the entry already exists");
+    assert.equal(json.data.suppressed, 1, "but the address must still be blocked");
+  });
+
   test("but separate events for different recipients of one message both count", async () => {
     const messageId = "ses-multi";
     await post(bounceEvent({ email: "r1@example.com", kind: "transactional", messageId }), "env-1");
@@ -456,6 +468,39 @@ describe("the failure ledger (#99)", () => {
     test("a working config set reports healthy correlation", async () => {
       await post(bounceEvent({ email: "tagged@example.com", kind: "transactional" }));
       assert.deepEqual(ledger.bounceLedgerHealth(), { ok: true, correlated: 1, untagged: 0 });
+    });
+
+    /**
+     * Every message in flight when tagging first deploys bounces untagged
+     * through no fault of the wiring. An alarm no operator action can turn off
+     * is one they learn to scroll past — and this is the alarm the pre-deploy
+     * health check exists for.
+     */
+    test("resolving the entry clears the wiring alarm", async () => {
+      await post(bounceEvent({ email: "inflight@example.com" }));
+      assert.equal(ledger.bounceLedgerHealth().ok, false);
+
+      const [entry] = ledger.listFailures();
+      ledger.resolveFailure(entry!.id, "nabil");
+      assert.deepEqual(ledger.bounceLedgerHealth(), { ok: true, correlated: 0, untagged: 0 });
+    });
+
+    /**
+     * Identity-level notifications carry the SAME mail.messageId and no tags.
+     * One dedupe key would let arrival order decide, and an unlucky ordering
+     * would record a paid ticket's bounce as hash-only marketing — no alarm, no
+     * address, nondeterministically.
+     */
+    test("an untagged copy arriving first cannot suppress the tagged one", async () => {
+      const email = "dual-wired@example.com";
+      const messageId = "ses-both-ways";
+      await post(bounceEvent({ email, messageId }), "env-identity");
+      await post(bounceEvent({ email, messageId, kind: "transactional" }), "env-configset");
+
+      const transactional = ledger.listFailures().find((e) => e.kind === "transactional");
+      assert.ok(transactional, "the alarm that says a paid ticket bounced must still fire");
+      assert.equal(transactional.recipients[0]?.address, email);
+      assert.equal(ledger.failureHealth().ok, false);
     });
 
     test("an unrecognised classifier value is treated as untagged, not coerced", async () => {

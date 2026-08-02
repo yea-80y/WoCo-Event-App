@@ -32,6 +32,7 @@ import {
   failureHealth,
   listFailures,
   resolveFailure,
+  resolveFailures,
   type EmailFailure,
 } from "../lib/email/failure-ledger.js";
 import { forgetRetries } from "../lib/email/retry-queue.js";
@@ -186,12 +187,8 @@ ops.post("/email-failures/resolve", async (c) => {
     return c.json({ ok: false, error: `At most ${MAX_BULK_RESOLVE} ids per request` }, 400);
   }
 
-  const resolved: string[] = [];
-  for (const id of ids) {
-    if (!resolveFailure(id, by)) continue;
-    forgetRetries(id);
-    resolved.push(id);
-  }
+  const resolved = resolveFailures(ids, by);
+  for (const id of resolved) forgetRetries(id);
 
   console.log(`[ops] ${resolved.length}/${ids.length} ledger entries marked resolved by ${by}`);
   return c.json({

@@ -493,6 +493,45 @@ describe("regressions found in review", () => {
     );
   });
 
+  /**
+   * On the async path `error` is the receiving MTA's diagnostic, relayed
+   * through an SNS envelope that may be 256KB. The first version of this
+   * redaction used an unbounded `+` before the `@` and backtracked
+   * quadratically — 97 seconds of blocked event loop on 200KB, which stalls
+   * every claim and Stripe webhook on this single-threaded server.
+   */
+  test("a hostile diagnostic cannot stall the server", () => {
+    const hostile = "a".repeat(200_000);
+    const started = process.hrtime.bigint();
+    ledger.recordFailure({
+      kind: "marketing",
+      recipients: ["x@example.com"],
+      recipientHashes: ["h"],
+      subject: "s",
+      provider: "ses",
+      error: hostile,
+      attempts: 1,
+      retryable: false,
+    });
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 1000, `redaction took ${Math.round(ms)}ms — the quantifier bound is gone`);
+  });
+
+  test("unicode and domain-literal addresses are redacted too", () => {
+    const entry = ledger.recordFailure({
+      kind: "marketing",
+      recipients: ["x@example.com"],
+      recipientHashes: ["h"],
+      subject: "s",
+      provider: "ses",
+      error: "failed for naïve.üser@exämple.com and for user@[10.0.0.1]",
+      attempts: 1,
+      retryable: false,
+    });
+    assert.ok(!entry.error.includes("exämple.com"));
+    assert.ok(!entry.error.includes("10.0.0.1"));
+  });
+
   test("a retry's error string is redacted too", async () => {
     const quoting = flakyProvider("ses", 99, retryable);
     await assert.rejects(

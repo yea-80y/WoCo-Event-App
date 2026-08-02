@@ -125,11 +125,29 @@ function normalise(raw: LegacyEmailFailure): EmailFailure {
  *
  * Transactional entries lose nothing — the address is in `recipients[].address`,
  * which is the field erasure knows how to remove.
+ *
+ * EVERY QUANTIFIER IS BOUNDED, and the scan itself is bounded, because this
+ * input is written by a stranger. On the async path `error` is the receiving
+ * MTA's `diagnosticCode`, relayed through an SNS envelope that may be 256KB.
+ * With an unbounded `+` before the `@`, a long run of local-part characters
+ * that never reaches an `@` backtracks quadratically: measured here at 6.4s for
+ * 50KB and 97s for 200KB of blocked event loop — one hostile or broken MTA
+ * stalling every claim, webhook and page render on this single-threaded server.
+ * RFC 5321 caps a local part at 64 and a label at 63, so nothing legitimate is
+ * lost by saying so.
  */
-const EMAIL_IN_TEXT = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+const EMAIL_IN_TEXT =
+  /[\p{L}\p{N}._%+-]{1,64}@(?:\[[^\s\]]{1,64}\]|[\p{L}\p{N}-]{1,63}(?:\.[\p{L}\p{N}-]{1,63}){1,10})/gu;
+
+/**
+ * Generous next to the 200-char subject and 500-char error we keep, so an
+ * address straddling the stored boundary is still caught, while the regex can
+ * never see enough input to matter.
+ */
+const MAX_REDACT_SCAN = 2000;
 
 function redactAddresses(text: string): string {
-  return text.replace(EMAIL_IN_TEXT, "[address-redacted]");
+  return text.slice(0, MAX_REDACT_SCAN).replace(EMAIL_IN_TEXT, "[address-redacted]");
 }
 
 let entries: EmailFailure[] = [];
@@ -290,11 +308,34 @@ export function bumpRetry(id: string, error: string): boolean {
 /** Mark an entry handled (resent by hand, buyer contacted, address dead). */
 export function resolveFailure(id: string, by: string): boolean {
   ensureLoaded();
+  if (!markResolved(id, by)) return false;
+  return persist();
+}
+
+/** Shared by the single and batch routes. Does NOT persist — the caller does. */
+function markResolved(id: string, by: string): boolean {
   const entry = entries.find((e) => e.id === id);
   if (!entry || entry.resolvedAt) return false;
   entry.resolvedAt = new Date().toISOString();
   entry.resolvedBy = by;
-  return persist();
+  return true;
+}
+
+/**
+ * Resolve many entries with ONE write.
+ *
+ * Looping `resolveFailure` would fsync the whole array once per id — up to 500
+ * synchronous full-file rewrites on the request path, during the incident that
+ * produced the backlog. The ledger acquired a second writer with the async
+ * bounce path, so backlogs are now a normal shape rather than an odd one.
+ *
+ * @returns the ids actually resolved; the rest were unknown or already handled.
+ */
+export function resolveFailures(ids: string[], by: string): string[] {
+  ensureLoaded();
+  const resolved = ids.filter((id) => markResolved(id, by));
+  if (resolved.length) persist();
+  return resolved;
 }
 
 export interface FailureHealth {
@@ -322,9 +363,9 @@ export function failureHealth(): FailureHealth {
 
 export interface BounceLedgerHealth {
   ok: boolean;
-  /** Async failures we could tie back to the send that caused them. */
+  /** UNRESOLVED async failures we could tie back to the send that caused them. */
   correlated: number;
-  /** Async failures that arrived with no message tags. */
+  /** UNRESOLVED async failures that arrived with no message tags. */
   untagged: number;
 }
 
@@ -338,12 +379,21 @@ export interface BounceLedgerHealth {
  * no ticket alarm, and nothing but a log line to say so. Health is what gets
  * checked before a deploy; logs are not.
  *
- * Derived from the ledger rather than a counter, so it survives restarts for
- * free and cannot drift from the records it describes.
+ * Derived from the ledger rather than from a counter, so it survives restarts
+ * for free. It counts only UNRESOLVED entries, which is what makes resolving
+ * them the way to clear it: an alarm no operator action can turn off is an
+ * alarm operators learn to scroll past, and this one WILL fire benignly — every
+ * message in flight when tagging first deploys bounces untagged through no
+ * fault of the wiring.
+ *
+ * It is a sampled signal, not a ledger. Untagged entries are recorded
+ * `marketing` and are therefore evictable, so a large marketing failure can age
+ * this back to green before anyone looks. It re-fires on the next untagged
+ * bounce, which for a genuinely miswired topic is every bounce.
  */
 export function bounceLedgerHealth(): BounceLedgerHealth {
   ensureLoaded();
-  const async = entries.filter((e) => e.context?.asyncEvent);
+  const async = entries.filter((e) => e.context?.asyncEvent && !e.resolvedAt);
   const untagged = async.filter((e) => e.context?.untagged === "true").length;
   return { ok: untagged === 0, correlated: async.length - untagged, untagged };
 }
