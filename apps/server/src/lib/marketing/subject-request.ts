@@ -10,7 +10,7 @@ import { consentsForEmailHash, forgetEmailHash, forgetEmailHashForOrg, type Cons
 import { listsContaining, removeFromLists } from "./list-store.js";
 import { persistFailureCount } from "./persist.js";
 import { marksFor, suppressGlobal, suppressOrg } from "./suppression-store.js";
-import { eraseRecipient, listFailures, type EmailFailure } from "../email/failure-ledger.js";
+import { eraseRecipient, failuresForHash, type EmailFailure } from "../email/failure-ledger.js";
 
 export interface SubjectReport {
   emailHash: string;
@@ -59,11 +59,7 @@ export function reportSubject(emailHash: string, organiser?: string): SubjectRep
     marks: marksFor(emailHash),
     // Platform-level, like the ledger itself: an organiser-scoped request does
     // not reach it, matching how `eraseSubject` treats it.
-    emailFailures: org
-      ? []
-      : listFailures({ includeResolved: true, limit: Number.MAX_SAFE_INTEGER }).filter(
-          (e) => e.recipientHash === emailHash,
-        ),
+    emailFailures: org ? [] : failuresForHash(emailHash),
   };
 }
 

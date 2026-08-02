@@ -174,7 +174,19 @@ export interface SendDeps {
   acquire?: (priority: SendPriority) => Promise<void>;
 }
 
-/** One provider, with retries. Resolves on success, returns the final error otherwise. */
+/**
+ * One provider, with retries.
+ *
+ * `attempts` is the number of provider calls actually made — not a guess
+ * derived from `retryable`. The ledger is an evidence record, and "3 attempts"
+ * on a message the provider was asked to send once is a claim about our own
+ * conduct that would not survive being checked.
+ */
+interface AttemptOutcome {
+  error: EmailSendError | null;
+  attempts: number;
+}
+
 async function attemptWithRetries(
   p: EmailProvider,
   msg: OutboundEmail,
@@ -182,8 +194,9 @@ async function attemptWithRetries(
   maxAttempts: number,
   sleepFn: (ms: number) => Promise<void>,
   acquire: (priority: SendPriority) => Promise<void>,
-): Promise<EmailSendError | null> {
+): Promise<AttemptOutcome> {
   let lastError: EmailSendError | undefined;
+  let made = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -196,11 +209,12 @@ async function attemptWithRetries(
       // module was written to eliminate. Unreachable at today's volumes; the
       // ledger exists for the days that are not today.
       await acquire(priority);
+      made++;
       await p.send(msg);
       if (attempt > 1) {
         console.log(`[email] Delivered via ${p.name} on attempt ${attempt}/${maxAttempts}`);
       }
-      return null;
+      return { error: null, attempts: made };
     } catch (err) {
       lastError =
         err instanceof EmailSendError
@@ -221,7 +235,10 @@ async function attemptWithRetries(
     }
   }
 
-  return lastError ?? new EmailSendError("Unknown send failure", { retryable: false });
+  return {
+    error: lastError ?? new EmailSendError("Unknown send failure", { retryable: false }),
+    attempts: made,
+  };
 }
 
 export async function sendEmail(msg: OutboundEmail, opts: SendEmailOptions = {}): Promise<void> {
@@ -246,9 +263,13 @@ export async function sendVia(
 
   const acquire = deps.acquire ?? ((pri: SendPriority) => sendRateLimiter().acquire(pri));
 
-  let failure = await attemptWithRetries(active, msg, priority, maxAttempts, deps.sleep, acquire);
-  if (!failure) return;
+  const primaryOutcome = await attemptWithRetries(
+    active, msg, priority, maxAttempts, deps.sleep, acquire,
+  );
+  if (!primaryOutcome.error) return;
 
+  let failure = primaryOutcome.error;
+  let attempts = primaryOutcome.attempts;
   let usedProvider = active.name;
 
   // Failover is for a DOWN PROVIDER, not a bad message: a permanent error
@@ -260,10 +281,13 @@ export async function sendVia(
     console.warn(
       `[email] ${active.name} exhausted ${maxAttempts} attempts — failing over to ${secondary.name}`,
     );
-    const secondaryFailure = await attemptWithRetries(
+    const secondaryOutcome = await attemptWithRetries(
       secondary, msg, priority, maxAttempts, deps.sleep, acquire,
     );
-    if (!secondaryFailure) {
+    // Failover calls count too — an operator reading "1 attempt" against a
+    // message we handed to two providers cannot reconstruct what happened.
+    attempts += secondaryOutcome.attempts;
+    if (!secondaryOutcome.error) {
       console.warn(`[email] Delivered via failover provider ${secondary.name}`);
       return;
     }
@@ -271,24 +295,24 @@ export async function sendVia(
     // on its own sends an operator to the wrong dashboard during an SES outage.
     usedProvider = `${active.name}→${secondary.name}`;
     failure = new EmailSendError(
-      `${failure.message} | failover ${secondary.name}: ${secondaryFailure.message}`,
+      `${failure.message} | failover ${secondary.name}: ${secondaryOutcome.error.message}`,
       {
-        retryable: secondaryFailure.retryable,
-        ...(secondaryFailure.code ? { code: secondaryFailure.code } : {}),
-        cause: secondaryFailure,
+        retryable: secondaryOutcome.error.retryable,
+        ...(secondaryOutcome.error.code ? { code: secondaryOutcome.error.code } : {}),
+        cause: secondaryOutcome.error,
       },
     );
   }
 
   recordFailure({
     kind: priority === "marketing" ? "marketing" : "transactional",
-    recipient: msg.to[0]!,
-    recipientHash: hashEmail(msg.to[0]!),
+    recipients: msg.to,
+    recipientHashes: msg.to.map(hashEmail),
     subject: msg.subject,
     provider: usedProvider,
     error: failure.message,
     ...(failure.code ? { code: failure.code } : {}),
-    attempts: failure.retryable ? maxAttempts : 1,
+    attempts,
     retryable: failure.retryable,
     ...(opts.context ? { context: opts.context } : {}),
   });

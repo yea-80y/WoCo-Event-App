@@ -74,7 +74,7 @@ if (!marks) {
 console.log(`\nUNDELIVERED EMAIL RECORDS (${report.emailFailures.length})`);
 for (const f of report.emailFailures) {
   console.log(
-    `  ${f.ts}  ${f.kind}  ${f.recipient ? "PLAINTEXT HELD" : "hash only"}` +
+    `  ${f.ts}  ${f.kind}  ${f.recipients.some((r) => r.address) ? "PLAINTEXT HELD" : "hash only"}` +
       `${f.resolvedAt ? `  resolved ${f.resolvedAt} by ${f.resolvedBy}` : "  UNRESOLVED"}  ${f.error}`,
   );
 }

@@ -39,25 +39,72 @@ const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 export type FailureKind = "transactional" | "marketing";
 
+/**
+ * One addressee of a failed message.
+ *
+ * A pair rather than two parallel arrays because erasure has to remove ONE
+ * subject's plaintext from a message that may have had several: with parallel
+ * arrays the index alignment is an invariant nothing enforces, and getting it
+ * wrong deletes the wrong person's address while reporting success.
+ */
+export interface FailureRecipient {
+  hash: string;
+  /** Present for `transactional` only — see PLAINTEXT POLICY above. */
+  address?: string;
+}
+
 export interface EmailFailure {
   id: string;
   ts: string;
   kind: FailureKind;
-  /** Present for `transactional` only — see PLAINTEXT POLICY above. */
-  recipient?: string;
-  recipientHash: string;
+  /**
+   * EVERY addressee, not just the first. `msg.to` is an array and a
+   * multi-recipient transactional send (one order, two ticket holders) would
+   * otherwise record recipient 1 and lose 2..n — an evidence record that is
+   * quietly incomplete is worse than one that is obviously missing.
+   */
+  recipients: FailureRecipient[];
   subject: string;
   provider: string;
   /** Provider error name/code where available, e.g. `MessageRejected`. */
   code?: string;
   error: string;
+  /** Real provider calls made, summed across the primary and any failover. */
   attempts: number;
   /** Whether the classifier thought a later retry could succeed. */
   retryable: boolean;
   /** Free-form breadcrumbs from the caller, e.g. `{ eventId, seriesId }`. */
   context?: Record<string, string>;
+  /** Automatic retries the drain worker has made since the entry was written. */
+  retries?: number;
+  lastRetryAt?: string;
   resolvedAt?: string;
   resolvedBy?: string;
+}
+
+/** Pre-2026-08 on-disk shape: one recipient per entry, in two flat fields. */
+interface LegacyEmailFailure extends Omit<EmailFailure, "recipients"> {
+  recipients?: FailureRecipient[];
+  recipient?: string;
+  recipientHash?: string;
+}
+
+/**
+ * Bring a record written by the single-recipient version forward.
+ *
+ * Done on read rather than by a migration script because the file is live in
+ * production and a loader that treats an old entry as malformed would drop
+ * evidence of an undelivered paid ticket at exactly the moment it is needed.
+ */
+function normalise(raw: LegacyEmailFailure): EmailFailure {
+  const { recipient, recipientHash, ...rest } = raw;
+  if (Array.isArray(raw.recipients)) return rest as EmailFailure;
+  return {
+    ...(rest as Omit<EmailFailure, "recipients">),
+    recipients: recipientHash
+      ? [{ hash: recipientHash, ...(recipient ? { address: recipient } : {}) }]
+      : [],
+  };
 }
 
 let entries: EmailFailure[] = [];
@@ -70,7 +117,7 @@ function ensureLoaded(): void {
   loaded = true;
   try {
     const parsed = JSON.parse(readFileSync(STORE_FILE, "utf-8")) as unknown;
-    entries = Array.isArray(parsed) ? (parsed as EmailFailure[]) : [];
+    entries = Array.isArray(parsed) ? (parsed as LegacyEmailFailure[]).map(normalise) : [];
     if (entries.length) {
       console.warn(
         `[email-failures] Loaded ${entries.length} undelivered email record(s) from disk — ` +
@@ -130,8 +177,10 @@ function prune(nowMs: number): void {
 
 export interface RecordFailureInput {
   kind: FailureKind;
-  recipient: string;
-  recipientHash: string;
+  /** Plaintext addresses, in `msg.to` order. Stored only for `transactional`. */
+  recipients: string[];
+  /** HMAC hashes, index-aligned with `recipients`. */
+  recipientHashes: string[];
   subject: string;
   provider: string;
   error: string;
@@ -155,8 +204,12 @@ export function recordFailure(input: RecordFailureInput): EmailFailure {
     id: `${nowMs.toString(36)}-${(seq++).toString(36)}`,
     ts: new Date(nowMs).toISOString(),
     kind: input.kind,
-    ...(input.kind === "transactional" ? { recipient: input.recipient } : {}),
-    recipientHash: input.recipientHash,
+    recipients: input.recipientHashes.map((hash, i) => ({
+      hash,
+      ...(input.kind === "transactional" && input.recipients[i]
+        ? { address: input.recipients[i]! }
+        : {}),
+    })),
     subject: input.subject.slice(0, 200),
     provider: input.provider,
     ...(input.code ? { code: input.code } : {}),
@@ -170,8 +223,9 @@ export function recordFailure(input: RecordFailureInput): EmailFailure {
   prune(nowMs);
 
   // Loud, and with the hash not the address: docker logs outlive the send.
+  const who = entry.recipients.map((r) => `${r.hash.slice(0, 8)}…`).join(", ") || "(no recipient)";
   console.error(
-    `[email-failures] ${input.kind} email to ${input.recipientHash.slice(0, 8)}… ` +
+    `[email-failures] ${input.kind} email to ${who} ` +
       `abandoned after ${input.attempts} attempt(s) via ${input.provider}: ${input.error}`,
   );
 
@@ -236,8 +290,11 @@ export function eraseRecipient(emailHash: string): number {
   ensureLoaded();
   let redacted = 0;
   for (const entry of entries) {
-    if (entry.recipientHash !== emailHash || entry.recipient === undefined) continue;
-    delete entry.recipient;
+    const match = entry.recipients.find((r) => r.hash === emailHash && r.address !== undefined);
+    if (!match) continue;
+    // Only THIS subject's address. A co-addressee of the same message made no
+    // erasure request, and their ticket is still undelivered.
+    delete match.address;
     if (!entry.resolvedAt) {
       entry.resolvedAt = new Date().toISOString();
       entry.resolvedBy = "erasure";
@@ -246,6 +303,12 @@ export function eraseRecipient(emailHash: string): number {
   }
   if (redacted) persist();
   return redacted;
+}
+
+/** Every entry naming this address, whether or not the plaintext survives. */
+export function failuresForHash(emailHash: string): EmailFailure[] {
+  ensureLoaded();
+  return entries.filter((e) => e.recipients.some((r) => r.hash === emailHash));
 }
 
 /** Tests only — clears memory AND disk, so suites start from empty. */
