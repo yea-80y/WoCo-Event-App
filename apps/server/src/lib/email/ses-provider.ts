@@ -19,9 +19,11 @@ import {
   SendEmailCommand,
   type Attachment,
   type MessageHeader,
+  type MessageTag,
 } from "@aws-sdk/client-sesv2";
 import type { EmailProvider, OutboundEmail, OutboundAttachment } from "./types.js";
 import { EmailSendError } from "./types.js";
+import { isLegalTagToken, MAX_MESSAGE_TAGS, TAG_KIND } from "./message-tags.js";
 
 // --- Limits, from the SES API reference / service quotas -------------------
 /** Max message size is 40MB AFTER base64. Guard below it to leave header room. */
@@ -196,6 +198,38 @@ export function toSesHeaders(headers: Record<string, string>): MessageHeader[] {
   return out;
 }
 
+/**
+ * Map our tag bag onto SES `EmailTags`.
+ *
+ * DROPS what it cannot send, where `toSesHeaders` above THROWS — and the
+ * asymmetry is the point. A missing `List-Unsubscribe` is a compliance breach,
+ * so silently omitting it must be impossible. A tag is diagnostic: losing one
+ * degrades our ability to attribute a later bounce, while throwing would mean a
+ * malformed breadcrumb is the reason a paid buyer's ticket never sends. Failing
+ * the send is strictly the worse outcome.
+ *
+ * `woco_kind` is the exception that is protected by construction rather than by
+ * a check — it is generated, never caller-supplied, and always legal.
+ */
+export function toSesEmailTags(tags: Record<string, string>): MessageTag[] {
+  const out: MessageTag[] = [];
+  for (const [name, value] of Object.entries(tags)) {
+    if (out.length >= MAX_MESSAGE_TAGS) break;
+    if (!isLegalTagToken(name) || !isLegalTagToken(value)) {
+      // The name is safe to log; the value may not be.
+      console.warn(`[ses] Dropping message tag "${name}" — not valid for SES`);
+      continue;
+    }
+    out.push({ Name: name, Value: value });
+  }
+  if (!out.some((t) => t.Name === TAG_KIND)) {
+    // Loud: without the classifier an async bounce cannot be told apart from a
+    // marketing one, and #99's ledger entry falls back to hash-only.
+    console.warn(`[ses] Message sent without ${TAG_KIND} — a bounce will not be classifiable`);
+  }
+  return out;
+}
+
 /** Approximate on-the-wire size, base64 expansion included. */
 function encodedSize(msg: OutboundEmail): number {
   const body = Buffer.byteLength(msg.html ?? "", "utf-8") + Buffer.byteLength(msg.text ?? "", "utf-8");
@@ -224,11 +258,15 @@ export function buildSendEmailInput(msg: OutboundEmail) {
 
   const attachments = (msg.attachments ?? []).map(toSesAttachment);
   const headers = msg.headers ? toSesHeaders(msg.headers) : [];
+  const tags = msg.tags ? toSesEmailTags(msg.tags) : [];
 
   return {
     FromEmailAddress: encodeFromAddress(msg.from),
     Destination: { ToAddresses: msg.to },
     ...(msg.replyTo?.length ? { ReplyToAddresses: msg.replyTo } : {}),
+    // Only sends that name a configuration set have their tags published to the
+    // event destination, so these two travel together or not at all.
+    ...(tags.length ? { EmailTags: tags } : {}),
     ...(process.env.SES_CONFIGURATION_SET
       ? { ConfigurationSetName: process.env.SES_CONFIGURATION_SET }
       : {}),

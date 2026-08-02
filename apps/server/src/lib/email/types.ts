@@ -25,6 +25,13 @@ export interface OutboundEmail {
   replyTo?: string[];
   headers?: Record<string, string>;
   attachments?: OutboundAttachment[];
+  /**
+   * Provider-agnostic per-message tags. Stamped by `sendVia`, never by callers,
+   * and echoed back on the provider's async delivery events — the only thing
+   * that makes a bounce arriving minutes after acceptance attributable to the
+   * send that caused it. See `message-tags.ts`.
+   */
+  tags?: Record<string, string>;
 }
 
 export interface EmailProvider {
