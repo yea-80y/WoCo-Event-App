@@ -107,6 +107,31 @@ function normalise(raw: LegacyEmailFailure): EmailFailure {
   };
 }
 
+/**
+ * Anything email-shaped inside a provider diagnostic.
+ *
+ * Provider error strings quote the address back at us — SES returns
+ * `smtp; 550 5.1.1 <user@example.com>: Recipient address rejected`, and
+ * `MessageRejected` names the unverified address. Left alone that plaintext
+ * reaches three places it must not: a `marketing` entry, which the PLAINTEXT
+ * POLICY above says holds only the hash; the `console.error` below, which
+ * `routes/ses-webhook.ts` promises never logs plaintext; and
+ * `GET /api/ops/email-failures`, whose whole design is that the LIST is
+ * redacted and plaintext costs a second, logged request.
+ *
+ * It also defeats erasure: `eraseRecipient` deletes `recipients[].address` and
+ * cannot reach a copy embedded in `error`, so an Art. 17 request would report
+ * success while the address survived in the same record.
+ *
+ * Transactional entries lose nothing — the address is in `recipients[].address`,
+ * which is the field erasure knows how to remove.
+ */
+const EMAIL_IN_TEXT = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+
+function redactAddresses(text: string): string {
+  return text.replace(EMAIL_IN_TEXT, "[address-redacted]");
+}
+
 let entries: EmailFailure[] = [];
 let loaded = false;
 /** Monotonic suffix so two failures inside the same millisecond cannot collide. */
@@ -200,6 +225,7 @@ export interface RecordFailureInput {
 export function recordFailure(input: RecordFailureInput): EmailFailure {
   ensureLoaded();
   const nowMs = Date.now();
+  const error = redactAddresses(input.error);
   const entry: EmailFailure = {
     id: `${nowMs.toString(36)}-${(seq++).toString(36)}`,
     ts: new Date(nowMs).toISOString(),
@@ -213,7 +239,7 @@ export function recordFailure(input: RecordFailureInput): EmailFailure {
     subject: input.subject.slice(0, 200),
     provider: input.provider,
     ...(input.code ? { code: input.code } : {}),
-    error: input.error.slice(0, 500),
+    error: error.slice(0, 500),
     attempts: input.attempts,
     retryable: input.retryable,
     ...(input.context ? { context: input.context } : {}),
@@ -226,7 +252,7 @@ export function recordFailure(input: RecordFailureInput): EmailFailure {
   const who = entry.recipients.map((r) => `${r.hash.slice(0, 8)}…`).join(", ") || "(no recipient)";
   console.error(
     `[email-failures] ${input.kind} email to ${who} ` +
-      `abandoned after ${input.attempts} attempt(s) via ${input.provider}: ${input.error}`,
+      `abandoned after ${input.attempts} attempt(s) via ${input.provider}: ${error}`,
   );
 
   persist();
@@ -257,7 +283,7 @@ export function bumpRetry(id: string, error: string): boolean {
   entry.retries = (entry.retries ?? 0) + 1;
   entry.lastRetryAt = new Date().toISOString();
   entry.attempts += 1;
-  entry.error = error.slice(0, 500);
+  entry.error = redactAddresses(error).slice(0, 500);
   return persist();
 }
 
