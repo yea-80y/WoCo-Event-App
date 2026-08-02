@@ -88,7 +88,7 @@ Enumerated from source, not assumed:
 | `storage-ledger.json` | Indirect | Bytes uploaded per owner address |
 | `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend event ids — replay prevention |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
-| `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver after every retry. `transactional` entries store the buyer's plaintext address: it is the only copy on disk (the claimers feed stores `emailHash`) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure — `failure-ledger.ts` |
+| `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver — either after every retry, or because the provider accepted it and then hard-bounced it (`routes/ses-webhook.ts`). `transactional` entries store the buyer's plaintext address: it is the only copy on disk (the claimers feed stores `emailHash`) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure. The stored provider diagnostic is scrubbed of email-shaped text before it is written or logged, so the address exists in exactly one field per entry — the one erasure knows how to remove — rather than in a second, unreachable copy inside the error string — `failure-ledger.ts` |
 | `broadcast-jobs/{jobId}.json` | **Yes** (pseudonymous) | One file per background broadcast. HMAC `emailHash`es of everyone it delivered to, plus counters, subject and the organiser's own message body. **No plaintext addresses, ever.** Purpose: send-once accounting — it is what lets a broadcast killed by a restart be resumed without mailing anyone twice. Mode 0600. Retention **7 days** (the resume window), and at most 20 records per organiser. Disclosed under Art. 15 (`broadcastsContaining`, surfaced by the §6 procedure). **Deliberately NOT erased under Art. 17**: removing a hash would make a resumed broadcast mail the person who asked to be forgotten. Erasure is effective by the suppression mark instead, which the send path re-checks per recipient — so a request stops a *live* job immediately — and the record itself expires in 7 days. `broadcast-jobs.ts` |
 | `broadcast-chunks/*.bin` | **Yes — plaintext, encrypted at rest** | The recipients of a broadcast that has not finished sending. Contact lists are ECIES-sealed to the organiser client-side, so the server cannot enumerate one; the client posting plaintext addresses is the only way a bulk send can happen at all, and a background job must hold them while it drains. **AES-256-GCM under a key generated at process start and never written to disk** — a backup, VM snapshot or disk image that captures these files captures ciphertext for which no key exists anywhere, including here. A restart therefore destroys them permanently, by design. Each chunk is deleted as it drains, not at job completion; a hard TTL (2× expected drain time, floored at 15 min, capped at 4 h) destroys the payload whether or not the job finished, and an abandoned half-uploaded job is destroyed after 15 minutes idle. Mode 0600. Basis: processor acting on the organiser's documented instruction — same data, same purpose as the former in-request handling, bounded in time (§6 of `docs/SES_MIGRATION_HANDOVER.md`). Art. 15/17: individual records inside a live chunk are not separately addressable; erasure takes effect through the suppression re-check at send time. `broadcast-jobs.ts` |
 
@@ -178,7 +178,8 @@ signing key and the encryption key are different keys from one seed.
 | Party | Purpose | Personal data shared | Location |
 |---|---|---|---|
 | **Stripe** | Card payments, organiser onboarding/KYC | Buyer email + card data (direct to Stripe, never via WoCo), organiser identity documents | US / IE |
-| **Resend** | Transactional ticket email + marketing sends | Recipient email, name, message content | US |
+| **Amazon SES (AWS)** | Transactional ticket email + marketing sends — the LIVE provider since 2026-07-31 | Recipient email, name, message content, and per-message tags (below) | EU (eu-west-2) |
+| **Resend** | Same, but held only as the rollback lever (`EMAIL_PROVIDER=resend`); scheduled for deletion 2026-10-01 | Recipient email, name, message content | US |
 | **Cloudflare** | CDN / tunnel for `events-api.woco-net.com` and `gateway.woco-net.com` | IP address, request metadata | Global |
 | **Hetzner** | VM hosting (server + bee node) | Everything in §3 at rest | Germany (EU) |
 | **Swarm network** | Decentralised storage | See §6 | **Global, uncontrolled** |
@@ -191,6 +192,26 @@ signing key and the encryption key are different keys from one seed.
 
 Crypto payment rails are **off** at launch (`FEATURES.cryptoPaymentsAllowed`), so on-chain payment
 processing is not currently live — but EAS likes and event registration on Arbitrum **are**.
+
+**Per-message tags sent to SES.** Every outbound message carries a small set of
+name/value tags (`lib/email/message-tags.ts`), which SES stores with the send and
+echoes back on its delivery events. They are:
+
+| Tag | Value | Why it leaves our systems |
+|---|---|---|
+| `woco_kind` | `transactional` or `marketing` | Tells an async bounce apart from a marketing one. Without it the ledger cannot honour the plaintext split in §3.1 and would have to guess |
+| `woco_ctx_stripeSessionId` | Stripe Checkout Session id | Ties a bounce that arrives minutes after acceptance back to the order that paid. It is what makes an undelivered paid ticket findable |
+| `woco_ctx_eventId` | Event UUID | Same |
+| `woco_ctx_siteId`, `woco_ctx_organiser` | Site id / organiser wallet address | Same, for site and marketing sends |
+
+These are pseudonymous identifiers of a natural person (the buyer's order, the
+organiser's wallet) that previously stayed in our own ledger. No new controller or
+processor is involved — SES already handles the recipient's address and the full
+message body, which is strictly more — but it is a real change to what leaves the
+platform, so it is recorded rather than assumed harmless. The builder **refuses** to
+emit any value containing an `@` or shaped like an email hash, so no recipient
+identifier can reach a tag; the ceiling is ten tags per message. Basis: Art. 6(1)(f)
+— establishing that a paid-for ticket was not delivered.
 
 ### 5.1 Stripe charge model — CORRECTED
 

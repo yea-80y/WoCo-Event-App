@@ -26,45 +26,60 @@ broadcasts ─ POST /api/broadcasts/jobs → /chunk → /start
 ```
 
 Health lives at `/api/health` → `.email`: `provider`, `undelivered` (an
-unresolved transactional failure means somebody paid and has no ticket), and
-`broadcasts` (a `died` job nobody resumed).
+unresolved transactional failure means somebody paid and has no ticket),
+`broadcasts` (a `died` job nobody resumed), and `bounceLedger` (whether bounces
+arriving AFTER the provider accepted the message can still be tied back to the
+order — `untagged > 0` means the SES configuration-set wiring is not publishing
+message tags).
 
 ---
 
 ## Next, in order
 
-### 1. #99 — async bounces never reach the failure ledger — **LAUNCH BLOCKER**
+### 1. #99 — async bounces reach the failure ledger — **DONE**
 
-The half of the silent-ticket-loss problem #98 did not cover. SES *accepts* a
-send to a typo'd address, so nothing retries, nothing fails, nothing is
-ledgered — and it hard-bounces minutes later. `ses-webhook.ts` suppresses the
-hash, logs a count, and no record says a **paid ticket** went undelivered.
-`failureHealth()` stays green.
+Shipped on `fix/async-bounce-ledger`. `sendVia` stamps configuration-set message
+tags on every send (`lib/email/message-tags.ts`); `ses-webhook.ts` decodes them
+on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
+`stripeSessionId` and `eventId`, so a paid ticket that never arrived is red on
+`/api/health` and actionable at `/api/ops/email-failures`.
 
-**What #100 already did for it:**
+**Decisions worth not relitigating:**
 
-- The consume-before-process ordering in `ses-webhook.ts` is now commented and
-  deliberately kept — it is what stops an SNS redelivery writing a duplicate
-  ledger entry once this handler starts writing them.
-- `recordFailure` takes `recipients: string[]` + `recipientHashes: string[]`, so
-  a bounce naming several recipients records all of them.
-- `/api/ops/email-failures` exists, so a bounced ticket is actionable without
-  SSH.
+- **Ledger before suppress.** Consume-before-process means a throw after the
+  consume loses the event permanently, and a lost suppression self-heals (the
+  address bounces again) while a lost ledger entry does not.
+- **Complaints suppress but do not ledger.** The message was delivered. It costs
+  the person no future ticket either — the suppression list is consumed only by
+  `marketing-send.ts`. Real loss returns later as
+  `Permanent/OnAccountSuppressionList`, which IS ledgered.
+- **Untagged bounces are recorded hash-only**, never guessed into
+  `transactional`. The alarm for that case is `email.bounceLedger.untagged` on
+  `/api/health`, not a per-message health flip.
+- **`woco_ctx_` is a separate namespace from `woco_kind`** because a context key
+  called `kind` already exists (`requirement-nudge.ts`).
 
-**Research already done — do not re-derive:**
+**Still open, deliberately:**
 
-- Correlation is by **configuration-set message tags**, which come back on the
-  SNS event as `mail.tags`, a map of string → array of strings, alongside
-  auto-populated `ses:configuration-set`, `ses:source-ip`, `ses:from-domain`,
+- **`routes/resend-webhook.ts` is NOT covered.** Resend is the rollback lever and
+  is scheduled for deletion; pulling it reopens the async hole, which
+  `/api/health` reports as `email.bounceLedger.unsupported` rather than leaving
+  it to be discovered.
+- **AWS-side wiring is unverifiable from code.** Tags are published only through
+  a **configuration-set event destination** — identity-level feedback
+  notifications carry none — and `Reject` must be enabled on that destination to
+  be delivered at all. If `email.bounceLedger.untagged` is nonzero after the
+  first real bounce, that is the wiring, not the code.
+
+**Research kept — do not re-derive:**
+
+- `mail.tags` is a map of string → **array** of strings, alongside auto-populated
+  `ses:configuration-set`, `ses:source-ip`, `ses:from-domain`,
   `ses:caller-identity`, `ses:operation`.
   ([Event data examples](https://docs.aws.amazon.com/ses/latest/dg/event-publishing-retrieving-sns-examples.html))
-- Set them with `EmailTags` on `SendEmail`. Tag names and values allow **only**
-  `[A-Za-z0-9_-]`, ≤256 chars — no `:`, no base64 padding. So a
-  `{eventId}:{hash}` composite must be split across two tags or encoded.
+- `EmailTags` on `SendEmail`; names and values allow **only** `[A-Za-z0-9_-]`,
+  ≤256 chars, both required — no `:`, no `.`, no base64 padding.
   ([MessageTag](https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_MessageTag.html))
-- **Identity-level notifications carry NO tags.** Only sends that specify
-  `ConfigurationSetName`, on a config set with an SNS destination, are
-  correlatable. We do stamp the config set on every send.
 - `MessageId` is **not** a safe key: it is assigned at *acceptance*, and AWS
   documents that "on rare occasions, SES may accept an email for delivery even
   though the send request returns an error to the caller… use message tags
@@ -74,10 +89,6 @@ hash, logs a count, and no record says a **paid ticket** went undelivered.
   count toward the bounce rate; plain `Permanent/Suppressed` does.
 - **Gmail complaints never reach SES at all** — Google Postmaster Tools is the
   only visibility. Do not present complaint rate as complete.
-- `routes/resend-webhook.ts` has the identical gap. It is pre-existing on both
-  providers, so this is a launch blocker, not a cutover blocker.
-
-Acceptance is in the issue. Keep the marketing/transactional plaintext split.
 
 ### 2. #96 — marketing must fail closed when the marketing from-address is unset
 

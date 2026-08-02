@@ -354,6 +354,9 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
   consumed-resend-events.json
+  consumed-sns-events.json (also dedupes the failure-ledger write for an async bounce —
+    losing it double-records an undelivered ticket, not just a repeated suppression)
+  email-failures.json (the undelivered-ticket ledger — the /api/health alarm reads it)
   broadcast-jobs/*.json (hash-only send accounting — losing it loses the "resume the
     broadcast that died" path AND the /api/health alarm that says one did)
   event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
