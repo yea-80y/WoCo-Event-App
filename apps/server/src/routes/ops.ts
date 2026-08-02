@@ -34,6 +34,7 @@ import {
   resolveFailure,
   type EmailFailure,
 } from "../lib/email/failure-ledger.js";
+import { forgetRetries } from "../lib/email/retry-queue.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -166,6 +167,11 @@ ops.post("/email-failures/:id/resolve", async (c) => {
     // there is nothing left for the operator to do with this id.
     return c.json({ ok: false, error: "No unresolved entry with that id" }, 404);
   }
+
+  // Drop any queued automatic retry: the operator has just said this is
+  // handled, and a backoff timer firing afterwards would re-send mail they may
+  // already have sent by hand.
+  forgetRetries(id);
 
   console.log(`[ops] Ledger entry ${id} marked resolved by ${by}`);
   return c.json({ ok: true, data: { resolved: true, health: failureHealth() } });

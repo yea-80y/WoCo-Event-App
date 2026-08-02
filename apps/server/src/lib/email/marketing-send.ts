@@ -22,13 +22,14 @@ import { mintUnsubToken } from "../marketing/unsub-token.js";
  * is enforced by the token bucket in `send.ts`, which also makes transactional
  * mail overtake this loop — so a broadcast can no longer delay a paid ticket.
  *
- * It does have to be large enough for the limiter to be the binding constraint,
- * because `maxInlineRecipients()` sizes a broadcast against the token rate.
- * Real throughput is `min(rate, SEND_CHUNK / latency)`, so at 12/s the limiter
- * only binds while mean latency stays under `SEND_CHUNK / 12`. At 5 that was
- * 417ms — inside SES's p50 but not its tail, and a broadcast sized for 12/s
- * that actually ran at 10/s could reach the edge timeout. At 10 the threshold
- * is 833ms, which the tail comfortably clears.
+ * It still has to be large enough for the limiter to be the binding constraint
+ * rather than round-trip latency: real throughput is
+ * `min(rate, SEND_CHUNK / latency)`, so at 12/s the limiter only binds while
+ * mean latency stays under `SEND_CHUNK / 12`. At 5 that was 417ms — inside
+ * SES's p50 but not its tail. At 10 the threshold is 833ms, which the tail
+ * comfortably clears. Now that broadcasts drain in the background a shortfall
+ * costs minutes rather than a timeout, but it is still the difference between a
+ * job finishing inside its TTL and expiring part-sent.
  *
  * Not raised further: each in-flight send holds its rendered body in memory.
  */

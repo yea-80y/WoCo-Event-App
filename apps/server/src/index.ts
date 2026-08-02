@@ -20,6 +20,7 @@ import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
 import { broadcast } from "./routes/broadcast.js";
+import { broadcastJobs } from "./routes/broadcast-jobs.js";
 import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
 import { sitesRouter } from "./routes/sites.js";
@@ -48,6 +49,8 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { failureHealth } from "./lib/email/failure-ledger.js";
+import { reconcileOnBoot } from "./lib/email/broadcast-jobs.js";
+import { drainWorkerHealth, settleReservation, startDrainWorker } from "./lib/email/drain-worker.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -184,7 +187,11 @@ app.get("/api/health", (c) =>
     ok: true,
     payoutSweep: payoutSweepHealth(),
     compliancePersistence: persistHealth(),
-    email: { provider: activeEmailProvider(), undelivered: failureHealth() },
+    email: {
+      provider: activeEmailProvider(),
+      undelivered: failureHealth(),
+      broadcasts: drainWorkerHealth(),
+    },
   }),
 );
 
@@ -487,6 +494,9 @@ app.route("/api/ses", sesWebhook);
 // Organiser marketing audience (sealed contact lists + broadcasts)
 app.route("/api/marketing", marketing);
 
+// Background broadcast queue — the only path that sends a bulk email.
+app.route("/api/broadcasts", broadcastJobs);
+
 // Public ticket page + composite PNG — replaces the slow woco.eth.limo/#/verify
 // link in confirmation emails. Mounted at /t (not /api/t) since these are
 // user-facing URLs that ship in emails.
@@ -534,3 +544,10 @@ startSnapshotMaintenance();
 // eventually breach Stripe's hold ceiling — so its absence is a production alarm,
 // not a degraded feature. See docs/PAYOUTS.md.
 startPayoutReleaseJob();
+// Broadcast recipients are encrypted at rest under a key held only in the
+// process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
+// it, mark the jobs that were in flight `died`, and hand back their daily-cap
+// reservations — a reservation left standing for a job that will never finish
+// locks the organiser out of resuming it for 24 hours.
+for (const job of reconcileOnBoot()) settleReservation(job);
+startDrainWorker();

@@ -24,7 +24,6 @@ import { join } from "node:path";
 import {
   RateLimiter,
   QueueOverflowError,
-  maxInlineRecipients,
   effectiveSendRate,
   DEFAULT_SEND_RATE,
 } from "../src/lib/email/rate-limiter.js";
@@ -533,43 +532,5 @@ describe("rate limiter", () => {
   test("a non-positive rate is rejected at construction", () => {
     // Otherwise the bucket never refills and every send hangs forever.
     assert.throws(() => new RateLimiter({ ratePerSecond: 0 }), /must be > 0/);
-  });
-});
-
-describe("inline broadcast guard", () => {
-  const original = process.env.SES_MAX_SEND_RATE;
-  const restore = () => {
-    if (original === undefined) delete process.env.SES_MAX_SEND_RATE;
-    else process.env.SES_MAX_SEND_RATE = original;
-  };
-
-  test("defaults to 90s of headroom at the default rate", () => {
-    delete process.env.SES_MAX_SEND_RATE;
-    assert.equal(effectiveSendRate(), DEFAULT_SEND_RATE);
-    assert.equal(maxInlineRecipients(), 90 * DEFAULT_SEND_RATE);
-    restore();
-  });
-
-  test("shrinks when the send rate is turned DOWN for warm-up", () => {
-    // The case the guard exists for. At 5/s a 1,000-recipient broadcast takes
-    // 200s and dies at Cloudflare's 524 with the organiser told nothing useful.
-    process.env.SES_MAX_SEND_RATE = "5";
-    assert.equal(maxInlineRecipients(), 450);
-    assert.ok(maxInlineRecipients() < 1000, "must reject what the rate cannot finish");
-    restore();
-  });
-
-  test("grows when the send rate is raised", () => {
-    process.env.SES_MAX_SEND_RATE = "50";
-    assert.equal(maxInlineRecipients(), 4500);
-    restore();
-  });
-
-  test("ignores a nonsense rate rather than computing a nonsense ceiling", () => {
-    for (const bad of ["0", "-4", "abc", ""]) {
-      process.env.SES_MAX_SEND_RATE = bad;
-      assert.equal(effectiveSendRate(), DEFAULT_SEND_RATE, `rate "${bad}" should fall back`);
-    }
-    restore();
   });
 });

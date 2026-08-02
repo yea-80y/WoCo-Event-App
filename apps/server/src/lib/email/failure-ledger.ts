@@ -240,6 +240,27 @@ export function listFailures(opts: { includeResolved?: boolean; limit?: number }
   return rows.slice(0, opts.limit ?? 100);
 }
 
+/**
+ * Record that the drain worker tried this entry again and failed.
+ *
+ * Updates the EXISTING entry rather than writing a new one. A retry that went
+ * back through `sendVia` would append a fresh failure per attempt: five backoff
+ * rounds over a thirty-message outage is 150 records, each transactional one
+ * holding another plaintext copy of the buyer's address, and each exempt from
+ * the size cap because unresolved transactional entries are protected from
+ * eviction. One incident has to stay one row.
+ */
+export function bumpRetry(id: string, error: string): boolean {
+  ensureLoaded();
+  const entry = entries.find((e) => e.id === id);
+  if (!entry || entry.resolvedAt) return false;
+  entry.retries = (entry.retries ?? 0) + 1;
+  entry.lastRetryAt = new Date().toISOString();
+  entry.attempts += 1;
+  entry.error = error.slice(0, 500);
+  return persist();
+}
+
 /** Mark an entry handled (resent by hand, buyer contacted, address dead). */
 export function resolveFailure(id: string, by: string): boolean {
   ensureLoaded();
