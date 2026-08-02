@@ -34,6 +34,18 @@ export interface AttendeeEmailSet {
    * as "all allowed" (which would reopen the hole).
    */
   unverifiableSeries: number;
+  /**
+   * Series whose feed we FAILED to read — a transient Swarm error, not a
+   * statement about membership. Distinct from `unverifiableSeries`, which is a
+   * permanent property of an on-chain series.
+   *
+   * "An unreadable page is not an empty page" (commit 4fedca9). A caller that
+   * cannot tell the two apart will read a Swarm blip as "these people are not
+   * attendees" and reject — or worse, silently drop — recipients who really do
+   * hold a ticket. A background job in particular must refuse to be created on
+   * a partial snapshot rather than bake it in for the length of the send.
+   */
+  unreadableSeries: number;
 }
 
 /** Reads one series' claimers feed. Injectable so the logic is testable without Swarm. */
@@ -59,6 +71,7 @@ export async function getAttendeeEmailHashes(
 ): Promise<AttendeeEmailSet> {
   const hashes = new Set<string>();
   let unverifiableSeries = 0;
+  let unreadableSeries = 0;
 
   for (const series of event.series) {
     if (series.swarmManifestRef && series.onChainEventId) {
@@ -71,6 +84,8 @@ export async function getAttendeeEmailHashes(
       feed = await readClaimers(series.seriesId);
     } catch (err) {
       console.warn(`[attendee-emails] claimers feed unreadable for ${series.seriesId}:`, err);
+      unreadableSeries++;
+      continue;
     }
     if (!feed?.claimers) continue;
 
@@ -86,5 +101,5 @@ export async function getAttendeeEmailHashes(
     }
   }
 
-  return { hashes, unverifiableSeries };
+  return { hashes, unverifiableSeries, unreadableSeries };
 }

@@ -146,18 +146,18 @@ scenario both legs fail and everything lands in the ledger anyway.
 delivers the first 100 and ledgers the remainder, which is worse than a clean
 failure because it is harder to reason about.
 
-**Conclusion: `EMAIL_FALLBACK_PROVIDER` ships OFF.** Turn it on for the cutover
-window if wanted — the period when SES is new to us and our own config is the
-least-trusted component is exactly when it earns its keep, and also when volume is
-lowest. Turn it off before real volume.
+**Conclusion: `EMAIL_FALLBACK_PROVIDER` was deleted with #100**, as this section
+said it should be. The drain worker is live: an abandoned transient send is
+queued in memory and retried at 1m/5m/15m/30m/60m, updating the existing ledger
+entry rather than writing a new one per attempt, and resolving it on success. A
+restart loses the pending retries and leaves the entry unresolved for
+`/api/ops/email-failures` — worse than an automatic retry, far better than the
+`console.error` all of this replaced.
 
-**The durable answer is a drain worker, not a second ESP.** SES outages are
-minutes to hours. A ticket that arrives 20 minutes late is acceptable; a ticket
-sent from a thin-reputation second provider risks the spam folder, which is worse
-than late. A worker that retries unresolved `email-failures.json` entries with
-backoff keeps all reputation on one domain, needs no second provider, and is the
-same machinery §5's background broadcast queue needs. **Build that; then delete
-the failover.**
+Resend remains ONLY as the `EMAIL_PROVIDER=resend` rollback lever. The
+`SendDeps.secondary` seam stays under test so the failover *rules* (transactional
+only, never on a permanent error) survive if a second funded provider is ever
+added — but production passes null.
 
 ---
 
@@ -239,11 +239,11 @@ record; do not close a row without a commit reference.
 | 6 | SNS canonical string ambiguity | ✅ Settled: trailing newline. `757d57e` |
 | 7 | `SEND_CHUNK = 5` meant the limiter only bound under 417ms latency, so `maxInlineRecipients()` oversized broadcasts | ✅ `757d57e` (→ 10, threshold 833ms) |
 | 8 | Empty header value / trailing-backslash display name / `.env.example` selecting SES with empty creds | ✅ `757d57e` |
-| 9 | Ledger records only `msg.to[0]`; a future multi-recipient transactional send would lose recipients 2..n | 🟡 Open, latent |
-| 10 | `attempts` in the ledger is approximate (`retryable ? maxAttempts : 1`), ignores failover attempts | 🟡 Open, cosmetic — but it is an evidence record |
-| 11 | No ops surface: `listFailures`/`resolveFailure` have no route, so remediation means editing `.data/` over SSH | 🟡 Open — the drain worker wants this read anyway |
+| 9 | Ledger records only `msg.to[0]`; a future multi-recipient transactional send would lose recipients 2..n | ✅ `fa6a0b2` — `recipients: [{hash, address?}]`, legacy shape migrated on read |
+| 10 | `attempts` in the ledger is approximate (`retryable ? maxAttempts : 1`), ignores failover attempts | ✅ `fa6a0b2` — real provider-call count, 0 on a queue overflow |
+| 11 | No ops surface: `listFailures`/`resolveFailure` have no route, so remediation means editing `.data/` over SSH | ✅ `5b9f5b0`+`04a097e` — `/api/ops/email-failures`, `OPS_TOKEN`, list always redacted |
 | 12 | Forged-message fetch amplification: any POST with a novel valid-host `SigningCertURL` triggers an outbound fetch from an unauthenticated endpoint | 🟡 Open — pin path to `/SimpleNotificationService-*.pem` and/or rate-limit |
-| 13 | Webhook consumes the `MessageId` **before** processing, so a crash between the two loses the bounce permanently | 🟡 Accepted trade (suppression is idempotent) — wants a comment so nobody "fixes" it |
+| 13 | Webhook consumes the `MessageId` **before** processing, so a crash between the two loses the bounce permanently | ✅ `fa6a0b2` — commented. The ordering is what #99 needs once the handler also ledgers |
 
 **Re-verified 2026-07-30** (`760a015..HEAD`): all seven actioned items confirmed fixed, no new
 problems introduced, and nothing in them obstructs finding 1. Two residuals from that pass were
@@ -251,8 +251,8 @@ closed in the same sweep — the Art. 15 report and the operator script did not 
 at all (so an access report omitted the one store holding the subject's plaintext address), and
 the `DATA_INVENTORY` cap wording predated the eviction exemption.
 
-Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + drain worker) ·
-**#101** (list cap). Rows 9–13 stay **here**, not on GitHub — they are a comment, an assertion and a cosmetic field, and six issues for that is noise while one bucket issue is unclosable. Rows 11 and the batched-persist note are natural pickups for #100's drain worker. The one exception is the SNS cert-fetch hardening, which is standalone security work: **#104**. Phase 2 sending domains: **#103**.
+Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + drain worker — SHIPPED,
+and rows 9, 10, 11, 13 closed with it) · **#101** (list cap). Rows 9–13 stayed **here**, not on GitHub — they are a comment, an assertion and a cosmetic field, and six issues for that is noise while one bucket issue is unclosable. Rows 11 and the batched-persist note are natural pickups for #100's drain worker. The one exception is the SNS cert-fetch hardening, which is standalone security work: **#104**. Phase 2 sending domains: **#103**.
 
 ### Finding 1 — the half of the bug that is still open
 
@@ -315,14 +315,23 @@ because the dangerous case is not someone raising the recipient cap, it is someo
 *(The commit message for `14f181a` says "900 today" — that was arithmetic done in prose
 rather than in code. The value is 1,080; `email-delivery-guarantees.test.ts` asserts it.)*
 
-- **No background job queue for broadcasts.** Sends still run inline in the HTTP request.
-  The rate limiter makes a large broadcast *slower*, not faster — 1,000 recipients at 12/s
-  is ~83s against Cloudflare's 125s origin timeout — ~34% headroom before rendering,
-  suppression checks and latency variance. Survivable, not comfortable. **This is
-  the next thing to fix**, and it is more urgent than it was before this change.
-- **No batch API use.** `SendEmail` is one message per call. SESv2 has `SendBulkEmail`, but
-  it requires templates, which our per-recipient unsubscribe footer does not fit without
-  restructuring.
+- ~~**No background job queue for broadcasts.**~~ **CLOSED — #100, 2026-08-02.** Both
+  broadcast paths now go through `/api/broadcasts/jobs` and drain on a background worker;
+  the inline endpoints return 410 and `maxInlineRecipients()` is deleted. §7 below records
+  what was settled.
+- **No batch API use — re-checked 2026-08-02, and the earlier reason was wrong.**
+  `SendBulkEmail` does require a template, but an INLINE template needs no stored resource,
+  and `BulkEmailEntry.ReplacementHeaders` (max 15) carries a per-destination
+  `List-Unsubscribe`, which is not on SES's disallowed-custom-header list. So our
+  per-recipient unsubscribe footer is *not* the blocker it was recorded as.
+  **It is still not worth doing**, for a better reason: SES quotas are counted in
+  RECIPIENTS, not calls — "an email that has 10 recipients counts as 10 against your quota"
+  — so batching 50 at a time saves round-trips and sockets, not throughput, and our ceiling
+  is the account send rate either way. It also turns every send into partial-failure
+  bookkeeping (`BulkEmailEntryResults` is per-entry) and makes subscribing to Rendering
+  Failure events mandatory. Revisit only if HTTP round-trips ever become the constraint.
+  Sources: SESv2 `BulkEmailEntry` / `MessageHeader` API reference, "Managing sending limits",
+  "Using templates to send personalized email".
 
 ---
 
@@ -391,3 +400,85 @@ shape works unchanged when a sealed list later arrives in pages, and it removes 
 per-request cap without anyone having to decide the list ceiling first. The
 plaintext-at-rest question, by contrast, **must** be settled before the job store is
 written, because it determines what that store holds.
+
+---
+
+## 7. What #100 settled — the queue as built (2026-08-02)
+
+§6 argued for the shape. This is what the shape became, and the decisions inside
+it that are not obvious from the code.
+
+**API.** `POST /api/broadcasts/jobs` → `.../chunk` → `.../start`, one surface for
+both `kind: "marketing"` and `kind: "event"`. `start` carries `chunkCount` and
+`totalRecipients` and **refuses on mismatch** — a lost chunk POST would otherwise
+produce a job that drains, completes and reports success while a chunk of people
+were never mailed, which is the failure class this whole branch exists to end.
+The two inline endpoints return **410**, not 404: Hono's default 404 is plain
+text and the frontend would surface it as a JSON parse error.
+
+**Ceilings — there is exactly one, and it is not the queue's.**
+`MAX_JOB_RECIPIENTS` derives from `MARKETING_MAX_LIST_EMAILS`, and the chunk
+bound derives from that with 4× headroom. A fixed chunk cap (the first draft had
+200 × 500 = 100,000) would have sat *below* the ~175k the sealed blob can
+actually take, leaving #101 a hidden lower ceiling to rediscover.
+
+**Restart semantics, stated plainly.** The payload key is generated per process
+and never written down, so a restart makes every chunk permanently unreadable and
+kills in-flight jobs. That is the cost of the property, and the property is worth
+it for BACKUPS rather than for the running VM — anyone who can read `.data/` can
+also read `server.env`, but a snapshot that catches a chunk catches ciphertext
+nobody holds a key for. The cost is paid down by making death loud: boot marks
+jobs `died` with an unsent count, `/api/health` reports `broadcasts.ok: false`
+while one is unresumed, and `resumeOf` re-uploads the same list and skips
+everyone already delivered to. **Check for running jobs before a deploy.**
+
+**Ordering that is load-bearing.** `sentHashes` is fsynced BEFORE the chunk is
+unlinked. The other order loses the record of who was mailed while the chunk is
+already gone, and a resume — which skips on `sentHashes` — would re-deliver up to
+a full chunk. The reverse crash window leaves an orphan ciphertext file that boot
+wipes, and costs nothing.
+
+**Scheduling** rotates at CHUNK granularity, event-kind first. Strict FIFO would
+park a 200-attendee "the doors have moved" behind a stranger's 20,000-contact
+blast for half an hour. The drain **never** takes `withOrgLock` — that is a
+promise chain, and holding it across a 28-minute send would hang the organiser's
+own list, check and suppress calls until Cloudflare killed them. The lock covers
+gate-check, cap reservation and the state flip only.
+
+**The daily cap is reserved at start and reconciled at the end**, rewriting the
+same log entry rather than appending a negative one (a refund written an hour
+later would also age out an hour later, briefly granting phantom allowance).
+Without the reconcile, a job killed at 5% leaves the full reservation standing,
+`capRemaining` reads 0, and the organiser cannot resume for 24 hours — the
+accounting for a failure blocking its own remedy.
+
+**Event membership is snapshotted ONCE** at job creation, and job creation
+**503s** if any claimers feed was unreadable. Re-deriving per chunk would be a
+Swarm read per series per chunk, and a blip midway would make real attendees look
+like strangers — `getAttendeeEmailHashes` now distinguishes `unreadableSeries`
+from `unverifiableSeries` so that is expressible at all. "An unreadable page is
+not an empty page" (`4fedca9`), applied to membership.
+
+**Cancellation stops what has not been sent and says so.** Every ESP that
+publishes its semantics says the same thing — Resend: "Canceling a broadcast only
+stops emails that haven't been sent yet." The UI never implies recall.
+
+**A separate defect fixed on the way** (`ce1da11`): the SESv2 client was on
+`retryMode: "adaptive"`, whose rate limiter is per-CLIENT and can delay the
+INITIAL request. One client serves ticket email and broadcasts, so a
+broadcast-induced throttle was stalling transactional mail *underneath* the
+priority queue. AWS: "Adaptive mode is not recommended as a general default." The
+SDK's own `maxAttempts` also composed with our retry loop — up to 9 provider
+calls recorded as 3, and a token bucket that could not see the calls the SDK
+absorbed. Retrying now happens in exactly one place.
+
+**Legal.** `docs/legal/DATA_INVENTORY.md` §3.1 gained rows for
+`broadcast-jobs/*.json` (hash-only, 7-day retention, Art. 15 reachable via
+`broadcastsContaining`, deliberately NOT Art. 17 erasable — removing a hash would
+make a resumed job mail the person who asked to be forgotten; suppression is the
+mechanism instead) and `broadcast-chunks/*.bin`. §3.2's "hashed-and-discarded"
+claim was amended: broadcast recipients are no longer transient, and saying so is
+not optional.
+
+**Still open:** #99 (async bounces → ledger) and #101 (the list cap). Board row
+12 (SNS cert-fetch hardening) is #104.

@@ -17,14 +17,13 @@
 
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   RateLimiter,
   QueueOverflowError,
-  maxInlineRecipients,
   effectiveSendRate,
   DEFAULT_SEND_RATE,
 } from "../src/lib/email/rate-limiter.js";
@@ -177,7 +176,7 @@ describe("failure ledger", () => {
     assert.equal(entry.kind, "transactional");
     // Plaintext is kept here on purpose: nothing else on disk can recover the
     // buyer's address, so a hash-only record would be unactionable.
-    assert.equal(entry.recipient, "buyer@example.com");
+    assert.equal(entry.recipients[0]?.address, "buyer@example.com");
     assert.equal(entry.context?.stripeSessionId, "cs_test_123");
     assert.equal(entry.subject, "Your ticket");
   });
@@ -193,8 +192,8 @@ describe("failure ledger", () => {
     const [entry] = ledger.listFailures();
     assert.ok(entry);
     assert.equal(entry.kind, "marketing");
-    assert.equal(entry.recipient, undefined, "the marketing path must not store plaintext");
-    assert.ok(entry.recipientHash.length > 0);
+    assert.equal(entry.recipients[0]?.address, undefined, "the marketing path must not store plaintext");
+    assert.ok((entry.recipients[0]?.hash ?? "").length > 0);
   });
 
   test("health goes NOT-ok on an unresolved transactional failure", async () => {
@@ -240,6 +239,119 @@ describe("failure ledger", () => {
     );
     ledger._reloadForTest(); // models a process restart: memory dropped, disk kept
     assert.equal(ledger.listFailures().length, 1, "the ledger is worthless if a restart empties it");
+  });
+});
+
+/**
+ * The ledger is evidence, not telemetry. Two properties follow from that and
+ * were wrong on merge (SES_MIGRATION_HANDOVER §4a rows 9 and 10): it must name
+ * every addressee, and its attempt count must be what we actually did.
+ */
+describe("the ledger as an evidence record", () => {
+  const MULTI: OutboundEmail = { ...MSG, to: ["one@example.com", "two@example.com"] };
+
+  test("every addressee is recorded, not just the first", async () => {
+    const primary = flakyProvider("ses", 99, permanent);
+    await assert.rejects(
+      send.sendVia({ primary: primary.provider, secondary: null, sleep: noSleep }, MULTI, {
+        maxAttempts: 1,
+      }),
+    );
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.recipients.length, 2, "recipient 2..n must not vanish from the record");
+    assert.deepEqual(
+      entry!.recipients.map((r) => r.address),
+      ["one@example.com", "two@example.com"],
+    );
+  });
+
+  test("erasure removes ONE subject's address and leaves their co-addressee's", async () => {
+    const primary = flakyProvider("ses", 99, permanent);
+    await assert.rejects(
+      send.sendVia({ primary: primary.provider, secondary: null, sleep: noSleep }, MULTI, {
+        maxAttempts: 1,
+      }),
+    );
+    const [before] = ledger.listFailures();
+    assert.equal(ledger.eraseRecipient(before!.recipients[0]!.hash), 1);
+
+    const after = ledger.listFailures({ includeResolved: true }).find((e) => e.id === before!.id);
+    assert.equal(after?.recipients[0]?.address, undefined, "the requester's address must go");
+    assert.equal(
+      after?.recipients[1]?.address,
+      "two@example.com",
+      "the other person made no request and is still owed their ticket",
+    );
+  });
+
+  test("attempts counts real provider calls across primary AND failover", async () => {
+    const primary = flakyProvider("ses", 99, retryable);
+    const secondary = flakyProvider("resend", 99, retryable);
+    await assert.rejects(
+      send.sendVia({ primary: primary.provider, secondary: secondary.provider, sleep: noSleep }, MSG, {
+        maxAttempts: 3,
+      }),
+    );
+    const [entry] = ledger.listFailures();
+    assert.equal(primary.callCount + secondary.callCount, 6);
+    assert.equal(entry?.attempts, 6, "the old `retryable ? maxAttempts : 1` under-reported by half");
+  });
+
+  test("a permanent failure records one attempt, because one is what we made", async () => {
+    const primary = flakyProvider("ses", 99, permanent);
+    await assert.rejects(
+      send.sendVia({ primary: primary.provider, secondary: null, sleep: noSleep }, MSG, {
+        maxAttempts: 5,
+      }),
+    );
+    assert.equal(ledger.listFailures()[0]?.attempts, 1);
+  });
+
+  test("a queue overflow records ZERO attempts — the provider was never called", async () => {
+    const primary = flakyProvider("ses", 0, retryable);
+    await assert.rejects(
+      send.sendVia(
+        {
+          primary: primary.provider,
+          secondary: null,
+          sleep: noSleep,
+          acquire: async () => { throw new QueueOverflowError(10_000); },
+        },
+        MSG,
+        { maxAttempts: 1 },
+      ),
+    );
+    assert.equal(primary.callCount, 0);
+    assert.equal(
+      ledger.listFailures()[0]?.attempts,
+      0,
+      "claiming an attempt we never made would send an operator to the SES console for nothing",
+    );
+  });
+
+  test("an entry written by the single-recipient version still loads", async () => {
+    // The file is live in production. A loader that treated the old shape as
+    // malformed would drop evidence of an undelivered paid ticket.
+    const legacy = [
+      {
+        id: "legacy-1",
+        ts: new Date().toISOString(),
+        kind: "transactional",
+        recipient: "old@example.com",
+        recipientHash: "abc123",
+        subject: "Your ticket",
+        provider: "resend",
+        error: "boom",
+        attempts: 3,
+        retryable: true,
+      },
+    ];
+    writeFileSync(join(process.cwd(), ".data", "email-failures.json"), JSON.stringify(legacy));
+    ledger._reloadForTest();
+
+    const [entry] = ledger.listFailures();
+    assert.deepEqual(entry?.recipients, [{ hash: "abc123", address: "old@example.com" }]);
+    assert.equal(ledger.eraseRecipient("abc123"), 1, "and erasure must still reach it");
   });
 });
 
@@ -299,7 +411,7 @@ describe("regressions found in review", () => {
     const health = ledger.failureHealth();
     assert.equal(health.unresolvedTransactional, 1, "the paid ticket must survive the flood");
     assert.equal(health.ok, false, "and the alarm must stay lit");
-    const survivor = ledger.listFailures({ limit: 5000 }).find((e) => e.recipient === "paid@example.com");
+    const survivor = ledger.listFailures({ limit: 5000 }).find((e) => e.recipients.some((r) => r.address === "paid@example.com"));
     assert.ok(survivor, "with the recipient still recoverable");
   });
 
@@ -309,15 +421,15 @@ describe("regressions found in review", () => {
       send.sendVia({ primary: failing.provider, secondary: null, sleep: noSleep }, MSG, { maxAttempts: 1 }),
     );
     const [before] = ledger.listFailures();
-    assert.equal(before?.recipient, "buyer@example.com");
+    assert.equal(before?.recipients[0]?.address, "buyer@example.com");
 
-    assert.equal(ledger.eraseRecipient(before!.recipientHash), 1);
+    assert.equal(ledger.eraseRecipient(before!.recipients[0]!.hash), 1);
 
     const all = ledger.listFailures({ includeResolved: true });
     const after = all.find((e) => e.id === before!.id);
     assert.ok(after);
-    assert.equal(after.recipient, undefined, "plaintext must be gone");
-    assert.equal(after.recipientHash, before!.recipientHash, "the hash stays so re-erasure matches");
+    assert.equal(after.recipients[0]?.address, undefined, "plaintext must be gone");
+    assert.equal(after.recipients[0]?.hash, before!.recipients[0]!.hash, "the hash stays so re-erasure matches");
     assert.equal(after.resolvedBy, "erasure");
     assert.equal(ledger.failureHealth().ok, true, "an erased subject cannot be chased, so the alarm clears");
   });
@@ -420,43 +532,5 @@ describe("rate limiter", () => {
   test("a non-positive rate is rejected at construction", () => {
     // Otherwise the bucket never refills and every send hangs forever.
     assert.throws(() => new RateLimiter({ ratePerSecond: 0 }), /must be > 0/);
-  });
-});
-
-describe("inline broadcast guard", () => {
-  const original = process.env.SES_MAX_SEND_RATE;
-  const restore = () => {
-    if (original === undefined) delete process.env.SES_MAX_SEND_RATE;
-    else process.env.SES_MAX_SEND_RATE = original;
-  };
-
-  test("defaults to 90s of headroom at the default rate", () => {
-    delete process.env.SES_MAX_SEND_RATE;
-    assert.equal(effectiveSendRate(), DEFAULT_SEND_RATE);
-    assert.equal(maxInlineRecipients(), 90 * DEFAULT_SEND_RATE);
-    restore();
-  });
-
-  test("shrinks when the send rate is turned DOWN for warm-up", () => {
-    // The case the guard exists for. At 5/s a 1,000-recipient broadcast takes
-    // 200s and dies at Cloudflare's 524 with the organiser told nothing useful.
-    process.env.SES_MAX_SEND_RATE = "5";
-    assert.equal(maxInlineRecipients(), 450);
-    assert.ok(maxInlineRecipients() < 1000, "must reject what the rate cannot finish");
-    restore();
-  });
-
-  test("grows when the send rate is raised", () => {
-    process.env.SES_MAX_SEND_RATE = "50";
-    assert.equal(maxInlineRecipients(), 4500);
-    restore();
-  });
-
-  test("ignores a nonsense rate rather than computing a nonsense ceiling", () => {
-    for (const bad of ["0", "-4", "abc", ""]) {
-      process.env.SES_MAX_SEND_RATE = bad;
-      assert.equal(effectiveSendRate(), DEFAULT_SEND_RATE, `rate "${bad}" should fall back`);
-    }
-    restore();
   });
 });

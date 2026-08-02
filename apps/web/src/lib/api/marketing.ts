@@ -10,7 +10,6 @@ import type {
   MarketingListMeta,
   MarketingListResponse,
   MarketingCheckResult,
-  MarketingBroadcastResult,
   SendingDomainInfo,
 } from "@woco/shared";
 
@@ -61,21 +60,9 @@ export async function suppressContacts(emails: string[]): Promise<void> {
   if (!resp.ok) throw new Error(resp.error || "Suppress failed");
 }
 
-export async function sendMarketingBroadcast(
-  fromName: string,
-  subject: string,
-  htmlBody: string,
-  recipients: Array<{ email: string; name?: string }>,
-): Promise<MarketingBroadcastResult> {
-  const resp = await authPost<MarketingBroadcastResult>("/api/marketing/broadcast", {
-    fromName,
-    subject,
-    htmlBody,
-    recipients,
-  });
-  if (!resp.data) throw new Error(resp.error || "Broadcast failed");
-  return resp.data;
-}
+// Broadcasts moved to the background queue — see `broadcasts.ts`. The inline
+// endpoint this file used to call now returns 410: a send that takes half an
+// hour cannot live inside an HTTP request, whatever the send rate.
 
 /** Send the draft to one inbox (usually the organiser's own) before the real
  *  broadcast. The server prefixes the subject with "[Test]". */

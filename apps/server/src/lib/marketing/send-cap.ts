@@ -16,6 +16,11 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 interface SendLogEntry {
   ts: number;
   count: number;
+  /**
+   * Set when the entry is a RESERVATION made by a background broadcast job,
+   * so the same entry can later be corrected to what the job actually sent.
+   */
+  jobId?: string;
 }
 
 const log = new Map<string, SendLogEntry[]>();
@@ -81,4 +86,50 @@ export function recordSend(organiserAddress: string, count: number): void {
   recent.push({ ts: Date.now(), count });
   log.set(organiserAddress.toLowerCase(), recent);
   persistToDisk();
+}
+
+/**
+ * Claim allowance for a broadcast that has not run yet.
+ *
+ * A background job drains for up to an hour, so the cap has to bind BEFORE the
+ * send starts — checking it after would let two concurrent jobs each pass a
+ * check the other invalidates. The reservation is therefore the full accepted
+ * recipient count, which over-states what will actually go out (suppressed
+ * recipients never receive anything).
+ *
+ * `reconcileReservation` is what stops that over-statement becoming permanent,
+ * and it is not optional. Without it a job killed at 5% progress leaves a
+ * 20,000 reservation standing, `capRemaining` returns 0, and the organiser is
+ * locked out of resuming for 24 hours — the accounting for a failure blocking
+ * the remedy for that same failure.
+ */
+export function reserveSend(organiserAddress: string, count: number, jobId: string): void {
+  if (count <= 0) return;
+  const recent = recentEntries(organiserAddress);
+  recent.push({ ts: Date.now(), count, jobId });
+  log.set(organiserAddress.toLowerCase(), recent);
+  persistToDisk();
+}
+
+/**
+ * Correct a reservation down to what the job really sent.
+ *
+ * Rewrites the original entry in place rather than appending a negative one: a
+ * refund written an hour after the reservation would also AGE OUT an hour
+ * later, briefly granting allowance that was never earned.
+ *
+ * @returns true if a reservation was found and corrected.
+ */
+export function reconcileReservation(
+  organiserAddress: string,
+  jobId: string,
+  actualSent: number,
+): boolean {
+  const recent = recentEntries(organiserAddress);
+  const entry = recent.find((e) => e.jobId === jobId);
+  if (!entry) return false;
+  entry.count = Math.max(0, actualSent);
+  log.set(organiserAddress.toLowerCase(), recent);
+  persistToDisk();
+  return true;
 }

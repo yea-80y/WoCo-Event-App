@@ -24,6 +24,7 @@ import { getResend } from "./client.js";
 import { sesProvider } from "./ses-provider.js";
 import { sendRateLimiter, type SendPriority } from "./rate-limiter.js";
 import { recordFailure } from "./failure-ledger.js";
+import { enqueueRetry } from "./retry-queue.js";
 import { hashEmail } from "../event/claim-service.js";
 import {
   EmailSendError,
@@ -36,18 +37,13 @@ export { EmailSendError };
 export type { EmailProvider, OutboundEmail, OutboundAttachment };
 
 /**
- * Resend is the secondary provider: an operator rollback lever
- * (`EMAIL_PROVIDER=resend`) and the automatic failover target for TRANSACTIONAL
- * mail only (`EMAIL_FALLBACK_PROVIDER=resend`, see `failoverProvider`).
+ * Resend is the operator ROLLBACK LEVER (`EMAIL_PROVIDER=resend`) and nothing
+ * more. The automatic failover it used to back was deleted with this commit —
+ * see `docs/SES_MIGRATION_HANDOVER.md` §3a, which called it a launch-window
+ * crutch and named the drain worker as the thing that replaces it.
  *
- * Kept on the FREE tier deliberately — we do not pay for two ESPs
- * (docs/PRICING_AND_EMAIL.md §6). That free tier is 100 messages/day, which is
- * why the failover is scoped the way it is: ticket email runs under 1,000 a
- * MONTH, so Resend can absorb an SES outage; a single 1,000-recipient broadcast
- * would exhaust the day's allowance and start a cold domain's reputation with a
- * burst of bulk mail. Hence marketing never fails over.
- *
- * This adapter is scheduled for deletion — see docs/SES_MIGRATION_HANDOVER.md.
+ * Kept on the FREE tier deliberately: we do not pay for two ESPs
+ * (docs/PRICING_AND_EMAIL.md §6). This adapter is scheduled for deletion.
  * Nothing new may be built on Resend.
  */
 const resendProvider: EmailProvider = {
@@ -99,27 +95,6 @@ function selectProvider(): EmailProvider {
   return provider;
 }
 
-/**
- * Secondary provider for TRANSACTIONAL mail only, used when the primary has
- * exhausted its retries on a retryable error — i.e. the provider is down or
- * throttling us, not the message being bad. Off unless configured.
- *
- * Returns null when unset, misconfigured, or pointed at the active provider
- * (failing over to yourself is a no-op that doubles the latency of every
- * outage). A bad value must not throw here: this runs on the error path, and an
- * exception would replace a recoverable failure with an unrecoverable one.
- */
-function failoverProvider(): EmailProvider | null {
-  const name = (process.env.EMAIL_FALLBACK_PROVIDER || "").toLowerCase();
-  if (!name || name === activeEmailProvider()) return null;
-  const p = PROVIDERS[name];
-  if (!p) {
-    console.error(`[email] EMAIL_FALLBACK_PROVIDER="${name}" is not a known provider — ignoring`);
-    return null;
-  }
-  return p;
-}
-
 /** Tests only — drops the memoised provider so env changes take effect. */
 export function _resetProviderForTest(): void {
   provider = null;
@@ -136,6 +111,12 @@ export interface SendEmailOptions {
   context?: Record<string, string>;
   /** Total attempts including the first. Default 3. */
   maxAttempts?: number;
+  /**
+   * Suppress the ledger write and the retry-queue hand-off. Set only by the
+   * drain worker, which is re-sending a message the ledger already holds an
+   * entry for and must update rather than duplicate.
+   */
+  noLedger?: boolean;
 }
 
 /** Base backoff. Doubles per attempt, then gets full jitter applied. */
@@ -167,14 +148,33 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  */
 export interface SendDeps {
   primary: EmailProvider;
-  /** Transactional-only failover target, or null for none. */
+  /**
+   * Second provider to try when the primary is down. Production always passes
+   * null — `EMAIL_FALLBACK_PROVIDER` was deleted once the drain worker landed.
+   * The seam stays because the failover BEHAVIOUR (transactional only, never on
+   * a permanent error) is worth keeping under test: if a second funded provider
+   * is ever added, this is where it goes, and the rules should not be rewritten
+   * from scratch at that point.
+   */
   secondary: EmailProvider | null;
   sleep: (ms: number) => Promise<void>;
   /** Defaults to the shared account-wide token bucket. */
   acquire?: (priority: SendPriority) => Promise<void>;
 }
 
-/** One provider, with retries. Resolves on success, returns the final error otherwise. */
+/**
+ * One provider, with retries.
+ *
+ * `attempts` is the number of provider calls actually made — not a guess
+ * derived from `retryable`. The ledger is an evidence record, and "3 attempts"
+ * on a message the provider was asked to send once is a claim about our own
+ * conduct that would not survive being checked.
+ */
+interface AttemptOutcome {
+  error: EmailSendError | null;
+  attempts: number;
+}
+
 async function attemptWithRetries(
   p: EmailProvider,
   msg: OutboundEmail,
@@ -182,8 +182,9 @@ async function attemptWithRetries(
   maxAttempts: number,
   sleepFn: (ms: number) => Promise<void>,
   acquire: (priority: SendPriority) => Promise<void>,
-): Promise<EmailSendError | null> {
+): Promise<AttemptOutcome> {
   let lastError: EmailSendError | undefined;
+  let made = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -196,11 +197,12 @@ async function attemptWithRetries(
       // module was written to eliminate. Unreachable at today's volumes; the
       // ledger exists for the days that are not today.
       await acquire(priority);
+      made++;
       await p.send(msg);
       if (attempt > 1) {
         console.log(`[email] Delivered via ${p.name} on attempt ${attempt}/${maxAttempts}`);
       }
-      return null;
+      return { error: null, attempts: made };
     } catch (err) {
       lastError =
         err instanceof EmailSendError
@@ -221,15 +223,14 @@ async function attemptWithRetries(
     }
   }
 
-  return lastError ?? new EmailSendError("Unknown send failure", { retryable: false });
+  return {
+    error: lastError ?? new EmailSendError("Unknown send failure", { retryable: false }),
+    attempts: made,
+  };
 }
 
 export async function sendEmail(msg: OutboundEmail, opts: SendEmailOptions = {}): Promise<void> {
-  return sendVia(
-    { primary: selectProvider(), secondary: failoverProvider(), sleep },
-    msg,
-    opts,
-  );
+  return sendVia({ primary: selectProvider(), secondary: null, sleep }, msg, opts);
 }
 
 /** `sendEmail` with its providers supplied explicitly. Exported for tests. */
@@ -246,24 +247,32 @@ export async function sendVia(
 
   const acquire = deps.acquire ?? ((pri: SendPriority) => sendRateLimiter().acquire(pri));
 
-  let failure = await attemptWithRetries(active, msg, priority, maxAttempts, deps.sleep, acquire);
-  if (!failure) return;
+  const primaryOutcome = await attemptWithRetries(
+    active, msg, priority, maxAttempts, deps.sleep, acquire,
+  );
+  if (!primaryOutcome.error) return;
 
+  let failure = primaryOutcome.error;
+  let attempts = primaryOutcome.attempts;
   let usedProvider = active.name;
 
   // Failover is for a DOWN PROVIDER, not a bad message: a permanent error
   // (rejected address, unverified domain, oversized attachment) would fail
   // identically on the secondary and just delay the ledger entry. Transactional
-  // only — see the resendProvider comment for why marketing must not fail over.
+  // only: a broadcast failing over would exhaust a free tier's daily allowance
+  // and start a cold domain's reputation with a burst of bulk mail.
   const secondary = priority === "transactional" && failure.retryable ? deps.secondary : null;
   if (secondary) {
     console.warn(
       `[email] ${active.name} exhausted ${maxAttempts} attempts — failing over to ${secondary.name}`,
     );
-    const secondaryFailure = await attemptWithRetries(
+    const secondaryOutcome = await attemptWithRetries(
       secondary, msg, priority, maxAttempts, deps.sleep, acquire,
     );
-    if (!secondaryFailure) {
+    // Failover calls count too — an operator reading "1 attempt" against a
+    // message we handed to two providers cannot reconstruct what happened.
+    attempts += secondaryOutcome.attempts;
+    if (!secondaryOutcome.error) {
       console.warn(`[email] Delivered via failover provider ${secondary.name}`);
       return;
     }
@@ -271,29 +280,82 @@ export async function sendVia(
     // on its own sends an operator to the wrong dashboard during an SES outage.
     usedProvider = `${active.name}→${secondary.name}`;
     failure = new EmailSendError(
-      `${failure.message} | failover ${secondary.name}: ${secondaryFailure.message}`,
+      `${failure.message} | failover ${secondary.name}: ${secondaryOutcome.error.message}`,
       {
-        retryable: secondaryFailure.retryable,
-        ...(secondaryFailure.code ? { code: secondaryFailure.code } : {}),
-        cause: secondaryFailure,
+        retryable: secondaryOutcome.error.retryable,
+        ...(secondaryOutcome.error.code ? { code: secondaryOutcome.error.code } : {}),
+        cause: secondaryOutcome.error,
       },
     );
   }
 
-  recordFailure({
-    kind: priority === "marketing" ? "marketing" : "transactional",
-    recipient: msg.to[0]!,
-    recipientHash: hashEmail(msg.to[0]!),
-    subject: msg.subject,
-    provider: usedProvider,
-    error: failure.message,
-    ...(failure.code ? { code: failure.code } : {}),
-    attempts: failure.retryable ? maxAttempts : 1,
-    retryable: failure.retryable,
-    ...(opts.context ? { context: opts.context } : {}),
-  });
+  // `noLedger` is the drain worker re-sending something already recorded. See
+  // `resendAbandoned` — a second entry per retry would multiply one undelivered
+  // ticket into a handful of unresolved records, each with its own plaintext
+  // copy of the buyer's address.
+  if (!opts.noLedger) {
+    const entry = recordFailure({
+      kind: priority === "marketing" ? "marketing" : "transactional",
+      recipients: msg.to,
+      recipientHashes: msg.to.map(hashEmail),
+      subject: msg.subject,
+      provider: usedProvider,
+      error: failure.message,
+      ...(failure.code ? { code: failure.code } : {}),
+      attempts,
+      retryable: failure.retryable,
+      ...(opts.context ? { context: opts.context } : {}),
+    });
+
+    // Hand a transient failure to the drain worker. Two conditions, both
+    // load-bearing.
+    //
+    // TRANSIENT only: a rejected address or an unverified domain would fail
+    // identically on every retry and would occupy budget a recoverable message
+    // needs.
+    //
+    // TRANSACTIONAL only: a broadcast already has a retry mechanism, and it is
+    // the job's own resume. Queueing a marketing failure here would deliver it
+    // outside the job — so its hash would never reach `sentHashes`, the job
+    // would still offer "send to the N who missed it", and those N would be
+    // mailed TWICE. It would also skip the suppression re-check that
+    // `sendMarketingBatch` performs and DATA_INVENTORY relies on, mailing
+    // someone who unsubscribed between the failure and the retry.
+    if (failure.retryable && priority !== "marketing") {
+      enqueueRetry(entry.id, msg, priority);
+    }
+  }
 
   throw failure;
+}
+
+/**
+ * Re-send a message the ledger already knows about, WITHOUT writing a second
+ * entry for it.
+ *
+ * The drain worker's entry point. `sendVia` records a failure every time it
+ * gives up, which is right for a first attempt and wrong for the fifth retry of
+ * the same message: it would multiply one undelivered ticket into a handful of
+ * unresolved transactional entries, each carrying its own plaintext copy of the
+ * buyer's address and each exempt from the ledger's size cap.
+ *
+ * @returns the failure, or null on success.
+ */
+export async function resendAbandoned(
+  msg: OutboundEmail,
+  priority: SendPriority,
+): Promise<EmailSendError | null> {
+  try {
+    await sendVia({ primary: selectProvider(), secondary: null, sleep }, msg, {
+      priority,
+      noLedger: true,
+    });
+    return null;
+  } catch (err) {
+    return err instanceof EmailSendError
+      ? err
+      : new EmailSendError(err instanceof Error ? err.message : String(err), { retryable: true });
+  }
 }
 
 /**

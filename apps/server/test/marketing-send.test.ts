@@ -172,7 +172,10 @@ test("one failed recipient does not stop the rest of the batch", async () => {
   assert.equal(result.sent, 2);
   assert.equal(result.failed, 1);
   assert.equal(sent.length, 2);
-  assert.match(result.errors[0], /ESP rejected/);
+  assert.match(result.failures[0].message, /ESP rejected/);
+  assert.equal(result.failures[0].email, bad, "the caller decides whether to keep the plaintext");
+  assert.equal(result.sentHashes.length, 2, "and learns exactly WHICH two went out");
+  assert.ok(!result.sentHashes.includes(result.failures[0].hash));
 });
 
 test("the display name is escaped in the delivered message, not just the builder", async () => {

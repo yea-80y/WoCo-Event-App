@@ -135,6 +135,18 @@ sesWebhook.post("/webhook", async (c) => {
     return c.json({ ok: true });
   }
 
+  // CONSUME BEFORE PROCESSING — deliberate, do not "fix" the ordering.
+  //
+  // A crash between this line and the suppression below loses that bounce
+  // permanently, because SNS's retry will now be deduped away. The alternative
+  // — consume after processing — loses nothing but lets a redelivery (SNS
+  // retries on any non-2xx, and at-least-once is its documented contract)
+  // re-run the handler. Suppression is idempotent, so that redelivery is
+  // harmless *today*; the moment this handler also writes a failure-ledger
+  // entry (#99) it stops being harmless, because duplicate entries are
+  // duplicated evidence of an undelivered ticket. Consuming first keeps the
+  // ordering that #99 needs. The lost-bounce window is bounded by the process
+  // crashing in the microseconds between two synchronous calls.
   if (!checkAndConsumeSnsEvent(envelope.MessageId)) {
     return c.json({ ok: true, data: { deduped: true } });
   }

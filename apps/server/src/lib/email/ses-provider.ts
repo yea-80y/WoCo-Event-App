@@ -73,12 +73,30 @@ export function getSesClient(): SESv2Client {
     }
     client = new SESv2Client({
       region,
-      // Adaptive retry adds client-side rate limiting on top of exponential
-      // backoff, which is the AWS-documented behaviour for throttled workloads.
-      // The token bucket in rate-limiter.ts shapes traffic so this rarely fires;
-      // when it does, it is the difference between a blip and a lost ticket.
-      retryMode: "adaptive",
-      maxAttempts: Number(process.env.SES_MAX_ATTEMPTS) || 3,
+      // STANDARD, not adaptive — this was backwards, and it defeated the one
+      // guarantee the send path exists to make.
+      //
+      // Adaptive mode adds a client-side rate limiter, and AWS is explicit
+      // about its scope: "The rate limiter operates per SDK client instance.
+      // All requests from a client share the same rate limit, regardless of
+      // which API operation or resource they target", and unlike standard mode
+      // it "can delay or block the *initial* request, not just retries". One
+      // client serves both ticket email and broadcasts here, so a
+      // marketing-induced throttle would have delayed the paid buyer's ticket
+      // at the SDK layer — precisely what the priority queue in
+      // rate-limiter.ts was built to prevent. AWS's own "when not to use"
+      // names our case ("serves multiple tenants") and concludes: "Adaptive
+      // mode is not recommended as a general default."
+      // https://docs.aws.amazon.com/sdkref/latest/guide/feature-retry-behavior.html
+      retryMode: "standard",
+      // ONE attempt at this layer, deliberately. `send.ts` already retries with
+      // jittered backoff, re-acquiring a rate-limiter token per attempt. Left
+      // at the SDK default of 3 the two retriers compose: a throttled message
+      // makes up to 9 provider calls while the ledger records 3, and the token
+      // bucket never sees the requests the SDK absorbed — so it cannot learn it
+      // overshot. Keeping the retry in one place makes the attempt count true
+      // and the shaping real.
+      maxAttempts: 1,
     });
   }
   return client;

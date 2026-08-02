@@ -23,7 +23,6 @@ import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
 import { consentedSubset } from "../lib/marketing/consent-store.js";
 import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
-import { maxInlineRecipients } from "../lib/email/rate-limiter.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
 import {
@@ -230,134 +229,32 @@ async function requireVerifiedSender(org: string): Promise<Response | null> {
   );
 }
 
-/** Marketing broadcast to client-decrypted recipients. */
-marketing.post("/broadcast", requireAuth, async (c) => {
-  const org = c.get("parentAddress").toLowerCase();
-  const body = c.get("body") as Record<string, unknown>;
-
-  try {
-    try { getResend(); } catch {
-      return c.json({ ok: false, error: "Email not configured (RESEND_API_KEY missing)" }, 500);
-    }
-
-    const gate = await requireVerifiedSender(org);
-    if (gate) return gate;
-
-    const fromName = body.fromName as string;
-    const subject = body.subject as string;
-    const htmlBody = body.htmlBody as string;
-    const recipients = body.recipients as Array<{ email: string; name?: string }>;
-
-    if (!fromName || typeof fromName !== "string" || fromName.length > 100) {
-      return c.json({ ok: false, error: "fromName required (max 100 chars)" }, 400);
-    }
-    if (!subject || typeof subject !== "string" || subject.length > 200) {
-      return c.json({ ok: false, error: "Subject required (max 200 chars)" }, 400);
-    }
-    if (!htmlBody || typeof htmlBody !== "string" || htmlBody.length > 50_000) {
-      return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
-    }
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      return c.json({ ok: false, error: "At least one recipient required" }, 400);
-    }
-    if (recipients.length > MAX_BROADCAST_RECIPIENTS) {
-      return c.json({ ok: false, error: `Maximum ${MAX_BROADCAST_RECIPIENTS} recipients per broadcast` }, 400);
-    }
-    // TEMPORARY, paired with the background queue (docs/SES_MIGRATION_HANDOVER.md
-    // §5): sends run inline, so a broadcast the send rate cannot finish in time
-    // dies at Cloudflare's 524 with the organiser seeing a generic gateway error
-    // and no idea how many people were mailed. Refusing up front is the honest
-    // failure. Delete this with the inline send path.
-    const inlineMax = maxInlineRecipients();
-    if (recipients.length > inlineMax) {
-      return c.json({
-        ok: false,
-        error:
-          `This broadcast is too large to send in one go right now — ${recipients.length} ` +
-          `recipients, current maximum ${inlineMax}. Split it, or wait for scheduled ` +
-          `sending which removes this limit.`,
-      }, 400);
-    }
-    for (const r of recipients) {
-      if (!r?.email || typeof r.email !== "string" || !EMAIL_RE.test(r.email)) {
-        return c.json({ ok: false, error: `Invalid email: ${String(r?.email)}` }, 400);
-      }
-    }
-
-    // Recipients must come from the imported list — the wizard's consent
-    // warranty is the only path to a sendable address. (Suppression is still
-    // re-checked per recipient inside sendMarketingBatch.)
-    const storedHashes = new Set(getList(org)?.emailHashes ?? []);
-    const unknownCount = recipients.filter((r) => !storedHashes.has(hashEmail(r.email))).length;
-    if (unknownCount > 0) {
-      return c.json(
-        { ok: false, error: `${unknownCount} recipient(s) are not in your imported audience — import them first` },
-        400,
-      );
-    }
-
-    // Rate limit + cap + send + record run under the org lock so concurrent
-    // broadcasts can't both pass the checks and double the allowance.
-    const outcome = await withOrgLock(org, async () => {
-      const now = Date.now();
-      const timestamps = broadcastRateMap.get(org) ?? [];
-      const recent = timestamps.filter((t) => now - t < BROADCAST_RATE_WINDOW);
-      if (recent.length >= BROADCAST_RATE_LIMIT) {
-        return { rejected: "Rate limit exceeded (2 marketing broadcasts per hour)" } as const;
-      }
-
-      // Daily cap: explicit reject, never silent trimming. The organiser's own
-      // stored list size is the floor — the cap exists to slow cold-list
-      // blasting, not to make a full-audience announcement impossible.
-      const remaining = capRemaining(org, storedHashes.size);
-      if (recipients.length > remaining) {
-        return {
-          rejected: `Daily marketing send cap reached (${remaining} of your daily allowance remaining). Try a smaller batch or wait.`,
-        } as const;
-      }
-
-      const result = await sendMarketingBatch({
-        organiserAddress: org,
-        fromDisplayName: fromName,
-        fromAddress: resolveMarketingFrom(org),
-        subject,
-        html: htmlBody,
-        recipients,
-      });
-
-      recent.push(now);
-      broadcastRateMap.set(org, recent);
-      recordSend(org, result.sent);
-      return { result } as const;
-    });
-
-    if ("rejected" in outcome) {
-      return c.json({ ok: false, error: outcome.rejected }, 429);
-    }
-    const result = outcome.result;
-
-    console.log(
-      `[marketing] broadcast org=${org} sent=${result.sent} suppressed=${result.suppressed} failed=${result.failed}`,
-    );
-
-    return c.json({
-      ok: true,
-      data: {
-        sent: result.sent,
-        suppressed: result.suppressed,
-        failed: result.failed,
-        // Same floor as the pre-send check, or the UI would report a smaller
-        // allowance than the next broadcast would actually be granted.
-        capRemaining: capRemaining(org, storedHashes.size),
-        ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 10) } : {}),
-      },
-    });
-  } catch (err) {
-    console.error("[marketing] broadcast error:", err);
-    const message = err instanceof Error ? err.message : "Broadcast failed";
-    return c.json({ ok: false, error: message }, 500);
-  }
-});
+/**
+ * `POST /api/marketing/broadcast` — RETIRED.
+ *
+ * Marketing broadcasts now go through the background queue at
+ * `/api/broadcasts/jobs` (`kind: "marketing"`). The gates moved with them
+ * unchanged: Stripe-verified sender, imported-audience membership per recipient,
+ * 2/hour, and the rolling daily cap. What did not move is sending inside the
+ * HTTP request — at the account send rate a full-list broadcast takes ~28
+ * minutes against a 125s origin timeout, and no send rate makes that fit.
+ *
+ * An explicit 410 rather than a deletion: Hono's default 404 is plain text, and
+ * the frontend's `authPost` would surface it as a JSON parse error instead of
+ * "reload the page".
+ */
+marketing.post("/broadcast", (c) =>
+  c.json(
+    {
+      ok: false,
+      error:
+        "This page is out of date — reload it. Broadcasts now send in the background, " +
+        "so your whole audience can be mailed in one go.",
+      code: "BROADCAST_ENDPOINT_RETIRED",
+    },
+    410,
+  ),
+);
 
 /** Test sends: enough to iterate on a draft, useless as a bulk sender. */
 const testSendRateMap = new Map<string, number[]>();
@@ -432,7 +329,11 @@ marketing.post("/broadcast/test", requireAuth, async (c) => {
         // this inbox unsubscribed from this organiser at some point.
         suppressed: result.suppressed,
         failed: result.failed,
-        ...(result.errors.length > 0 ? { errors: result.errors.slice(0, 1) } : {}),
+        // Plaintext is right here: it is the one address the organiser just
+        // typed into the box, and they are the controller of it.
+        ...(result.failures.length > 0
+          ? { errors: result.failures.slice(0, 1).map((f) => `${f.email}: ${f.message}`) }
+          : {}),
       },
     });
   } catch (err) {

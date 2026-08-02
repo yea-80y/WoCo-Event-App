@@ -10,7 +10,8 @@ import { consentsForEmailHash, forgetEmailHash, forgetEmailHashForOrg, type Cons
 import { listsContaining, removeFromLists } from "./list-store.js";
 import { persistFailureCount } from "./persist.js";
 import { marksFor, suppressGlobal, suppressOrg } from "./suppression-store.js";
-import { eraseRecipient, listFailures, type EmailFailure } from "../email/failure-ledger.js";
+import { eraseRecipient, failuresForHash, type EmailFailure } from "../email/failure-ledger.js";
+import { broadcastsContaining, type BroadcastRecord } from "../email/broadcast-jobs.js";
 
 export interface SubjectReport {
   emailHash: string;
@@ -27,6 +28,12 @@ export interface SubjectReport {
    * the data the subject is most entitled to know about.
    */
   emailFailures: EmailFailure[];
+  /**
+   * Broadcast jobs that mailed this address. Hash-only records — no plaintext
+   * has ever been in that store — but the fact that an organiser's broadcast
+   * reached them on a given date is processing we hold and must disclose.
+   */
+  broadcasts: BroadcastRecord[];
 }
 
 export interface ErasureResult {
@@ -59,11 +66,10 @@ export function reportSubject(emailHash: string, organiser?: string): SubjectRep
     marks: marksFor(emailHash),
     // Platform-level, like the ledger itself: an organiser-scoped request does
     // not reach it, matching how `eraseSubject` treats it.
-    emailFailures: org
-      ? []
-      : listFailures({ includeResolved: true, limit: Number.MAX_SAFE_INTEGER }).filter(
-          (e) => e.recipientHash === emailHash,
-        ),
+    emailFailures: org ? [] : failuresForHash(emailHash),
+    // Scoped to the named controller when one is given: a broadcast belongs to
+    // the organiser who sent it, unlike the platform-level failure ledger.
+    broadcasts: broadcastsContaining(emailHash).filter((b) => !org || b.org === org),
   };
 }
 

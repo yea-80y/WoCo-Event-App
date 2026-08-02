@@ -1,6 +1,12 @@
 <script lang="ts">
-  import type { MarketingContact, MarketingBroadcastResult, EventDirectoryEntry } from "@woco/shared";
-  import { sendMarketingBroadcast, sendMarketingTest } from "../../api/marketing.js";
+  import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
+  import { sendMarketingTest } from "../../api/marketing.js";
+  import {
+    startBroadcast,
+    pollBroadcast,
+    type BroadcastJobStatus,
+  } from "../../api/broadcasts.js";
+  import BroadcastProgress from "./BroadcastProgress.svelte";
   import { getEventsByCreator } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { firstImageUrl } from "../../components/site/image-fallback.js";
@@ -26,7 +32,9 @@
   let body = $state("");
   let sending = $state(false);
   let showPreview = $state(false);
-  let result = $state<MarketingBroadcastResult | null>(null);
+  let job = $state<BroadcastJobStatus | null>(null);
+  /** Contacts handed over so far, while a large list uploads. */
+  let uploaded = $state(0);
   let error = $state<string | null>(null);
 
   /** Attaching an event is what turns a message into an on-sale announcement —
@@ -117,31 +125,51 @@
     }
   }
 
-  async function handleSend(): Promise<void> {
+  async function handleSend(resumeOf?: string): Promise<void> {
+    // The send button is disabled while `sending`, but the resume button in
+    // BroadcastProgress is a different control — and the blocking `confirm()`
+    // below lets a second click through at the first await, which would create
+    // two resume jobs and mail the remainder twice.
+    if (sending) return;
     error = null;
-    result = null;
-    if (!fromName.trim()) { error = "Add the name this email is from (your brand)."; return; }
-    if (!subject.trim()) { error = "Subject is required."; return; }
-    if (!body.trim()) { error = "Message body is required."; return; }
+    // A resume re-sends the message the server already holds, so there is
+    // nothing to validate here — the compose box was cleared when the first
+    // job queued, which is exactly why the content cannot come from it.
+    if (!resumeOf) {
+      if (!fromName.trim()) { error = "Add the name this email is from (your brand)."; return; }
+      if (!subject.trim()) { error = "Subject is required."; return; }
+      if (!body.trim()) { error = "Message body is required."; return; }
+    }
     if (recipients.length === 0) { error = "No reachable contacts to send to."; return; }
 
-    if (!confirm(`Send "${subject.trim()}" to ${recipients.length.toLocaleString()} contact${recipients.length === 1 ? "" : "s"}?`)) {
+    const verb = resumeOf ? "Send again to the contacts who missed it" : `Send "${subject.trim()}"`;
+    if (!confirm(`${verb} — ${recipients.length.toLocaleString()} contact${recipients.length === 1 ? "" : "s"}?`)) {
       return;
     }
 
     sending = true;
+    uploaded = 0;
+    job = null;
     try {
-      result = await sendMarketingBroadcast(
-        fromName.trim(),
-        subject.trim(),
-        buildHtml(),
+      // Resolves once the job is QUEUED. Everything after this point happens on
+      // the server, which is the whole point — the organiser can walk away.
+      job = await startBroadcast({
+        kind: "marketing",
         recipients,
-      );
-      if (result.sent > 0) {
-        subject = "";
-        body = "";
-        showPreview = false;
-      }
+        onUpload: (n) => { uploaded = n; },
+        ...(resumeOf
+          ? { resumeOf }
+          : { fromName: fromName.trim(), subject: subject.trim(), htmlBody: buildHtml() }),
+      });
+      // Clear the draft as soon as it is safely queued: leaving it in the box
+      // invites a second send of the same message.
+      subject = "";
+      body = "";
+      showPreview = false;
+      void pollBroadcast(job.jobId, (update) => { job = update; }).catch(() => {
+        // A dropped poll says nothing about the send. Leave the last known
+        // state on screen rather than claiming a failure that did not happen.
+      });
     } catch (err) {
       error = err instanceof Error ? err.message : "Send failed.";
     } finally {
@@ -225,13 +253,12 @@
   </div>
   {#if testNote}<p class="test-note">{testNote}</p>{/if}
 
-  {#if result}
-    <div class="result" class:has-failures={result.failed > 0}>
-      Sent to {result.sent.toLocaleString()} contact{result.sent === 1 ? "" : "s"}.
-      {#if result.suppressed > 0}<br />{result.suppressed.toLocaleString()} skipped (unsubscribed).{/if}
-      {#if result.failed > 0}<br />{result.failed.toLocaleString()} failed.{/if}
-      <br /><span class="cap">{result.capRemaining.toLocaleString()} sends left in your daily allowance.</span>
-    </div>
+  {#if job}
+    <BroadcastProgress
+      {job}
+      onResume={(dead) => handleSend(dead.jobId)}
+      onDismiss={() => { job = null; }}
+    />
   {/if}
   {#if error}<p class="err">{error}</p>{/if}
 
@@ -244,7 +271,11 @@
       disabled={sending || recipients.length === 0 || !subject.trim() || !body.trim() || !fromName.trim()}
       onclick={() => void handleSend()}
     >
-      {sending ? "Sending…" : "Send broadcast"}
+      {sending
+        ? uploaded > 0 && recipients.length > uploaded
+          ? `Uploading ${uploaded.toLocaleString()} of ${recipients.length.toLocaleString()}…`
+          : "Starting…"
+        : "Send broadcast"}
     </button>
   </div>
 </section>
@@ -353,18 +384,6 @@
     color: var(--text-secondary);
     margin: -0.375rem 0 0;
   }
-
-  .result {
-    font-size: 0.8125rem;
-    color: var(--text);
-    border: 1px solid color-mix(in srgb, var(--success) 40%, var(--border));
-    background: var(--accent-subtle);
-    border-radius: var(--radius-md);
-    padding: 0.75rem 0.875rem;
-    line-height: 1.6;
-  }
-  .result.has-failures { border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
-  .result .cap { color: var(--text-muted); font-size: 0.75rem; }
 
   .err { color: var(--error); font-size: 0.8125rem; margin: 0; }
 

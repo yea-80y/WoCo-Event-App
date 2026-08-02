@@ -51,6 +51,14 @@ jobs:
       - name: Test server (sponsor nonce queue)
         run: npm run test:server
 
+      # svelte-check, NOT just the build. Vite/esbuild strip types without
+      # checking them, so a .svelte file referencing an undeclared identifier
+      # builds clean and fails at runtime — which is exactly how a dead send
+      # button reached a green CI run once. `build:web` proves it bundles;
+      # this proves it compiles.
+      - name: Typecheck web
+        run: npm run check -w @woco/web
+
       - name: Build web
         run: npm run build:web
 

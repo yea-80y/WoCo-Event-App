@@ -15,10 +15,12 @@ import { orders } from "./routes/orders.js";
 import { approvals } from "./routes/approvals.js";
 import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
+import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
 import { broadcast } from "./routes/broadcast.js";
+import { broadcastJobs } from "./routes/broadcast-jobs.js";
 import { domains } from "./routes/domains.js";
 import { stripeRoutes } from "./routes/stripe.js";
 import { sitesRouter } from "./routes/sites.js";
@@ -47,6 +49,13 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { failureHealth } from "./lib/email/failure-ledger.js";
+import { reconcileOnBoot, recordShutdown } from "./lib/email/broadcast-jobs.js";
+import {
+  drainWorkerHealth,
+  settleReservation,
+  startDrainWorker,
+  stopDrainWorker,
+} from "./lib/email/drain-worker.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
@@ -183,7 +192,11 @@ app.get("/api/health", (c) =>
     ok: true,
     payoutSweep: payoutSweepHealth(),
     compliancePersistence: persistHealth(),
-    email: { provider: activeEmailProvider(), undelivered: failureHealth() },
+    email: {
+      provider: activeEmailProvider(),
+      undelivered: failureHealth(),
+      broadcasts: drainWorkerHealth(),
+    },
   }),
 );
 
@@ -421,6 +434,10 @@ app.route("/api/collection", collection);
 app.route("/api/admin", admin);
 app.route("/api/site", siteRoute);
 
+// Operator surface — bearer token, NOT wallet auth, and refuses when OPS_TOKEN
+// is unset. Reaches the one store holding buyer plaintext addresses.
+app.route("/api/ops", ops);
+
 // Multi-page site builder: config + events index CRUD
 app.route("/api/sites", sitesRouter);
 
@@ -482,6 +499,9 @@ app.route("/api/ses", sesWebhook);
 // Organiser marketing audience (sealed contact lists + broadcasts)
 app.route("/api/marketing", marketing);
 
+// Background broadcast queue — the only path that sends a bulk email.
+app.route("/api/broadcasts", broadcastJobs);
+
 // Public ticket page + composite PNG — replaces the slow woco.eth.limo/#/verify
 // link in confirmation emails. Mounted at /t (not /api/t) since these are
 // user-facing URLs that ship in emails.
@@ -507,7 +527,39 @@ app.get("/woco-embed.js", (c) => {
 
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
-serve({ fetch: app.fetch, port });
+const server = serve({ fetch: app.fetch, port });
+
+/**
+ * Graceful shutdown.
+ *
+ * `docker compose up -d server` sends SIGTERM and waits before killing. Without
+ * a handler the process vanishes mid-broadcast and the only record of it is
+ * reconstructed at the NEXT boot — fine when the container comes straight back,
+ * wrong when it does not: an organiser is left looking at "Sending" forever,
+ * `/api/health` says nothing, and there is no resume button, because nothing has
+ * run to say the job died.
+ *
+ * So the truth is written at the moment of death, and `reconcileOnBoot` remains
+ * as the belt to this braces — it has to produce the same outcome for a kill -9,
+ * an OOM or a power cut, where no handler ever runs.
+ */
+let shuttingDown = false;
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} — stopping the broadcast worker`);
+  // First: no new chunks, and abort whatever is in flight. `finishJob` fires
+  // each job's AbortController, so a send stops at its next group rather than
+  // being cut off mid-request.
+  stopDrainWorker();
+  for (const job of recordShutdown()) settleReservation(job);
+  server.close(() => process.exit(0));
+  // Backstop: never hang past the container's grace period holding open a
+  // keep-alive connection. The records above are already on disk by here.
+  setTimeout(() => process.exit(0), 5_000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 // Surfaces a missing SES credential at boot rather than leaving it to be found
 // by the first buyer whose ticket never arrived. Non-fatal by design.
 checkEmailProviderConfig();
@@ -529,3 +581,10 @@ startSnapshotMaintenance();
 // eventually breach Stripe's hold ceiling — so its absence is a production alarm,
 // not a degraded feature. See docs/PAYOUTS.md.
 startPayoutReleaseJob();
+// Broadcast recipients are encrypted at rest under a key held only in the
+// process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
+// it, mark the jobs that were in flight `died`, and hand back their daily-cap
+// reservations — a reservation left standing for a job that will never finish
+// locks the organiser out of resuming it for 24 hours.
+for (const job of reconcileOnBoot()) settleReservation(job);
+startDrainWorker();
