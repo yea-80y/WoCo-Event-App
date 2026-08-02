@@ -22,9 +22,8 @@ import { getMarketingFromAddress } from "../email/client.js";
  * nothing wrong and there is no action they can take.
  */
 export const MARKETING_SENDER_UNCONFIGURED =
-  "Marketing sending is paused: WoCo has not finished configuring its marketing " +
-  "sending address. Nothing has been sent and your draft is safe — this is a " +
-  "platform setup step, not a problem with your account.";
+  "WoCo has not finished setting up its marketing sending address, so nothing was " +
+  "sent. This is on our side, not a problem with your account.";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-domains.json");

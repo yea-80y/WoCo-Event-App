@@ -265,7 +265,7 @@ describe("MARKETING_SENDER_UNCONFIGURED", () => {
    */
   test("tells the organiser nothing was sent and it is not their account", () => {
     const msg = store.MARKETING_SENDER_UNCONFIGURED;
-    assert.match(msg, /nothing has been sent/i);
+    assert.match(msg, /nothing was sent/i);
     assert.match(msg, /not a problem with your account/i);
     assert.doesNotMatch(msg, /EMAIL_FROM_MARKETING|env|null/i, "written for an organiser, not an operator");
   });

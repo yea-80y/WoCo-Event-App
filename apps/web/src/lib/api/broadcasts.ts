@@ -18,6 +18,7 @@
  */
 
 import { authPost, authGet } from "./client.js";
+import { apiError } from "./errors.js";
 
 export type BroadcastJobKind = "marketing" | "event";
 
@@ -95,7 +96,7 @@ export async function startBroadcast(input: StartBroadcastInput): Promise<Broadc
     ...(input.eventId ? { eventId: input.eventId } : {}),
     ...(input.resumeOf ? { resumeOf: input.resumeOf } : {}),
   });
-  if (!created.data) throw new Error(created.error || "Could not start the broadcast");
+  if (!created.data) throw apiError(created, "Could not start the broadcast");
   const jobId = created.data.jobId;
 
   // Tally what the SERVER said it took, not what we sent. The two are allowed

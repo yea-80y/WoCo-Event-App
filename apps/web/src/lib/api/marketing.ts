@@ -5,6 +5,7 @@
  */
 
 import { authPost, authGet, authDelete } from "./client.js";
+import { apiError } from "./errors.js";
 import type {
   SealedBox,
   MarketingListMeta,
@@ -76,7 +77,7 @@ export async function sendMarketingTest(
     "/api/marketing/broadcast/test",
     { fromName, subject, htmlBody, email },
   );
-  if (!resp.data) throw new Error(resp.error || "Test send failed");
+  if (!resp.data) throw apiError(resp, "Test send failed");
   return resp.data;
 }
 
