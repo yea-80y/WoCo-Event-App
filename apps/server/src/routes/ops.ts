@@ -32,6 +32,7 @@ import {
   failureHealth,
   listFailures,
   resolveFailure,
+  resolveFailures,
   type EmailFailure,
 } from "../lib/email/failure-ledger.js";
 import { forgetRetries } from "../lib/email/retry-queue.js";
@@ -153,6 +154,48 @@ ops.get("/email-failures/:id/recipients", (c) => {
       recipients: entry.recipients,
       ...(entry.context ? { context: entry.context } : {}),
     },
+  });
+});
+
+/**
+ * POST /api/ops/email-failures/resolve
+ *
+ * Body: `{ ids: string[], by }`. Resolves many entries in one request.
+ *
+ * Exists because the ledger acquired a second writer. Until #99 the only source
+ * of transactional entries was our own send path, so clearing the alarm one
+ * POST at a time was proportionate. Now every permanent bounce writes one, and
+ * unresolved transactional entries are exempt from the ledger's size cap — so a
+ * bad list, or a burst of unauthenticated email claims to bouncing addresses,
+ * leaves an operator with dozens of rows and a red `/api/health` they can only
+ * clear one at a time, during the incident.
+ *
+ * Explicit ids, never "resolve everything": the operator has to have looked at
+ * the list. `by` is required for the same reason as the single-entry route — an
+ * alarm cleared by nobody in particular is an alarm nobody owns.
+ */
+const MAX_BULK_RESOLVE = 500;
+
+ops.post("/email-failures/resolve", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { ids?: unknown; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+
+  const ids = Array.isArray(body?.ids) ? body.ids.filter((i): i is string => typeof i === "string") : [];
+  if (!ids.length) return c.json({ ok: false, error: "`ids` must be a non-empty array" }, 400);
+  if (ids.length > MAX_BULK_RESOLVE) {
+    return c.json({ ok: false, error: `At most ${MAX_BULK_RESOLVE} ids per request` }, 400);
+  }
+
+  const resolved = resolveFailures(ids, by);
+  for (const id of resolved) forgetRetries(id);
+
+  console.log(`[ops] ${resolved.length}/${ids.length} ledger entries marked resolved by ${by}`);
+  return c.json({
+    ok: true,
+    // `skipped` is already-resolved or unknown, which are the same answer: there
+    // is nothing left to do with that id.
+    data: { resolved: resolved.length, skipped: ids.length - resolved.length, health: failureHealth() },
   });
 });
 

@@ -33,6 +33,8 @@ let suppression: typeof import("../src/lib/marketing/suppression-store.js");
 let hashEmail: (typeof import("../src/lib/event/claim-service.js"))["hashEmail"];
 let snsVerify: typeof import("../src/lib/email/sns-verify.js");
 let consumed: typeof import("../src/lib/email/consumed-sns-events.js");
+let ledger: typeof import("../src/lib/email/failure-ledger.js");
+let tags: typeof import("../src/lib/email/message-tags.js");
 
 before(async () => {
   const dir = mkdtempSync(join(tmpdir(), "woco-ses-webhook-cert-"));
@@ -57,12 +59,16 @@ before(async () => {
   suppression = await import("../src/lib/marketing/suppression-store.js");
   snsVerify = await import("../src/lib/email/sns-verify.js");
   consumed = await import("../src/lib/email/consumed-sns-events.js");
+  ledger = await import("../src/lib/email/failure-ledger.js");
+  tags = await import("../src/lib/email/message-tags.js");
   ({ hashEmail } = await import("../src/lib/event/claim-service.js"));
 });
 
 beforeEach(() => {
   snsVerify._clearCertCacheForTest();
   consumed._resetForTest();
+  ledger._resetForTest();
+  route._resetUntaggedWarningForTest();
 });
 
 let messageSeq = 0;
@@ -192,5 +198,318 @@ describe("event handling", () => {
       headers: { "content-type": "text/plain" },
     });
     assert.equal(res.status, 400);
+  });
+});
+
+/**
+ * #99 — the async half of silent ticket loss.
+ *
+ * SES ACCEPTS a message to a typo'd address and hard-bounces it minutes later.
+ * `send()` resolved, so nothing retried and nothing was ledgered: the buyer paid
+ * and the first anyone knew was the door. These assert the record now exists,
+ * carries the order it belongs to, and respects the PLAINTEXT POLICY split.
+ */
+describe("the failure ledger (#99)", () => {
+  /** A bounce shaped like the real event: `mail` block, tags and all. */
+  function bounceEvent(opts: {
+    email: string;
+    kind?: "transactional" | "marketing";
+    context?: Record<string, string>;
+    bounceType?: string;
+    subType?: string;
+    diagnosticCode?: string;
+    messageId?: string;
+    subject?: string;
+  }) {
+    const emailTags: Record<string, string[]> = {
+      "ses:configuration-set": ["woco-events"],
+      "ses:source-ip": ["192.0.2.0"],
+    };
+    if (opts.kind) {
+      for (const [k, v] of Object.entries(tags.buildMessageTags(opts.kind, opts.context))) {
+        emailTags[k] = [v];
+      }
+    }
+    return {
+      eventType: "Bounce",
+      bounce: {
+        bounceType: opts.bounceType ?? "Permanent",
+        bounceSubType: opts.subType ?? "General",
+        bouncedRecipients: [
+          {
+            emailAddress: opts.email,
+            action: "failed",
+            status: "5.1.1",
+            diagnosticCode: opts.diagnosticCode ?? "smtp; 550 5.1.1 user unknown",
+          },
+        ],
+      },
+      mail: {
+        timestamp: "2026-08-02T10:00:00.000Z",
+        messageId: opts.messageId ?? `ses-msg-${opts.email}`,
+        destination: [opts.email],
+        commonHeaders: { subject: opts.subject ?? "Your ticket #001 — Warehouse Party" },
+        tags: emailTags,
+      },
+    };
+  }
+
+  test("a bounced TICKET becomes an unresolved entry naming the order", async () => {
+    const email = "typo@exampl.com";
+    await post(
+      bounceEvent({
+        email,
+        kind: "transactional",
+        context: { stripeSessionId: "cs_test_paid1", eventId: "3f2504e0-4f89-11d3" },
+      }),
+    );
+
+    const [entry] = ledger.listFailures();
+    assert.ok(entry, "a bounce that follows acceptance must still be recorded");
+    assert.equal(entry.kind, "transactional");
+    assert.equal(entry.recipients[0]?.address, email, "a paid buyer has to be contactable");
+    assert.equal(entry.recipients[0]?.hash, hashEmail(email));
+    assert.equal(entry.context?.stripeSessionId, "cs_test_paid1");
+    assert.equal(entry.context?.eventId, "3f2504e0-4f89-11d3");
+    assert.equal(entry.context?.asyncEvent, "Bounce");
+    assert.equal(entry.code, "Bounce/Permanent/General");
+    assert.equal(entry.retryable, false, "re-sending to a dead address bounces again");
+    assert.equal(entry.subject, "Your ticket #001 — Warehouse Party");
+    assert.equal(entry.resolvedAt, undefined);
+  });
+
+  test("and it turns /api/health red — the whole point of the record", async () => {
+    assert.equal(ledger.failureHealth().ok, true);
+    await post(bounceEvent({ email: "gone@example.com", kind: "transactional" }));
+    const health = ledger.failureHealth();
+    assert.equal(health.ok, false);
+    assert.equal(health.unresolvedTransactional, 1);
+  });
+
+  test("a bounced MARKETING send keeps the hash and never the address", async () => {
+    const email = "cold@example.com";
+    await post(bounceEvent({ email, kind: "marketing", context: { organiser: "0xAbCd11" } }));
+
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.kind, "marketing");
+    assert.equal(entry?.recipients[0]?.hash, hashEmail(email));
+    assert.equal(entry?.recipients[0]?.address, undefined, "PLAINTEXT POLICY");
+    assert.equal(entry?.context?.organiser, "0xAbCd11");
+    assert.equal(ledger.failureHealth().ok, true, "a bad list is not a ticket alarm");
+  });
+
+  test("the SMTP diagnostic is kept, minus any address it quotes", async () => {
+    await post(
+      bounceEvent({
+        email: "quoted@example.com",
+        kind: "transactional",
+        diagnosticCode: "smtp; 550 5.1.1 <quoted@example.com>: Recipient address rejected",
+      }),
+    );
+    const [entry] = ledger.listFailures();
+    assert.match(entry!.error, /550 5\.1\.1/, "the operator still learns why");
+    assert.ok(!entry!.error.includes("quoted@example.com"), "but not a second copy of the address");
+  });
+
+  test("a Transient bounce is neither suppressed nor ledgered", async () => {
+    await post(bounceEvent({ email: "full@example.com", kind: "transactional", bounceType: "Transient", subType: "MailboxFull" }));
+    assert.equal(ledger.listFailures().length, 0, "it may still arrive; a self-clearing alarm teaches operators to ignore alarms");
+    assert.equal(suppression.isSuppressed(hashEmail("full@example.com"), ORG), false);
+  });
+
+  /**
+   * The message WAS delivered. Recording it as undelivered would be false, and
+   * the suppression it triggers is only consumed by the marketing path, so it
+   * cannot cost this person a future ticket either.
+   */
+  test("a complaint suppresses but does NOT ledger", async () => {
+    const email = "spam-button@example.com";
+    await post({
+      eventType: "Complaint",
+      complaint: { complainedRecipients: [{ emailAddress: email }], complaintFeedbackType: "abuse" },
+      mail: { messageId: "m-complaint", destination: [email], tags: {} },
+    });
+    assert.equal(suppression.isSuppressed(hashEmail(email), ORG), true);
+    assert.equal(ledger.listFailures().length, 0);
+  });
+
+  test("Permanent/OnAccountSuppressionList — AWS dropped it silently — is ledgered", async () => {
+    await post(
+      bounceEvent({ email: "onlist@example.com", kind: "transactional", subType: "OnAccountSuppressionList" }),
+    );
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.code, "Bounce/Permanent/OnAccountSuppressionList");
+    assert.equal(ledger.failureHealth().ok, false);
+  });
+
+  /**
+   * SES accepted the message and then discarded it on a content verdict. Our
+   * ticket mail carries a composite PNG, so a false positive is a live path —
+   * and there is no `bounce` object to read recipients from.
+   */
+  test("a Reject event is ledgered from mail.destination, and suppresses nobody", async () => {
+    const email = "innocent@example.com";
+    await post({
+      eventType: "Reject",
+      reject: { reason: "Bad content" },
+      mail: {
+        messageId: "m-reject",
+        destination: [email],
+        commonHeaders: { subject: "Your ticket #002" },
+        tags: Object.fromEntries(
+          Object.entries(tags.buildMessageTags("transactional", { eventId: "evt-9" })).map(
+            ([k, v]) => [k, [v]],
+          ),
+        ),
+      },
+    });
+
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.kind, "transactional");
+    assert.equal(entry?.code, "Reject");
+    assert.equal(entry?.recipients[0]?.address, email);
+    assert.equal(entry?.context?.eventId, "evt-9");
+    assert.match(entry!.error, /Bad content/);
+    assert.equal(
+      suppression.isSuppressed(hashEmail(email), ORG),
+      false,
+      "the fault is our content — blocking them would deny every future ticket",
+    );
+  });
+
+  test("every bounced addressee is recorded, not just the first", async () => {
+    const event = bounceEvent({ email: "one@example.com", kind: "transactional" });
+    event.bounce.bouncedRecipients.push({
+      emailAddress: "two@example.com",
+      action: "failed",
+      status: "5.1.1",
+      diagnosticCode: "smtp; 550 unknown",
+    });
+    event.mail.destination = ["one@example.com", "two@example.com"];
+    await post(event);
+
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.recipients.length, 2);
+    assert.deepEqual(
+      entry?.recipients.map((r) => r.address),
+      ["one@example.com", "two@example.com"],
+    );
+  });
+
+  test("a partial bounce records only the addressee that failed", async () => {
+    const event = bounceEvent({ email: "bad@example.com", kind: "transactional" });
+    event.mail.destination = ["bad@example.com", "fine@example.com"];
+    await post(event);
+
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.recipients.length, 1);
+    assert.equal(entry?.recipients[0]?.address, "bad@example.com");
+  });
+
+  /**
+   * `SES_SNS_TOPIC_ARN` is a comma-separated list, and a config-set destination
+   * alongside identity-level notifications delivers one failure twice with
+   * different envelope ids. Two unresolved entries is doubled evidence of one
+   * incident, and doubles the work of clearing the alarm.
+   */
+  test("one SES failure delivered over two subscriptions writes ONE entry", async () => {
+    const event = bounceEvent({ email: "dual@example.com", kind: "transactional", messageId: "ses-dual" });
+    await post(event, "sns-envelope-a");
+    await post(event, "sns-envelope-b");
+    assert.equal(ledger.listFailures().length, 1);
+  });
+
+  /** Deduping the LEDGER write must not also skip the suppression it protects. */
+  test("the second copy still suppresses even though it does not ledger", async () => {
+    const email = "dual-suppress@example.com";
+    const event = bounceEvent({ email, kind: "marketing", messageId: "ses-dual-supp" });
+    await post(event, "env-a");
+    const res = await post(event, "env-b");
+
+    const json = (await res.json()) as { data: { suppressed: number; ledgered: boolean } };
+    assert.equal(json.data.ledgered, false, "the entry already exists");
+    assert.equal(json.data.suppressed, 1, "but the address must still be blocked");
+  });
+
+  test("but separate events for different recipients of one message both count", async () => {
+    const messageId = "ses-multi";
+    await post(bounceEvent({ email: "r1@example.com", kind: "transactional", messageId }), "env-1");
+    await post(bounceEvent({ email: "r2@example.com", kind: "transactional", messageId }), "env-2");
+    assert.equal(ledger.listFailures().length, 2);
+  });
+
+  describe("when the event carries no tags", () => {
+    /**
+     * Identity-level notifications publish none, and so does every message
+     * already in flight when this ships. Classifying on a guess is the one
+     * mistake that cannot be undone — storing a stranger's plaintext — so it
+     * takes the hash-only path, and the ALARM is that correlation is broken,
+     * not that this particular message failed.
+     */
+    test("it is recorded hash-only rather than guessed into transactional", async () => {
+      const email = "untagged@example.com";
+      await post(bounceEvent({ email }));
+
+      const [entry] = ledger.listFailures();
+      assert.ok(entry);
+      assert.equal(entry.kind, "marketing");
+      assert.equal(entry.recipients[0]?.address, undefined);
+      assert.equal(entry.recipients[0]?.hash, hashEmail(email));
+      assert.equal(entry.context?.untagged, "true");
+      assert.equal(ledger.failureHealth().ok, true, "no false ticket alarm");
+    });
+
+    test("and /api/health says correlation is broken", async () => {
+      assert.deepEqual(ledger.bounceLedgerHealth(), { ok: true, correlated: 0, untagged: 0 });
+      await post(bounceEvent({ email: "untagged@example.com" }));
+      assert.deepEqual(ledger.bounceLedgerHealth(), { ok: false, correlated: 0, untagged: 1 });
+    });
+
+    test("a working config set reports healthy correlation", async () => {
+      await post(bounceEvent({ email: "tagged@example.com", kind: "transactional" }));
+      assert.deepEqual(ledger.bounceLedgerHealth(), { ok: true, correlated: 1, untagged: 0 });
+    });
+
+    /**
+     * Every message in flight when tagging first deploys bounces untagged
+     * through no fault of the wiring. An alarm no operator action can turn off
+     * is one they learn to scroll past — and this is the alarm the pre-deploy
+     * health check exists for.
+     */
+    test("resolving the entry clears the wiring alarm", async () => {
+      await post(bounceEvent({ email: "inflight@example.com" }));
+      assert.equal(ledger.bounceLedgerHealth().ok, false);
+
+      const [entry] = ledger.listFailures();
+      ledger.resolveFailure(entry!.id, "nabil");
+      assert.deepEqual(ledger.bounceLedgerHealth(), { ok: true, correlated: 0, untagged: 0 });
+    });
+
+    /**
+     * Identity-level notifications carry the SAME mail.messageId and no tags.
+     * One dedupe key would let arrival order decide, and an unlucky ordering
+     * would record a paid ticket's bounce as hash-only marketing — no alarm, no
+     * address, nondeterministically.
+     */
+    test("an untagged copy arriving first cannot suppress the tagged one", async () => {
+      const email = "dual-wired@example.com";
+      const messageId = "ses-both-ways";
+      await post(bounceEvent({ email, messageId }), "env-identity");
+      await post(bounceEvent({ email, messageId, kind: "transactional" }), "env-configset");
+
+      const transactional = ledger.listFailures().find((e) => e.kind === "transactional");
+      assert.ok(transactional, "the alarm that says a paid ticket bounced must still fire");
+      assert.equal(transactional.recipients[0]?.address, email);
+      assert.equal(ledger.failureHealth().ok, false);
+    });
+
+    test("an unrecognised classifier value is treated as untagged, not coerced", async () => {
+      const email = "weird@example.com";
+      await post({
+        ...bounceEvent({ email }),
+        mail: { ...bounceEvent({ email }).mail, tags: { woco_kind: ["something-else"] } },
+      });
+      assert.equal(ledger.listFailures()[0]?.context?.untagged, "true");
+    });
   });
 });

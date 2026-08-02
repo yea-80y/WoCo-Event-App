@@ -437,6 +437,112 @@ describe("regressions found in review", () => {
   test("erasing an address we hold no failures for is a no-op", () => {
     assert.equal(ledger.eraseRecipient("0".repeat(64)), 0);
   });
+
+  /**
+   * Providers quote the address back inside the error string, so `error` was a
+   * second, unerasable copy of the plaintext — one that reached marketing
+   * entries (hash-only by policy), the redacted ops list, and docker logs.
+   */
+  test("a provider diagnostic naming the address is redacted before it is stored", async () => {
+    const quoting = flakyProvider(
+      "ses",
+      99,
+      () =>
+        new EmailSendError(
+          "SES MessageRejected: smtp; 550 5.1.1 <buyer@example.com>: Recipient address rejected",
+          { retryable: false, code: "MessageRejected" },
+        ),
+    );
+    await assert.rejects(
+      send.sendVia({ primary: quoting.provider, secondary: null, sleep: noSleep }, MSG, {
+        maxAttempts: 1,
+      }),
+    );
+
+    const [entry] = ledger.listFailures();
+    assert.ok(entry);
+    assert.ok(!entry.error.includes("buyer@example.com"), "no plaintext address in `error`");
+    assert.match(entry.error, /\[address-redacted\]/);
+    assert.match(entry.error, /550 5\.1\.1/, "the diagnostic itself is still legible");
+    assert.equal(
+      entry.recipients[0]?.address,
+      "buyer@example.com",
+      "the recipient field still carries it — that is the field erasure can reach",
+    );
+  });
+
+  test("erasure leaves nothing behind once the diagnostic is redacted", async () => {
+    const quoting = flakyProvider(
+      "ses",
+      99,
+      () => new EmailSendError("SES: recipient buyer@example.com does not exist", { retryable: false }),
+    );
+    await assert.rejects(
+      send.sendVia({ primary: quoting.provider, secondary: null, sleep: noSleep }, MSG, {
+        maxAttempts: 1,
+      }),
+    );
+    const [entry] = ledger.listFailures();
+    ledger.eraseRecipient(entry!.recipients[0]!.hash);
+
+    const after = ledger.listFailures({ includeResolved: true }).find((e) => e.id === entry!.id);
+    const serialised = JSON.stringify(after);
+    assert.ok(
+      !serialised.includes("buyer@example.com"),
+      "an Art. 17 request must not report success while a copy survives in `error`",
+    );
+  });
+
+  /**
+   * On the async path `error` is the receiving MTA's diagnostic, relayed
+   * through an SNS envelope that may be 256KB. The first version of this
+   * redaction used an unbounded `+` before the `@` and backtracked
+   * quadratically — 97 seconds of blocked event loop on 200KB, which stalls
+   * every claim and Stripe webhook on this single-threaded server.
+   */
+  test("a hostile diagnostic cannot stall the server", () => {
+    const hostile = "a".repeat(200_000);
+    const started = process.hrtime.bigint();
+    ledger.recordFailure({
+      kind: "marketing",
+      recipients: ["x@example.com"],
+      recipientHashes: ["h"],
+      subject: "s",
+      provider: "ses",
+      error: hostile,
+      attempts: 1,
+      retryable: false,
+    });
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 1000, `redaction took ${Math.round(ms)}ms — the quantifier bound is gone`);
+  });
+
+  test("unicode and domain-literal addresses are redacted too", () => {
+    const entry = ledger.recordFailure({
+      kind: "marketing",
+      recipients: ["x@example.com"],
+      recipientHashes: ["h"],
+      subject: "s",
+      provider: "ses",
+      error: "failed for naïve.üser@exämple.com and for user@[10.0.0.1]",
+      attempts: 1,
+      retryable: false,
+    });
+    assert.ok(!entry.error.includes("exämple.com"));
+    assert.ok(!entry.error.includes("10.0.0.1"));
+  });
+
+  test("a retry's error string is redacted too", async () => {
+    const quoting = flakyProvider("ses", 99, retryable);
+    await assert.rejects(
+      send.sendVia({ primary: quoting.provider, secondary: null, sleep: noSleep }, MSG, { maxAttempts: 1 }),
+    );
+    const [entry] = ledger.listFailures();
+    ledger.bumpRetry(entry!.id, "still failing for buyer@example.com");
+
+    const after = ledger.listFailures().find((e) => e.id === entry!.id);
+    assert.ok(!after!.error.includes("buyer@example.com"));
+  });
 });
 
 describe("rate limiter", () => {

@@ -25,6 +25,7 @@ import { sesProvider } from "./ses-provider.js";
 import { sendRateLimiter, type SendPriority } from "./rate-limiter.js";
 import { recordFailure } from "./failure-ledger.js";
 import { enqueueRetry } from "./retry-queue.js";
+import { buildMessageTags } from "./message-tags.js";
 import { hashEmail } from "../event/claim-service.js";
 import {
   EmailSendError,
@@ -58,6 +59,12 @@ const resendProvider: EmailProvider = {
       ...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
       ...(msg.headers ? { headers: msg.headers } : {}),
       ...(msg.attachments ? { attachments: msg.attachments } : {}),
+      // `msg.tags` is deliberately NOT forwarded. Resend's tag shape and its
+      // webhook echo are different, and its bounce handler does not read them,
+      // so passing them would imply a correlation that does not exist. The
+      // consequence — async bounces are not ledgered while the rollback lever is
+      // pulled — is reported by /api/health as `bounceLedger: "unsupported"`
+      // rather than left to be discovered.
     } as Parameters<ReturnType<typeof getResend>["emails"]["send"]>[0]);
     if (error) {
       // The SDK returns rate limiting and 5xx in the same `error` shape as a
@@ -247,8 +254,17 @@ export async function sendVia(
 
   const acquire = deps.acquire ?? ((pri: SendPriority) => sendRateLimiter().acquire(pri));
 
+  // Tag at the chokepoint so no send can opt out of being correlatable when it
+  // bounces asynchronously. Already-tagged messages keep their tags: the drain
+  // worker re-sends what it queued, and recomputing here would lose the original
+  // `context` — the message would come back classifiable but with no idea which
+  // paid order it belonged to.
+  const outbound: OutboundEmail = msg.tags
+    ? msg
+    : { ...msg, tags: buildMessageTags(priority, opts.context) };
+
   const primaryOutcome = await attemptWithRetries(
-    active, msg, priority, maxAttempts, deps.sleep, acquire,
+    active, outbound, priority, maxAttempts, deps.sleep, acquire,
   );
   if (!primaryOutcome.error) return;
 
@@ -267,7 +283,7 @@ export async function sendVia(
       `[email] ${active.name} exhausted ${maxAttempts} attempts — failing over to ${secondary.name}`,
     );
     const secondaryOutcome = await attemptWithRetries(
-      secondary, msg, priority, maxAttempts, deps.sleep, acquire,
+      secondary, outbound, priority, maxAttempts, deps.sleep, acquire,
     );
     // Failover calls count too — an operator reading "1 attempt" against a
     // message we handed to two providers cannot reconstruct what happened.
@@ -322,7 +338,7 @@ export async function sendVia(
     // `sendMarketingBatch` performs and DATA_INVENTORY relies on, mailing
     // someone who unsubscribed between the failure and the retry.
     if (failure.retryable && priority !== "marketing") {
-      enqueueRetry(entry.id, msg, priority);
+      enqueueRetry(entry.id, outbound, priority);
     }
   }
 
