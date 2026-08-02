@@ -30,6 +30,7 @@ import {
   putDomain,
   deleteDomain,
   resolveMarketingFrom,
+  MARKETING_SENDER_UNCONFIGURED,
   type SendingDomainEntry,
 } from "../lib/marketing/sending-domain-store.js";
 import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
@@ -309,10 +310,23 @@ marketing.post("/broadcast/test", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Rate limit exceeded (5 test sends per hour)" }, 429);
     }
 
+    // Fails closed with the real broadcast (#96). A test send is a REHEARSAL:
+    // if it goes out from the transactional address while the real broadcast
+    // would be refused, it misrepresents both the outcome and the sender the
+    // organiser is previewing. An honest rehearsal fails the way the
+    // performance would.
+    const marketingFrom = resolveMarketingFrom(org);
+    if (!marketingFrom) {
+      return c.json(
+        { ok: false, error: MARKETING_SENDER_UNCONFIGURED, code: "MARKETING_SENDER_NOT_CONFIGURED" },
+        503,
+      );
+    }
+
     const result = await sendMarketingBatch({
       organiserAddress: org,
       fromDisplayName: fromName,
-      fromAddress: resolveMarketingFrom(org),
+      fromAddress: marketingFrom,
       subject: `[Test] ${subject}`,
       html: htmlBody,
       recipients: [{ email }],
@@ -353,6 +367,9 @@ function toInfo(entry: SendingDomainEntry): Record<string, unknown> {
     fromLocalPart: entry.fromLocalPart,
     status: entry.status,
     records: entry.records,
+    // Null while unverified AND the platform marketing address is unset — the
+    // honest answer, since a marketing send in that state is now refused rather
+    // than quietly redirected to the transactional address (#96).
     fromAddress:
       entry.status === "verified"
         ? `${entry.fromLocalPart}@${entry.domain}`

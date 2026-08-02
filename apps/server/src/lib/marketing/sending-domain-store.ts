@@ -14,6 +14,18 @@ import { join } from "node:path";
 import type { SendingDomainRecord } from "@woco/shared";
 import { getMarketingFromAddress } from "../email/client.js";
 
+/**
+ * Shown to the organiser when `resolveMarketingFrom` returns null. It has to
+ * stand on its own: the client drops the response `code` (api/broadcasts.ts
+ * rethrows `error` only), so this string is the entire explanation they get.
+ * It names the platform as the cause on purpose — the organiser has done
+ * nothing wrong and there is no action they can take.
+ */
+export const MARKETING_SENDER_UNCONFIGURED =
+  "Marketing sending is paused: WoCo has not finished configuring its marketing " +
+  "sending address. Nothing has been sent and your draft is safe — this is a " +
+  "platform setup step, not a problem with your account.";
+
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-domains.json");
 
@@ -68,8 +80,15 @@ export function deleteDomain(organiserAddress: string): void {
   persistToDisk();
 }
 
-/** From-address resolution: verified organiser domain → platform marketing address. */
-export function resolveMarketingFrom(organiserAddress: string): string {
+/**
+ * From-address resolution: verified organiser domain → platform marketing
+ * address → `null`.
+ *
+ * `null` means "this send has no marketing address to go out from", and the
+ * only correct response to it on the marketing lane is to refuse. It never
+ * degrades to the transactional address — see `getMarketingFromAddress`.
+ */
+export function resolveMarketingFrom(organiserAddress: string): string | null {
   const d = getDomain(organiserAddress);
   if (d && d.status === "verified") return `${d.fromLocalPart}@${d.domain}`;
   return getMarketingFromAddress();

@@ -37,7 +37,11 @@ import { getAttendeeEmailHashes } from "../lib/event/attendee-emails.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { getList, withOrgLock } from "../lib/marketing/list-store.js";
 import { capRemaining, reserveSend } from "../lib/marketing/send-cap.js";
-import { resolveMarketingFrom } from "../lib/marketing/sending-domain-store.js";
+import {
+  MARKETING_SENDER_UNCONFIGURED,
+  resolveMarketingFrom,
+} from "../lib/marketing/sending-domain-store.js";
+import { getFromAddress } from "../lib/email/client.js";
 import { RateWindow } from "../lib/marketing/rate-window.js";
 import { checkEmailProviderConfig } from "../lib/email/send.js";
 import { kickDrainWorker, settleReservation } from "../lib/email/drain-worker.js";
@@ -203,13 +207,25 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     if (!getList(org)) {
       return c.json({ ok: false, error: "Import an audience before broadcasting" }, 400);
     }
+    // FAIL CLOSED (#96). An imported list is cold mail — its complaint and
+    // bounce rates are exactly what burns a sending domain — so it must never
+    // ride the transactional address that delivers everyone's tickets. Refuse
+    // BEFORE createJob so no draft, no reservation and no chunk state is minted
+    // for a send that cannot legitimately happen.
+    const marketingFrom = resolveMarketingFrom(org);
+    if (!marketingFrom) {
+      return c.json(
+        { ok: false, error: MARKETING_SENDER_UNCONFIGURED, code: "MARKETING_SENDER_NOT_CONFIGURED" },
+        503,
+      );
+    }
     job = createJob({
       org,
       kind,
       subject,
       html: htmlBody,
       fromDisplayName,
-      fromAddress: resolveMarketingFrom(org),
+      fromAddress: marketingFrom,
       ...(resumeOf ? { resumeOf } : {}),
     });
   } else {
@@ -246,6 +262,18 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     const allowUnproven = unverifiableSeries > 0 && (await isVerifiedOrganiser(org));
 
     fromDisplayName = event.title;
+    // The event lane KEEPS the transactional fallback that the marketing lane
+    // above refuses, and the asymmetry is deliberate. These recipients consented
+    // by buying a ticket, so complaint risk is near zero; and the message this
+    // path carries is "the venue moved" or "the event is cancelled", which an
+    // organiser must be able to send whatever state WoCo's marketing env is in.
+    // Refusing here would turn a platform config gap into attendee harm.
+    //
+    // Consequence worth knowing when EMAIL_FROM_MARKETING is first set: attendee
+    // mail moves off the ticket domain onto the marketing subdomain the same
+    // day. That is the right lane, but it means the least-warmed identity starts
+    // carrying the mail that most needs to land — so warm the subdomain on event
+    // broadcasts deliberately before any imported list touches it.
     job = createJob({
       org,
       kind,
@@ -253,7 +281,7 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
       subject,
       html: htmlBody,
       fromDisplayName,
-      fromAddress: resolveMarketingFrom(org),
+      fromAddress: resolveMarketingFrom(org) ?? getFromAddress(),
       attendees: { hashes, allowUnproven, hasUnverifiableSeries: unverifiableSeries > 0 },
       ...(resumeOf ? { resumeOf } : {}),
     });
