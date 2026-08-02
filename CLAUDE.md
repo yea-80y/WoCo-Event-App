@@ -16,6 +16,7 @@ WHERE THE DEPTH LIVES
   docs/PAYMENTS_INTEGRATION.md    # Stripe mechanics, crypto rail (off), reservations, ticket card
   docs/PAYOUTS.md                 # AUTHORITY on payouts — manual, released after the event
   docs/PRICING_AND_EMAIL.md       # ALL fee arithmetic (§7, §15–§17). Never restate rates elsewhere.
+  docs/EMAIL_NEXT_HANDOVER.md     # email subsystem state + what is next (start here for email work)
   docs/MARKETING_COMPLIANCE.md    # marketing lists, suppression, RFC 8058, abuse gate
   docs/EAS_LIKES_HANDOVER.md      # EAS likes / social graph design + abuse model
   docs/STYLUS_AGGREGATOR.md       # Stylus like-aggregator contract
