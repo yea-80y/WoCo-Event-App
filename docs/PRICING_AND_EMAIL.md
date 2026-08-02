@@ -86,7 +86,7 @@ Stripe *may* additionally send its own payment receipt — we pass `customer_ema
 
 ## 5. Organiser sending domains
 
-**Marketing: built and automated.** `routes/marketing.ts` → Resend Domains API → `sending-domain-store.ts` caches `id/status/records`, verify-on-demand. `resolveMarketingFrom()`: verified organiser domain → `RESEND_FROM_MARKETING` → `RESEND_FROM`. Organiser adds domain → we return DNS records → they paste → click verify.
+**Marketing: built and automated.** `routes/marketing.ts` → Resend Domains API → `sending-domain-store.ts` caches `id/status/records`, verify-on-demand. `resolveMarketingFrom()`: verified organiser domain → `EMAIL_FROM_MARKETING` → **null, which refuses the send** (#96 — it never falls back to the transactional address). Organiser adds domain → we return DNS records → they paste → click verify.
 
 **Transactional: not built.** All ticket email ships from `getFromAddress()` — `"Event Title" <events@woco-net.com>`. Same for `attendee-gate.ts`, `shop-receipt.ts`, `sites.ts`.
 
