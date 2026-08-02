@@ -24,7 +24,7 @@
  * compliance stores (see docs/PAYOUTS.md §8).
  */
 
-import { chmodSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 
@@ -173,19 +173,10 @@ function ensureLoaded(): void {
 }
 
 function persist(): boolean {
-  const ok = writeJsonAtomic(STORE_FILE, entries, "email-failures");
-  if (ok) {
-    // writeJsonAtomic creates the temp file at the process umask (0644 in the
-    // container). This file holds buyer addresses; tighten it every write rather
-    // than relying on an ops step that has been missed before.
-    try {
-      chmodSync(STORE_FILE, 0o600);
-    } catch {
-      // Non-fatal: the record landing matters more than the mode. An operator
-      // sweep (CLAUDE.local.md) catches a file that somehow stayed readable.
-    }
-  }
-  return ok;
+  // 0600 is `writeJsonAtomic`'s job now, for every `.data` store rather than the
+  // ones that remembered to ask. This file holds buyer addresses; the chmod that
+  // used to live here was correct and is why the guarantee moved down a level.
+  return writeJsonAtomic(STORE_FILE, entries, "email-failures");
 }
 
 /**
