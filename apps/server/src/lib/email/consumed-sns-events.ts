@@ -3,9 +3,14 @@
  *
  * Keyed by `MessageId`, which is stable across redeliveries. SNS retries an
  * HTTPS endpoint that does not return 2xx, so without this a slow response
- * turns one complaint into several suppression writes; the writes are
- * idempotent today, but relying on that would make any future non-idempotent
- * handling silently wrong.
+ * turns one complaint into several suppression writes.
+ *
+ * It no longer only guards idempotent work. `routes/ses-webhook.ts` also
+ * consumes a COMPOSITE key — `ledger:{sesMessageId}:{eventType}:{hashes}` — to
+ * stop one SES failure delivered over two subscriptions writing two failure
+ * ledger entries for one buyer. That write is not idempotent, so losing this
+ * file now costs duplicated evidence of an undelivered ticket, not just a
+ * repeated suppression.
  *
  * BOUNDED, unlike `consumed-resend-events.json`, which grows forever. Every
  * bounce and complaint for the life of the platform passes through here, so an
@@ -57,8 +62,15 @@ export function checkAndConsumeSnsEvent(id: string): boolean {
   return true;
 }
 
-/** Tests only. */
+/**
+ * Tests only — clears memory AND disk.
+ *
+ * Clearing memory alone left `loaded = false`, so the next call reloaded every
+ * key straight back off the file and one test's ids silently deduped the next
+ * one's events.
+ */
 export function _resetForTest(): void {
   consumed = new Set();
-  loaded = false;
+  loaded = true;
+  writeJsonAtomic(STORE_FILE, [], "consumed-sns-events");
 }

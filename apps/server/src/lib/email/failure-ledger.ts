@@ -320,6 +320,34 @@ export function failureHealth(): FailureHealth {
   };
 }
 
+export interface BounceLedgerHealth {
+  ok: boolean;
+  /** Async failures we could tie back to the send that caused them. */
+  correlated: number;
+  /** Async failures that arrived with no message tags. */
+  untagged: number;
+}
+
+/**
+ * Is async-bounce correlation actually WORKING in production?
+ *
+ * Message tags are published only through a configuration-set event
+ * destination; identity-level feedback notifications carry none. That wiring is
+ * console state no code here can read, so a miswired topic would silently
+ * reproduce the exact bug #99 exists to fix — every bounce recorded hash-only,
+ * no ticket alarm, and nothing but a log line to say so. Health is what gets
+ * checked before a deploy; logs are not.
+ *
+ * Derived from the ledger rather than a counter, so it survives restarts for
+ * free and cannot drift from the records it describes.
+ */
+export function bounceLedgerHealth(): BounceLedgerHealth {
+  ensureLoaded();
+  const async = entries.filter((e) => e.context?.asyncEvent);
+  const untagged = async.filter((e) => e.context?.untagged === "true").length;
+  return { ok: untagged === 0, correlated: async.length - untagged, untagged };
+}
+
 /**
  * Art. 17 erasure: strip the plaintext recipient from every entry for this
  * address, keeping the hash and the operational record.

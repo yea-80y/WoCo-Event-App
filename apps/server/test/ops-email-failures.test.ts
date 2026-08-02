@@ -216,3 +216,70 @@ describe("ops ledger surface — resolving", () => {
     assert.equal((await post()).status, 404);
   });
 });
+
+/**
+ * The ledger acquired a second writer with #99: every permanent bounce now
+ * writes an entry, and unresolved transactional entries are exempt from the
+ * size cap. A bad list — or a burst of unauthenticated email claims to bouncing
+ * addresses — leaves an operator with dozens of red rows and, until now, one
+ * POST each to clear them, during the incident.
+ */
+describe("ops ledger surface — bulk resolve", () => {
+  const bulk = (body: unknown) =>
+    authed("/email-failures/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  test("clears many entries and the alarm with them", async () => {
+    const ids = [seedTransactionalFailure(), seedTransactionalFailure(), seedTransactionalFailure()]
+      .map((e) => e.id);
+    assert.equal(ledger.failureHealth().ok, false);
+
+    const res = await bulk({ ids, by: "nabil" });
+    const json = (await res.json()) as { data: { resolved: number; skipped: number } };
+    assert.equal(res.status, 200);
+    assert.equal(json.data.resolved, 3);
+    assert.equal(json.data.skipped, 0);
+    assert.equal(ledger.failureHealth().ok, true);
+  });
+
+  test("already-resolved and unknown ids are skipped, not failed", async () => {
+    const entry = seedTransactionalFailure();
+    await bulk({ ids: [entry.id], by: "nabil" });
+
+    const res = await bulk({ ids: [entry.id, "no-such-id"], by: "nabil" });
+    const json = (await res.json()) as { data: { resolved: number; skipped: number } };
+    assert.equal(json.data.resolved, 0);
+    assert.equal(json.data.skipped, 2);
+  });
+
+  test("`by` is required — an alarm cleared by nobody is an alarm nobody owns", async () => {
+    const entry = seedTransactionalFailure();
+    assert.equal((await bulk({ ids: [entry.id] })).status, 400);
+    assert.equal(ledger.failureHealth().ok, false, "and nothing was resolved");
+  });
+
+  test("an empty or non-array ids list is refused", async () => {
+    assert.equal((await bulk({ ids: [], by: "nabil" })).status, 400);
+    assert.equal((await bulk({ ids: "all", by: "nabil" })).status, 400);
+  });
+
+  /** Explicit ids only: the operator has to have looked at the list. */
+  test("the batch is bounded", async () => {
+    const ids = Array.from({ length: 501 }, (_, i) => `id-${i}`);
+    assert.equal((await bulk({ ids, by: "nabil" })).status, 400);
+  });
+
+  test("it needs the ops token like everything else here", async () => {
+    const entry = seedTransactionalFailure();
+    const res = await call("/email-failures/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [entry.id], by: "nabil" }),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(ledger.failureHealth().ok, false);
+  });
+});

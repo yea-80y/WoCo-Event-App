@@ -48,7 +48,7 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
-import { failureHealth } from "./lib/email/failure-ledger.js";
+import { failureHealth, bounceLedgerHealth } from "./lib/email/failure-ledger.js";
 import { reconcileOnBoot, recordShutdown } from "./lib/email/broadcast-jobs.js";
 import {
   drainWorkerHealth,
@@ -196,6 +196,13 @@ app.get("/api/health", (c) =>
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
       broadcasts: drainWorkerHealth(),
+      // Only the SES path ledgers a bounce that arrives AFTER the provider
+      // accepted the message. Resend is the rollback lever, and pulling it
+      // reopens that hole — reported, not left to be discovered.
+      bounceLedger:
+        activeEmailProvider() === "ses"
+          ? bounceLedgerHealth()
+          : { ok: false, unsupported: activeEmailProvider() },
     },
   }),
 );
