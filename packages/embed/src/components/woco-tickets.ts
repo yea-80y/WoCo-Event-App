@@ -970,7 +970,7 @@ export class WocoTickets extends HTMLElement {
     if (!st || st.claiming || !this.api) return;
 
     const input = this.shadow.querySelector<HTMLInputElement>(
-      `[data-email-input="${seriesId}"]`,
+      `[data-email-input="${CSS.escape(seriesId)}"]`,
     );
     const email = input?.value?.trim();
     if (!email || !email.includes("@")) {
@@ -993,7 +993,7 @@ export class WocoTickets extends HTMLElement {
       // The form was rendered, so the opt-out WAS offered — an untouched box is
       // an explicit refusal (recorded as a suppression), not "never asked".
       body.marketingConsent = !!this.shadow.querySelector<HTMLInputElement>(
-        `[data-marketing-consent="${seriesId}"]`,
+        `[data-marketing-consent="${CSS.escape(seriesId)}"]`,
       )?.checked;
 
       const resp = await this.api.post<unknown>(
