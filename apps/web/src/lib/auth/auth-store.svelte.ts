@@ -32,6 +32,7 @@ import {
   restorePasskeyAccount,
   createPasskeyAccount,
   hasStoredPasskeyCredential,
+  clearPasskeyCredential,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
@@ -526,6 +527,19 @@ async function _ensurePasskeyKey(): Promise<void> {
     // recoverAndRekey), so it is the authority; KV is only a cold-start fallback.
     const sessionPodAddr = _podAddress ?? (await getKV<string>(StorageKeys.POD_ADDRESS));
     if (sessionPodAddr && sessionPodAddr.toLowerCase() !== result.address.toLowerCase()) {
+      // Unpin the credential we just proved wrong. `authenticatePasskey` writes
+      // PASSKEY_CREDENTIAL for whatever the picker returned BEFORE this guard can
+      // run, so a wrong pick leaves the wrong credential pinned: the next ceremony
+      // jumps straight back to it, the user authorises with a fingerprint, and it
+      // fails here again — a loop only escapable by cancelling into the picker.
+      //
+      // Deleting is safe HERE and nowhere else on this path. `restorePasskeyAccount`
+      // deliberately refuses to delete on a NotAllowedError because that would be a
+      // guess — a cancel is indistinguishable from a missing credential. This is not
+      // a guess: a successful assertion proved the pinned credential derives a
+      // DIFFERENT account. Dropping the pin sends the next attempt to the picker,
+      // where the right choice rewrites the metadata itself.
+      await clearPasskeyCredential();
       throw new Error(
         "That passkey belongs to a different WoCo account. Sign out and sign back in to switch accounts.",
       );
