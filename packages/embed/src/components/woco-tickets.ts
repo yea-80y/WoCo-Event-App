@@ -351,11 +351,20 @@ export class WocoTickets extends HTMLElement {
         return;
       }
 
-      // data-passkey-create — the ONLY path that mints a new passkey account
+      // data-passkey-create — the ONLY path that mints a new passkey account.
+      // Gate on the offer actually being open, not merely on the attribute being
+      // present: the shadow root is `mode: "open"`, so the host page can inject an
+      // element carrying this attribute and click it. That grants no capability a
+      // hostile host page lacks (it can call `navigator.credentials.create()`
+      // itself, and the native ceremony still runs), but minting an account is the
+      // one action here that must follow from a decision the CLAIMER made — so
+      // require the state that proves we asked them.
       const passkeyCreateBtn = target.closest<HTMLElement>("[data-passkey-create]");
       if (passkeyCreateBtn) {
         const sid = passkeyCreateBtn.getAttribute("data-passkey-create")!;
-        this.handlePasskeyClaim(sid, true);
+        if (this.seriesStates.get(sid)?.passkeyCreateOffer) {
+          this.handlePasskeyClaim(sid, true);
+        }
         return;
       }
 
@@ -971,9 +980,20 @@ export class WocoTickets extends HTMLElement {
     }
   }
 
+  /**
+   * Escape for interpolation into HTML — including into a double-quoted
+   * ATTRIBUTE, which is how most call sites here use it (`data-series="..."`,
+   * `data-passkey-create="..."`). `textContent`→`innerHTML` alone escapes only
+   * `& < >`, so a value containing a double quote could close the attribute and
+   * open a new one; that is enough to inject an event handler without ever
+   * needing a `<`. The strings interpolated are event/series fields fetched from
+   * the API, so they are attacker-controlled by whoever authored the event —
+   * not necessarily the organiser whose page hosts the widget. Escape the quotes
+   * too, so attribute and text contexts are both safe.
+   */
   private esc(s: string): string {
     const d = document.createElement("div");
     d.textContent = s;
-    return d.innerHTML;
+    return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 }
