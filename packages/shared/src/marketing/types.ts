@@ -18,6 +18,25 @@ import type { SealedBox } from "../crypto/types.js";
 export const MARKETING_MAX_LIST_EMAILS = 20_000;
 
 /**
+ * The one definition of "we will attempt to deliver to this address".
+ *
+ * It lived in three places — the CSV import wizard, the marketing routes and
+ * the broadcast chunk endpoint — as three byte-identical literals, which is a
+ * divergence waiting to happen: the moment one is loosened, a row the importer
+ * accepts becomes a row the send path rejects, and the organiser is told
+ * neither which address nor which rule (#136). Sharing it makes them agree by
+ * construction rather than by coincidence.
+ *
+ * Deliberately loose. It is a "can we put this in an SMTP envelope" test, not
+ * RFC 5322 — the address either delivers or bounces, and the bounce is what
+ * actually decides. What it must keep excluding is WHITESPACE, which
+ * `drain-worker.ts` relies on to keep provider stop-reasons unforgeable.
+ *
+ * No `g` flag: a shared regex with one would carry `lastIndex` between callers.
+ */
+export const MAILABLE_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
  * One contact in an organiser's audience.
  *
  * Every field beyond `email` is optional and carried VERBATIM from the source

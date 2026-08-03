@@ -27,7 +27,7 @@
  * no whitespace, so relaxing it there would quietly break something else.
  */
 
-export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import { MAILABLE_EMAIL_RE } from "@woco/shared";
 
 /** Enough for the organiser to recognise the rows; not a full echo of the list. */
 const SAMPLE_SIZE = 10;
@@ -65,7 +65,7 @@ export function normalizeEmails(raw: unknown, max: number): NormalizedEmails | n
     }
     const norm = entry.trim().toLowerCase();
     emails.push(norm);
-    if (!EMAIL_RE.test(norm)) {
+    if (!MAILABLE_EMAIL_RE.test(norm)) {
       unmailableCount++;
       if (unmailable.length < SAMPLE_SIZE) unmailable.push(norm);
     }

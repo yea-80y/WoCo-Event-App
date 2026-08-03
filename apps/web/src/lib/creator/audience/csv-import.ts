@@ -9,6 +9,9 @@
  */
 
 import type { MarketingContact } from "@woco/shared";
+// The SAME rule the server applies, so a row this wizard accepts can never be a
+// row the send path rejects.
+import { MAILABLE_EMAIL_RE } from "@woco/shared";
 
 /**
  * Fields that can be mapped to a CSV column.
@@ -107,8 +110,6 @@ export type ColumnMapping = Record<ImportField, string>;
 export function emptyMapping(): ColumnMapping {
   return Object.fromEntries(IMPORT_FIELDS.map((f) => [f, ""])) as ColumnMapping;
 }
-
-export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Headers that contain a field token but hold a flag or a derived value rather
@@ -461,7 +462,7 @@ export function buildImportReport(
 
   for (const row of rows) {
     const email = normaliseEmail(row[mapping.email] ?? "");
-    if (!EMAIL_RE.test(email)) {
+    if (!MAILABLE_EMAIL_RE.test(email)) {
       invalidRows++;
       continue;
     }

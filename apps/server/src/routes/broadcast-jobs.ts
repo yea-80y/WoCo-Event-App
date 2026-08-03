@@ -29,6 +29,7 @@
  */
 
 import { Hono } from "hono";
+import { MAILABLE_EMAIL_RE } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { hashEmail } from "../lib/event/claim-service.js";
@@ -66,8 +67,6 @@ import {
 } from "../lib/email/broadcast-jobs.js";
 
 const broadcastJobs = new Hono<AppEnv>();
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Unchanged from the inline routes: 2 marketing / 5 attendee broadcasts an hour. */
 const MARKETING_PER_HOUR = 2;
@@ -334,7 +333,7 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
   const recipients: JobRecipient[] = [];
   for (const r of raw as Array<{ email?: unknown; name?: unknown }>) {
     const email = typeof r?.email === "string" ? r.email.trim() : "";
-    if (!email || !EMAIL_RE.test(email)) {
+    if (!email || !MAILABLE_EMAIL_RE.test(email)) {
       return c.json({ ok: false, error: `Invalid email: ${String(r?.email)}` }, 400);
     }
     recipients.push({ email, ...(typeof r.name === "string" ? { name: r.name } : {}) });

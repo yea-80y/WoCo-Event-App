@@ -14,13 +14,13 @@
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
-import { FEATURES, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import { FEATURES, MAILABLE_EMAIL_RE, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
-import { EMAIL_RE, normalizeEmails } from "../lib/marketing/emails.js";
+import { normalizeEmails } from "../lib/marketing/emails.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
 import { consentedSubset } from "../lib/marketing/consent-store.js";
 import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
@@ -319,7 +319,7 @@ marketing.post("/broadcast/test", requireAuth, async (c) => {
     if (!htmlBody || typeof htmlBody !== "string" || htmlBody.length > 50_000) {
       return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
     }
-    if (!email || typeof email !== "string" || !EMAIL_RE.test(email)) {
+    if (!email || typeof email !== "string" || !MAILABLE_EMAIL_RE.test(email)) {
       return c.json({ ok: false, error: "A valid test address is required" }, 400);
     }
 
