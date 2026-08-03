@@ -44,8 +44,9 @@ export function getFromAddress(): string {
  *
  * `EMAIL_FROM_MARKETING` is the provider-neutral name; `RESEND_FROM_MARKETING`
  * is still read so the SES cutover did not require an env rename. Trimmed
- * because production carries the key with an EMPTY value, and a whitespace
- * value is the same non-answer.
+ * because `KEY=` and `KEY="   "` are both things an env file expresses easily
+ * and both mean "not configured" — a truthiness test alone would read either as
+ * an address and hand it to the provider.
  */
 export function getMarketingFromAddress(): string | null {
   const configured = (process.env.EMAIL_FROM_MARKETING || process.env.RESEND_FROM_MARKETING || "").trim();
