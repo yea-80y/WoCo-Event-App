@@ -101,7 +101,13 @@
    * here consented and unmailable.
    */
   const unmailable = $derived(
-    contacts.filter((c) => !MAILABLE_EMAIL_RE.test(c.email.trim().toLowerCase())),
+    contacts
+      // Suppressed FIRST, so the reach line's two exclusion counts never
+      // describe the same person twice and sum past the audience size.
+      // Unsubscribed is the fact that matters more: it is a decision someone
+      // made, where undeliverable is just a broken string.
+      .filter((c) => !suppressedEmails.has(c.email))
+      .filter((c) => !MAILABLE_EMAIL_RE.test(c.email.trim().toLowerCase())),
   );
 
   const recipients = $derived(

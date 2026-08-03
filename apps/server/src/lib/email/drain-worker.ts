@@ -79,7 +79,7 @@ const ACCOUNT_LEVEL_STOP =
  * working the moment you pull the lever is worse than no stop.
  *
  * Every alternative contains a space, which is what makes them unforgeable:
- * recipient addresses pass `EMAIL_RE` and domains `HOSTNAME_RE`, neither of
+ * recipient addresses pass `MAILABLE_EMAIL_RE` and domains `HOSTNAME_RE`, neither of
  * which admits whitespace, so no organiser-supplied token echoed into a
  * provider error can match.
  *

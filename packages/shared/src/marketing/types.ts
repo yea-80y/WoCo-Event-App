@@ -96,6 +96,22 @@ export interface MarketingListMeta {
   updatedAt: string;
   /** Swarm reference of the sealed blob (hex, no 0x) — self-sovereign read path */
   swarmRef: string;
+  /**
+   * Addresses the write ACCEPTED and indexed but that no send can deliver to —
+   * a sample, capped server-side, alongside the full count.
+   *
+   * Advisory, and absent when there are none. A non-web caller that hands the
+   * server addresses it knows are undeliverable deserves to be told so; staying
+   * quiet would make the server complicit in a list that silently under-sends.
+   * The web client does not read these — it holds the plaintext list and marks
+   * them itself — but the field belongs in the shared type rather than existing
+   * as undeclared API surface.
+   *
+   * Absence is deliberately ambiguous between "none" and "older server". Fine
+   * for something advisory; do NOT build a guarantee on it.
+   */
+  unmailable?: string[];
+  unmailableCount?: number;
 }
 
 export interface MarketingListResponse {
