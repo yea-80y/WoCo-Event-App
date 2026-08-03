@@ -35,8 +35,9 @@
   let panel = $state<"contacts" | "compose" | "attendees" | null>(null);
 
   /** ?announce={eventId} — the post-publish prompt: open the composer with
-   *  that event preselected. (With no contacts yet, the import invite shows
-   *  instead, which is the right first step anyway.) */
+   *  that event preselected. It opens with an empty audience too: the composer
+   *  is where you find out what a WoCo email looks like, and being sent there
+   *  with nothing to look at was the worse answer (#135). */
   const announceEventId = $derived(router.params.announce);
   $effect(() => {
     if (announceEventId) panel = "compose";
@@ -197,6 +198,15 @@
         <div class="actions center">
           <button class="btn-primary" onclick={() => (wizardOpen = true)}>Import contacts</button>
           <button class="btn-ghost" onclick={() => (panel = "attendees")}>Add from your events</button>
+          <!-- Deliberately offered BEFORE there is an audience. The test send
+               takes one address the organiser types and skips the membership
+               check entirely, so seeing the email is the step that should come
+               before handing over other people's data — not after (#135). -->
+          <button
+            class="btn-ghost"
+            class:active={panel === "compose"}
+            onclick={() => (panel = panel === "compose" ? null : "compose")}
+          >See what an email looks like</button>
         </div>
       </div>
     {:else}
@@ -263,7 +273,11 @@
       />
     {/if}
 
-    {#if panel === "compose" && contacts.length > 0}
+    <!-- No contact-count gate. The endpoint behind the test send says it plainly:
+         "There is deliberately NO imported-list membership check: the point is
+         previewing in an inbox that may not be in the audience." Requiring an
+         audience to reach it inverted the one feature meant to work first. -->
+    {#if panel === "compose"}
       <StripeVerifyGate
         bind:verified={stripeVerified}
         title="Verify Stripe to send broadcasts"

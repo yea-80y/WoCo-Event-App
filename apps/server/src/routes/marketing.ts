@@ -14,12 +14,13 @@
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
-import { FEATURES, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import { FEATURES, MAILABLE_EMAIL_RE, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
+import { normalizeEmails } from "../lib/marketing/emails.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
 import { consentedSubset } from "../lib/marketing/consent-store.js";
 import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
@@ -57,7 +58,6 @@ const domainsGate: MiddlewareHandler<AppEnv> = async (c, next) => {
   await next();
 };
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_LIST_EMAILS = MARKETING_MAX_LIST_EMAILS;
 /**
  * Hex ciphertext ≈ 2× plaintext, so this allows ~3MB of sealed bytes.
@@ -91,16 +91,9 @@ function isSealedBox(v: unknown): v is SealedBoxShape {
   );
 }
 
-function normalizeEmails(raw: unknown, max: number): string[] | null {
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > max) return null;
-  const out: string[] = [];
-  for (const e of raw) {
-    if (typeof e !== "string") return null;
-    const norm = e.trim().toLowerCase();
-    if (!EMAIL_RE.test(norm)) return null;
-    out.push(norm);
-  }
-  return out;
+/** Shape/size refusal — the one thing content-tolerant normalisation still rejects. */
+function badShape(max: number): string {
+  return `emails must be an array of at most ${max.toLocaleString()} addresses`;
 }
 
 /** Replace the organiser's stored list (sealed blob + hashes). */
@@ -116,10 +109,16 @@ marketing.post("/list", requireAuth, async (c) => {
     if (JSON.stringify(sealedList).length > MAX_SEALED_JSON) {
       return c.json({ ok: false, error: "Sealed list too large (max ~20k contacts)" }, 413);
     }
-    const emails = normalizeEmails(body.emails, MAX_LIST_EMAILS);
-    if (!emails) {
-      return c.json({ ok: false, error: `emails must be 1..${MAX_LIST_EMAILS} valid addresses` }, 400);
+    // An EMPTY array is a legitimate state, not malformed input: it is what
+    // deleting the last contact looks like, and refusing it made "remove
+    // everyone" impossible through the UI (#136) — an odd neighbour for the
+    // erasure path. It stays distinguishable from never-having-imported, which
+    // is `getList` returning null.
+    const normalized = normalizeEmails(body.emails, MAX_LIST_EMAILS);
+    if (!normalized) {
+      return c.json({ ok: false, error: badShape(MAX_LIST_EMAILS) }, 400);
     }
+    const { emails, unmailable, unmailableCount } = normalized;
 
     const data = await withOrgLock(org, async () => {
       const emailHashes = [...new Set(emails.map(hashEmail))];
@@ -136,7 +135,13 @@ marketing.post("/list", requireAuth, async (c) => {
       return { swarmRef, count, updatedAt };
     });
 
-    return c.json({ ok: true, data });
+    // Reported, never dropped. Excluding an unmailable row from the index would
+    // desync it from the sealed blob the organiser can still see on screen, and
+    // that index is what subject-access and erasure read.
+    return c.json({
+      ok: true,
+      data: { ...data, ...(unmailableCount > 0 ? { unmailable, unmailableCount } : {}) },
+    });
   } catch (err) {
     console.error("[marketing] list upload error:", err);
     const message = err instanceof Error ? err.message : "List upload failed";
@@ -171,10 +176,16 @@ marketing.post("/check", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const body = c.get("body") as Record<string, unknown>;
 
-  const emails = normalizeEmails(body.emails, MAX_LIST_EMAILS);
-  if (!emails) {
-    return c.json({ ok: false, error: `emails must be 1..${MAX_LIST_EMAILS} valid addresses` }, 400);
+  // A query, so an unmailable address gets a truthful answer (it is in none of
+  // the three sets) rather than a 400 that takes the whole batch down with it.
+  // That refusal is live today: `claims.ts` admits a claim address on
+  // `includes("@")` alone, and one such buyer 400s an entire "Add from your
+  // events" scan (AttendeeImport calls this before it can import anyone).
+  const normalized = normalizeEmails(body.emails, MAX_LIST_EMAILS);
+  if (!normalized) {
+    return c.json({ ok: false, error: badShape(MAX_LIST_EMAILS) }, 400);
   }
+  const { emails } = normalized;
 
   const hashToEmail = new Map<string, string>();
   for (const e of emails) hashToEmail.set(hashEmail(e), e);
@@ -206,9 +217,17 @@ marketing.post("/suppress", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const body = c.get("body") as Record<string, unknown>;
 
-  const emails = normalizeEmails(body.emails, 1000);
-  if (!emails) {
-    return c.json({ ok: false, error: "emails must be 1..1000 valid addresses" }, 400);
+  const normalized = normalizeEmails(body.emails, 1000);
+  if (!normalized) {
+    return c.json({ ok: false, error: badShape(1000) }, 400);
+  }
+  // Unlike `/list`, an EMPTY array here is a caller bug rather than a state:
+  // there is no "suppress nobody" intent to honour. Unmailable addresses ARE
+  // suppressed — the organiser asked for this contact to stay unsubscribed, and
+  // a permanent mark on a hash nobody can mail costs nothing and honours it.
+  const { emails } = normalized;
+  if (emails.length === 0) {
+    return c.json({ ok: false, error: "At least one address is required" }, 400);
   }
   for (const e of emails) suppressOrg(hashEmail(e), org, "manual");
   return c.json({ ok: true, data: { suppressed: emails.length } });
@@ -300,7 +319,7 @@ marketing.post("/broadcast/test", requireAuth, async (c) => {
     if (!htmlBody || typeof htmlBody !== "string" || htmlBody.length > 50_000) {
       return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
     }
-    if (!email || typeof email !== "string" || !EMAIL_RE.test(email)) {
+    if (!email || typeof email !== "string" || !MAILABLE_EMAIL_RE.test(email)) {
       return c.json({ ok: false, error: "A valid test address is required" }, 400);
     }
 

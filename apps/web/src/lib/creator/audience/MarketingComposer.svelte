@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
+  import { MAILABLE_EMAIL_RE } from "@woco/shared";
   import { sendMarketingTest } from "../../api/marketing.js";
   import { MarketingSenderUnavailable } from "../../api/errors.js";
   import {
@@ -83,14 +84,54 @@
     });
   }
 
+  /**
+   * Contacts the send path will not accept. The chunk endpoint rejects a WHOLE
+   * chunk on one malformed address, so without this filter a single such row
+   * would block every broadcast — the freeze that #136 removed from the list
+   * write, relocated to the send.
+   *
+   * They are excluded here rather than dropped at import, because the server
+   * deliberately keeps them in its hash index: that index is what subject-access
+   * and erasure read, and it has to keep mirroring the list the organiser can
+   * see. Unmailable is a property of an address, not grounds for losing the
+   * record of a person.
+   *
+   * Reachable via the attendee import: a claim address only has to contain "@"
+   * to be stored, so a buyer who ticked the opt-in with a typo'd address arrives
+   * here consented and unmailable.
+   */
+  const unmailable = $derived(
+    contacts
+      // Suppressed FIRST, so the reach line's two exclusion counts never
+      // describe the same person twice and sum past the audience size.
+      // Unsubscribed is the fact that matters more: it is a decision someone
+      // made, where undeliverable is just a broken string.
+      .filter((c) => !suppressedEmails.has(c.email))
+      .filter((c) => !MAILABLE_EMAIL_RE.test(c.email.trim().toLowerCase())),
+  );
+
   const recipients = $derived(
     contacts
       .filter((c) => !suppressedEmails.has(c.email))
+      .filter((c) => MAILABLE_EMAIL_RE.test(c.email.trim().toLowerCase()))
       .map((c) => ({
         email: c.email,
         name: [c.firstName, c.lastName].filter(Boolean).join(" ") || undefined,
       })),
   );
+
+  /**
+   * Why the broadcast button is off, said BEFORE it is clicked. An audience of
+   * zero is the ordinary first-run state, not an error — and the test send,
+   * which is exactly the thing to do at that point, works regardless (#135).
+   */
+  const blockedReason = $derived.by(() => {
+    if (recipients.length > 0) return null;
+    if (contacts.length === 0) {
+      return "You haven't added anyone yet, so there is no broadcast to send. Send a test to your own inbox to see what your email looks like first.";
+    }
+    return "Everyone in your audience has either unsubscribed or has an address we can't deliver to. A test send still works.";
+  });
 
   /** Remembered across visits — the organiser tests into the same inbox every time. */
   const TEST_EMAIL_KEY = "woco:test-send-email";
@@ -222,7 +263,18 @@
     {#if suppressedEmails.size > 0}
       <span class="reach-sup">· {suppressedEmails.size.toLocaleString()} unsubscribed are excluded automatically</span>
     {/if}
+    {#if unmailable.length > 0}
+      <span class="reach-sup">
+        · {unmailable.length.toLocaleString()}
+        {unmailable.length === 1 ? "address can't" : "addresses can't"} be delivered to and
+        {unmailable.length === 1 ? "is" : "are"} excluded
+      </span>
+    {/if}
   </div>
+
+  {#if blockedReason}
+    <p class="blocked">{blockedReason}</p>
+  {/if}
 
   <label class="field">
     <span>From</span>
@@ -366,6 +418,19 @@
   }
   .reach strong { color: var(--accent-text); font-family: var(--font-mono); }
   .reach-sup { color: var(--text-muted); }
+
+  /* Not an error — nothing is wrong and nothing was lost, so this reads as the
+     muted note it is rather than borrowing the red the composer keeps for a
+     rejected draft. */
+  .blocked {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: -0.375rem 0 0;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
 
   .field { display: flex; flex-direction: column; gap: 0.35rem; }
   .field span {
