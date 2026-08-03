@@ -103,13 +103,83 @@ on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
 - **Gmail complaints never reach SES at all** — Google Postmaster Tools is the
   only visibility. Do not present complaint rate as complete.
 
-### 2. #96 — marketing must fail closed when the marketing from-address is unset
+### 2. #96 — marketing must fail closed when the marketing from-address is unset — **DONE**
 
-`resolveMarketingFrom` falls back to the **transactional** address, which puts
-imported-list marketing on the domain that carries ticket delivery. Small
-change. **Check the env name first** — the issue predates SES and names
-`RESEND_FROM_MARKETING`; post-cutover the marketing from-address may need an
-SES-side equivalent. It is unset in production today.
+Shipped on `fix/marketing-from-fail-closed`. `getMarketingFromAddress()` and
+`resolveMarketingFrom()` answer `string | null` and never degrade to the
+transactional address; the marketing lane refuses with 503 before `createJob`,
+and the test send refuses with it.
+
+Env name settled: `EMAIL_FROM_MARKETING` is the provider-neutral name and
+already existed, so no SES-side equivalent was needed. Production carries the
+key with an **empty value**, which is why the check trims rather than testing
+for absence.
+
+**⚠️ DEPLOY SEQUENCING — this is not a code-only merge.** With
+`organiserSendingDomains: false`, no organiser has the verified-domain path, so
+from the moment the container restarts every marketing broadcast and every
+marketing test send 503s until `EMAIL_FROM_MARKETING` is set. Required order:
+
+1. Create and **DKIM-verify** the marketing subdomain identity in SES. Presence
+   is not verification — a set-but-unverified value passes the config guard and
+   is then rejected per message.
+2. Set `EMAIL_FROM_MARKETING` in the laptop-master `.env`.
+3. Deploy code and env **together** (STEP 2, `up -d` not `restart`), then
+   confirm with `docker exec woco-server printenv | grep EMAIL_FROM_MARKETING`
+   and `curl .../api/health | jq .email.marketingSender`.
+
+The SES warm-up embargo (no broadcasts until ~2026-08-14) means the outage
+window currently costs nothing — this is the cheapest moment the change will
+ever have.
+
+**Decisions worth not relitigating:**
+
+- **The event lane keeps the fallback**, now explicit at the call site rather
+  than hidden in the resolver. Those recipients consented by buying a ticket and
+  the message is "the event is cancelled" — refusing there would turn a platform
+  config gap into attendee harm.
+- **Consequence of setting the var**, worth expecting: attendee mail moves off
+  the ticket domain onto the marketing subdomain the same day, so the
+  least-warmed identity starts carrying the mail that most needs to land. Warm
+  the subdomain on event broadcasts deliberately before any imported list
+  touches it.
+- **The test send fails closed too.** It is a rehearsal; one that goes out from
+  a sender the real broadcast would be refused from misrepresents what it is
+  previewing.
+- **No second assert at `/jobs/:id/start` or in the drain worker.** A job created
+  under old code cannot drain under new code — chunks are ciphertext under a
+  process-lifetime key and `reconcileOnBoot` wipes them — and the check would
+  have to be "fromAddress equals the transactional address", which is *correct*
+  for the same worker's event jobs. Create is the single policy point.
+- **Resume re-resolves the address rather than copying the prior job's.**
+  Copying it would resurrect a pre-change record carrying `events@woco-net.com`,
+  or a since-unverified domain the provider now rejects. A broadcast split
+  across two senders breaks nothing: unsub tokens are minted per recipient
+  independent of from, suppression is org-scoped, DKIM alignment is per-message.
+
+**Still open, deliberately:**
+
+- **An unverified from-identity is now an account-level stop** in the drain
+  worker, because making the var mandatory made a typo'd or not-yet-verified
+  value a fresh way to reject 20,000 messages one at a time. Three alternatives:
+  `MailFromDomainNotVerifiedException` (SES's named exception), "Email address
+  is not verified" (SES's `MessageRejected` wording for an unverified identity),
+  and "domain is not verified" (Resend's wording — the rollback lever, and a
+  stop that quietly stops working the moment you pull it is worse than no stop).
+  Bare `MessageRejected` is deliberately NOT matched: it also covers genuine
+  per-message content rejections. Every alternative contains a space, which is
+  what makes them unforgeable — recipient addresses pass `EMAIL_RE` and domains
+  `HOSTNAME_RE`, neither of which admits whitespace.
+- **Known imprecision:** an SES account back in sandbox emits the identical
+  "Email address is not verified" for unverified RECIPIENTS. The stop still
+  fires correctly (nothing can send), but the settle message's diagnosis names
+  the sending address. Unreachable while the account stays production-enabled.
+- **A refusal lasting more than 7 days destroys the resume path.** The
+  died-unresumed exemption in `sweep` bypasses the per-org count cap but NOT
+  `tooOld` (`RECORD_RETENTION_MS`), so a died job's `sentHashes` skip-list is
+  deleted after 7 days and the only remaining remedy re-mails the already-mailed
+  half. Pre-existing, but fail-closed adds a way to be pinned there by ops
+  alone. The sequencing above makes it unreachable in practice.
 
 ### 3. #104 — SNS webhook: pin the signing-cert URL path
 

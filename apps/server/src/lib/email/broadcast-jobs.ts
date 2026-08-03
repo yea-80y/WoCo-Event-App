@@ -470,6 +470,14 @@ export interface CreateJobInput {
 
 export function createJob(input: CreateJobInput): BroadcastJob {
   ensureLoaded();
+  // A job with no from-address is unsendable, and the drain worker is the wrong
+  // place to find that out — by then the recipients are encrypted on disk and
+  // the organiser has been told the send is queued. `resolveMarketingFrom` can
+  // now answer null (#96), so this refuses the coercion that would otherwise
+  // paper over it (`?? ""`) rather than trusting every future call site.
+  if (!input.fromAddress.trim()) {
+    throw new Error("createJob: fromAddress is required — a job with no sender cannot be sent");
+  }
   const now = Date.now();
   const job: BroadcastJob = {
     id: randomUUID(),

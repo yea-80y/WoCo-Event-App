@@ -158,7 +158,12 @@ export interface SendingDomainInfo {
   fromLocalPart: string;
   status: SendingDomainStatus;
   records: SendingDomainRecord[];
-  /** Resolved from-address preview (verified domain or platform fallback) */
-  fromAddress: string;
+  /**
+   * Resolved from-address preview: the verified organiser domain, else the
+   * platform marketing address, else `null` — which means marketing sends are
+   * currently refused rather than quietly redirected to the transactional
+   * ticket address (#96).
+   */
+  fromAddress: string | null;
   createdAt: string;
 }

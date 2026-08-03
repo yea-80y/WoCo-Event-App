@@ -90,9 +90,18 @@
   {#if loading}
     <p class="muted">Checking…</p>
   {:else if !info}
+    <!--
+      Deliberately describes what connecting a domain GIVES you rather than
+      asserting what happens without one. The old copy promised that broadcasts
+      "currently send from the WoCo address", which stopped being reliably true
+      when marketing began failing closed on an unconfigured platform sender
+      (#96) — and the promise it made was the bug: that address was the
+      transactional one.
+    -->
     <p class="muted">
-      Broadcasts currently send from the WoCo address. Connect a domain you own and they'll
-      come from your brand instead — your name in the inbox, your sender reputation.
+      Connect a domain you own and marketing comes from your brand — your name in the inbox,
+      and a sender reputation that is yours alone instead of shared with every other organiser
+      on WoCo.
     </p>
     <div class="connect-row">
       <div class="from-preview" aria-hidden="true">
@@ -109,8 +118,8 @@
       {#if verified}
         Marketing email sends from <strong class="mono">{info.fromAddress}</strong>.
       {:else}
-        Add these records at your DNS provider, then check. Until it verifies, broadcasts
-        keep sending from the WoCo address — nothing breaks in the meantime.
+        Add these records at your DNS provider, then check. Nothing sends from this domain
+        until it verifies.
       {/if}
     </p>
 

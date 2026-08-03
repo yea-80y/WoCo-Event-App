@@ -33,8 +33,12 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   the unsubscribe link itself, defeating the whole control.
 - **REPUTATION SPLIT**: marketing must not share a sending domain with ticket email. Mailbox
   providers score reputation per domain and Gmail/Yahoo cap complaints at 0.3% per domain, so
-  one bad campaign puts *ticket* email in spam on event day. `RESEND_FROM_MARKETING` is the
-  seam; it must point at a separate subdomain before the first imported list is emailed.
+  one bad campaign puts *ticket* email in spam on event day. `EMAIL_FROM_MARKETING` is the
+  seam (`RESEND_FROM_MARKETING` is the legacy alias); it must point at a separate subdomain.
+  **It fails closed (#96)**: unset, empty or whitespace refuses platform marketing sends with
+  503 rather than falling back to the transactional address, and `/api/health` →
+  `email.marketingSender.ok` reports it. The old fallback silently put imported cold lists on
+  the ticket domain, which is the exact outcome this rule exists to prevent.
 - `/u/:token` = public unsubscribe page (one-click POST tolerant of empty body).
   Token `mu1.*` = HMAC(`EMAIL_HASH_SECRET`-derived key) over `{emailHash, org}`; **NO expiry**
   (an expired unsub link = spam complaint). Rotating `EMAIL_HASH_SECRET` invalidates all
@@ -81,7 +85,10 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   regex (a consent column is supposed to look like a flag) and carries its own guard so a
   consent DATE is not mistaken for the flag.
 - Organiser sending domains: Resend Domains API, verify-on-demand (no poller);
-  `resolveMarketingFrom`: verified org domain → `RESEND_FROM_MARKETING` → `RESEND_FROM`.
+  `resolveMarketingFrom`: verified org domain → `EMAIL_FROM_MARKETING` → **null** (refuse).
+  Only the event-broadcast lane falls back to `EMAIL_FROM`, spelled out at its call site in
+  `routes/broadcast-jobs.ts`: those recipients consented by buying a ticket, and "the event
+  is cancelled" must be sendable whatever state the platform's email config is in.
   From-domain never bypasses suppression/headers.
 - Resend webhook `/api/resend/webhook`: bounce/complaint → GLOBAL suppression; SDK-bundled
   svix verify UNCONDITIONAL (no `NODE_ENV` gate — a forged bounce = targeted email denial);

@@ -48,6 +48,7 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
+import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
 import { failureHealth, bounceLedgerHealth } from "./lib/email/failure-ledger.js";
 import { reconcileOnBoot, recordShutdown } from "./lib/email/broadcast-jobs.js";
 import {
@@ -196,6 +197,10 @@ app.get("/api/health", (c) =>
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
       broadcasts: drainWorkerHealth(),
+      // `ok: false` means the PLATFORM marketing lane is refusing sends because
+      // no marketing from-address is configured (#96). Organisers with their own
+      // verified sending domain are unaffected, and so is transactional email.
+      marketingSender: marketingSenderHealth(),
       // Only the SES path ledgers a bounce that arrives AFTER the provider
       // accepted the message. Resend is the rollback lever, and pulling it
       // reopens that hole — reported, not left to be discovered.
@@ -570,6 +575,7 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 // Surfaces a missing SES credential at boot rather than leaving it to be found
 // by the first buyer whose ticket never arrived. Non-fatal by design.
 checkEmailProviderConfig();
+checkMarketingSenderConfig();
 startDomainPoller();
 void logSponsorReadiness();
 // Prime the directory-snapshot read cache (#37: 1 pointer + 1 blob) so the first

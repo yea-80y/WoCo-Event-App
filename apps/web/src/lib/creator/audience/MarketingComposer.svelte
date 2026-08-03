@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
   import { sendMarketingTest } from "../../api/marketing.js";
+  import { MarketingSenderUnavailable } from "../../api/errors.js";
   import {
     startBroadcast,
     pollBroadcast,
@@ -97,8 +98,45 @@
   let testSending = $state(false);
   let testNote = $state<string | null>(null);
 
-  async function handleSendTest(): Promise<void> {
+  /**
+   * The one failure that is not a validation error and not a retry: WoCo has no
+   * marketing sending address, so the send was refused (#96). Held separately
+   * from `error` because it needs the opposite tone — nothing is wrong with
+   * what they wrote, and the draft they are staring at is intact.
+   */
+  let held = $state<string | null>(null);
+
+  /** Names the action that was refused — a test send is not a broadcast. */
+  let heldTitle = $state("");
+
+  /** The subject at the moment of refusal, quoted back so "safe" is provable. */
+  let heldSubject = $state("");
+
+  function clearFeedback(): void {
     error = null;
+    held = null;
+  }
+
+  /**
+   * Routes a thrown failure to the right surface.
+   *
+   * `quoteDraft` is false on a resume: that send is the OLD message, which the
+   * server holds and the composer does not. Quoting whatever is in the box
+   * would put a fresh draft's subject under a refusal that was about a
+   * different message — each sentence true, the juxtaposition misleading.
+   */
+  function surface(err: unknown, fallback: string, title: string, quoteDraft = true): void {
+    if (err instanceof MarketingSenderUnavailable) {
+      heldTitle = title;
+      heldSubject = quoteDraft ? subject.trim() : "";
+      held = err.message;
+      return;
+    }
+    error = err instanceof Error ? err.message : fallback;
+  }
+
+  async function handleSendTest(): Promise<void> {
+    clearFeedback();
     testNote = null;
     if (!fromName.trim() || !subject.trim() || !body.trim()) {
       error = "Fill in from, subject and message before sending a test.";
@@ -119,7 +157,7 @@
         error = res.errors?.[0] ?? "Test send failed.";
       }
     } catch (err) {
-      error = err instanceof Error ? err.message : "Test send failed.";
+      surface(err, "Test send failed.", "Can't send the test yet");
     } finally {
       testSending = false;
     }
@@ -131,7 +169,7 @@
     // below lets a second click through at the first await, which would create
     // two resume jobs and mail the remainder twice.
     if (sending) return;
-    error = null;
+    clearFeedback();
     // A resume re-sends the message the server already holds, so there is
     // nothing to validate here — the compose box was cleared when the first
     // job queued, which is exactly why the content cannot come from it.
@@ -171,7 +209,7 @@
         // state on screen rather than claiming a failure that did not happen.
       });
     } catch (err) {
-      error = err instanceof Error ? err.message : "Send failed.";
+      surface(err, "Send failed.", "Can't send yet", !resumeOf);
     } finally {
       sending = false;
     }
@@ -260,6 +298,37 @@
       onDismiss={() => { job = null; }}
     />
   {/if}
+  <!--
+    Refused ≠ failed. A validation error means "you did something, fix it"; this
+    means "we did something, there is nothing for you to do, and your draft is
+    where you left it". The same red line for both would tell an organiser who
+    has just written to thousands of people that they broke it and may have lost
+    it — wrong twice. Amber, because it already means "waiting on someone else"
+    here (the pending-approval badge), and app.css reserves vermillion for
+    destructive and dangerous, which this is neither.
+
+    The titles say "can't send yet", never "held" or "queued": nothing is
+    waiting to go out. No job was created, and the message is sitting in the box
+    below — promising a queue that does not exist would be the worse lie.
+  -->
+  <!--
+    The live region stays MOUNTED and its contents toggle. Several screen
+    readers only announce changes inside a region that already existed, so
+    creating the region and its text in the same tick can be announced as
+    nothing at all — and for this notice, the announcement is the whole feature
+    on the accessibility axis.
+  -->
+  <div class="held-region" class:showing={held} role="status">
+    {#if held}
+      <div class="held">
+        <p class="held-title">{heldTitle}</p>
+        <p class="held-body">{held}</p>
+        {#if heldSubject}
+          <p class="held-draft">Still in your composer: "{heldSubject}"</p>
+        {/if}
+      </div>
+    {/if}
+  </div>
   {#if error}<p class="err">{error}</p>{/if}
 
   <div class="actions">
@@ -386,6 +455,47 @@
   }
 
   .err { color: var(--error); font-size: 0.8125rem; margin: 0; }
+
+  /* Hidden by a class, not `:empty` — the region is a flex child, so leaving it
+     displayed would add a phantom gap, and Selectors 3 `:empty` does not ignore
+     the comment anchors Svelte leaves behind an inactive `{#if}`. */
+  .held-region { display: none; }
+  .held-region.showing { display: block; }
+
+  /* A left rule rather than a banner: this annotates the draft, it does not
+     reject it. No icon — an amber triangle is the reflex answer and says
+     nothing the words don't. */
+  .held {
+    border-left: 2px solid var(--warning);
+    background: var(--bg-elevated);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    padding: 0.75rem 0.875rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .held-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--warning);
+    margin: 0;
+  }
+  .held-body {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0;
+  }
+  /* Mono is this system's "verbatim, and here is the proof" voice. Quoting
+     their own subject back is what makes "still in your composer" credible
+     rather than a promise they have to take on faith. */
+  .held-draft {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    margin: 0.125rem 0 0;
+    overflow-wrap: anywhere;
+  }
 
   .actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 
