@@ -39,6 +39,7 @@ import { getList, withOrgLock } from "../lib/marketing/list-store.js";
 import { capRemaining, reserveSend } from "../lib/marketing/send-cap.js";
 import {
   MARKETING_SENDER_UNCONFIGURED,
+  MARKETING_SENDER_UNCONFIGURED_CODE,
   resolveMarketingFrom,
 } from "../lib/marketing/sending-domain-store.js";
 import { getFromAddress } from "../lib/email/client.js";
@@ -215,7 +216,7 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     const marketingFrom = resolveMarketingFrom(org);
     if (!marketingFrom) {
       return c.json(
-        { ok: false, error: MARKETING_SENDER_UNCONFIGURED, code: "MARKETING_SENDER_NOT_CONFIGURED" },
+        { ok: false, error: MARKETING_SENDER_UNCONFIGURED, code: MARKETING_SENDER_UNCONFIGURED_CODE },
         503,
       );
     }

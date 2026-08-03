@@ -73,12 +73,22 @@ const ACCOUNT_LEVEL_STOP =
  * verified", so match that text rather than the exception name — plain
  * `MessageRejected` also covers genuinely per-message content rejections.
  *
+ * `domain is not verified` covers Resend, which words it differently ("The X
+ * domain is not verified. Please, add and verify your domain"). Resend is the
+ * rollback lever and is scheduled for deletion, but a stop that silently stops
+ * working the moment you pull the lever is worse than no stop.
+ *
+ * Every alternative contains a space, which is what makes them unforgeable:
+ * recipient addresses pass `EMAIL_RE` and domains `HOSTNAME_RE`, neither of
+ * which admits whitespace, so no organiser-supplied token echoed into a
+ * provider error can match.
+ *
  * This became reachable when the marketing from-address turned mandatory (#96):
  * the guard there checks that a value is PRESENT, and presence is not
  * verification. A typo, or setting it before DNS propagates, lands here.
  */
 const FROM_IDENTITY_STOP =
-  /MailFromDomainNotVerifiedException|Email address is not verified|not verified in region/i;
+  /MailFromDomainNotVerifiedException|Email address is not verified|domain is not verified/i;
 
 /**
  * A failure every attempted recipient shares is an outage, not bad addresses —

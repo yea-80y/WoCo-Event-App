@@ -15,15 +15,25 @@ import type { SendingDomainRecord } from "@woco/shared";
 import { getMarketingFromAddress } from "../email/client.js";
 
 /**
- * Shown to the organiser when `resolveMarketingFrom` returns null. It has to
- * stand on its own: the client drops the response `code` (api/broadcasts.ts
- * rethrows `error` only), so this string is the entire explanation they get.
- * It names the platform as the cause on purpose — the organiser has done
- * nothing wrong and there is no action they can take.
+ * Shown to the organiser when `resolveMarketingFrom` returns null. It names the
+ * platform as the cause on purpose — they have done nothing wrong and there is
+ * no action they can take.
+ *
+ * Written to stand on its own even though the WoCo composer pairs it with a
+ * title and a draft-is-safe line: any other client, and this one before it
+ * learned to branch on the code below, shows this string and nothing else.
  */
 export const MARKETING_SENDER_UNCONFIGURED =
   "WoCo has not finished setting up its marketing sending address, so nothing was " +
   "sent. This is on our side, not a problem with your account.";
+
+/**
+ * Response `code` for the refusal — the documented branch point for UI
+ * ("branches on this, never on the human-readable `error` text"). Defined once
+ * here so the two routes that emit it cannot drift apart by a typo, which would
+ * degrade silently to the generic error path.
+ */
+export const MARKETING_SENDER_UNCONFIGURED_CODE = "MARKETING_SENDER_NOT_CONFIGURED";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-domains.json");

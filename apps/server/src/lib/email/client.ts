@@ -17,7 +17,14 @@ export function getResend(): Resend {
  * fallback when the Resend adapter goes.
  */
 export function getFromAddress(): string {
-  return process.env.EMAIL_FROM || process.env.RESEND_FROM || "events@woco-net.com";
+  // Trimmed for the same reason as the marketing address: a whitespace-only
+  // value in an env_file is truthy, and here it would skip the default and
+  // reach `createJob`'s empty-sender throw as an unhandled 500.
+  return (
+    (process.env.EMAIL_FROM || "").trim() ||
+    (process.env.RESEND_FROM || "").trim() ||
+    "events@woco-net.com"
+  );
 }
 
 /**

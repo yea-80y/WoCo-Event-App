@@ -22,6 +22,7 @@
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -259,14 +260,41 @@ describe("marketingSenderHealth", () => {
 
 describe("MARKETING_SENDER_UNCONFIGURED", () => {
   /**
-   * `apps/web/src/lib/api/broadcasts.ts` rethrows the response `error` and
-   * drops `code`, so this string is the entire explanation the organiser gets.
-   * It has to say that nothing was sent, and that it is not their fault.
+   * The WoCo composer pairs this with a title and a draft-is-safe line, but any
+   * other client shows this string alone — so on its own it still has to say
+   * that nothing was sent and that it is not the organiser's fault.
    */
   test("tells the organiser nothing was sent and it is not their account", () => {
     const msg = store.MARKETING_SENDER_UNCONFIGURED;
     assert.match(msg, /nothing was sent/i);
     assert.match(msg, /not a problem with your account/i);
     assert.doesNotMatch(msg, /EMAIL_FROM_MARKETING|env|null/i, "written for an organiser, not an operator");
+  });
+
+  /**
+   * The wire contract the composer branches on to render its "can't send yet"
+   * notice instead of a red validation line. A drifted literal in either route
+   * would degrade silently to the generic error path, so the constant is
+   * defined once and its VALUE is pinned here — renaming it would otherwise
+   * break the client with a green server suite.
+   */
+  test("the response code is the literal the client matches on", () => {
+    assert.equal(store.MARKETING_SENDER_UNCONFIGURED_CODE, "MARKETING_SENDER_NOT_CONFIGURED");
+  });
+
+  test("both refusing routes emit the shared constant, not their own literal", async () => {
+    const sources = await Promise.all(
+      ["../src/routes/broadcast-jobs.ts", "../src/routes/marketing.ts"].map((rel) =>
+        readFile(new URL(rel, import.meta.url), "utf-8"),
+      ),
+    );
+    for (const [i, src] of sources.entries()) {
+      assert.match(src, /code: MARKETING_SENDER_UNCONFIGURED_CODE/, `route ${i} uses the constant`);
+      assert.doesNotMatch(
+        src,
+        /code: "MARKETING_SENDER_NOT_CONFIGURED"/,
+        `route ${i} must not re-spell the code inline`,
+      );
+    }
   });
 });

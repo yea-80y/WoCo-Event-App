@@ -242,6 +242,13 @@ describe("stopping", () => {
       "an unverified from-address",
       "SES MessageRejected: Email address is not verified. The following identities failed the check in region EU-WEST-1: news@news.woco-net.com",
     ],
+    // Resend words it differently. It is the rollback lever and is scheduled
+    // for deletion, but a stop that quietly stops working the moment you pull
+    // the lever is worse than no stop.
+    [
+      "an unverified domain on the Resend rollback path",
+      "Resend validation_error: The news.woco-net.com domain is not verified. Please, add and verify your domain on https://resend.com/domains",
+    ],
   ] as const) {
     test(`${label} stops the job rather than rejecting every recipient`, async () => {
       const rec = recorder(() => message);

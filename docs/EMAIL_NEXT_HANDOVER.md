@@ -160,11 +160,20 @@ ever have.
 **Still open, deliberately:**
 
 - **An unverified from-identity is now an account-level stop** in the drain
-  worker (`MailFromDomainNotVerifiedException` / "Email address is not
-  verified"), because making the var mandatory made a typo'd or not-yet-verified
-  value a fresh way to reject 20,000 messages one at a time. Bare
-  `MessageRejected` is deliberately NOT matched — it also covers genuine
-  per-message content rejections.
+  worker, because making the var mandatory made a typo'd or not-yet-verified
+  value a fresh way to reject 20,000 messages one at a time. Three alternatives:
+  `MailFromDomainNotVerifiedException` (SES's named exception), "Email address
+  is not verified" (SES's `MessageRejected` wording for an unverified identity),
+  and "domain is not verified" (Resend's wording — the rollback lever, and a
+  stop that quietly stops working the moment you pull it is worse than no stop).
+  Bare `MessageRejected` is deliberately NOT matched: it also covers genuine
+  per-message content rejections. Every alternative contains a space, which is
+  what makes them unforgeable — recipient addresses pass `EMAIL_RE` and domains
+  `HOSTNAME_RE`, neither of which admits whitespace.
+- **Known imprecision:** an SES account back in sandbox emits the identical
+  "Email address is not verified" for unverified RECIPIENTS. The stop still
+  fires correctly (nothing can send), but the settle message's diagnosis names
+  the sending address. Unreachable while the account stays production-enabled.
 - **A refusal lasting more than 7 days destroys the resume path.** The
   died-unresumed exemption in `sweep` bypasses the per-org count cap but NOT
   `tooOld` (`RECORD_RETENTION_MS`), so a died job's `sentHashes` skip-list is

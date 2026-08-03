@@ -31,6 +31,7 @@ import {
   deleteDomain,
   resolveMarketingFrom,
   MARKETING_SENDER_UNCONFIGURED,
+  MARKETING_SENDER_UNCONFIGURED_CODE,
   type SendingDomainEntry,
 } from "../lib/marketing/sending-domain-store.js";
 import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
@@ -318,7 +319,7 @@ marketing.post("/broadcast/test", requireAuth, async (c) => {
     const marketingFrom = resolveMarketingFrom(org);
     if (!marketingFrom) {
       return c.json(
-        { ok: false, error: MARKETING_SENDER_UNCONFIGURED, code: "MARKETING_SENDER_NOT_CONFIGURED" },
+        { ok: false, error: MARKETING_SENDER_UNCONFIGURED, code: MARKETING_SENDER_UNCONFIGURED_CODE },
         503,
       );
     }

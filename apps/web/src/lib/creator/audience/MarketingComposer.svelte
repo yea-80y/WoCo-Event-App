@@ -117,11 +117,18 @@
     held = null;
   }
 
-  /** Routes a thrown failure to the right surface. */
-  function surface(err: unknown, fallback: string, title: string): void {
+  /**
+   * Routes a thrown failure to the right surface.
+   *
+   * `quoteDraft` is false on a resume: that send is the OLD message, which the
+   * server holds and the composer does not. Quoting whatever is in the box
+   * would put a fresh draft's subject under a refusal that was about a
+   * different message — each sentence true, the juxtaposition misleading.
+   */
+  function surface(err: unknown, fallback: string, title: string, quoteDraft = true): void {
     if (err instanceof MarketingSenderUnavailable) {
       heldTitle = title;
-      heldSubject = subject.trim();
+      heldSubject = quoteDraft ? subject.trim() : "";
       held = err.message;
       return;
     }
@@ -202,7 +209,7 @@
         // state on screen rather than claiming a failure that did not happen.
       });
     } catch (err) {
-      surface(err, "Send failed.", "Can't send yet");
+      surface(err, "Send failed.", "Can't send yet", !resumeOf);
     } finally {
       sending = false;
     }
@@ -304,15 +311,24 @@
     waiting to go out. No job was created, and the message is sitting in the box
     below — promising a queue that does not exist would be the worse lie.
   -->
-  {#if held}
-    <div class="held" role="status">
-      <p class="held-title">{heldTitle}</p>
-      <p class="held-body">{held}</p>
-      {#if heldSubject}
-        <p class="held-draft">Still in your composer: "{heldSubject}"</p>
-      {/if}
-    </div>
-  {/if}
+  <!--
+    The live region stays MOUNTED and its contents toggle. Several screen
+    readers only announce changes inside a region that already existed, so
+    creating the region and its text in the same tick can be announced as
+    nothing at all — and for this notice, the announcement is the whole feature
+    on the accessibility axis.
+  -->
+  <div class="held-region" class:showing={held} role="status">
+    {#if held}
+      <div class="held">
+        <p class="held-title">{heldTitle}</p>
+        <p class="held-body">{held}</p>
+        {#if heldSubject}
+          <p class="held-draft">Still in your composer: "{heldSubject}"</p>
+        {/if}
+      </div>
+    {/if}
+  </div>
   {#if error}<p class="err">{error}</p>{/if}
 
   <div class="actions">
@@ -439,6 +455,12 @@
   }
 
   .err { color: var(--error); font-size: 0.8125rem; margin: 0; }
+
+  /* Hidden by a class, not `:empty` — the region is a flex child, so leaving it
+     displayed would add a phantom gap, and Selectors 3 `:empty` does not ignore
+     the comment anchors Svelte leaves behind an inactive `{#if}`. */
+  .held-region { display: none; }
+  .held-region.showing { display: block; }
 
   /* A left rule rather than a banner: this annotates the draft, it does not
      reject it. No icon — an amber triangle is the reflex answer and says

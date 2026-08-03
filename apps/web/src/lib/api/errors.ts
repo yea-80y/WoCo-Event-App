@@ -18,7 +18,8 @@
  * broke it, and possibly lost it", which is wrong twice.
  */
 export class MarketingSenderUnavailable extends Error {
-  readonly code = "MARKETING_SENDER_NOT_CONFIGURED";
+  static readonly CODE = "MARKETING_SENDER_NOT_CONFIGURED";
+  readonly code = MarketingSenderUnavailable.CODE;
   constructor(message: string) {
     super(message);
     this.name = "MarketingSenderUnavailable";
@@ -34,7 +35,7 @@ export function apiError(
   fallback: string,
 ): Error {
   const message = resp.error || fallback;
-  if (resp.code === "MARKETING_SENDER_NOT_CONFIGURED") {
+  if (resp.code === MarketingSenderUnavailable.CODE) {
     return new MarketingSenderUnavailable(message);
   }
   return new Error(message);
