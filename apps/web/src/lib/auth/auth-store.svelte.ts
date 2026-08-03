@@ -479,12 +479,44 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
  * Re-derive the raw PRF key + PRF-EOA address via a biometric prompt (if not
  * already in memory). This is the deterministic POD key source (invariant #1)
  * and the Kernel's sudo signer source — it never builds the Kernel itself.
+ *
+ * SINGLE-FLIGHT. `_getSigner` and `_getPodSigner` both call this, and a first
+ * authenticated action can drive `ensureSession` + `ensurePodIdentity`
+ * concurrently. Two ceremonies would mean two biometric prompts, and WebAuthn
+ * rejects the second with an opaque NotAllowedError — which used to cascade
+ * into wiping the credential metadata. Concurrent callers want the same key, so
+ * they share one in-flight promise (the passkey module's ceremony lock is the
+ * backstop for races this doesn't cover).
  */
+let _passkeyKeyInFlight: Promise<void> | null = null;
+
 async function _ensurePasskeyKey(): Promise<void> {
   if (_passkeyPrivateKey && _podAddress) return;
-  const result = await restorePasskeyAccount();
-  _passkeyPrivateKey = result.privateKey;
-  _podAddress = result.address; // PRF-EOA address — POD derivation/AAD key
+  if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
+  _passkeyKeyInFlight = (async () => {
+    const result = await restorePasskeyAccount();
+
+    // Identity guard. A discoverable fallback inside restorePasskeyAccount shows
+    // the picker, and every WoCo passkey is labelled identically — so the user
+    // can pick a DIFFERENT account than the one this session belongs to. Adopting
+    // it would sign PODs and requests with one identity under another's parent
+    // address (invariant #1 violated silently). The stored PRF-EOA is authoritative
+    // for an established session; a mismatch is a wrong pick, not a new login.
+    const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
+    if (storedPodAddr && storedPodAddr.toLowerCase() !== result.address.toLowerCase()) {
+      throw new Error(
+        "That passkey belongs to a different WoCo account. Sign out and sign back in to switch accounts.",
+      );
+    }
+
+    _passkeyPrivateKey = result.privateKey;
+    _podAddress = result.address; // PRF-EOA address — POD derivation/AAD key
+  })();
+  try {
+    await _passkeyKeyInFlight;
+  } finally {
+    _passkeyKeyInFlight = null;
+  }
 }
 
 /**
@@ -1280,16 +1312,29 @@ async function loginCoinbase(): Promise<boolean> {
   }
 }
 
-async function loginPasskey(): Promise<boolean> {
-  if (_busy) return false;
+/**
+ * `mode` is the user's EXPLICIT intent, never inferred. "signin" runs a
+ * discoverable get() and fails loudly if no assertion comes back; "create"
+ * mints a new credential. They were previously one call that silently
+ * escalated sign-in into create, so a cancelled prompt forked the account.
+ */
+async function loginPasskey(mode: "signin" | "create" = "signin"): Promise<boolean> {
+  return (await loginPasskeyResult(mode)).ok;
+}
+
+/** Same flow, but surfaces WHY it failed so the UI can offer the right next step. */
+async function loginPasskeyResult(
+  mode: "signin" | "create" = "signin",
+): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean }> {
+  if (_busy) return { ok: false };
   _busy = true;
   _loginStage = "waiting";
 
   const t0 = performance.now();
   let tCeremony = t0;
   try {
-    // Always use discoverable get() → shows passkey picker → falls back to create
-    const account = await authenticatePasskey();
+    const account =
+      mode === "create" ? await createPasskeyAccount() : await authenticatePasskey();
     tCeremony = performance.now();
     _loginStage = "finalizing";
 
@@ -1319,7 +1364,7 @@ async function loginPasskey(): Promise<boolean> {
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
-        return true;
+        return { ok: true };
       }
     } else if (readVerifiedBinding("passkey", account.address) === override.toLowerCase()) {
       // RECOVERED-ACCOUNT FAST PATH (returning device): this device has already
@@ -1351,7 +1396,7 @@ async function loginPasskey(): Promise<boolean> {
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (recovered fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
-        return true;
+        return { ok: true };
       }
     }
 
@@ -1462,10 +1507,18 @@ async function loginPasskey(): Promise<boolean> {
     _cleanupAccountListener = null;
 
     console.debug(`[auth] passkey login (full path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
-    return true;
+    return { ok: true };
   } catch (e) {
-    console.error("[auth] passkey login failed:", e);
-    return false;
+    // Log the raw fault (DOMException.name is the only thing that distinguishes
+    // a cancel from a pending-request rejection from an unsupported PRF) — the
+    // old copy collapsed every cause into one unactionable sentence.
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.error(`[auth] passkey login failed (${mode}): ${err.name}: ${err.message}`, e);
+    return {
+      ok: false,
+      error: err,
+      noAssertion: err.name === "PasskeyAssertionUnavailableError",
+    };
   } finally {
     _busy = false;
     _loginStage = null;
@@ -2251,6 +2304,7 @@ export const auth = {
   login,
   loginWeb3,
   loginPasskey,
+  loginPasskeyResult,
   loginWeb3Auth,
   loginCoinbase,
   prefetchCoinbaseSdk,
