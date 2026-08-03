@@ -514,12 +514,27 @@ export class WocoTickets extends HTMLElement {
     const fields = this.event?.orderFields ?? [];
     let fieldsHtml = "";
 
+    // `maxlength` is interpolated RAW into a double-quoted attribute below, so
+    // escaping is not enough — coerce, because the value is not trustworthy.
+    // `OrderField.maxLength` is typed `number?` but that is a COMPILE-TIME claim
+    // about our own code; the value arrives as JSON from the event manifest and
+    // the server never validates orderFields (it destructures and passes the
+    // array straight through — apps/server/src/routes/events.ts:185,341, whose
+    // validation block covers title/dates/tags/geo/payment only). A crafted
+    // event carrying `maxLength: '1" onfocus="…'` would otherwise break out of
+    // the attribute. Emitting it only when it really is a positive integer
+    // enforces the contract the type merely asserts.
+    const maxLenAttr = (f: { maxLength?: number }): string =>
+      Number.isInteger(f.maxLength) && (f.maxLength as number) > 0
+        ? `maxlength="${f.maxLength}"`
+        : "";
+
     for (const f of fields) {
       let inputHtml: string;
       const val = st.orderFormData[f.id] ?? "";
 
       if (f.type === "textarea") {
-        inputHtml = `<textarea data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" placeholder="${this.esc(f.placeholder || "")}" ${f.maxLength ? `maxlength="${f.maxLength}"` : ""} rows="2">${this.esc(val)}</textarea>`;
+        inputHtml = `<textarea data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" placeholder="${this.esc(f.placeholder || "")}" ${maxLenAttr(f)} rows="2">${this.esc(val)}</textarea>`;
       } else if (f.type === "select" && f.options) {
         const opts = f.options.map((o) =>
           `<option value="${this.esc(o)}" ${val === o ? "selected" : ""}>${this.esc(o)}</option>`
@@ -528,7 +543,7 @@ export class WocoTickets extends HTMLElement {
       } else if (f.type === "checkbox") {
         inputHtml = `<label class="checkbox-row"><input type="checkbox" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" ${val === "yes" ? "checked" : ""} /><span>${this.esc(f.placeholder || f.label)}</span></label>`;
       } else {
-        inputHtml = `<input type="${this.esc(f.type)}" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" value="${this.esc(val)}" placeholder="${this.esc(f.placeholder || "")}" ${f.maxLength ? `maxlength="${f.maxLength}"` : ""} />`;
+        inputHtml = `<input type="${this.esc(f.type)}" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" value="${this.esc(val)}" placeholder="${this.esc(f.placeholder || "")}" ${maxLenAttr(f)} />`;
       }
 
       fieldsHtml += `
@@ -596,8 +611,12 @@ export class WocoTickets extends HTMLElement {
   }
 
   private renderSeries(s: SeriesSummary, st?: SeriesState | null): string {
-    const avail = st?.status?.available ?? s.totalSupply;
-    const total = st?.status?.totalSupply ?? s.totalSupply;
+    // Coerced, not escaped: these render raw into markup AND drive `avail === 0`
+    // below, so a string-typed API value would both inject and silently break the
+    // sold-out branch. `Number()` on a non-numeric yields NaN, which renders as
+    // "NaN" and compares false — visibly wrong, never executable.
+    const avail = Number(st?.status?.available ?? s.totalSupply);
+    const total = Number(st?.status?.totalSupply ?? s.totalSupply);
 
     if (st?.pendingApproval) {
       return `
@@ -619,7 +638,7 @@ export class WocoTickets extends HTMLElement {
             <h3>${this.esc(s.name)}</h3>
             <p class="avail">${avail} / ${total} available</p>
           </div>
-          <div class="claimed-badge">&#10003; Claimed #${st.claimedEdition}</div>
+          <div class="claimed-badge">&#10003; Claimed #${Number(st.claimedEdition)}</div>
         </div>
       `;
     }
@@ -990,6 +1009,13 @@ export class WocoTickets extends HTMLElement {
    * the API, so they are attacker-controlled by whoever authored the event —
    * not necessarily the organiser whose page hosts the widget. Escape the quotes
    * too, so attribute and text contexts are both safe.
+   *
+   * NOT a URL sanitiser and NOT a substitute for validation. It cannot stop a
+   * `javascript:` scheme in an href (see the `appUrl` link below — host-page
+   * config, so no privilege gain), and it does nothing for values interpolated
+   * WITHOUT it. Numeric fields from the API are coerced at their call sites
+   * rather than escaped, because the contract to enforce there is "is a number",
+   * not "is inert text".
    */
   private esc(s: string): string {
     const d = document.createElement("div");
