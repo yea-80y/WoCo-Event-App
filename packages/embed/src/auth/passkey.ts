@@ -20,7 +20,10 @@ export function isPasskeySupported(): boolean {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function getPrfSalt(): Promise<Uint8Array> {
+/** `Uint8Array<ArrayBuffer>`, not bare `Uint8Array`: WebAuthn's `BufferSource`
+ *  excludes SharedArrayBuffer-backed views, and `subtle.digest` always returns a
+ *  plain ArrayBuffer — so this is a tightening, not a cast. Mirrors the web app. */
+async function getPrfSalt(): Promise<Uint8Array<ArrayBuffer>> {
   const enc = new TextEncoder();
   const hash = await crypto.subtle.digest("SHA-256", enc.encode(PASSKEY_PRF_SALT_INPUT));
   return new Uint8Array(hash);
@@ -98,6 +101,52 @@ interface CredentialMeta {
   rpId: string;
 }
 
+// ---------------------------------------------------------------------------
+// Ceremony lock + errors
+// ---------------------------------------------------------------------------
+
+/**
+ * WebAuthn permits ONE outstanding ceremony per page. `claiming` is per-series
+ * state, so two ticket series on the same embed can each start a claim and race
+ * — the browser rejects the second with an opaque NotAllowedError. Serialise
+ * every ceremony so a race can never be mistaken for "no credential".
+ *
+ * The `_impl` split keeps the lock at the exported boundary only; taking it
+ * inside a function another locked function calls would self-deadlock.
+ */
+let _ceremonyQueue: Promise<unknown> = Promise.resolve();
+
+function withCeremonyLock<T>(fn: () => Promise<T>): Promise<T> {
+  // Chain on settle — a failed ceremony must not wedge the queue.
+  const run = _ceremonyQueue.then(fn, fn);
+  _ceremonyQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/**
+ * No assertion came back. WebAuthn deliberately returns the same opaque
+ * NotAllowedError for "user cancelled", "timed out", "another request was
+ * pending" and "no credential exists" — so we cannot tell them apart, and must
+ * never resolve the ambiguity by creating an account. A passkey IS the account
+ * here (keccak256(PRF) is the claimer's key), so a wrong guess mints a new
+ * identity and strands the claimer's existing tickets.
+ */
+export class PasskeyAssertionUnavailableError extends Error {
+  constructor() {
+    super("No WoCo passkey was used on this device.");
+    this.name = "PasskeyAssertionUnavailableError";
+  }
+}
+
+/** A ceremony was cancelled or refused — wrapped so the raw spec prose (Chrome
+ *  appends a w3.org URL) never reaches the claimer. */
+export class PasskeyCeremonyCancelledError extends Error {
+  constructor(action: "creation" | "authentication") {
+    super(`Passkey ${action} was cancelled or not permitted by your device.`);
+    this.name = "PasskeyCeremonyCancelledError";
+  }
+}
+
 function loadCredential(): CredentialMeta | null {
   try {
     const raw = localStorage.getItem(CRED_KEY);
@@ -115,12 +164,87 @@ function saveCredential(meta: CredentialMeta): void {
 // Authenticate (create-or-get)
 // ---------------------------------------------------------------------------
 
-export async function passkeyAuthenticate(): Promise<{ privateKey: Uint8Array; address: string }> {
+/**
+ * Sign in with an EXISTING passkey. NEVER creates.
+ *
+ * Previously this created a new passkey whenever localStorage held no metadata
+ * — so a returning claimer in a fresh browser, or after clearing site data, was
+ * silently given a brand-new account and lost sight of their tickets. Passkeys
+ * sync (iCloud Keychain, Google Password Manager), so an empty localStorage
+ * says nothing about whether the claimer has a WoCo passkey. The discoverable
+ * picker asks the authenticator, which actually knows.
+ *
+ * Order: pinned get() when we hold metadata (no picker, fastest), else — or on
+ * an ambiguous failure — a discoverable get(). Only an explicit user decision
+ * reaches passkeyCreateAccount().
+ */
+export async function passkeySignIn(): Promise<{ privateKey: Uint8Array; address: string }> {
+  return withCeremonyLock(_passkeySignInImpl);
+}
+
+async function _passkeySignInImpl(): Promise<{ privateKey: Uint8Array; address: string }> {
   const existing = loadCredential();
   if (existing) {
-    return restorePasskey(existing);
+    try {
+      return await restorePasskey(existing);
+    } catch (e) {
+      // Ambiguous — the pinned credential may be gone, or the user may have
+      // cancelled. Do NOT delete the metadata on a guess: a cancel would
+      // permanently demote this browser to the picker. A successful discoverable
+      // retry rewrites it instead, so a genuinely stale pin heals on success.
+      // Anything else (unsupported PRF, RP-ID SecurityError) is a real fault.
+      const ambiguous =
+        (e instanceof DOMException && e.name === "NotAllowedError") ||
+        e instanceof PasskeyAssertionUnavailableError;
+      if (!ambiguous) throw e;
+    }
   }
-  return createPasskey();
+  return discoverPasskey();
+}
+
+/** Discoverable get() — the authenticator offers every WoCo passkey it holds. */
+async function discoverPasskey(): Promise<{ privateKey: Uint8Array; address: string }> {
+  const salt = await getPrfSalt();
+  const rpId = getPasskeyRpId();
+
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId,
+        // No allowCredentials → discoverable mode
+        userVerification: "required",
+        extensions: { prf: { eval: { first: salt } } },
+      },
+    })) as PublicKeyCredential | null;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "NotAllowedError") {
+      throw new PasskeyAssertionUnavailableError();
+    }
+    throw e;
+  }
+
+  if (!credential) throw new PasskeyAssertionUnavailableError();
+
+  const prfOutput = extractPrfResult(credential.getClientExtensionResults());
+  saveCredential({ credentialId: toBase64url(credential.rawId), rpId });
+  return deriveKey(prfOutput);
+}
+
+/**
+ * Create a NEW passkey account. Only ever call this behind an explicit user
+ * choice — it mints a new identity, it does not recover an existing one.
+ */
+export async function passkeyCreateAccount(): Promise<{ privateKey: Uint8Array; address: string }> {
+  return withCeremonyLock(() =>
+    createPasskey().catch((e: unknown) => {
+      if (e instanceof DOMException && e.name === "NotAllowedError") {
+        throw new PasskeyCeremonyCancelledError("creation");
+      }
+      throw e;
+    }),
+  );
 }
 
 async function createPasskey(): Promise<{ privateKey: Uint8Array; address: string }> {
@@ -202,9 +326,9 @@ async function restorePasskey(meta: CredentialMeta): Promise<{ privateKey: Uint8
     },
   })) as PublicKeyCredential | null;
 
-  if (!credential) {
-    throw new Error("Passkey authentication was cancelled.");
-  }
+  // Same ambiguity class as NotAllowedError, so raise the same type — otherwise
+  // this path would skip the discoverable fallback in _passkeySignInImpl.
+  if (!credential) throw new PasskeyAssertionUnavailableError();
 
   const prfOutput = extractPrfResult(credential.getClientExtensionResults());
   return deriveKey(prfOutput);

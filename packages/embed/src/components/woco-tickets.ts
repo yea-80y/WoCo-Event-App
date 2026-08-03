@@ -1,6 +1,12 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
 import { connectWallet, signClaimTypedData, isWalletAvailable } from "../auth/wallet.js";
-import { isPasskeySupported, passkeyAuthenticate, signClaimDigest } from "../auth/passkey.js";
+import {
+  isPasskeySupported,
+  passkeySignIn,
+  passkeyCreateAccount,
+  PasskeyAssertionUnavailableError,
+  signClaimDigest,
+} from "../auth/passkey.js";
 import { getStyles } from "./styles.js";
 import {
   sealJson,
@@ -51,6 +57,8 @@ interface SeriesState {
   orderFormVisible: boolean;
   orderFormData: Record<string, string>;
   passkeyConfirm: boolean; // show confirmation overlay before biometric
+  /** Sign-in found no passkey — offer creating one as an EXPLICIT choice. */
+  passkeyCreateOffer: boolean;
   pendingApproval: boolean; // claim submitted, awaiting organizer approval
 }
 
@@ -122,6 +130,7 @@ export class WocoTickets extends HTMLElement {
           orderFormVisible: false,
           orderFormData: {},
           passkeyConfirm: false,
+          passkeyCreateOffer: false,
           pendingApproval: false,
         });
       }
@@ -174,6 +183,7 @@ export class WocoTickets extends HTMLElement {
           orderFormVisible: existing?.orderFormVisible ?? false,
           orderFormData: existing?.orderFormData ?? {},
           passkeyConfirm: existing?.passkeyConfirm ?? false,
+          passkeyCreateOffer: existing?.passkeyCreateOffer ?? false,
           pendingApproval: existing?.pendingApproval ?? false,
         });
       }
@@ -191,7 +201,7 @@ export class WocoTickets extends HTMLElement {
   /** Returns true if the user has an active form open in any series card. */
   private isUserInteracting(): boolean {
     for (const [, st] of this.seriesStates) {
-      if (st.claiming || st.orderFormVisible || st.passkeyConfirm) return true;
+      if (st.claiming || st.orderFormVisible || st.passkeyConfirm || st.passkeyCreateOffer) return true;
     }
     return false;
   }
@@ -341,12 +351,20 @@ export class WocoTickets extends HTMLElement {
         return;
       }
 
+      // data-passkey-create — the ONLY path that mints a new passkey account
+      const passkeyCreateBtn = target.closest<HTMLElement>("[data-passkey-create]");
+      if (passkeyCreateBtn) {
+        const sid = passkeyCreateBtn.getAttribute("data-passkey-create")!;
+        this.handlePasskeyClaim(sid, true);
+        return;
+      }
+
       // data-cancel-passkey
       const cancelPasskeyBtn = target.closest<HTMLElement>("[data-cancel-passkey]");
       if (cancelPasskeyBtn) {
         const sid = cancelPasskeyBtn.getAttribute("data-cancel-passkey")!;
         const st = this.seriesStates.get(sid);
-        if (st) { st.passkeyConfirm = false; this.updateSeries(sid); }
+        if (st) { st.passkeyConfirm = false; st.passkeyCreateOffer = false; this.updateSeries(sid); }
         return;
       }
 
@@ -443,6 +461,36 @@ export class WocoTickets extends HTMLElement {
           <button class="passkey-btn passkey-btn--confirm" data-passkey-confirm="${this.esc(seriesId)}">
             ${this.fingerprintIcon}
             ${approvalRequired ? "Sign &amp; Request" : "Sign &amp; Claim"}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Shown when sign-in produced no assertion. Deliberately offers BOTH paths and
+   * names the consequence: a new passkey is a new account, not a way back into an
+   * existing one. Retry is listed first because "I cancelled" and "I have none
+   * here" are indistinguishable to us, and retry is the non-destructive answer.
+   */
+  private renderPasskeyCreateOffer(seriesId: string): string {
+    return `
+      <div class="passkey-confirm">
+        <p class="passkey-confirm-title">No passkey used</p>
+        <p class="passkey-confirm-note">
+          Either you cancelled, or this device has no WoCo passkey yet. If you already
+          have a WoCo account, try again and pick your passkey — creating a new one
+          makes a separate account and will not restore your existing tickets.
+        </p>
+        <div class="passkey-confirm-actions">
+          <button class="passkey-btn passkey-btn--confirm" data-passkey-confirm="${this.esc(seriesId)}">
+            ${this.fingerprintIcon}
+            Try again
+          </button>
+        </div>
+        <div class="passkey-confirm-actions">
+          <button class="cancel-btn" data-passkey-create="${this.esc(seriesId)}">
+            Create a new passkey account
           </button>
         </div>
       </div>
@@ -579,6 +627,19 @@ export class WocoTickets extends HTMLElement {
             <p class="avail">${avail} / ${total} available</p>
           </div>
           ${this.renderPasskeyConfirm(s.seriesId, s.name, approvalRequired)}
+        </div>
+      `;
+    }
+
+    // Sign-in found no passkey — creating one is the user's call, never ours
+    if (st?.passkeyCreateOffer) {
+      return `
+        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
+          <div class="series-info">
+            <h3>${this.esc(s.name)}</h3>
+            <p class="avail">${avail} / ${total} available</p>
+          </div>
+          ${this.renderPasskeyCreateOffer(s.seriesId)}
         </div>
       `;
     }
@@ -773,12 +834,13 @@ export class WocoTickets extends HTMLElement {
     }
   }
 
-  private async handlePasskeyClaim(seriesId: string) {
+  private async handlePasskeyClaim(seriesId: string, createAccount = false) {
     const st = this.seriesStates.get(seriesId);
     if (!st || st.claiming || !this.api) return;
 
     st.claiming = true;
     st.error = null;
+    st.passkeyCreateOffer = false;
     this.updateSeries(seriesId);
 
     // Encrypt order data if form is present
@@ -788,12 +850,20 @@ export class WocoTickets extends HTMLElement {
     let privateKey: Uint8Array;
     let address: string;
     try {
-      const result = await passkeyAuthenticate();
+      const result = createAccount ? await passkeyCreateAccount() : await passkeySignIn();
       privateKey = result.privateKey;
       address = result.address;
     } catch (err) {
       st.claiming = false;
-      st.error = err instanceof Error ? err.message : "Passkey authentication failed";
+      // Sign-in found no assertion. That means "you cancelled" OR "there is no
+      // WoCo passkey here" — indistinguishable by spec, so ask rather than mint
+      // an account the claimer did not ask for.
+      if (err instanceof PasskeyAssertionUnavailableError) {
+        st.passkeyCreateOffer = true;
+        st.error = null;
+      } else {
+        st.error = err instanceof Error ? err.message : "Passkey authentication failed";
+      }
       this.updateSeries(seriesId);
       return;
     }
