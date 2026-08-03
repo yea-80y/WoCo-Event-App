@@ -1,6 +1,12 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
 import { connectWallet, signClaimTypedData, isWalletAvailable } from "../auth/wallet.js";
-import { isPasskeySupported, passkeyAuthenticate, signClaimDigest } from "../auth/passkey.js";
+import {
+  isPasskeySupported,
+  passkeySignIn,
+  passkeyCreateAccount,
+  PasskeyAssertionUnavailableError,
+  signClaimDigest,
+} from "../auth/passkey.js";
 import { getStyles } from "./styles.js";
 import {
   sealJson,
@@ -51,6 +57,8 @@ interface SeriesState {
   orderFormVisible: boolean;
   orderFormData: Record<string, string>;
   passkeyConfirm: boolean; // show confirmation overlay before biometric
+  /** Sign-in found no passkey — offer creating one as an EXPLICIT choice. */
+  passkeyCreateOffer: boolean;
   pendingApproval: boolean; // claim submitted, awaiting organizer approval
 }
 
@@ -89,7 +97,30 @@ export class WocoTickets extends HTMLElement {
   private get eventId() { return this.getAttribute("event-id") || ""; }
   private get apiUrl() { return this.getAttribute("api-url") || ""; }
   /** Where the hosted legal pages live. Overridable for self-hosted deployments. */
-  private get appUrl() { return this.getAttribute("app-url") || "https://woco.eth.limo"; }
+  private static readonly DEFAULT_APP_URL = "https://woco.eth.limo";
+
+  /**
+   * Host-page-supplied, so it is interpolated into an `href` and must be a
+   * scheme we chose. Escaping cannot help here — `javascript:alert(1)` contains
+   * no character `esc()` touches. Allow only http(s) and fall back to the
+   * canonical app otherwise.
+   *
+   * The host page is already fully privileged on its own page, so this is not a
+   * privilege boundary. It is here so the widget cannot be turned into the
+   * instrument of an injection against a claimer mid-ceremony — at that moment
+   * the claimer's derived account key is in this page's JS memory.
+   */
+  private get appUrl(): string {
+    const raw = this.getAttribute("app-url");
+    if (!raw) return WocoTickets.DEFAULT_APP_URL;
+    try {
+      const u = new URL(raw, window.location.href);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return WocoTickets.DEFAULT_APP_URL;
+      return u.href.replace(/\/+$/, "");
+    } catch {
+      return WocoTickets.DEFAULT_APP_URL;
+    }
+  }
   private get claimMode() { return (this.getAttribute("claim-mode") || "email") as "wallet" | "email" | "both"; }
   private get theme() { return (this.getAttribute("theme") || "dark") as "dark" | "light"; }
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
@@ -122,6 +153,7 @@ export class WocoTickets extends HTMLElement {
           orderFormVisible: false,
           orderFormData: {},
           passkeyConfirm: false,
+          passkeyCreateOffer: false,
           pendingApproval: false,
         });
       }
@@ -174,6 +206,7 @@ export class WocoTickets extends HTMLElement {
           orderFormVisible: existing?.orderFormVisible ?? false,
           orderFormData: existing?.orderFormData ?? {},
           passkeyConfirm: existing?.passkeyConfirm ?? false,
+          passkeyCreateOffer: existing?.passkeyCreateOffer ?? false,
           pendingApproval: existing?.pendingApproval ?? false,
         });
       }
@@ -191,7 +224,7 @@ export class WocoTickets extends HTMLElement {
   /** Returns true if the user has an active form open in any series card. */
   private isUserInteracting(): boolean {
     for (const [, st] of this.seriesStates) {
-      if (st.claiming || st.orderFormVisible || st.passkeyConfirm) return true;
+      if (st.claiming || st.orderFormVisible || st.passkeyConfirm || st.passkeyCreateOffer) return true;
     }
     return false;
   }
@@ -341,12 +374,29 @@ export class WocoTickets extends HTMLElement {
         return;
       }
 
+      // data-passkey-create — the ONLY path that mints a new passkey account.
+      // Gate on the offer actually being open, not merely on the attribute being
+      // present: the shadow root is `mode: "open"`, so the host page can inject an
+      // element carrying this attribute and click it. That grants no capability a
+      // hostile host page lacks (it can call `navigator.credentials.create()`
+      // itself, and the native ceremony still runs), but minting an account is the
+      // one action here that must follow from a decision the CLAIMER made — so
+      // require the state that proves we asked them.
+      const passkeyCreateBtn = target.closest<HTMLElement>("[data-passkey-create]");
+      if (passkeyCreateBtn) {
+        const sid = passkeyCreateBtn.getAttribute("data-passkey-create")!;
+        if (this.seriesStates.get(sid)?.passkeyCreateOffer) {
+          this.handlePasskeyClaim(sid, true);
+        }
+        return;
+      }
+
       // data-cancel-passkey
       const cancelPasskeyBtn = target.closest<HTMLElement>("[data-cancel-passkey]");
       if (cancelPasskeyBtn) {
         const sid = cancelPasskeyBtn.getAttribute("data-cancel-passkey")!;
         const st = this.seriesStates.get(sid);
-        if (st) { st.passkeyConfirm = false; this.updateSeries(sid); }
+        if (st) { st.passkeyConfirm = false; st.passkeyCreateOffer = false; this.updateSeries(sid); }
         return;
       }
 
@@ -449,6 +499,36 @@ export class WocoTickets extends HTMLElement {
     `;
   }
 
+  /**
+   * Shown when sign-in produced no assertion. Deliberately offers BOTH paths and
+   * names the consequence: a new passkey is a new account, not a way back into an
+   * existing one. Retry is listed first because "I cancelled" and "I have none
+   * here" are indistinguishable to us, and retry is the non-destructive answer.
+   */
+  private renderPasskeyCreateOffer(seriesId: string): string {
+    return `
+      <div class="passkey-confirm">
+        <p class="passkey-confirm-title">No passkey used</p>
+        <p class="passkey-confirm-note">
+          Either you cancelled, or this device has no WoCo passkey yet. If you already
+          have a WoCo account, try again and pick your passkey — creating a new one
+          makes a separate account and will not restore your existing tickets.
+        </p>
+        <div class="passkey-confirm-actions">
+          <button class="passkey-btn passkey-btn--confirm" data-passkey-confirm="${this.esc(seriesId)}">
+            ${this.fingerprintIcon}
+            Try again
+          </button>
+        </div>
+        <div class="passkey-confirm-actions">
+          <button class="cancel-btn" data-passkey-create="${this.esc(seriesId)}">
+            Create a new passkey account
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   private get hasOrderForm(): boolean {
     return !!(this.event?.orderFields?.length && this.event?.encryptionKey);
   }
@@ -457,12 +537,27 @@ export class WocoTickets extends HTMLElement {
     const fields = this.event?.orderFields ?? [];
     let fieldsHtml = "";
 
+    // `maxlength` is interpolated RAW into a double-quoted attribute below, so
+    // escaping is not enough — coerce, because the value is not trustworthy.
+    // `OrderField.maxLength` is typed `number?` but that is a COMPILE-TIME claim
+    // about our own code; the value arrives as JSON from the event manifest and
+    // the server never validates orderFields (it destructures and passes the
+    // array straight through — apps/server/src/routes/events.ts:185,341, whose
+    // validation block covers title/dates/tags/geo/payment only). A crafted
+    // event carrying `maxLength: '1" onfocus="…'` would otherwise break out of
+    // the attribute. Emitting it only when it really is a positive integer
+    // enforces the contract the type merely asserts.
+    const maxLenAttr = (f: { maxLength?: number }): string =>
+      Number.isInteger(f.maxLength) && (f.maxLength as number) > 0
+        ? `maxlength="${f.maxLength}"`
+        : "";
+
     for (const f of fields) {
       let inputHtml: string;
       const val = st.orderFormData[f.id] ?? "";
 
       if (f.type === "textarea") {
-        inputHtml = `<textarea data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" placeholder="${this.esc(f.placeholder || "")}" ${f.maxLength ? `maxlength="${f.maxLength}"` : ""} rows="2">${this.esc(val)}</textarea>`;
+        inputHtml = `<textarea data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" placeholder="${this.esc(f.placeholder || "")}" ${maxLenAttr(f)} rows="2">${this.esc(val)}</textarea>`;
       } else if (f.type === "select" && f.options) {
         const opts = f.options.map((o) =>
           `<option value="${this.esc(o)}" ${val === o ? "selected" : ""}>${this.esc(o)}</option>`
@@ -471,7 +566,7 @@ export class WocoTickets extends HTMLElement {
       } else if (f.type === "checkbox") {
         inputHtml = `<label class="checkbox-row"><input type="checkbox" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" ${val === "yes" ? "checked" : ""} /><span>${this.esc(f.placeholder || f.label)}</span></label>`;
       } else {
-        inputHtml = `<input type="${this.esc(f.type)}" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" value="${this.esc(val)}" placeholder="${this.esc(f.placeholder || "")}" ${f.maxLength ? `maxlength="${f.maxLength}"` : ""} />`;
+        inputHtml = `<input type="${this.esc(f.type)}" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" value="${this.esc(val)}" placeholder="${this.esc(f.placeholder || "")}" ${maxLenAttr(f)} />`;
       }
 
       fieldsHtml += `
@@ -539,8 +634,12 @@ export class WocoTickets extends HTMLElement {
   }
 
   private renderSeries(s: SeriesSummary, st?: SeriesState | null): string {
-    const avail = st?.status?.available ?? s.totalSupply;
-    const total = st?.status?.totalSupply ?? s.totalSupply;
+    // Coerced, not escaped: these render raw into markup AND drive `avail === 0`
+    // below, so a string-typed API value would both inject and silently break the
+    // sold-out branch. `Number()` on a non-numeric yields NaN, which renders as
+    // "NaN" and compares false — visibly wrong, never executable.
+    const avail = Number(st?.status?.available ?? s.totalSupply);
+    const total = Number(st?.status?.totalSupply ?? s.totalSupply);
 
     if (st?.pendingApproval) {
       return `
@@ -562,7 +661,7 @@ export class WocoTickets extends HTMLElement {
             <h3>${this.esc(s.name)}</h3>
             <p class="avail">${avail} / ${total} available</p>
           </div>
-          <div class="claimed-badge">&#10003; Claimed #${st.claimedEdition}</div>
+          <div class="claimed-badge">&#10003; Claimed #${Number(st.claimedEdition)}</div>
         </div>
       `;
     }
@@ -579,6 +678,19 @@ export class WocoTickets extends HTMLElement {
             <p class="avail">${avail} / ${total} available</p>
           </div>
           ${this.renderPasskeyConfirm(s.seriesId, s.name, approvalRequired)}
+        </div>
+      `;
+    }
+
+    // Sign-in found no passkey — creating one is the user's call, never ours
+    if (st?.passkeyCreateOffer) {
+      return `
+        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
+          <div class="series-info">
+            <h3>${this.esc(s.name)}</h3>
+            <p class="avail">${avail} / ${total} available</p>
+          </div>
+          ${this.renderPasskeyCreateOffer(s.seriesId)}
         </div>
       `;
     }
@@ -773,12 +885,13 @@ export class WocoTickets extends HTMLElement {
     }
   }
 
-  private async handlePasskeyClaim(seriesId: string) {
+  private async handlePasskeyClaim(seriesId: string, createAccount = false) {
     const st = this.seriesStates.get(seriesId);
     if (!st || st.claiming || !this.api) return;
 
     st.claiming = true;
     st.error = null;
+    st.passkeyCreateOffer = false;
     this.updateSeries(seriesId);
 
     // Encrypt order data if form is present
@@ -788,12 +901,20 @@ export class WocoTickets extends HTMLElement {
     let privateKey: Uint8Array;
     let address: string;
     try {
-      const result = await passkeyAuthenticate();
+      const result = createAccount ? await passkeyCreateAccount() : await passkeySignIn();
       privateKey = result.privateKey;
       address = result.address;
     } catch (err) {
       st.claiming = false;
-      st.error = err instanceof Error ? err.message : "Passkey authentication failed";
+      // Sign-in found no assertion. That means "you cancelled" OR "there is no
+      // WoCo passkey here" — indistinguishable by spec, so ask rather than mint
+      // an account the claimer did not ask for.
+      if (err instanceof PasskeyAssertionUnavailableError) {
+        st.passkeyCreateOffer = true;
+        st.error = null;
+      } else {
+        st.error = err instanceof Error ? err.message : "Passkey authentication failed";
+      }
       this.updateSeries(seriesId);
       return;
     }
@@ -849,7 +970,7 @@ export class WocoTickets extends HTMLElement {
     if (!st || st.claiming || !this.api) return;
 
     const input = this.shadow.querySelector<HTMLInputElement>(
-      `[data-email-input="${seriesId}"]`,
+      `[data-email-input="${CSS.escape(seriesId)}"]`,
     );
     const email = input?.value?.trim();
     if (!email || !email.includes("@")) {
@@ -872,7 +993,7 @@ export class WocoTickets extends HTMLElement {
       // The form was rendered, so the opt-out WAS offered — an untouched box is
       // an explicit refusal (recorded as a suppression), not "never asked".
       body.marketingConsent = !!this.shadow.querySelector<HTMLInputElement>(
-        `[data-marketing-consent="${seriesId}"]`,
+        `[data-marketing-consent="${CSS.escape(seriesId)}"]`,
       )?.checked;
 
       const resp = await this.api.post<unknown>(
@@ -901,9 +1022,27 @@ export class WocoTickets extends HTMLElement {
     }
   }
 
+  /**
+   * Escape for interpolation into HTML — including into a double-quoted
+   * ATTRIBUTE, which is how most call sites here use it (`data-series="..."`,
+   * `data-passkey-create="..."`). `textContent`→`innerHTML` alone escapes only
+   * `& < >`, so a value containing a double quote could close the attribute and
+   * open a new one; that is enough to inject an event handler without ever
+   * needing a `<`. The strings interpolated are event/series fields fetched from
+   * the API, so they are attacker-controlled by whoever authored the event —
+   * not necessarily the organiser whose page hosts the widget. Escape the quotes
+   * too, so attribute and text contexts are both safe.
+   *
+   * NOT a URL sanitiser and NOT a substitute for validation, and it does nothing
+   * for values interpolated WITHOUT it. The other two contexts in this file are
+   * therefore handled at their own call sites, not here: `appUrl` is scheme-
+   * checked in its getter (escaping cannot stop `javascript:` — it contains no
+   * character this touches), and numeric API fields are coerced, because the
+   * contract to enforce there is "is a number", not "is inert text".
+   */
   private esc(s: string): string {
     const d = document.createElement("div");
     d.textContent = s;
-    return d.innerHTML;
+    return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 }
