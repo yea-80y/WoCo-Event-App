@@ -1,6 +1,6 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { isPasskeySupported, hasStoredPasskeyCredential } from "../../auth/passkey-account.js";
+  import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -14,27 +14,36 @@
   let { oncomplete, onstart, onsettle }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
-  let hasExisting = $state(false);
+  /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
+  let offerCreate = $state(false);
 
-  onMount(async () => {
+  onMount(() => {
     supported = isPasskeySupported();
-    if (supported) {
-      // Warm the chunks the post-biometric path needs (ethers; viem/zerodev on
-      // first-device logins) so the click never stalls on a download.
-      void auth.prefetchPasskeySdk();
-      hasExisting = await hasStoredPasskeyCredential();
-    }
+    // Warm the chunks the post-biometric path needs (ethers; viem/zerodev on
+    // first-device logins) so the click never stalls on a download.
+    if (supported) void auth.prefetchPasskeySdk();
   });
 
-  async function handleLogin() {
+  /**
+   * Sign in and create are SEPARATE user decisions. A passkey is an account: if
+   * sign-in comes back empty we cannot tell "you have none here" from "you
+   * cancelled", so making a new one is offered, never assumed. Choosing wrong
+   * strands the user's tickets and funds on the account they meant to reach.
+   */
+  async function run(mode: "signin" | "create") {
     error = null;
     onstart?.();
     try {
-      const ok = await auth.login("passkey");
-      if (ok) {
+      const res = await auth.loginPasskeyResult(mode);
+      if (res.ok) {
         oncomplete?.();
+        return;
+      }
+      if (res.noAssertion && mode === "signin") {
+        offerCreate = true;
+        error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
       } else {
-        error = "Passkey authentication failed. Try again or use another method.";
+        error = res.error?.message ?? "Passkey authentication failed. Try again or use another method.";
       }
     } finally {
       onsettle?.();
@@ -46,7 +55,7 @@
   <div class="passkey-login">
     <button
       class="passkey-btn"
-      onclick={handleLogin}
+      onclick={() => run("signin")}
       disabled={auth.busy}
     >
       <!-- Passkey / fingerprint icon -->
@@ -55,11 +64,22 @@
       </svg>
       {#if auth.busy}
         Authenticating...
-      {:else if hasExisting}
-        Sign in with Passkey
       {:else}
-        Create Passkey Account
+        Sign in with Passkey
       {/if}
+    </button>
+
+    <!-- Always present, always secondary. `hasStoredPasskeyCredential` only
+         knows about THIS device, so it cannot tell a brand-new user from a
+         returning one on a new device — promoting create on its say-so is how a
+         returning user ends up with a second account. Let the user say which. -->
+    <button
+      class="create-btn"
+      class:emphasised={offerCreate}
+      onclick={() => run("create")}
+      disabled={auth.busy}
+    >
+      New to WoCo? Create a passkey account
     </button>
 
     <div class="providers">
@@ -92,11 +112,8 @@
     </div>
 
     <p class="hint">
-      {#if hasExisting}
-        Your passkey produces the same account on any synced device.
-      {:else}
-        Creates a crypto account secured by your device. Syncs automatically via iCloud, Google, or your password manager.
-      {/if}
+      Your passkey produces the same account on any synced device. Creating a new
+      one makes a separate account — it will not restore an existing one.
     </p>
 
     {#if error}
@@ -135,6 +152,31 @@
 
   .passkey-btn:active:not(:disabled) {
     background: var(--accent-press);
+  }
+
+  .create-btn {
+    padding: 0.5rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    transition: color var(--transition), border-color var(--transition);
+  }
+
+  .create-btn:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--text-muted);
+  }
+
+  .create-btn.emphasised {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+
+  .create-btn:disabled {
+    opacity: 0.5;
   }
 
   .passkey-btn:disabled {

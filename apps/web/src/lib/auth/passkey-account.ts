@@ -86,6 +86,94 @@ function extractPrfResult(
 }
 
 // ---------------------------------------------------------------------------
+// Ceremony lock
+// ---------------------------------------------------------------------------
+
+/**
+ * WebAuthn allows only ONE outstanding ceremony per page: a second
+ * `navigator.credentials.get/create` while one is pending makes the browser
+ * reject a request with `NotAllowedError` — indistinguishable from a user
+ * cancel. That used to cascade: `restorePasskeyAccount` read the rejection as
+ * "credential gone", wiped its metadata and fell through to a path that could
+ * MINT A NEW ACCOUNT. Two callers really can race (`_getSigner` and
+ * `_getPodSigner` both await `_ensurePasskeyKey`), and mobile's slower
+ * biometric sheet holds the window open for far longer.
+ *
+ * Every exported ceremony therefore runs through this serial queue. The
+ * `_impl` split below is not stylistic: taking the lock inside a function that
+ * another locked function calls would self-deadlock, so the lock is held ONLY
+ * at the exported boundary and internals stay lock-free.
+ */
+let _ceremonyQueue: Promise<unknown> = Promise.resolve();
+
+function withCeremonyLock<T>(fn: () => Promise<T>): Promise<T> {
+  // Chain on settle, not on success — one failed ceremony must not wedge the queue.
+  const run = _ceremonyQueue.then(fn, fn);
+  _ceremonyQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/**
+ * A sign-in ceremony produced no assertion. WebAuthn deliberately collapses
+ * "user cancelled", "ceremony timed out", "another request was pending" and
+ * "no credential exists for this RP" into one opaque `NotAllowedError` so a
+ * site cannot probe for credentials. We therefore CANNOT tell them apart —
+ * which is exactly why this must never auto-create an account. The caller
+ * surfaces it and lets the user decide.
+ */
+export class PasskeyAssertionUnavailableError extends Error {
+  readonly cause?: unknown;
+  constructor(cause?: unknown) {
+    super(
+      "No passkey was used. You may have cancelled, or there may be no WoCo passkey on this device.",
+    );
+    this.name = "PasskeyAssertionUnavailableError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * A ceremony was cancelled or refused by the platform. Browsers reject a
+ * cancelled `credentials.create()` with `NotAllowedError` (they do NOT resolve
+ * null), and Chrome's message is raw spec prose ending in a w3.org URL — which
+ * the login modal renders verbatim. Wrap it so a plain cancel reads as one.
+ */
+export class PasskeyCeremonyCancelledError extends Error {
+  readonly cause?: unknown;
+  constructor(action: "creation" | "authentication", cause?: unknown) {
+    super(`Passkey ${action} was cancelled or not permitted by your device.`);
+    this.name = "PasskeyCeremonyCancelledError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * Run a ceremony under the lock, translating a raw NotAllowedError into readable
+ * copy. Applied at the exported boundary so it covers BOTH the outer ceremony
+ * and any inner one (the create paths do a second get() when the authenticator
+ * returns `prf.enabled` without a result) without restructuring either.
+ * Non-NotAllowedError faults — unsupported PRF, RP-ID SecurityError — pass
+ * through untouched; they are actionable and must stay legible.
+ */
+function ceremony<T>(action: "creation" | "authentication", fn: () => Promise<T>): Promise<T> {
+  return withCeremonyLock(() =>
+    fn().catch((e: unknown) => {
+      if (e instanceof DOMException && e.name === "NotAllowedError") {
+        throw new PasskeyCeremonyCancelledError(action, e);
+      }
+      throw e;
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Feature detection
 // ---------------------------------------------------------------------------
 
@@ -103,61 +191,65 @@ export function isPasskeySupported(): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Authenticate with an existing passkey using discoverable credentials.
- * Always shows the passkey picker so the user can choose which one.
- * Falls back to creating a new passkey if none exist for this RP.
+ * Sign in with an EXISTING passkey using discoverable credentials. Always shows
+ * the passkey picker so the user can choose which one; does not rely on IDB, so
+ * it works on a fresh device or after IDB is cleared.
  *
- * This is the primary entry point — avoids relying on IDB for credential
- * tracking, so it works even if IDB is cleared.
+ * NEVER creates. An assertion failure raises PasskeyAssertionUnavailableError
+ * and the caller must ask the user before minting anything — see that class for
+ * why the browser cannot tell us "no credential" apart from "cancelled". The
+ * previous behaviour (fall through to create on NotAllowedError) turned every
+ * cancelled, timed-out or concurrently-rejected ceremony into a brand-new
+ * account at a brand-new address, silently forking the user's identity.
  */
 export async function authenticatePasskey(): Promise<{
+  address: string;
+  privateKey: string;
+}> {
+  return withCeremonyLock(_authenticatePasskeyImpl);
+}
+
+async function _authenticatePasskeyImpl(): Promise<{
   address: string;
   privateKey: string;
 }> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 
-  // Try discoverable get() first — shows passkey picker, no allowCredentials
+  let credential: PublicKeyCredential | null;
   try {
-    const credential = (await navigator.credentials.get({
+    // Discoverable mode (no allowCredentials) → user picks from all passkeys for this RP
+    credential = (await navigator.credentials.get({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         rpId,
-        // No allowCredentials = discoverable mode → user picks from all passkeys for this RP
         userVerification: "required",
         extensions: {
           prf: { eval: { first: salt } },
         },
       },
     })) as PublicKeyCredential | null;
-
-    if (credential) {
-      const prfOutput = extractPrfResult(credential.getClientExtensionResults());
-
-      // Update stored credential metadata so init() can restore kind on reload
-      const meta: PasskeyCredentialMeta = {
-        credentialId: toBase64url(credential.rawId),
-        rpId,
-      };
-      await putKV(StorageKeys.PASSKEY_CREDENTIAL, meta);
-
-      return deriveKey(prfOutput);
-    }
-    // credential is null — user cancelled, throw so caller handles it
-    throw new Error("Passkey authentication was cancelled.");
   } catch (e) {
-    // If the error is "no credentials available" (NotAllowedError with no passkeys),
-    // fall through to create. Otherwise re-throw (user cancelled, PRF unsupported, etc).
-    const isNoCredentials =
-      e instanceof DOMException && e.name === "NotAllowedError";
-
-    if (!isNoCredentials) {
-      throw e;
+    // NotAllowedError is the opaque catch-all; anything else (PRF unsupported,
+    // SecurityError from an RP-ID mismatch) is a real, actionable fault.
+    if (e instanceof DOMException && e.name === "NotAllowedError") {
+      throw new PasskeyAssertionUnavailableError(e);
     }
+    throw e;
   }
 
-  // No discoverable credentials found for this RP — create a new passkey
-  return createPasskeyAccount();
+  if (!credential) throw new PasskeyAssertionUnavailableError();
+
+  const prfOutput = extractPrfResult(credential.getClientExtensionResults());
+
+  // Update stored credential metadata so init() can restore kind on reload
+  const meta: PasskeyCredentialMeta = {
+    credentialId: toBase64url(credential.rawId),
+    rpId,
+  };
+  await putKV(StorageKeys.PASSKEY_CREDENTIAL, meta);
+
+  return deriveKey(prfOutput);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +259,20 @@ export async function authenticatePasskey(): Promise<{
 /**
  * Create a new passkey and derive a secp256k1 key via PRF.
  * Stores credential metadata (ID + rpId) in IndexedDB.
+ *
+ * ONLY call this behind an explicit user decision to create a NEW account. It
+ * is never reached by a failed sign-in: minting here forks identity (new PRF-EOA
+ * → new Kernel → new address), stranding the user's tickets, feeds and funds on
+ * the account they meant to sign in to.
  */
 export async function createPasskeyAccount(): Promise<{
+  address: string;
+  privateKey: `0x${string}`;
+}> {
+  return ceremony("creation", _createPasskeyAccountImpl);
+}
+
+async function _createPasskeyAccountImpl(): Promise<{
   address: string;
   privateKey: `0x${string}`;
 }> {
@@ -267,6 +371,10 @@ export async function createPasskeyAccount(): Promise<{
  * can never equal auth.parent / auth.podAddress).
  */
 export async function createPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
+  return ceremony("creation", _createPasskeyBackupKeyImpl);
+}
+
+async function _createPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey: string }> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 
@@ -339,6 +447,10 @@ export async function createPasskeyBackupKey(): Promise<{ address: string; priva
  * different primary credential we must not disturb.
  */
 export async function getPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
+  return ceremony("authentication", _getPasskeyBackupKeyImpl);
+}
+
+async function _getPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey: string }> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 
@@ -373,10 +485,17 @@ export async function restorePasskeyAccount(): Promise<{
   address: string;
   privateKey: string;
 }> {
+  return withCeremonyLock(_restorePasskeyAccountImpl);
+}
+
+async function _restorePasskeyAccountImpl(): Promise<{
+  address: string;
+  privateKey: string;
+}> {
   const meta = await getKV<PasskeyCredentialMeta>(StorageKeys.PASSKEY_CREDENTIAL);
   if (!meta) {
-    // IDB cleared — fall back to discoverable picker
-    return authenticatePasskey();
+    // IDB cleared — fall back to the discoverable picker (sign-in only, never creates)
+    return _authenticatePasskeyImpl();
   }
 
   const salt = await getPrfSalt();
@@ -395,17 +514,18 @@ export async function restorePasskeyAccount(): Promise<{
       },
     })) as PublicKeyCredential | null;
 
-    if (!credential) {
-      throw new Error("Passkey authentication was cancelled.");
-    }
+    if (!credential) throw new PasskeyAssertionUnavailableError();
 
     const prfOutput = extractPrfResult(credential.getClientExtensionResults());
     return deriveKey(prfOutput);
   } catch (e) {
-    // If the stored credential no longer exists, fall back to discoverable
     if (e instanceof DOMException && e.name === "NotAllowedError") {
-      await delKV(StorageKeys.PASSKEY_CREDENTIAL);
-      return authenticatePasskey();
+      // Ambiguous: the credential may be gone, or the user just cancelled. Do
+      // NOT delete the metadata on a guess — a cancel would permanently demote
+      // this device to the discoverable path. The discoverable retry below
+      // rewrites the metadata itself once a real assertion succeeds, so a
+      // genuinely-stale entry is corrected by success rather than by deletion.
+      return _authenticatePasskeyImpl();
     }
     throw e;
   }

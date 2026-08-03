@@ -32,6 +32,7 @@ import {
   restorePasskeyAccount,
   createPasskeyAccount,
   hasStoredPasskeyCredential,
+  clearPasskeyCredential,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
@@ -479,12 +480,92 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
  * Re-derive the raw PRF key + PRF-EOA address via a biometric prompt (if not
  * already in memory). This is the deterministic POD key source (invariant #1)
  * and the Kernel's sudo signer source — it never builds the Kernel itself.
+ *
+ * SINGLE-FLIGHT. `_getSigner` and `_getPodSigner` both call this, and a first
+ * authenticated action can drive `ensureSession` + `ensurePodIdentity`
+ * concurrently. Two ceremonies would mean two biometric prompts, and WebAuthn
+ * rejects the second with an opaque NotAllowedError — which used to cascade
+ * into wiping the credential metadata. Concurrent callers want the same key, so
+ * they share one in-flight promise (the passkey module's ceremony lock is the
+ * backstop for races this doesn't cover).
  */
+let _passkeyKeyInFlight: Promise<void> | null = null;
+
 async function _ensurePasskeyKey(): Promise<void> {
   if (_passkeyPrivateKey && _podAddress) return;
-  const result = await restorePasskeyAccount();
-  _passkeyPrivateKey = result.privateKey;
-  _podAddress = result.address; // PRF-EOA address — POD derivation/AAD key
+  if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
+  _passkeyKeyInFlight = (async () => {
+    const result = await restorePasskeyAccount();
+
+    // A biometric sheet can stay open across a sign-out: `clearAllAuth` nulls
+    // `_podAddress` AND deletes the KV slot, so an orphaned ceremony settling
+    // afterwards would find `sessionPodAddr` null and pass the guard below
+    // VACUOUSLY — adopting whichever credential the picker returned into module
+    // state. Today nothing can sign with it (every reader is `_kind`-gated and
+    // every login path overwrites both fields first), but that is an invariant
+    // spread across the whole file. Re-check the kind here so the guarantee is
+    // local: if the session this ceremony belonged to is gone, discard its result.
+    if (_kind !== "passkey") {
+      throw new Error("Passkey session ended before the ceremony completed.");
+    }
+
+    // Identity guard. A discoverable fallback inside restorePasskeyAccount shows
+    // the picker, and every WoCo passkey is labelled identically — so the user
+    // can pick a DIFFERENT account than the one this session belongs to. Adopting
+    // it would sign PODs and requests with one identity under another's parent
+    // address (invariant #1 violated silently). A mismatch is a wrong pick, not a
+    // new login — switching accounts goes through loginPasskey, which never calls
+    // this mid-flight.
+    //
+    // Compare against the IN-MEMORY `_podAddress` first. StorageKeys.POD_ADDRESS
+    // is ONE global IDB slot shared by every tab and every login kind (web3auth
+    // writes it too), so trusting it alone fails both ways: another tab logging
+    // in as a different account would reject THIS session's correct passkey, and
+    // another tab logging OUT would delete the slot and let the guard pass
+    // vacuously — permitting exactly the adoption it exists to stop. `_podAddress`
+    // is set on every passkey session entry (init, all three loginPasskey paths,
+    // recoverAndRekey), so it is the authority; KV is only a cold-start fallback.
+    const sessionPodAddr = _podAddress ?? (await getKV<string>(StorageKeys.POD_ADDRESS));
+    if (sessionPodAddr && sessionPodAddr.toLowerCase() !== result.address.toLowerCase()) {
+      // Unpin the credential we just proved wrong. `authenticatePasskey` writes
+      // PASSKEY_CREDENTIAL for whatever the picker returned BEFORE this guard can
+      // run, so a wrong pick leaves the wrong credential pinned: the next ceremony
+      // jumps straight back to it, the user authorises with a fingerprint, and it
+      // fails here again — a loop only escapable by cancelling into the picker.
+      //
+      // Deleting is safe HERE and nowhere else on this path. `restorePasskeyAccount`
+      // deliberately refuses to delete on a NotAllowedError because that would be a
+      // guess — a cancel is indistinguishable from a missing credential. This is not
+      // a guess: a successful assertion proved the pinned credential derives a
+      // DIFFERENT account. Dropping the pin sends the next attempt to the picker,
+      // where the right choice rewrites the metadata itself.
+      // Best-effort: delKV rejects on an IDB fault, and letting that propagate
+      // would replace the actionable message below with an opaque storage error
+      // for every caller joined to this single-flight. Failing to unpin only
+      // costs the user the retry loop this is here to avoid — it never adopts
+      // the wrong identity, because the throw happens either way.
+      try {
+        await clearPasskeyCredential();
+      } catch (e) {
+        console.warn("[auth] could not unpin the mismatched passkey credential:", e);
+      }
+      throw new Error(
+        "That passkey belongs to a different WoCo account. Sign out and sign back in to switch accounts.",
+      );
+    }
+
+    _passkeyPrivateKey = result.privateKey;
+    _podAddress = result.address; // PRF-EOA address — POD derivation/AAD key
+  })();
+  const inFlight = _passkeyKeyInFlight;
+  try {
+    await inFlight;
+  } finally {
+    // Only clear OUR entry. `clearAllAuth` nulls this slot mid-flight, so a later
+    // caller may already have installed a newer promise — blindly nulling here
+    // would strand it and let the next caller start a second ceremony.
+    if (_passkeyKeyInFlight === inFlight) _passkeyKeyInFlight = null;
+  }
 }
 
 /**
@@ -1280,16 +1361,31 @@ async function loginCoinbase(): Promise<boolean> {
   }
 }
 
-async function loginPasskey(): Promise<boolean> {
-  if (_busy) return false;
+/**
+ * `mode` is the user's EXPLICIT intent, never inferred. "signin" runs a
+ * discoverable get() and fails loudly if no assertion comes back; "create"
+ * mints a new credential. They were previously one call that silently
+ * escalated sign-in into create, so a cancelled prompt forked the account.
+ */
+async function loginPasskey(mode: "signin" | "create" = "signin"): Promise<boolean> {
+  return (await loginPasskeyResult(mode)).ok;
+}
+
+/** Same flow, but surfaces WHY it failed so the UI can offer the right next step. */
+async function loginPasskeyResult(
+  mode: "signin" | "create" = "signin",
+): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean }> {
+  // Not a ceremony failure — no prompt ran. Say so, rather than letting the UI
+  // render "authentication failed" for a collision with an in-flight login.
+  if (_busy) return { ok: false, error: new Error("A sign-in is already in progress.") };
   _busy = true;
   _loginStage = "waiting";
 
   const t0 = performance.now();
   let tCeremony = t0;
   try {
-    // Always use discoverable get() → shows passkey picker → falls back to create
-    const account = await authenticatePasskey();
+    const account =
+      mode === "create" ? await createPasskeyAccount() : await authenticatePasskey();
     tCeremony = performance.now();
     _loginStage = "finalizing";
 
@@ -1319,7 +1415,7 @@ async function loginPasskey(): Promise<boolean> {
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
-        return true;
+        return { ok: true };
       }
     } else if (readVerifiedBinding("passkey", account.address) === override.toLowerCase()) {
       // RECOVERED-ACCOUNT FAST PATH (returning device): this device has already
@@ -1351,7 +1447,7 @@ async function loginPasskey(): Promise<boolean> {
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (recovered fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
-        return true;
+        return { ok: true };
       }
     }
 
@@ -1462,10 +1558,18 @@ async function loginPasskey(): Promise<boolean> {
     _cleanupAccountListener = null;
 
     console.debug(`[auth] passkey login (full path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
-    return true;
+    return { ok: true };
   } catch (e) {
-    console.error("[auth] passkey login failed:", e);
-    return false;
+    // Log the raw fault (DOMException.name is the only thing that distinguishes
+    // a cancel from a pending-request rejection from an unsupported PRF) — the
+    // old copy collapsed every cause into one unactionable sentence.
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.error(`[auth] passkey login failed (${mode}): ${err.name}: ${err.message}`, e);
+    return {
+      ok: false,
+      error: err,
+      noAssertion: err.name === "PasskeyAssertionUnavailableError",
+    };
   } finally {
     _busy = false;
     _loginStage = null;
@@ -2194,6 +2298,7 @@ async function clearAllAuth(): Promise<void> {
   _sessionInFlight = null;
   _podInFlight = null;
   _feedSignerInFlight = null;
+  _passkeyKeyInFlight = null;
   _feedSignerAddressMemo = null;
   _backupInvMemo = null;
   _backupInvFlight = null;
@@ -2251,6 +2356,7 @@ export const auth = {
   login,
   loginWeb3,
   loginPasskey,
+  loginPasskeyResult,
   loginWeb3Auth,
   loginCoinbase,
   prefetchCoinbaseSdk,
