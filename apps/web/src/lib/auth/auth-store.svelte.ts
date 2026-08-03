@@ -496,6 +496,18 @@ async function _ensurePasskeyKey(): Promise<void> {
   _passkeyKeyInFlight = (async () => {
     const result = await restorePasskeyAccount();
 
+    // A biometric sheet can stay open across a sign-out: `clearAllAuth` nulls
+    // `_podAddress` AND deletes the KV slot, so an orphaned ceremony settling
+    // afterwards would find `sessionPodAddr` null and pass the guard below
+    // VACUOUSLY — adopting whichever credential the picker returned into module
+    // state. Today nothing can sign with it (every reader is `_kind`-gated and
+    // every login path overwrites both fields first), but that is an invariant
+    // spread across the whole file. Re-check the kind here so the guarantee is
+    // local: if the session this ceremony belonged to is gone, discard its result.
+    if (_kind !== "passkey") {
+      throw new Error("Passkey session ended before the ceremony completed.");
+    }
+
     // Identity guard. A discoverable fallback inside restorePasskeyAccount shows
     // the picker, and every WoCo passkey is labelled identically — so the user
     // can pick a DIFFERENT account than the one this session belongs to. Adopting
@@ -522,10 +534,14 @@ async function _ensurePasskeyKey(): Promise<void> {
     _passkeyPrivateKey = result.privateKey;
     _podAddress = result.address; // PRF-EOA address — POD derivation/AAD key
   })();
+  const inFlight = _passkeyKeyInFlight;
   try {
-    await _passkeyKeyInFlight;
+    await inFlight;
   } finally {
-    _passkeyKeyInFlight = null;
+    // Only clear OUR entry. `clearAllAuth` nulls this slot mid-flight, so a later
+    // caller may already have installed a newer promise — blindly nulling here
+    // would strand it and let the next caller start a second ceremony.
+    if (_passkeyKeyInFlight === inFlight) _passkeyKeyInFlight = null;
   }
 }
 
