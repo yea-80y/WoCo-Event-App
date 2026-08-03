@@ -500,10 +500,20 @@ async function _ensurePasskeyKey(): Promise<void> {
     // the picker, and every WoCo passkey is labelled identically — so the user
     // can pick a DIFFERENT account than the one this session belongs to. Adopting
     // it would sign PODs and requests with one identity under another's parent
-    // address (invariant #1 violated silently). The stored PRF-EOA is authoritative
-    // for an established session; a mismatch is a wrong pick, not a new login.
-    const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
-    if (storedPodAddr && storedPodAddr.toLowerCase() !== result.address.toLowerCase()) {
+    // address (invariant #1 violated silently). A mismatch is a wrong pick, not a
+    // new login — switching accounts goes through loginPasskey, which never calls
+    // this mid-flight.
+    //
+    // Compare against the IN-MEMORY `_podAddress` first. StorageKeys.POD_ADDRESS
+    // is ONE global IDB slot shared by every tab and every login kind (web3auth
+    // writes it too), so trusting it alone fails both ways: another tab logging
+    // in as a different account would reject THIS session's correct passkey, and
+    // another tab logging OUT would delete the slot and let the guard pass
+    // vacuously — permitting exactly the adoption it exists to stop. `_podAddress`
+    // is set on every passkey session entry (init, all three loginPasskey paths,
+    // recoverAndRekey), so it is the authority; KV is only a cold-start fallback.
+    const sessionPodAddr = _podAddress ?? (await getKV<string>(StorageKeys.POD_ADDRESS));
+    if (sessionPodAddr && sessionPodAddr.toLowerCase() !== result.address.toLowerCase()) {
       throw new Error(
         "That passkey belongs to a different WoCo account. Sign out and sign back in to switch accounts.",
       );
@@ -1326,7 +1336,9 @@ async function loginPasskey(mode: "signin" | "create" = "signin"): Promise<boole
 async function loginPasskeyResult(
   mode: "signin" | "create" = "signin",
 ): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean }> {
-  if (_busy) return { ok: false };
+  // Not a ceremony failure — no prompt ran. Say so, rather than letting the UI
+  // render "authentication failed" for a collision with an in-flight login.
+  if (_busy) return { ok: false, error: new Error("A sign-in is already in progress.") };
   _busy = true;
   _loginStage = "waiting";
 
@@ -2247,6 +2259,7 @@ async function clearAllAuth(): Promise<void> {
   _sessionInFlight = null;
   _podInFlight = null;
   _feedSignerInFlight = null;
+  _passkeyKeyInFlight = null;
   _feedSignerAddressMemo = null;
   _backupInvMemo = null;
   _backupInvFlight = null;

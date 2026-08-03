@@ -139,6 +139,40 @@ export class PasskeyAssertionUnavailableError extends Error {
   }
 }
 
+/**
+ * A ceremony was cancelled or refused by the platform. Browsers reject a
+ * cancelled `credentials.create()` with `NotAllowedError` (they do NOT resolve
+ * null), and Chrome's message is raw spec prose ending in a w3.org URL — which
+ * the login modal renders verbatim. Wrap it so a plain cancel reads as one.
+ */
+export class PasskeyCeremonyCancelledError extends Error {
+  readonly cause?: unknown;
+  constructor(action: "creation" | "authentication", cause?: unknown) {
+    super(`Passkey ${action} was cancelled or not permitted by your device.`);
+    this.name = "PasskeyCeremonyCancelledError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * Run a ceremony under the lock, translating a raw NotAllowedError into readable
+ * copy. Applied at the exported boundary so it covers BOTH the outer ceremony
+ * and any inner one (the create paths do a second get() when the authenticator
+ * returns `prf.enabled` without a result) without restructuring either.
+ * Non-NotAllowedError faults — unsupported PRF, RP-ID SecurityError — pass
+ * through untouched; they are actionable and must stay legible.
+ */
+function ceremony<T>(action: "creation" | "authentication", fn: () => Promise<T>): Promise<T> {
+  return withCeremonyLock(() =>
+    fn().catch((e: unknown) => {
+      if (e instanceof DOMException && e.name === "NotAllowedError") {
+        throw new PasskeyCeremonyCancelledError(action, e);
+      }
+      throw e;
+    }),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Feature detection
 // ---------------------------------------------------------------------------
@@ -235,7 +269,7 @@ export async function createPasskeyAccount(): Promise<{
   address: string;
   privateKey: `0x${string}`;
 }> {
-  return withCeremonyLock(_createPasskeyAccountImpl);
+  return ceremony("creation", _createPasskeyAccountImpl);
 }
 
 async function _createPasskeyAccountImpl(): Promise<{
@@ -337,7 +371,7 @@ async function _createPasskeyAccountImpl(): Promise<{
  * can never equal auth.parent / auth.podAddress).
  */
 export async function createPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
-  return withCeremonyLock(_createPasskeyBackupKeyImpl);
+  return ceremony("creation", _createPasskeyBackupKeyImpl);
 }
 
 async function _createPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey: string }> {
@@ -413,7 +447,7 @@ async function _createPasskeyBackupKeyImpl(): Promise<{ address: string; private
  * different primary credential we must not disturb.
  */
 export async function getPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
-  return withCeremonyLock(_getPasskeyBackupKeyImpl);
+  return ceremony("authentication", _getPasskeyBackupKeyImpl);
 }
 
 async function _getPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey: string }> {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { isPasskeySupported, hasStoredPasskeyCredential } from "../../auth/passkey-account.js";
+  import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -14,18 +14,14 @@
   let { oncomplete, onstart, onsettle }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
-  let hasExisting = $state(false);
-  /** Revealed only after a sign-in found no passkey — creating is never automatic. */
+  /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
   let offerCreate = $state(false);
 
-  onMount(async () => {
+  onMount(() => {
     supported = isPasskeySupported();
-    if (supported) {
-      // Warm the chunks the post-biometric path needs (ethers; viem/zerodev on
-      // first-device logins) so the click never stalls on a download.
-      void auth.prefetchPasskeySdk();
-      hasExisting = await hasStoredPasskeyCredential();
-    }
+    // Warm the chunks the post-biometric path needs (ethers; viem/zerodev on
+    // first-device logins) so the click never stalls on a download.
+    if (supported) void auth.prefetchPasskeySdk();
   });
 
   /**
