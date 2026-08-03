@@ -539,7 +539,16 @@ async function _ensurePasskeyKey(): Promise<void> {
       // a guess: a successful assertion proved the pinned credential derives a
       // DIFFERENT account. Dropping the pin sends the next attempt to the picker,
       // where the right choice rewrites the metadata itself.
-      await clearPasskeyCredential();
+      // Best-effort: delKV rejects on an IDB fault, and letting that propagate
+      // would replace the actionable message below with an opaque storage error
+      // for every caller joined to this single-flight. Failing to unpin only
+      // costs the user the retry loop this is here to avoid — it never adopts
+      // the wrong identity, because the throw happens either way.
+      try {
+        await clearPasskeyCredential();
+      } catch (e) {
+        console.warn("[auth] could not unpin the mismatched passkey credential:", e);
+      }
       throw new Error(
         "That passkey belongs to a different WoCo account. Sign out and sign back in to switch accounts.",
       );
