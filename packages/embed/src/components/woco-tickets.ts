@@ -97,7 +97,30 @@ export class WocoTickets extends HTMLElement {
   private get eventId() { return this.getAttribute("event-id") || ""; }
   private get apiUrl() { return this.getAttribute("api-url") || ""; }
   /** Where the hosted legal pages live. Overridable for self-hosted deployments. */
-  private get appUrl() { return this.getAttribute("app-url") || "https://woco.eth.limo"; }
+  private static readonly DEFAULT_APP_URL = "https://woco.eth.limo";
+
+  /**
+   * Host-page-supplied, so it is interpolated into an `href` and must be a
+   * scheme we chose. Escaping cannot help here — `javascript:alert(1)` contains
+   * no character `esc()` touches. Allow only http(s) and fall back to the
+   * canonical app otherwise.
+   *
+   * The host page is already fully privileged on its own page, so this is not a
+   * privilege boundary. It is here so the widget cannot be turned into the
+   * instrument of an injection against a claimer mid-ceremony — at that moment
+   * the claimer's derived account key is in this page's JS memory.
+   */
+  private get appUrl(): string {
+    const raw = this.getAttribute("app-url");
+    if (!raw) return WocoTickets.DEFAULT_APP_URL;
+    try {
+      const u = new URL(raw, window.location.href);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return WocoTickets.DEFAULT_APP_URL;
+      return u.href.replace(/\/+$/, "");
+    } catch {
+      return WocoTickets.DEFAULT_APP_URL;
+    }
+  }
   private get claimMode() { return (this.getAttribute("claim-mode") || "email") as "wallet" | "email" | "both"; }
   private get theme() { return (this.getAttribute("theme") || "dark") as "dark" | "light"; }
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
@@ -1010,12 +1033,12 @@ export class WocoTickets extends HTMLElement {
    * not necessarily the organiser whose page hosts the widget. Escape the quotes
    * too, so attribute and text contexts are both safe.
    *
-   * NOT a URL sanitiser and NOT a substitute for validation. It cannot stop a
-   * `javascript:` scheme in an href (see the `appUrl` link below — host-page
-   * config, so no privilege gain), and it does nothing for values interpolated
-   * WITHOUT it. Numeric fields from the API are coerced at their call sites
-   * rather than escaped, because the contract to enforce there is "is a number",
-   * not "is inert text".
+   * NOT a URL sanitiser and NOT a substitute for validation, and it does nothing
+   * for values interpolated WITHOUT it. The other two contexts in this file are
+   * therefore handled at their own call sites, not here: `appUrl` is scheme-
+   * checked in its getter (escaping cannot stop `javascript:` — it contains no
+   * character this touches), and numeric API fields are coerced, because the
+   * contract to enforce there is "is a number", not "is inert text".
    */
   private esc(s: string): string {
     const d = document.createElement("div");
