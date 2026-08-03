@@ -62,9 +62,9 @@ describe("getMarketingFromAddress", () => {
   });
 
   /**
-   * The production shape on the day this was written: the key is PRESENT in
-   * apps/server/.env with an empty value. A `!== undefined` guard would have
-   * read that as configured and sent anyway.
+   * `KEY=` is the shape a commented-out or half-finished env entry takes, and
+   * it is what `.env.example` ships. A `!== undefined` guard reads it as
+   * configured and hands an empty string to the provider as a from-address.
    */
   test("an empty value is unset, not configured", () => {
     process.env.EMAIL_FROM_MARKETING = "";

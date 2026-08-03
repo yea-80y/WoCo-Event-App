@@ -111,26 +111,26 @@ transactional address; the marketing lane refuses with 503 before `createJob`,
 and the test send refuses with it.
 
 Env name settled: `EMAIL_FROM_MARKETING` is the provider-neutral name and
-already existed, so no SES-side equivalent was needed. Production carries the
-key with an **empty value**, which is why the check trims rather than testing
-for absence.
+already existed, so no SES-side equivalent was needed. The check trims because
+`KEY=` and `KEY="  "` both mean "not configured" and an env file expresses
+either by accident.
 
-**⚠️ DEPLOY SEQUENCING — this is not a code-only merge.** With
-`organiserSendingDomains: false`, no organiser has the verified-domain path, so
-from the moment the container restarts every marketing broadcast and every
-marketing test send 503s until `EMAIL_FROM_MARKETING` is set. Required order:
+**Deployed 2026-08-03. No outage — the var was already set.** An earlier draft
+of this section warned that merging would 503 every marketing send until
+`EMAIL_FROM_MARKETING` was configured. That was wrong: it is set on both the
+laptop master and the VM to `news@mail.woco-net.com`, a subdomain distinct from
+the transactional `woco-net.com`, which is exactly the lane split this issue
+asks for. `/api/health` → `email.marketingSender.ok` is `true` in production.
+The claim came from misreading a `grep -o` that truncated at the `=`; check a
+value's LENGTH, never a pattern that stops before it.
 
-1. Create and **DKIM-verify** the marketing subdomain identity in SES. Presence
-   is not verification — a set-but-unverified value passes the config guard and
-   is then rejected per message.
-2. Set `EMAIL_FROM_MARKETING` in the laptop-master `.env`.
-3. Deploy code and env **together** (STEP 2, `up -d` not `restart`), then
-   confirm with `docker exec woco-server printenv | grep EMAIL_FROM_MARKETING`
-   and `curl .../api/health | jq .email.marketingSender`.
-
-The SES warm-up embargo (no broadcasts until ~2026-08-14) means the outage
-window currently costs nothing — this is the cheapest moment the change will
-ever have.
+**Still worth confirming in the SES console** (not checkable from the repo, and
+`marketingSender.ok` only proves the string is non-empty): that
+`mail.woco-net.com` is a DKIM-verified identity. Public DNS shows no SPF or
+custom MAIL FROM record on that subdomain — with SES's default MAIL FROM,
+SPF passes via `amazonses.com` but is not aligned to `woco-net.com`, so DMARC
+rests on DKIM alone. If the identity is NOT verified, the drain worker now says
+so loudly on the first chunk instead of grinding through the whole list.
 
 **Decisions worth not relitigating:**
 
