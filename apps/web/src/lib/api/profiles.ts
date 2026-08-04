@@ -2,7 +2,7 @@ import type { UserProfile, UpdateProfileRequest } from "@woco/shared";
 import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared";
 import { authPost, get } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import { writeContentFeed, readContentFeed } from "../swarm/content-feed.js";
+import { writeContentFeed, readContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
@@ -196,10 +196,25 @@ export async function updateProfile(updates: UpdateProfileRequest): Promise<User
   }
 
   // Self-read the existing data feed to carry forward unedited fields.
-  const existing = await readContentFeed<UserProfile>(
+  //
+  // This is a read-modify-write, so it MUST NOT merge against an unknown base. The
+  // lenient read returns null for "no profile yet" AND "couldn't read it", and every
+  // carry-forward below is `updates.x ?? existing?.x` — so one transient fault used
+  // to write a profile with the user's bio, website, both socials and their VERIFIED
+  // sub-ENS label silently blanked, and report success (#171). The label is the one
+  // the user cannot simply retype; it was bound by a verification step.
+  //
+  // Only a definitive "no profile here" may proceed with an empty base.
+  const existingRead = await readContentFeedResult<UserProfile>(
     signer.address,
     profileDataContentTopic(addr),
-  ).catch(() => null);
+  ).catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
+  if (existingRead.status === "unavailable") {
+    throw new Error(
+      "Couldn't load your current profile to update it — check your connection and try again. Nothing was changed.",
+    );
+  }
+  const existing = existingRead.status === "found" ? existingRead.value : null;
 
   const profile: UserProfile = {
     v: 1,

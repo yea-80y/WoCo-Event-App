@@ -442,10 +442,20 @@ export async function resolveLatestSocVersion(
  * raw bytes; a multi-chunk feed is a {@link ContentFeedManifest} in the base SOC
  * plus `pages` data SOCs. `baseId`/`pageIdFor` select versioned vs legacy identifiers.
  *
- * Only an absent BASE chunk is `absent`. A manifest whose pages are missing or
- * out of range is a torn/corrupt write — real bytes exist at this identifier, so
- * reporting `absent` would let a caller cache "nothing was ever here". That is
- * `unavailable`.
+ * Only an absent BASE chunk is `absent`. A manifest whose pages are missing, out of
+ * range, or don't add up to the length it declares is a torn/corrupt write — real
+ * bytes exist at this identifier, so reporting `absent` would let a caller cache
+ * "nothing was ever here". That is `unavailable`.
+ *
+ * The `len` check is the only thing standing between a half-written version and
+ * SILENT corruption (#170), and the write-side refusal added for #154 cannot help
+ * here. Pages upload BEFORE the manifest, so an attempt that lands its pages then
+ * fails leaves version N with pages but no base. The next write probes N, finds its
+ * base genuinely absent — a CLEAN answer, so nothing refuses — targets N again, and
+ * its page uploads dedupe against the failed attempt's chunks (a SOC is immutable:
+ * 201 returned, old bytes kept) while the fresh manifest describes the new payload.
+ * Assembling that yields the OLD bytes under the NEW manifest. `len` is the one
+ * field that disagrees, so it is the only thing that can catch it.
  */
 export async function assembleContentFeed(
   read: SocChunkProbe,
@@ -478,6 +488,12 @@ export async function assembleContentFeed(
   const full = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let off = 0;
   for (const p of parts) { full.set(p, off); off += p.length; }
+  if (full.length !== head.len) {
+    return {
+      status: "unavailable",
+      reason: `multi-chunk length mismatch: assembled ${full.length} B, manifest declares ${head.len} B`,
+    };
+  }
   return { status: "found", bytes: full };
 }
 
