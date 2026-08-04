@@ -779,6 +779,31 @@ export async function getEasSessionClient(
  */
 const VERIFICATION_GAS_FALLBACK = 3_000_000n;
 
+/**
+ * An ERC-4337 userOp that REVERTS in its execution phase still lands on-chain
+ * inside a successful bundler transaction, with `UserOperationEvent.success =
+ * false`. viem's `waitForUserOperationReceipt` resolves on the first receipt it
+ * finds and never inspects `success`, so without this check a reverted op is
+ * indistinguishable from a successful one — which on the recovery path meant
+ * "You're protected" for an account with no recovery route, and "Account
+ * recovered" for an account whose owner never rotated (#151).
+ *
+ * Gas estimation catches DETERMINISTIC reverts before they are ever sent, so
+ * this fires mainly where estimation is bypassed: `recoverAccount` supplies an
+ * explicit `callGasLimit`, which viem passes straight through.
+ */
+function assertUserOpSucceeded(
+  userOpHash: Hex,
+  receipt: { success?: boolean; reason?: string; receipt?: { transactionHash?: string } },
+): void {
+  if (receipt?.success === true) return;
+  const reason = receipt?.reason ? `: ${receipt.reason}` : "";
+  throw new Error(
+    `UserOperation ${userOpHash} was included but reverted on-chain${reason} ` +
+      `(tx ${receipt?.receipt?.transactionHash ?? "unknown"}).`,
+  );
+}
+
 function isStubVerificationGasError(err: unknown): boolean {
   const seen = new Set<unknown>();
   for (let e = err; e && typeof e === "object" && !seen.has(e); e = (e as { cause?: unknown }).cause) {
@@ -813,6 +838,7 @@ export async function sendSessionUserOp(
     });
   }
   const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
+  assertUserOpSucceeded(userOpHash, receipt);
   return { userOpHash, receipt };
 }
 
@@ -1041,6 +1067,7 @@ async function sendSudoUserOp(
     } as Parameters<typeof client.sendUserOperation>[0]);
   }
   const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
+  assertUserOpSucceeded(userOpHash, receipt);
   return { userOpHash, txHash: receipt.receipt.transactionHash };
 }
 
@@ -1150,6 +1177,60 @@ export async function sweepToExternal(
 
   const callData = await builtKernel.account.encodeCalls(calls);
   return sendSudoUserOp(builtKernel.kernelClient, { callData });
+}
+
+/**
+ * Caller-hook guardian registry getter — `allowed(guardian, kernel) → bool`
+ * (selector `0x5c658165`, confirmed against the deployed hook). This is the
+ * ON-CHAIN truth about who can call `doRecovery` on an account; every other
+ * "is this account protected / is this the guardian" signal in the product is
+ * an untrusted server hint (#162).
+ */
+const RECOVERY_HOOK_ALLOWED_ABI = [
+  {
+    type: "function",
+    name: "allowed",
+    stateMutability: "view",
+    inputs: [
+      { name: "guardian", type: "address" },
+      { name: "account", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+/**
+ * Is `guardianAddress` actually registered on-chain as a permitted recovery
+ * caller for `targetAddress`? Gasless `eth_call`, no writes.
+ *
+ * Returns `true`/`false` when the chain answered, and `null` when the read
+ * FAILED — callers must not treat an unreadable chain as "not registered"
+ * (the same absent-vs-unknown distinction #138 is about).
+ *
+ * Note this reports the CURRENT registry, which is append-only in the deployed
+ * ZeroDev hook: a guardian that was ever installed stays `true` forever, so a
+ * `true` here does NOT mean "this is the only guardian" (#148).
+ */
+export async function isGuardianRegistered(
+  guardianAddress: string,
+  targetAddress: string,
+): Promise<boolean | null> {
+  const [{ createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([
+    import("viem"),
+    import("viem/chains"),
+  ]);
+  try {
+    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    return (await publicClient.readContract({
+      address: RECOVERY_CALLER_HOOK as Address,
+      abi: RECOVERY_HOOK_ALLOWED_ABI,
+      functionName: "allowed",
+      args: [guardianAddress as Address, targetAddress as Address],
+    })) as boolean;
+  } catch (e) {
+    console.warn("[kernel] isGuardianRegistered read failed:", e);
+    return null;
+  }
 }
 
 /**
