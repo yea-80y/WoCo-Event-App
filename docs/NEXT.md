@@ -32,13 +32,42 @@ issue — `gh issue view <n>`. No detail here, or the two sources drift and neit
 | # | Item | Owner | State |
 |---|---|---|---|
 | **S1** | #139 + #140 — passkey ceremony safety + embed silent-mint | Claude | ✅ Merged `ae23a49` · ⚠️ **frontend deploy outstanding (owner)** |
-| **S2** | Recovery subsystem lockdown: `/security-review` recovery + portability, then fix findings **plus #138** | Fable reviews / Opus fixes | ⬅️ **NEXT** |
+| **S2** | Recovery subsystem lockdown — review DONE, 20 findings filed. Index: **#168** | Fable reviews / Opus fixes | 🔨 **IN PROGRESS** on `fix/recovery-lockdown` |
+| **S2b** | #165 "Remove all backups" (works today, no Solidity) → then **#164 WoCo-owned caller hook** with set-semantics + real revoke | Fable | Not started — **pre-launch is when #164 is cheap** |
 | **S3** | #146 — strict CSP + supply-chain pinning | Opus | Not started |
 | **S4** | #143 — embed `signClaimDigest` throws; then #144 — embed typecheck in CI | Opus | Not started |
 | **S5** | #145 **research only** — (A) does root-validator swap preserve the address? (B) does `@zerodev/webauthn-key` drop the hosted-server dep? | Fable | Not started |
 | **S6** | Passkey docs audit — collapse 8 overlapping docs to one authoritative | Sonnet | Not started |
+| **S7** | Login-surface review — S2 covered RECOVERY only. web3, coinbase, local and the web3auth login path have NOT had this treatment | Fable | Not started |
 
 **Owner-held, not Claude's:** #119. **Do not reopen:** #145 implementation, #57.
+
+**S2 review outcome (2026-08-04).** The design held: guardian pinning enforces (an unregistered
+caller reverts `"not allowed"`, verified on-chain), the escrow crypto is sound, guardian
+derivation is not forgeable, both singleton addresses are real. The failures were all at the
+edges, in four repeating shapes: **no way to undo a grant** (#148); **"couldn't tell" treated as
+"definitely not"** (#138, #154, #155); **never checking whether an operation succeeded** (#151,
+#152); and **a guard written for passkey that didn't cover web3auth** (#149). Six findings would
+actually harm a user (#148, #149, #150, #138, #151, #152); the rest are hardening and honesty.
+
+**Not yet true, do not assume otherwise:** recovery has only ever been tested on the happy path —
+no failed-recovery test exists; the guardian evidence is `eth_call` simulation against a real
+account, not an executed install-then-attack; the other login kinds are unreviewed (S7).
+
+**ARCHITECTURE RULING (Fable, 2026-08-04) — `auth-store.svelte.ts` is 2456 lines.**
+Do NOT restructure it on a security branch: the lines a refactor would move are the same lines
+the security fixes edit, and `apps/web`'s test harness **cannot execute `.svelte.ts` rune modules
+at all** (`$state` needs the Svelte compiler; `tsx` won't transform it), so a refactor there is
+eyeball-reviewed only. **Freeze rule while S2 is open:** all new logic goes in NEW files
+(`backup-management.ts` etc.), auth-store gains only thin facade delegations.
+Then a dedicated `refactor/auth-store-split` branch — **trigger: after the live recovery test
+passes, and BEFORE the next auth feature branch opens** (the web3auth guardian-escrow work would
+otherwise grow the file again). Target ~13 files of 100–350 lines; the public `auth` API and the
+`auth-store.svelte.ts` filename never change, so none of the 64 importing files move. Sequence:
+characterisation tests → pure-move commit (bindings, kaddr cache, sdk-prefetch) → the state
+module alone in its own commit → one cluster per commit. Verify each with
+`git show --color-moved=dimmed-zebra` (rule: zero bright lines outside imports/exports) plus
+`npm run check -w @woco/web`. Note `git -M` will NOT show a partial extraction as a rename.
 
 ---
 
