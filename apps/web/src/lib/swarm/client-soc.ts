@@ -17,8 +17,15 @@ import { Bee, PrivateKey, Bytes, Span, Identifier, Reference } from "@etherspher
 import { calculateCacAddress, encodeSpan, SOC_MAX_PAYLOAD_SIZE, type SocReadOutcome } from "@woco/shared";
 import { authPost, get } from "../api/client.js";
 
-// makeSingleOwnerChunk does no I/O; the URL is only used if a Bee method ever
-// hits the network (it doesn't here). Reads/writes go through our API.
+// `makeSingleOwnerChunk` does no I/O — but this URL is NOT inert. `probeSoc`'s
+// gateway-first step calls `makeSOCReader(owner).download(identifier)`, which is
+// `downloadSingleOwnerChunk` → `chunkAPI.download` → a network GET /chunks against
+// THIS host (verified against the installed bee-js@11). Writes go through our API;
+// reads do not.
+//
+// This host is hard-coded, which is the client-side half of #156: a read source
+// should be pluggable, so a browser bee node or a light client can be tried FIRST
+// and any operator's gateway can slot in without a code change.
 let _bee: Bee | null = null;
 function bee(): Bee {
   if (!_bee) _bee = new Bee("https://gateway.woco-net.com");
@@ -148,9 +155,15 @@ export async function probeSoc(
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return { status: "found", bytes: out };
   }
-  // The server answers 404 only after its own bee (and the Etherna backstop) came
-  // back not-found — that is a real answer. Anything else (403, 5xx, an HTML error
-  // page `safeJson` wrapped) is the network failing to answer, not a verdict.
+  // A server 404 is the closest thing to a verdict this stack has — the server's
+  // bee reported not-found — so we treat it as one. Know what it rests on, though:
+  // `readSocPayload` ALSO maps bee's 500 "read chunk failed" to not-found, and its
+  // Etherna backstop returns null when Etherna is merely unreachable (bad token,
+  // timeout, 5xx). Either can dress a "couldn't ask" as a verdict (#156).
+  //
+  // So this is a NARROWER channel than the one it replaced — any completed-but-
+  // failed HTTP response — not a closed one. A caller that caches off `absent`
+  // inherits the remainder (#138). Do not restate this as "absent means absent".
   if (res.status === 404) return { status: "absent" };
   return {
     status: "unavailable",

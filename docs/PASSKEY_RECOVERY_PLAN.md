@@ -818,7 +818,7 @@ recovery/funds-adjacent → **Opus**, fresh chat.
 
 AUDITOR VERDICT (2026-07-01, code-verified): SOUND and STRICTLY IMPROVES posture. Not novel
 plumbing — it reuses the ALREADY-SHIPPED client-owned-SOC pattern in
-`apps/web/src/lib/swarm/client-soc.ts` (`signAndUploadSoc` / `readSoc`), swapping the signer to a
+`apps/web/src/lib/swarm/client-soc.ts` (`signAndUploadSoc` / `probeSoc`), swapping the signer to a
 guardian-derived key. A SOC address = `keccak256(identifier‖owner)` and the reader REJECTS any
 chunk whose recovered signer ≠ owner (`makeSOCReader(owner).download`), so:
   - Confidentiality: UNCHANGED (owner is irrelevant to the seal; payload already ciphertext).
@@ -834,7 +834,7 @@ chunk whose recovered signer ≠ owner (`makeSOCReader(owner).download`), so:
 - **Core fix — guardian-derived SOC owner.** The backup wallet is present at BOTH protect AND
   recover time (it already signs to derive the guardian HPKE key, `deriveGuardianEncryptionKeypair`).
   Derive the recovery-feed SOC signer from the guardian and have the CLIENT sign+write the SOC via
-  the `signAndUploadSoc` path; read via `readSoc(guardianOwner, identifier)` (gateway-first,
+  the `signAndUploadSoc` path; read via `probeSoc(guardianOwner, identifier)` (gateway-first,
   self-verifying). Reproducible on any device by the backup wallet, no escrow, no platform key in
   the loop. Discovery unchanged: identifier stays `topicRecovery(kernelAddress)`-derived, owner =
   guardian address the client computes locally from the pasted TARGET + connected backup wallet.

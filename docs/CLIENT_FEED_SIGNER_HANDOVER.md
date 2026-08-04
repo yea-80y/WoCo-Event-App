@@ -27,8 +27,9 @@ Files:
   the SOC address on the proxy) and unauth `GET /api/swarm/soc/:owner/:identifier`
   (read by computed chunk address — availability fallback).
 - `apps/web/src/lib/swarm/client-soc.ts` — `signAndUploadSoc` (bee-js
-  `makeSingleOwnerChunk`, same digest as the proven feed path) + `readSoc`
-  (GATEWAY-FIRST via `makeSOCReader`, server fallback).
+  `makeSingleOwnerChunk`, same digest as the proven feed path) + `probeSoc`
+  (GATEWAY-FIRST via `makeSOCReader`, server fallback; returns found/absent/
+  unavailable — the lenient `readSoc` was removed 2026-08-04, see #138).
 - `apps/web/src/lib/auth/recovery-portability.ts` (+ `recovery-escrow.ts`
   `deriveEncryptionKeypairFromSeed`) — domain-separated SOC-owner + X25519 keys
   from the passkey PRF key; seal/write/read the envelope reusing the audited
@@ -156,7 +157,7 @@ address**. Both must pass. Only then make the envelope target-aware.
    `beeUploadSem` / `withTimeout` from `upload-queue.ts`.
 2. **Client: SOC write helper.** `apps/web/src/lib/swarm/client-soc.ts` —
    `signAndUploadSoc({ signer, identifier, payload })`: `makeSingleOwnerChunk(...)`
-   → POST to the endpoint above via `authPost`. Plus `readSoc(ownerAddress, identifier)`
+   → POST to the endpoint above via `authPost`. Plus `probeSoc(ownerAddress, identifier)`
    for reads (can hit Bee/gateway directly, no auth).
 3. **Client: PRF-derived keys.** In a new `apps/web/src/lib/auth/recovery-portability.ts`:
    derive, from the PRF output (domain-separated, per the

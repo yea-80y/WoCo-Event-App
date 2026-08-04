@@ -984,15 +984,22 @@ async function init(): Promise<void> {
 // that login, and re-running recovery on the device heals it (it writes the
 // binding, which wins over this cache).
 //
-// What is NO LONGER residual (#138, fixed): that login used to also CACHE the
-// wrong address. The old note scoped the risk to "a total gateway+server
-// outage" and leaned on navigator.onLine, but the read stack turned any
-// completed-but-failed response — a 403 whitelist lag, a 5xx, a Cloudflare
-// error page — into the same "absent" as an empty one, and navigator.onLine is
-// true for every one of those. The probe now answers absent / unavailable
-// separately all the way down (probeSoc → readContentFeedResult →
-// readPortabilityEnvelope), and only a definitive absence reaches
-// `envelopeAbsent`, so only a definitive absence is ever written here.
+// NARROWED, NOT CLOSED (#138 — kept open deliberately). The old note scoped the
+// risk to "a total gateway+server outage" and leaned on navigator.onLine, but the
+// read stack turned any completed-but-failed response — a 403 whitelist lag, a
+// 5xx, a Cloudflare error page — into the same "absent" as an empty one, and
+// navigator.onLine is true for every one of those. The probe now answers absent /
+// unavailable separately all the way down (probeSoc → readContentFeedResult →
+// readPortabilityEnvelope), which closes that whole class.
+//
+// What still gets here (adversarial review, 2026-08-04): the server can mint a 404
+// from a NON-verdict — it maps bee's 500 "read chunk failed" to not-found, and its
+// Etherna backstop returns null when Etherna is merely unreachable. A non-thorough
+// gateway 404 is likewise trusted with no server fallback. Each of those becomes
+// `absent` here and gets cached. The window went from "any failed HTTP response"
+// to "a bee-level retrieval fault on a chunk that exists" — much smaller, still
+// real. Closing it needs either an honest 404 from the server (#156) or a cache
+// that never seeds off an absence at all.
 // ---------------------------------------------------------------------------
 
 const KERNEL_ADDR_CACHE_PREFIX = "woco:kaddr:";
