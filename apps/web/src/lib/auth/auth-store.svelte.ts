@@ -631,11 +631,12 @@ async function _deleteRecoveryBinding(podAddress: string): Promise<void> {
  * VERIFY ON-CHAIN that the preserved Kernel's current ECDSA owner equals this
  * device's PRF-EOA before trusting it — the chain, not the blob, is the authority.
  *
- * Pure check: returns `{ preserved, podSeed }` to apply, `null` when the probe
- * definitively found no envelope (the cacheable answer for a never-recovered
- * account), or `"unavailable"` when the check errored or an envelope was found
- * but could not be verified on-chain — treated as absent for THIS login but
- * never cached. The caller does the storage writes (storePodSeed + binding)
+ * Pure check: returns `{ preserved, podSeed }` to apply, `null` ONLY when the read
+ * stack definitively established that no envelope chunk exists (the cacheable
+ * answer for a never-recovered account), or `"unavailable"` for every other
+ * non-result — the read failed, the envelope was unusable, or it was found but
+ * could not be verified on-chain. `"unavailable"` is treated as absent for THIS
+ * login but is never cached. The caller does the storage writes (storePodSeed + binding)
  * AFTER `_clearStaleAuthForSwitch`, which would otherwise wipe a freshly-stored
  * seed. The read is unauthenticated, so this works during login before any
  * session exists.
@@ -646,8 +647,17 @@ async function _verifyPortabilityEnvelope(
 ): Promise<{ preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string } | null | "unavailable"> {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-    const opened = await readPortabilityEnvelope({ passkeyPrivKey });
-    if (!opened) return null;
+    const read = await readPortabilityEnvelope({ passkeyPrivKey });
+    if (read.status === "absent") return null;
+    if (read.status !== "found") {
+      // Either bytes were there and we could not use them (`unusable`), or nobody
+      // could tell us whether they were there at all (`unreadable`). This login
+      // proceeds WITHOUT the override, but the answer is not "never recovered"
+      // and must never be cached as one.
+      console.warn(`[auth] portability envelope ${read.status} — treating as unknown:`, read.reason);
+      return "unavailable";
+    }
+    const opened = read.value;
 
     // Trust backstop: the override is applied ONLY if the deployed Kernel at the
     // claimed address currently has THIS PRF-EOA as its ECDSA sudo owner. A
@@ -672,13 +682,16 @@ async function _verifyPortabilityEnvelope(
 }
 
 /**
- * Best-effort write of the cross-device portability envelope for the CURRENT
+ * Best-effort sync of the cross-device portability envelope for the CURRENT
  * recovered passkey account. Fire-and-forget from `ensureSession` (needs a
  * session for the authenticated SOC stamp): the first authenticated action after
- * a recovery — or after this code ships, for an already-recovered Account #2 —
- * persists the envelope so the account becomes portable to future devices. Once
- * written it self-skips (the SOC already exists), so this runs at most once per
- * account. No-op for non-recovered accounts (no local binding).
+ * a recovery persists the envelope so the account becomes portable to future
+ * devices. No-op for non-recovered accounts (no local binding).
+ *
+ * The decide-and-write lives in `recovery-portability.ts`
+ * (`backfillPortabilityEnvelope`) — it skips when the stored envelope already
+ * carries these exact secrets, so this settles after one write per account
+ * instead of re-uploading on every session mint (#153).
  */
 async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
   try {
@@ -686,26 +699,20 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
     const override = await _recoveryKernelFor(_podAddress);
     if (!override) return; // only recovered accounts carry a binding
 
-    const { derivePortabilityKeys, writePortabilityEnvelope } = await import("./recovery-portability.js");
-    const { readSoc } = await import("../swarm/client-soc.js");
-    const { portabilitySocIdentifier } = await import("@woco/shared");
-
-    const keys = await derivePortabilityKeys(_passkeyPrivateKey);
-    const existing = await readSoc(keys.socOwnerAddress, portabilitySocIdentifier());
-    if (existing) return; // already portable
-
     const seed = await restorePodSeed(_podAddress);
     if (!seed) return;
     // Carry the feed signer too, so a recovered account's FURTHER devices restore
     // it (same role the guardian escrow plays on the recovery device itself).
     const feedSigner = await _getContentFeedSigner();
-    await writePortabilityEnvelope({
+
+    const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
+    const outcome = await backfillPortabilityEnvelope({
       passkeyPrivKey: _passkeyPrivateKey,
       preservedKernelAddress: override,
       podSeed: seed,
       feedSignerPrivKey: feedSigner?.privKey,
     });
-    console.log("[auth] wrote cross-device recovery portability envelope");
+    console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
   }
@@ -973,10 +980,19 @@ async function init(): Promise<void> {
 //    entry fails loudly, it cannot attach a divergent identity.
 //
 // Residual risk (accepted): a recovered account's FIRST login on a new device
-// during a total gateway+server outage reads the envelope as absent — today
-// that login already lands in the wrong counterfactual account; the cache makes
-// the retry sticky until recovery is re-run on this device (which writes the
-// binding, healing it). The navigator.onLine guard covers the hard-offline case.
+// that cannot read the envelope lands in the wrong counterfactual account for
+// that login, and re-running recovery on the device heals it (it writes the
+// binding, which wins over this cache).
+//
+// What is NO LONGER residual (#138, fixed): that login used to also CACHE the
+// wrong address. The old note scoped the risk to "a total gateway+server
+// outage" and leaned on navigator.onLine, but the read stack turned any
+// completed-but-failed response — a 403 whitelist lag, a 5xx, a Cloudflare
+// error page — into the same "absent" as an empty one, and navigator.onLine is
+// true for every one of those. The probe now answers absent / unavailable
+// separately all the way down (probeSoc → readContentFeedResult →
+// readPortabilityEnvelope), and only a definitive absence reaches
+// `envelopeAbsent`, so only a definitive absence is ever written here.
 // ---------------------------------------------------------------------------
 
 const KERNEL_ADDR_CACHE_PREFIX = "woco:kaddr:";

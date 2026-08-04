@@ -30,7 +30,7 @@ import {
   readVersionedContentFeed,
   LEGACY_CONTENT_FEED_VERSION,
   type ContentFeedManifest,
-  type SocChunkReader,
+  type SocChunkProbe,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
 
@@ -143,7 +143,7 @@ export async function writeContentFeed(args: {
    */
   knownVersion?: number;
 }): Promise<number> {
-  const [{ Wallet }, { signAndUploadSoc, readSoc }] = await Promise.all([
+  const [{ Wallet }, { signAndUploadSoc, probeSoc }] = await Promise.all([
     import("ethers"),
     import("./client-soc.js"),
   ]);
@@ -161,10 +161,22 @@ export async function writeContentFeed(args: {
   } else {
     // thorough: the write-path probe MUST see chunks still settling on the
     // public net (Etherna-stamped writes) — a missed version here re-writes an
-    // existing immutable SOC and silently loses the edit (see readSoc).
-    const read: SocChunkReader = (id) => readSoc(owner, id, { thorough: true });
+    // existing immutable SOC and silently loses the edit (see probeSoc).
+    const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true });
     const hint = args.versionHint ?? readVersionHint(owner, args.topic);
-    const latest = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
+    const { latest, clean } = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
+    // A dirty scan cannot bound the sequence: the version it failed to read may
+    // exist, and writing there is a NO-OP that returns 201 and keeps the old
+    // payload — the edit is lost, silently, with success reported. Refusing is the
+    // only honest option; the caller retries. `thorough` narrows this window (it
+    // consults the server on a gateway 404/403) but cannot close it — an API origin
+    // answering 5xx/429 leaves nobody who can say whether the chunk is there.
+    if (!clean) {
+      throw new Error(
+        `Content feed version probe was inconclusive for "${args.topic}" — refusing to write ` +
+        `(a write at an unverified version is silently discarded). Try again.`,
+      );
+    }
     version = (latest ?? LEGACY_CONTENT_FEED_VERSION) + 1;
   }
 
@@ -208,22 +220,47 @@ export async function writeContentFeed(args: {
   return version;
 }
 
+/** Tri-state result of a content-feed read. `absent` is the only cacheable negative. */
+export type ContentFeedResult<T> =
+  | { status: "found"; value: T; version: number }
+  | { status: "absent" }
+  | { status: "unavailable"; reason?: string };
+
 /**
- * Read + JSON-decode a client-owned content feed by owner + topic. Probes the
- * versioned sequence for the latest update, reassembling multi-chunk pages, and
+ * Read + JSON-decode a client-owned content feed by owner + topic, preserving the
+ * distinction between "this feed does not exist" and "could not read it". Probes
+ * the versioned sequence for the latest update, reassembling multi-chunk pages, and
  * falls back to the legacy pre-versioning fixed identifier so feeds written before
- * this fix stay readable. Multi-chunk aware.
+ * the versioning fix stay readable. Multi-chunk aware.
+ *
+ * Use this — not {@link readContentFeed} — wherever `absent` gets acted on: a
+ * durable write, a cached negative, or a security decision.
  */
-export async function readContentFeed<T>(ownerAddress: string, topic: string): Promise<T | null> {
-  const { readSoc } = await import("./client-soc.js");
+export async function readContentFeedResult<T>(
+  ownerAddress: string,
+  topic: string,
+): Promise<ContentFeedResult<T>> {
+  const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
-  const read: SocChunkReader = (id) => readSoc(owner, id);
+  const read: SocChunkProbe = (id) => probeSoc(owner, id);
   const res = await readVersionedContentFeed(read, topic, readVersionHint(owner, topic));
-  if (!res) return null;
+  if (res.status !== "found") return res;
   if (res.version >= 0) bumpVersionHint(owner, topic, res.version);
   try {
-    return JSON.parse(new TextDecoder().decode(res.bytes)) as T;
+    return { status: "found", value: JSON.parse(new TextDecoder().decode(res.bytes)) as T, version: res.version };
   } catch {
-    return null;
+    // Bytes exist at this identifier but aren't our JSON — corrupt or foreign,
+    // never "no feed here". Absent would be a lie a caller could cache.
+    return { status: "unavailable", reason: "feed payload is not valid JSON" };
   }
+}
+
+/**
+ * Lenient wrapper over {@link readContentFeedResult}: the decoded feed, or null for
+ * BOTH "absent" and "could not read". Correct only for display paths that re-read
+ * on the next visit (profiles, event detail, site pages).
+ */
+export async function readContentFeed<T>(ownerAddress: string, topic: string): Promise<T | null> {
+  const res = await readContentFeedResult<T>(ownerAddress, topic);
+  return res.status === "found" ? res.value : null;
 }

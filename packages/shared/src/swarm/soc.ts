@@ -336,14 +336,30 @@ export function editionsContentTopic(seriesId: string, page = 0): string {
 // ---------------------------------------------------------------------------
 // Versioned content-feed READ (probe latest, reassemble, legacy fallback)
 //
-// Shared by the client (`content-feed.ts`, gateway-first `readSoc`) and the server
+// Shared by the client (`content-feed.ts`, gateway-first `probeSoc`) and the server
 // (`soc-upload.ts`, `readSocPayload`) so both ends resolve "latest" identically.
 // Each end supplies its own chunk reader; the derivation + probing algorithm live
 // here to prevent drift.
 // ---------------------------------------------------------------------------
 
-/** Reads one SOC's inline payload by identifier, or null if the chunk is absent. */
-export type SocChunkReader = (identifier: Uint8Array) => Promise<Uint8Array | null>;
+/**
+ * The outcome of ONE chunk probe. Three states, not two: a reader that collapses
+ * "the network said there is no such chunk" into the same `null` as "the network
+ * did not answer" makes every caller unsound. A writer computes the next version
+ * off it (a wrong answer silently dedupes the write against an existing immutable
+ * SOC — old payload kept, 201 returned); a login caches "this account was never
+ * recovered" off it. Both need `absent` to MEAN absent.
+ *
+ * `unavailable` carries an optional human `reason` for diagnosis only — no caller
+ * branches on it.
+ */
+export type SocReadOutcome =
+  | { status: "found"; bytes: Uint8Array }
+  | { status: "absent" }
+  | { status: "unavailable"; reason?: string };
+
+/** Probes one SOC by identifier. See {@link SocReadOutcome} — three states. */
+export type SocChunkProbe = (identifier: Uint8Array) => Promise<SocReadOutcome>;
 
 /**
  * Highest version returned for a feed that has NO versioned chunk yet but does have
@@ -363,25 +379,45 @@ export const LEGACY_CONTENT_FEED_VERSION = -1;
  */
 const VERSION_PROBE_WINDOW = 2;
 
-export interface VersionedFeedRead {
-  bytes: Uint8Array;
-  /** Resolved version, or {@link LEGACY_CONTENT_FEED_VERSION} for the legacy chunk. */
-  version: number;
+/** A resolved feed read: the bytes plus the version they came from. */
+export type VersionedFeedRead =
+  | { status: "found"; bytes: Uint8Array; /** Resolved version, or {@link LEGACY_CONTENT_FEED_VERSION}. */ version: number }
+  | { status: "absent" }
+  | { status: "unavailable"; reason?: string };
+
+export interface SocVersionResolution {
+  /** Highest version confirmed PRESENT, or null if none was found. */
+  latest: number | null;
+  /**
+   * True only when every probe answered definitively. When false, `latest` is a
+   * lower bound and nothing may be concluded from the scan STOPPING where it did —
+   * in particular a write MUST NOT target `latest + 1`, because the version it
+   * could not read may exist and the write would silently dedupe against it.
+   */
+  clean: boolean;
 }
 
 /**
  * Resolve the highest existing version by probing `read(baseIdFor(v))` FORWARD from
  * `hint`. Versions are contiguous from 0 and immutable (a version once written can
  * never disappear), so `hint` is a valid lower bound; a stale/wrong hint (its
- * version absent) falls back to a full scan from 0. Returns the highest version, or
- * `null` if no versioned chunk exists at all (⇒ caller tries the legacy identifier).
+ * version absent) falls back to a full scan from 0.
+ *
+ * An `unavailable` probe ends the scan like an absent one — the read path still gets
+ * the best lower bound available — but clears `clean`, so a caller that needs
+ * certainty (any WRITER) can refuse instead of guessing.
  */
 export async function resolveLatestSocVersion(
-  read: SocChunkReader,
+  read: SocChunkProbe,
   baseIdFor: (version: number) => Uint8Array,
   hint = 0,
-): Promise<number | null> {
-  const exists = async (v: number): Promise<boolean> => (await read(baseIdFor(v))) !== null;
+): Promise<SocVersionResolution> {
+  let clean = true;
+  const exists = async (v: number): Promise<boolean> => {
+    const outcome = await read(baseIdFor(v));
+    if (outcome.status === "unavailable") clean = false;
+    return outcome.status === "found";
+  };
 
   let start = hint > 0 ? hint : 0;
   if (start > 0 && !(await exists(start))) start = 0; // hint unreliable → full scan
@@ -398,42 +434,51 @@ export async function resolveLatestSocVersion(
     }
     if (ended) break;
   }
-  return latest >= 0 ? latest : null;
+  return { latest: latest >= 0 ? latest : null, clean };
 }
 
 /**
  * Read + reassemble ONE version's payload: a single-chunk feed is the base SOC's
  * raw bytes; a multi-chunk feed is a {@link ContentFeedManifest} in the base SOC
- * plus `pages` data SOCs. Returns null if the base or any page is absent (a torn /
- * incomplete write). `baseId`/`pageIdFor` select versioned vs legacy identifiers.
+ * plus `pages` data SOCs. `baseId`/`pageIdFor` select versioned vs legacy identifiers.
+ *
+ * Only an absent BASE chunk is `absent`. A manifest whose pages are missing or
+ * out of range is a torn/corrupt write — real bytes exist at this identifier, so
+ * reporting `absent` would let a caller cache "nothing was ever here". That is
+ * `unavailable`.
  */
 export async function assembleContentFeed(
-  read: SocChunkReader,
+  read: SocChunkProbe,
   baseId: Uint8Array,
   pageIdFor: (page: number) => Uint8Array,
-): Promise<Uint8Array | null> {
-  const raw = await read(baseId);
-  if (!raw) return null;
+): Promise<SocReadOutcome> {
+  const base = await read(baseId);
+  if (base.status !== "found") return base;
+  const raw = base.bytes;
 
   let head: unknown;
   try {
     head = JSON.parse(new TextDecoder().decode(raw));
   } catch {
-    return raw; // not JSON (shouldn't happen for our feeds) — hand back as-is
+    return base; // not JSON (shouldn't happen for our feeds) — hand back as-is
   }
-  if (!isContentFeedManifest(head)) return raw; // single-chunk feed
-  if (head.pages < 1 || head.pages > 256) return null; // bound the loop (≤ 1 MB)
+  if (!isContentFeedManifest(head)) return base; // single-chunk feed
+  if (head.pages < 1 || head.pages > 256) {
+    return { status: "unavailable", reason: `manifest page count out of range: ${head.pages}` };
+  }
 
   const parts: Uint8Array[] = [];
   for (let i = 1; i <= head.pages; i++) {
     const page = await read(pageIdFor(i));
-    if (!page) return null; // a missing page ⇒ incomplete; treat as not-found
-    parts.push(page);
+    if (page.status !== "found") {
+      return { status: "unavailable", reason: `multi-chunk page ${i}/${head.pages} ${page.status}` };
+    }
+    parts.push(page.bytes);
   }
   const full = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let off = 0;
   for (const p of parts) { full.set(p, off); off += p.length; }
-  return full;
+  return { status: "found", bytes: full };
 }
 
 /**
@@ -442,25 +487,45 @@ export async function assembleContentFeed(
  * pre-versioning fixed identifier (`contentFeedSocIdentifier(topic)` + its
  * `topic/pN` pages) — so a feed written before this fix stays READABLE, and its
  * first edit (which writes version 0) then wins over the legacy chunk with NO
- * re-publish. Returns the raw feed bytes + the resolved version, or null.
+ * re-publish.
+ *
+ * `absent` is only ever returned when the version scan was CLEAN and found nothing
+ * and the legacy identifier is definitively absent too — i.e. the one answer a
+ * caller may cache.
+ *
+ * A `found` under a DIRTY scan may be a stale version (a higher one existed but
+ * could not be read). That is the normal best-effort read contract — the bytes are
+ * genuinely this feed's, just possibly not its newest. Callers for which staleness
+ * is unsafe must verify out-of-band; the recovery paths verify on-chain.
  */
 export async function readVersionedContentFeed(
-  read: SocChunkReader,
+  read: SocChunkProbe,
   topic: string,
   hint = 0,
-): Promise<VersionedFeedRead | null> {
+): Promise<VersionedFeedRead> {
   const base = contentFeedSocIdentifier(topic);
   const baseIdFor = (v: number): Uint8Array => versionedSocIdentifier(base, v);
 
-  const latest = await resolveLatestSocVersion(read, baseIdFor, hint);
+  const { latest, clean } = await resolveLatestSocVersion(read, baseIdFor, hint);
   if (latest !== null) {
-    const bytes = await assembleContentFeed(
+    const asm = await assembleContentFeed(
       read,
       baseIdFor(latest),
       (page) => versionedPageIdentifier(base, latest, page),
     );
-    return bytes ? { bytes, version: latest } : null;
+    if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest };
+    // The probe just confirmed this version PRESENT, so an absent re-read is a
+    // contradiction (a vanished chunk / a reader disagreeing with itself), never
+    // evidence that the feed does not exist.
+    return asm.status === "absent"
+      ? { status: "unavailable", reason: `version ${latest} vanished between probe and read` }
+      : asm;
   }
+
+  // A dirty scan found nothing — but it never asked every question, so "nothing
+  // exists" is not a conclusion that can be drawn (and the legacy probe below
+  // would answer for the wrong identifier anyway).
+  if (!clean) return { status: "unavailable", reason: "version probe inconclusive" };
 
   // Legacy fallback: the pre-versioning fixed identifier + its topic-string pages.
   const legacy = await assembleContentFeed(
@@ -468,5 +533,7 @@ export async function readVersionedContentFeed(
     base,
     (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
   );
-  return legacy ? { bytes: legacy, version: LEGACY_CONTENT_FEED_VERSION } : null;
+  return legacy.status === "found"
+    ? { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION }
+    : legacy;
 }

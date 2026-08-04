@@ -37,7 +37,7 @@ import {
   versionedSocIdentifier,
   versionedPageIdentifier,
   LEGACY_CONTENT_FEED_VERSION,
-  type SocChunkReader,
+  type SocChunkProbe,
   SOC_IDENTIFIER_SIZE,
   SOC_SIGNATURE_SIZE,
   SOC_MAX_PAYLOAD_SIZE,
@@ -406,7 +406,19 @@ export async function readContentFeedJson(
   baseTopic: string,
   versionHint = 0,
 ): Promise<Uint8Array | null> {
-  const read: SocChunkReader = (id) => readSocPayload(ownerHex, bytesToHex(id));
+  // `readSocPayload` THROWS every fault except a bee not-found, so a transient
+  // fault propagates out of this function rather than being cached as "no such
+  // feed" — the distinction the probe needs is mostly already there.
+  //
+  // Not airtight: after bee's not-found, `readSocFromEtherna` also returns null
+  // when Etherna is unconfigured or its own read fails, so a null can still be an
+  // Etherna-side "couldn't tell" riding a bee "definitely not". Narrow (bee has
+  // already run a full network search by then) and unchanged by this commit —
+  // closing it belongs with #156, which is about trusting that fallback at all.
+  const read: SocChunkProbe = async (id) => {
+    const bytes = await readSocPayload(ownerHex, bytesToHex(id));
+    return bytes ? { status: "found", bytes } : { status: "absent" };
+  };
   const key = `${ownerHex.toLowerCase().replace(/^0x/, "")}:${baseTopic}`;
   const base = contentFeedSocIdentifier(baseTopic);
 
@@ -416,13 +428,13 @@ export async function readContentFeedJson(
     if (Date.now() - cached.at < ttl) {
       if (cached.version === null) return null;
       // Exact-version read: existing chunks only — zero missing-chunk searches.
-      const bytes =
+      const asm =
         cached.version === LEGACY_CONTENT_FEED_VERSION
           ? await assembleContentFeed(read, base, (p) =>
               contentFeedSocIdentifier(contentFeedPageTopic(baseTopic, p)))
           : await assembleContentFeed(read, versionedSocIdentifier(base, cached.version), (p) =>
               versionedPageIdentifier(base, cached.version as number, p));
-      if (bytes) return bytes;
+      if (asm.status === "found") return asm.bytes;
       // Cached version unexpectedly unreadable — drop it and re-probe below.
       cfvCache.delete(key);
     }
@@ -431,8 +443,11 @@ export async function readContentFeedJson(
   // Probe forward from the best lower bound we have (caller hint vs cached).
   const hint = Math.max(versionHint, cached?.version ?? 0);
   const res = await readVersionedContentFeed(read, baseTopic, hint);
-  cfvCache.set(key, { version: res ? res.version : null, at: Date.now() });
-  return res?.bytes ?? null;
+  // Only a definitive answer may be cached. Caching an `unavailable` as absent
+  // would serve "this feed does not exist" for the whole TTL off one bad read.
+  if (res.status === "found") cfvCache.set(key, { version: res.version, at: Date.now() });
+  else if (res.status === "absent") cfvCache.set(key, { version: null, at: Date.now() });
+  return res.status === "found" ? res.bytes : null;
 }
 
 /**

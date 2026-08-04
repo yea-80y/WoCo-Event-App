@@ -47,7 +47,7 @@ export async function uploadRecoveryEnvelopeSoc(args: {
  * Read the guardian-owned recovery envelope SOC. `socOwnerAddress` is the guardian
  * SOC signer address the client derives LOCALLY from the connected backup wallet
  * (`deriveGuardianKeys().socSigner.address`) — no platform lookup in the loop. The
- * read is self-verifying (see `readSoc`). Resolves the latest version and falls
+ * read is self-verifying (see `probeSoc`). Resolves the latest version and falls
  * back to the legacy fixed identifier. Returns null if absent (e.g. a pre-§13
  * account whose envelope is still on the legacy platform feed).
  */
