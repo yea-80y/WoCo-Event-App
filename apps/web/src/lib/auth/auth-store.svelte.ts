@@ -286,11 +286,18 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
     // sign-to-derive here would produce a DIFFERENT key than the one that owns the
     // account's existing feeds — silently forking them. Its real signer only comes
     // from escrow/portability restore (done at login). Reaching here means that
-    // restore didn't happen, so FAIL LOUD rather than fork. Non-recovered passkeys
+    // restore didn't happen, so FAIL LOUD rather than fork. Non-recovered accounts
     // (no binding) derive deterministically and are unaffected.
-    if (_kind === "passkey" && (await _recoveryKernelFor(_podAddress))) {
+    //
+    // NOT passkey-only: `recoverAndRekey` also supports a WEB3AUTH new owner, which
+    // gets the same durable binding and the same un-re-derivable secrets — but has
+    // no PRF portability envelope, so its only restore channel is the guardian
+    // portal. Gating this on `_kind === "passkey"` meant a plain logout→login of a
+    // web3auth-recovered account silently minted a divergent feed signer and forked
+    // every feed it owns (#149). The binding itself is the correct signal.
+    if (await _recoveryKernelFor(_podAddress)) {
       throw new Error(
-        "Recovered passkey feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
+        "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
       );
     }
     const signer = await _deriveFeedSignerBySigning(parent);
@@ -1694,9 +1701,15 @@ async function ensurePodIdentity(): Promise<string | null> {
       // return null (POD unavailable this session) rather than clobber it — login
       // should have restored it; failing soft keeps historical data recoverable once
       // the restore path runs, whereas a divergent derive would corrupt it forever.
-      if (_kind === "passkey" && (await _recoveryKernelFor(podAddr))) {
+      //
+      // NOT passkey-only: a WEB3AUTH-recovered account carries the same binding and
+      // the same un-re-derivable seed, and had NO guard at all — so a logout→login
+      // silently derived a divergent seed and made its encrypted claim history
+      // permanently undecryptable (#149). The binding is the correct signal; kinds
+      // that can never carry one (web3/coinbase/local) are unaffected.
+      if (await _recoveryKernelFor(podAddr)) {
         console.error(
-          "[auth] recovered passkey POD seed missing — refusing to re-derive a divergent seed",
+          "[auth] recovered account POD seed missing — refusing to re-derive a divergent seed",
         );
         return null;
       }
@@ -1989,6 +2002,11 @@ async function setupAccountRecovery(backup: {
  * config is reconstructed from the backup address (v1 = 1-of-1) and MUST match
  * what was registered at setup, or step 2 reverts at the caller hook.
  */
+/** Arb Sepolia is fast, but the owner read can trail the userOp receipt by a
+ *  block or two — retry briefly before declaring the rotation failed (#152). */
+const ROTATION_CONFIRM_ATTEMPTS = 4;
+const ROTATION_CONFIRM_DELAY_MS = 1500;
+
 async function recoverAndRekey(args: {
   backup: import("../wallet/backup-signer.js").BackupWallet;
   targetAddress: string;
@@ -2052,6 +2070,32 @@ async function recoverAndRekey(args: {
       );
     }
 
+    // (0b) ON-CHAIN PRE-FLIGHT: is this backup's guardian actually registered on
+    // the target account? The escrow decrypt above proves the user IS the escrow
+    // guardian; it says nothing about whether the on-chain install ever landed.
+    // Those can diverge, because the escrow SOC is written BEFORE the irreversible
+    // install in setupAccountRecovery — so a setup that failed (silently, before
+    // #151) leaves an escrow that opens perfectly and a route that does not exist.
+    // "Protected account found" in the portal is a SERVER hint; this is the chain.
+    // Free, gasless, and it runs before a passkey is minted (#162).
+    //
+    // Unreadable chain is NOT a failure here: null means "could not tell", and
+    // blocking a locked-out user's only way back in on an RPC blip is worse than
+    // letting them proceed to the rotation, which now fails closed on its own.
+    const guardianConfigForCheck = {
+      signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
+      threshold: 100,
+    };
+    const { deriveGuardianAddress, isGuardianRegistered } = await import("./kernel-account.js");
+    const expectedGuardian = await deriveGuardianAddress(guardianConfigForCheck);
+    const registered = await isGuardianRegistered(expectedGuardian, target);
+    if (registered === false) {
+      throw new Error(
+        "That backup isn't set up as the recovery key for this account on-chain. " +
+          "Check you connected the right backup wallet and chose the right account.",
+      );
+    }
+
     // (1) New owner credential on THIS device. passkey → a fresh PRF-EOA;
     // web3auth → an email/social login whose EOA becomes the new sudo owner (the
     // account STAYS web3auth — owner decision 2026-07-02, not forced to passkey).
@@ -2076,24 +2120,49 @@ async function recoverAndRekey(args: {
     // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
     onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
     const guardianSigner = await backup.getGuardianSigner();
-    const guardianConfig = {
-      signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
-      threshold: 100,
-    };
     const { recoverAccount } = await import("./kernel-account.js");
     const { txHash } = await recoverAccount({
       targetAddress: target,
-      guardianConfig,
+      // The SAME config object the pre-flight derived `expectedGuardian` from —
+      // reconstructing it separately here is how setup-time and recovery-time
+      // guardian addresses could silently diverge (#161).
+      guardianConfig: guardianConfigForCheck,
       guardianSigners: [guardianSigner],
       newOwnerAddress,
     });
 
+    // (2b) POST-CONDITION: prove on-chain that the owner actually rotated, before
+    // ANY irreversible local commit below. The old `kernel.address !== target`
+    // assertion could not do this — buildKernelFromPrivateKey passes the address
+    // override straight through to createKernelAccount, so it compared `target`
+    // to itself and was true whatever happened on-chain (#152). A userOp that is
+    // included but reverts now throws in sendSudoUserOp (#151); this catches the
+    // rest (wrong validator, a rotation that landed elsewhere, chain reorg).
+    //
+    // Fails CLOSED, including on an unreadable chain: nothing has been committed
+    // at this point, so refusing costs the user a retry, whereas proceeding
+    // wrongly tells them "you're back in" and invites them to discard the old
+    // device that still holds the only working credential.
+    onProgress?.("Confirming the change on-chain…");
+    const { readKernelEcdsaOwner } = await import("./kernel-account.js");
+    let rotatedOwner: string | null = null;
+    for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
+      rotatedOwner = await readKernelEcdsaOwner(target);
+      if (rotatedOwner?.toLowerCase() === newOwnerAddress.toLowerCase()) break;
+      if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
+      }
+    }
+    if (rotatedOwner?.toLowerCase() !== newOwnerAddress.toLowerCase()) {
+      throw new Error(
+        "The recovery transaction did not take effect on-chain — your account has NOT been changed. " +
+          "Keep using your existing sign-in and try again.",
+      );
+    }
+
     // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
     const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
     const kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
-    if (kernel.address !== target) {
-      throw new Error("Recovery produced a divergent account address — aborting.");
-    }
 
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored POD seed).
