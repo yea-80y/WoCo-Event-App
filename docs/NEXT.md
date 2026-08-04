@@ -3,7 +3,7 @@
 The single ordered list. GitHub issues are the *what*; this is the *when*. If a plan only
 exists in a chat message, it does not exist. Update this file when the order changes.
 
-Last updated: 2026-07-29 (pre-launch review follow-ups #80/#81/#82/#83/#85 built; #84/#87 decided).
+Last updated: 2026-08-04 (security workstream added — #139/#140 merged, recovery lockdown next).
 
 > **Model routing (token efficiency):** the Owner column now names the cheapest model that
 > can safely own the item. **Fable** = architecture, money paths, irreversible Swarm/batch
@@ -18,6 +18,27 @@ Last updated: 2026-07-29 (pre-launch review follow-ups #80/#81/#82/#83/#85 built
 > re-publish from the builder; the re-deploy free-hosts onto the Etherna platform
 > batch — which itself needs the 7b top-up decision first, or the re-publish dies
 > again in days.
+
+---
+
+## Security workstream — passkey / accounts (added 2026-08-04)
+
+Runs alongside the table below; separate lane, separate worktree. **Do the top undone item.
+Anything else found goes to a GitHub issue, not into the current branch.**
+
+Rows are ONE LINE: issue number, owner, state. If a row needs a paragraph, it belongs in the
+issue — `gh issue view <n>`. No detail here, or the two sources drift and neither is trusted.
+
+| # | Item | Owner | State |
+|---|---|---|---|
+| **S1** | #139 + #140 — passkey ceremony safety + embed silent-mint | Claude | ✅ Merged `ae23a49` · ⚠️ **frontend deploy outstanding (owner)** |
+| **S2** | Recovery subsystem lockdown: `/security-review` recovery + portability, then fix findings **plus #138** | Fable reviews / Opus fixes | ⬅️ **NEXT** |
+| **S3** | #146 — strict CSP + supply-chain pinning | Opus | Not started |
+| **S4** | #143 — embed `signClaimDigest` throws; then #144 — embed typecheck in CI | Opus | Not started |
+| **S5** | #145 **research only** — (A) does root-validator swap preserve the address? (B) does `@zerodev/webauthn-key` drop the hosted-server dep? | Fable | Not started |
+| **S6** | Passkey docs audit — collapse 8 overlapping docs to one authoritative | Sonnet | Not started |
+
+**Owner-held, not Claude's:** #119. **Do not reopen:** #145 implementation, #57.
 
 ---
 
