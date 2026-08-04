@@ -32,7 +32,7 @@ issue — `gh issue view <n>`. No detail here, or the two sources drift and neit
 | # | Item | Owner | State |
 |---|---|---|---|
 | **S1** | #139 + #140 — passkey ceremony safety + embed silent-mint | Claude | ✅ Merged `ae23a49` · ⚠️ **frontend deploy outstanding (owner)** |
-| **S2** | Recovery subsystem lockdown — review DONE, 20 findings filed. Index: **#168** | Fable reviews / Opus fixes | 🔨 **IN PROGRESS** on `fix/recovery-lockdown` |
+| **S2** | Recovery subsystem lockdown — review DONE, 20 findings filed. Index + running state: **#168** | Fable reviews / Opus fixes | 🔨 **IN PROGRESS** — `fix/recovery-lockdown` (5 commits, Fable-verified) + `fix/content-feed-len-170` **stacked on it, merges after**. Next: #148+#165 |
 | **S2b** | #165 "Remove all backups" (works today, no Solidity) → then **#164 WoCo-owned caller hook** with set-semantics + real revoke | Fable | Not started — **pre-launch is when #164 is cheap** |
 | **S3** | #146 — strict CSP + supply-chain pinning | Opus | Not started |
 | **S4** | #143 — embed `signClaimDigest` throws; then #144 — embed typecheck in CI | Opus | Not started |
