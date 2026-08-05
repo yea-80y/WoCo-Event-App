@@ -135,10 +135,13 @@ and require an explicit confirm ("this wallet becomes your recovery key"); (2) `
 if it guards ANOTHER account, soft-warn it links the two (independence nudge, §12.3); (3) keep the
 self-key hard block. This is a UI/messaging task → folds into the Sonnet handover (chooser + prompting).
 
-**Setup UX (same session):** `#/protect` now reads the escrow envelope on mount and shows "Backup
-on record" + "Replace backup" when one exists (presence is auth-bound + the LAST setup write, so
-honest but bounded — copy says "on record", not "guaranteed"; only a real recovery proves live
-recoverability). Added an independence + no-accidental-duplicate guard (rejects a backup == the
+**Setup UX:** `#/protect` shows "Backup on record" when one exists, with **"Add another backup"**
+and **"Remove all backups"**. ~~"Replace backup"~~ was removed in #148 — it never replaced anything
+(see §12.2). Protection state is read from the CHAIN (`selectorConfig(doRecovery)`); the server's
+`RecoveryStatus` is a forgeable hint used only when the chain is unreadable, and only as evidence
+OF protection — it can never prove absence, or the portal would tell a locked-out user that
+recovery is impossible. Copy says "on record", not "guaranteed"; only a real recovery proves live
+recoverability. The independence + no-accidental-duplicate guard stands (rejects a backup == the
 account's own key, or a wallet already this account's guardian via the by-guardian hint). Multiple
 guardians = 1-of-N (contained, gated) vs M-of-N (VSS, deferred); see §12.2.
 
@@ -731,13 +734,27 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
   GATED behind the funds-safety browser test like the rest of §12.
 - **M-of-N threshold (need several TOGETHER — social recovery)** = factor #4 above; needs VSS so no
   single guardian holds the DEK. Deferred.
-- **v1 reality = strictly 1-of-1.** So the setup UI's second action is **"Replace backup"**, NOT
-  "add another": re-running setup installs a new single guardian and the PUT overwrites the envelope
-  sealed only to the new backup — running it twice does NOT yield two working backups (the old one
-  would lose escrow-decrypt even if a stale on-chain guardian lingers). A read-only **independence +
-  no-accidental-duplicate guard** is wired in `AccountRecoverySetup.svelte` (rejects a backup ==
-  account's own key, or a wallet already registered as THIS account's guardian via the by-guardian
-  reverse hint — fail-safe: a missing hint just falls through).
+- ~~**v1 reality = strictly 1-of-1**, so the setup UI's second action is "Replace backup"~~ —
+  **WRONG, AND REMOVED IN CODE (#148, 2026-08-05). Do not reintroduce it from this document.**
+  Both halves of the argument were false for the shipped §13 model:
+  - *On-chain:* the ZeroDev caller hook's `allowed[guardian][kernel]` mapping is APPEND-ONLY.
+    `onInstall` ORs each guardian in; `onUninstall` clears only an init flag; there is no revoke
+    entrypoint. Re-running setup ADDS a guardian. The previous backup keeps permanent takeover.
+  - *Escrow:* "the PUT overwrites the envelope sealed only to the new backup" was true of the
+    legacy platform-signed feed. §13 writes the envelope to a SOC owned by the **guardian-derived**
+    signer, so a new backup writes a DIFFERENT SOC and never overwrites the old one. The old
+    guardian keeps `podSeed` and `feedSignerPrivKey` indefinitely.
+
+  What ships instead: **"Add another backup"** (honest — it adds) plus **"Remove all backups"**,
+  which uninstalls the shared `doRecovery` selector route (`uninstallModule(3, ·, 0xac39fd0f)`) and
+  so disables every guardian at once — the only revoke that exists without new Solidity (#165).
+  Removal is proven by an on-chain read-back of `selectorConfig`, never by the transaction, because
+  Kernel does not revert when nothing was installed. Re-installing against the same hook
+  **resurrects every past guardian**, so retired backups are MARKED in the manifest, not deleted,
+  and the UI warns before any later add. The durable fix is a WoCo-owned hook with set-semantics
+  (#164). The **independence + no-accidental-duplicate guard** in `AccountRecoverySetup.svelte`
+  stands (rejects a backup == account's own key, or a wallet already registered as THIS account's
+  guardian via the by-guardian reverse hint — fail-safe: a missing hint just falls through).
 
 ### 12.3 Primary-method-aware prompting (the "don't suggest the same account" rule)
 - **Reliable signal = the app's own known login method** (passkey / email-wallet / web3 / local),

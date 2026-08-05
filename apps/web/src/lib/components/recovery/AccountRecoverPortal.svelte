@@ -14,7 +14,8 @@
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
-  import { fetchRecoveryStatus, fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { readBackupProtection } from "../../auth/backup-management.js";
   import { resolveSubEnsAddress } from "../../api/sub-ens.js";
 
   type Phase =
@@ -117,15 +118,28 @@
   }
 
   // Confirm a protected account exists for `addr` and move to the found/none state.
-  // Presence hint only (§13): the authoritative check is the guardian-SOC decrypt
-  // inside recoverAndRekey, which cannot run until the backup wallet signs.
+  // Chain first (#148): the server's presence hint keeps saying "configured" after
+  // an account removes its backups, and says nothing at all for an account whose
+  // hint write failed — so "Protected account found ✓" must come from the Kernel's
+  // own recovery route where that can be read. The hint is only the fallback.
+  //
+  // Still a PRE-CHECK, not authorisation: the authoritative check is the guardian-SOC
+  // decrypt inside recoverAndRekey, which cannot run until the backup wallet signs.
+  //
+  // A read that answered nowhere stays an ERROR, never "no backup found" — telling a
+  // protected, locked-out user that recovery is impossible is the worse failure (#169).
   async function checkAddress(addr: string) {
     account = addr;
     phase = "checking";
     errorMsg = "";
     try {
-      const status = await fetchRecoveryStatus(addr);
-      phase = status?.configured ? "found" : "none";
+      const { isProtected } = await readBackupProtection(addr);
+      if (isProtected === null) {
+        errorMsg = "Couldn't check that account — please try again in a moment";
+        phase = "error";
+        return;
+      }
+      phase = isProtected ? "found" : "none";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Couldn't check that account";
       phase = "error";
@@ -285,11 +299,12 @@
 
       {#if phase === "found" || phase === "restoring"}
         <div class="result result--ok">
-          <p class="result-title">Protected account found ✓</p>
+          <p class="result-title">This account has recovery set up ✓</p>
           <p class="result-body">
-            We can restore
+            If this is the backup you added for it, we can restore
             {#if displayName}<strong>{displayName}</strong> (<code>{short(account)}</code>){:else}<code>{short(account)}</code>{/if}
-            to this device using your backup.
+            to this device. We check that when you continue — we can see the account has a
+            recovery route, not yet that this wallet is the one that opens it.
           </p>
           <fieldset class="owner-choice" disabled={phase === "restoring"}>
             <legend>How do you want to sign in from now on?</legend>

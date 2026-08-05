@@ -23,9 +23,9 @@ import {
   type ManifestFeedKind,
   type SelfSealedEnvelope,
 } from "@woco/shared";
-import { readContentFeed, writeContentFeed } from "../swarm/content-feed.js";
+import { readContentFeedResult, writeContentFeed } from "../swarm/content-feed.js";
 import { openFromSelf, sealToSelf } from "./self-seal.js";
-import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry } from "./ops.js";
+import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry, retireBackupEntries } from "./ops.js";
 
 /** The feed-signer material the manifest is owned by + sealed to. */
 export interface ManifestSigner {
@@ -44,23 +44,65 @@ export async function readUserManifest(args: {
   signer: ManifestSigner;
   parentAddress: string;
 }): Promise<UserManifest | null> {
-  const raw = await readContentFeed<unknown>(args.signer.address, USER_MANIFEST_TOPIC);
-  if (!raw || !isSelfSealedEnvelope(raw)) return null;
+  const res = await readUserManifestResult(args);
+  return res.status === "found" ? res.manifest : null;
+}
+
+/**
+ * Tri-state manifest read: `absent` (there is no manifest) and `unavailable` (we
+ * could not tell) are different answers, and the WRITE path must act on them
+ * oppositely — writing on `unavailable` would clobber a manifest we simply failed
+ * to read (#154/#155). `readUserManifest` collapses both to null because its
+ * callers are the comfort layer, where "show nothing" is a fine answer.
+ */
+export type ManifestReadResult =
+  | { status: "found"; manifest: UserManifest }
+  | { status: "absent" }
+  | { status: "unavailable" };
+
+export async function readUserManifestResult(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+}): Promise<ManifestReadResult> {
+  const res = await readContentFeedResult<unknown>(args.signer.address, USER_MANIFEST_TOPIC);
+  if (res.status === "unavailable") return { status: "unavailable" };
+  if (res.status === "absent") return { status: "absent" };
+  if (!isSelfSealedEnvelope(res.value)) return { status: "absent" };
   try {
     const manifest = openFromSelf<UserManifest>({
       feedSignerPrivKey: args.signer.privKey,
       parentAddress: args.parentAddress,
-      envelope: raw as SelfSealedEnvelope,
+      envelope: res.value as SelfSealedEnvelope,
     });
-    if (typeof manifest?.updatedAt !== "number" || !Array.isArray(manifest?.backups)) return null;
-    return manifest;
+    if (typeof manifest?.updatedAt !== "number" || !Array.isArray(manifest?.backups)) {
+      // Bytes exist but are not a manifest we can use — never "no manifest here",
+      // which a writer would act on by overwriting whatever is really there.
+      return { status: "unavailable" };
+    }
+    return { status: "found", manifest };
   } catch {
-    return null;
+    return { status: "unavailable" };
   }
 }
 
-/** Convenience: just the backup inventory (empty if no manifest). */
+/**
+ * The account's LIVE backups — retired entries (`revoked`) are filtered out, so
+ * every "your backups" surface keeps meaning what it always meant. Use
+ * {@link readBackupHistory} when you need the retired ones too.
+ */
 export async function readBackupInventory(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+}): Promise<BackupInventoryEntry[]> {
+  return (await readBackupHistory(args)).filter((b) => !b.revoked);
+}
+
+/**
+ * Every backup entry the account has ever recorded, retired ones included. Two
+ * callers need this and both are correctness-critical: the guardian list handed to
+ * the hint-tombstone pass, and the "adding a backup will resurrect these" warning.
+ */
+export async function readBackupHistory(args: {
   signer: ManifestSigner;
   parentAddress: string;
 }): Promise<BackupInventoryEntry[]> {
@@ -108,6 +150,34 @@ export async function upsertBackupEntry(args: {
     backups: [...kept, { ...args.entry, guardianAddress: g }],
   };
   await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+}
+
+/**
+ * Retire the whole backup inventory after an on-chain "Remove all backups" (#165).
+ * Call it ONLY once the removal is proven on-chain — retiring the local record of
+ * backups that still work would hide a live takeover route from the user.
+ *
+ * Reports which of three things happened, because the caller renders a claim about
+ * it: an unreadable manifest is `"unavailable"`, never a silent success. Writing on
+ * an inconclusive read would also republish a manifest with the feed keep-list
+ * missing, so this refuses rather than guesses (#154).
+ */
+export type RetireBackupsResult = "retired" | "nothing-to-retire" | "unavailable";
+
+export async function retireBackupInventory(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+}): Promise<RetireBackupsResult> {
+  const res = await readUserManifestResult({ signer: args.signer, parentAddress: args.parentAddress });
+  if (res.status === "unavailable") return "unavailable";
+  if (res.status === "absent") return "nothing-to-retire";
+  if (!res.manifest.backups.some((b) => !b.revoked)) return "nothing-to-retire"; // don't churn the feed
+  await writeUserManifest({
+    signer: args.signer,
+    parentAddress: args.parentAddress,
+    manifest: retireBackupEntries(res.manifest),
+  });
+  return "retired";
 }
 
 // ── Feed log + trash (Phase 4 — active client-owned content) ────────────────

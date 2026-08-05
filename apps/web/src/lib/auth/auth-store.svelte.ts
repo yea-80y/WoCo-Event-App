@@ -409,7 +409,22 @@ let _backupInvMemo: { parent: string; at: number; entries: import("@woco/shared"
 let _backupInvFlight: { parent: string; promise: Promise<import("@woco/shared").BackupInventoryEntry[]> } | null = null;
 const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
 
+/** The account's LIVE backups — retired ones are filtered out (see getRetiredBackups). */
 async function getBackupInventory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
+  return (await _getBackupHistory()).filter((b) => !b.revoked);
+}
+
+/**
+ * Backups retired by "Remove all backups" (#165). NOT dead history: uninstalling
+ * the recovery route leaves the caller hook's guardian mapping intact, so adding
+ * any new backup makes every one of these work again. The setup screen warns off
+ * this list, which is why the entries are marked rather than deleted.
+ */
+async function getRetiredBackups(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
+  return (await _getBackupHistory()).filter((b) => b.revoked);
+}
+
+async function _getBackupHistory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
   const parent = _parent;
   if (!parent) return [];
   const memo = _backupInvMemo;
@@ -429,8 +444,10 @@ async function _readBackupInventoryUncached(parent: string): Promise<import("@wo
   const privKey = await restoreContentFeedSigner(parent);
   if (!privKey) return [];
   try {
-    const { readBackupInventory } = await import("../manifest/inventory.js");
-    const entries = await readBackupInventory({ signer: { privKey, address }, parentAddress: parent });
+    // Read the FULL history — the memo backs both the live-backups view and the
+    // retired-guardian warning, and one read serves both.
+    const { readBackupHistory } = await import("../manifest/inventory.js");
+    const entries = await readBackupHistory({ signer: { privKey, address }, parentAddress: parent });
     _backupInvMemo = { parent, at: Date.now(), entries };
     return entries;
   } catch {
@@ -2000,6 +2017,41 @@ async function setupAccountRecovery(backup: {
 }
 
 /**
+ * "Remove all backups" (#165) — thin delegation to `backup-management.ts`, which
+ * owns the logic. All this does is hand over the two secrets the store holds: the
+ * built Kernel that signs the sudo userOp, and the feed signer that owns the
+ * encrypted-to-self manifest.
+ *
+ * Removal is all-or-nothing and it is NOT a replace — see backup-management.ts.
+ */
+async function removeAccountBackups(
+  opts: { expectInstalled?: boolean } = {},
+): Promise<import("./backup-management.js").RemoveBackupsOutcome> {
+  if (_kind !== "passkey" && _kind !== "web3auth") {
+    throw new Error("Account recovery is only available for passkey or email/social accounts");
+  }
+  await _ensureKernelForKind();
+  if (!_kernel) throw new Error("Account unavailable — please sign in again");
+
+  // BEST-EFFORT, and it must stay that way. `_getContentFeedSigner` throws outright
+  // for a recovered account whose escrow restore didn't happen, and for a passkey
+  // with no stored signer it falls through to sign-to-derive (a biometric prompt).
+  // Letting either reach the caller would block the on-chain revoke entirely — for
+  // exactly the user most likely to need it — over a cosmetic manifest update.
+  const feedSigner = await _getContentFeedSigner().catch(() => null);
+
+  const { removeAllAccountBackups } = await import("./backup-management.js");
+  const outcome = await removeAllAccountBackups({
+    kernel: _kernel,
+    kernelAddress: _kernel.address,
+    feedSigner,
+    expectInstalled: opts.expectInstalled,
+  });
+  _backupInvMemo = null; // the panel must not keep listing revoked backups
+  return outcome;
+}
+
+/**
  * "Recover my account" — the irreversible portal ceremony (PASSKEY_RECOVERY_PLAN
  * §11.6). The locked-out user is on a NEW device with no session; they have only
  * their backup wallet and the lost account's address. This:
@@ -2462,6 +2514,7 @@ export const auth = {
   ensureEasSessionKey,
   grantSpendPermission,
   setupAccountRecovery,
+  removeAccountBackups,
   recoverAndRekey,
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass
@@ -2476,4 +2529,7 @@ export const auth = {
   // Configured recovery backups from the encrypted-to-self manifest — prompt-free
   // read for the "Protect your account" panel (Increment 3a).
   getBackupInventory: () => getBackupInventory(),
+  // Backups retired by "Remove all backups" — a live hazard, not history: adding
+  // any new backup makes them all work again (#148/#165).
+  getRetiredBackups: () => getRetiredBackups(),
 };

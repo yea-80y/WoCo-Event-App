@@ -5,15 +5,28 @@
    *
    * State machine:
    *   intro → choosing → connecting → confirming → working → done
+   *   intro → confirm-remove → removing → removed
    *   any phase → error → (retry → choosing)
+   *
+   * HONESTY RULES THIS SCREEN IS BOUND BY (#148):
+   *  - "protected" is read from the CHAIN, not the server's presence hint, and an
+   *    unreadable chain says so rather than claiming the account is unprotected.
+   *  - adding a backup ADDS one. There is no replace: the deployed caller hook has
+   *    no per-guardian revoke, so a screen offering "Replace backup" was telling
+   *    users their old backup was retired when it kept full takeover power.
+   *  - removal is all-or-nothing, and re-adding later resurrects every past
+   *    guardian — so "remove then re-add" is never offered as a way to retire one.
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
-  import { fetchRecoveryStatus, fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { readBackupProtection } from "../../auth/backup-management.js";
+  import { fetchRecoveryByGuardian } from "../../api/recovery.js";
 
-  type Phase = "intro" | "choosing" | "connecting" | "confirming" | "working" | "done" | "error";
+  type Phase =
+    | "intro" | "choosing" | "connecting" | "confirming" | "working" | "done"
+    | "confirm-remove" | "removing" | "removed" | "error";
   let phase = $state<Phase>("intro");
   let connectingMethod = $state<"email" | "wallet" | "passkey" | null>(null);
   let pendingBackup = $state<BackupWallet | null>(null);
@@ -23,10 +36,23 @@
   // Info (not error): this wallet already guards THIS account — nothing to change.
   let alreadyGuarding = $state(false);
   let errorMsg = $state("");
+  // Which flow failed — the retry must go back to that flow, not drop a user who
+  // tried to REMOVE their backups into the "choose a backup method" screen.
+  let errorFrom = $state<"add" | "remove">("add");
 
   let checking = $state(false);
   let checkDone = $state(false);
-  let alreadyProtected = $state(false);
+  // Tri-state (#138 discipline): `null` means "couldn't tell", which must render as
+  // uncertainty, never as "you have no backup". Only a chain read sets it to false.
+  let isProtected = $state<boolean | null>(null);
+  let protectionSource = $state<"chain" | "hint" | "none">("none");
+  // Whether the hint/manifest cleanup after a removal also succeeded — cosmetic,
+  // reported so the panel never silently disagrees with itself.
+  let removeBookkeepingOk = $state(true);
+  // Backups this account retired earlier. A LIVE hazard, not history: the caller
+  // hook's guardian mapping survived the uninstall, so adding any new backup makes
+  // all of these work again. The user must be told before, not after.
+  let retiredCount = $state(0);
 
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const addrDisplay = (a: string) => `${a.slice(0, 10)}…${a.slice(-8)}`;
@@ -92,12 +118,20 @@
     checking = true;
     (async () => {
       try {
-        const status = await fetchRecoveryStatus(kernel);
-        alreadyProtected = !!status?.configured;
-      } catch { /* hiccup — fall through to add-backup CTA */ } finally {
+        // Chain first — the server's presence hint is forgeable and goes stale the
+        // moment a user removes a backup, so it is only a fallback here.
+        const p = await readBackupProtection(kernel);
+        isProtected = p.isProtected;
+        protectionSource = p.source;
+      } catch { /* hiccup — stays null, i.e. "couldn't tell" */ } finally {
         checking = false;
         checkDone = true;
       }
+      // Separate + non-blocking: the resurrect warning is owed even when the
+      // protection read failed, and a manifest hiccup must not stall the panel.
+      auth.getRetiredBackups()
+        .then((r) => { retiredCount = r.length; })
+        .catch(() => {});
     })();
   });
 
@@ -110,6 +144,7 @@
     bindWarning = null;
     alreadyGuarding = false;
     errorMsg = "";
+    errorFrom = "add";
     phase = "choosing";
   }
 
@@ -171,10 +206,45 @@
         meta: { method: connectingMethod ?? "wallet", providerLabel: pendingBackup.providerLabel },
       });
       backupAddress = pendingBackup.address;
-      alreadyProtected = true;
+      isProtected = true; // the install succeeded, so the route is on-chain
+      protectionSource = "chain";
       phase = "done";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Something went wrong — please try again";
+      phase = "error";
+    }
+  }
+
+  function startRemove() {
+    errorMsg = "";
+    errorFrom = "remove";
+    phase = "confirm-remove";
+  }
+
+  /**
+   * Uninstall the recovery route — the ONLY revoke that exists. `removeAccountBackups`
+   * throws unless the chain proves the route is gone, so reaching "removed" is never
+   * an assumption: an unverifiable removal surfaces as an error, not a green tick.
+   */
+  async function confirmRemove() {
+    phase = "removing";
+    errorMsg = "";
+    try {
+      // We only offer this button off a confirmed-protected state, so an account
+      // that reads back as undeployed is a contradiction the chain layer must
+      // refuse rather than resolve into a cheerful "nothing to remove".
+      const outcome = await auth.removeAccountBackups({ expectInstalled: isProtected === true });
+      removeBookkeepingOk = outcome.hintCleared && outcome.manifestCleared;
+      isProtected = false;
+      protectionSource = "chain";
+      backupAddress = null;
+      phase = "removed";
+      // These are now the resurrect hazard the add flow must warn about.
+      auth.getRetiredBackups()
+        .then((r) => { retiredCount = r.length; })
+        .catch(() => {});
+    } catch (e) {
+      errorMsg = e instanceof Error ? e.message : "Couldn't remove your backups — please try again";
       phase = "error";
     }
   }
@@ -226,7 +296,64 @@
       <h1>Protect your account</h1>
       <p class="hint-sm" aria-live="polite">Checking your account…</p>
 
-    {:else if phase === "intro" && alreadyProtected}
+    {:else if phase === "removed"}
+      <p class="kicker">Account safety</p>
+      <h1>Backups removed</h1>
+      <p class="lede">
+        Account recovery is off. No backup can restore this account any more.
+      </p>
+      <p class="security-note" role="note">
+        If you lose this login now, there is <strong>no way back in</strong>. Add a backup
+        again when you can — but read this first.
+      </p>
+      <p class="security-note" role="note">
+        Adding any new backup makes <strong>every backup you've ever used work again</strong>.
+        Removing switches recovery off; it can't un-trust a wallet. That's a limit of the
+        recovery contract, not a setting we can change.
+      </p>
+      {#if !removeBookkeepingOk}
+        <p class="footnote">
+          We couldn't update your backup list everywhere — it may still show backups that
+          can no longer restore this account.
+        </p>
+      {/if}
+      <button class="btn btn--ghost cta" onclick={startChoosing}>Add a backup</button>
+
+    {:else if phase === "confirm-remove"}
+      <p class="kicker">Account safety</p>
+      <h1>Remove all backups?</h1>
+      <p class="lede">
+        This turns account recovery off completely — no backup will be able to restore
+        this account.
+      </p>
+      <ul class="reasons">
+        <li><span class="tick tick--warn">!</span> It's all or nothing — backups can't be removed one at a time</li>
+        <li><span class="tick tick--warn">!</span> If you lose this login afterwards, nothing can get you back in</li>
+        <li>
+          <span class="tick tick--warn">!</span>
+          This can't un-trust a wallet. If you ever add a backup again, <strong>every backup
+          you've ever used starts working again</strong> — so removing won't shake off a
+          backup you no longer trust
+        </li>
+        <li>
+          <span class="tick tick--warn">!</span>
+          A backup you've already added keeps the keys it was given: it can still read your
+          ticket history and publish as your account. Removing can't take those back
+        </li>
+      </ul>
+      <button class="btn btn--danger btn--lg cta" onclick={confirmRemove}>Remove all backups</button>
+      <button class="linkish cta-link" onclick={() => (phase = "intro")}>Keep my backups</button>
+
+    {:else if phase === "removing"}
+      <p class="kicker">Account safety</p>
+      <h1>Removing your backups</h1>
+      <p class="lede">
+        Approve anything your device asks for. We then check on-chain that it actually
+        worked before telling you it's done.
+      </p>
+      <p class="hint-sm" aria-live="polite"><span class="spinner"></span> Working…</p>
+
+    {:else if phase === "intro" && isProtected === true}
       <p class="kicker kicker--hi">Account safety</p>
       <h1>Backup on record</h1>
       <p class="lede">
@@ -237,8 +364,28 @@
         <span class="dot"></span>
         Backup configured
       </div>
+      {#if protectionSource === "hint"}
+        <p class="soft-warn" role="note">
+          We couldn't reach the network to confirm this on-chain, so this is from our
+          records rather than from the account itself.
+        </p>
+      {/if}
+      {#if retiredCount > 0}
+        <p class="security-note" role="note">
+          Because recovery is switched on again, the
+          <strong>{retiredCount === 1 ? "backup you removed earlier is" : `${retiredCount} backups you removed earlier are`}
+          active too</strong> — the recovery contract can't un-trust a wallet, so they came
+          back with it.
+        </p>
+      {/if}
+      <p class="soft-warn" role="note">
+        Adding another backup <strong>adds</strong> to what's already set up — it doesn't
+        replace anything, and every backup will be able to restore your account. There's no
+        way to retire just one yet.
+      </p>
       <p class="footnote">The only way to be fully sure is to run a recovery on another device.</p>
-      <button class="btn btn--ghost cta" onclick={startChoosing}>Replace backup</button>
+      <button class="btn btn--ghost cta" onclick={startChoosing}>Add another backup</button>
+      <button class="linkish cta-link danger-link" onclick={startRemove}>Remove all backups</button>
 
     {:else if phase === "intro"}
       <p class="kicker">Account safety</p>
@@ -249,10 +396,24 @@
       <ul class="reasons">
         <li><span class="tick">✓</span> Recover on any phone or laptop</li>
         <li><span class="tick">✓</span> Your events and history come with you</li>
-        <li><span class="tick">✓</span> Only your backup can do it — no one else</li>
+        <li><span class="tick">✓</span> Only a backup you choose — never WoCo, never anyone else</li>
       </ul>
+      {#if retiredCount > 0}
+        <p class="security-note" role="note">
+          You removed {retiredCount === 1 ? "a backup" : `${retiredCount} backups`} from this
+          account earlier. Adding a new one now <strong>makes {retiredCount === 1 ? "that one" : "those"}
+          work again</strong> — the recovery contract can't un-trust a wallet. Only continue if
+          you still trust {retiredCount === 1 ? "it" : "them"}.
+        </p>
+      {/if}
+      {#if isProtected === null && checkDone}
+        <p class="soft-warn" role="note">
+          We couldn't check whether this account already has a backup. Adding one is safe
+          either way — it adds to any you already have.
+        </p>
+      {/if}
       <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Add a backup</button>
-      <p class="footnote">Takes a few seconds. You'll confirm once with your passkey.</p>
+      <p class="footnote">Takes a few seconds — you'll confirm on this device.</p>
 
     {:else if phase === "choosing"}
       <p class="kicker">Account safety</p>
@@ -347,10 +508,24 @@
           <p class="soft-warn" role="note">{bindWarning}</p>
         {/if}
 
+        {#if isProtected === true}
+          <p class="soft-warn" role="note">
+            You already have a backup. This <strong>adds</strong> another — the existing one
+            keeps working. Retiring a single backup isn't possible yet, and removing them all
+            and re-adding brings the old ones back.
+          </p>
+        {:else if retiredCount > 0}
+          <p class="security-note" role="note">
+            This also <strong>reactivates the {retiredCount === 1 ? "backup" : `${retiredCount} backups`}
+            you removed earlier</strong> — adding any backup switches the recovery route back on
+            for every wallet this account has ever trusted.
+          </p>
+        {/if}
+
         <p class="security-note">
-          This becomes the one wallet that can restore your account. Only ever approve a
-          signature request here when <strong>you</strong> started a WoCo recovery yourself —
-          never because of a link, email, or message telling you to sign something.
+          This wallet will be able to restore your account. Only ever approve a signature
+          request here when <strong>you</strong> started a WoCo recovery yourself — never
+          because of a link, email, or message telling you to sign something.
         </p>
 
         <button class="btn btn--primary btn--lg cta" onclick={confirmAndInstall}>
@@ -362,15 +537,20 @@
 
     {:else if phase === "working"}
       <p class="kicker">Account safety</p>
-      <h1>{alreadyProtected ? "Replacing your backup" : "Setting up your backup"}</h1>
+      <h1>{isProtected === true ? "Adding another backup" : "Setting up your backup"}</h1>
       <p class="lede">Confirm each prompt as it appears, then sign once in your backup wallet.</p>
       <p class="hint-sm" aria-live="polite"><span class="spinner"></span> Working…</p>
 
     {:else if phase === "error"}
       <p class="kicker">Account safety</p>
-      <h1>{alreadyProtected ? "Replace your backup" : "Protect your account"}</h1>
+      <h1>{errorFrom === "remove" ? "Remove all backups" : "Protect your account"}</h1>
       <p class="error" role="alert">{errorMsg}</p>
-      <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Try again</button>
+      {#if errorFrom === "remove"}
+        <button class="btn btn--danger btn--lg cta" onclick={startRemove}>Try again</button>
+        <button class="linkish cta-link" onclick={() => (phase = "intro")}>Back</button>
+      {:else}
+        <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Try again</button>
+      {/if}
     {/if}
   </div>
 </section>
@@ -453,6 +633,9 @@
     width: 1.1rem; height: 1.1rem; display: grid; place-items: center;
     font-size: 0.7rem; flex: none; margin-top: 0.1rem;
   }
+  /* Same list shape, opposite meaning: the remove-confirm screen lists what you
+     LOSE, so an acid-lime tick would read as reassurance. */
+  .tick--warn { background: var(--error); color: var(--bg-surface); font-weight: 700; }
 
   /* ── Method chooser ────────────────────────────────────────────────── */
   .method-grid {
@@ -567,6 +750,18 @@
     text-underline-offset: 2px;
   }
   .cta-link:hover { color: var(--text-secondary); }
+  .danger-link { color: var(--error); }
+  .danger-link:hover { color: var(--error); opacity: 0.8; }
+
+  /* Destructive primary — app.css has no danger button, and this is the only
+     screen that permanently switches account recovery off. */
+  .btn--danger {
+    background: var(--error);
+    color: var(--bg-surface);
+    border: 1px solid var(--error);
+  }
+  .btn--danger:hover { opacity: 0.9; }
+  .btn--danger:active { opacity: 0.8; }
 
   .backup-chip {
     display: inline-flex; align-items: center; gap: 0.5rem;

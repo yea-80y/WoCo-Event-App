@@ -60,6 +60,17 @@ export interface BackupInventoryEntry {
   addedAt: number;
   /** Optional user-only masked hint (e.g. "n•••@gmail.com"). Never a secret. */
   maskedEmail?: string;
+  /**
+   * Retired by "Remove all backups" (#165). The entry is MARKED, never deleted,
+   * for one load-bearing reason: uninstalling the recovery route does not clear
+   * the caller hook's guardian mapping, so adding any new backup later makes every
+   * one of these work again. Deleting the record would destroy the only evidence
+   * that warning is owed, and the only list of guardians whose reverse-index hints
+   * still need tombstoning. Readers showing "your backups" must filter these out.
+   */
+  revoked?: boolean;
+  /** Unix ms when this backup was retired (display + audit only). */
+  revokedAt?: number;
 }
 
 /**

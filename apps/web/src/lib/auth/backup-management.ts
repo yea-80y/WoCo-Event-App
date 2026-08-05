@@ -1,0 +1,228 @@
+/**
+ * Managing the recovery backups an account already has (#148, #165).
+ *
+ * Setting a backup UP lives in `auth-store.setupAccountRecovery`. This module is
+ * the other half — reading what protection actually exists, and taking it away —
+ * and it is deliberately a separate, store-free file (S2 freeze rule): every
+ * function takes the secrets it needs as arguments, so it is unit-testable and
+ * auth-store gains only a thin delegation.
+ *
+ * TWO RULES RUN THROUGH ALL OF IT:
+ *
+ *  1. THE CHAIN IS THE TRUTH. `RecoveryStatus` from the server is a hint the
+ *     platform signs — forgeable, withholdable, and stale the moment a user
+ *     removes a backup. Protection state is read from the Kernel's own selector
+ *     table and only falls back to the hint when the chain is unreadable, which
+ *     is reported as "couldn't tell", never as "not protected".
+ *
+ *  2. REMOVAL IS ALL-OR-NOTHING, AND IT IS NOT A REPLACE. The deployed ZeroDev
+ *     caller hook has no per-guardian revoke: `onInstall` ORs guardians in and
+ *     nothing clears them, so "replacing" a backup only ever ADDED one and left
+ *     the old one with permanent takeover power (#148). The only real revoke is
+ *     uninstalling the shared `doRecovery` route, which disables every guardian
+ *     at once — see `removeAllBackups` in kernel-account.ts for the on-chain
+ *     mechanics and the two limits it cannot fix.
+ */
+
+import type { BuiltKernel } from "./kernel-account.js";
+import type { RecoveryRouteState } from "./kernel-account.js";
+
+/** Where a protection answer came from — the UI must not present a hint as chain truth. */
+export type ProtectionSource = "chain" | "hint" | "none";
+
+export interface BackupProtection {
+  /** `null` = could not tell. NEVER render that as "not protected" (#138). */
+  isProtected: boolean | null;
+  source: ProtectionSource;
+  /** Raw on-chain route state, for callers that want to distinguish the reasons. */
+  routeState: RecoveryRouteState;
+}
+
+/**
+ * What the server's presence hint said. Three outcomes, not two: `null` is the
+ * server answering "no document", `"unreadable"` is it not answering at all.
+ */
+export type HintOutcome = { configured: boolean } | null | "unreadable";
+
+/**
+ * Pure decision: given the chain read and the hint read, what may we tell the user?
+ *
+ * THE RULE THAT MATTERS: a platform-signed hint can attest PRESENCE — somebody
+ * wrote it — but it can NEVER attest ABSENCE. Three independent reasons, all real
+ * in this codebase:
+ *  - the hint write at setup is explicitly non-fatal (`setupAccountRecovery`), so a
+ *    genuinely protected account can legitimately have no status document at all;
+ *  - the server reads it through the lenient feed read, which collapses a transient
+ *    bee error into the same `null` as a real absence;
+ *  - the platform signs it, so it is forgeable and withholdable by design.
+ *
+ * So "no hint" and "hint says not configured" both resolve to `null` — could not
+ * tell — and ONLY a chain read may return `false`. Getting this wrong is not a
+ * cosmetic bug: it is what lets the recovery portal tell a protected, locked-out
+ * user that "recovery isn't possible for this account" (#138/#169 failure class).
+ *
+ * Exported and pure so the matrix is unit-tested rather than eyeballed.
+ */
+export function decideProtection(route: RecoveryRouteState, hint: HintOutcome): BackupProtection {
+  if (route === "installed") return { isProtected: true, source: "chain", routeState: route };
+  if (route === "absent") return { isProtected: false, source: "chain", routeState: route };
+
+  if (hint && hint !== "unreadable" && hint.configured) {
+    return { isProtected: true, source: "hint", routeState: "unknown" };
+  }
+  return { isProtected: null, source: "none", routeState: "unknown" };
+}
+
+/**
+ * Does this account currently have a working recovery route?
+ *
+ * Chain first (`selectorConfig(doRecovery)`), the server hint only as a fallback
+ * for an unreadable chain — and even then only as evidence OF protection, never
+ * against it (see `decideProtection`). Callers MUST render `isProtected: null` as
+ * uncertainty; presenting it as "you have no backup" is the bug this guards.
+ */
+export async function readBackupProtection(kernelAddress: string): Promise<BackupProtection> {
+  const { readRecoveryRoute } = await import("./kernel-account.js");
+  const route = await readRecoveryRoute(kernelAddress);
+  if (route.state !== "unknown") return decideProtection(route.state, null);
+
+  let hint: HintOutcome = "unreadable";
+  try {
+    const { fetchRecoveryStatus } = await import("../api/recovery.js");
+    const status = await fetchRecoveryStatus(kernelAddress);
+    hint = status ? { configured: !!status.configured } : null;
+  } catch {
+    hint = "unreadable";
+  }
+  return decideProtection("unknown", hint);
+}
+
+export interface RemoveBackupsOutcome {
+  /**
+   * Proven on-chain: no guardian can call `doRecovery` on this account. Always
+   * true on return — an unproven removal throws rather than resolving false, so
+   * no caller can render "backups removed" off an unverified result.
+   */
+  removed: true;
+  /**
+   * The account is not deployed, so no route can exist and no userOp was sent —
+   * the ONLY case that skips the transaction. A deployed account always sends the
+   * uninstall, even when the route already looks absent, because one RPC's "absent"
+   * is not proof (see `removeAllBackups`).
+   */
+  alreadyAbsent: boolean;
+  txHash?: string;
+  /**
+   * Server presence hint flipped AND every named guardian's reverse-index entry
+   * tombstoned. False means some hint somewhere may still point at this account —
+   * cosmetic (the chain governs every decision), but the flag exists to be honest,
+   * so it must not report success it cannot see.
+   */
+  hintCleared: boolean;
+  /** Local encrypted-to-self backup list retired (best-effort). */
+  manifestCleared: boolean;
+}
+
+/**
+ * "Remove all backups" end to end: the on-chain revoke first, then the two pieces
+ * of bookkeeping that only describe it.
+ *
+ * ORDER IS LOAD-BEARING. The chain step throws unless the route is provably gone,
+ * so nothing downstream can claim a removal that did not happen. The hint and
+ * manifest clears run only afterwards and are best-effort: they hold no authority,
+ * and failing them must not turn a completed revoke into a reported failure — the
+ * caller reports what each flag says rather than pretending both always run.
+ */
+export async function removeAllAccountBackups(args: {
+  kernel: BuiltKernel;
+  /** The account's Kernel address (also the manifest's parent address). */
+  kernelAddress: string;
+  /** Content-feed signer that owns + seals the manifest; null = nothing to retire. */
+  feedSigner: { privKey: string; address: string } | null;
+  /**
+   * Was the user being shown "you are protected" when they asked for this? If so,
+   * a chain that reads back as undeployed is a CONTRADICTION, not a quiet success —
+   * see `removeAllBackups`. Callers that offer the button off a protected state
+   * must pass true; it is the guard against a lagging RPC printing a false all-clear.
+   */
+  expectInstalled?: boolean;
+}): Promise<RemoveBackupsOutcome> {
+  const { removeAllBackups } = await import("./kernel-account.js");
+  const chain = await removeAllBackups(args.kernel, { expectInstalled: args.expectInstalled });
+
+  // Read the guardian list BEFORE retiring it, and read the FULL history rather
+  // than the live entries: a previous removal whose tombstone pass failed left
+  // retired rows whose reverse-index hints still point at this account, and this
+  // is the run that can finally clear them.
+  let guardianAddresses: string[] = [];
+  let guardiansTruncated = false;
+  if (args.feedSigner) {
+    try {
+      const { MAX_CLEAR_GUARDIANS } = await import("@woco/shared");
+      const { readBackupHistory } = await import("../manifest/inventory.js");
+      const history = await readBackupHistory({
+        signer: { privKey: args.feedSigner.privKey, address: args.feedSigner.address },
+        parentAddress: args.kernelAddress,
+      });
+      // The server REJECTS an over-long list rather than truncating it, so sending
+      // more than the cap would clear nothing at all. Newest first, because a recent
+      // guardian is the one whose auto-find hint is actually live.
+      guardiansTruncated = history.length > MAX_CLEAR_GUARDIANS;
+      guardianAddresses = [...history]
+        .sort((a, b) => b.addedAt - a.addedAt)
+        .slice(0, MAX_CLEAR_GUARDIANS)
+        .map((b) => b.guardianAddress);
+      if (guardiansTruncated) {
+        console.warn(
+          `[recovery] ${history.length} past guardians but only ${MAX_CLEAR_GUARDIANS} hints can be ` +
+            "cleared per request — the oldest keep their auto-find hint (cosmetic; the chain governs).",
+        );
+      }
+    } catch (err) {
+      console.warn("[recovery] couldn't read the guardian history for tombstoning:", err);
+    }
+  }
+
+  let hintCleared = false;
+  try {
+    const { clearRecoveryHint } = await import("../api/recovery.js");
+    const res = await clearRecoveryHint({ guardianAddresses });
+    // `ok` only says the request was served. Individual tombstone writes are
+    // swallowed server-side, so a green response with failures is not "cleared".
+    hintCleared = res.ok && (res.data?.failedGuardians ?? 0) === 0 && !guardiansTruncated;
+    if (!res.ok) console.warn("[recovery] clearing the presence hint failed (non-fatal):", res.error);
+  } catch (err) {
+    console.warn("[recovery] clearing the presence hint failed (non-fatal):", err);
+  }
+
+  // No feed signer = no manifest to retire, which is DONE, not failed. Reporting
+  // it as failed would render a "your backup list may be out of date" warning at
+  // a user who has no backup list.
+  let manifestCleared = !args.feedSigner;
+  if (args.feedSigner) {
+    try {
+      const { retireBackupInventory } = await import("../manifest/inventory.js");
+      const result = await retireBackupInventory({
+        signer: { privKey: args.feedSigner.privKey, address: args.feedSigner.address },
+        parentAddress: args.kernelAddress,
+      });
+      // "unavailable" means we could not read the manifest, so we deliberately did
+      // NOT write one. Nothing was retired — say so rather than assume.
+      manifestCleared = result !== "unavailable";
+      if (result === "unavailable") {
+        console.warn("[recovery] backup manifest unreadable — entries not retired (non-fatal)");
+      }
+    } catch (err) {
+      manifestCleared = false;
+      console.warn("[recovery] retiring the backup manifest failed (non-fatal):", err);
+    }
+  }
+
+  return {
+    removed: true,
+    alreadyAbsent: chain.alreadyAbsent,
+    txHash: chain.txHash,
+    hintCleared,
+    manifestCleared,
+  };
+}
