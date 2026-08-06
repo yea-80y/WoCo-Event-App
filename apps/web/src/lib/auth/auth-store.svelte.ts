@@ -295,7 +295,15 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
     // portal. Gating this on `_kind === "passkey"` meant a plain logout→login of a
     // web3auth-recovered account silently minted a divergent feed signer and forked
     // every feed it owns (#149). The binding itself is the correct signal.
-    if (await _recoveryKernelFor(_podAddress)) {
+    //
+    // `_getPodAddress()`, NOT `_podAddress` (#174): the bare field is only ever
+    // assigned on passkey paths, so for a web3auth session it is null, and
+    // `_recoveryKernelFor` returns undefined at its first line — the guard was inert
+    // for the exact population the paragraph above describes. The accessor resolves
+    // `_web3authPodAddress` for web3auth and `_parent` for kinds that can never carry
+    // a binding, which is the same form already used at `_ensureKernelForWeb3Auth`
+    // and in `ensurePodIdentity`'s twin guard.
+    if (await _recoveryKernelFor(_getPodAddress())) {
       throw new Error(
         "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
       );

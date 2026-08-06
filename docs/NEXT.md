@@ -32,13 +32,13 @@ issue — `gh issue view <n>`. No detail here, or the two sources drift and neit
 | # | Item | Owner | State |
 |---|---|---|---|
 | **S1** | #139 + #140 — passkey ceremony safety + embed silent-mint | Claude | ✅ Merged `ae23a49` · ⚠️ **frontend deploy outstanding (owner)** |
-| **S2** | Recovery subsystem lockdown — review DONE, 20 findings filed. Index + running state: **#168** | Fable reviews / Opus fixes | 🔨 **IN PROGRESS** — `fix/recovery-lockdown` (5 commits, Fable-verified) + `fix/content-feed-len-170` **stacked on it, merges after**. Next: #148+#165 |
-| **S2b** | #165 "Remove all backups" (works today, no Solidity) → then **#164 WoCo-owned caller hook** with set-semantics + real revoke | Fable | Not started — **pre-launch is when #164 is cheap** |
+| **S2** | Recovery subsystem lockdown — review DONE, 20 findings filed. Index + running state: **#168** | Fable reviews / Opus fixes | 🔨 **IN PROGRESS** — `fix/recovery-lockdown` (6 commits, Fable-verified) + `fix/content-feed-len-170` **stacked on it, merges after** (needs a rebase — it branched at `0affa01`). Next: #150+#163 |
+| **S2b** | ~~#165 "Remove all backups"~~ ✅ **DONE `55412c9`** (unmerged) — real revoke-all via `uninstallModule(3,·,0xac39fd0f)`, proven by a block-pinned read-back. **#164 WoCo-owned caller hook is now the top S2 item**: #148 CANNOT close without it (a removed backup keeps `podSeed` + `feedSignerPrivKey` forever, and re-adding resurrects every past guardian — both are hook properties, not ours). Memory says `contracts/` got a remote 2026-08-04, so the old blocker may be gone — **confirm before scheduling** | Fable | #165 done · #164 **not started, verify unblocked** |
 | **S3** | #146 — strict CSP + supply-chain pinning | Opus | Not started |
 | **S4** | #143 — embed `signClaimDigest` throws; then #144 — embed typecheck in CI | Opus | Not started |
 | **S5** | #145 **research only** — (A) does root-validator swap preserve the address? (B) does `@zerodev/webauthn-key` drop the hosted-server dep? | Fable | Not started |
 | **S6** | Passkey docs audit — collapse 8 overlapping docs to one authoritative | Sonnet | Not started |
-| **S7** | Login-surface review — S2 covered RECOVERY only. web3, coinbase, local and the web3auth login path have NOT had this treatment | Fable | Not started |
+| **S7** | Login-surface review — S2 covered RECOVERY only. web3, coinbase, local and the web3auth login path have NOT had this treatment | Fable | 🔨 In progress — filed #174 (the #149 guard was inert for web3auth: `_podAddress` is a passkey-only field, so it read null and never fired). Fixed on `fix/recovery-lockdown` rather than a separate branch, to avoid a conflict in `auth-store.svelte.ts` |
 
 **Owner-held, not Claude's:** #119. **Do not reopen:** #145 implementation, #57.
 
