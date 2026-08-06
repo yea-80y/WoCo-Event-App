@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite, resolveSiteConfig } from "../lib/site/service.js";
+import { jsonForInlineScript, resolveDeployUrls } from "../lib/site/deploy-config.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
   readFeedPage,
@@ -633,8 +634,19 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
   try {
     const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site; clientFeed?: boolean };
-    const { apiUrl, gatewayUrl = "https://gateway.woco-net.com", wocoAppUrl = "https://woco.eth.limo" } = body;
-    if (!apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
+    if (!body.apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
+
+    // All three are free-form in the request body and all three are load-bearing
+    // in the deployed page — apiUrl receives visitors' session headers, gatewayUrl
+    // routes both content reads and batch payment, wocoAppUrl lands in an href.
+    // Allowlisted before anything else uses them (#180).
+    const resolvedUrls = resolveDeployUrls({
+      apiUrl: body.apiUrl,
+      gatewayUrl: body.gatewayUrl ?? "https://gateway.woco-net.com",
+      wocoAppUrl: body.wocoAppUrl ?? "https://woco.eth.limo",
+    });
+    if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
+    const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
     if (!existsSync(DIST_MULTISITE_PATH)) {
       return c.json({
@@ -691,7 +703,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // always fetches event images from WoCo Bee regardless of site host.
     const config: Record<string, unknown> = { site, gatewayUrl, apiUrl, wocoAppUrl };
     if (target === "etherna") config.contentGatewayUrl = "https://gateway.woco-net.com";
-    const configScript = `<script>window.SITE_CONFIG=${JSON.stringify(config)};</script>`;
+    const configScript = `<script>window.SITE_CONFIG=${jsonForInlineScript(config)};</script>`;
     const injectedHtml = html.replace("</head>", `  ${configScript}\n  </head>`);
 
     const ts = Date.now();
