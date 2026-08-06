@@ -5,6 +5,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getPendingClaimsFeed, approvePendingClaim, rejectPendingClaim } from "../lib/event/claim-service.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
+import { authorizeSeriesAction } from "../lib/event/series-authz.js";
 
 const approvals = new Hono<AppEnv>();
 
@@ -93,11 +94,10 @@ approvals.post("/:eventId/series/:seriesId/pending-claims/:pendingId/approve", r
 
   try {
     const event = await getEventForOwner(eventId, parentAddress);
-    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-
-    if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
-      return c.json({ ok: false, error: "Only the event organizer can approve claims" }, 403);
-    }
+    // Ownership of the event is not authority over an arbitrary series — the
+    // seriesId in the URL must belong to it. See lib/event/series-authz.ts.
+    const authz = authorizeSeriesAction(event, seriesId, parentAddress, "approve");
+    if (!authz.ok) return c.json({ ok: false, error: authz.error }, authz.status);
 
     await queueSeriesApproval(seriesId, () => approvePendingClaim(seriesId, pendingId));
     return c.json({ ok: true });
@@ -124,11 +124,10 @@ approvals.post("/:eventId/series/:seriesId/pending-claims/:pendingId/reject", re
 
   try {
     const event = await getEventForOwner(eventId, parentAddress);
-    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-
-    if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
-      return c.json({ ok: false, error: "Only the event organizer can reject claims" }, 403);
-    }
+    // Same join as approve — a reject on someone else's series denies entry to
+    // their attendees and releases the reserved slots.
+    const authz = authorizeSeriesAction(event, seriesId, parentAddress, "reject");
+    if (!authz.ok) return c.json({ ok: false, error: authz.error }, authz.status);
 
     await queueSeriesApproval(seriesId, () => rejectPendingClaim(seriesId, pendingId, reason));
     return c.json({ ok: true });
