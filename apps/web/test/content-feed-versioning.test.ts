@@ -233,6 +233,50 @@ test("an unreadable feed reads as unavailable, never absent", async () => {
   assert.equal(res.status, "unavailable");
 });
 
+test("a retry that dedupes against a failed attempt's pages is caught by `len`", async () => {
+  const store = makeStore();
+  const topic = "woco/site/config/retry";
+  const base = contentFeedSocIdentifier(topic);
+
+  // Attempt 1 at version 0: pages land, then the manifest upload FAILS. Version 0
+  // now has pages but no base chunk.
+  const oldA = "O".repeat(SOC_MAX_PAYLOAD_SIZE);
+  const oldB = "O".repeat(20);
+  store.putImmutable(versionedPageIdentifier(base, 0, 1), enc(oldA));
+  store.putImmutable(versionedPageIdentifier(base, 0, 2), enc(oldB));
+
+  // Attempt 2. The probe of version 0 finds its base genuinely absent — a CLEAN
+  // answer — so #154's refusal does not fire and cannot help here.
+  const probe = await resolveLatestSocVersion(store.read, (v) => versionedSocIdentifier(base, v));
+  assert.deepEqual(probe, { latest: null, clean: true }, "the torn version reads as a clean absence");
+
+  // It targets version 0 again. Its page uploads DEDUPE against attempt 1's chunks
+  // (immutable: old bytes kept), while the fresh manifest describes the new payload.
+  const newA = "N".repeat(SOC_MAX_PAYLOAD_SIZE);
+  const newB = "N".repeat(50);
+  store.putImmutable(versionedPageIdentifier(base, 0, 1), enc(newA)); // no-op
+  store.putImmutable(versionedPageIdentifier(base, 0, 2), enc(newB)); // no-op
+  store.putImmutable(
+    versionedSocIdentifier(base, 0),
+    enc(JSON.stringify({ [CONTENT_FEED_MC_MARKER]: 1, pages: 2, len: newA.length + newB.length })),
+  );
+
+  // Without the length check this serves attempt 1's payload as the new version,
+  // silently. `len` is the only field that disagrees.
+  const res = await readVersionedContentFeed(store.read, topic);
+  assert.equal(res.status, "unavailable", "stale pages under a fresh manifest must not read as found");
+
+  // And an honestly-written feed of the same shape still reads fine.
+  const clean = makeStore();
+  clean.putImmutable(versionedPageIdentifier(base, 0, 1), enc(newA));
+  clean.putImmutable(versionedPageIdentifier(base, 0, 2), enc(newB));
+  clean.putImmutable(
+    versionedSocIdentifier(base, 0),
+    enc(JSON.stringify({ [CONTENT_FEED_MC_MARKER]: 1, pages: 2, len: newA.length + newB.length })),
+  );
+  assert.equal(new TextDecoder().decode(found(await readVersionedContentFeed(clean.read, topic)).bytes), newA + newB);
+});
+
 test("a torn multi-chunk feed is unavailable, not absent", async () => {
   const store = makeStore();
   const topic = "woco/event/torn";
