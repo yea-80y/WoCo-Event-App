@@ -7,8 +7,10 @@ import {
   getRecoveryStatus,
   putRecoveryStatus,
   getRecoveryByGuardian,
+  getRecoveryByGuardianRaw,
   putRecoveryByGuardian,
 } from "../lib/recovery/service.js";
+import { MAX_CLEAR_GUARDIANS, mayTombstone, selectTombstoneTargets } from "../lib/recovery/tombstone.js";
 
 export const recovery = new Hono<AppEnv>();
 
@@ -62,6 +64,79 @@ recovery.post("/escrow", requireAuth, async (c) => {
     console.error("[api] putRecoveryStatus error:", err);
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ ok: false, error: `Failed to record recovery hint: ${msg}` }, 500);
+  }
+});
+
+// POST /api/recovery/escrow/clear — authenticated. The mirror of /escrow, run after
+// the account proved on-chain that it uninstalled its recovery route (#165). Marks
+// the presence hint not-configured and tombstones the guardian reverse-index entries
+// so a removed backup no longer auto-finds this account in the portal.
+//
+// AUTHZ: an index entry is only tombstoned when it already points AT the caller's own
+// Kernel, so naming someone else's guardian address does nothing. The hints carry no
+// authority either way — the chain does (see RecoveryGuardianIndex SECURITY).
+//
+// It clears HINTS ONLY. The revoke itself is the client's sudo userOp; a server that
+// could turn recovery off by itself would be a new attack surface.
+recovery.post("/escrow/clear", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = (c.get("body") ?? {}) as { guardianAddresses?: unknown };
+
+  const requested = Array.isArray(body.guardianAddresses) ? body.guardianAddresses : [];
+  // Bound BEFORE validating or de-duplicating: a hostile client should not get the
+  // server to walk a multi-megabyte array at all. Reject rather than truncate, so a
+  // caller with more guardians than this learns instead of silently losing some.
+  if (requested.length > MAX_CLEAR_GUARDIANS) {
+    return c.json({ ok: false, error: `Too many guardianAddresses (max ${MAX_CLEAR_GUARDIANS})` }, 400);
+  }
+  if (requested.some((g) => typeof g !== "string" || !ADDR_RE.test(g))) {
+    return c.json({ ok: false, error: "Invalid guardianAddresses" }, 400);
+  }
+
+  try {
+    // The status doc names the most recent guardian; the client supplies the rest
+    // from its own manifest, which is the only record of guardians replaced earlier.
+    const existing = await getRecoveryStatus(parentAddress);
+    const targets = selectTombstoneTargets({
+      requested: requested as string[],
+      statusGuardian: existing?.guardianAddress,
+    });
+
+    await putRecoveryStatus(parentAddress, {
+      v: RECOVERY_STATUS_VERSION,
+      configured: false,
+      updatedAt: Date.now(),
+    });
+
+    // Best-effort, exactly like the register path — but REPORTED, not swallowed.
+    //
+    // Do NOT reason that "#162's on-chain pre-flight rejects a stale hint anyway":
+    // that pre-flight reads the caller hook's `allowed` mapping, which is APPEND-ONLY
+    // and still returns true for a removed guardian. What actually neutralises a
+    // stale hint is the portal's own recovery-route read returning "absent". Saying
+    // it wrong here would invite someone to weaken that read later.
+    let cleared = 0;
+    let failed = 0;
+    for (const guardianAddress of targets) {
+      try {
+        const index = await getRecoveryByGuardianRaw(guardianAddress);
+        if (!mayTombstone(index, parentAddress)) continue;
+        await putRecoveryByGuardian(guardianAddress, { ...index!, revoked: true });
+        cleared++;
+      } catch (err) {
+        failed++;
+        console.error("[api] tombstone putRecoveryByGuardian (non-fatal):", err);
+      }
+    }
+
+    return c.json({
+      ok: true,
+      data: { kernelAddress: parentAddress, clearedGuardians: cleared, failedGuardians: failed },
+    });
+  } catch (err) {
+    console.error("[api] clear recovery hint error:", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: `Failed to clear recovery hint: ${msg}` }, 500);
   }
 });
 

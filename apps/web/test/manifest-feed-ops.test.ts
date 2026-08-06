@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { UserManifest, ManifestFeedEntry } from "@woco/shared";
-import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry } from "../src/lib/manifest/ops.js";
+import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry, retireBackupEntries } from "../src/lib/manifest/ops.js";
 
 const entry = (over: Partial<ManifestFeedEntry> = {}): ManifestFeedEntry => ({
   kind: "avatar",
@@ -105,6 +105,54 @@ test("backups and unknown future sections survive every op", () => {
     assert.equal(m.backups.length, 1);
     assert.deepEqual((m as unknown as { futureSection: unknown }).futureSection, { keep: true });
   }
+});
+
+test("retireBackupEntries MARKS backups — deleting them would erase the resurrect warning", () => {
+  // Uninstalling the recovery route does NOT clear the caller hook's guardian
+  // mapping, so adding any new backup later makes every one of these work again.
+  // The marked rows are the only evidence that warning is owed, and the only list
+  // of guardians whose server-side hints still need tombstoning. Delete them and a
+  // user who removed a phished backup returns to a screen that looks brand new.
+  const seeded = mergeFeedEntry(
+    {
+      v: 1,
+      updatedAt: 1,
+      backups: [
+        { method: "email", guardianAddress: "0x" + "11".repeat(20), addedAt: 1 },
+        { method: "wallet", guardianAddress: "0x" + "22".repeat(20), addedAt: 2 },
+      ],
+      futureSection: { keep: true },
+    } as unknown as UserManifest,
+    entry(),
+  );
+
+  const retired = retireBackupEntries(seeded);
+  assert.equal(retired.backups.length, 2, "entries are kept, not dropped");
+  assert.ok(retired.backups.every((b) => b.revoked === true));
+  assert.ok(retired.backups.every((b) => typeof b.revokedAt === "number"));
+  // The guardian addresses must survive verbatim — they ARE the tombstone list.
+  assert.deepEqual(
+    retired.backups.map((b) => b.guardianAddress),
+    seeded.backups.map((b) => b.guardianAddress),
+  );
+  // Content sections untouched: `feeds` is what batch migration reads.
+  assert.deepEqual(retired.feeds, seeded.feeds);
+  assert.deepEqual((retired as unknown as { futureSection: unknown }).futureSection, { keep: true });
+  // Guardian addresses are not content: they must not land in the restore window.
+  assert.equal(retired.trash, undefined);
+});
+
+test("retireBackupEntries is idempotent and preserves the first retirement time", () => {
+  const once = retireBackupEntries({
+    v: 1, updatedAt: 1,
+    backups: [{ method: "email", guardianAddress: "0x" + "11".repeat(20), addedAt: 1 }],
+  } as unknown as UserManifest);
+  const twice = retireBackupEntries(once);
+  assert.equal(twice.backups[0]!.revokedAt, once.backups[0]!.revokedAt);
+});
+
+test("retireBackupEntries on an absent manifest is a no-op shape", () => {
+  assert.deepEqual(retireBackupEntries(null).backups, []);
 });
 
 test("trash is capped (oldest dropped)", () => {

@@ -14,11 +14,18 @@
  */
 
 import { Bee, PrivateKey, Bytes, Span, Identifier, Reference } from "@ethersphere/bee-js";
-import { calculateCacAddress, encodeSpan, SOC_MAX_PAYLOAD_SIZE } from "@woco/shared";
+import { calculateCacAddress, encodeSpan, SOC_MAX_PAYLOAD_SIZE, type SocReadOutcome } from "@woco/shared";
 import { authPost, get } from "../api/client.js";
 
-// makeSingleOwnerChunk does no I/O; the URL is only used if a Bee method ever
-// hits the network (it doesn't here). Reads/writes go through our API.
+// `makeSingleOwnerChunk` does no I/O — but this URL is NOT inert. `probeSoc`'s
+// gateway-first step calls `makeSOCReader(owner).download(identifier)`, which is
+// `downloadSingleOwnerChunk` → `chunkAPI.download` → a network GET /chunks against
+// THIS host (verified against the installed bee-js@11). Writes go through our API;
+// reads do not.
+//
+// This host is hard-coded, which is the client-side half of #156: a read source
+// should be pluggable, so a browser bee node or a light client can be tried FIRST
+// and any operator's gateway can slot in without a code change.
 let _bee: Bee | null = null;
 function bee(): Bee {
   if (!_bee) _bee = new Bee("https://gateway.woco-net.com");
@@ -83,8 +90,18 @@ export async function signAndUploadSoc(args: {
 }
 
 /**
- * Read a SOC's inline payload by owner + identifier. Returns the raw payload
- * bytes, or null if the chunk doesn't exist.
+ * Probe a SOC by owner + identifier. Returns `found` with the raw payload bytes,
+ * `absent` when a source DEFINITIVELY answered "no such chunk", or `unavailable`
+ * when no source could answer.
+ *
+ * Keeping `absent` and `unavailable` apart is the whole point of this function.
+ * `safeJson` converts a 403 / 5xx / Cloudflare error page into a resolved
+ * `{ ok: false }` rather than a throw, so a failed-but-completed response used to
+ * be indistinguishable from an empty one — and a caller then wrote that
+ * indistinguishable answer somewhere durable (#138: a wrong Kernel address cached
+ * for the life of the device; #154: a content-feed write deduped against a version
+ * the probe merely failed to see). A client-side network EXCEPTION still throws
+ * out of here, which is loud and safe.
  *
  * GATEWAY-FIRST, server fallback. The read source is UNTRUSTED by design: a SOC
  * is self-authenticating — `makeSOCReader(owner).download(identifier)` resolves
@@ -97,19 +114,20 @@ export async function signAndUploadSoc(args: {
  * server-side at write time); the server fallback covers a whitelist lag and is
  * availability-only. No auth required on either path.
  */
-export async function readSoc(
+export async function probeSoc(
   ownerAddress: string,
   identifier: Uint8Array,
   opts: { thorough?: boolean } = {},
-): Promise<Uint8Array | null> {
+): Promise<SocReadOutcome> {
   if (identifier.length !== 32) throw new Error("SOC identifier must be 32 bytes");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
 
   // 1. Gateway-first: self-verifying SOC read straight from our Bee gateway
   //    (same instance used for signing; makeSOCReader.download does GET /chunks).
+  let gatewayReason = "gateway read failed";
   try {
     const soc = await bee().makeSOCReader(`0x${owner}`).download(identifier);
-    return soc.payload.toUint8Array();
+    return { status: "found", bytes: soc.payload.toUint8Array() };
   } catch (err) {
     // A gateway 404 means the bee node already ran a full network search and
     // found nothing — asking the server would repeat that exact search against
@@ -125,14 +143,30 @@ export async function readSoc(
     // extra server round-trip is confined to where it is correctness-critical.
     const status = (err as { status?: number; response?: { status?: number } })?.status
       ?? (err as { response?: { status?: number } })?.response?.status;
-    if (status === 404 && !opts.thorough) return null;
+    if (status === 404 && !opts.thorough) return { status: "absent" };
+    gatewayReason = `gateway HTTP ${status ?? "?"}`;
   }
 
   // 2. Server fallback (availability only).
   const res = await get<{ payloadB64: string }>(`/api/swarm/soc/${owner}/${bytesToHex(identifier)}`);
-  if (!res.ok || !res.data) return null;
-  const bin = atob(res.data.payloadB64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  if (res.ok && res.data) {
+    const bin = atob(res.data.payloadB64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return { status: "found", bytes: out };
+  }
+  // A server 404 is the closest thing to a verdict this stack has — the server's
+  // bee reported not-found — so we treat it as one. Know what it rests on, though:
+  // `readSocPayload` ALSO maps bee's 500 "read chunk failed" to not-found, and its
+  // Etherna backstop returns null when Etherna is merely unreachable (bad token,
+  // timeout, 5xx). Either can dress a "couldn't ask" as a verdict (#156).
+  //
+  // So this is a NARROWER channel than the one it replaced — any completed-but-
+  // failed HTTP response — not a closed one. A caller that caches off `absent`
+  // inherits the remainder (#138). Do not restate this as "absent means absent".
+  if (res.status === 404) return { status: "absent" };
+  return {
+    status: "unavailable",
+    reason: `${gatewayReason}; server HTTP ${res.status ?? "?"}${res.error ? `: ${res.error}` : ""}`,
+  };
 }

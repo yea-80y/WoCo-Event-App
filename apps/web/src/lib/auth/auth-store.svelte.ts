@@ -286,11 +286,26 @@ async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
     // sign-to-derive here would produce a DIFFERENT key than the one that owns the
     // account's existing feeds — silently forking them. Its real signer only comes
     // from escrow/portability restore (done at login). Reaching here means that
-    // restore didn't happen, so FAIL LOUD rather than fork. Non-recovered passkeys
+    // restore didn't happen, so FAIL LOUD rather than fork. Non-recovered accounts
     // (no binding) derive deterministically and are unaffected.
-    if (_kind === "passkey" && (await _recoveryKernelFor(_podAddress))) {
+    //
+    // NOT passkey-only: `recoverAndRekey` also supports a WEB3AUTH new owner, which
+    // gets the same durable binding and the same un-re-derivable secrets — but has
+    // no PRF portability envelope, so its only restore channel is the guardian
+    // portal. Gating this on `_kind === "passkey"` meant a plain logout→login of a
+    // web3auth-recovered account silently minted a divergent feed signer and forked
+    // every feed it owns (#149). The binding itself is the correct signal.
+    //
+    // `_getPodAddress()`, NOT `_podAddress` (#174): the bare field is only ever
+    // assigned on passkey paths, so for a web3auth session it is null, and
+    // `_recoveryKernelFor` returns undefined at its first line — the guard was inert
+    // for the exact population the paragraph above describes. The accessor resolves
+    // `_web3authPodAddress` for web3auth and `_parent` for kinds that can never carry
+    // a binding, which is the same form already used at `_ensureKernelForWeb3Auth`
+    // and in `ensurePodIdentity`'s twin guard.
+    if (await _recoveryKernelFor(_getPodAddress())) {
       throw new Error(
-        "Recovered passkey feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
+        "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
       );
     }
     const signer = await _deriveFeedSignerBySigning(parent);
@@ -402,7 +417,22 @@ let _backupInvMemo: { parent: string; at: number; entries: import("@woco/shared"
 let _backupInvFlight: { parent: string; promise: Promise<import("@woco/shared").BackupInventoryEntry[]> } | null = null;
 const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
 
+/** The account's LIVE backups — retired ones are filtered out (see getRetiredBackups). */
 async function getBackupInventory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
+  return (await _getBackupHistory()).filter((b) => !b.revoked);
+}
+
+/**
+ * Backups retired by "Remove all backups" (#165). NOT dead history: uninstalling
+ * the recovery route leaves the caller hook's guardian mapping intact, so adding
+ * any new backup makes every one of these work again. The setup screen warns off
+ * this list, which is why the entries are marked rather than deleted.
+ */
+async function getRetiredBackups(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
+  return (await _getBackupHistory()).filter((b) => b.revoked);
+}
+
+async function _getBackupHistory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
   const parent = _parent;
   if (!parent) return [];
   const memo = _backupInvMemo;
@@ -422,8 +452,10 @@ async function _readBackupInventoryUncached(parent: string): Promise<import("@wo
   const privKey = await restoreContentFeedSigner(parent);
   if (!privKey) return [];
   try {
-    const { readBackupInventory } = await import("../manifest/inventory.js");
-    const entries = await readBackupInventory({ signer: { privKey, address }, parentAddress: parent });
+    // Read the FULL history — the memo backs both the live-backups view and the
+    // retired-guardian warning, and one read serves both.
+    const { readBackupHistory } = await import("../manifest/inventory.js");
+    const entries = await readBackupHistory({ signer: { privKey, address }, parentAddress: parent });
     _backupInvMemo = { parent, at: Date.now(), entries };
     return entries;
   } catch {
@@ -624,11 +656,12 @@ async function _deleteRecoveryBinding(podAddress: string): Promise<void> {
  * VERIFY ON-CHAIN that the preserved Kernel's current ECDSA owner equals this
  * device's PRF-EOA before trusting it — the chain, not the blob, is the authority.
  *
- * Pure check: returns `{ preserved, podSeed }` to apply, `null` when the probe
- * definitively found no envelope (the cacheable answer for a never-recovered
- * account), or `"unavailable"` when the check errored or an envelope was found
- * but could not be verified on-chain — treated as absent for THIS login but
- * never cached. The caller does the storage writes (storePodSeed + binding)
+ * Pure check: returns `{ preserved, podSeed }` to apply, `null` ONLY when the read
+ * stack definitively established that no envelope chunk exists (the cacheable
+ * answer for a never-recovered account), or `"unavailable"` for every other
+ * non-result — the read failed, the envelope was unusable, or it was found but
+ * could not be verified on-chain. `"unavailable"` is treated as absent for THIS
+ * login but is never cached. The caller does the storage writes (storePodSeed + binding)
  * AFTER `_clearStaleAuthForSwitch`, which would otherwise wipe a freshly-stored
  * seed. The read is unauthenticated, so this works during login before any
  * session exists.
@@ -639,8 +672,17 @@ async function _verifyPortabilityEnvelope(
 ): Promise<{ preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string } | null | "unavailable"> {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-    const opened = await readPortabilityEnvelope({ passkeyPrivKey });
-    if (!opened) return null;
+    const read = await readPortabilityEnvelope({ passkeyPrivKey });
+    if (read.status === "absent") return null;
+    if (read.status !== "found") {
+      // Either bytes were there and we could not use them (`unusable`), or nobody
+      // could tell us whether they were there at all (`unreadable`). This login
+      // proceeds WITHOUT the override, but the answer is not "never recovered"
+      // and must never be cached as one.
+      console.warn(`[auth] portability envelope ${read.status} — treating as unknown:`, read.reason);
+      return "unavailable";
+    }
+    const opened = read.value;
 
     // Trust backstop: the override is applied ONLY if the deployed Kernel at the
     // claimed address currently has THIS PRF-EOA as its ECDSA sudo owner. A
@@ -665,13 +707,16 @@ async function _verifyPortabilityEnvelope(
 }
 
 /**
- * Best-effort write of the cross-device portability envelope for the CURRENT
+ * Best-effort sync of the cross-device portability envelope for the CURRENT
  * recovered passkey account. Fire-and-forget from `ensureSession` (needs a
  * session for the authenticated SOC stamp): the first authenticated action after
- * a recovery — or after this code ships, for an already-recovered Account #2 —
- * persists the envelope so the account becomes portable to future devices. Once
- * written it self-skips (the SOC already exists), so this runs at most once per
- * account. No-op for non-recovered accounts (no local binding).
+ * a recovery persists the envelope so the account becomes portable to future
+ * devices. No-op for non-recovered accounts (no local binding).
+ *
+ * The decide-and-write lives in `recovery-portability.ts`
+ * (`backfillPortabilityEnvelope`) — it skips when the stored envelope already
+ * carries these exact secrets, so this settles after one write per account
+ * instead of re-uploading on every session mint (#153).
  */
 async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
   try {
@@ -679,26 +724,20 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
     const override = await _recoveryKernelFor(_podAddress);
     if (!override) return; // only recovered accounts carry a binding
 
-    const { derivePortabilityKeys, writePortabilityEnvelope } = await import("./recovery-portability.js");
-    const { readSoc } = await import("../swarm/client-soc.js");
-    const { portabilitySocIdentifier } = await import("@woco/shared");
-
-    const keys = await derivePortabilityKeys(_passkeyPrivateKey);
-    const existing = await readSoc(keys.socOwnerAddress, portabilitySocIdentifier());
-    if (existing) return; // already portable
-
     const seed = await restorePodSeed(_podAddress);
     if (!seed) return;
     // Carry the feed signer too, so a recovered account's FURTHER devices restore
     // it (same role the guardian escrow plays on the recovery device itself).
     const feedSigner = await _getContentFeedSigner();
-    await writePortabilityEnvelope({
+
+    const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
+    const outcome = await backfillPortabilityEnvelope({
       passkeyPrivKey: _passkeyPrivateKey,
       preservedKernelAddress: override,
       podSeed: seed,
       feedSignerPrivKey: feedSigner?.privKey,
     });
-    console.log("[auth] wrote cross-device recovery portability envelope");
+    console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
   }
@@ -966,10 +1005,26 @@ async function init(): Promise<void> {
 //    entry fails loudly, it cannot attach a divergent identity.
 //
 // Residual risk (accepted): a recovered account's FIRST login on a new device
-// during a total gateway+server outage reads the envelope as absent — today
-// that login already lands in the wrong counterfactual account; the cache makes
-// the retry sticky until recovery is re-run on this device (which writes the
-// binding, healing it). The navigator.onLine guard covers the hard-offline case.
+// that cannot read the envelope lands in the wrong counterfactual account for
+// that login, and re-running recovery on the device heals it (it writes the
+// binding, which wins over this cache).
+//
+// NARROWED, NOT CLOSED (#138 — kept open deliberately). The old note scoped the
+// risk to "a total gateway+server outage" and leaned on navigator.onLine, but the
+// read stack turned any completed-but-failed response — a 403 whitelist lag, a
+// 5xx, a Cloudflare error page — into the same "absent" as an empty one, and
+// navigator.onLine is true for every one of those. The probe now answers absent /
+// unavailable separately all the way down (probeSoc → readContentFeedResult →
+// readPortabilityEnvelope), which closes that whole class.
+//
+// What still gets here (adversarial review, 2026-08-04): the server can mint a 404
+// from a NON-verdict — it maps bee's 500 "read chunk failed" to not-found, and its
+// Etherna backstop returns null when Etherna is merely unreachable. A non-thorough
+// gateway 404 is likewise trusted with no server fallback. Each of those becomes
+// `absent` here and gets cached. The window went from "any failed HTTP response"
+// to "a bee-level retrieval fault on a chunk that exists" — much smaller, still
+// real. Closing it needs either an honest 404 from the server (#156) or a cache
+// that never seeds off an absence at all.
 // ---------------------------------------------------------------------------
 
 const KERNEL_ADDR_CACHE_PREFIX = "woco:kaddr:";
@@ -1694,9 +1749,15 @@ async function ensurePodIdentity(): Promise<string | null> {
       // return null (POD unavailable this session) rather than clobber it — login
       // should have restored it; failing soft keeps historical data recoverable once
       // the restore path runs, whereas a divergent derive would corrupt it forever.
-      if (_kind === "passkey" && (await _recoveryKernelFor(podAddr))) {
+      //
+      // NOT passkey-only: a WEB3AUTH-recovered account carries the same binding and
+      // the same un-re-derivable seed, and had NO guard at all — so a logout→login
+      // silently derived a divergent seed and made its encrypted claim history
+      // permanently undecryptable (#149). The binding is the correct signal; kinds
+      // that can never carry one (web3/coinbase/local) are unaffected.
+      if (await _recoveryKernelFor(podAddr)) {
         console.error(
-          "[auth] recovered passkey POD seed missing — refusing to re-derive a divergent seed",
+          "[auth] recovered account POD seed missing — refusing to re-derive a divergent seed",
         );
         return null;
       }
@@ -1964,6 +2025,41 @@ async function setupAccountRecovery(backup: {
 }
 
 /**
+ * "Remove all backups" (#165) — thin delegation to `backup-management.ts`, which
+ * owns the logic. All this does is hand over the two secrets the store holds: the
+ * built Kernel that signs the sudo userOp, and the feed signer that owns the
+ * encrypted-to-self manifest.
+ *
+ * Removal is all-or-nothing and it is NOT a replace — see backup-management.ts.
+ */
+async function removeAccountBackups(
+  opts: { expectInstalled?: boolean } = {},
+): Promise<import("./backup-management.js").RemoveBackupsOutcome> {
+  if (_kind !== "passkey" && _kind !== "web3auth") {
+    throw new Error("Account recovery is only available for passkey or email/social accounts");
+  }
+  await _ensureKernelForKind();
+  if (!_kernel) throw new Error("Account unavailable — please sign in again");
+
+  // BEST-EFFORT, and it must stay that way. `_getContentFeedSigner` throws outright
+  // for a recovered account whose escrow restore didn't happen, and for a passkey
+  // with no stored signer it falls through to sign-to-derive (a biometric prompt).
+  // Letting either reach the caller would block the on-chain revoke entirely — for
+  // exactly the user most likely to need it — over a cosmetic manifest update.
+  const feedSigner = await _getContentFeedSigner().catch(() => null);
+
+  const { removeAllAccountBackups } = await import("./backup-management.js");
+  const outcome = await removeAllAccountBackups({
+    kernel: _kernel,
+    kernelAddress: _kernel.address,
+    feedSigner,
+    expectInstalled: opts.expectInstalled,
+  });
+  _backupInvMemo = null; // the panel must not keep listing revoked backups
+  return outcome;
+}
+
+/**
  * "Recover my account" — the irreversible portal ceremony (PASSKEY_RECOVERY_PLAN
  * §11.6). The locked-out user is on a NEW device with no session; they have only
  * their backup wallet and the lost account's address. This:
@@ -1989,6 +2085,11 @@ async function setupAccountRecovery(backup: {
  * config is reconstructed from the backup address (v1 = 1-of-1) and MUST match
  * what was registered at setup, or step 2 reverts at the caller hook.
  */
+/** Arb Sepolia is fast, but the owner read can trail the userOp receipt by a
+ *  block or two — retry briefly before declaring the rotation failed (#152). */
+const ROTATION_CONFIRM_ATTEMPTS = 4;
+const ROTATION_CONFIRM_DELAY_MS = 1500;
+
 async function recoverAndRekey(args: {
   backup: import("../wallet/backup-signer.js").BackupWallet;
   targetAddress: string;
@@ -2052,6 +2153,32 @@ async function recoverAndRekey(args: {
       );
     }
 
+    // (0b) ON-CHAIN PRE-FLIGHT: is this backup's guardian actually registered on
+    // the target account? The escrow decrypt above proves the user IS the escrow
+    // guardian; it says nothing about whether the on-chain install ever landed.
+    // Those can diverge, because the escrow SOC is written BEFORE the irreversible
+    // install in setupAccountRecovery — so a setup that failed (silently, before
+    // #151) leaves an escrow that opens perfectly and a route that does not exist.
+    // "Protected account found" in the portal is a SERVER hint; this is the chain.
+    // Free, gasless, and it runs before a passkey is minted (#162).
+    //
+    // Unreadable chain is NOT a failure here: null means "could not tell", and
+    // blocking a locked-out user's only way back in on an RPC blip is worse than
+    // letting them proceed to the rotation, which now fails closed on its own.
+    const guardianConfigForCheck = {
+      signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
+      threshold: 100,
+    };
+    const { deriveGuardianAddress, isGuardianRegistered } = await import("./kernel-account.js");
+    const expectedGuardian = await deriveGuardianAddress(guardianConfigForCheck);
+    const registered = await isGuardianRegistered(expectedGuardian, target);
+    if (registered === false) {
+      throw new Error(
+        "That backup isn't set up as the recovery key for this account on-chain. " +
+          "Check you connected the right backup wallet and chose the right account.",
+      );
+    }
+
     // (1) New owner credential on THIS device. passkey → a fresh PRF-EOA;
     // web3auth → an email/social login whose EOA becomes the new sudo owner (the
     // account STAYS web3auth — owner decision 2026-07-02, not forced to passkey).
@@ -2076,24 +2203,49 @@ async function recoverAndRekey(args: {
     // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
     onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
     const guardianSigner = await backup.getGuardianSigner();
-    const guardianConfig = {
-      signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
-      threshold: 100,
-    };
     const { recoverAccount } = await import("./kernel-account.js");
     const { txHash } = await recoverAccount({
       targetAddress: target,
-      guardianConfig,
+      // The SAME config object the pre-flight derived `expectedGuardian` from —
+      // reconstructing it separately here is how setup-time and recovery-time
+      // guardian addresses could silently diverge (#161).
+      guardianConfig: guardianConfigForCheck,
       guardianSigners: [guardianSigner],
       newOwnerAddress,
     });
 
+    // (2b) POST-CONDITION: prove on-chain that the owner actually rotated, before
+    // ANY irreversible local commit below. The old `kernel.address !== target`
+    // assertion could not do this — buildKernelFromPrivateKey passes the address
+    // override straight through to createKernelAccount, so it compared `target`
+    // to itself and was true whatever happened on-chain (#152). A userOp that is
+    // included but reverts now throws in sendSudoUserOp (#151); this catches the
+    // rest (wrong validator, a rotation that landed elsewhere, chain reorg).
+    //
+    // Fails CLOSED, including on an unreadable chain: nothing has been committed
+    // at this point, so refusing costs the user a retry, whereas proceeding
+    // wrongly tells them "you're back in" and invites them to discard the old
+    // device that still holds the only working credential.
+    onProgress?.("Confirming the change on-chain…");
+    const { readKernelEcdsaOwner } = await import("./kernel-account.js");
+    let rotatedOwner: string | null = null;
+    for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
+      rotatedOwner = await readKernelEcdsaOwner(target);
+      if (rotatedOwner?.toLowerCase() === newOwnerAddress.toLowerCase()) break;
+      if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
+      }
+    }
+    if (rotatedOwner?.toLowerCase() !== newOwnerAddress.toLowerCase()) {
+      throw new Error(
+        "The recovery transaction did not take effect on-chain — your account has NOT been changed. " +
+          "Keep using your existing sign-in and try again.",
+      );
+    }
+
     // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
     const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
     const kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
-    if (kernel.address !== target) {
-      throw new Error("Recovery produced a divergent account address — aborting.");
-    }
 
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored POD seed).
@@ -2370,6 +2522,7 @@ export const auth = {
   ensureEasSessionKey,
   grantSpendPermission,
   setupAccountRecovery,
+  removeAccountBackups,
   recoverAndRekey,
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass
@@ -2384,4 +2537,7 @@ export const auth = {
   // Configured recovery backups from the encrypted-to-self manifest — prompt-free
   // read for the "Protect your account" panel (Increment 3a).
   getBackupInventory: () => getBackupInventory(),
+  // Backups retired by "Remove all backups" — a live hazard, not history: adding
+  // any new backup makes them all work again (#148/#165).
+  getRetiredBackups: () => getRetiredBackups(),
 };

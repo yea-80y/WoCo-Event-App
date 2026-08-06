@@ -55,7 +55,24 @@ export interface RecoveryGuardianIndex {
   kernelAddress: string;
   /** Optional sub-ENS label ({label}.woco.eth) for a human-readable confirmation. */
   label?: string;
+  /**
+   * Tombstone written when the account removed all its backups (#165). Swarm
+   * feeds have no delete, so the entry is superseded rather than erased; readers
+   * MUST treat a revoked entry as no entry. Only the account the index points at
+   * can set it (the server checks the verified parent), so it is not a DoS vector.
+   */
+  revoked?: boolean;
 }
+
+/**
+ * How many guardian addresses one `POST /api/recovery/escrow/clear` may name.
+ *
+ * Shared BECAUSE the two sides disagree destructively otherwise: the server
+ * rejects an over-long list outright (so a caller learns instead of silently
+ * losing tombstones), which means a client that sends more than this gets every
+ * hint left in place. Both halves must read the same number.
+ */
+export const MAX_CLEAR_GUARDIANS = 32;
 
 /** Current presence-hint format. */
 export const RECOVERY_STATUS_VERSION = 1 as const;

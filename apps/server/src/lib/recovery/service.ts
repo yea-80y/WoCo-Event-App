@@ -45,6 +45,23 @@ export async function getRecoveryByGuardian(
 ): Promise<RecoveryGuardianIndex | null> {
   const page = await readFeedPage(topicRecoveryGuardian(guardianAddress));
   if (!page) return null;
+  const index = decodeJsonFeed<RecoveryGuardianIndex>(page);
+  // A tombstoned entry is no entry: the account removed all its backups (#165),
+  // so this guardian protects nothing and must not auto-find it in the portal.
+  if (index?.revoked) return null;
+  return index;
+}
+
+/**
+ * Raw read INCLUDING tombstones — only the clear path needs this, to check who a
+ * guardian entry belongs to before overwriting it. Everything else must use
+ * `getRecoveryByGuardian`, which hides revoked entries.
+ */
+export async function getRecoveryByGuardianRaw(
+  guardianAddress: string,
+): Promise<RecoveryGuardianIndex | null> {
+  const page = await readFeedPage(topicRecoveryGuardian(guardianAddress));
+  if (!page) return null;
   return decodeJsonFeed<RecoveryGuardianIndex>(page);
 }
 

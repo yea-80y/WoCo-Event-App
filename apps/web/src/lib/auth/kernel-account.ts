@@ -30,6 +30,14 @@ import { StorageKeys, EAS_ADDRESS } from "@woco/shared";
 import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
+import {
+  KERNEL_SELECTOR_CONFIG_ABI,
+  RECOVERY_CALLER_HOOK,
+  RECOVERY_EXECUTOR_FN,
+  buildRegisterGuardianCallData,
+  buildUninstallRecoveryCallData,
+  recoveryRouteSelector,
+} from "./recovery-route.js";
 
 /** Arbitrum Sepolia — the buildathon chain. */
 export const KERNEL_CHAIN_ID = 421614;
@@ -779,6 +787,31 @@ export async function getEasSessionClient(
  */
 const VERIFICATION_GAS_FALLBACK = 3_000_000n;
 
+/**
+ * An ERC-4337 userOp that REVERTS in its execution phase still lands on-chain
+ * inside a successful bundler transaction, with `UserOperationEvent.success =
+ * false`. viem's `waitForUserOperationReceipt` resolves on the first receipt it
+ * finds and never inspects `success`, so without this check a reverted op is
+ * indistinguishable from a successful one — which on the recovery path meant
+ * "You're protected" for an account with no recovery route, and "Account
+ * recovered" for an account whose owner never rotated (#151).
+ *
+ * Gas estimation catches DETERMINISTIC reverts before they are ever sent, so
+ * this fires mainly where estimation is bypassed: `recoverAccount` supplies an
+ * explicit `callGasLimit`, which viem passes straight through.
+ */
+function assertUserOpSucceeded(
+  userOpHash: Hex,
+  receipt: { success?: boolean; reason?: string; receipt?: { transactionHash?: string } },
+): void {
+  if (receipt?.success === true) return;
+  const reason = receipt?.reason ? `: ${receipt.reason}` : "";
+  throw new Error(
+    `UserOperation ${userOpHash} was included but reverted on-chain${reason} ` +
+      `(tx ${receipt?.receipt?.transactionHash ?? "unknown"}).`,
+  );
+}
+
 function isStubVerificationGasError(err: unknown): boolean {
   const seen = new Set<unknown>();
   for (let e = err; e && typeof e === "object" && !seen.has(e); e = (e as { cause?: unknown }).cause) {
@@ -813,6 +846,7 @@ export async function sendSessionUserOp(
     });
   }
   const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
+  assertUserOpSucceeded(userOpHash, receipt);
   return { userOpHash, receipt };
 }
 
@@ -905,13 +939,8 @@ export async function registerSubEnsViaPermit(
 // Client-first: install + rotation are sponsored userOps, no server secret.
 // ---------------------------------------------------------------------------
 
-const RECOVERY_ACTION_ADDRESS = "0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E" as const;
-const RECOVERY_CALLER_HOOK = "0x990a9FC8189D96d59E3cE98bd87F42135a24a30E" as const;
-/** ERC-7579 fallback module — the recovery action is a selector-routed fallback. */
-const RECOVERY_FALLBACK_MODULE_TYPE = 3n;
-const RECOVERY_EXECUTOR_FN = "function doRecovery(address _validator, bytes calldata _data)";
-const INSTALL_MODULE_FN =
-  "function installModule(uint256 _type, address _module, bytes calldata _initData)";
+// Addresses, ABIs and calldata for the route live in ./recovery-route.js (imported
+// at the top of this file) — pure, no I/O, unit-tested against live-chain bytes.
 
 /**
  * Guardian set for the weighted-ECDSA guardian ACCOUNT. v1 = a single backup EOA
@@ -1000,34 +1029,11 @@ export async function deriveGuardianAddress(config: GuardianConfig): Promise<str
   return account.address.toLowerCase();
 }
 
-/** installModule(type=3) init data: selector + caller hook + abi(delegatecall, 0xff-flagged guardian list). */
-function buildRegisterGuardianCallData(d: RecoveryDeps, guardianAddress: Address): Hex {
-  return d.encodeFunctionData({
-    abi: d.parseAbi([INSTALL_MODULE_FN]),
-    functionName: "installModule",
-    args: [
-      RECOVERY_FALLBACK_MODULE_TYPE,
-      RECOVERY_ACTION_ADDRESS,
-      d.concat([
-        d.toFunctionSelector(d.parseAbi([RECOVERY_EXECUTOR_FN])[0]),
-        RECOVERY_CALLER_HOOK,
-        d.encodeAbiParameters(d.parseAbiParameters("bytes selectorData, bytes hookData"), [
-          "0xff", // selectorData: route via delegatecall
-          d.concat([
-            "0xff", // flag: install the caller hook
-            d.encodeAbiParameters(d.parseAbiParameters("address[] guardians"), [[guardianAddress]]),
-          ]),
-        ]),
-      ]),
-    ],
-  });
-}
-
 /** Send a sudo-signed userOp through the built Kernel, with the same stub-verificationGas retry as sendSessionUserOp. */
 async function sendSudoUserOp(
   client: KernelAccountClient,
   op: { callData?: Hex; calls?: { to: Address; data: Hex; value?: bigint }[]; callGasLimit?: bigint },
-): Promise<{ userOpHash: Hex; txHash: string }> {
+): Promise<{ userOpHash: Hex; txHash: string; blockNumber?: bigint }> {
   let userOpHash: Hex;
   try {
     userOpHash = await client.sendUserOperation(op as Parameters<typeof client.sendUserOperation>[0]);
@@ -1041,7 +1047,14 @@ async function sendSudoUserOp(
     } as Parameters<typeof client.sendUserOperation>[0]);
   }
   const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
-  return { userOpHash, txHash: receipt.receipt.transactionHash };
+  assertUserOpSucceeded(userOpHash, receipt);
+  // blockNumber is surfaced so callers can PIN a read-back to the block the op
+  // landed in, instead of asking "latest" and trusting whichever replica answers.
+  return {
+    userOpHash,
+    txHash: receipt.receipt.transactionHash,
+    blockNumber: receipt.receipt.blockNumber,
+  };
 }
 
 /**
@@ -1059,6 +1072,208 @@ export async function setupRecovery(
   const d = await loadRecoveryDeps();
   const callData = buildRegisterGuardianCallData(d, guardianAddress as Address);
   return sendSudoUserOp(builtKernel.kernelClient, { callData });
+}
+
+// --- Removing recovery (#165) ----------------------------------------------
+//
+// There is NO per-guardian revoke. The ZeroDev caller hook's `onInstall` ORs each
+// guardian into `allowed[guardian][kernel]` and nothing ever clears it, so a
+// replaced backup keeps permanent takeover power (#148). What CAN be removed is
+// the SELECTOR ROUTE itself, which sits in front of every guardian:
+//
+//   Kernel.sol:454-456   uninstallModule(3, …) → _uninstallSelector(bytes4(deInitData[0:4]), deInitData[4:])
+//   SelectorManager:63-73 zeroes hook, target and callType for that selector
+//   Kernel.sol:182-184   fallback(): if (config.hook == address(0)) revert InvalidSelector()
+//
+// so afterwards EVERY `doRecovery` call reverts before the hook or the action is
+// reached — from any caller, including every registered guardian. Verified against
+// `zerodevapp/kernel@release/v3.1`, and the live account reports
+// `accountId() == "kernel.advanced.v0.3.1"`.
+//
+// TWO THINGS THIS DOES NOT DO, and the product must not claim otherwise:
+//  - `_uninstallSelector` discards the hook it returns and never calls its
+//    `onUninstall`, so `allowed[…]` survives. RE-INSTALLING against the same hook
+//    address resurrects every past guardian.
+//  - it cannot un-disclose the escrow: each guardian's SOC still holds a bundle
+//    sealed to it (podSeed + feed-signer key). Removal ends TAKEOVER, not the
+//    secrets a backup was already given.
+
+/**
+ * Session-memoised "is the configured RPC really Arbitrum Sepolia?". `null` while
+ * unknown, so a failed check is retried rather than cached as a refusal.
+ */
+let _rpcChainVerified: boolean | null = null;
+
+async function isConfiguredChain(client: { getChainId: () => Promise<number> }): Promise<boolean> {
+  if (_rpcChainVerified !== null) return _rpcChainVerified;
+  try {
+    const chainId = await client.getChainId();
+    if (chainId !== KERNEL_CHAIN_ID) {
+      console.error(`[kernel] RPC serves chain ${chainId}, expected ${KERNEL_CHAIN_ID} — refusing to read account state.`);
+      _rpcChainVerified = false;
+      return false;
+    }
+    _rpcChainVerified = true;
+    return true;
+  } catch (e) {
+    console.warn("[kernel] could not confirm the RPC chain id:", e);
+    return false; // not memoised: a transient failure must not poison the session
+  }
+}
+
+/**
+ * Is the recovery route installed on this account? Three states, never two: an
+ * unreadable chain is `"unknown"`, NOT `"absent"` — the same absent-vs-unknown
+ * discipline as the SOC read stack (#138/#155). Callers must never report a
+ * removal, or an unprotected account, off `"unknown"`.
+ */
+export type RecoveryRouteState = "installed" | "absent" | "unknown";
+
+export interface RecoveryRouteStatus {
+  state: RecoveryRouteState;
+  /**
+   * Does the Kernel have code? `undefined` when we could not tell. Load-bearing
+   * for `removeAllBackups`: sending the uninstall against an UNDEPLOYED account
+   * would deploy it as a side effect, so that is the one case it must not send —
+   * and therefore the one case where the pre-read alone decides.
+   */
+  deployed?: boolean;
+  /** Caller hook pinned in front of the route (only when `installed`). */
+  hook?: string;
+  /** Recovery action the route delegatecalls (only when `installed`). */
+  target?: string;
+}
+
+/**
+ * On-chain truth for "does a recovery route exist on this account" — gasless
+ * `eth_call`, no writes. This is the signal the UI must trust; the server's
+ * `RecoveryStatus` is a forgeable hint (#148).
+ *
+ * An undeployed Kernel reads `"absent"`. Note the reason precisely: it is NOT that
+ * a Kernel can never be born with a fallback route — `Kernel.initialize` self-calls
+ * arbitrary `initConfig` calldata (`Kernel.sol:116-121`), so one could be. It is
+ * that WoCo's factory args install a sudo validator and nothing else, and
+ * `setupRecovery` is what deploys the account here.
+ *
+ * `atBlock` pins the read to a block, so a post-transaction read-back cannot be
+ * answered by a replica that has not caught up: such a node errors on an unknown
+ * block, which surfaces honestly as `"unknown"` instead of as stale state.
+ */
+export async function readRecoveryRoute(
+  kernelAddress: string,
+  atBlock?: bigint,
+): Promise<RecoveryRouteStatus> {
+  const [{ createPublicClient, http, toFunctionSelector, parseAbi, zeroAddress }, { arbitrumSepolia }] =
+    await Promise.all([import("viem"), import("viem/chains")]);
+  try {
+    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+
+    // viem does NOT check that the endpoint serves the chain named in `chain`, and
+    // this function is the one place a definitive NEGATIVE is minted. A wrong-chain
+    // RPC answers "no code" for a perfectly real Kernel, which the recovery portal
+    // would render as "recovery isn't possible for this account" — to a locked-out
+    // user. Memoised, so it costs one call per session.
+    if (!(await isConfiguredChain(publicClient))) return { state: "unknown" };
+
+    const at = atBlock === undefined ? {} : { blockNumber: atBlock };
+    const code = await publicClient.getCode({ address: kernelAddress as Address, ...at });
+    if (!code || code === "0x") return { state: "absent", deployed: false };
+
+    const config = (await publicClient.readContract({
+      address: kernelAddress as Address,
+      abi: KERNEL_SELECTOR_CONFIG_ABI,
+      functionName: "selectorConfig",
+      args: [recoveryRouteSelector({ toFunctionSelector, parseAbi })],
+      ...at,
+    })) as { hook: Address; target: Address; callType: Hex };
+
+    if (!config.hook || config.hook.toLowerCase() === zeroAddress.toLowerCase()) {
+      return { state: "absent", deployed: true };
+    }
+    return {
+      state: "installed",
+      deployed: true,
+      hook: config.hook.toLowerCase(),
+      target: config.target.toLowerCase(),
+    };
+  } catch (e) {
+    console.warn("[kernel] readRecoveryRoute failed:", e);
+    return { state: "unknown" };
+  }
+}
+
+export interface RemoveAllBackupsResult {
+  /** The account is not deployed, so no route can exist and no userOp was sent. */
+  alreadyAbsent: boolean;
+  userOpHash?: string;
+  txHash?: string;
+}
+
+/**
+ * "Remove all backups" — one sudo userOp that uninstalls the `doRecovery` route,
+ * disabling EVERY registered guardian at once (per-guardian revoke does not exist).
+ *
+ * Success is proven by an on-chain READ-BACK, never by the transaction: Kernel
+ * does not revert when the selector was never installed, so a green receipt says
+ * nothing about whether anything was removed. Throws if the route survives, and
+ * throws if the chain cannot be re-read afterwards — an unverified removal must
+ * never be reported as done.
+ *
+ * WHY IT SENDS THE USEROP EVEN WHEN THE ROUTE LOOKS ABSENT. `getCode` and
+ * `selectorConfig` are answers from ONE load-balanced RPC, not chain truth. A
+ * replica lagging behind the install answers "absent" for a route that exists —
+ * and the user hitting that window is not hypothetical, it is "I added a backup,
+ * changed my mind, clicked Remove". Short-circuiting there would print "Backups
+ * removed. Account recovery is off." while the guardian kept permanent takeover:
+ * exactly the false safety certificate #148 exists to abolish. So a "removed"
+ * claim never rests on the pre-read. The uninstall is idempotent and sponsored,
+ * so sending it needlessly costs a no-op userOp — a fair price for the claim.
+ *
+ * The one exception is an UNDEPLOYED account, where sending would deploy it as a
+ * side effect. `expectInstalled` covers that hole from the other side: if the
+ * caller was showing the user "you are protected", an undeployed reading is a
+ * contradiction, and a contradiction is reported as such rather than as success.
+ */
+export async function removeAllBackups(
+  builtKernel: BuiltKernel,
+  opts: { expectInstalled?: boolean } = {},
+): Promise<RemoveAllBackupsResult> {
+  const before = await readRecoveryRoute(builtKernel.address);
+  if (before.deployed === false) {
+    if (opts.expectInstalled) {
+      throw new Error(
+        "Couldn't confirm this account's state on-chain, so nothing was changed. " +
+          "Your backups have NOT been removed — please try again in a moment.",
+      );
+    }
+    return { alreadyAbsent: true };
+  }
+
+  const d = await loadRecoveryDeps();
+  const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
+    callData: buildUninstallRecoveryCallData(d),
+  });
+
+  // PINNED to the block the uninstall landed in. Asked at "latest", this read can
+  // be served by a replica that has not seen the transaction yet — which would
+  // report a route that is already gone as still installed, and tell the user their
+  // removal failed when it succeeded. A node that lacks the block errors instead,
+  // and that surfaces as the honest "couldn't confirm" below.
+  const after = await readRecoveryRoute(builtKernel.address, blockNumber);
+  if (after.state === "installed") {
+    throw new Error(
+      `Removal did not take effect: the recovery route is still installed as of block ` +
+        `${after.deployed ? blockNumber : "?"} (tx ${txHash}). Your backups have NOT been ` +
+        "removed — please try again.",
+    );
+  }
+  if (after.state === "unknown") {
+    throw new Error(
+      `Couldn't confirm the removal on-chain yet (tx ${txHash}). It may well have worked — ` +
+        "reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  return { alreadyAbsent: false, userOpHash, txHash };
 }
 
 export interface RecoverAccountArgs {
@@ -1150,6 +1365,60 @@ export async function sweepToExternal(
 
   const callData = await builtKernel.account.encodeCalls(calls);
   return sendSudoUserOp(builtKernel.kernelClient, { callData });
+}
+
+/**
+ * Caller-hook guardian registry getter — `allowed(guardian, kernel) → bool`
+ * (selector `0x5c658165`, confirmed against the deployed hook). This is the
+ * ON-CHAIN truth about who can call `doRecovery` on an account; every other
+ * "is this account protected / is this the guardian" signal in the product is
+ * an untrusted server hint (#162).
+ */
+const RECOVERY_HOOK_ALLOWED_ABI = [
+  {
+    type: "function",
+    name: "allowed",
+    stateMutability: "view",
+    inputs: [
+      { name: "guardian", type: "address" },
+      { name: "account", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+/**
+ * Is `guardianAddress` actually registered on-chain as a permitted recovery
+ * caller for `targetAddress`? Gasless `eth_call`, no writes.
+ *
+ * Returns `true`/`false` when the chain answered, and `null` when the read
+ * FAILED — callers must not treat an unreadable chain as "not registered"
+ * (the same absent-vs-unknown distinction #138 is about).
+ *
+ * Note this reports the CURRENT registry, which is append-only in the deployed
+ * ZeroDev hook: a guardian that was ever installed stays `true` forever, so a
+ * `true` here does NOT mean "this is the only guardian" (#148).
+ */
+export async function isGuardianRegistered(
+  guardianAddress: string,
+  targetAddress: string,
+): Promise<boolean | null> {
+  const [{ createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([
+    import("viem"),
+    import("viem/chains"),
+  ]);
+  try {
+    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    return (await publicClient.readContract({
+      address: RECOVERY_CALLER_HOOK as Address,
+      abi: RECOVERY_HOOK_ALLOWED_ABI,
+      functionName: "allowed",
+      args: [guardianAddress as Address, targetAddress as Address],
+    })) as boolean;
+  } catch (e) {
+    console.warn("[kernel] isGuardianRegistered read failed:", e);
+    return null;
+  }
 }
 
 /**

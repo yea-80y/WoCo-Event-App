@@ -27,6 +27,27 @@ export async function registerRecoveryHint(opts: {
 }
 
 /**
+ * Clear the platform hints after an on-chain "Remove all backups" (#165): flips the
+ * presence hint to not-configured and tombstones the guardian reverse-index entries
+ * that point at this account, so a removed backup stops auto-finding it.
+ *
+ * Pass every guardian the account has ever used (from the encrypted-to-self
+ * manifest) — the server only knows the most recent one, and only tombstones an
+ * entry that already points at the verified caller.
+ *
+ * NON-FATAL by design: these are untrusted hints, and the revoke that matters
+ * already happened on-chain. Never gate the removal's success on this.
+ */
+export async function clearRecoveryHint(opts: {
+  guardianAddresses?: string[];
+}): Promise<ApiResponse<{ kernelAddress: string; clearedGuardians: number; failedGuardians: number }>> {
+  return authPost<{ kernelAddress: string; clearedGuardians: number; failedGuardians: number }>(
+    "/api/recovery/escrow/clear",
+    { guardianAddresses: opts.guardianAddresses ?? [] },
+  );
+}
+
+/**
  * Presence hint for a Kernel address (§13) — drives the setup screen's "backup on
  * record" state and the portal's existence check. Public, untrusted: a missing/
  * forged value only mis-renders the UI; real recoverability is proven only by

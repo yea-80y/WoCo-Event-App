@@ -43,7 +43,7 @@ import {
   openRecoveryBundle,
   type GuardianEncryptionKeypair,
 } from "./recovery-escrow.js";
-import { writeContentFeed, readContentFeed } from "../swarm/content-feed.js";
+import { writeContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
 
 /** Domain-separated 32-byte seed = keccak256(utf8(domain) || prfPrivKeyBytes). */
 function domainSeed(domain: string, prfPrivKeyBytes: Uint8Array): Uint8Array {
@@ -143,26 +143,56 @@ export interface OpenedPortability {
 }
 
 /**
+ * The outcome of a portability-envelope read.
+ *
+ * `absent` is separate because the caller acts on it in a way it can never take
+ * back: "this passkey was never recovered" is what seeds the returning-device
+ * address cache, and a wrong negative there pins the account to the wrong Kernel
+ * for the life of the device (#138). Neither other negative is ever cacheable.
+ *
+ * `unreadable` and `unusable` are separate because the BACK-FILL acts on them
+ * oppositely: an envelope that is present but stale/corrupt should be rewritten
+ * (that is the documented self-heal), while one we simply could not fetch must be
+ * left alone — rewriting on every transient fault is unbounded growth on the
+ * shared postage batch (#153).
+ */
+export type PortabilityRead =
+  | { status: "found"; value: OpenedPortability }
+  /** The read stack definitively established there is no envelope chunk. */
+  | { status: "absent" }
+  /** Nobody could answer whether an envelope exists. */
+  | { status: "unreadable"; reason: string }
+  /** An envelope IS there, but this client cannot use it (version, integrity). */
+  | { status: "unusable"; reason: string };
+
+/**
  * Read + open the portability envelope for the passkey holding `passkeyPrivKey`.
- * Returns the preserved secrets, or null if no envelope exists (non-recovered
- * account) or it can't be opened. Does NOT perform the on-chain owner check — the
- * caller MUST verify `Kernel(preservedKernelAddress).owner == PRF-EOA` before
- * trusting the result.
+ * Does NOT perform the on-chain owner check — the caller MUST verify
+ * `Kernel(preservedKernelAddress).owner == PRF-EOA` before trusting the result.
+ *
+ * `absent` means one thing only: the read stack definitively established that no
+ * envelope chunk exists, i.e. this really is a never-recovered account.
  */
 export async function readPortabilityEnvelope(args: {
   passkeyPrivKey: string;
-}): Promise<OpenedPortability | null> {
+}): Promise<PortabilityRead> {
   const keys = await derivePortabilityKeys(args.passkeyPrivKey);
 
-  const parsed = await readContentFeed<PortabilityEnvelope>(
+  const read = await readContentFeedResult<PortabilityEnvelope>(
     keys.socOwnerAddress,
     PORTABILITY_SOC_IDENTIFIER_INPUT,
   );
-  if (!parsed) return null;
+  if (read.status === "absent") return { status: "absent" };
+  if (read.status === "unavailable") {
+    return { status: "unreadable", reason: read.reason ?? "envelope chunk unreadable" };
+  }
+  const parsed = read.value;
 
-  // v1 (cleartext-Kernel) envelopes no longer match → null → back-fill rewrites.
+  // A version we don't understand is an envelope that IS there. The back-fill
+  // rewrites it — but only on a device that already holds a recovery binding, so
+  // a new device must not read this as "never recovered".
   if (parsed.v !== PORTABILITY_ENVELOPE_VERSION || !parsed.envelope) {
-    return null;
+    return { status: "unusable", reason: `envelope version ${String(parsed.v)} != ${PORTABILITY_ENVELOPE_VERSION}` };
   }
 
   try {
@@ -174,13 +204,83 @@ export async function readPortabilityEnvelope(args: {
     });
     const preservedKernelAddress = bundle.secrets.preservedKernelAddress;
     const podSeed = bundle.secrets.podSeed;
-    if (!preservedKernelAddress || !podSeed) return null;
+    if (!preservedKernelAddress || !podSeed) {
+      return { status: "unusable", reason: "opened bundle is missing required secrets" };
+    }
     return {
-      preservedKernelAddress: preservedKernelAddress.toLowerCase(),
-      podSeed,
-      feedSignerPrivKey: bundle.secrets.feedSignerPrivKey,
+      status: "found",
+      value: {
+        preservedKernelAddress: preservedKernelAddress.toLowerCase(),
+        podSeed,
+        feedSignerPrivKey: bundle.secrets.feedSignerPrivKey,
+      },
     };
-  } catch {
-    return null;
+  } catch (e) {
+    // Decrypt failure on bytes that exist — corruption, or someone else's chunk at
+    // this address. An integrity fault, never an absence.
+    return { status: "unusable", reason: `envelope decrypt failed: ${(e as Error).message}` };
   }
+}
+
+/** Normalise a secp256k1 private key for comparison (0x-prefixed, lowercase). */
+function normKey(k: string | undefined): string | undefined {
+  if (!k) return undefined;
+  return (k.startsWith("0x") ? k : `0x${k}`).toLowerCase();
+}
+
+export interface PortabilityBackfill {
+  action: "wrote" | "skipped" | "deferred";
+  reason: string;
+}
+
+/**
+ * Bring the portability envelope in line with the secrets this device holds,
+ * writing only when it actually differs.
+ *
+ * The old skip test read the LEGACY pre-versioning identifier (`keccak(topic)`)
+ * while the writer targets the VERSIONED rail (`keccak(keccak(topic) ‖ v)`) — a
+ * 32-byte preimage against a 40-byte one, so it could never match anything written
+ * since versioning landed. "Once written it self-skips" was false: every session
+ * mint re-sealed and re-uploaded a fresh version, growing the sequence without
+ * bound, adding ~ceil(n/2) sequential probes to the new-device read this feature
+ * exists for, and re-disclosing the Kernel ↔ socOwnerAddress link each time (#153).
+ *
+ * Compares against the OPENED envelope through the same resolver the writer uses.
+ * A skip is only ever taken on a definitive read.
+ */
+export async function backfillPortabilityEnvelope(args: {
+  passkeyPrivKey: string;
+  preservedKernelAddress: string;
+  podSeed: string;
+  feedSignerPrivKey?: string;
+}): Promise<PortabilityBackfill> {
+  const read = await readPortabilityEnvelope({ passkeyPrivKey: args.passkeyPrivKey });
+
+  // Could not tell what is out there. Writing blind is what runs the version
+  // counter away; the next session mint retries.
+  if (read.status === "unreadable") return { action: "deferred", reason: read.reason };
+
+  if (read.status === "found") {
+    const cur = read.value;
+    const current =
+      cur.preservedKernelAddress === args.preservedKernelAddress.toLowerCase() &&
+      cur.podSeed === args.podSeed;
+    if (current) {
+      const curSigner = normKey(cur.feedSignerPrivKey);
+      const newSigner = normKey(args.feedSignerPrivKey);
+      if (curSigner === newSigner) return { action: "skipped", reason: "envelope already current" };
+      // Never rewrite an envelope that carries a feed signer with one that does
+      // not — a session without the signer to hand would strip the escrowed key
+      // and orphan this account's content feeds on its future devices.
+      if (!newSigner) {
+        return { action: "skipped", reason: "no feed signer this session — refusing to strip the escrowed one" };
+      }
+    }
+  }
+
+  await writePortabilityEnvelope(args);
+  return {
+    action: "wrote",
+    reason: read.status === "found" ? "contents differed" : read.status,
+  };
 }

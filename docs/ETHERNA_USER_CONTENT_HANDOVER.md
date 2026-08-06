@@ -68,13 +68,14 @@ holds the chunk locally and answers while a just-pushed chunk is still settling.
 ## LANDMINE 2 — versioned-sequence split-brain = silently lost writes
 
 Existing profiles have versions 0..N stamped on WoCo. After the switch, version N+1
-lands on Etherna only. `writeContentFeed` resolves "latest" by probing with `readSoc`
+lands on Etherna only. `writeContentFeed` resolves "latest" by probing with `probeSoc`
 (`content-feed.ts:162-165`). A prober that can only see WoCo stops at N → computes
 next = N+1 → uploads a SOC whose address ALREADY EXISTS on Etherna → **Bee dedupes
 silently and keeps the old payload** (`content-feed.ts:114-117`). The user's edit is
 lost with a success response. Dual-source reads are therefore **correctness-critical
 for the write path**, not an availability nicety. Fix Landmine 1 first; the write
-path inherits it via the same `readSoc`.
+path inherits it via the same `probeSoc`. (Since 2026-08-04 the writer also
+REFUSES to write when that probe was inconclusive rather than guessing — #154.)
 
 Verified resolver semantics (`packages/shared/src/swarm/soc.ts:379-402`): probes
 forward from the hint in windows of `VERSION_PROBE_WINDOW = 2` (`soc.ts:364` — do
