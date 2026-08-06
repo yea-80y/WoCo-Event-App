@@ -137,7 +137,13 @@ export async function removeAllAccountBackups(args: {
   kernel: BuiltKernel;
   /** The account's Kernel address (also the manifest's parent address). */
   kernelAddress: string;
-  /** Content-feed signer that owns + seals the manifest; null = nothing to retire. */
+  /**
+   * Content-feed signer that owns + seals the manifest, or null if it could not be
+   * obtained. NULL MEANS UNAVAILABLE, NOT ABSENT: for the only kinds that reach here
+   * (passkey / web3auth) `_getContentFeedSigner` returns a signer or THROWS — it
+   * never resolves null — so a null arriving here is a swallowed failure, and both
+   * bookkeeping flags must report that nothing was done.
+   */
   feedSigner: { privKey: string; address: string } | null;
   /**
    * Was the user being shown "you are protected" when they asked for this? If so,
@@ -154,29 +160,43 @@ export async function removeAllAccountBackups(args: {
   // than the live entries: a previous removal whose tombstone pass failed left
   // retired rows whose reverse-index hints still point at this account, and this
   // is the run that can finally clear them.
+  // ENUMERATED, not just non-empty. An empty list is ambiguous — no past guardians,
+  // or we never managed to look — and the server can only ever contribute the single
+  // guardian named in its own status doc. So an unread history leaves every OLDER
+  // auto-find hint live while the request still returns ok, which would make
+  // `hintCleared` true for a clearance that did not happen.
+  let guardianHistoryKnown = false;
   let guardianAddresses: string[] = [];
   let guardiansTruncated = false;
   if (args.feedSigner) {
     try {
       const { MAX_CLEAR_GUARDIANS } = await import("@woco/shared");
-      const { readBackupHistory } = await import("../manifest/inventory.js");
-      const history = await readBackupHistory({
+      const { readUserManifestResult } = await import("../manifest/inventory.js");
+      // The tri-state read, NOT readBackupHistory: that one collapses "no manifest"
+      // and "couldn't read it" into the same empty array (#138/#155 class).
+      const res = await readUserManifestResult({
         signer: { privKey: args.feedSigner.privKey, address: args.feedSigner.address },
         parentAddress: args.kernelAddress,
       });
-      // The server REJECTS an over-long list rather than truncating it, so sending
-      // more than the cap would clear nothing at all. Newest first, because a recent
-      // guardian is the one whose auto-find hint is actually live.
-      guardiansTruncated = history.length > MAX_CLEAR_GUARDIANS;
-      guardianAddresses = [...history]
-        .sort((a, b) => b.addedAt - a.addedAt)
-        .slice(0, MAX_CLEAR_GUARDIANS)
-        .map((b) => b.guardianAddress);
-      if (guardiansTruncated) {
-        console.warn(
-          `[recovery] ${history.length} past guardians but only ${MAX_CLEAR_GUARDIANS} hints can be ` +
-            "cleared per request — the oldest keep their auto-find hint (cosmetic; the chain governs).",
-        );
+      if (res.status !== "unavailable") {
+        guardianHistoryKnown = true;
+        const history = res.status === "found" ? res.manifest.backups : [];
+        // The server REJECTS an over-long list rather than truncating it, so sending
+        // more than the cap would clear nothing at all. Newest first, because a recent
+        // guardian is the one whose auto-find hint is actually live.
+        guardiansTruncated = history.length > MAX_CLEAR_GUARDIANS;
+        guardianAddresses = [...history]
+          .sort((a, b) => b.addedAt - a.addedAt)
+          .slice(0, MAX_CLEAR_GUARDIANS)
+          .map((b) => b.guardianAddress);
+        if (guardiansTruncated) {
+          console.warn(
+            `[recovery] ${history.length} past guardians but only ${MAX_CLEAR_GUARDIANS} hints can be ` +
+              "cleared per request — the oldest keep their auto-find hint (cosmetic; the chain governs).",
+          );
+        }
+      } else {
+        console.warn("[recovery] guardian history unreadable — older auto-find hints may survive");
       }
     } catch (err) {
       console.warn("[recovery] couldn't read the guardian history for tombstoning:", err);
@@ -189,16 +209,21 @@ export async function removeAllAccountBackups(args: {
     const res = await clearRecoveryHint({ guardianAddresses });
     // `ok` only says the request was served. Individual tombstone writes are
     // swallowed server-side, so a green response with failures is not "cleared".
-    hintCleared = res.ok && (res.data?.failedGuardians ?? 0) === 0 && !guardiansTruncated;
+    hintCleared =
+      res.ok && (res.data?.failedGuardians ?? 0) === 0 && !guardiansTruncated && guardianHistoryKnown;
     if (!res.ok) console.warn("[recovery] clearing the presence hint failed (non-fatal):", res.error);
   } catch (err) {
     console.warn("[recovery] clearing the presence hint failed (non-fatal):", err);
   }
 
-  // No feed signer = no manifest to retire, which is DONE, not failed. Reporting
-  // it as failed would render a "your backup list may be out of date" warning at
-  // a user who has no backup list.
-  let manifestCleared = !args.feedSigner;
+  // FALSE when there is no signer — the opposite of the obvious reading. A null
+  // signer here is never "this account has no manifest": the kinds that reach this
+  // function get a signer or an exception, so null means the exception was swallowed
+  // and the manifest — which may well exist and still list live-looking backups —
+  // was never touched. The account most likely to land here is a recovered one whose
+  // escrow restore never ran, i.e. exactly the user pressing this button after an
+  // incident. Claiming a clean sweep at them is the failure this flag exists to stop.
+  let manifestCleared = false;
   if (args.feedSigner) {
     try {
       const { retireBackupInventory } = await import("../manifest/inventory.js");
