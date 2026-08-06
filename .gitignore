@@ -61,8 +61,12 @@ contracts/
 *.sln
 *.sw?
 
-# Claude Code local settings
-.claude/
+# Claude Code local settings.
+# NO trailing slash: `.claude/` matches directories ONLY, and the worktree runbook
+# prescribes a SYMLINK to the canonical repo's .claude. Git treats a symlink as a
+# file, so the slashed form left it untracked in every worktree — one `git add -A`
+# from committing an absolute local path, and a dangling symlink, to a public repo.
+.claude
 
 # OS
 Thumbs.db
