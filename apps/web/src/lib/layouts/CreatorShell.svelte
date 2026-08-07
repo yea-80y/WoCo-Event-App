@@ -13,6 +13,7 @@
   import ShoppingBag from "lucide-svelte/icons/shopping-bag";
   import Layers from "lucide-svelte/icons/layers";
   import ArrowLeft from "lucide-svelte/icons/arrow-left";
+  import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
 
   interface Props {
     children: Snippet;
@@ -39,6 +40,7 @@
 </script>
 
 <main>
+  <PreLaunchBanner variant="strip" />
   <header class="top-bar">
     <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
       <WocoWordmark height={20} variant="default" />

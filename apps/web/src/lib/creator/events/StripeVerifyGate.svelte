@@ -16,6 +16,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
+  import { FEATURES } from "@woco/shared";
 
   interface Props {
     /** null = still checking · false = not verified · true = charges_enabled. */
@@ -83,8 +84,9 @@
             Card payments settle through Stripe, so you need a connected, verified
             account to publish an event with card payments on. In test mode it
             takes ~2 minutes (use Stripe's “Use test data” / “Skip” buttons — no
-            real business details needed). Crypto-only? Turn off card payments on
-            the tier and publish without Stripe.
+            real business details needed).{#if FEATURES.cryptoPaymentsAllowed}
+              Crypto-only? Turn off card payments on the tier and publish without Stripe.
+            {/if}
           {/if}
         </p>
       </div>
