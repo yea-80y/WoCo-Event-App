@@ -8,7 +8,7 @@
  *      free text.
  *   2. The three URLs the config carries are ALLOWLISTED, not merely sanitised.
  *      `apiUrl` becomes the base for every authenticated request the deployed
- *      page makes, so an arbitrary https host is not "clean" — it is the attack.
+ *      page makes, so an arbitrary https host is not "clean" — it is the whole problem.
  *
  * The escape table's last two entries are literal U+2028/U+2029, invisible in an
  * editor. These assertions are what stops a reformat silently dropping them, so
@@ -56,7 +56,7 @@ function withEnv<T>(patch: Record<string, string | undefined>, fn: () => T): T {
 // ── Inline-script escaping ───────────────────────────────────────────────────
 
 test("a </script> in organiser text cannot close the tag", () => {
-  const payload = { site: { title: "</script><script>alert(1)</script>" } };
+  const payload = { site: { title: "</script><script>MARKER</script>" } };
   const out = jsonForInlineScript(payload);
 
   assert.ok(!out.includes("</script>"), "closing tag survived into the script body");
@@ -69,7 +69,7 @@ test("escaping is transparent — the parsed value is identical to the input", (
   // The whole approach rests on this: < is a valid JSON string escape that
   // parses back to "<". If it were not, escaping would corrupt site content.
   const payload = {
-    title: "</script><script>alert(1)</script>",
+    title: "</script><script>MARKER</script>",
     amp: "Rock & Roll",
     arrow: "a > b < c",
     sep: `line${LINE_SEPARATOR}break${PARAGRAPH_SEPARATOR}here`,
@@ -104,7 +104,7 @@ test("id guard admits the ids we mint and rejects anything that could break out"
   assert.ok(isSafeIdParam("01J8ZK9QK7MZ0P6R3W2V5X8Y1A"), "ULID-ish site id");
   assert.ok(isSafeIdParam(`0x${"a".repeat(64)}`), "0x-prefixed on-chain id");
 
-  assert.ok(!isSafeIdParam("</script><script>alert(1)</script>"));
+  assert.ok(!isSafeIdParam("</script><script>MARKER</script>"));
   assert.ok(!isSafeIdParam('a"bcdefgh'));
   assert.ok(!isSafeIdParam("abcd/efgh"));
   assert.ok(!isSafeIdParam("short"), "under the length floor");
@@ -113,11 +113,11 @@ test("id guard admits the ids we mint and rejects anything that could break out"
 
 // ── URL allowlists ───────────────────────────────────────────────────────────
 
-test("apiUrl comes from the server, so an attacker host cannot be supplied", () =>
+test("apiUrl comes from the server, so a caller-chosen host cannot be supplied", () =>
   withEnv({ PUBLIC_API_BASE: "https://events-api.woco-net.com" }, () => {
     // The point of discarding rather than comparing: it does not matter what the
     // client sent, only what the server knows about itself.
-    assert.equal(resolveDeployApiUrl("https://mallory.example"), "https://events-api.woco-net.com");
+    assert.equal(resolveDeployApiUrl("https://not-our-host.example"), "https://events-api.woco-net.com");
     assert.equal(resolveDeployApiUrl("https://events-api.woco-net.com/"), "https://events-api.woco-net.com");
   }));
 
@@ -125,7 +125,7 @@ test("an https host is not enough — this is the gap sanitisePublicApiUrl left"
   withEnv({ PUBLIC_API_BASE: "", NODE_ENV: "production" }, () => {
     // Without a PUBLIC_API_BASE the server has no public identity to bake in, and
     // the client's https value is exactly what must not be trusted.
-    assert.equal(resolveDeployApiUrl("https://mallory.example"), null);
+    assert.equal(resolveDeployApiUrl("https://not-our-host.example"), null);
   }));
 
 test("gatewayUrl is matched on exact origin, never on host suffix", () =>
@@ -138,16 +138,16 @@ test("gatewayUrl is matched on exact origin, never on host suffix", () =>
     // accepts this. It is a registrable host, so exact origin equality is the
     // requirement.
     assert.ok(!isAllowedGatewayUrl("https://evilgateway.woco-net.com"));
-    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com.mallory.example"));
-    assert.ok(!isAllowedGatewayUrl("https://mallory.example"));
+    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com.not-our-host.example"));
+    assert.ok(!isAllowedGatewayUrl("https://not-our-host.example"));
     assert.ok(!isAllowedGatewayUrl("not a url"));
   }));
 
 test("wocoAppUrl rejects javascript: — it is interpolated into an href", () =>
   withEnv({ FRONTEND_URL: "", NODE_ENV: "production" }, () => {
     assert.ok(isAllowedAppUrl("https://woco.eth.limo"));
-    assert.ok(!isAllowedAppUrl("javascript:alert(1)"));
-    assert.ok(!isAllowedAppUrl("https://mallory.example"));
+    assert.ok(!isAllowedAppUrl("javascript:MARKER"));
+    assert.ok(!isAllowedAppUrl("https://not-our-host.example"));
   }));
 
 test("FRONTEND_URL widens the app allowlist without displacing the default", () =>
@@ -196,7 +196,7 @@ test("the composite resolver fails closed and names the field that failed", () =
 
       const badGateway = resolveDeployUrls({
         apiUrl: "https://events-api.woco-net.com",
-        gatewayUrl: "https://mallory.example",
+        gatewayUrl: "https://not-our-host.example",
         wocoAppUrl: "https://woco.eth.limo",
       });
       assert.equal(badGateway.ok, false);
@@ -205,7 +205,7 @@ test("the composite resolver fails closed and names the field that failed", () =
       const badApp = resolveDeployUrls({
         apiUrl: "https://events-api.woco-net.com",
         gatewayUrl: "https://gateway.woco-net.com",
-        wocoAppUrl: "javascript:alert(1)",
+        wocoAppUrl: "javascript:MARKER",
       });
       assert.equal(badApp.ok, false);
       assert.match(badApp.ok === false ? badApp.error : "", /wocoAppUrl/);
@@ -214,7 +214,7 @@ test("the composite resolver fails closed and names the field that failed", () =
 
 // ── Head injection ───────────────────────────────────────────────────────────
 //
-// Every case below was found by an adversarial review of the first cut of this
+// Every case below was found by a review of the first cut of this
 // fix, which closed the inline-script hole and left three other routes to the
 // same outcome open.
 
@@ -244,7 +244,7 @@ test("the snippet lands before </head> and the document is otherwise untouched",
 test("attribute escaping closes the quote, not just the angle brackets", () => {
   // The deploy builds <meta content="..."> from organiser theme fields. An
   // escaper that omits `"` leaves the attribute breakable.
-  const out = escapeHtmlAttribute('#000"><script>alert(1)</script>');
+  const out = escapeHtmlAttribute('#000"><script>MARKER</script>');
   assert.ok(!out.includes('"'), "raw quote survived");
   assert.ok(!out.includes("<"), "raw < survived");
   assert.ok(!out.includes(">"), "raw > survived");
@@ -253,16 +253,16 @@ test("attribute escaping closes the quote, not just the angle brackets", () => {
 
 // ── Allowlist: origin equality is not enough on its own ──────────────────────
 
-test("an allowed origin with a hostile PATH is refused", () =>
+test("an allowed origin carrying a path is refused", () =>
   withEnv({ ETHERNA_GATEWAY_URL: "", FRONTEND_URL: "", NODE_ENV: "production" }, () => {
     // These values are not merely compared, they are CARRIED: gatewayUrl becomes
     // `${gatewayUrl}/bytes/${ref}` inside an href, wocoAppUrl becomes
     // `${wocoAppUrl}/#/legal/privacy`. Origin equality alone let the path through.
-    assert.ok(!isAllowedGatewayUrl('https://gateway.woco-net.com/"><script>alert(1)</script>'));
+    assert.ok(!isAllowedGatewayUrl('https://gateway.woco-net.com/"><script>MARKER</script>'));
     assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com/some/path"));
     assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com/?q=1"));
     assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com/#frag"));
-    assert.ok(!isAllowedAppUrl('https://woco.eth.limo/"><script>alert(1)</script>'));
+    assert.ok(!isAllowedAppUrl('https://woco.eth.limo/"><script>MARKER</script>'));
 
     // A bare origin, with or without the trailing slash, still passes.
     assert.ok(isAllowedGatewayUrl("https://gateway.woco-net.com"));
@@ -275,7 +275,7 @@ test("blob: and userinfo do not sneak past on a borrowed origin", () =>
     // origin — the bare-origin requirement is what rejects it.
     assert.ok(!isAllowedGatewayUrl("blob:https://gateway.woco-net.com/1234"));
     assert.ok(!isAllowedAppUrl("blob:https://woco.eth.limo/1234"));
-    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com@mallory.example"));
+    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com@not-our-host.example"));
     assert.ok(!isAllowedGatewayUrl("https://user:pw@gateway.woco-net.com"));
   }));
 
@@ -283,12 +283,12 @@ test("the composite resolver carries only the bare origin forward", () =>
   withEnv(
     { PUBLIC_API_BASE: "https://events-api.woco-net.com", FRONTEND_URL: "", ETHERNA_GATEWAY_URL: "", NODE_ENV: "production" },
     () => {
-      const hostilePath = resolveDeployUrls({
+      const withPath = resolveDeployUrls({
         apiUrl: "https://events-api.woco-net.com",
-        gatewayUrl: 'https://gateway.woco-net.com/"><script>alert(1)</script>',
+        gatewayUrl: 'https://gateway.woco-net.com/"><script>MARKER</script>',
         wocoAppUrl: "https://woco.eth.limo",
       });
-      assert.equal(hostilePath.ok, false, "hostile path was accepted");
+      assert.equal(withPath.ok, false, "a path on an allowed origin was accepted");
 
       const ok = resolveDeployUrls({
         apiUrl: "https://events-api.woco-net.com",

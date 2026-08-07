@@ -184,7 +184,7 @@ function originOf(raw: string): string | null {
 
 /**
  * A loopback URL, and only outside production. It is unreachable to anyone but
- * the developer running it, so it cannot be aimed at a victim — but production
+ * the developer running it, so it cannot be pointed at anyone else — but production
  * has no dev flow to serve, so it fails closed there rather than resting on that
  * reasoning holding.
  */
@@ -277,9 +277,9 @@ export function isAllowedAppUrl(raw: string): boolean {
  *
  * The server is the authority on its own public identity — see
  * `lib/url/public-api-url.ts`. When it knows it, the client's claim is DISCARDED
- * rather than compared, so no near-miss is left to exploit. `sanitisePublicApiUrl`
+ * rather than compared, so there is no near-miss left to match. `sanitisePublicApiUrl`
  * is NOT sufficient here: it admits any https host, which is exactly the value an
- * attacker would supply.
+ * must not be trusted here.
  */
 export function resolveDeployApiUrl(raw: string): string | null {
   const publicApiBase = stripTrailingSlash(process.env.PUBLIC_API_BASE || "");
