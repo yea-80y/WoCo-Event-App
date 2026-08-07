@@ -1,0 +1,103 @@
+/**
+ * Durable record of which Kernels have been observed with an on-chain owner (#200).
+ *
+ * WHY THIS EXISTS. `isKernelOwner` decides authority by reading the account's live
+ * owner. When that read fails it falls back to a counterfactual address match —
+ * the Kernel address is CREATE2-derived from the original owner's init data, so
+ * the original key matches it forever, including after recovery has rotated the
+ * owner away. That fallback is correct for an account that has no on-chain owner
+ * yet: nothing else can authenticate it, and only the key deriving the address
+ * could ever deploy it. It is NOT correct for an account that has one, because
+ * there the counterfactual proves a fact about the account's birth rather than
+ * about who controls it now.
+ *
+ * So the fallback needs to know which case it is in, and the read that would tell
+ * it is precisely the read that just failed. This module remembers the answer from
+ * when the read did work.
+ *
+ * DURABILITY IS THE POINT. An in-memory record would be cleared by the restart
+ * that a deploy performs, and the window would reopen every release — silently,
+ * because nothing about a forgotten fact looks like an error. It is written
+ * through the same `.data` directory as the revocation state, and belongs on the
+ * "must survive restarts" list in CLAUDE.local.md for the same reason that one
+ * does.
+ *
+ * The record is append-only in practice: an account that has been deployed cannot
+ * become undeployed. Losing an entry fails OPEN (the fallback resumes), which is
+ * why it is persisted rather than derived on demand.
+ */
+
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+const DATA_DIR = join(process.cwd(), ".data");
+const DEPLOYED_FILE = join(DATA_DIR, "kernel-deployed.json");
+
+interface DeployedState {
+  version: 1;
+  /** kernel address (lowercase) → ISO timestamp of the first observation. */
+  kernels: Record<string, string>;
+}
+
+let state: DeployedState = { version: 1, kernels: {} };
+let loaded = false;
+
+function load(): void {
+  if (loaded) return;
+  loaded = true;
+  try {
+    const parsed = JSON.parse(readFileSync(DEPLOYED_FILE, "utf-8")) as DeployedState;
+    if (parsed?.kernels && typeof parsed.kernels === "object") {
+      state = { version: 1, kernels: parsed.kernels };
+      console.log(`[kernel-deployed] loaded ${Object.keys(state.kernels).length} observed Kernels`);
+    }
+  } catch {
+    // Absent on first boot. Any other read fault also lands here and leaves the
+    // set empty, which fails OPEN — see the module doc. Deliberate: refusing
+    // every deployed account because a file would not parse trades one narrow
+    // window for a total outage.
+  }
+}
+
+function persist(): void {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(DEPLOYED_FILE, JSON.stringify(state), { mode: 0o600 });
+  } catch (err) {
+    // Non-fatal: the in-memory set still holds for this process lifetime, so the
+    // guard keeps working until a restart. Loud, because a persistent failure
+    // means the window reopens on the next deploy.
+    console.error("[kernel-deployed] persist failed:", err);
+  }
+}
+
+/**
+ * Record that this Kernel was read with a real on-chain owner.
+ *
+ * Called only on a definitive read. A `null` owner (provably undeployed) and a
+ * read error must NOT record anything — the first is the state this guard exists
+ * to distinguish from, and the second knows nothing at all.
+ */
+export function markKernelDeployed(kernelAddress: string): void {
+  load();
+  const key = kernelAddress.toLowerCase();
+  if (state.kernels[key]) return;
+  state.kernels[key] = new Date().toISOString();
+  persist();
+}
+
+/**
+ * Has this Kernel ever been observed with an on-chain owner?
+ *
+ * True means a counterfactual match is no longer sufficient evidence of control.
+ */
+export function isKernelKnownDeployed(kernelAddress: string): boolean {
+  load();
+  return Boolean(state.kernels[kernelAddress.toLowerCase()]);
+}
+
+/** Test seam — drops the in-memory set and forces a reload on next access. */
+export function _resetKernelDeployedForTests(): void {
+  state = { version: 1, kernels: {} };
+  loaded = false;
+}

@@ -26,6 +26,7 @@ import { getKernelAddressFromECDSA, getValidatorAddress } from "@zerodev/ecdsa-v
 import { createPublicClient, http, zeroAddress, type Address, type PublicClient } from "viem";
 import { arbitrumSepolia } from "viem/chains";
 import { getChainRpcUrl } from "../chain/event-contract.js";
+import { isKernelKnownDeployed, markKernelDeployed } from "./kernel-deployed.js";
 
 /** Kernel deployments live on Arbitrum Sepolia (KERNEL_CHAIN_ID client-side). */
 const KERNEL_CHAIN_ID = 421614;
@@ -108,6 +109,10 @@ export async function readKernelOwner(kernelAddress: string): Promise<string | n
       args: [kernelAddress as Address],
     })) as Address;
     const lower = !owner || owner.toLowerCase() === zeroAddress ? null : owner.toLowerCase();
+    // A real owner means this account is deployed and has one. Remember that
+    // durably: it is what tells a LATER failed read that the counterfactual
+    // fallback no longer applies here (#200, kernel-deployed.ts).
+    if (lower) markKernelDeployed(key);
     _ownerCache.set(key, { owner: lower, fetchedAt: Date.now() });
     return lower;
   } catch {
@@ -127,15 +132,40 @@ export async function readKernelOwner(kernelAddress: string): Promise<string | n
  *    keys fail);
  *  - provably undeployed/unset (null) → decide by counterfactual match (only
  *    the key whose init data derives this address can ever deploy it);
- *  - read error (RPC outage) → counterfactual match keeps the original key
- *    working (availability bias; the narrow risk is a retired key during an
- *    outage window), everything else fails closed.
+ *  - read error (RPC outage) → REFUSE if this Kernel has ever been seen with an
+ *    on-chain owner; otherwise counterfactual match, as for the undeployed case.
+ *
+ * That last rule is the #200 fix, and it turns on what the counterfactual actually
+ * proves. The Kernel address is CREATE2-derived from the original owner's init
+ * data, so the original key matches it forever — including after recovery has
+ * rotated the owner away. For an account with no on-chain owner that is the only
+ * evidence available and it is sound. For an account that HAS one, it is evidence
+ * about the account's birth rather than about who controls it now, and treating it
+ * as authority hands a rotated-out key its access back for as long as the read
+ * keeps failing.
+ *
+ * Previously both outcomes shared the fallback, on an availability argument. The
+ * cost of that bias is paid by exactly the keys someone decided to stop trusting,
+ * and the duration is set by a third-party RPC rather than by us. Refusing costs a
+ * deployed-account user their session during an outage, which is the same failure
+ * every auth system has when its backing store is unreachable, and it is bounded
+ * by the outage. Undeployed accounts are unaffected — they keep the fallback,
+ * because for them it is the whole mechanism.
  */
 export async function isKernelOwner(eoaAddress: string, parentAddress: string): Promise<boolean> {
   const eoa = eoaAddress.toLowerCase();
   const parent = parentAddress.toLowerCase();
   const owner = await readKernelOwner(parent);
   if (owner !== null && owner !== "error") return owner === eoa;
+
+  if (owner === "error" && isKernelKnownDeployed(parent)) {
+    // Known to have an owner, and we cannot read who. "Cannot verify" is not
+    // "verified" — and the stale value we hold could predate a rotation, which is
+    // the case this exists to catch, so it is not usable either.
+    console.warn(`[kernel-owner] owner read failed for known-deployed ${parent.slice(0, 10)}… — refusing`);
+    return false;
+  }
+
   const counterfactual = await kernelAddressOfOwner(eoa);
   return counterfactual === parent;
 }
