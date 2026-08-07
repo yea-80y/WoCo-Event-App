@@ -126,8 +126,8 @@ export async function readKernelOwner(kernelAddress: string): Promise<string | n
  * The live on-chain owner is AUTHORITATIVE when readable: a counterfactual
  * match alone is NOT sufficient for a deployed Kernel, because after a
  * recovery the RETIRED original key still counterfactual-matches the preserved
- * address — accepting it would let a stolen old device keep API access after
- * the owner rotated away. So:
+ * address — accepting it would let a device still holding the retired key keep
+ * API access after the owner rotated away. So:
  *  - owner readable → decide by owner == eoa (rotated-in keys pass, rotated-out
  *    keys fail);
  *  - provably undeployed/unset (null) → decide by counterfactual match (only
