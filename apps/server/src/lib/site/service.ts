@@ -1,8 +1,8 @@
 import { Topic } from "@ethersphere/bee-js";
 import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEventsIndexTopic, isSitePointer } from "@woco/shared";
-import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x } from "@woco/shared";
-import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
-import { readContentFeedJson } from "../swarm/soc-upload.js";
+import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x, VersionedFeedRead } from "@woco/shared";
+import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult } from "../swarm/feeds.js";
+import { readContentFeedJson, readContentFeedJsonResult } from "../swarm/soc-upload.js";
 
 const DIR_PAGE_LIMIT = 4096;
 
@@ -22,41 +22,116 @@ export interface ResolvedSite {
  * included) is read from the owner's SOC at `siteConfigTopic(siteId)`. In the
  * pointer case `site.ownerAddress` is OVERRIDDEN by the pointer's server-stamped
  * value — ownership gates must never trust the client-signed payload's claim.
- * The ONLY config-read path for server routes; returns null when absent/corrupt.
+ *
+ * THREE ANSWERS, NOT TWO — and the third is the point (#181).
+ *
+ *   found        the site's config, with its ownership provenance.
+ *   absent       the feed provably holds no site. A caller MAY treat the siteId
+ *                as unclaimed.
+ *   unavailable  neither could be established: a network fault, bytes that will
+ *                not decode, a payload naming a different site. Nothing may be
+ *                concluded, and an authorisation gate must refuse.
+ *
+ * The ownership gates use this to answer "does someone already own this siteId?"
+ * and it used to answer with `null`, which they read as "no". So one failed Swarm
+ * read — a slow bee, a gateway timeout, a chunk needing re-fetch — let any
+ * authenticated caller be stamped owner of an existing site, take over its
+ * `woco-multisite-{siteId}` feed and re-point the custom domains that resolve
+ * through it. Nothing to race and nothing to guess: retry until a read fails.
+ *
+ * The separation lives here rather than at the call sites because a caller cannot
+ * recover a distinction the reader has already discarded — the same conclusion as
+ * #154, #155, #170 and #171.
  */
-export async function resolveSiteConfig(siteId: string): Promise<ResolvedSite | null> {
-  const configTopic = Topic.fromString(siteConfigTopic(siteId));
-  const configPage = await readFeedPage(configTopic);
-  if (!configPage) return null;
+export type SiteConfigRead =
+  | { status: "found"; site: Site; siteFeedSigner?: Hex0x }
+  | { status: "absent" }
+  | { status: "unavailable"; reason: string };
 
-  const head = decodeJsonFeed<unknown>(configPage);
-  if (!head) return null;
+/**
+ * Injectable readers, defaulting to the real ones — the same shape
+ * `claims-feed.ts` and `pending-claims-feed.ts` use, and for the same reason: the
+ * branches worth testing here are the FAILURE ones, and a test cannot make a live
+ * Swarm read fail on demand.
+ */
+export interface SiteConfigReaders {
+  readConfigPage: (topic: Topic) => Promise<FeedReadStrictResult>;
+  readPointerTarget: (ownerHex: string, baseTopic: string) => Promise<VersionedFeedRead>;
+  readPagesPage: (topic: Topic) => Promise<Uint8Array | null>;
+}
+
+const DEFAULT_READERS: SiteConfigReaders = {
+  readConfigPage: readFeedPageStrict,
+  readPointerTarget: readContentFeedJsonResult,
+  readPagesPage: readFeedPage,
+};
+
+export async function resolveSiteConfig(
+  siteId: string,
+  readers: SiteConfigReaders = DEFAULT_READERS,
+): Promise<SiteConfigRead> {
+  const configTopic = Topic.fromString(siteConfigTopic(siteId));
+  const configPage = await readers.readConfigPage(configTopic);
+  if (configPage.status === "error") {
+    return { status: "unavailable", reason: `config feed read failed: ${configPage.error.message}` };
+  }
+  if (configPage.status === "absent") return { status: "absent" };
+
+  const head = decodeJsonFeed<unknown>(configPage.data);
+  // Bytes exist and do not decode. Corrupt or foreign, never evidence that the
+  // site was never published — reading it as absent is how the name gets given
+  // away.
+  if (!head) return { status: "unavailable", reason: "config feed payload did not decode" };
 
   if (isSitePointer(head)) {
-    const payload = await readContentFeedJson(
-      head.siteFeedSigner.replace(/^0x/, ""),
-      siteConfigTopic(siteId),
-    ).catch(() => null);
-    if (!payload) return null;
+    const payload = await readers
+      .readPointerTarget(head.siteFeedSigner.replace(/^0x/, ""), siteConfigTopic(siteId))
+      .catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
+
+    if (payload.status === "unavailable") {
+      return { status: "unavailable", reason: `pointer target unreadable: ${payload.reason ?? "unknown"}` };
+    }
+    // A pointer exists, so a site WAS published. Its target being absent is an
+    // inconsistency to refuse on, not a vacancy to hand out.
+    if (payload.status === "absent") {
+      return { status: "unavailable", reason: "pointer target absent — site feed is inconsistent" };
+    }
+
     let site: Site;
     try {
-      site = JSON.parse(new TextDecoder().decode(payload)) as Site;
+      site = JSON.parse(new TextDecoder().decode(payload.bytes)) as Site;
     } catch {
-      return null;
+      return { status: "unavailable", reason: "pointer target did not parse as JSON" };
     }
-    if (!site?.siteId || site.siteId !== siteId) return null;
+    if (!site?.siteId || site.siteId !== siteId) {
+      return { status: "unavailable", reason: "pointer target names a different siteId" };
+    }
     site.ownerAddress = head.ownerAddress;
-    return { site, siteFeedSigner: head.siteFeedSigner };
+    return { status: "found", site, siteFeedSigner: head.siteFeedSigner };
   }
 
-  // Legacy platform-written site — pages live in their own split feed.
+  // Legacy platform-written site — pages live in their own split feed. A failed
+  // pages read stays non-fatal: the site is established either way, and pages are
+  // content rather than an ownership fact.
   const site = head as Site;
-  const pagesPage = await readFeedPage(Topic.fromString(sitePagesTopicFn(siteId)));
+  const pagesPage = await readers.readPagesPage(Topic.fromString(sitePagesTopicFn(siteId)));
   if (pagesPage) {
     const pagesData = decodeJsonFeed<{ pages: Page[] }>(pagesPage);
     if (pagesData?.pages) site.pages = pagesData.pages;
   }
-  return { site };
+  return { status: "found", site };
+}
+
+/**
+ * Collapse a read to the site or nothing, for DISPLAY paths only.
+ *
+ * Never decide ownership with this — it restores the exact conflation #181 was
+ * about. It exists so read endpoints that legitimately fall through to "show
+ * nothing" do not each re-implement the collapse.
+ */
+export async function resolveSiteConfigOrNull(siteId: string): Promise<ResolvedSite | null> {
+  const res = await resolveSiteConfig(siteId);
+  return res.status === "found" ? { site: res.site, siteFeedSigner: res.siteFeedSigner } : null;
 }
 
 // In-memory memo for getCreatorSites — collapses burst reads when the
@@ -76,7 +151,10 @@ export async function getSiteTheme(
   siteId: string,
 ): Promise<{ palette: SitePalette; brandName: string; contactEmail?: string } | null> {
   try {
-    const resolved = await resolveSiteConfig(siteId);
+    // Display path: theming a ticket email. An unreadable config means the email
+    // goes out with WoCo's default palette, which is the correct fallback and not
+    // an ownership decision.
+    const resolved = await resolveSiteConfigOrNull(siteId);
     if (!resolved?.site?.theme?.palette) return null;
     return {
       palette: resolved.site.theme.palette,

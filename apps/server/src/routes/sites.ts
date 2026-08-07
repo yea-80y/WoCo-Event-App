@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
-import { getCreatorSites, upsertCreatorSite, resolveSiteConfig } from "../lib/site/service.js";
+import { getCreatorSites, upsertCreatorSite, resolveSiteConfig, resolveSiteConfigOrNull } from "../lib/site/service.js";
 import {
   escapeHtmlAttribute as escHtml,
   injectBeforeHeadClose,
@@ -61,9 +61,14 @@ const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multis
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Config read for routes — follows the client-owned pointer (see service.ts). */
+/**
+ * Config read for DISPLAY routes — follows the client-owned pointer (see
+ * service.ts). Collapses "absent" and "unavailable" into null, which is right for
+ * a page that renders nothing and wrong for anything deciding ownership. The two
+ * ownership gates in this file call `resolveSiteConfig` directly for that reason.
+ */
 async function readSiteConfig(siteId: string): Promise<Site | null> {
-  return (await resolveSiteConfig(siteId))?.site ?? null;
+  return (await resolveSiteConfigOrNull(siteId))?.site ?? null;
 }
 
 /**
@@ -287,8 +292,20 @@ sitesRouter.post("/", requireAuth, async (c) => {
     }
 
     // If an existing site is published, only the owner may overwrite it.
+    //
+    // Three answers, and only ONE of them permits the write (#181). "absent" means
+    // the siteId is genuinely unclaimed. "unavailable" means we could not find out
+    // — and proceeding on that is what let a caller be stamped owner of somebody
+    // else's site by retrying until a Swarm read failed.
     const existing = await resolveSiteConfig(site.siteId);
-    if (existing && existing.site.ownerAddress.toLowerCase() !== parentAddress) {
+    if (existing.status === "unavailable") {
+      console.warn(`[sites/publish] ownership undecidable for ${site.siteId}: ${existing.reason}`);
+      return c.json({
+        ok: false,
+        error: "Could not verify site ownership right now — please try again",
+      }, 503);
+    }
+    if (existing.status === "found" && existing.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
 
@@ -332,7 +349,7 @@ sitesRouter.post("/", requireAuth, async (c) => {
       const siteToWrite: Site = {
         ...site,
         ownerAddress: parentAddress,
-        createdAt: existing?.site.createdAt ?? now,
+        createdAt: existing.status === "found" ? existing.site.createdAt : now,
         updatedAt: now,
       };
       const { pages, ...siteShell } = siteToWrite;
@@ -662,15 +679,28 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Either way, an EXISTING siteId may only be deployed by its owner — without
     // this gate the body.site fast path would let any authenticated user overwrite
     // another site's woco-multisite feed and re-point its custom domains.
+    // As on publish: "unavailable" is not "unclaimed" (#181). This gate is the
+    // only thing standing between the body.site fast path and a caller taking over
+    // another site's woco-multisite feed, which is what the custom domains resolve
+    // through — so an undecidable read must refuse rather than fall through.
     const published = await resolveSiteConfig(siteId);
-    if (published && published.site.ownerAddress.toLowerCase() !== parentAddress) {
+    if (published.status === "unavailable") {
+      console.warn(`[sites/deploy] ownership undecidable for ${siteId}: ${published.reason}`);
+      return c.json({
+        ok: false,
+        error: "Could not verify site ownership right now — please try again",
+      }, 503);
+    }
+    if (published.status === "found" && published.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
     let site: Site;
     if (body.site && body.site.siteId === siteId) {
       site = { ...body.site, ownerAddress: parentAddress };
     } else {
-      if (!published) return c.json({ ok: false, error: "Site not found — publish first" }, 404);
+      if (published.status !== "found") {
+        return c.json({ ok: false, error: "Site not found — publish first" }, 404);
+      }
       site = published.site;
     }
 
@@ -838,7 +868,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // that can't sign must keep the platform-signed feed, else the new manifest
     // would point at a feed with no updates). Both targets: Etherna is the
     // production path, so client ownership must hold there first of all.
-    const feedOwnerSigner = body.clientFeed ? published?.siteFeedSigner : undefined;
+    const feedOwnerSigner =
+      body.clientFeed && published.status === "found" ? published.siteFeedSigner : undefined;
 
     if (feedOwnerSigner && target === "etherna") {
       // Same steps as the platform-signed Etherna write, minus signing — the
