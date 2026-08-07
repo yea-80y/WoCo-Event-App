@@ -8,7 +8,12 @@ import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite, resolveSiteConfig } from "../lib/site/service.js";
-import { jsonForInlineScript, resolveDeployUrls } from "../lib/site/deploy-config.js";
+import {
+  escapeHtmlAttribute as escHtml,
+  injectBeforeHeadClose,
+  siteConfigScript,
+  resolveDeployUrls,
+} from "../lib/site/deploy-config.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
   readFeedPage,
@@ -162,10 +167,6 @@ function spawnPromise(cmd: string, args: string[]): Promise<void> {
     });
     proc.on("error", rej);
   });
-}
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function buildContactHtml(name: string, email: string, message: string, siteName: string): string {
@@ -703,8 +704,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // always fetches event images from WoCo Bee regardless of site host.
     const config: Record<string, unknown> = { site, gatewayUrl, apiUrl, wocoAppUrl };
     if (target === "etherna") config.contentGatewayUrl = "https://gateway.woco-net.com";
-    const configScript = `<script>window.SITE_CONFIG=${jsonForInlineScript(config)};</script>`;
-    const injectedHtml = html.replace("</head>", `  ${configScript}\n  </head>`);
+    const configScript = siteConfigScript(config);
+    const injectedHtml = injectBeforeHeadClose(html, `  ${configScript}`);
 
     const ts = Date.now();
     tmpDir = `/tmp/woco-multisite-${ts}`;
@@ -730,14 +731,15 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const descEsc = escHtml(desc);
     const logoRef = site.theme.logoSwarmRef;
     // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
-    const thumbnailUrl = logoRef && !/^0+$/.test(logoRef)
-      ? `${gatewayUrl}/bytes/${logoRef}`
-      : './logo.png';
+    const thumbnailUrl = escHtml(
+      logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : './logo.png',
+    );
+    const themeColorEsc = escHtml(site.theme.palette.accent ?? '');
 
     const headLines = [
       `  <link rel="manifest" href="./manifest.json">`,
       thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
-      `  <meta name="theme-color" content="${site.theme.palette.accent}">`,
+      `  <meta name="theme-color" content="${themeColorEsc}">`,
       desc ? `  <meta name="description" content="${descEsc}">` : '',
       `  <meta property="og:type" content="website">`,
       `  <meta property="og:title" content="${brandNameEsc}">`,
@@ -749,7 +751,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
     ].filter(Boolean).join('\n');
 
-    const injectedWithPwa = injectedHtml.replace("</head>", `${headLines}\n  </head>`);
+    const injectedWithPwa = injectBeforeHeadClose(injectedHtml, headLines);
 
     await fs.cp(DIST_MULTISITE_PATH, tmpDir, { recursive: true });
     await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");

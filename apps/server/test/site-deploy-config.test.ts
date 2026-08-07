@@ -20,6 +20,9 @@ import assert from "node:assert/strict";
 
 import {
   allowedAppUrls,
+  siteConfigScript,
+  escapeHtmlAttribute,
+  injectBeforeHeadClose,
   allowedGatewayUrls,
   isAllowedAppUrl,
   isAllowedGatewayUrl,
@@ -208,3 +211,156 @@ test("the composite resolver fails closed and names the field that failed", () =
       assert.match(badApp.ok === false ? badApp.error : "", /wocoAppUrl/);
     },
   ));
+
+// ── Head injection ───────────────────────────────────────────────────────────
+//
+// Every case below was found by an adversarial review of the first cut of this
+// fix, which closed the inline-script hole and left three other routes to the
+// same outcome open.
+
+test("$ patterns in the payload are not expanded by the replacement", () => {
+  // String.replace expands $$, $&, $` and $' inside a STRING replacement. The
+  // snippet carries organiser free text, so a brand name was enough to reach it.
+  const html = "<head>\nBEFORE\n</head>\nAFTER";
+
+  const dollars = injectBeforeHeadClose(html, `  <script>x=${jsonForInlineScript({ n: "$$" })};</script>`);
+  assert.ok(dollars.includes('{"n":"$$"}'), `$$ was collapsed: ${dollars}`);
+
+  const backtick = injectBeforeHeadClose(html, `  <script>x=${jsonForInlineScript({ n: "$`" })};</script>`);
+  assert.ok(!backtick.includes("BEFORE\n  <script>x={\"n\":\"<head>"), "document was spliced into the payload");
+  assert.ok(backtick.includes('{"n":"$`"}'), `$\` was expanded: ${backtick}`);
+
+  const all = injectBeforeHeadClose(html, jsonForInlineScript({ n: "$& $' $` $$" }));
+  assert.deepEqual(JSON.parse(all.split("\n")[2]), { n: "$& $' $` $$" });
+});
+
+test("the snippet lands before </head> and the document is otherwise untouched", () => {
+  const out = injectBeforeHeadClose("<head>\nA\n</head>\nB", "  X");
+  assert.equal(out, "<head>\nA\n  X\n  </head>\nB");
+});
+
+// ── Attribute escaping ───────────────────────────────────────────────────────
+
+test("attribute escaping closes the quote, not just the angle brackets", () => {
+  // The deploy builds <meta content="..."> from organiser theme fields. An
+  // escaper that omits `"` leaves the attribute breakable.
+  const out = escapeHtmlAttribute('#000"><script>alert(1)</script>');
+  assert.ok(!out.includes('"'), "raw quote survived");
+  assert.ok(!out.includes("<"), "raw < survived");
+  assert.ok(!out.includes(">"), "raw > survived");
+  assert.equal(escapeHtmlAttribute("O'Neill & Sons"), "O&#39;Neill &amp; Sons");
+});
+
+// ── Allowlist: origin equality is not enough on its own ──────────────────────
+
+test("an allowed origin with a hostile PATH is refused", () =>
+  withEnv({ ETHERNA_GATEWAY_URL: "", FRONTEND_URL: "", NODE_ENV: "production" }, () => {
+    // These values are not merely compared, they are CARRIED: gatewayUrl becomes
+    // `${gatewayUrl}/bytes/${ref}` inside an href, wocoAppUrl becomes
+    // `${wocoAppUrl}/#/legal/privacy`. Origin equality alone let the path through.
+    assert.ok(!isAllowedGatewayUrl('https://gateway.woco-net.com/"><script>alert(1)</script>'));
+    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com/some/path"));
+    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com/?q=1"));
+    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com/#frag"));
+    assert.ok(!isAllowedAppUrl('https://woco.eth.limo/"><script>alert(1)</script>'));
+
+    // A bare origin, with or without the trailing slash, still passes.
+    assert.ok(isAllowedGatewayUrl("https://gateway.woco-net.com"));
+    assert.ok(isAllowedGatewayUrl("https://gateway.woco-net.com/"));
+  }));
+
+test("blob: and userinfo do not sneak past on a borrowed origin", () =>
+  withEnv({ ETHERNA_GATEWAY_URL: "", FRONTEND_URL: "", NODE_ENV: "production" }, () => {
+    // new URL("blob:https://gateway.woco-net.com/1").origin IS the allowed
+    // origin — the bare-origin requirement is what rejects it.
+    assert.ok(!isAllowedGatewayUrl("blob:https://gateway.woco-net.com/1234"));
+    assert.ok(!isAllowedAppUrl("blob:https://woco.eth.limo/1234"));
+    assert.ok(!isAllowedGatewayUrl("https://gateway.woco-net.com@mallory.example"));
+    assert.ok(!isAllowedGatewayUrl("https://user:pw@gateway.woco-net.com"));
+  }));
+
+test("the composite resolver carries only the bare origin forward", () =>
+  withEnv(
+    { PUBLIC_API_BASE: "https://events-api.woco-net.com", FRONTEND_URL: "", ETHERNA_GATEWAY_URL: "", NODE_ENV: "production" },
+    () => {
+      const hostilePath = resolveDeployUrls({
+        apiUrl: "https://events-api.woco-net.com",
+        gatewayUrl: 'https://gateway.woco-net.com/"><script>alert(1)</script>',
+        wocoAppUrl: "https://woco.eth.limo",
+      });
+      assert.equal(hostilePath.ok, false, "hostile path was accepted");
+
+      const ok = resolveDeployUrls({
+        apiUrl: "https://events-api.woco-net.com",
+        gatewayUrl: "https://gateway.woco-net.com/",
+        wocoAppUrl: "https://woco.eth.limo/",
+      });
+      assert.equal(ok.ok, true);
+      assert.equal(ok.ok && ok.urls.gatewayUrl, "https://gateway.woco-net.com");
+      assert.equal(ok.ok && ok.urls.wocoAppUrl, "https://woco.eth.limo");
+    },
+  ));
+
+
+// ── The emitted script element ───────────────────────────────────────────────
+
+/** Evaluate the emitted element the way a browser would. */
+function evalEmitted(el: string): unknown {
+  const expr = el.replace(/^<script>window\.SITE_CONFIG=/, "").replace(/;<\/script>$/, "");
+  // eslint-disable-next-line no-eval
+  return (0, eval)(`(${expr})`);
+}
+
+test("__proto__ in the payload stays a property and does not become the prototype", () => {
+  // Built with JSON.parse, exactly as the request body arrives: JSON.parse creates
+  // __proto__ as an OWN property. Writing `{ __proto__: ... }` in source here would
+  // instead set this object's prototype and stringify would never see the key —
+  // which is the same asymmetry the emitted script has to avoid on the page.
+  const site = JSON.parse('{"brandName":"ok","__proto__":{"polluted":true}}') as Record<string, unknown>;
+  assert.equal(Object.prototype.hasOwnProperty.call(site, "__proto__"), true, "test fixture is wrong");
+
+  const value = evalEmitted(siteConfigScript({ site })) as { site: Record<string, unknown> };
+
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(value.site, "__proto__"),
+    true,
+    "__proto__ was consumed as a prototype instead of surviving as a property",
+  );
+  assert.equal(Object.getPrototypeOf(value.site), Object.prototype, "the prototype was replaced");
+  assert.equal((value.site as { polluted?: boolean }).polluted, undefined);
+});
+
+test("the emitted element assigns SITE_CONFIG and a closing tag in the data cannot end it", () => {
+  const payload = { title: "</script><script>ignored</script>", n: 1 };
+  const el = siteConfigScript(payload);
+
+  assert.ok(el.startsWith("<script>window.SITE_CONFIG="), "assignment shape changed");
+  // Exactly one closing tag: the element's own. The one in the data is escaped.
+  assert.equal(el.match(/<\/script>/g)?.length, 1, "the data opened or closed a tag");
+  assert.ok(el.includes("\\u003c"), "< was not escaped in the payload");
+  assert.deepEqual(evalEmitted(el), payload);
+});
+
+test("the allowlist forwards the parsed origin, not the submitted bytes", () =>
+  withEnv(
+    { PUBLIC_API_BASE: "https://events-api.woco-net.com", FRONTEND_URL: "", ETHERNA_GATEWAY_URL: "", NODE_ENV: "production" },
+    () => {
+      // Validating a string then carrying it forward is the shape that let a
+      // crafted path ride an allowed origin. Only the canonical origin travels.
+      const res = resolveDeployUrls({
+        apiUrl: "https://events-api.woco-net.com",
+        gatewayUrl: "https://gateway.woco-net.com/",
+        wocoAppUrl: "https://woco.eth.limo/",
+      });
+      assert.equal(res.ok, true);
+      assert.equal(res.ok && res.urls.gatewayUrl, "https://gateway.woco-net.com");
+      assert.equal(res.ok && res.urls.wocoAppUrl, "https://woco.eth.limo");
+    },
+  ));
+
+test("an unset NODE_ENV is treated as production, not as development", () =>
+  withEnv({ NODE_ENV: undefined, ETHERNA_GATEWAY_URL: "", FRONTEND_URL: "" }, () => {
+    // Unset-means-dev is how a loopback allowance ends up live in production.
+    assert.ok(!isAllowedGatewayUrl("http://localhost:1633"));
+    assert.ok(!isAllowedAppUrl("http://localhost:5173"));
+  }));

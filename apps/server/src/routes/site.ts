@@ -15,8 +15,9 @@ import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../
 import {
   allowedGatewayUrls,
   isAllowedGatewayUrl,
+  injectBeforeHeadClose,
   isSafeIdParam,
-  jsonForInlineScript,
+  siteConfigScript,
   resolveDeployApiUrl,
 } from "../lib/site/deploy-config.js";
 import { promises as fs } from "node:fs";
@@ -146,8 +147,8 @@ site.post("/deploy", requireAuth, async (c) => {
       eventId,
       ...(eventSigner ? { eventSigner } : {}),
     };
-    const configScript = `<script>window.SITE_CONFIG=${jsonForInlineScript(config)};</script>`;
-    const injectedHtml = siteHtml.replace("</head>", `  ${configScript}\n  </head>`);
+    const configScript = siteConfigScript(config);
+    const injectedHtml = injectBeforeHeadClose(siteHtml, `  ${configScript}`);
 
     // 2) Copy dist-site to a temp dir, write modified site.html
     const ts = Date.now();
