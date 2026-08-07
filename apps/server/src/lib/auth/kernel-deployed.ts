@@ -27,8 +27,12 @@
  * why it is persisted rather than derived on demand.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+// Generic atomic-JSON writer. It lives under lib/marketing/ for historical
+// reasons rather than because it belongs to marketing; auth importing from there
+// is a smell worth fixing by relocating it, not by hand-rolling a second writer.
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const DEPLOYED_FILE = join(DATA_DIR, "kernel-deployed.json");
@@ -60,14 +64,17 @@ function load(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(DEPLOYED_FILE, JSON.stringify(state), { mode: 0o600 });
-  } catch (err) {
-    // Non-fatal: the in-memory set still holds for this process lifetime, so the
-    // guard keeps working until a restart. Loud, because a persistent failure
-    // means the window reopens on the next deploy.
-    console.error("[kernel-deployed] persist failed:", err);
+  // ATOMIC, not a plain write. A torn write leaves a truncated file, `load` cannot
+  // parse it, the set comes back empty — and an empty set fails OPEN, so the #200
+  // window reopens with nothing to observe. writeJsonAtomic writes to a temp file,
+  // fsyncs it, renames, and fsyncs the directory, so the file is either the old
+  // contents or the new ones. It also sets 0600 on the descriptor rather than
+  // trusting the open, which matters because .data modes are not self-maintaining.
+  if (!writeJsonAtomic(DEPLOYED_FILE, state, "kernel-deployed")) {
+    // In-memory state still holds for this process lifetime, so the guard keeps
+    // working until a restart. Loud, because a persistent failure means the
+    // window reopens on the next deploy and nothing else would say so.
+    console.error("[kernel-deployed] persist failed — the guard will not survive a restart");
   }
 }
 
