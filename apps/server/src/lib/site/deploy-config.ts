@@ -173,8 +173,16 @@ function stripTrailingSlash(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
 }
 
-/** `scheme://host[:port]` of a URL, or null if it will not parse. */
-function originOf(raw: string): string | null {
+/**
+ * `scheme://host[:port]` of a URL, or null if it will not parse.
+ *
+ * Exported because BOTH deploy routes have to bake the canonical form, not the
+ * submitted one. Forwarding the submitted bytes after validating the parsed value
+ * is the defect this file already fixed once; `routes/site.ts` was left on the
+ * submitted form and kept baking a trailing slash, an odd-case host or an explicit
+ * :443 into a page that cannot be edited afterwards.
+ */
+export function canonicalOrigin(raw: string): string | null {
   try {
     return new URL(stripTrailingSlash(raw)).origin;
   } catch {
@@ -183,10 +191,10 @@ function originOf(raw: string): string | null {
 }
 
 /**
- * A loopback URL, and only outside production. It is unreachable to anyone but
- * the developer running it, so it cannot be pointed at anyone else — but production
- * has no dev flow to serve, so it fails closed there rather than resting on that
- * reasoning holding.
+ * A loopback URL, and only when the environment explicitly says development or
+ * test. It is unreachable to anyone but the developer running it, so it cannot be
+ * pointed at anyone else — but nothing outside a declared dev environment has a
+ * dev flow to serve, so everything else fails closed.
  */
 function devLoopbackAllowed(raw: string): boolean {
   // Allowed only when the environment says DEVELOPMENT, never merely when it
@@ -233,9 +241,9 @@ function isBareOrigin(raw: string): boolean {
  */
 function originAllowed(raw: string, allowed: string[]): boolean {
   if (!isBareOrigin(raw)) return false;
-  const origin = originOf(raw);
+  const origin = canonicalOrigin(raw);
   if (!origin) return false;
-  return allowed.some((a) => originOf(a) === origin);
+  return allowed.some((a) => canonicalOrigin(a) === origin);
 }
 
 /** Gateways a site may be deployed to and read its content back through. */
@@ -278,8 +286,9 @@ export function isAllowedAppUrl(raw: string): boolean {
  * The server is the authority on its own public identity — see
  * `lib/url/public-api-url.ts`. When it knows it, the client's claim is DISCARDED
  * rather than compared, so there is no near-miss left to match. `sanitisePublicApiUrl`
- * is NOT sufficient here: it admits any https host, which is exactly the value an
- * must not be trusted here.
+ * is NOT sufficient here: it rejects only private and non-https hosts, so it
+ * admits any https host at all — which is precisely the value that must not be
+ * trusted on this path.
  */
 export function resolveDeployApiUrl(raw: string): string | null {
   const publicApiBase = stripTrailingSlash(process.env.PUBLIC_API_BASE || "");
@@ -334,8 +343,8 @@ export function resolveDeployUrls(input: {
     ok: true,
     urls: {
       apiUrl,
-      gatewayUrl: originOf(input.gatewayUrl) ?? stripTrailingSlash(input.gatewayUrl),
-      wocoAppUrl: originOf(input.wocoAppUrl) ?? stripTrailingSlash(input.wocoAppUrl),
+      gatewayUrl: canonicalOrigin(input.gatewayUrl) ?? stripTrailingSlash(input.gatewayUrl),
+      wocoAppUrl: canonicalOrigin(input.wocoAppUrl) ?? stripTrailingSlash(input.wocoAppUrl),
     },
   };
 }

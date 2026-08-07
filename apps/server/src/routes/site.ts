@@ -16,6 +16,7 @@ import {
   allowedGatewayUrls,
   isAllowedGatewayUrl,
   injectBeforeHeadClose,
+  canonicalOrigin,
   isSafeIdParam,
   siteConfigScript,
   resolveDeployApiUrl,
@@ -140,7 +141,8 @@ site.post("/deploy", requireAuth, async (c) => {
 
     const config = {
       apiUrl,
-      gatewayUrl: gatewayUrl?.trim() || "https://gateway.woco-net.com",
+      // Canonical origin, never the submitted bytes — see canonicalOrigin().
+      gatewayUrl: (gatewayUrl?.trim() ? canonicalOrigin(gatewayUrl) : null) ?? "https://gateway.woco-net.com",
       // Event images (uploaded to WoCo Bee at event-creation time) must always
       // be fetched from the WoCo gateway, regardless of where the site is hosted.
       contentGatewayUrl: "https://gateway.woco-net.com",

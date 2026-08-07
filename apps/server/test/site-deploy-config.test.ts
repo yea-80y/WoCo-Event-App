@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 
 import {
   allowedAppUrls,
+  canonicalOrigin,
   siteConfigScript,
   escapeHtmlAttribute,
   injectBeforeHeadClose,
@@ -363,4 +364,15 @@ test("an unset NODE_ENV is treated as production, not as development", () =>
     // Unset-means-dev is how a loopback allowance ends up live in production.
     assert.ok(!isAllowedGatewayUrl("http://localhost:1633"));
     assert.ok(!isAllowedAppUrl("http://localhost:5173"));
+  }));
+
+test("both deploy routes bake the canonical origin, not the submitted form", () =>
+  withEnv({ ETHERNA_GATEWAY_URL: "", NODE_ENV: "production" }, () => {
+    // routes/site.ts kept the submitted string after validating the parsed one,
+    // so a trailing slash, an odd-case host or an explicit :443 was baked into a
+    // page that cannot be edited afterwards.
+    assert.equal(canonicalOrigin("https://gateway.woco-net.com/"), "https://gateway.woco-net.com");
+    assert.equal(canonicalOrigin("https://GATEWAY.WOCO-NET.COM"), "https://gateway.woco-net.com");
+    assert.equal(canonicalOrigin("https://gateway.woco-net.com:443"), "https://gateway.woco-net.com");
+    assert.equal(canonicalOrigin("not a url"), null);
   }));
