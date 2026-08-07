@@ -51,6 +51,7 @@ import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { getLabelOwner, updateSubEnsContenthash } from "../lib/chain/sub-ens-contract.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 const sitesRouter = new Hono();
 
@@ -590,7 +591,7 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
 
 sitesRouter.post("/:id/contact", async (c) => {
   const siteId = c.req.param("id");
-  const ip = c.req.header("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  const ip = clientIp(c);
   const now = Date.now();
   const hits = (contactRateMap.get(ip) ?? []).filter((t) => now - t < CONTACT_RATE_WINDOW);
   if (hits.length >= CONTACT_RATE_LIMIT) {
