@@ -111,11 +111,13 @@ directly above it. If the crypto rail returns (#41), rebuild it on
 
 ### Preconditions and ordering
 
-- **Confirm no approval-required event has an outstanding pending queue** before
-  deleting approvals — afterwards there is no endpoint to approve OR reject, and
-  a paid pending means a charged buyer with no path. Believed safe by
-  construction (only v1 writes pending entries; all live events are v2) but
-  unlisted and builder-site events could not be enumerated without organiser auth.
+**There is no data precondition. WoCo is pre-launch with no customers and no real
+organisers.** The four events in the directory are the owner's own test events and
+are being deleted. Do not gate this work on inspecting them, do not write
+compatibility paths for them, and do not ask whether they hold state — delete
+freely and let them break. An earlier draft of this document asked for a
+pending-approval sweep; that was wrong and has been removed.
+
 - **Reject `approvalRequired` at event creation** — otherwise organisers can set
   a flag whose behaviour is now undefined.
 - **Same-commit atomicity** or the build breaks: `service.ts:643` + `:652-662`
@@ -140,23 +142,30 @@ directly above it. If the crypto rail returns (#41), rebuild it on
   with `mapWithConcurrency`; copy that.
 - `approvalRequired` on a paid v2 series is undefined behaviour (adjacent to #119,
   which this work removes by removing the feature).
-- A live Para API key (`beta_418f…`) sits in 32 commits of PUBLIC repo history.
-  Para is deleted from the codebase — REVOKE the key at Para. Deliberately not a
-  GitHub issue, since a public issue would point at it.
+
+The Para key in repo history is CLOSED, not outstanding: it is a sandbox key with
+no use, Para is deleted from the codebase, and the owner has ruled it a non-issue.
+Do not raise it again.
 
 ## Working with Fable
 
-Review only, never the cut. Short and narrow succeeds every time — one topic, a
-named file list, no repo-wide greps, `git show <sha>` not `git log -p`. Long broad
-sessions get flagged and silently switched to Opus mid-run. Its record on this
-work: it caught the Hono `%2F` path-decode gap, the unverified editions-write
-precondition, the incoherent delete-safety substitution, the `getOnChainEventV2`
-fail-open, and that bind-wallet was already dead.
+**Owner's decision: Fable does phase 2, writing as well as reviewing**, accepting
+the possibility of a mid-run model switch. Honour that.
+
+What is actually known about keeping it effective, from this work: it does best on
+one topic with a named file list, no repo-wide greps, and `git show <sha>` rather
+than `git log -p`. If phase 2 is split, the natural seams are (a) the subtractive
+deletions, (b) the three fail-closed fixes, (c) bind-wallet and the frontend
+callers. Its record here: it caught the Hono `%2F` path-decode gap, the unverified
+editions-write precondition, the incoherent delete-safety substitution, the
+`getOnChainEventV2` fail-open, and that bind-wallet was already dead — all things
+the main session had wrong.
 
 ## Starter prompt for a fresh session
 
     WoCo (~/projects/woco-wt-v1retire, branch fix/retire-v1-claim-rail, nothing pushed).
-    Read docs/V1_RETIREMENT_HANDOVER.md in full first — it has the verified facts and
-    the three fail-closed fixes that a review already caught me getting wrong.
-    Phase 1 is committed and green. Do Phase 2: retire the v1 claim rail.
-    Get Fable to review the diff before committing; keep it narrow and review-only.
+    Read docs/V1_RETIREMENT_HANDOVER.md in full first. Phase 1 is committed and green.
+    Do Phase 2: retire the v1 claim rail — delete it, do not harden it.
+    WoCo is PRE-LAUNCH: no customers, no real organisers, the test events are being
+    deleted. No compatibility paths, no data preconditions, nothing to preserve.
+    Don't re-derive the decisions in the doc; the three fail-closed fixes are the risk.
