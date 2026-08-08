@@ -114,7 +114,10 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   const availableSupplier = async (): Promise<number> => {
     if (series.onChainEventId) {
       const chainId = getActiveChainId();
-      const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
+      // Fail closed on ANY chain problem: EventNotFound returns null, a
+      // transport failure throws — both mean "cannot verify seats exist",
+      // and a hold must never be granted against seats we can't count.
+      const onChainData = await getOnChainEvent(series.onChainEventId, chainId).catch(() => null);
       if (!onChainData) return 0;
       return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
     }
