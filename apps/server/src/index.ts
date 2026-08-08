@@ -9,6 +9,7 @@ import { FEATURES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { requireAuth } from "./middleware/auth.js";
 import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
+import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
@@ -193,6 +194,12 @@ app.get("/api/health", (c) =>
     ok: true,
     payoutSweep: payoutSweepHealth(),
     compliancePersistence: persistHealth(),
+    // `false` is an alarm, not a statistic: the Kernel known-deployed record
+    // exists on disk but would not load, so the counterfactual fallback is live
+    // again for every account (#200). It fails open deliberately — refusing every
+    // deployed account over a parse error is worse — but that is exactly why the
+    // condition has to be visible rather than inferred from a log line.
+    kernelDeployedStore: { ok: !kernelDeployedLoadFailed() },
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),

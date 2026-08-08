@@ -27,7 +27,7 @@
  * why it is persisted rather than derived on demand.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 // Generic atomic-JSON writer. It lives under lib/marketing/ for historical
 // reasons rather than because it belongs to marketing; auth importing from there
@@ -45,6 +45,7 @@ interface DeployedState {
 
 let state: DeployedState = { version: 1, kernels: {} };
 let loaded = false;
+let loadFailed = false;
 
 function load(): void {
   if (loaded) return;
@@ -54,13 +55,42 @@ function load(): void {
     if (parsed?.kernels && typeof parsed.kernels === "object") {
       state = { version: 1, kernels: parsed.kernels };
       console.log(`[kernel-deployed] loaded ${Object.keys(state.kernels).length} observed Kernels`);
+      return;
     }
-  } catch {
-    // Absent on first boot. Any other read fault also lands here and leaves the
-    // set empty, which fails OPEN — see the module doc. Deliberate: refusing
-    // every deployed account because a file would not parse trades one narrow
-    // window for a total outage.
+    throw new Error("file parsed but holds no kernels object");
+  } catch (err) {
+    // A missing file is the normal first boot and says nothing.
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
+
+    // Anything else means bytes exist that we cannot use — and the set stays
+    // empty, which fails OPEN. That is still the right default (refusing every
+    // deployed account over a parse error trades a narrow window for a broad
+    // outage), but silence is not: this is the one event that quietly restores
+    // the behaviour this module was written to remove.
+    console.error(
+      `[kernel-deployed] CRITICAL: ${DEPLOYED_FILE} exists but could not be loaded — ` +
+        `the counterfactual fallback is active again for every Kernel until this is repaired. ` +
+        `Cause: ${(err as Error)?.message ?? err}`,
+    );
+    loadFailed = true;
+
+    // Quarantine before anything can overwrite it. The next markKernelDeployed
+    // would otherwise persist the near-empty set straight over the damaged file,
+    // making the reset permanent and leaving nothing to diagnose.
+    try {
+      const quarantine = `${DEPLOYED_FILE}.corrupt.${Date.now()}`;
+      renameSync(DEPLOYED_FILE, quarantine);
+      console.error(`[kernel-deployed] preserved the unreadable file at ${quarantine}`);
+    } catch (renameErr) {
+      console.error("[kernel-deployed] could not quarantine the unreadable file:", renameErr);
+    }
   }
+}
+
+/** True when the store existed but could not be read — surfaced on /api/health. */
+export function kernelDeployedLoadFailed(): boolean {
+  load();
+  return loadFailed;
 }
 
 function persist(): void {
@@ -107,4 +137,5 @@ export function isKernelKnownDeployed(kernelAddress: string): boolean {
 export function _resetKernelDeployedForTests(): void {
   state = { version: 1, kernels: {} };
   loaded = false;
+  loadFailed = false;
 }

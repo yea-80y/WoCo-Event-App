@@ -152,20 +152,69 @@ export async function readKernelOwner(kernelAddress: string): Promise<string | n
  * by the outage. Undeployed accounts are unaffected — they keep the fallback,
  * because for them it is the whole mechanism.
  */
+/**
+ * The decision itself, as a pure function over the four facts it needs.
+ *
+ * Separated from the I/O so the truth table can be pinned without mocking an RPC.
+ * Every row below is a test: the branch this file exists to change is the
+ * `knownDeployed` one, and while it lived inline nothing exercised it — the whole
+ * `isKernelOwner` hunk could be reverted with the suite still green.
+ */
+export function decideKernelOwnership(args: {
+  /** Live read: an owner, `null` for no owner on chain, `"error"` for unreadable. */
+  ownerRead: string | null | "error";
+  eoa: string;
+  counterfactualMatches: boolean;
+  /** Has this Kernel ever been observed WITH an on-chain owner? */
+  knownDeployed: boolean;
+}): boolean {
+  const { ownerRead, eoa, counterfactualMatches, knownDeployed } = args;
+
+  // A definitive owner settles it outright, in both directions.
+  if (ownerRead !== null && ownerRead !== "error") return ownerRead === eoa;
+
+  // Neither remaining outcome may fall back for an account we have SEEN with an
+  // owner — and that includes a read that succeeded and returned nothing.
+  //
+  // The error case is the obvious one. The `null` case is the subtler half and was
+  // missed on the first pass: a storage read against state a node does not have
+  // returns zero rather than failing, so a lagging or load-balanced RPC serving
+  // pre-deployment state is indistinguishable from "no owner" — and would hand the
+  // rotated-out key its access back through the counterfactual, which is precisely
+  // the outcome this guard exists to prevent. A validator-address change or an
+  // uninstalled ECDSA validator reads the same way.
+  //
+  // The record says this account HAS an owner. A read saying otherwise contradicts
+  // it, and a contradiction is not evidence of control.
+  if (knownDeployed) return false;
+
+  // Never seen with an owner: the counterfactual is the only evidence there is, and
+  // for a genuinely undeployed account it is sound — only the key whose init data
+  // derives this address can ever deploy it.
+  return counterfactualMatches;
+}
+
 export async function isKernelOwner(eoaAddress: string, parentAddress: string): Promise<boolean> {
   const eoa = eoaAddress.toLowerCase();
   const parent = parentAddress.toLowerCase();
-  const owner = await readKernelOwner(parent);
-  if (owner !== null && owner !== "error") return owner === eoa;
+  const ownerRead = await readKernelOwner(parent);
+  const knownDeployed =
+    ownerRead === null || ownerRead === "error" ? isKernelKnownDeployed(parent) : false;
 
-  if (owner === "error" && isKernelKnownDeployed(parent)) {
-    // Known to have an owner, and we cannot read who. "Cannot verify" is not
-    // "verified" — and the stale value we hold could predate a rotation, which is
-    // the case this exists to catch, so it is not usable either.
-    console.warn(`[kernel-owner] owner read failed for known-deployed ${parent.slice(0, 10)}… — refusing`);
-    return false;
+  if (knownDeployed) {
+    console.warn(
+      `[kernel-owner] ${ownerRead === "error" ? "owner read failed" : "owner read returned none"} ` +
+        `for known-deployed ${parent.slice(0, 10)}… — refusing`,
+    );
+    return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches: false, knownDeployed });
   }
 
-  const counterfactual = await kernelAddressOfOwner(eoa);
-  return counterfactual === parent;
+  // Only computed when it can still matter — it is a local CREATE2 derivation, but
+  // there is no reason to run it on the path that has already decided.
+  const counterfactualMatches =
+    ownerRead === null || ownerRead === "error"
+      ? (await kernelAddressOfOwner(eoa)) === parent
+      : false;
+
+  return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches, knownDeployed });
 }
