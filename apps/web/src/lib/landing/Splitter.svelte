@@ -11,6 +11,7 @@
   import DoorOpen from "../components/icons/sprites/DoorOpen.svelte";
   import SprayCan from "../components/icons/sprites/SprayCan.svelte";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
+  import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import Shield from "lucide-svelte/icons/shield-check";
   import Layers from "lucide-svelte/icons/layers";
@@ -20,6 +21,8 @@
 </script>
 
 <div class="root">
+  <PreLaunchBanner />
+
   <!-- ── Top bar ─────────────────────────────────────────────────────── -->
   <header class="top">
     <button class="brand" onclick={() => navigate("/")} aria-label="WoCo home">
@@ -88,8 +91,8 @@
     </div>
 
     <!-- corner stamps -->
-    <div class="corner corner-tl mono">EST. 2025 · OPEN BETA</div>
-    <div class="corner corner-br mono">v1.0 // YOURS TO LEAVE</div>
+    <div class="corner corner-tl mono">EST. 2025 · PRE-LAUNCH</div>
+    <div class="corner corner-br mono">v0 // YOURS TO LEAVE</div>
   </section>
 
   <!-- ── Section divider ─────────────────────────────────────────────── -->

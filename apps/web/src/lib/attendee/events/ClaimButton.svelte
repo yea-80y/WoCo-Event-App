@@ -404,6 +404,17 @@
     <button class="claim-btn" disabled>Not currently available</button>
   {/if}
 
+
+  <!-- At the point of payment, not only in the banner: checkout redirects to
+       Stripe, so this is the last surface we control before a buyer would
+       otherwise type a real card and read the decline as us being broken. -->
+  {#if isPaid && hasStripe}
+    <p class="testmode">
+      Test mode — no real payment is taken. Use card
+      <code>4242 4242 4242 4242</code>, any future expiry, any CVC.
+    </p>
+  {/if}
+
   {#if error}
     <p class="error">{error}</p>
   {/if}
@@ -477,5 +488,18 @@
     font-size: 0.75rem;
     margin: 0;
     text-align: right;
+  }
+
+  .testmode {
+    margin: 0.5rem 0 0;
+    font-size: 0.6875rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    text-align: center;
+  }
+  .testmode code {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    white-space: nowrap;
   }
 </style>
