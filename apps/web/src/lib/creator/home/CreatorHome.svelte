@@ -2,7 +2,7 @@
   CreatorHome — the /creator landing.
   Studio dashboard (not an events list). Three jobs for an organiser:
     1. Start something new (event / site)
-    2. Pick up where you left off (drafts / pending approvals)
+    2. Pick up where you left off (drafts)
     3. Manage existing work (latest events + sites)
   Design spec: memory/project_ui_theming_direction.md
 -->
@@ -11,7 +11,6 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getMyEventsSWR, getMySitesSWR, getMyShopsSWR } from "../../api/creator-cache.js";
-  import { getPendingClaims } from "../../api/events.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import OwnedNamesList from "../builder/OwnedNamesList.svelte";
@@ -44,7 +43,6 @@
   let events = $state<EventDirectoryEntry[]>([]);
   let sites = $state<SiteDirectoryEntry[]>([]);
   let shops = $state<ShopDirectoryEntry[]>([]);
-  let pendingTotal = $state(0);
   let stripeReady = $state<boolean | null>(null);
   // Per-panel loading so the events panel doesn't wait for the sites Swarm
   // read (or vice versa) — each paints as soon as its own data resolves.
@@ -85,7 +83,6 @@
     events = [];
     sites = [];
     shops = [];
-    pendingTotal = 0;
     stripeReady = null;
     ownedNames = [];
     backupInventory = [];
@@ -146,19 +143,6 @@
       if (token !== loadToken) return;
       if (fresh && (fresh.length > 0 || !shopSWR.cached)) shops = fresh;
       loadingShops = false;
-    });
-
-    // Pending approvals — fire as soon as events arrive; don't wait on sites.
-    eventsPromise.then(() => {
-      if (token !== loadToken) return;
-      const upcoming = events.filter(e => !isPastEvent(e, now));
-      if (upcoming.length === 0) return;
-      Promise.all(upcoming.slice(0, 6).map(e =>
-        getPendingClaims(e.eventId).catch(() => [])
-      )).then(results => {
-        if (token !== loadToken) return;
-        pendingTotal = results.reduce((sum, list) => sum + (list?.length || 0), 0);
-      });
     });
 
     getStripeAccountStatus().then(s => {
@@ -227,16 +211,6 @@
   // Quick suggestions — show only what's actionable
   const suggestions = $derived.by(() => {
     const out: Array<{ kind: string; label: string; href?: string; action?: () => void }> = [];
-    if (auth.isConnected && pendingTotal > 0) {
-      out.push({
-        kind: "approvals",
-        label: `${pendingTotal} attendee${pendingTotal === 1 ? "" : "s"} waiting for approval`,
-        action: () => {
-          const evt = events[0];
-          if (evt) navigate(`/event/${evt.eventId}/dashboard`);
-        },
-      });
-    }
     // The Getting Started checklist owns the Stripe + first-event prompts while
     // it's visible — duplicating them here would be the bombardment the
     // onboarding is meant to avoid.
@@ -332,10 +306,6 @@
         <div class="stat">
           <span class="stat-label mono">YOUR SHOPS</span>
           <span class="stat-num mono" class:hot={shops.length > 0}>{loadingShops ? "—" : String(shops.length).padStart(2, "0")}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label mono">PENDING</span>
-          <span class="stat-num mono" class:hot={pendingTotal > 0}>{String(pendingTotal).padStart(2, "0")}</span>
         </div>
       </div>
     </div>

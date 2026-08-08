@@ -15,12 +15,10 @@ export const FEATURES = {
   cryptoPaymentsAllowed: false,
   // The MCP agent-commerce rail (/api/agent/quote + /buy): an agent draws USDC under a
   // spend permission the user signed on-chain. Was ON as a deliberate "opt-in, so the
-  // blast radius is zero" call; turned OFF because the blast radius stopped being zero.
-  // It mints through claimTicket(), the v1 Swarm rail, and f951652 retired the editions
-  // feed that rail allocates from — so selectFreeSlot finds no slots and the mint throws
-  // "No tickets available" for every event created since 2026-06-29. spend-authority.ts
-  // consumes the USDC draw BEFORE minting, so the buyer is charged and gets nothing.
-  // Turn on with a v2 on-chain mint path, not before.
+  // blast radius is zero" call; turned OFF because the blast radius stopped being zero:
+  // it minted through the v1 Swarm rail, which could charge the buyer and mint nothing.
+  // That rail is now DELETED — settleAgentTicketPurchase refuses outright (see
+  // lib/agent/spend-authority.ts). Turn on with a v2 on-chain mint path, not before.
   agentCommerceAllowed: false,
   // Organiser custom sending domains. OFF for launch, for two independent
   // reasons: the production Resend key is send-only, so the Domains API 401s and

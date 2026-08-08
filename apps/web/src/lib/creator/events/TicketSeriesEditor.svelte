@@ -24,7 +24,6 @@
     id: string;
     tierName: string;
     description: string;
-    approvalRequired: boolean;
     waves: WaveItem[];
     /** Whether this tier is a paid ticket */
     isPaid: boolean;
@@ -51,7 +50,6 @@
     name: string;
     description: string;
     totalSupply: number;
-    approvalRequired?: boolean;
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
@@ -240,7 +238,6 @@
       id: crypto.randomUUID(),
       tierName: name,
       description: "",
-      approvalRequired: false,
       isPaid: !FEATURES.freeEventsAllowed,
       price: "",
       currency: "GBP",
@@ -293,7 +290,6 @@
         id: crypto.randomUUID(),
         tierName: t.name?.trim() || "General Admission",
         description: "",
-        approvalRequired: false,
         isPaid,
         price: importedPaid ? priceStr : "",
         currency,
@@ -354,7 +350,6 @@
             : tier.tierName.trim(),
           description: tier.description.trim(),
           totalSupply: wave.totalSupply,
-          approvalRequired: tier.approvalRequired,
           ...(tier.waves.length > 1 && wave.label.trim() ? { wave: wave.label.trim() } : {}),
           ...(wave.saleStart ? { saleStart: wave.saleStart } : {}),
           ...(wave.saleEnd ? { saleEnd: wave.saleEnd } : {}),
@@ -532,12 +527,6 @@
         <label class="field">
           <span class="field-label">Description</span>
           <input type="text" bind:value={tier.description} placeholder="What's included" />
-        </label>
-
-        <label class="approval-toggle">
-          <input type="checkbox" bind:checked={tier.approvalRequired} />
-          <span class="approval-label">Require organiser approval</span>
-          <span class="approval-hint">Attendees submit a request; you approve each one from the dashboard</span>
         </label>
 
         <!-- Payment config -->

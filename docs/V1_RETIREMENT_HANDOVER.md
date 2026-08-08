@@ -1,8 +1,18 @@
 # Retiring the v1 claim rail — handover
 
-STATUS 2026-08-08. Branch `fix/retire-v1-claim-rail`, worktree
-`~/projects/woco-wt-v1retire`, cut from `origin/main` (4d2f87e). NOTHING PUSHED.
-Phase 1 committed and green (tsc clean, 572 tests pass). Phase 2 not started.
+STATUS 2026-08-08 (evening). Branch `fix/retire-v1-claim-rail`, worktree
+`~/projects/woco-wt-v1retire`. **Phase 2 COMPLETE** — the rail is deleted, the
+three fail-closed fixes are in, server tsc clean + 515 tests green, web
+svelte-check + embed build green. Inventory gaps found while cutting (each got
+the doc's own bind-wallet treatment — verified dead, then deleted):
+attendee-gate Route B (/start + /confirm) was dead end-to-end, not just
+bind-wallet; `spend-authority.ts` minted via claimTicket (now refuses before
+consuming the draw); `ticket-page.ts` read the claims feed (best-effort,
+always null for v2); the checkout availability pre-check + firstN tier count
+had NO v2 branch (now chain reads); 59795f1 (registration gate) re-landed with
+the webhook v1-branch deletion, which is when its revert reason ("premature")
+expired. The embed widget still renders v1 claim flows — followed up as an
+issue, not folded into this cut.
 
 ## What this replaces
 

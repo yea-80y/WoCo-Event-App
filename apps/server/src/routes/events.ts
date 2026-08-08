@@ -231,6 +231,15 @@ events.post("/", requireAuth, async (c) => {
     if (!s.signedManifest || !s.podBodies?.length) {
       return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or podBodies` }, 400);
     }
+    // The approvals feature went with the v1 claim rail. Reject rather than
+    // silently drop: an organiser who set this flag expects a review queue
+    // that no longer exists, and must hear that at publish time.
+    if ((s as { approvalRequired?: unknown }).approvalRequired) {
+      return c.json(
+        { ok: false, error: `Series ${s.seriesId}: approval-required claims are no longer supported` },
+        400,
+      );
+    }
     // Defence-in-depth — mirror FEATURES gates so an old client (or direct API
     // hit) can't bypass the UI and ship a free event. A paid series must set a
     // price and enable at least one payment rail; Stripe is no longer mandatory

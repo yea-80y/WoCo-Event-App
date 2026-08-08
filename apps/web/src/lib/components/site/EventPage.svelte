@@ -1,17 +1,13 @@
 <script lang="ts">
-  import type { EventFeed, SeriesSummary, SealedBox, SeriesClaimStatus } from "@woco/shared";
-  import { sealJson } from "@woco/shared";
-  import { getEvent, claimTicket, claimTicketByEmail, getClaimStatus } from "../../api/events.js";
+  import type { EventFeed, SeriesSummary, SeriesClaimStatus } from "@woco/shared";
+  import { getEvent, getClaimStatus } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
+  import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
   import { buildEventJsonLd, eventMetaDescription } from "@woco/shared";
   import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
-  import TicketSuccess from "../../attendee/events/TicketSuccess.svelte";
-  import type { ClaimedTicket } from "@woco/shared";
   import { firstImageUrl, useNextImageUrl } from "./image-fallback.js";
 
   interface Props {
@@ -45,59 +41,32 @@
   // ── Ticket selection ──────────────────────────────────────────────────────
   let selectedSeries = $state<SeriesSummary | null>(null);
 
-  // ── Claim status (per-series availability + user state) ───────────────────
+  // ── Claim status (per-series availability) ────────────────────────────────
   // Keyed by seriesId — fetched lazily when series is selected or on mount.
+  // Anonymous data (supply counts only) — the server returns no per-user state.
   let seriesStatus = $state<Record<string, SeriesClaimStatus>>({});
-  let _fetchedStatusWithAddr = false;
 
   function getSeriesStatus(s: SeriesSummary): SeriesClaimStatus | null {
     return seriesStatus[s.seriesId] ?? null;
   }
 
-  function fetchSeriesStatus(s: SeriesSummary, addr?: string) {
-    const sk = cacheKey.claimStatus(eventId, s.seriesId, addr ?? "anon");
+  function fetchSeriesStatus(s: SeriesSummary) {
+    const sk = cacheKey.claimStatus(eventId, s.seriesId, "anon");
     const cached = cacheGet<SeriesClaimStatus>(sk);
     if (cached) seriesStatus = { ...seriesStatus, [s.seriesId]: cached };
 
-    getClaimStatus(eventId, s.seriesId, addr || undefined, undefined, apiUrl)
+    getClaimStatus(eventId, s.seriesId, undefined, undefined, apiUrl)
       .then((fresh) => {
         if (!fresh) return;
         cacheSet(sk, fresh, TTL.CLAIM_STATUS);
         seriesStatus = { ...seriesStatus, [s.seriesId]: fresh };
-        if (selectedSeries?.seriesId === s.seriesId) {
-          if (fresh.userPendingId && !approvalPending && !claimed) {
-            approvalPending = true;
-          } else if (fresh.userEdition != null && !claimed) {
-            claimed = true;
-            claimedEdition = fresh.userEdition;
-            claimedVia = "wallet";
-          }
-        }
       })
       .catch(() => {});
   }
 
-  // ── Claim flow state ──────────────────────────────────────────────────────
-  let formData = $state<Record<string, string>>({});
-  let inlineEmail = $state("");
-  let chosenMethod = $state<"wallet" | "email" | null>(null);
-  let claiming = $state(false);
-  let claimStep = $state("");
-  let claimError = $state<string | null>(null);
-  let claimed = $state(false);
-  let claimedEdition = $state<number | null>(null);
-  let claimedVia = $state<"wallet" | "email" | null>(null);
-  let approvalPending = $state(false);
+  // ── Purchase panel state ──────────────────────────────────────────────────
   let ticketQty = $state<Record<string, number>>({});
   let claimOpen = $state(false);
-
-  // ── Ticket success modal ──────────────────────────────────────────────────
-  let showSuccessModal = $state(false);
-  let successEdition = $state<number | null>(null);
-  let successEditions = $state<Array<{ edition: number; ticket?: ClaimedTicket }>>([]);
-  let successVia = $state<"wallet" | "email" | null>(null);
-  let successTicket = $state<ClaimedTicket | undefined>(undefined);
-  let successEmail = $state<string | undefined>(undefined);
   /** seriesId to auto-select after Stripe return — resolved once event loads */
   let stripeReturnSeriesId = $state<string | null>(null);
 
@@ -160,41 +129,9 @@
     window.location.hash = "#/";
   }
 
-  function handleClaimSuccess(data: { edition: number | null; claimedVia: "wallet" | "email" | null; ticket?: ClaimedTicket; claimerEmail?: string; editions?: Array<{ edition: number; ticket?: ClaimedTicket }> }) {
-    successEdition = data.edition;
-    successEditions = data.editions ?? (data.edition != null ? [{ edition: data.edition, ticket: data.ticket }] : []);
-    successVia = data.claimedVia;
-    successTicket = data.ticket;
-    successEmail = data.claimerEmail;
-    showSuccessModal = true;
-    if (!claimed) {
-      claimed = true;
-      claimedEdition = data.edition;
-      claimedVia = data.claimedVia;
-    }
-  }
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const claimMode = $derived(event?.claimMode ?? "wallet");
-  const hasOrderForm = $derived(!!event?.orderFields?.length && !!event?.encryptionKey);
-  const hasEmailField = $derived(
-    !!event?.orderFields?.some((f) => f.type === "email" || f.id === "__email")
-  );
   const anySelected = $derived(Object.values(ticketQty).some((v) => v > 0));
-
-  const formValid = $derived(() => {
-    if (!event?.orderFields?.length) return true;
-    return event.orderFields.every(
-      (f) => !f.required || (formData[f.id] ?? "").trim().length > 0
-    );
-  });
-
-  const walletFormValid = $derived(() => {
-    if (!event?.orderFields?.length) return true;
-    return event.orderFields.every(
-      (f) => f.id === "__email" || !f.required || (formData[f.id] ?? "").trim().length > 0
-    );
-  });
 
   // ── Sale window helpers ───────────────────────────────────────────────────
   function saleStatus(s: SeriesSummary): "active" | "future" | "past" {
@@ -281,167 +218,10 @@
     if (saleStatus(s) !== "active") return;
     const ss = getSeriesStatus(s);
     if (ss != null && ss.available === 0) return;
-    if (selectedSeries?.seriesId !== s.seriesId) {
-      claimed = false;
-      claimedEdition = null;
-      claimedVia = null;
-      approvalPending = false;
-      claimError = null;
-      formData = {};
-      inlineEmail = "";
-      chosenMethod = null;
-    }
     selectedSeries = s;
   }
 
-  // ── Claim logic ───────────────────────────────────────────────────────────
-  function getEmail(): string | null {
-    const fromForm = formData["__email"]?.trim();
-    if (fromForm?.includes("@")) return fromForm;
-    if (event?.orderFields) {
-      for (const f of event.orderFields) {
-        if (f.type === "email") {
-          const v = formData[f.id]?.trim();
-          if (v?.includes("@")) return v;
-        }
-      }
-    }
-    const inline = inlineEmail.trim();
-    if (inline?.includes("@")) return inline;
-    return null;
-  }
-
-  function effectiveMethod(): "wallet" | "email" {
-    if (claimMode === "wallet") return "wallet";
-    if (claimMode === "email") return "email";
-    return chosenMethod ?? (auth.isConnected ? "wallet" : "email");
-  }
-
-  async function handleClaim(method?: "wallet" | "email") {
-    if (!selectedSeries || claiming) return;
-    if (method) chosenMethod = method;
-
-    claiming = true;
-    claimError = null;
-
-    try {
-      const m = method ?? effectiveMethod();
-
-      if (m === "email") {
-        const email = getEmail();
-        if (!email) {
-          claimError = "Please enter a valid email address";
-          return;
-        }
-
-        let encryptedOrder: SealedBox | undefined;
-        if (event?.encryptionKey) {
-          claimStep = "Encrypting your info…";
-          encryptedOrder = await sealJson(event.encryptionKey, {
-            ...(Object.keys(formData).length > 0 ? { fields: formData } : {}),
-            seriesId: selectedSeries.seriesId,
-            claimerEmail: email,
-          });
-        }
-
-        claimStep = "Submitting…";
-        const result = await claimTicketByEmail(
-          eventId,
-          selectedSeries.seriesId,
-          email,
-          encryptedOrder,
-          apiUrl,
-        );
-
-        if (!result.ok) {
-          claimError = result.error || "Failed to register";
-          return;
-        }
-
-        if (result.approvalPending) {
-          approvalPending = true;
-          return;
-        }
-
-        claimed = true;
-        claimedEdition = result.edition ?? null;
-        claimedVia = "email";
-        handleClaimSuccess({ edition: result.edition ?? null, claimedVia: "email", ticket: result.ticket, claimerEmail: getEmail() || undefined });
-      } else {
-        if (!auth.isConnected) {
-          claimStep = "Waiting for sign-in…";
-          const ok = await loginRequest.request();
-          if (!ok) {
-            claimError = "Login cancelled";
-            return;
-          }
-        }
-
-        if (!auth.hasSession) {
-          claimStep = "Approving session…";
-          const ok = await auth.ensureSession();
-          if (!ok) {
-            claimError = "Session approval cancelled";
-            return;
-          }
-        }
-
-        let encryptedOrder: SealedBox | undefined;
-        if (event?.encryptionKey) {
-          claimStep = "Encrypting your info…";
-          encryptedOrder = await sealJson(event.encryptionKey, {
-            ...(Object.keys(formData).length > 0 ? { fields: formData } : {}),
-            seriesId: selectedSeries.seriesId,
-            claimerAddress: auth.parent,
-          });
-        }
-
-        claimStep = "Registering…";
-        const result = await claimTicket(
-          eventId,
-          selectedSeries.seriesId,
-          auth.parent!,
-          encryptedOrder,
-          apiUrl,
-        );
-
-        if (!result.ok) {
-          claimError = result.error || "Failed to register";
-          return;
-        }
-
-        if (result.approvalPending) {
-          approvalPending = true;
-          if (auth.parent && selectedSeries) {
-            const addr = auth.parent.toLowerCase();
-            const sk = cacheKey.claimStatus(eventId, selectedSeries.seriesId, addr);
-            const cur = cacheGet<SeriesClaimStatus>(sk);
-            const base = cur ?? ({ seriesId: selectedSeries.seriesId, totalSupply: selectedSeries.totalSupply, claimed: 0, available: selectedSeries.totalSupply } as SeriesClaimStatus);
-            cacheSet(sk, { ...base, userPendingId: "pending" }, TTL.CLAIM_STATUS);
-          }
-          return;
-        }
-
-        claimed = true;
-        claimedEdition = result.edition ?? null;
-        claimedVia = "wallet";
-        handleClaimSuccess({ edition: result.edition ?? null, claimedVia: "wallet", ticket: result.ticket });
-        if (auth.parent && selectedSeries) {
-          cacheDel(cacheKey.claimStatus(eventId, selectedSeries.seriesId, auth.parent.toLowerCase()));
-        }
-      }
-    } catch (e) {
-      claimError = e instanceof Error ? e.message : "Unexpected error";
-    } finally {
-      claiming = false;
-      claimStep = "";
-    }
-  }
-
   onMount(() => {
-    const addr = auth.parent?.toLowerCase();
-    if (addr) _fetchedStatusWithAddr = true;
-
     const hash = window.location.hash;
     // Check both hash (woco.eth.limo hash-router) and search (standalone ENS sites).
     const stripeParams = hash + window.location.search;
@@ -543,7 +323,7 @@
           if (match) { selectedSeries = match; stripeReturnSeriesId = null; claimOpen = true; }
         }
         for (const s of fresh.series) {
-          fetchSeriesStatus(s, addr || undefined);
+          fetchSeriesStatus(s);
         }
       })
       .catch((e) => {
@@ -555,17 +335,8 @@
 
     if (_cached) {
       for (const s of _cached.series) {
-        fetchSeriesStatus(s, addr || undefined);
+        fetchSeriesStatus(s);
       }
-    }
-  });
-
-  $effect(() => {
-    const addr = auth.parent?.toLowerCase();
-    if (!addr || _fetchedStatusWithAddr || !event) return;
-    _fetchedStatusWithAddr = true;
-    for (const s of event.series) {
-      fetchSeriesStatus(s, addr);
     }
   });
 </script>
@@ -786,155 +557,18 @@
           <ClaimButton
             eventId={eventId}
             seriesId={selectedSeries.seriesId}
-            totalSupply={selectedSeries.totalSupply}
             encryptionKey={event.encryptionKey}
             orderFields={event.orderFields}
-            claimMode={claimMode}
-            approvalRequired={selectedSeries.approvalRequired ?? false}
             apiUrl={apiUrl}
             payment={selectedSeries.payment}
-            eventEndDate={event.endDate}
             quantity={ticketQty[selectedSeries.seriesId] ?? 1}
             eager
-            onclaim={handleClaimSuccess}
           />
 
-        {:else if claimed}
-          <div class="claim-success">
-            <div class="success-check">
-              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path d="M4 10l5 5 7-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </div>
-            <div class="success-body">
-              <p class="success-title">
-                {claimedVia === "email" ? "Registration submitted!" : "Ticket claimed!"}
-              </p>
-              {#if claimedEdition != null}
-                <p class="success-detail">Ticket #{claimedEdition} · {selectedSeries.name}</p>
-              {/if}
-              <button class="success-view-btn" onclick={() => { successEdition = claimedEdition; successVia = claimedVia; showSuccessModal = true; }}>
-                View ticket &amp; QR
-              </button>
-            </div>
-          </div>
-
-        {:else if approvalPending}
-          <div class="claim-pending">
-            <div class="pending-dot"></div>
-            <div>
-              <p class="pending-title">Request submitted — pending approval</p>
-              <p class="pending-note">You'll receive your ticket once the organizer approves it.</p>
-            </div>
-          </div>
-
         {:else}
-          <!-- Order form -->
-          {#if hasOrderForm && event.orderFields}
-            <div class="form-fields">
-              {#each event.orderFields as field}
-                <label class="form-field">
-                  <span class="form-label">
-                    {field.label || field.placeholder || field.type}
-                    {#if field.required}<span class="required">*</span>{/if}
-                  </span>
-                  {#if field.type === "textarea"}
-                    <textarea
-                      bind:value={formData[field.id]}
-                      placeholder={field.placeholder || ""}
-                      maxlength={field.maxLength}
-                      rows="3"
-                    ></textarea>
-                  {:else if field.type === "select" && field.options}
-                    <select bind:value={formData[field.id]}>
-                      <option value="">Select…</option>
-                      {#each field.options as opt}
-                        <option value={opt}>{opt}</option>
-                      {/each}
-                    </select>
-                  {:else if field.type === "checkbox"}
-                    <label class="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={formData[field.id] === "yes"}
-                        onchange={(e) =>
-                          (formData[field.id] = (e.target as HTMLInputElement).checked ? "yes" : "")}
-                      />
-                      <span>{field.placeholder || field.label}</span>
-                    </label>
-                  {:else}
-                    <input
-                      type={field.type}
-                      bind:value={formData[field.id]}
-                      placeholder={field.placeholder || ""}
-                      maxlength={field.maxLength}
-                    />
-                  {/if}
-                </label>
-              {/each}
-            </div>
-          {/if}
-
-          {#if claimMode === "both" && !hasEmailField}
-            <label class="form-field">
-              <span class="form-label">
-                Email <span class="form-label-optional">(for email claim)</span>
-              </span>
-              <input type="email" bind:value={inlineEmail} placeholder="your@email.com" />
-            </label>
-          {/if}
-
-          {#if claimError}
-            <p class="claim-error">{claimError}</p>
-          {/if}
-
-          <div class="claim-actions">
-            {#if claiming}
-              <button class="claim-btn" disabled>{claimStep || "Processing…"}</button>
-            {:else if claimMode === "both"}
-              <button
-                class="claim-btn"
-                onclick={() => handleClaim("wallet")}
-                disabled={!walletFormValid()}
-              >
-                {selectedSeries.approvalRequired ? "Request with wallet" : "Claim with wallet"}
-              </button>
-              <button
-                class="claim-btn claim-btn--outline"
-                onclick={() => handleClaim("email")}
-                disabled={!formValid() || (!hasEmailField && !inlineEmail.trim())}
-              >
-                {selectedSeries.approvalRequired ? "Request with email" : "Claim with email"}
-              </button>
-            {:else if claimMode === "email"}
-              <button
-                class="claim-btn"
-                onclick={() => handleClaim("email")}
-                disabled={!formValid()}
-              >
-                {selectedSeries.approvalRequired ? "Request to attend" : "Claim with email"}
-              </button>
-            {:else}
-              <button
-                class="claim-btn"
-                onclick={() => handleClaim("wallet")}
-                disabled={!walletFormValid()}
-              >
-                {selectedSeries.approvalRequired ? "Request to attend" : "Claim ticket"}
-              </button>
-            {/if}
-          </div>
-
-          {#if hasOrderForm}
-            <p class="encrypt-note">
-              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="display:inline;vertical-align:middle;margin-right:3px">
-                <rect x="2" y="5" width="8" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
-                <path d="M4 5V4a2 2 0 1 1 4 0v1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-              </svg>
-              Your info is encrypted — only the organizer can read it.
-            </p>
-          {/if}
-
+          <!-- No purchase rail: free series need a v2 mint path (the v1 claim
+               rail was deleted; freeEventsAllowed is off). -->
+          <p class="claim-unavailable">Tickets for this event are not currently on sale.</p>
         {/if}
       </div>
     {/if}
@@ -971,18 +605,7 @@
   {/if}
 </div>
 
-{#if showSuccessModal && event && selectedSeries}
-  <TicketSuccess
-    event={event}
-    series={selectedSeries}
-    edition={successEdition}
-    editions={successEditions}
-    claimedVia={successVia}
-    claimerEmail={successEmail}
-    ticket={successTicket}
-    onclose={() => { showSuccessModal = false; }}
-  />
-{/if}
+
 
 {#if stripeBanner}
   <div class="purchase-success-overlay" role="status" aria-live="polite">
@@ -1552,197 +1175,8 @@
     border-color: var(--border-hover);
   }
 
-  /* ── Order form (inside claim panel) ──────────────────────────────────────── */
-  .form-fields {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    padding: 1.25rem 1.25rem 0;
-  }
-
-  .form-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-
-  .form-label {
-    font-family: var(--font-mono, ui-monospace, "SF Mono", "Menlo", monospace);
-    font-size: 0.6875rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  .form-label-optional {
-    font-weight: 400;
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-
-  .required { color: var(--error); margin-left: 0.125rem; }
-
-  .form-field input,
-  .form-field textarea,
-  .form-field select {
-    padding: 0.625rem 0.875rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text);
-    font-size: 0.9375rem;
-    font-family: inherit;
-    transition: border-color var(--transition);
-    resize: vertical;
-  }
-
-  .form-field input:focus,
-  .form-field textarea:focus,
-  .form-field select:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
-  }
-
-  .checkbox-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
+  .claim-unavailable {
     font-size: 0.875rem;
-    color: var(--text-secondary);
-    cursor: pointer;
-  }
-
-  /* ── Claim actions ────────────────────────────────────────────────────────── */
-  .claim-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 0.625rem;
-    padding: 1.25rem 1.25rem 0;
-  }
-
-  .claim-btn {
-    width: 100%;
-    padding: 0.75rem 1.375rem;
-    font-size: 0.9375rem;
-    font-weight: 700;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink, #fff);
-    white-space: nowrap;
-    transition: background var(--transition);
-    letter-spacing: 0.01em;
-  }
-
-  .claim-btn:hover:not(:disabled) { background: var(--accent-hover); }
-  .claim-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .claim-btn--outline {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
-  }
-  .claim-btn--outline:hover:not(:disabled) {
-    background: var(--bg-elevated);
-    border-color: var(--border-hover);
-  }
-
-  .claim-error {
-    font-size: 0.8125rem;
-    color: var(--error);
-    margin: 0;
-    padding: 0 1.25rem;
-  }
-
-  .encrypt-note {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    padding: 0.75rem 1.25rem 0;
-    margin: 0;
-  }
-
-  /* ── Claim success ────────────────────────────────────────────────────────── */
-  .claim-success {
-    display: flex;
-    align-items: flex-start;
-    gap: 1rem;
-    padding: 1.25rem;
-  }
-
-  .success-check {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--success) 15%, transparent);
-    color: var(--success);
-    flex-shrink: 0;
-    border: 1.5px solid color-mix(in srgb, var(--success) 30%, transparent);
-  }
-
-  .success-body { min-width: 0; }
-
-  .success-title {
-    font-size: 0.9375rem;
-    font-weight: 700;
-    color: var(--text);
-    margin: 0 0 0.25rem;
-  }
-
-  .success-detail {
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-    margin: 0 0 0.25rem;
-  }
-
-  .success-view-btn {
-    margin-top: 0.625rem;
-    display: inline-flex;
-    padding: 0.45rem 0.875rem;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
-    color: var(--accent-text);
-    cursor: pointer;
-    transition: background var(--transition);
-  }
-  .success-view-btn:hover {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-  }
-
-  /* ── Claim pending ────────────────────────────────────────────────────────── */
-  .claim-pending {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.875rem;
-    padding: 1.25rem;
-  }
-
-  .pending-dot {
-    width: 0.625rem;
-    height: 0.625rem;
-    border-radius: 50%;
-    background: var(--warning, #d97706);
-    flex-shrink: 0;
-    margin-top: 0.25rem;
-  }
-
-  .pending-title {
-    font-size: 0.875rem;
-    font-weight: 700;
-    color: var(--warning, #d97706);
-    margin: 0 0 0.3rem;
-  }
-
-  .pending-note {
-    font-size: 0.8125rem;
     color: var(--text-muted);
     margin: 0;
   }
@@ -1836,9 +1270,6 @@
     .tickets-heading { padding: 1rem 1rem 0.875rem; }
     .tickets-footer { padding: 0.875rem 1rem 1rem; }
     .claim-panel-header { padding: 0.875rem 1rem; }
-    .form-fields { padding: 1rem 1rem 0; }
-    .claim-actions { padding: 1rem 1rem 0; }
-    .encrypt-note { padding: 0.625rem 1rem 0; }
     .venue-card { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
     .maps-btn { width: 100%; justify-content: center; }
   }

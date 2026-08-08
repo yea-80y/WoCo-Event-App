@@ -26,9 +26,7 @@ import { authGet } from "./client.js";
 import { cacheGet, cacheSet, cacheKey, TTL } from "../cache/cache.js";
 import {
   getEventOrders,
-  getPendingClaims,
   type EventOrdersResponse,
-  type PendingClaimEntry,
 } from "./events.js";
 
 export interface SWRResult<T> {
@@ -148,18 +146,3 @@ export function getEventOrdersSWR(eventId: string): SWRResult<EventOrdersRespons
 // ---------------------------------------------------------------------------
 // Event admin: pending approvals — /api/events/:id/pending-claims
 // ---------------------------------------------------------------------------
-
-export function getPendingClaimsSWR(eventId: string): SWRResult<PendingClaimEntry[]> {
-  const key = cacheKey.pendingClaims(eventId);
-  const cached = cacheGet<PendingClaimEntry[]>(key);
-  const refresh = async (): Promise<PendingClaimEntry[] | null> => {
-    try {
-      const data = await getPendingClaims(eventId);
-      if (data.length > 0) cacheSet(key, data, TTL.PENDING_CLAIMS);
-      return data;
-    } catch {
-      return null;
-    }
-  };
-  return { cached, refresh };
-}

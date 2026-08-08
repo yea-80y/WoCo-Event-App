@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { OrderField, ClaimMode, SeriesClaimStatus } from "@woco/shared";
+  import type { OrderField, SeriesClaimStatus } from "@woco/shared";
   import {
     MARKETING_CONSENT_NOTICE,
     TRANSACTIONAL_EMAIL_NOTICE,
@@ -7,29 +7,23 @@
   } from "@woco/shared";
   import type { BuyerFees } from "./fees.js";
 
+  // Stripe-only: the form collects the organiser's order fields (+ a buyer
+  // email when needed) ahead of the checkout redirect. The direct wallet/email
+  // claim buttons went with the v1 claim rail.
   interface Props {
     status: SeriesClaimStatus | null;
     quantity: number;
     orderFields?: OrderField[];
-    claimMode: ClaimMode;
     hasEmailField: boolean;
-    hasOrderForm: boolean;
-    stripeAfterForm: boolean;
     authConnected: boolean;
     stripeLoading: boolean;
-    approvalRequired: boolean;
-    claiming: boolean;
-    step: string;
     buyerFees: BuyerFees | null;
     priceLabel: string;
     /** Pay button shows shimmer while the order-ref pre-upload is in flight. */
     payPreparing: boolean;
     /** Closure over orderFields + formData. Recomputed on each call. */
     formValid: () => boolean;
-    /** Closure that skips the __email required check (wallet path). */
-    walletFormValid: () => boolean;
     formData: Record<string, string>;
-    inlineEmail: string;
     stripeEmail: string;
     /** Organiser display name — the consent must name who is being consented to. */
     organiserName?: string;
@@ -38,7 +32,6 @@
     marketingConsent: boolean | null;
     onStripeCheckout: () => void;
     onPayHover: () => void;
-    onClaim: (method?: "wallet" | "email") => void;
     onCancel: () => void;
   }
 
@@ -46,28 +39,19 @@
     status,
     quantity,
     orderFields,
-    claimMode,
     hasEmailField,
-    hasOrderForm,
-    stripeAfterForm,
     authConnected,
     stripeLoading,
-    approvalRequired,
-    claiming,
-    step,
     buyerFees,
     priceLabel,
     payPreparing,
     formValid,
-    walletFormValid,
     formData = $bindable(),
-    inlineEmail = $bindable(),
     stripeEmail = $bindable(),
     organiserName,
     marketingConsent = $bindable(),
     onStripeCheckout,
     onPayHover,
-    onClaim,
     onCancel,
   }: Props = $props();
 </script>
@@ -128,16 +112,7 @@
     {/each}
   {/if}
 
-  {#if claimMode === "both" && !hasEmailField}
-    <label class="form-field">
-      <span class="form-label">Email <span class="form-label-optional">(for email claim)</span></span>
-      <input
-        type="email"
-        bind:value={inlineEmail}
-        placeholder="your@email.com"
-      />
-    </label>
-  {:else if stripeAfterForm && !hasEmailField && !authConnected}
+  {#if !hasEmailField && !authConnected}
     <!-- Need an email for Stripe checkout when user isn't logged in -->
     <label class="form-field">
       <span class="form-label">Email <span class="required">*</span></span>
@@ -175,59 +150,25 @@
   </div>
 
   <div class="form-actions">
-    {#if stripeAfterForm}
-      <!-- Order form was shown before Stripe checkout -->
-      {#if stripeLoading}
-        <button class="stripe-btn stripe-btn--primary" disabled>Redirecting to Stripe…</button>
-      {:else if status && status.available <= 0}
-        <button class="stripe-btn stripe-btn--primary" disabled>Sold out</button>
-      {:else if status && status.available < quantity}
-        <button class="stripe-btn stripe-btn--primary" disabled>Not enough tickets</button>
-      {:else}
-        <button
-          class="stripe-btn stripe-btn--primary"
-          class:preparing={payPreparing}
-          onclick={onStripeCheckout}
-          onpointerenter={onPayHover}
-          onpointerdown={onPayHover}
-          onmousedown={onPayHover}
-          onfocus={onPayHover}
-          ontouchstart={onPayHover}
-          disabled={!formValid()}
-        >
-          Continue to payment {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
-        </button>
-      {/if}
-    {:else if claimMode === "both"}
-      {#if claiming}
-        <button class="claim-btn" disabled>{step}</button>
-      {:else}
-        <button
-          class="claim-btn"
-          onclick={() => onClaim("wallet")}
-          disabled={!walletFormValid()}
-        >
-          {approvalRequired ? "Request with wallet" : "Claim with wallet"}
-        </button>
-        <button
-          class="claim-btn claim-btn--outline"
-          onclick={() => onClaim("email")}
-          disabled={!formValid() || (!hasEmailField && !inlineEmail.trim())}
-        >
-          {approvalRequired ? "Request with email" : "Claim with email"}
-        </button>
-      {/if}
+    {#if stripeLoading}
+      <button class="stripe-btn stripe-btn--primary" disabled>Redirecting to Stripe…</button>
+    {:else if status && status.available <= 0}
+      <button class="stripe-btn stripe-btn--primary" disabled>Sold out</button>
+    {:else if status && status.available < quantity}
+      <button class="stripe-btn stripe-btn--primary" disabled>Not enough tickets</button>
     {:else}
-      <button class="claim-btn" onclick={() => onClaim()} disabled={claiming || !(claimMode === "email" ? formValid() : walletFormValid())}>
-        {#if claiming}
-          {step}
-        {:else if approvalRequired}
-          Submit request
-        {:else if claimMode === "email"}
-          Claim with email
-        {:else}
-          Claim ticket
-        {/if}
+      <button
+        class="stripe-btn stripe-btn--primary"
+        class:preparing={payPreparing}
+        onclick={onStripeCheckout}
+        onpointerenter={onPayHover}
+        onpointerdown={onPayHover}
+        onmousedown={onPayHover}
+        onfocus={onPayHover}
+        ontouchstart={onPayHover}
+        disabled={!formValid()}
+      >
+        Continue to payment {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
       </button>
     {/if}
     <button class="cancel-btn" onclick={onCancel}>Cancel</button>
@@ -257,12 +198,6 @@
 
   .required {
     color: var(--error);
-  }
-
-  .form-label-optional {
-    font-weight: 400;
-    color: var(--text-muted);
-    font-style: italic;
   }
 
   .order-form input,
@@ -362,37 +297,6 @@
   .privacy-note a {
     color: var(--accent-text);
     text-decoration: underline;
-  }
-
-  /* Shared with parent — Svelte scopes per-component, so duplicate. */
-  .claim-btn {
-    padding: 0.5rem 1.25rem;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: #fff;
-    white-space: nowrap;
-    transition: background var(--transition);
-  }
-
-  .claim-btn:hover:not(:disabled) {
-    background: var(--accent-hover);
-  }
-
-  .claim-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .claim-btn--outline {
-    background: transparent;
-    border: 1px solid var(--accent);
-    color: var(--accent-text);
-  }
-
-  .claim-btn--outline:hover:not(:disabled) {
-    background: var(--accent-subtle);
   }
 
   .stripe-btn {

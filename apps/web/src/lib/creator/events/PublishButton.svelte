@@ -16,7 +16,6 @@
     name: string;
     description: string;
     totalSupply: number;
-    approvalRequired?: boolean;
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
@@ -220,7 +219,6 @@
             totalSupply: s.totalSupply,
             signedManifest: manifests[i]!.signedManifest,
             podBodies: manifests[i]!.podBodies,
-            ...(s.approvalRequired ? { approvalRequired: true } : {}),
             ...(s.wave ? { wave: s.wave } : {}),
             ...(s.saleStart ? { saleStart: s.saleStart } : {}),
             ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),

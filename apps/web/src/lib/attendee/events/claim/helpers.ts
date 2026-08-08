@@ -1,37 +1,10 @@
-import type { OrderField, PaymentChainId, ClaimMode } from "@woco/shared";
-import { CHAIN_INFO } from "../../../payment/chains.js";
+import type { OrderField } from "@woco/shared";
 
 export const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: "$",
   GBP: "\u00a3",
   EUR: "\u20ac",
 };
-
-export const CHAIN_COLORS: Record<number, string> = {
-  1: "#627eea",
-  8453: "#0052ff",
-  10: "#ff0420",
-  42161: "#28a0f0",
-  11155111: "#888",
-  421614: "#888",
-};
-
-export function explorerUrl(chainId: PaymentChainId, txHash: string): string {
-  return `${CHAIN_INFO[chainId].blockExplorer}/tx/${txHash}`;
-}
-
-export function shortHash(h: string): string {
-  return h.length > 14 ? `${h.slice(0, 8)}\u2026${h.slice(-6)}` : h;
-}
-
-export async function copyToClipboard(text: string | null | undefined): Promise<void> {
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    /* ignore */
-  }
-}
 
 /**
  * Synchronously compute the initial Stripe-success state at script-init time
@@ -80,18 +53,6 @@ export function getEmailFromForm(
   const inline = inlineEmail.trim();
   if (inline && inline.includes("@")) return inline;
   return null;
-}
-
-/** Determine the effective claim method for this click. */
-export function effectiveMethod(
-  claimMode: ClaimMode,
-  chosenMethod: "wallet" | "email" | null,
-  authConnected: boolean,
-): "wallet" | "email" {
-  if (claimMode === "wallet") return "wallet";
-  if (claimMode === "email") return "email";
-  if (chosenMethod) return chosenMethod;
-  return authConnected ? "wallet" : "email";
 }
 
 /**

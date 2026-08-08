@@ -69,26 +69,11 @@ export const topicEvent = (eventId: string) =>
 export const topicEventsSnapshot = () =>
   Topic.fromString(`${EVENT_NS}/directory/snapshot`);
 
-/**
- * Editions feed topic. Page 0 is the base topic, additional pages
- * are suffixed with /p{pageIndex} to support >127 tickets per series.
- */
-export const topicEditions = (seriesId: string, page = 0) =>
-  pagedTopic(`${POD_NS}/editions/${component(seriesId, "seriesId")}`, page);
-
-/**
- * Claims feed topic. Same pagination scheme as editions.
- */
-export const topicClaims = (seriesId: string, page = 0) =>
-  pagedTopic(`${POD_NS}/claims/${component(seriesId, "seriesId")}`, page);
-
-/**
- * Claimers feed topic. Page 0 is the base topic — pre-paging v1 feeds ARE
- * page 0, so no migration — and overflow spills onto `/pN` (see
- * lib/event/claimers-feed.ts).
- */
-export const topicClaimers = (seriesId: string, page = 0) =>
-  pagedTopic(`${POD_NS}/claimers/${component(seriesId, "seriesId")}`, page);
+// The v1 per-series claim feeds (woco/pod/editions|claims|claimers|
+// pending-claims/{seriesId}) were retired with the v1 claim rail — the
+// WoCoEventV2 contract is the ticket ledger. Their topic builders are gone so
+// nothing can quietly write that namespace again; see git history for the
+// exact strings if a migration ever needs to READ an old feed.
 
 /**
  * User collection feed topic. Page 0 is the base topic; overflow entries
@@ -114,14 +99,6 @@ export const topicCreatorDirectory = (ethAddress: string, page = 0) =>
     `${EVENT_NS}/creator/${component(ethAddress.toLowerCase(), "ethAddress")}`,
     page,
   );
-
-/**
- * Pending-claims feed topic. Same scheme as claimers: page 0 is the base topic
- * — pre-paging v1 feeds ARE page 0, so no migration — and overflow spills onto
- * `/pN` (see lib/event/pending-claims-feed.ts).
- */
-export const topicPendingClaims = (seriesId: string, page = 0) =>
-  pagedTopic(`${POD_NS}/pending-claims/${component(seriesId, "seriesId")}`, page);
 
 // ---------------------------------------------------------------------------
 // Profile feeds
@@ -159,22 +136,6 @@ export const topicRecoveryStatus = (kernelAddress: string) =>
 // is the authoritative guard.
 export const topicRecoveryGuardian = (guardianAddress: string) =>
   Topic.fromString(`${RECOVERY_NS}/by-guardian/${guardianAddress.toLowerCase()}`);
-
-// ---------------------------------------------------------------------------
-// Pagination helpers
-// ---------------------------------------------------------------------------
-
-/** How many ticket slots fit on page 0 (slot 0 = metadata). */
-export const PAGE_0_CAPACITY = 127;
-
-/** How many ticket slots fit on pages 1+. */
-export const PAGE_N_CAPACITY = 128;
-
-/** Calculate how many edition pages are needed for a given supply. */
-export function editionPageCount(totalSupply: number): number {
-  if (totalSupply <= PAGE_0_CAPACITY) return 1;
-  return 1 + Math.ceil((totalSupply - PAGE_0_CAPACITY) / PAGE_N_CAPACITY);
-}
 
 // ---------------------------------------------------------------------------
 // Marketing feeds — pointer to the organiser's SEALED contact-list blob.

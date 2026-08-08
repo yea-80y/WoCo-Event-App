@@ -26,7 +26,7 @@
   let geo = $state<EventGeo | undefined>(undefined);
   let tags = $state<EventTag[]>([]);
   let imageDataUrl = $state<string | null>(null);
-  let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; approvalRequired?: boolean; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
+  let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
   let cryptoRecipientMissing = $state(false);
   // null = still checking · false = not verified · true = Stripe charges_enabled.
   // Only gates publish when the event actually takes card payments (below).

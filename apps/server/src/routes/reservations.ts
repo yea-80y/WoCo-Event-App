@@ -2,7 +2,6 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
-import { getClaimStatus } from "../lib/event/claim-service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import {
   reserve,
@@ -108,21 +107,23 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+  const onChainEventId = series.onChainEventId;
+  if (!onChainEventId) {
+    // Registration never completed — nothing can be minted, so a seat hold
+    // has nothing to hold. Same refusal create-checkout and claim-status give.
+    return c.json({ ok: false, error: "Tickets for this event are not currently on sale" }, 409);
+  }
 
-  // Closure that the reservation store uses to ask "what is available right now?"
-  // v2 (on-chain) events read from the contract; v1 events read from Swarm feeds.
+  // Closure that the reservation store uses to ask "what is available right
+  // now?" — the contract is the only supply ledger.
   const availableSupplier = async (): Promise<number> => {
-    if (series.onChainEventId) {
-      const chainId = getActiveChainId();
-      // Fail closed on ANY chain problem: EventNotFound returns null, a
-      // transport failure throws — both mean "cannot verify seats exist",
-      // and a hold must never be granted against seats we can't count.
-      const onChainData = await getOnChainEvent(series.onChainEventId, chainId).catch(() => null);
-      if (!onChainData) return 0;
-      return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
-    }
-    const status = await getClaimStatus(seriesId, undefined, undefined, event.creatorFeedSigner);
-    return Math.max(0, status.available);
+    const chainId = getActiveChainId();
+    // Fail closed on ANY chain problem: EventNotFound returns null, a
+    // transport failure throws — both mean "cannot verify seats exist",
+    // and a hold must never be granted against seats we can't count.
+    const onChainData = await getOnChainEvent(onChainEventId, chainId).catch(() => null);
+    if (!onChainData) return 0;
+    return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
   };
 
   const result = await reserve(
