@@ -22,6 +22,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Topic } from "@ethersphere/bee-js";
+import { siteConfigTopic } from "@woco/shared";
 import type { Site } from "@woco/shared";
 
 import {
@@ -155,15 +156,94 @@ test("a legacy platform-written site resolves", async () => {
   assert.equal(res.status === "found" ? res.site.siteId : "", SITE_ID);
 });
 
-test("a failed PAGES read stays non-fatal — pages are content, not ownership", async () => {
+test("pages are merged when the pages feed has them", async () => {
   const res = await resolveSiteConfig(
     SITE_ID,
     readers({
       readConfigPage: async () => ({ status: "ok", data: encodeJsonFeed(legacySite()) }),
-      readPagesPage: async () => null,
+      readPagesPage: async () => encodeJsonFeed({ pages: [{ id: "home" }] }),
     }),
   );
   assert.equal(res.status, "found");
+  assert.deepEqual(res.status === "found" ? res.site.pages : null, [{ id: "home" }]);
+});
+
+test("a THROWING pages read stays non-fatal — pages are content, not ownership", async () => {
+  // The previous version of this test overrode readPagesPage with the helper's own
+  // default, so it asserted nothing the test above it did not. The case that
+  // actually needs pinning is a reader that REJECTS: without the catch, the whole
+  // resolve would reject and a legacy site would become a 500 over missing content.
+  const res = await resolveSiteConfig(
+    SITE_ID,
+    readers({
+      readConfigPage: async () => ({ status: "ok", data: encodeJsonFeed(legacySite()) }),
+      readPagesPage: async () => {
+        throw new Error("pages feed unreachable");
+      },
+    }),
+  );
+  assert.equal(res.status, "found");
+});
+
+test("a THROWING config read is unavailable, not an exception", async () => {
+  // Otherwise a rejecting reader is a fourth outcome and the tri-state is not
+  // total: the function throws instead of returning one of its three answers.
+  const res = await resolveSiteConfig(
+    SITE_ID,
+    readers({
+      readConfigPage: async () => {
+        throw new Error("reader exploded");
+      },
+    }),
+  );
+  assert.equal(res.status, "unavailable");
+});
+
+test("a legacy payload naming a different siteId is unavailable, not found", async () => {
+  // Any decodable non-pointer JSON reaches the legacy branch — an unrecognised
+  // future pointer version, an unrelated document, a config for another site. The
+  // pointer branch already refuses those; this branch used to cast and return one.
+  const res = await resolveSiteConfig(
+    SITE_ID,
+    readers({
+      readConfigPage: async () => ({ status: "ok", data: encodeJsonFeed(legacySite("a-different-site")) }),
+    }),
+  );
+  assert.equal(res.status, "unavailable");
+});
+
+test("a decodable payload that is not a site config at all is unavailable", async () => {
+  const res = await resolveSiteConfig(
+    SITE_ID,
+    readers({ readConfigPage: async () => ({ status: "ok", data: encodeJsonFeed({ foo: 1 }) }) }),
+  );
+  assert.equal(res.status, "unavailable");
+});
+
+test("the readers are called with the right topic and the pointer's signer", async () => {
+  // Nothing else asserts the ARGUMENTS. Without this, a mutant passing the wrong
+  // owner or the wrong topic survives the suite: it fails closed in production
+  // (wrong target → siteId mismatch → unavailable), so the takeover direction
+  // stays shut, but the happy path would break with the tests still green.
+  const seen: { configTopic?: string; ownerHex?: string; targetTopic?: string } = {};
+  const res = await resolveSiteConfig(SITE_ID, {
+    readConfigPage: async (topic) => {
+      seen.configTopic = topic.toHex();
+      return { status: "ok", data: encodeJsonFeed(pointer) };
+    },
+    readPointerTarget: async (ownerHex, baseTopic) => {
+      seen.ownerHex = ownerHex;
+      seen.targetTopic = baseTopic;
+      return { status: "found", bytes: bytesOf(legacySite()), version: 0 };
+    },
+    readPagesPage: async () => null,
+  });
+
+  assert.equal(res.status, "found");
+  assert.equal(seen.configTopic, Topic.fromString(siteConfigTopic(SITE_ID)).toHex());
+  // The signer comes from the pointer, 0x-stripped — not from the caller.
+  assert.equal(seen.ownerHex, SIGNER.replace(/^0x/, ""));
+  assert.equal(seen.targetTopic, siteConfigTopic(SITE_ID));
 });
 
 test("a pointer site resolves, and ownership comes from the POINTER", async () => {
@@ -184,8 +264,31 @@ test("a pointer site resolves, and ownership comes from the POINTER", async () =
 
 // ── The display collapse is still available, and still a collapse ────────────
 
-test("resolveSiteConfigOrNull collapses both failure answers to null", async () => {
+test("resolveSiteConfigOrNull collapses BOTH failure answers to null", async () => {
   // Display paths legitimately show nothing. The point of the separate function is
-  // that choosing to collapse is now visible at the call site instead of built in.
-  assert.equal(await resolveSiteConfigOrNull("no-such-site-anywhere"), null);
+  // that choosing to collapse is a visible call rather than the default.
+  //
+  // Injected, not left to the real readers: without that this ran against whatever
+  // network happened to exist and returned null in every world — no bee, live bee,
+  // and the reverted code alike — so it asserted only "did not crash" while being
+  // the one test in the file that could hang on a blackholed port.
+  const fromUnavailable = await resolveSiteConfigOrNull(
+    SITE_ID,
+    readers({ readConfigPage: async () => ({ status: "error", error: new Error("bee timeout") }) }),
+  );
+  assert.equal(fromUnavailable, null);
+
+  const fromAbsent = await resolveSiteConfigOrNull(
+    SITE_ID,
+    readers({ readConfigPage: async () => ({ status: "absent" }) }),
+  );
+  assert.equal(fromAbsent, null);
+
+  // And it still returns the site when there is one, so "collapses to null" is not
+  // passing by refusing everything.
+  const found = await resolveSiteConfigOrNull(
+    SITE_ID,
+    readers({ readConfigPage: async () => ({ status: "ok", data: encodeJsonFeed(legacySite()) }) }),
+  );
+  assert.equal(found?.site.siteId, SITE_ID);
 });

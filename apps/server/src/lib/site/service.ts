@@ -2,7 +2,7 @@ import { Topic } from "@ethersphere/bee-js";
 import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEventsIndexTopic, isSitePointer } from "@woco/shared";
 import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x, VersionedFeedRead } from "@woco/shared";
 import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult } from "../swarm/feeds.js";
-import { readContentFeedJson, readContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
 
 const DIR_PAGE_LIMIT = 4096;
 
@@ -71,7 +71,14 @@ export async function resolveSiteConfig(
   readers: SiteConfigReaders = DEFAULT_READERS,
 ): Promise<SiteConfigRead> {
   const configTopic = Topic.fromString(siteConfigTopic(siteId));
-  const configPage = await readers.readConfigPage(configTopic);
+  // A rejecting reader would otherwise be a FOURTH outcome — the function would
+  // throw instead of returning one of the three, and the tri-state would not be
+  // total. The real default resolves rather than throws, but a caller may inject
+  // anything and a future reader may change; catching keeps the contract true by
+  // construction rather than by assumption.
+  const configPage = await readers
+    .readConfigPage(configTopic)
+    .catch((e: unknown) => ({ status: "error" as const, error: e instanceof Error ? e : new Error(String(e)) }));
   if (configPage.status === "error") {
     return { status: "unavailable", reason: `config feed read failed: ${configPage.error.message}` };
   }
@@ -110,11 +117,25 @@ export async function resolveSiteConfig(
     return { status: "found", site, siteFeedSigner: head.siteFeedSigner };
   }
 
-  // Legacy platform-written site — pages live in their own split feed. A failed
-  // pages read stays non-fatal: the site is established either way, and pages are
-  // content rather than an ownership fact.
+  // Legacy platform-written site. The payload decoded and is not a pointer, but
+  // that alone does not make it this site: any decodable JSON reaches here — a
+  // future pointer version that `isSitePointer` does not recognise, an unrelated
+  // document, a config naming a different siteId. The pointer branch already
+  // refuses those; this branch used to cast and return them as `found`, which
+  // contradicted this function's own contract and handed a malformed Site to the
+  // display paths. The gates fail closed on it either way (a missing or mismatched
+  // ownerAddress refuses a stranger), so this is correctness, not a second hole.
   const site = head as Site;
-  const pagesPage = await readers.readPagesPage(Topic.fromString(sitePagesTopicFn(siteId)));
+  if (!site?.siteId || site.siteId !== siteId) {
+    return { status: "unavailable", reason: "config payload is not a site config for this siteId" };
+  }
+
+  // Pages live in their own split feed. A failed pages read stays non-fatal — the
+  // site is established either way, and pages are content rather than an ownership
+  // fact — so a rejection is flattened to "no pages" rather than losing the site.
+  const pagesPage = await readers
+    .readPagesPage(Topic.fromString(sitePagesTopicFn(siteId)))
+    .catch(() => null);
   if (pagesPage) {
     const pagesData = decodeJsonFeed<{ pages: Page[] }>(pagesPage);
     if (pagesData?.pages) site.pages = pagesData.pages;
@@ -129,8 +150,11 @@ export async function resolveSiteConfig(
  * about. It exists so read endpoints that legitimately fall through to "show
  * nothing" do not each re-implement the collapse.
  */
-export async function resolveSiteConfigOrNull(siteId: string): Promise<ResolvedSite | null> {
-  const res = await resolveSiteConfig(siteId);
+export async function resolveSiteConfigOrNull(
+  siteId: string,
+  readers: SiteConfigReaders = DEFAULT_READERS,
+): Promise<ResolvedSite | null> {
+  const res = await resolveSiteConfig(siteId, readers);
   return res.status === "found" ? { site: res.site, siteFeedSigner: res.siteFeedSigner } : null;
 }
 
