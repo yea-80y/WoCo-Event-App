@@ -24,34 +24,9 @@ export function getGateStatus(): Promise<ApiResponse<GateStatusData>> {
   return authGet<GateStatusData>("/api/attendee-gate/status");
 }
 
-/** Route B step 1: ticket link/QR text + purchase email → server sig-verifies
- *  the ticket, matches the email HMAC, and emails a 6-digit code. */
-export function startTicketProof(
-  ticket: string,
-  email: string,
-): Promise<ApiResponse<{ seriesId: string; edition: number }>> {
-  return authPost("/api/attendee-gate/start", { ticket, email });
-}
-
-/** Route B step 2: the emailed code → one-shot binding to the authed account. */
-export function confirmTicketProof(params: {
-  seriesId: string;
-  edition: number;
-  code: string;
-  podPubKey?: string;
-}): Promise<ApiResponse<{ gated: boolean; via: string }>> {
-  return authPost("/api/attendee-gate/confirm", { ...params });
-}
-
-/** Wallet claimers: claims on the feed are already bound to the authed parent —
- *  binds every unconsumed edition of the series, no email dance. */
-export function bindWalletTickets(params: {
-  eventId: string;
-  seriesId: string;
-  podPubKey?: string;
-}): Promise<ApiResponse<{ gated: boolean; via: string; bound: number }>> {
-  return authPost("/api/attendee-gate/bind-wallet", { ...params });
-}
+// Route B (ticket link + email → code) and bind-wallet were deleted with the
+// v1 claim rail — both read claim records only the v1 Swarm feeds held, so no
+// on-chain ticket could ever pass them. The unlock path is the email CTA token.
 
 // ---------------------------------------------------------------------------
 // Route A — email CTA token (signup landing)
