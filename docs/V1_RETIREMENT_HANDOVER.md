@@ -149,14 +149,14 @@ Do not raise it again.
 
 ## Working with Fable
 
-**Owner's decision: Fable does phase 2, writing as well as reviewing**, accepting
-the possibility of a mid-run model switch. Honour that.
+**Fable does phase 2 — writing, not just reviewing.**
 
-What is actually known about keeping it effective, from this work: it does best on
-one topic with a named file list, no repo-wide greps, and `git show <sha>` rather
-than `git log -p`. If phase 2 is split, the natural seams are (a) the subtractive
-deletions, (b) the three fail-closed fixes, (c) bind-wallet and the frontend
-callers. Its record here: it caught the Hono `%2F` path-decode gap, the unverified
+It does best on one topic with a named file list, no repo-wide greps, and
+`git show <sha>` rather than `git log -p`. If the work is split, the natural seams
+are (a) the subtractive deletions, (b) the three fail-closed fixes, (c) bind-wallet
+and the frontend callers.
+
+Its record on phase 1: it caught the Hono `%2F` path-decode gap, the unverified
 editions-write precondition, the incoherent delete-safety substitution, the
 `getOnChainEventV2` fail-open, and that bind-wallet was already dead — all things
 the main session had wrong.
