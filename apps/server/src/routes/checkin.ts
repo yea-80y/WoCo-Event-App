@@ -16,9 +16,7 @@
  */
 
 import { Hono, type Context } from "hono";
-import { createHash } from "node:crypto";
 import type {
-  ClaimedTicket,
   CheckinPack,
   CheckinSeries,
   CheckinSyncRequest,
@@ -27,8 +25,6 @@ import type {
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
-import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { readAllClaimers } from "../lib/event/claimers-feed.js";
 import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
 import {
   issueDoorPass,
@@ -186,8 +182,10 @@ checkin.get("/:eventId/pack", async (c) => {
         totalSupply: s.totalSupply,
       };
 
+      // Slot owners come from the contract, which is the only ticket ledger. A
+      // series that never finished registering has no slots, so it contributes an
+      // empty entry rather than falling back to a Swarm feed no longer written.
       if (s.swarmManifestRef && s.onChainEventId) {
-        // v2 — slot owners from chain enable offline ecrecover verification
         entry.onChainEventId = s.onChainEventId as CheckinSeries["onChainEventId"];
         const onChain = await getOnChainEvent(s.onChainEventId, chainId).catch(() => null);
         const slotCount = onChain ? Number(onChain.nextSlot) : 0;
@@ -200,27 +198,6 @@ checkin.get("/:eventId/pack", async (c) => {
           },
         );
         entry.slotOwners = owners;
-      } else {
-        // v1 — claim ledger with sig hashes from the claimed-ticket blobs
-        const claimers = await readAllClaimers(s.seriesId).catch(() => []);
-        entry.claimedEditions = await mapWithConcurrency(
-          claimers,
-          SLOT_READ_CONCURRENCY,
-          async (claimer) => {
-            let sigHash = "";
-            if (claimer.claimedRef) {
-              try {
-                const ticket = JSON.parse(await downloadFromBytes(claimer.claimedRef)) as ClaimedTicket;
-                if (ticket.originalSignature) {
-                  sigHash = createHash("sha256").update(ticket.originalSignature).digest("hex");
-                }
-              } catch (err) {
-                console.warn(`[checkin] claimedRef fetch failed (${s.seriesId} #${claimer.edition}):`, err);
-              }
-            }
-            return { edition: claimer.edition, sigHash };
-          },
-        );
       }
       series.push(entry);
     }
