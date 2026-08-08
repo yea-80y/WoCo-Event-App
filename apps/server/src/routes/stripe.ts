@@ -620,13 +620,32 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Event organiser has not completed Stripe onboarding" }, 400);
   }
 
-  // Sponsor-readiness gate. For on-chain (v2) series the webhook mints via the
-  // sponsor wallet's `batchClaimFor`, which reverts `NotAuthorised` if the
-  // sponsor isn't on the contract allow-list — that would charge the buyer then
-  // auto-refund. Refuse the checkout up front instead. Fail-OPEN on an RPC error
-  // (transient) since the webhook's auto-refund remains the backstop; only a
-  // definitive "not authorised" blocks the sale.
-  if (series.swarmManifestRef && series.onChainEventId) {
+  // Registration gate. Publish is two phases and the second can fail: the event
+  // feed is written first, then `registerAndFinalise()` registers the series on
+  // chain. In between, the series has no `onChainEventId`. Such an event never
+  // reaches the public directory (the snapshot is rebuilt on register-success),
+  // but it IS reachable by direct link and from a builder site — and the mint is
+  // on-chain only, so there is nothing to allocate against. Refuse rather than
+  // charge-then-refund, the same trade the sponsor gate below makes. Fails CLOSED:
+  // this is a property of the series, not a transient chain condition.
+  if (!series.onChainEventId || !series.swarmManifestRef) {
+    console.error(
+      `[stripe/create-checkout] BLOCKED — series is not registered on chain; refusing to charge ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
+    );
+    return c.json(
+      { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
+      409,
+    );
+  }
+
+  // Sponsor-readiness gate. The webhook mints via the sponsor wallet's
+  // `batchClaimFor`, which reverts `NotAuthorised` if the sponsor isn't on the
+  // contract allow-list — that would charge the buyer then auto-refund. Refuse the
+  // checkout up front instead. Fail-OPEN on an RPC error (transient) since the
+  // webhook's auto-refund remains the backstop; only a definitive "not
+  // authorised" blocks the sale.
+  {
     let sponsorReady = true;
     try {
       sponsorReady = await isSponsorReady(getActiveChainId());
