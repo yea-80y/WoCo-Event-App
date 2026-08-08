@@ -14,13 +14,14 @@ export const FEATURES = {
   // validation in lockstep — an old client can't offer crypto past the API.
   cryptoPaymentsAllowed: false,
   // The MCP agent-commerce rail (/api/agent/quote + /buy): an agent draws USDC under a
-  // spend permission the user signed on-chain. Shares the #41 defect — settlement is
-  // on-chain but the ticket still mints via claimTicket(), i.e. Swarm-only. Left ON: it
-  // is opt-in (no grant, no rail), is not reachable from the checkout UI, and so does not
-  // contradict "crypto is not surfaced for launch". Flagged separately from
-  // cryptoPaymentsAllowed because it is a separate decision — and because a live money
-  // path needs a kill switch that is not a code change.
-  agentCommerceAllowed: true,
+  // spend permission the user signed on-chain. Was ON as a deliberate "opt-in, so the
+  // blast radius is zero" call; turned OFF because the blast radius stopped being zero.
+  // It mints through claimTicket(), the v1 Swarm rail, and f951652 retired the editions
+  // feed that rail allocates from — so selectFreeSlot finds no slots and the mint throws
+  // "No tickets available" for every event created since 2026-06-29. spend-authority.ts
+  // consumes the USDC draw BEFORE minting, so the buyer is charged and gets nothing.
+  // Turn on with a v2 on-chain mint path, not before.
+  agentCommerceAllowed: false,
   // Organiser custom sending domains. OFF for launch, for two independent
   // reasons: the production Resend key is send-only, so the Domains API 401s and
   // the panel could only ever show an error; and PRICING_AND_EMAIL.md §6 forbids
