@@ -20,11 +20,9 @@
 
 import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
-import type { SignedTicket, SitePalette } from "@woco/shared";
+import type { SitePalette } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
-import { getClaimedTicketByEdition } from "../lib/event/claim-service.js";
-import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
 import { verifyTicketSig } from "../lib/ticket/verify-sig.js";
 import { getSiteTheme } from "../lib/site/service.js";
@@ -160,16 +158,6 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.json}", async (c) => {
     return c.json({ ok: false, error: "Invalid ticket signature" }, 403);
   }
 
-  // Sig chain is best-effort: the QR + per-ticket sig alone remain verifiable
-  // against chain even if Swarm reads fail right now.
-  const claimed = await getClaimedTicketByEdition(seriesId, edition).catch(() => null);
-  const original: SignedTicket | null =
-    claimed?.eventId === eventId && claimed.originalPodHash
-      ? await downloadFromBytes(claimed.originalPodHash)
-          .then((json) => JSON.parse(json) as SignedTicket)
-          .catch(() => null)
-      : null;
-
   const pod = {
     format: "woco.ticket.download.v1",
     eventId,
@@ -178,12 +166,14 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.json}", async (c) => {
     qrContent: `woco://t/${eventId}/${seriesId}/${edition}/${sig}`,
     ticketSig: sig,
     sigVerification: {
-      verdict, // "valid" (recovers to on-chain slotOwner) | "unverified" (legacy v1 / chain unreachable)
+      verdict, // "valid" (recovers to on-chain slotOwner) | "unverified" (chain unreachable)
       method:
         "EIP-191 recover of ticketSig over buildTicketCanonicalMessage(onChainEventId, seriesId, edition) must equal the on-chain WoCoEventV2 slotOwner for edition-1",
     },
-    claimed: claimed?.eventId === eventId ? claimed : null,
-    original,
+    // On-chain tickets have no ClaimedTicket/SignedTicket PODs — the contract
+    // is the ledger. Fields kept (as null) so the download format is stable.
+    claimed: null,
+    original: null,
     downloadedAt: new Date().toISOString(),
   };
 

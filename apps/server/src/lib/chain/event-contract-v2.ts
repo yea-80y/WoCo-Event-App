@@ -1,4 +1,4 @@
-import { JsonRpcProvider, Contract, Interface, Wallet } from "ethers";
+import { JsonRpcProvider, Contract, Interface, Wallet, id } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import type { OnChainEvent, SlotData } from "./event-contract.js";
@@ -17,6 +17,8 @@ const V2_READ_ABI = [
   "function getEvent(bytes32) view returns (uint64 totalSupply, uint64 nextSlot, uint128 priceBaseUnits, address organiser, address payoutRecipient, uint16 platformFeeBps, address dropGate, bytes32 manifestRef)",
   "function getSlotData(bytes32 eventId, uint256 slot) view returns (address owner, address claimer, bytes32 orderRef, bool escrowed, bool refunded)",
   "function authorisedSponsors(address) view returns (bool)",
+  // Declared so ethers decodes the revert — getOnChainEventV2 keys on its name.
+  "error EventNotFound()",
 ];
 
 const V2_CLAIM_ABI = [
@@ -72,6 +74,18 @@ export async function isSponsorAuthorisedV2(
   return readContract(contractAddress, chainId).authorisedSponsors(sponsorAddress) as Promise<boolean>;
 }
 
+/** 4-byte selector of `EventNotFound()` — fallback match when ethers cannot
+ *  attach the decoded error (e.g. a provider that strips revert metadata). */
+const EVENT_NOT_FOUND_SELECTOR = id("EventNotFound()").slice(0, 10);
+
+/**
+ * Null means exactly one thing: the contract reverted `EventNotFound()` — the
+ * event has no on-chain record. Every OTHER failure (RPC outage, timeout, bad
+ * chain config) THROWS. Callers that use `nextSlot` as a safety count
+ * (delete-safety in event/service.ts, availability, gate tiers) rely on this:
+ * a transport failure read as "0 claimed" would let a sold-out event be
+ * deleted or a closed gate open.
+ */
 export async function getOnChainEventV2(
   onChainEventId: string,
   contractAddress: string,
@@ -88,10 +102,13 @@ export async function getOnChainEventV2(
       organiser:   (r[3] as string).toLowerCase(), // organiser
       manifestRef: r[7] as string,                 // manifestRef
     };
-  } catch {
-    // V2 reverts `EventNotFound` when event doesn't exist. Caller treats null
-    // as "no on-chain record yet" — same shape as the V1 path.
-    return null;
+  } catch (err) {
+    const e = err as { revert?: { name?: string } | null; data?: unknown };
+    if (e?.revert?.name === "EventNotFound") return null;
+    if (typeof e?.data === "string" && e.data.toLowerCase() === EVENT_NOT_FOUND_SELECTOR) {
+      return null;
+    }
+    throw err;
   }
 }
 

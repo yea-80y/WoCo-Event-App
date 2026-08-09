@@ -238,27 +238,12 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Only the event organiser can send broadcasts" }, 403);
     }
 
-    // Snapshot the audience ONCE. Re-deriving it per chunk would be a Swarm read
-    // per series per chunk, and a blip midway would make real attendees look
-    // like strangers — "an unreadable page is not an empty page" all over again.
-    const { hashes, unverifiableSeries, unreadableSeries } = await getAttendeeEmailHashes(event);
-    if (unreadableSeries > 0) {
-      // Refuse rather than bake a partial snapshot into a half-hour send.
-      return c.json(
-        {
-          ok: false,
-          error:
-            "Could not read your attendee list just now — nothing has been sent. Try again in a moment.",
-          code: "ATTENDEES_UNREADABLE",
-        },
-        503,
-      );
-    }
-
-    // An on-chain series records the claimer only inside the sealed order blob,
-    // so membership is unprovable server-side for those recipients. Fall back to
-    // the marketing abuse gate for the unproven remainder only — in practice a
-    // no-op, since an on-chain series is a paid Stripe series.
+    // On-chain series record the claimer only inside the sealed order blob, so
+    // attendee membership is unprovable server-side — the proven set is empty
+    // (see lib/event/attendee-emails.ts). Event broadcasts therefore ride the
+    // marketing abuse gate: a verified organiser may mail their decrypted
+    // recipient list; an unverified one cannot event-broadcast at all.
+    const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event);
     const allowUnproven = unverifiableSeries > 0 && (await isVerifiedOrganiser(org));
 
     fromDisplayName = event.title;

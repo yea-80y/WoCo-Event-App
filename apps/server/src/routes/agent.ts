@@ -26,7 +26,7 @@ import type { Context, Next } from "hono";
 import { USDC_ADDRESSES, FEATURES } from "@woco/shared";
 import type { Hex0x, PaymentChainId, SealedBox } from "@woco/shared";
 import { getEvent, listEvents } from "../lib/event/service.js";
-import { getClaimStatus } from "../lib/event/claim-service.js";
+import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { fiatToUSD } from "../lib/payment/eth-price.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import type { PodGate, PodGateGroup } from "@woco/shared";
@@ -83,6 +83,9 @@ interface ResolvedPayment {
   eventTitle: string;
   /** POD-holdings gate on this series, if any — enforced at /buy before mint. */
   gate?: PodGate | PodGateGroup;
+  /** On-chain id of the series being SOLD (not the gate's POD event) — the
+   *  only source for a firstN gate's committed claim count. */
+  onChainEventId?: string;
 }
 
 type Resolved =
@@ -137,24 +140,40 @@ async function resolveSeriesPayment(eventId: string, seriesId: string): Promise<
       seriesName: series.name,
       eventTitle: event.title,
       gate: series.gate,
+      onChainEventId: series.onChainEventId,
     },
   };
 }
 
 /**
  * Enforce the series POD-holdings gate against the funding/claiming Kernel,
- * mirroring the events claim route (claims.ts). Fails closed. Returns null when
- * the gate is satisfied (or absent), or an error string to reject with.
+ * mirroring the Stripe checkout gate (stripe.ts). Fails closed. Returns null
+ * when the gate is satisfied (or absent), or an error string to reject with.
+ *
+ * A firstN window needs the sold series' committed claim count — read from the
+ * contract (`nextSlot`: slots ever allocated, monotonic; overcounts after a
+ * refund, which errs toward "early access over" — the phase that still lets
+ * holders through). An unknown count is passed through as undefined, which
+ * computeGatePhase resolves to holders-only: never a definite count of 0, so
+ * a read failure can never hold a firstN window open past its boundary. The
+ * holdings check itself fails closed inside checkPodGate.
  */
 async function gateRejection(
   gate: PodGate | PodGateGroup | undefined,
-  seriesId: string,
+  onChainEventId: string | undefined,
   userKernel: Hex0x,
 ): Promise<string | null> {
   if (!gate) return null;
-  const tierClaimed = gateNeedsClaimCount(gate)
-    ? (await getClaimStatus(seriesId)).claimed
-    : undefined;
+  let tierClaimed: number | undefined;
+  if (gateNeedsClaimCount(gate)) {
+    if (!onChainEventId) {
+      // Tiered gate on a series with no on-chain record: the count does not
+      // exist anywhere, so the phase can never resolve. Fail closed.
+      return "This ticket is not currently available.";
+    }
+    const onChain = await getOnChainEvent(onChainEventId, getActiveChainId()).catch(() => null);
+    if (onChain) tierClaimed = Number(onChain.nextSlot);
+  }
   const phase = gatePhase(gate, { tierClaimed });
   if (phase === "closed") return "This ticket is not currently available.";
   if (phase === "holders-only") {
@@ -390,8 +409,8 @@ agentRouter.post("/buy", async (c) => {
     }
 
     // POD gate — fail closed BEFORE consuming the intent / minting, same as the
-    // events claim route. A gated-out Kernel can never settle here.
-    const gateErr = await gateRejection(r.gate, seriesId, userKernel.toLowerCase() as Hex0x);
+    // Stripe checkout gate. A gated-out Kernel can never settle here.
+    const gateErr = await gateRejection(r.gate, r.onChainEventId, userKernel.toLowerCase() as Hex0x);
     if (gateErr) return c.json({ ok: false, gated: true, error: gateErr }, 403);
 
     // Bind the draw to this exact purchase. Peek (don't burn yet) to get the

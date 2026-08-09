@@ -22,17 +22,13 @@
  * NOT the outer `tx.from`. A 4337 userOp's `tx.from` is the bundler, so the
  * public claim endpoint's `tx.from === claimer` binding cannot be used here — the
  * log proof (from = exactly the user Kernel, to = organiser, exact amount) is the
- * stronger guarantee, and we mint via the internal `claimTicket()` directly.
+ * stronger guarantee.
  *
  * Only Arbitrum Sepolia (421614) — the locked Kernel/paymaster chain.
  */
 
 import type { Hex0x, PaymentChainId, SealedBox, ClaimedTicket } from "@woco/shared";
 import { USDC_ADDRESSES } from "@woco/shared";
-import { JsonRpcProvider } from "ethers";
-import { getRpcUrl, ERC20_TRANSFER_TOPIC, getMinConfirmations } from "../payment/constants.js";
-import { checkAndConsumeTxHash } from "../payment/tx-registry.js";
-import { claimTicket } from "../event/claim-service.js";
 
 /** Locked rail — ZeroDev Kernel + gasless paymaster run here (Arb Sepolia). */
 export const AGENT_SPEND_CHAIN_ID = 421614 as const;
@@ -93,63 +89,6 @@ export function agentBudgetParams(agentAddress: Hex0x, organiserRecipient: Hex0x
 }
 
 // ---------------------------------------------------------------------------
-// On-chain verification of the agent's draw (read-only — no key, no funds).
-// ---------------------------------------------------------------------------
-
-const providers = new Map<PaymentChainId, JsonRpcProvider>();
-function provider(chainId: PaymentChainId): JsonRpcProvider {
-  let p = providers.get(chainId);
-  if (!p) {
-    p = new JsonRpcProvider(getRpcUrl(chainId), chainId, { staticNetwork: true });
-    providers.set(chainId, p);
-  }
-  return p;
-}
-
-/**
- * Confirm the settlement tx contains a USDC `Transfer` log that is EXACTLY
- * from = userKernel, to = organiser, value = amount, at the per-chain
- * confirmation depth. Mirrors the shop rail's `verifyDrawOnChain` — log-based,
- * never the outer `tx.from` (which is the 4337 bundler). Returns the block
- * timestamp so the caller can enforce purchase-intent freshness.
- */
-async function verifyUsdcTransferLog(
-  chainId: PaymentChainId,
-  txHash: string,
-  from: string,
-  to: string,
-  usdcAddress: string,
-  amount: bigint,
-): Promise<{ ok: true; blockTimestamp: number } | { ok: false; error: string }> {
-  const p = provider(chainId);
-  let receipt: Awaited<ReturnType<JsonRpcProvider["getTransactionReceipt"]>>;
-  try {
-    receipt = await p.waitForTransaction(txHash, getMinConfirmations(chainId), 30_000);
-  } catch {
-    receipt = null;
-  }
-  if (!receipt) return { ok: false, error: "Settlement tx not confirmed in time" };
-  if (receipt.status !== 1) return { ok: false, error: "Settlement tx reverted" };
-
-  const usdc = usdcAddress.toLowerCase();
-  const fromTopic = "0x" + from.toLowerCase().replace(/^0x/, "").padStart(64, "0");
-  const toTopic = "0x" + to.toLowerCase().replace(/^0x/, "").padStart(64, "0");
-  for (const log of receipt.logs) {
-    if (log.address.toLowerCase() !== usdc) continue;
-    if (log.topics[0] !== ERC20_TRANSFER_TOPIC) continue;
-    if (log.topics.length < 3) continue;
-    if (log.topics[1].toLowerCase() !== fromTopic) continue;
-    if (log.topics[2].toLowerCase() !== toTopic) continue;
-    if (BigInt(log.data) !== amount) continue;
-    // Matched. Resolve the block timestamp for the freshness (intent) check.
-    const block = await p.getBlock(receipt.blockNumber);
-    if (!block) return { ok: false, error: "Settlement block not found" };
-    return { ok: true, blockTimestamp: block.timestamp };
-  }
-  return { ok: false, error: "No matching USDC Transfer (userKernel→organiser, exact amount) in tx" };
-}
-
-// ---------------------------------------------------------------------------
 // Settle — verify the agent's draw and mint the ticket to the user's Kernel.
 // ---------------------------------------------------------------------------
 
@@ -175,82 +114,28 @@ export interface SettleAgentPurchaseOpts {
   encryptedOrder?: SealedBox;
 }
 
-/** Clock-skew tolerance (seconds) between the intent issuer and chain block time. */
-const FRESHNESS_SKEW_SECONDS = 120;
-
 export type SettleResult =
   | { ok: true; ticket: ClaimedTicket; settlementTxHash: string }
   | { ok: false; error: string; code: 400 | 402 | 403 | 404 | 409 | 502 };
 
-/** In-flight settlement lock per draw tx — reject concurrent duplicate buys. */
-const settling = new Set<string>();
-
 /**
- * Verify the agent's on-chain draw, then mint the ticket to the user's Kernel.
- * The draw tx is one-shot (consumed in the global tx registry) so the same draw
- * can never mint two tickets. We mint via the internal `claimTicket()` directly,
- * bypassing the public claim endpoint's `tx.from === claimer` binding (invalid
- * for a 4337 payment) — the log proof here is the stronger guarantee.
+ * RETIRED. The agent rail settled by minting through the v1 Swarm rail
+ * (`claimTicket`), which no longer exists — so a verified draw could move the
+ * buyer's USDC and mint nothing. Refuse before verifying or consuming
+ * anything: the draw tx is NOT consumed, so it stays bindable to a future
+ * settlement path. Unreachable while `agentCommerceAllowed` is false; this
+ * guard is for the day the flag flips back before a v2 mint path (claimFor
+ * keyed by the paying Kernel — a new design, see the v1-retirement handover)
+ * exists. The deleted verification invariants worth carrying into that
+ * design: USDC Transfer LOG proof (never tx.from — 4337 bundler), intent
+ * freshness against block timestamp, one-shot draw-tx consumption.
  */
-export async function settleAgentTicketPurchase(opts: SettleAgentPurchaseOpts): Promise<SettleResult> {
-  const txHash = opts.settlementTxHash.toLowerCase();
-
-  let amount: bigint;
-  try {
-    amount = BigInt(opts.amountAtomic);
-  } catch {
-    return { ok: false, error: "Invalid amount", code: 400 };
-  }
-  if (amount <= 0n) return { ok: false, error: "Amount must be positive", code: 400 };
-
-  if (settling.has(txHash)) {
-    return { ok: false, error: "Settlement already in progress for this draw", code: 409 };
-  }
-  settling.add(txHash);
-  try {
-    // 1. Verify the draw moved exactly the expected USDC userKernel→organiser.
-    const verified = await verifyUsdcTransferLog(
-      opts.chainId,
-      txHash,
-      opts.userKernel,
-      opts.organiser,
-      opts.usdcAddress,
-      amount,
-    );
-    if (!verified.ok) return { ok: false, error: verified.error, code: 402 };
-
-    // 1b. Freshness: the draw must post-date the purchase intent. A pre-existing
-    //     matching transfer (older than the intent) cannot be bound to this buy.
-    if (verified.blockTimestamp < opts.notBeforeUnix - FRESHNESS_SKEW_SECONDS) {
-      return { ok: false, error: "Settlement tx predates the purchase intent", code: 402 };
-    }
-
-    // 2. One-shot the draw tx BEFORE minting so concurrent/replayed buys can't
-    //    mint twice off the same payment. Atomic check-and-set.
-    if (!checkAndConsumeTxHash(txHash)) {
-      return { ok: false, error: "This draw has already been settled", code: 409 };
-    }
-
-    // 3. Mint to the user's Kernel (it funded the draw and receives the ticket).
-    try {
-      const ticket = await claimTicket({
-        seriesId: opts.seriesId,
-        identifier: { type: "wallet", address: opts.userKernel },
-        encryptedOrder: opts.encryptedOrder,
-        paid: true,
-        via: "crypto",
-      });
-      const { _pendingId, ...clean } = ticket;
-      void _pendingId;
-      return { ok: true, ticket: clean, settlementTxHash: txHash };
-    } catch (err) {
-      // Funds DID move but the mint failed — surface loudly. The draw tx is
-      // already consumed (charged-without-ticket); the user is owed a refund or
-      // a manual mint. Rare: only "already claimed / sold out / series missing".
-      console.error(`[agent/settle] mint failed after verified draw ${txHash}:`, err);
-      return { ok: false, error: `Ticket mint failed after payment: ${(err as Error).message}`, code: 502 };
-    }
-  } finally {
-    settling.delete(txHash);
-  }
+export async function settleAgentTicketPurchase(_opts: SettleAgentPurchaseOpts): Promise<SettleResult> {
+  return {
+    ok: false,
+    error:
+      "Agent purchases cannot be settled: the ticket mint path has been retired. " +
+      "The draw has not been consumed.",
+    code: 409,
+  };
 }

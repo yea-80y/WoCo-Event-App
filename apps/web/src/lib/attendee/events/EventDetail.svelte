@@ -313,14 +313,10 @@
             <ClaimButton
               eventId={event.eventId}
               seriesId={s.seriesId}
-              totalSupply={s.totalSupply}
               encryptionKey={event.encryptionKey}
               orderFields={event.orderFields}
-              claimMode={event.claimMode ?? "wallet"}
-              approvalRequired={s.approvalRequired ?? false}
               apiUrl={externalApiUrl}
               payment={s.payment}
-              eventEndDate={event.endDate}
               quantity={ticketQty[s.seriesId] ?? 1}
             />
           </div>

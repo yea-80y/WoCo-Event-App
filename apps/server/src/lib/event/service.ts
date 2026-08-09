@@ -9,7 +9,6 @@ import { batchForDeploy, type BatchSelection } from "../etherna/batch-router.js"
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId, getOnChainEvent } from "../chain/event-contract.js";
-import { getClaimStatus } from "./claim-service.js";
 import { heldFor } from "./reservation-store.js";
 import { validatePodGate } from "../pod/gate-check.js";
 import { upsertCreatorPod } from "../pod/directory.js";
@@ -28,7 +27,6 @@ import {
   topicCreatorDirectory,
   topicEvent,
 } from "../swarm/topics.js";
-import { readPendingPagesStrict } from "./pending-claims-feed.js";
 
 /**
  * Batch routing for a LEGACY (platform-signed) event detail feed restamp —
@@ -85,7 +83,6 @@ export async function createEventV2(opts: {
     totalSupply: number;
     signedManifest: SignedManifestV1;
     podBodies: PodV2Body[];
-    approvalRequired?: boolean;
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
@@ -200,7 +197,6 @@ export async function createEventV2(opts: {
         price: s.payment ? parseFloat(s.payment.price) : 0,
         swarmManifestRef,
         manifestRef: manifestDigestHex,
-        ...(s.approvalRequired ? { approvalRequired: true } : {}),
         ...(s.wave ? { wave: s.wave } : {}),
         ...(s.saleStart ? { saleStart: s.saleStart } : {}),
         ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
@@ -634,32 +630,27 @@ export async function deleteEventIfNoOrders(opts: {
   if (!feed.deleted) {
     const blockers: string[] = [];
     for (const s of feed.series) {
+      // The contract is the only ticket ledger. A series with no on-chain
+      // record has no count to verify ANYWHERE — there is nothing to
+      // substitute, so it fails closed: refuse rather than read "cannot
+      // verify" as zero. (A registered-but-EventNotFound series reads null,
+      // which IS a verified zero — nothing can have minted; transport
+      // failures throw, per getOnChainEventV2.)
+      if (!s.onChainEventId) {
+        blockers.push(`"${s.name}": series has no on-chain record — ticket count cannot be verified`);
+        continue;
+      }
       let claimed: number;
       try {
-        if (s.onChainEventId) {
-          const onChain = await getOnChainEvent(s.onChainEventId, getActiveChainId());
-          claimed = onChain ? Number(onChain.nextSlot) : 0;
-        } else {
-          claimed = (await getClaimStatus(s.seriesId, undefined, undefined, feed.creatorFeedSigner)).claimed;
-        }
+        const onChain = await getOnChainEvent(s.onChainEventId, getActiveChainId());
+        // nextSlot = slots ever allocated (refunds flag, never free, slots) —
+        // overcounting after refunds is the safe direction for delete-safety.
+        claimed = onChain ? Number(onChain.nextSlot) : 0;
       } catch (err) {
         console.error(`[event] delete order-check failed for series ${s.seriesId}:`, err);
         throw new Error("Could not verify order status — try again");
       }
       if (claimed > 0) blockers.push(`"${s.name}": ${claimed} ticket(s) issued`);
-
-      // Strict read across every page — the lenient reader collapses transient
-      // Swarm errors into null, which here would read as "no pending requests".
-      // Fail closed instead.
-      const pendingRead = await readPendingPagesStrict(s.seriesId);
-      if (pendingRead.status === "error") {
-        console.error(`[event] delete pending-check failed for series ${s.seriesId}:`, pendingRead.error);
-        throw new Error("Could not verify order status — try again");
-      }
-      const pendingCount = pendingRead.pages
-        .flatMap((p) => p.pending)
-        .filter((p) => p.status === "pending").length;
-      if (pendingCount > 0) blockers.push(`"${s.name}": ${pendingCount} approval request(s) pending`);
 
       const held = heldFor(s.seriesId);
       if (held > 0) blockers.push(`"${s.name}": ${held} seat(s) currently held by buyers`);

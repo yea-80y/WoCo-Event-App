@@ -317,21 +317,9 @@ export function profileAvatarContentTopic(address: string): string {
   return `woco/profile/avatar/${address.toLowerCase()}`;
 }
 
-/**
- * Canonical content-feed topic STRING for a series' EDITIONS feed
- * (`woco/pod/editions/{seriesId}` or paged `…/p{N}`). Phase B: the editions feed
- * is a SOC owned by the organiser's content-feed signer (the carrier), so the
- * server can only READ it (it never holds that key) and the platform signer never
- * writes editions. The 4096-byte `pack4096` page rides inline (Etherna-safe). MUST
- * byte-match the server's bee-js `topicEditions` strings so the legacy
- * platform-feed and the client SOC address the same logical feed. Page 0 = slot 0
- * meta + editions 1..127; pages 1+ = 128 editions each.
- */
-export function editionsContentTopic(seriesId: string, page = 0): string {
-  return page === 0
-    ? `woco/pod/editions/${seriesId}`
-    : `woco/pod/editions/${seriesId}/p${page}`;
-}
+// `editionsContentTopic` (woco/pod/editions/{seriesId}) was deleted with the
+// v1 claim rail — nothing writes or reads the editions feed; the WoCoEventV2
+// contract is the supply ledger.
 
 // ---------------------------------------------------------------------------
 // Versioned content-feed READ (probe latest, reassemble, legacy fallback)

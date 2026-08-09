@@ -4,7 +4,6 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { readAllClaimers } from "../lib/event/claimers-feed.js";
 import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
@@ -49,8 +48,12 @@ orders.get("/:id/orders", requireAuth, async (c) => {
     const chainId = getActiveChainId();
 
     for (const series of event.series) {
-      if (series.swarmManifestRef && series.onChainEventId) {
-        // ── v2: source of truth is the on-chain slot registry ──────────────
+      // The contract is the only order ledger. A series that never finished
+      // registering has no slots and therefore no orders — skip rather than
+      // reaching for a Swarm feed that is no longer written.
+      if (!series.swarmManifestRef || !series.onChainEventId) continue;
+
+      {
         const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
         if (!onChainData || onChainData.nextSlot === 0n) continue;
 
@@ -109,33 +112,6 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           for (const entry of results) {
             if (entry) orderEntries.push(entry);
           }
-        }
-      } else {
-        // ── v1: Swarm claimers feed (paged) ─────────────────────────────────
-        const claimers = await readAllClaimers(series.seriesId);
-        if (claimers.length === 0) continue;
-
-        for (const claimer of claimers) {
-          let encryptedOrder: SealedBox | undefined;
-
-          if (claimer.orderRef) {
-            try {
-              const json = await downloadFromBytes(claimer.orderRef);
-              encryptedOrder = JSON.parse(json) as SealedBox;
-            } catch (err) {
-              console.error(`[orders] Failed to download order ref ${claimer.orderRef}:`, err);
-            }
-          }
-
-          orderEntries.push({
-            seriesId: series.seriesId,
-            seriesName: series.name,
-            edition: claimer.edition,
-            claimerAddress: claimer.claimerAddress,
-            claimedAt: claimer.claimedAt,
-            ...(encryptedOrder ? { encryptedOrder } : {}),
-            ...(claimer.via ? { via: claimer.via } : {}),
-          });
         }
       }
     }
