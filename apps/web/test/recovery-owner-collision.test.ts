@@ -25,6 +25,8 @@ function clean(over: Partial<OwnerCollisionEvidence> = {}): OwnerCollisionEviden
     existingBinding: undefined,
     podSeedPresent: false,
     cachedKernel: null,
+    verifiedBinding: null,
+    counterfactualAddress: OTHER, // this credential's own account is NOT the target
     counterfactualOwner: null,
     ...over,
   };
@@ -114,7 +116,51 @@ test("address comparisons are case-insensitive", () => {
   assert.match(v.reason, /repair/);
 });
 
-test("a missing address blocks rather than defaulting to allow", () => {
+test("a missing owner address blocks rather than defaulting to allow", () => {
   const v = decideOwnerCollision(clean({ newOwnerEoa: "" }));
   assert.equal(v.status, "block");
+});
+
+test("a missing TARGET address blocks too", () => {
+  // Pins the second half of the guard clause: mutating `!eoa || !target` to `!eoa`
+  // must not survive. Without this, a caller passing an empty target reaches the
+  // ownership rules and can be ALLOWED by the repair path comparing "" to "".
+  const v = decideOwnerCollision(clean({ targetKernel: "" }));
+  assert.equal(v.status, "block");
+});
+
+test("recovering your OWN account onto its own credential is allowed", () => {
+  // A never-recovered email account, recovered through the portal on a fresh
+  // device. The account this credential "already has" IS the target, so there is
+  // no second account and nothing to alias. Blocking would tell a rightful holder
+  // their own account belongs to someone else.
+  const v = decideOwnerCollision(
+    clean({ counterfactualAddress: TARGET, counterfactualOwner: EOA }),
+  );
+  assert.equal(v.status, "allow");
+  assert.match(v.reason, /own account/);
+});
+
+test("a cache entry matching the target does not block", () => {
+  // Pins the `cached !== target` half. A mutant loosening this to `if (cached)`
+  // would block every returning device, which is the repair path again.
+  const v = decideOwnerCollision(clean({ cachedKernel: TARGET }));
+  assert.equal(v.status, "allow");
+});
+
+test("a localStorage-verified binding for a different account blocks", () => {
+  // Survives IndexedDB eviction, so it is the one signal still present in the
+  // skew where binding, seed and cache all read clean.
+  const v = decideOwnerCollision(clean({ verifiedBinding: OTHER }));
+  assert.equal(v.status, "block");
+  assert.match(v.reason, /previously verified/);
+});
+
+test("a FAILED local seed read says 'couldn't confirm', not 'already taken'", () => {
+  // The message on the evidence type MOST likely to fail transiently. Asserting
+  // only the verdict here would let a mutant swap in the terminal message and
+  // survive — and the terminal message is the one that makes users stop trying.
+  const v = decideOwnerCollision(clean({ podSeedPresent: null }));
+  assert.equal(v.status, "block");
+  assert.match(v.userMessage, /couldn't confirm/i);
 });

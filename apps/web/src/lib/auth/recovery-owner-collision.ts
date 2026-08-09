@@ -25,16 +25,31 @@
  *     cryptographic backstop everywhere else in this design; here it is structurally
  *     blind, because the value both accounts bind to is identical.
  *
- * So this refuses at the only place the state can be created.
+ * So this refuses at the FORWARD factory: an existing credential acquiring a second
+ * account, on this device. Be precise about what that does and does not close —
+ * two routes to the same collided state remain open, and a re-key migration author
+ * who reads this as a guarantee will build on a false premise:
+ *
+ *  - REVERSED ORDER, same device. Recover onto a fresh credential (allowed, correctly
+ *    — there is nothing to see), then later move that account to another credential.
+ *    The first credential's binding is deleted by the stale-binding check on its next
+ *    login, but its seed slot is NOT, and the session then falls through to that
+ *    credential's own counterfactual account and adopts the leftover seed. Same
+ *    silent wrong-identity end state, reached without this guard ever being consulted.
+ *    Tracked separately; the fix is to clear the seed wherever the binding is cleared.
+ *  - CROSS-DEVICE. Two recoveries onto the same credential on two devices. Neither
+ *    device can see the other's, and no per-credential chain read can either, because
+ *    a recovered account lives at a PRESERVED address that is not derivable from the
+ *    credential. Closing it needs an authoritative owner→account record.
  *
  * STOPGAP, deliberately. The real fix is to key the binding by (ownerKey, account)
  * and the seed by (podAddress, parentAddress), so one key CAN own several accounts
  * and (2) becomes impossible rather than merely unreachable. This guard is a
- * prerequisite for that work, not an alternative to it: the migration has to decide
- * whose seed occupies a legacy slot, and on an already-collided device that is
- * unanswerable — the ciphertext and the AAD are identical either way. Blocking here
- * is what guarantees no collided device exists for the migration to mis-attribute.
- * Remove this guard only together with that re-keying.
+ * prerequisite for that work — the migration must decide whose seed occupies a
+ * legacy slot, and on an already-collided device that is unanswerable, since the
+ * ciphertext and the AAD are identical either way. It narrows the population the
+ * migration has to reason about; it does not empty it. Remove this guard only
+ * together with that re-keying.
  *
  * WHY IT FAILS CLOSED, when the rest of the ceremony deliberately does not. The
  * guardian pre-flight proceeds on an unreadable chain, because blocking a locked-out
@@ -57,10 +72,25 @@ export interface OwnerCollisionEvidence {
   /** Cached Kernel address for this EOA from a previous login, if any. */
   cachedKernel?: string | null;
   /**
-   * On-chain owner of this EOA's counterfactual Kernel: an address when the chain
+   * A binding this device previously VERIFIED on-chain for this credential. It
+   * lives in localStorage, so it can outlive the IndexedDB binding when storage is
+   * evicted unevenly — which is exactly the skew where every other local signal
+   * reads clean and this one still remembers.
+   */
+  verifiedBinding?: string | null;
+  /**
+   * This EOA's own counterfactual Kernel address. Needed to tell "this credential
+   * already has ANOTHER account" from "this credential already has THIS account" —
+   * the latter is a legitimate recovery of your own never-recovered account, and
+   * blocking it would tell a rightful holder to go and split their own account.
+   */
+  counterfactualAddress?: string | null;
+  /**
+   * On-chain owner of that counterfactual Kernel: an address when the chain
    * answered, `null` when it answered "no owner", `"error"` when it could not be
    * read. Absence proves nothing — Kernels deploy lazily, so a real account that
-   * never transacted is invisible here.
+   * never transacted is invisible here. It is also structurally blind to RECOVERED
+   * accounts, which live at preserved addresses no per-credential read can reach.
    */
   counterfactualOwner: string | null | "error";
 }
@@ -102,6 +132,8 @@ export function decideOwnerCollision(e: OwnerCollisionEvidence): OwnerCollisionV
 
   const binding = lower(e.existingBinding);
   const cached = lower(e.cachedKernel);
+  const verified = lower(e.verifiedBinding);
+  const counterfactual = lower(e.counterfactualAddress);
 
   // (0) IDEMPOTENT REPAIR — re-running recovery of the SAME account onto the SAME
   // credential must stay open. It is how a user recovers from a ceremony that died
@@ -109,6 +141,17 @@ export function decideOwnerCollision(e: OwnerCollisionEvidence): OwnerCollisionV
   // account's own. Checked first so no later rule can refuse a repair.
   if (binding && binding === target) {
     return { status: "allow", reason: "binding already points at this account — repair path" };
+  }
+
+  // (0b) RECOVERING YOUR OWN ACCOUNT ONTO ITS OWN CREDENTIAL. If the target IS this
+  // credential's counterfactual, then the account it "already has" is the one being
+  // recovered — there is no second account and nothing to alias. Blocking here would
+  // tell a rightful holder that their own account belongs to someone else and advise
+  // them to split it, which is worse than useless. Checked before the ownership rules
+  // for the same reason as (0): a legitimate identity must not be refused by a rule
+  // written to catch a different one.
+  if (counterfactual && counterfactual === target) {
+    return { status: "allow", reason: "the target IS this credential's own account" };
   }
 
   // (1) This credential is already bound to a DIFFERENT recovered account. The seed
@@ -156,6 +199,13 @@ export function decideOwnerCollision(e: OwnerCollisionEvidence): OwnerCollisionV
     return {
       status: "block",
       reason: `a previous login cached a different account for this credential (${cached})`,
+      userMessage: MSG_TAKEN,
+    };
+  }
+  if (verified && verified !== target) {
+    return {
+      status: "block",
+      reason: `this device previously verified a different account for this credential (${verified})`,
       userMessage: MSG_TAKEN,
     };
   }

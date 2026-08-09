@@ -1452,6 +1452,38 @@ const ECDSA_VALIDATOR_STORAGE_ABI = [
  * transacted has no on-chain trace at all. Callers must pair it with local
  * evidence — see `recovery-owner-collision.ts`.
  */
+/**
+ * This EOA's counterfactual Kernel address — a pure CREATE2 function of the key,
+ * no chain state involved. Returned separately from its owner because the two
+ * answer different questions: the owner says "does an account exist here", the
+ * ADDRESS says "is that account the one we are talking about". Conflating them
+ * makes a rightful holder recovering their OWN account look like a collision.
+ * `null` if it cannot be computed.
+ */
+export async function counterfactualKernelOf(eoaAddress: string): Promise<string | null> {
+  try {
+    const [{ createPublicClient, http }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getKernelAddressFromECDSA }] =
+      await Promise.all([
+        import("viem"),
+        import("viem/chains"),
+        import("@zerodev/sdk/constants"),
+        import("@zerodev/ecdsa-validator"),
+      ]);
+    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const addr = await getKernelAddressFromECDSA({
+      entryPoint: getEntryPoint("0.7"),
+      kernelVersion: KERNEL_V3_1,
+      eoaAddress: eoaAddress as Address,
+      index: 0n,
+      publicClient,
+    });
+    return addr.toLowerCase();
+  } catch (e) {
+    console.warn("[kernel] counterfactualKernelOf failed:", e);
+    return null;
+  }
+}
+
 export async function readCounterfactualOwner(
   eoaAddress: string,
 ): Promise<string | null | "error"> {
