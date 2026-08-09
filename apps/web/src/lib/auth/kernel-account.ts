@@ -1438,6 +1438,58 @@ const ECDSA_VALIDATOR_STORAGE_ABI = [
 ] as const;
 
 /**
+ * Does this EOA already own its OWN Kernel on chain? Computes the EOA's
+ * counterfactual address and reads that Kernel's live ECDSA owner.
+ *
+ * Returns the lowercased owner when the chain answered, `null` when it answered
+ * "no owner", and `"error"` when the read failed — the three states must stay
+ * apart, because the caller refuses on `"error"` and would otherwise read a failed
+ * read as "this credential is free" (the #138 mistake, on a path whose write
+ * destroys a non-re-derivable secret).
+ *
+ * One-sided by nature: a positive answer proves an account exists, but absence
+ * proves nothing, because Kernels deploy lazily and an account that never
+ * transacted has no on-chain trace at all. Callers must pair it with local
+ * evidence — see `recovery-owner-collision.ts`.
+ */
+export async function readCounterfactualOwner(
+  eoaAddress: string,
+): Promise<string | null | "error"> {
+  try {
+    const [{ createPublicClient, http }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getKernelAddressFromECDSA }] =
+      await Promise.all([
+        import("viem"),
+        import("viem/chains"),
+        import("@zerodev/sdk/constants"),
+        import("@zerodev/ecdsa-validator"),
+      ]);
+    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const counterfactual = await getKernelAddressFromECDSA({
+      entryPoint: getEntryPoint("0.7"),
+      kernelVersion: KERNEL_V3_1,
+      eoaAddress: eoaAddress as Address,
+      index: 0n,
+      publicClient,
+    });
+    // readKernelEcdsaOwner collapses "no owner" and "read failed" into null. Here
+    // that distinction is the whole point, so the inner read is repeated rather
+    // than reused — a failure must surface as "error", never as "free".
+    const { getValidatorAddress } = await import("@zerodev/ecdsa-validator");
+    const { zeroAddress } = await import("viem");
+    const owner = (await publicClient.readContract({
+      address: getValidatorAddress(getEntryPoint("0.7"), KERNEL_V3_1) as Address,
+      abi: ECDSA_VALIDATOR_STORAGE_ABI,
+      functionName: "ecdsaValidatorStorage",
+      args: [counterfactual as Address],
+    })) as Address;
+    return !owner || owner.toLowerCase() === zeroAddress.toLowerCase() ? null : owner.toLowerCase();
+  } catch (e) {
+    console.warn("[kernel] readCounterfactualOwner failed:", e);
+    return "error";
+  }
+}
+
+/**
  * Read the CURRENT on-chain ECDSA sudo owner of a deployed Kernel via a gasless
  * `eth_call` — the trust backstop for the cross-device portability envelope
  * (CROSS_DEVICE_RECOVERY.md §3). A recovered account's preserved address is only

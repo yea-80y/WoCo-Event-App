@@ -2192,6 +2192,36 @@ async function recoverAndRekey(args: {
       const web3 = await loginWithWeb3Auth();
       newOwnerAddress = web3.address;
       newOwnerPrivKey = web3.privateKey;
+
+      // (1b) COLLISION GUARD — a web3auth login yields ONE deterministic key per
+      // identity, so this is the only path that can point an EXISTING key at a
+      // DIFFERENT account. Doing so overwrites the other account's POD seed under a
+      // shared AAD, which makes it both unreachable AND, later, silently openable
+      // by the wrong account. See recovery-owner-collision.ts for the full chain.
+      //
+      // Placed here deliberately: after the login (the EOA is unknowable before it)
+      // and BEFORE `recoverAccount` — the irreversible boundary. Nothing local has
+      // been written at this point either, so an abort is clean and unlimited-retry.
+      const { decideOwnerCollision } = await import("./recovery-owner-collision.js");
+      const { readCounterfactualOwner } = await import("./kernel-account.js");
+      let podSeedPresent: boolean | null;
+      try {
+        podSeedPresent = !!(await restorePodSeed(newOwnerAddress));
+      } catch {
+        podSeedPresent = null; // read FAILED — not evidence that the slot is free
+      }
+      const verdict = decideOwnerCollision({
+        newOwnerEoa: newOwnerAddress,
+        targetKernel: target,
+        existingBinding: await _recoveryKernelFor(newOwnerAddress),
+        podSeedPresent,
+        cachedKernel: readCachedKernelAddress("web3auth", newOwnerAddress),
+        counterfactualOwner: await readCounterfactualOwner(newOwnerAddress),
+      });
+      if (verdict.status === "block") {
+        console.warn("[auth] recovery refused — owner collision:", verdict.reason);
+        throw new Error(verdict.userMessage);
+      }
     } else {
       onProgress?.("Create a new passkey on this device…");
       const fresh = await createPasskeyAccount();
