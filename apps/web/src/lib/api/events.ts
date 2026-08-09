@@ -5,7 +5,6 @@ import type {
   CreateEventV2Request,
   UpdateEventMetaRequest,
   CreateEventResponse,
-  ClaimTicketResponse,
   SeriesClaimStatus,
   UserCollection,
   ClaimedTicket,
@@ -200,8 +199,7 @@ export async function updateEventMeta(
 
 /**
  * Delete an event — only possible while it has ZERO orders (the server verifies
- * on-chain claims, legacy claim feeds, pending approvals and live buyer holds,
- * fail-closed). Feeds can't be erased from Swarm, so "delete" = tombstone: the
+ * on-chain claims and live buyer holds, fail-closed). Feeds can't be erased from Swarm, so "delete" = tombstone: the
  * server removes both directory entries and, for Phase B events, hands back the
  * tombstoned feed for the OWNER to overwrite their SOC with here. The manifest
  * entry moves to trash so a future batch migration drops the feed.
@@ -308,76 +306,6 @@ export async function getEvent(eventId: string, apiUrl?: string, signer?: string
   return resp.data ?? null;
 }
 
-export async function claimTicket(
-  eventId: string,
-  seriesId: string,
-  walletAddress: string,
-  encryptedOrder?: SealedBox,
-  apiUrl?: string,
-  paymentProof?: import("@woco/shared").PaymentProof,
-  marketingConsent?: boolean,
-): Promise<ClaimTicketResponse> {
-  // Wallet claims require session delegation (proves address ownership)
-  const siteId = currentSiteId();
-  // claimed.v2: cached POD pubkey only (never prompts a signature mid-claim) —
-  // the ticket is issued to this identity and the account gate-bound at claim.
-  const ownerPodPubKey = auth.podPublicKeyHex ?? undefined;
-  const json = await authPost<ClaimTicketResponse>(
-    `/api/events/${eventId}/series/${seriesId}/claim`,
-    {
-      mode: "wallet",
-      walletAddress,
-      encryptedOrder,
-      ...(paymentProof ? { paymentProof } : {}),
-      ...(siteId ? { siteId } : {}),
-      ...(ownerPodPubKey ? { ownerPodPubKey } : {}),
-      ...(marketingConsent !== undefined ? { marketingConsent } : {}),
-    },
-    apiUrl,
-  );
-  return {
-    ok: json.ok,
-    ticket: (json as any).ticket ?? json.data?.ticket,
-    edition: (json as any).edition ?? json.data?.edition,
-    approvalPending: (json as any).approvalPending,
-    pendingId: (json as any).pendingId,
-    error: json.error,
-  };
-}
-
-export async function claimTicketByEmail(
-  eventId: string,
-  seriesId: string,
-  email: string,
-  encryptedOrder?: SealedBox,
-  apiUrl?: string,
-  paymentProof?: import("@woco/shared").PaymentProof,
-  marketingConsent?: boolean,
-): Promise<ClaimTicketResponse> {
-  const siteId = currentSiteId();
-  const resp = await fetch(`${apiUrl ?? apiBase}/api/events/${eventId}/series/${seriesId}/claim`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      mode: "email",
-      email,
-      encryptedOrder,
-      ...(paymentProof ? { paymentProof } : {}),
-      ...(siteId ? { siteId } : {}),
-      ...(marketingConsent !== undefined ? { marketingConsent } : {}),
-    }),
-  });
-  const json = await resp.json();
-  return {
-    ok: json.ok,
-    ticket: json.ticket ?? json.data?.ticket,
-    edition: json.edition ?? json.data?.edition,
-    approvalPending: json.approvalPending,
-    pendingId: json.pendingId,
-    error: json.error,
-  };
-}
-
 export async function getClaimStatus(
   eventId: string,
   seriesId: string,
@@ -459,41 +387,3 @@ export async function webhookRelay(
 // Organizer approval flow
 // ---------------------------------------------------------------------------
 
-export interface PendingClaimEntry {
-  pendingId: string;
-  seriesId: string;
-  seriesName: string;
-  claimerKey: string;
-  requestedAt: string;
-  encryptedOrder?: SealedBox;
-}
-
-export async function getPendingClaims(eventId: string): Promise<PendingClaimEntry[]> {
-  const resp = await authGet<{ eventId: string; pendingClaims: PendingClaimEntry[] }>(
-    `/api/events/${eventId}/pending-claims`,
-  );
-  return resp.data?.pendingClaims ?? [];
-}
-
-export async function approvePendingClaim(
-  eventId: string,
-  seriesId: string,
-  pendingId: string,
-): Promise<{ ok: boolean; error?: string }> {
-  return authPost(
-    `/api/events/${eventId}/series/${seriesId}/pending-claims/${pendingId}/approve`,
-    {},
-  );
-}
-
-export async function rejectPendingClaim(
-  eventId: string,
-  seriesId: string,
-  pendingId: string,
-  reason?: string,
-): Promise<{ ok: boolean; error?: string }> {
-  return authPost(
-    `/api/events/${eventId}/series/${seriesId}/pending-claims/${pendingId}/reject`,
-    { reason },
-  );
-}

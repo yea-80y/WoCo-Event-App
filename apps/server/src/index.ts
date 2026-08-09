@@ -13,7 +13,6 @@ import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
-import { approvals } from "./routes/approvals.js";
 import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
 import { ops } from "./routes/ops.js";
@@ -438,7 +437,6 @@ app.post("/api/auth/revoke-all", requireAuth, (c) => {
 app.route("/api/events", events);
 app.route("/api/events", claims);
 app.route("/api/events", orders);
-app.route("/api/events", approvals);
 app.route("/api/events", broadcast);
 app.route("/api/events", reservations);
 app.route("/api/events", checkinOrganiser);

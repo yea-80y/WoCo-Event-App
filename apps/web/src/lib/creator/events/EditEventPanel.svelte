@@ -14,12 +14,11 @@
      *  the server independently re-verifies (incl. live holds) either way. */
     ordersCount: number;
     /** Approval requests still pending — also blocks delete. */
-    pendingCount: number;
     onsaved: (feed: EventFeed) => void;
     ondeleted: () => void;
   }
 
-  let { event, ordersCount, pendingCount, onsaved, ondeleted }: Props = $props();
+  let { event, ordersCount, onsaved, ondeleted }: Props = $props();
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
@@ -50,7 +49,6 @@
 
   const deleteBlockedReason = $derived.by(() => {
     if (ordersCount > 0) return `${ordersCount} ticket(s) have been issued — events with orders can't be deleted.`;
-    if (pendingCount > 0) return `${pendingCount} approval request(s) are pending — resolve them first.`;
     return null;
   });
 

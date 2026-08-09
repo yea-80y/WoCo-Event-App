@@ -18,6 +18,7 @@ import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/
 import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
+import { isValidSeriesId } from "../lib/swarm/topics.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
 import { clientIp } from "../lib/http/client-ip.js";
 const events = new Hono<AppEnv>();
@@ -201,9 +202,37 @@ events.post("/", requireAuth, async (c) => {
       return c.json({ ok: false, error: "geo too large (max 1KB serialised)" }, 400);
     }
   }
+  // Shape-check every series id BEFORE any message interpolates one. The id is
+  // browser-invented and lands verbatim in feed topic strings whose last segment
+  // is the page suffix, so a "/" in it addresses another series' page (#197).
+  const seenSeriesIds = new Set<string>();
+  for (const s of series) {
+    if (!isValidSeriesId(s.seriesId)) {
+      return c.json({
+        ok: false,
+        error: "Each seriesId must be 8-64 characters of lowercase letters, digits or hyphens",
+      }, 400);
+    }
+    // Namespacing outside the event cannot separate two series that share an id
+    // INSIDE it — they collide with each other on every per-series feed.
+    if (seenSeriesIds.has(s.seriesId)) {
+      return c.json({ ok: false, error: `Duplicate seriesId in this event: ${s.seriesId}` }, 400);
+    }
+    seenSeriesIds.add(s.seriesId);
+  }
+
   for (const s of series) {
     if (!s.signedManifest || !s.podBodies?.length) {
       return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or podBodies` }, 400);
+    }
+    // The approvals feature went with the v1 claim rail. Reject rather than
+    // silently drop: an organiser who set this flag expects a review queue
+    // that no longer exists, and must hear that at publish time.
+    if ((s as { approvalRequired?: unknown }).approvalRequired) {
+      return c.json(
+        { ok: false, error: `Series ${s.seriesId}: approval-required claims are no longer supported` },
+        400,
+      );
     }
     // Defence-in-depth — mirror FEATURES gates so an old client (or direct API
     // hit) can't bypass the UI and ship a free event. A paid series must set a

@@ -286,8 +286,6 @@ export interface SeriesSummary {
   description: string;
   totalSupply: number;
   price: number;
-  /** If true, attendees submit a request; organizer approves/rejects from dashboard */
-  approvalRequired?: boolean;
   /** Sales phase label e.g. "Early Bird", "General Release" */
   wave?: string;
   /** ISO datetime when this series opens for claims (server-enforced) */
@@ -346,7 +344,6 @@ export interface CreateEventV2Request {
     totalSupply: number;
     signedManifest: SignedManifestV1;
     podBodies: PodV2Body[];
-    approvalRequired?: boolean;
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
@@ -496,27 +493,6 @@ export interface ClaimedTicket {
   claimedAt: string;
   originalPodHash: string;
   originalSignature: string;
-  /** Approval status — present when the series has approvalRequired: true */
-  approvalStatus?: "pending" | "approved" | "rejected";
-}
-
-/** Request body for POST /api/events/:eventId/series/:seriesId/claim */
-export interface ClaimTicketRequest {
-  mode: "wallet" | "email" | "api";
-  /** Wallet address (mode: wallet) */
-  walletAddress?: string;
-  /** Email address (mode: email) */
-  email?: string;
-  /** API key for organizer claims (mode: api) */
-  apiKey?: string;
-  /** ECIES-encrypted order data — only the event organizer can decrypt */
-  encryptedOrder?: SealedBox;
-  /** On-chain payment proof (for paid events) */
-  paymentProof?: PaymentProof;
-  /** Attendee ed25519 POD pubkey (hex, no 0x) — wallet-authenticated modes
-   *  only. When present the claim is issued-to-identity (claimed.v2): owner
-   *  stamped at birth + platform ownerSig + automatic gate binding. */
-  ownerPodPubKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -546,18 +522,6 @@ export interface UserCollection {
   updatedAt: string;
 }
 
-/** Response from claim endpoint */
-export interface ClaimTicketResponse {
-  ok: boolean;
-  ticket?: ClaimedTicket;
-  edition?: number;
-  /** True when the series requires organizer approval — ticket is pending, not yet issued */
-  approvalPending?: boolean;
-  /** ID of the pending claim entry (only present when approvalPending is true) */
-  pendingId?: string;
-  error?: string;
-}
-
 /** Claim status for a series (returned by GET .../claim-status) */
 export interface SeriesClaimStatus {
   seriesId: string;
@@ -572,52 +536,10 @@ export interface SeriesClaimStatus {
   available: number;
   /** Seats currently held by active reservations (informational). */
   held?: number;
-  /** If the requesting user has an approved claim, their lowest edition number */
-  userEdition?: number;
-  /** All edition numbers owned by the requesting user (multi-purchase support) */
-  userEditions?: number[];
-  /** If the requesting user has a pending approval request, the pendingId */
-  userPendingId?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Claimers feed (per-series tracking of who claimed what)
-// ---------------------------------------------------------------------------
-
-/** Single entry in the claimers JSON feed */
-export interface ClaimerEntry {
-  edition: number;
-  /** Primary claim handle — "wallet:{hmacHash}" or "email:{hmacHash}".
-   *  This feed sits at a derivable public address (SOC = hash(topic, owner);
-   *  the topic scheme and platform owner are public), so a raw wallet address
-   *  here is a publicly-linkable attendance record. Identifiers are therefore
-   *  keyed HMAC hashes; the organiser's readable copy of the claimer identity
-   *  travels in the sealed order blob (orderRef), never here. Entries written
-   *  before 2026-08-01 hold bare lowercase wallet addresses — readers must
-   *  match both forms. */
-  claimerAddress: string;
-  claimedRef: string;
-  claimedAt: string;
-  /** Swarm ref to ECIES-encrypted order data (only organizer can decrypt) */
-  orderRef?: string;
-  /** How this claim was paid for. Absent on legacy entries. */
-  via?: ClaimVia;
-  /** HMAC-SHA256 hash of a secondary email identifier. Set when a wallet user
-   *  paid by Stripe — the Stripe customer email is recorded alongside the
-   *  verified wallet so dedup works against both handles. */
-  secondaryEmailHash?: string;
 }
 
 /** Payment method used to obtain a ticket. */
 export type ClaimVia = "stripe" | "crypto" | "free";
-
-/** Claimers JSON feed stored per series */
-export interface ClaimersFeed {
-  v: 1;
-  seriesId: string;
-  claimers: ClaimerEntry[];
-  updatedAt: string;
-}
 
 // ---------------------------------------------------------------------------
 // Organizer order data (dashboard)
@@ -633,40 +555,4 @@ export interface OrderEntry {
   encryptedOrder?: SealedBox;
   /** How this claim was paid for. Absent on legacy entries. */
   via?: ClaimVia;
-}
-
-// ---------------------------------------------------------------------------
-// Organizer approval flow (pending claims)
-// ---------------------------------------------------------------------------
-
-/** A single pending claim entry in the pending-claims feed */
-export interface PendingClaimEntry {
-  /** Random UUID assigned at request time */
-  pendingId: string;
-  /** Claim handle — "wallet:{hmacHash}" or "email:{hmacHash}" (bare lowercase
-   *  wallet address on legacy entries). Pseudonymous: this feed is publicly
-   *  derivable, same as the claimers feed. */
-  claimerKey: string;
-  /** Server-sealed (AES-256-GCM) raw wallet address, present on wallet claims.
-   *  The approve path needs the raw address for gate binding and the user's
-   *  collection feed, and it must not ride in public plaintext — only the
-   *  server can open this. */
-  claimerSealed?: string;
-  requestedAt: string;
-  /** Swarm ref to ECIES-encrypted order data (same format as claimers feed orderRef) */
-  orderRef?: string;
-  /** Swarm ref to the reserved ClaimedTicket (written with approvalStatus: "pending") */
-  claimedRef: string;
-  status: "pending" | "approved" | "rejected";
-  decidedAt?: string;
-  /** Organizer-written rejection reason — not attendee data */
-  rejectionReason?: string;
-}
-
-/** Pending claims feed stored per series */
-export interface PendingClaimsFeed {
-  v: 1;
-  seriesId: string;
-  pending: PendingClaimEntry[];
-  updatedAt: string;
 }

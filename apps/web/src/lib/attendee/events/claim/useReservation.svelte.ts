@@ -12,7 +12,7 @@ interface UseReservationOpts {
    *  so changes auto-trigger re-reservation. */
   getQuantity: () => number;
   /** Reactive getter: should we currently hold a seat reservation? All
-   *  parent state reads (claimed / approvalPending / showOrderForm / etc.)
+   * (parent state reads: claimed / showOrderForm / etc.)
    *  happen inside this fn so the hook's $effect tracks them transitively. */
   getShouldHold: () => boolean;
 }

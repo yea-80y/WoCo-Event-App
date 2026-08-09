@@ -215,25 +215,3 @@ export async function createShopCheckout(
   return { url: data.url };
 }
 
-/** Save encrypted order data after successful Stripe payment.
- *
- * `expectedEditions` is the number of tickets the user paid for. The server
- * uses it to wait until ALL claims for this batch have been written to the
- * claimers feed before attaching the orderRef — otherwise the post-Stripe
- * webhook may still be mid-way through a multi-ticket claim and save-order
- * would attach orderRef only to the already-written entries. */
-export async function saveStripeOrder(params: {
-  seriesId: string;
-  encryptedOrder: SealedBox;
-  claimerEmail?: string;
-  claimerAddress?: string;
-  expectedEditions?: number;
-}): Promise<void> {
-  const resp = await fetch(`${apiBase}/api/stripe/save-order`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
-  const data = await resp.json() as { ok: boolean; error?: string };
-  if (!data.ok) throw new Error(data.error || "Failed to save order data");
-}

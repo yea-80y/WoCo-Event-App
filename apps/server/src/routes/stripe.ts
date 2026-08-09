@@ -24,20 +24,16 @@ import {
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
-import { claimTicket, hashEmail, claimHandleMatches, enqueueClaimersAttach, getClaimStatus, type ClaimIdentifier } from "../lib/event/claim-service.js";
-import { readAllClaimers } from "../lib/event/claimers-feed.js";
+import { hashEmail, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
-import { queueSeriesClaim } from "./claims.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
 import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
 import type { SealedBox, SeriesManifestBlob, PayoutsResponse } from "@woco/shared";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
-import { getActiveChainId } from "../lib/chain/event-contract.js";
+import { getActiveChainId, getOnChainEvent } from "../lib/chain/event-contract.js";
 import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
 import { readFeedPage, writeFeedPage, decodeJsonFeed, encodeJsonFeed } from "../lib/swarm/feeds.js";
-import { topicClaimers } from "../lib/swarm/topics.js";
-import type { ClaimersFeed } from "@woco/shared";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { sendTicketEmail } from "./tickets.js";
 import { bindTicket } from "../lib/gate/store.js";
@@ -504,35 +500,22 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
   }
 
-  // Load event + (when no reservation) availability check + (optionally) upload
-  // encrypted order in parallel. Swarm upload is the slowest link (~3–10s cold);
-  // running it alongside the event read hides its latency behind work we'd be
-  // doing anyway.
-  //
-  // When a valid reservation is already held, the seat is locked and the
-  // duplicate-claim re-check happens in the webhook anyway — skip the
-  // expensive availability read entirely. This is the dominant pre-Pay
-  // latency for the reservation path.
-  const userEmailHash = claimerEmail ? hashEmail(claimerEmail) : undefined;
+  // Load event + (optionally) upload encrypted order in parallel. Swarm upload
+  // is the slowest link (~3–10s cold); running it alongside the event read
+  // hides its latency behind work we'd be doing anyway. Availability is read
+  // from the contract AFTER the series resolves (it needs onChainEventId).
   const tSwarm = performance.now();
+  // When a valid reservation is already held, the seat is locked and the
+  // contract re-checks supply at mint anyway — skip the availability read.
   const skipAvailability = !!reservationId;
   // Phase B money path: when claiming from a deployed site, resolve the event's
   // signer from that site's server-written SiteEventsIndex (trusted carrier) so a
   // client-signed, not-WoCo-listed event reads its authentic SOC — this read feeds
-  // the Stripe destination (creatorAddress→Connect) + amount AND the carrier-owned
-  // editions feed the availability pre-check reads. siteId is only a pointer; trust
-  // is the server-written index, never the request. Hoisted out of the parallel
-  // reads below so the same carrier threads into both getEvent and getClaimStatus.
+  // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
+  // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const [event, statusResult, inlineUploadedRef] = await Promise.all([
+  const [event, inlineUploadedRef] = await Promise.all([
     getEvent(eventId, siteSigner ?? undefined),
-    skipAvailability
-      ? Promise.resolve(null)
-      : getClaimStatus(seriesId, verifiedAddress, userEmailHash, siteSigner ?? undefined).catch((err) => {
-          // Swarm read failure — non-fatal; webhook will re-check on claim.
-          console.warn("[stripe/create-checkout] Availability pre-check failed (continuing):", err);
-          return null;
-        }),
     shouldUploadInline
       ? uploadToBytes(JSON.stringify(encryptedOrder)).catch((err) => {
           // Inline upload failure is non-fatal — webhook falls back to the
@@ -562,17 +545,43 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid price" }, 400);
   }
 
-  // Pre-flight availability + duplicate check (best-effort — result from parallel fetch above).
-  if (statusResult) {
-    if (statusResult.available <= 0) {
-      return c.json({ ok: false, error: "Sold out" }, 409);
+  // Registration gate. Publish is two phases and the second can fail: the event
+  // feed is written first, then `registerAndFinalise()` registers the series on
+  // chain. In between, the series has no `onChainEventId`. Such an event never
+  // reaches the public directory (the snapshot is rebuilt on register-success),
+  // but it IS reachable by direct link and from a builder site — and the mint is
+  // on-chain only, so there is nothing to allocate against. Refuse rather than
+  // charge-then-refund, the same trade the sponsor gate below makes. Fails
+  // CLOSED: this is a property of the series, not a transient chain condition.
+  // (Re-landed from 59795f1 — premature only while the v1 webhook fallback
+  // still existed to absorb these sessions.)
+  if (!series.onChainEventId || !series.swarmManifestRef) {
+    console.error(
+      `[stripe/create-checkout] BLOCKED — series is not registered on chain; refusing to charge ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
+    );
+    return c.json(
+      { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
+      409,
+    );
+  }
+
+  // One contract read serves the sold-out pre-check and the firstN tier count.
+  // The pre-check fails OPEN on a transport error (the contract re-checks
+  // supply at mint and the webhook auto-refund is the backstop); the tier
+  // count stays undefined on failure, which computeGatePhase fail-safes to
+  // holders-only — never a definite 0 that could hold a window open.
+  let onChain: Awaited<ReturnType<typeof getOnChainEvent>> = null;
+  if (!skipAvailability || (series.gate && gateNeedsClaimCount(series.gate))) {
+    try {
+      onChain = await getOnChainEvent(series.onChainEventId, getActiveChainId());
+    } catch (err) {
+      console.warn("[stripe/create-checkout] availability chain read failed (continuing):", err);
     }
-    // Paid Stripe series allow multi-purchase (each payment_intent is unique).
-    // Only block a repeat if approval is required — that's a pending-request
-    // spam gate, not a paid-ticket gate.
-    if (statusResult.userEdition != null && series.approvalRequired) {
-      return c.json({ ok: false, error: "You already have a ticket for this series" }, 409);
-    }
+  }
+  if (!skipAvailability && onChain
+      && Number(onChain.totalSupply) - Number(onChain.nextSlot) < quantity) {
+    return c.json({ ok: false, error: "Sold out" }, 409);
   }
 
   // POD-holdings gate on the CARD rail. The gate is a property of the buyer's
@@ -583,14 +592,8 @@ stripe.post("/create-checkout", async (c) => {
   // keeping "server uses the VERIFIED holder address only". Enforce BEFORE any
   // Stripe session is created so a gated-out buyer is never charged.
   if (series.gate) {
-    // firstN needs this series' committed claim count. Reuse the pre-flight
-    // status read when present; only fetch separately if it was skipped.
-    let tierClaimed: number | undefined;
-    if (gateNeedsClaimCount(series.gate)) {
-      tierClaimed = statusResult
-        ? statusResult.claimed
-        : await getClaimStatus(seriesId, undefined, undefined, siteSigner ?? undefined).then((s) => s.claimed).catch(() => undefined);
-    }
+    const tierClaimed =
+      gateNeedsClaimCount(series.gate) && onChain ? Number(onChain.nextSlot) : undefined;
     const phase = gatePhase(series.gate, { tierClaimed });
     if (phase === "closed") {
       return c.json({ ok: false, gated: true, error: "This ticket is not currently available." }, 403);
@@ -620,13 +623,13 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Event organiser has not completed Stripe onboarding" }, 400);
   }
 
-  // Sponsor-readiness gate. For on-chain (v2) series the webhook mints via the
-  // sponsor wallet's `batchClaimFor`, which reverts `NotAuthorised` if the
-  // sponsor isn't on the contract allow-list — that would charge the buyer then
-  // auto-refund. Refuse the checkout up front instead. Fail-OPEN on an RPC error
-  // (transient) since the webhook's auto-refund remains the backstop; only a
-  // definitive "not authorised" blocks the sale.
-  if (series.swarmManifestRef && series.onChainEventId) {
+  // Sponsor-readiness gate. The webhook mints via the sponsor wallet's
+  // `batchClaimFor`, which reverts `NotAuthorised` if the sponsor isn't on the
+  // contract allow-list — that would charge the buyer then auto-refund. Refuse
+  // the checkout up front instead. Fail-OPEN on an RPC error (transient) since
+  // the webhook's auto-refund remains the backstop; only a definitive "not
+  // authorised" blocks the sale.
+  {
     let sponsorReady = true;
     try {
       sponsorReady = await isSponsorReady(getActiveChainId());
@@ -1140,9 +1143,6 @@ async function handleSuccessfulPayment(
   let isV2 = false;
   let v2OnChainEventId = "";
   let v2SwarmManifestRef = "";
-  // Carrier-owned editions SOC owner — resolved from the trusted event feed below
-  // and threaded into the v1 claimTicket so it reads the client-owned editions.
-  let editionsCarrier: string | undefined;
 
   try {
     // Phase B: thread the site carrier (from checkout metadata) so the issued
@@ -1150,7 +1150,6 @@ async function handleSuccessfulPayment(
     const siteSigner = metaSiteId ? await resolveSiteEventSigner(metaSiteId, eventId) : null;
     const ev = await getEvent(eventId, siteSigner ?? undefined);
     if (ev) {
-      editionsCarrier = ev.creatorFeedSigner;
       eventTitle = ev.title;
       eventDate = ev.startDate;
       eventEndDate = ev.endDate ?? "";
@@ -1331,50 +1330,17 @@ async function handleSuccessfulPayment(
       }
     }
   } else {
-    // ── v1 Swarm-feed path (unchanged) ─────────────────────────────────────
-    for (let i = 0; i < quantity; i++) {
-      const ticketNum = quantity > 1 ? ` (${i + 1}/${quantity})` : "";
-      try {
-        const result = await queueSeriesClaim(seriesId, () =>
-          claimTicket({
-            seriesId,
-            identifier,
-            via: "stripe",
-            paid: true,
-            claimedAt,
-            ...(editionsCarrier ? { carrier: editionsCarrier } : {}),
-            ...(accountClaim && i === 0 ? { accountClaim } : {}),
-            ...(prefetchedOrderRef
-              ? { orderRef: prefetchedOrderRef }
-              : { encryptedOrder }),
-          }),
-        );
-        console.log(`[stripe-webhook] Ticket claimed${ticketNum}: series=${seriesId}, edition=${result.edition}`);
-        if (result.originalSignature) {
-          claimedResults.push({
-            edition: result.edition,
-            qrContent: `woco://t/${eventId}/${seriesId}/${result.edition}/${result.originalSignature}`,
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[stripe-webhook] Failed to claim ticket${ticketNum}:`, msg);
-
-        // ANY failure stops the batch and records why, because `stoppedReason`
-        // is what drives the refund and `markPayoutVoid` below.
-        //
-        // This used to stop only for an allowlist of "unrecoverable" messages
-        // and silently continue otherwise. That left the buyer with no ticket,
-        // no refund and no payout void whenever the claim failed for a reason
-        // nobody had enumerated — a transient Swarm read or feed write, say.
-        // The session is already consumed and 200 already returned, so Stripe
-        // never redelivers and nothing retries: the money simply stayed taken.
-        // Continuing also could not help, since the next ticket in the batch
-        // would hit the same infrastructure.
-        stoppedReason = msg;
-        break;
-      }
-    }
+    // No fallback rail: the contract is the only ticket ledger, and a series
+    // without an on-chain registration has nothing to mint against. Setting
+    // `stoppedReason` drives the full auto-refund + payout void below — the
+    // same money outcome the deleted v1 path's guaranteed "No tickets
+    // available" produced, without pretending to try. create-checkout now
+    // refuses these sessions up front; this covers one created before that
+    // gate, or a feed/chain disagreement.
+    console.error(
+      `[stripe-webhook] Paid session for unregistered series ${seriesId} — refunding`,
+    );
+    stoppedReason = "Series is not registered on chain — no mint path";
   }
 
   // Now release the seat hold — all claims that were going to land have
@@ -1521,111 +1487,5 @@ async function handleSuccessfulPayment(
       });
   }
 }
-
-// ---------------------------------------------------------------------------
-// 4. Save order data after successful Stripe payment
-// ---------------------------------------------------------------------------
-
-/**
- * POST /api/stripe/save-order
- *
- * Body: { seriesId, encryptedOrder, claimerEmail?, claimerAddress? }
- *
- * Called by the frontend after redirect back from a successful Stripe checkout.
- * Uploads the encrypted order data to Swarm and attaches it to the claimer's
- * entry in the claimers feed.
- */
-stripe.post("/save-order", async (c) => {
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: "Invalid JSON" }, 400);
-  }
-
-  const { seriesId, encryptedOrder, claimerEmail, claimerAddress, expectedEditions } = body as {
-    seriesId: string;
-    encryptedOrder: SealedBox;
-    claimerEmail?: string;
-    claimerAddress?: string;
-    expectedEditions?: number;
-  };
-
-  if (!seriesId || !encryptedOrder) {
-    return c.json({ ok: false, error: "seriesId and encryptedOrder are required" }, 400);
-  }
-  if (!claimerEmail && !claimerAddress) {
-    return c.json({ ok: false, error: "claimerEmail or claimerAddress is required" }, 400);
-  }
-
-  // Expected number of entries we must see in the claimers feed before writing
-  // — must match the quantity Stripe charged for. Defaults to 1 for legacy
-  // single-ticket calls that don't send the field.
-  const expected = Math.max(
-    1,
-    Math.min(10, Number.isInteger(expectedEditions) ? expectedEditions as number : 1),
-  );
-
-  // Determine the claimer key (must match what claim-service wrote)
-  const claimerKey = claimerAddress
-    ? claimerAddress.toLowerCase()
-    : `email:${hashEmail(claimerEmail!)}`;
-
-  try {
-    // Upload encrypted order to Swarm first (outside the queue — no feed access needed)
-    const orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
-    console.log(`[stripe/save-order] Encrypted order uploaded: ${orderRef} (expected=${expected})`);
-
-    // Poll for expected entries OUTSIDE the queue so we don't block the very
-    // webhook claim writes we're waiting on. Previously this loop ran INSIDE
-    // queueSeriesClaim, which starved the queued claims and guaranteed a 30s
-    // timeout whenever save-order fired before the webhook finished.
-    //
-    // Note: this path is now mostly a no-op for Stripe flows that pre-upload
-    // via /prepare-order — the webhook already attaches the full orderRef.
-    // Kept as a backward-compat fallback (old clients) and for wallet-mode
-    // edge cases where the encrypted order wasn't prepared pre-redirect.
-    let observed = 0;
-    const retryDelays = [1000, 2000, 3000, 5000, 8000, 11000];
-    for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
-      if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, retryDelays[attempt - 1]));
-      }
-      const claimers = await readAllClaimers(seriesId);
-      observed = claimers.filter(
-        (e) => claimHandleMatches(e.claimerAddress, claimerKey, seriesId),
-      ).length;
-      if (observed >= expected) break;
-    }
-
-    if (observed === 0) {
-      throw new Error("Claimer entry not found — ticket may not have been claimed yet");
-    }
-    if (observed < expected) {
-      console.warn(
-        `[stripe/save-order] Only ${observed}/${expected} entries visible after retries — ` +
-        `attaching orderRef to what we have`,
-      );
-    }
-
-    // The attach runs on the per-series CLAIMERS queue (not the slot-
-    // allocation queue) so it serialises against the webhook's claimers
-    // appends — the paged feed is a multi-page read-modify-write.
-    //
-    // Only entries without an orderRef are touched: the webhook is the
-    // canonical writer and attaches a per-purchase orderRef at claim time.
-    // Without that guard, a repeat buyer's later /save-order call would
-    // overwrite the orderRef on every past entry sharing their email,
-    // collapsing all historical orders onto the latest form data.
-    const matchCount = await enqueueClaimersAttach(seriesId, claimerKey, orderRef);
-
-    console.log(`[stripe/save-order] Order data attached to ${matchCount} claimer entries for ${claimerKey}, series ${seriesId}`);
-    return c.json({ ok: true });
-  } catch (err) {
-    console.error("[stripe/save-order] Failed:", err);
-    const msg = err instanceof Error ? err.message : "Failed to save order data";
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
 
 export { stripe as stripeRoutes };
