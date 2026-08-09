@@ -69,8 +69,8 @@ assumption in the plumbing, so organiser copy quality is not the binding constra
 |---|---|
 | Organiser's own DNS domain | **Recommended path.** Only tier where authority accrues to them. |
 | Organiser's own ENS name | Supported. Their asset, their choice. |
-| WoCo-issued ENS equivalent | Future. Not now. |
-| WoCo-issued free subdomain | **Rejected** — see D2. |
+| WoCo-issued sub-ENS (`{label}.woco.eth`) | **Returning to the website builder** (owner, 2026-08-09) — Shopify-parity default address. Ships WITH canonical injection (#70), not before. See D3. Already live on profiles and event pages. |
+| WoCo-issued free subdomain on `woco-net.com` | **Rejected, and still rejected** — see D2. Not the same question as the row above: `woco-net.com` is the registrable domain that also carries `events-api.` and `gateway.`. |
 
 ### D2 — No WoCo-issued free subdomain tier
 
@@ -85,7 +85,57 @@ Rejected 2026-07-26. Reasons, strongest first:
 
 ### D3 — Sub-ENS dropped from the website builder entirely
 
-WoCo-issued sub-ENS (`{label}.woco.eth`) is **removed from the multi-page site builder**.
+> ## 🔄 REOPENED 2026-08-09 by the owner — do NOT action the removal below
+>
+> **Sub-ENS is coming BACK to the website builder.** Nothing in D3 may be used to justify
+> deleting `Site.subEnsLabel`, `<SubENSPicker>`, or the deploy contenthash hook. Issue #69
+> is reopened-in-place and its "Scope" section is now the wrong instruction.
+>
+> **Why the reversal.** Every store on Shopify gets a `{store}.myshopify.com` address the
+> moment it signs up, and WoCo should match that. Verified against Shopify's own docs
+> rather than assumed — and the framing differs from "a demo URL" in a way that matters:
+>
+> - It is assigned by default at signup and is a **permanent identifier** — it cannot be
+>   removed or transferred, and it is what their admin login, support and app integrations
+>   key off.
+> - It **is** the working storefront address until a custom domain is set as primary.
+> - Once a custom domain is primary, the `myshopify.com` address **redirects** to it and is
+>   not shown to customers.
+>
+> So it is not framed as a preview or demo tier. It is a permanent system address that
+> doubles as the shareable storefront until the organiser attaches their own domain — which
+> is exactly the gap D3 left open (see the "accepted consequence" below: an organiser with
+> no DNS domain and no ENS name currently has no shareable address at all).
+>
+> **D2 is NOT reopened, and the two are different questions.** D2 rejects a WoCo-issued
+> subdomain on `woco-net.com`, and its strongest reason still stands untouched: that puts
+> anonymous hosting behind the **same registrable domain as `events-api.` and `gateway.`**,
+> where Safe Browsing and spam reputation act. Sub-ENS is on `woco.eth` / `eth.limo` — a
+> different registrable domain — so it does not inherit that objection. Do not merge the two.
+>
+> **The condition attached to bringing it back.** D3's load-bearing reason was never the
+> authority argument (retracted below as unproven) — it was **one page reachable at four
+> URLs with no canonical to disambiguate**, and that objection is still valid. It is fixed
+> the way Shopify fixes it: one canonical address, everything else pointing at it.
+>
+> Note the mechanism differs. Shopify issues an HTTP redirect; WoCo cannot, because
+> sub-ENS resolves via contenthash through eth.limo and there is no origin of ours in that
+> path to return a 301 from. The achievable equivalent is a deploy-time
+> `<link rel="canonical">` naming the organiser's primary domain — which is already planned
+> as **item 4 / #70**. Therefore: **sub-ENS returns to the website builder together with
+> canonical injection, not before it.** Shipping it without #70 rebuilds the exact duplicate-
+> URL problem D3 correctly identified.
+>
+> This does not conflict with "the custom-domain worker must proxy, never redirect" — that
+> rule is about serving the canonical domain itself. Pointing the non-canonical addresses at
+> it is the same policy seen from the other end.
+>
+> Sources: [Shopify — Adding a domain](https://help.shopify.com/en/manual/domains/add-a-domain) ·
+> [Shopify — Change your primary domain](https://help.shopify.com/en/manual/domains/domain-type/change-primary-domain) ·
+> [Shopify — Managing domain settings](https://help.shopify.com/en/manual/domains/managing-domains)
+
+WoCo-issued sub-ENS (`{label}.woco.eth`) was **removed from the multi-page site builder**.
+⚠️ Superseded by the reversal above — retained for the reasoning, not as an instruction.
 
 ⚠️ **Rationale corrected 2026-07-27 — the decision stands, one of its two reasons does not.**
 
@@ -204,7 +254,7 @@ town name appears in body copy at all, link text in {"click here", "read more", 
 |---|---|---|
 | 1 | Custom domain edge proxy (Cloudflare Worker) — **blocks everything below** | #67 |
 | 2 | One CNAME path — drop trial/migration funnel (D6) | #68 |
-| 3 | Drop sub-ENS from website builder (D3) | #69 |
+| 3 | ~~Drop sub-ENS from website builder (D3)~~ → **REVERSED 2026-08-09.** Keep sub-ENS; bring the picker back as the Shopify-parity default address. Sequenced AFTER item 4 (#70), because canonical injection is the condition | #69 (reopened in place) |
 | 4 | Deploy-time `<title>` + canonical injection | #70 |
 | 5 | schema.org/Event JSON-LD, deploy-time injected | #55 |
 | 6 | Real per-page URLs — static pre-render per page | #71 |
