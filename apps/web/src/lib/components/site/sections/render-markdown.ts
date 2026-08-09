@@ -6,10 +6,16 @@
  * ---------------------------------------------------------------------------
  *
  * The return value of `renderMarkdown` is handed to Svelte's `{@html}`, so it
- * is parsed as markup. The input is organiser-authored, and a rendered
- * organiser site is SAME-ORIGIN with the WoCo app — both are served from
- * `gateway.woco-net.com/bzz/<hash>/` — so markup that executed here would run
- * with access to a visitor's stored session and POD identity.
+ * is parsed as markup, and the input is written by one party (the organiser)
+ * and read by another (their visitors).
+ *
+ * State the guarantee without reference to where the page is hosted. WoCo sites
+ * have been served from the WoCo gateway, are moving to the Etherna gateway
+ * where every site shares one origin with every other, and will mostly be
+ * reached on an organiser's own domain or sub-ENS name. The guarantee has to
+ * hold in all of them, so do NOT re-derive it from whichever origin happens to
+ * be current — that reasoning invites "we aren't same-origin with the app any
+ * more, so we can relax this", which does not follow.
  *
  * Safety rests on exactly two properties, and on nothing else:
  *

@@ -137,6 +137,35 @@ test("soundcloud player urls are rebuilt from the inner url, not trusted whole",
   );
 });
 
+test("mixcloud widget feeds are validated and rebuilt, not passed through", () => {
+  // A widget URL whose feed already points at Mixcloud: kept, but rebuilt from
+  // the path alone so the pasted scheme/host/query are discarded.
+  const r = ok("https://player-widget.mixcloud.com/widget/iframe/?feed=%2Fdj%2Fshow%2F");
+  assert.equal(r.src, "https://player-widget.mixcloud.com/widget/iframe/?feed=%2Fdj%2Fshow%2F");
+
+  const fromUrl = ok(
+    "https://player-widget.mixcloud.com/widget/iframe/?feed=https%3A%2F%2Fwww.mixcloud.com%2Fdj%2Fshow%2F&hide_cover=1",
+  );
+  assert.equal(fromUrl.src, "https://player-widget.mixcloud.com/widget/iframe/?feed=%2Fdj%2Fshow%2F");
+  assert.ok(!fromUrl.src.includes("hide_cover"), "pasted query must not survive");
+
+  // An allowlisted widget aimed at an off-provider feed. The frame's own origin
+  // would still be Mixcloud's, which is why this needs its own check.
+  rejected(
+    "https://player-widget.mixcloud.com/widget/iframe/?feed=https%3A%2F%2Fevil.test%2Fx",
+    "off-provider feed url",
+  );
+  rejected(
+    "https://player-widget.mixcloud.com/widget/iframe/?feed=http%3A%2F%2Fwww.mixcloud.com%2Fdj%2Fshow%2F",
+    "non-https feed url",
+  );
+  rejected(
+    "https://player-widget.mixcloud.com/widget/iframe/?feed=%2F%2Fevil.test%2Fx",
+    "protocol-relative feed",
+  );
+  rejected("https://player-widget.mixcloud.com/widget/iframe/", "missing feed");
+});
+
 test("candidateUrls is bounded and strips trailing punctuation", () => {
   assert.deepEqual(candidateUrls("see https://vimeo.com/123456789."), ["https://vimeo.com/123456789"]);
   const many = candidateUrls(Array.from({ length: 50 }, () => "https://a.test/x").join(" "));

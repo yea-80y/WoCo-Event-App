@@ -2,11 +2,22 @@
  * RichTextSection renders organiser prose through `{@html}` on the same origin
  * as the WoCo app, so the property that makes it safe is pinned here (#212).
  *
- * The safety argument is structural, not a list of blocked inputs: after the
- * escape pass, every `<` in the output must belong to a tag the renderer wrote
- * itself, and every `&` must be one of the three entities it emits. The two
- * property assertions below are that argument, made machine-checkable — they
- * hold for any input, not just the samples.
+ * The safety argument is structural: after the escape pass, every `<` in the
+ * output must belong to a tag the renderer wrote itself, and every `&` must be
+ * one of the three entities it emits.
+ *
+ * Be honest about what this file does and does not establish. The two checkers
+ * below are input-agnostic, but the suite quantifies over a fixed sample list,
+ * so it does NOT prove the property universally — that comes from the argument
+ * written on `renderMarkdown` itself. What the samples are for is REGRESSION:
+ * each one occupies a different structural position in the pipeline, so a
+ * change that breaks the property in that position fails loudly here.
+ *
+ * That is why the link and image samples matter most. They are the exact edit
+ * the invariant warns about — the day someone adds `[text](url)`, an `href`
+ * attribute and a URL scheme enter a pipeline whose safety argument assumes
+ * neither exists. Today they must survive as escaped text; under a naive link
+ * substitution, property 1 fails here instead of in production.
  */
 
 import { test } from "node:test";
@@ -64,18 +75,46 @@ const INPUTS: Array<[string, string]> = [
   ["newline to br with markup", "line one\n<br onload=x>\nline three"],
   ["heading syntax with markup", "# <script>x</script>"],
   ["dollar sequences in captures", "**$& $1 $` $'**"],
+  // The regression the invariant exists to catch — see the file header.
+  ["markdown link syntax", "[click me](https://example.test/page)"],
+  ["markdown link with a script scheme", "[click me](javascript:alert(1))"],
+  ["markdown link with a data scheme", "[x](data:text/html;base64,PHNjcmlwdD4=)"],
+  ["markdown link whose target breaks an attribute", `[x](" onerror="boom)`],
+  ["markdown image syntax", "![alt](https://example.test/x.png)"],
+  ["reference-style link", "[x][ref]\n\n[ref]: https://example.test"],
+  ["autolink syntax", "<https://example.test>"],
   ["comment open", "<!-- <script>x</script> -->"],
   ["cdata-ish", "<![CDATA[<script>x</script>]]>"],
   ["unclosed tag", "<div"],
   ["empty", ""],
 ];
 
-test("renderMarkdown emits only its own tags, for every input", () => {
+// Named for what it actually does. Universality is argued on the function, not
+// established here; this pins the property across each structural position.
+test("renderMarkdown emits only its own tags, across every sampled shape", () => {
   for (const [label, input] of INPUTS) {
     const out = renderMarkdown(input);
     assertOnlyOwnTags(out, label);
     assertOnlyOwnEntities(out, label);
   }
+});
+
+test("link and image syntax stay inert text — the invariant's break condition", () => {
+  // If someone adds link support without a sanitiser, these stop being text.
+  for (const src of [
+    "[click me](javascript:alert(1))",
+    "![alt](https://example.test/x.png)",
+    `[x](" onerror="boom)`,
+  ]) {
+    const out = renderMarkdown(src);
+    assert.ok(!out.includes("<a"), `link tag emitted for ${src}`);
+    assert.ok(!out.includes("<img"), `img tag emitted for ${src}`);
+    assert.ok(!out.includes("href"), `href attribute emitted for ${src}`);
+    assertOnlyOwnTags(out, src);
+  }
+  // The scheme survives as visible text, which is the correct outcome: it is
+  // prose about a link, not a link.
+  assert.ok(renderMarkdown("[a](javascript:alert(1))").includes("javascript:alert(1)"));
 });
 
 test("escapeHtml escapes & first, so entities are not double-mangled", () => {

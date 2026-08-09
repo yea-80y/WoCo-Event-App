@@ -6,10 +6,18 @@
  * ---------------------------------------------------------------------------
  *
  * An organiser pastes an embed snippet (or a plain link). Previously that text
- * was injected into the page with `{@html}`, on the SAME ORIGIN as the WoCo app
- * — so it could read any visitor's stored session.
+ * was injected into the page with `{@html}` — markup written by one party and
+ * rendered to another.
  *
- * This module removes that entirely rather than containing it: the organiser's
+ * State the guarantee without reference to where the page is hosted. WoCo sites
+ * have been served from the WoCo gateway, are moving to the Etherna gateway
+ * where every site shares one origin with every other, and will mostly be
+ * reached on an organiser's own domain or sub-ENS name. The guarantee has to
+ * hold in all of them, so do NOT re-derive it from whichever origin happens to
+ * be current — that reasoning invites "we aren't same-origin with the app any
+ * more, so we can relax this", which does not follow.
+ *
+ * This module removes the problem rather than containing it: the organiser's
  * bytes are NEVER rendered. We extract candidate URLs from the text, and render
  * only a URL that has passed all three of:
  *
@@ -160,13 +168,20 @@ const PROVIDERS: Provider[] = [
     hosts: ["mixcloud.com", "www.mixcloud.com", "player-widget.mixcloud.com"],
     toEmbed(u) {
       if (u.hostname === "player-widget.mixcloud.com") {
-        const feed = u.searchParams.get("feed");
+        // The widget's `feed` decides what the frame plays, so it gets the same
+        // treatment as SoundCloud's nested `url` — validated and rebuilt, never
+        // passed through. Taking it verbatim would let the paste aim an
+        // allowlisted widget at an off-provider feed, which is the thing the
+        // allowlist exists to prevent even when the frame's own origin is fine.
+        const feed = mixcloudFeedPath(u.searchParams.get("feed"));
         if (!feed) return null;
         return { src: widgetUrlFor(feed), height: 120 };
       }
       const seg = segments(u);
       if (seg.length < 2) return null;
-      return { src: widgetUrlFor(`/${seg.join("/")}/`), height: 120 };
+      const path = mixcloudFeedPath(`/${seg.join("/")}/`);
+      if (!path) return null;
+      return { src: widgetUrlFor(path), height: 120 };
     },
   },
   {
@@ -203,6 +218,32 @@ const PROVIDERS: Provider[] = [
 function playerUrlFor(track: URL): string {
   const clean = `https://${track.hostname}${track.pathname}`;
   return `https://w.soundcloud.com/player/?url=${encodeURIComponent(clean)}&visual=false&show_comments=false`;
+}
+
+/** A Mixcloud show path: `/user/show/`. Charset is deliberately narrow. */
+const MIXCLOUD_PATH = /^\/[A-Za-z0-9._~%-]+(?:\/[A-Za-z0-9._~%-]+)+\/?$/;
+
+/**
+ * Normalise a widget `feed` to a validated Mixcloud path.
+ *
+ * Accepts either a bare path or a full Mixcloud URL, and returns the path only
+ * — so a full URL's host, scheme and query are discarded rather than trusted.
+ * Anything else is refused.
+ */
+function mixcloudFeedPath(feed: string | null): string | null {
+  if (!feed) return null;
+  if (feed.startsWith("/")) {
+    return MIXCLOUD_PATH.test(feed) ? feed : null;
+  }
+  let inner: URL;
+  try {
+    inner = new URL(feed);
+  } catch {
+    return null;
+  }
+  if (inner.protocol !== "https:") return null;
+  if (!["mixcloud.com", "www.mixcloud.com"].includes(inner.hostname)) return null;
+  return MIXCLOUD_PATH.test(inner.pathname) ? inner.pathname : null;
 }
 
 function widgetUrlFor(feedPath: string): string {
