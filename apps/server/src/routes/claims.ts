@@ -27,6 +27,7 @@ import { formatUnits } from "ethers";
 import { extractDelegation, verifyDelegation } from "../lib/auth/verify-delegation.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
 import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 const claims = new Hono<AppEnv>();
 
@@ -184,9 +185,7 @@ claims.post("/:eventId/series/:seriesId/claim", async (c) => {
     }
 
     // Rate limit email claims by IP
-    const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
-      || c.req.header("cf-connecting-ip")
-      || "unknown";
+    const ip = clientIp(c);
     if (!checkEmailRateLimit(ip)) {
       return c.json({ ok: false, error: "Too many claims. Please try again later." }, 429);
     }

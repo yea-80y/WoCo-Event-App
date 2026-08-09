@@ -11,6 +11,7 @@ import {
   RESERVATION_MAX_QTY,
   heldFor,
 } from "../lib/event/reservation-store.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 const reservations = new Hono<AppEnv>();
 
@@ -29,13 +30,6 @@ const reserveRateMap = new Map<string, number[]>();
 const RESERVE_RATE_LIMIT = 30; // max calls
 const RESERVE_RATE_WINDOW = 60_000; // per minute
 
-function clientIp(c: Context<AppEnv>): string {
-  return (
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
-    c.req.header("cf-connecting-ip") ||
-    "unknown"
-  );
-}
 
 function checkRate(ip: string): boolean {
   const now = Date.now();

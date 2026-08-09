@@ -46,6 +46,7 @@ import {
 } from "../lib/gate/store.js";
 import { getFromAddress } from "../lib/email/client.js";
 import { sendEmail } from "../lib/email/send.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 export const attendeeGate = new Hono<AppEnv>();
 
@@ -63,9 +64,6 @@ function allowStart(ip: string): boolean {
   return true;
 }
 
-function clientIp(c: { req: { header: (n: string) => string | undefined } }): string {
-  return c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-}
 
 /** Accepts `woco://t/...`, a full /t page URL, or the bare path — extracts
  *  {eventId, seriesId, edition, sig}. Query params (?n= ?e=) are ignored. */

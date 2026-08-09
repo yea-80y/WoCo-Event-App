@@ -36,6 +36,7 @@ import {
   AGENT_SPEND_CHAIN_ID,
 } from "../lib/agent/spend-authority.js";
 import { issuePurchaseIntent, peekPurchaseIntent, deletePurchaseIntent } from "../lib/agent/purchase-intent.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 export const agentRouter = new Hono<AppEnv>();
 
@@ -65,9 +66,6 @@ function rateLimited(ip: string): boolean {
   }
   e.count += 1;
   return e.count > RATE_LIMIT;
-}
-function clientIp(c: { req: { header: (k: string) => string | undefined } }): string {
-  return (c.req.header("x-forwarded-for") || "").split(",")[0].trim() || "unknown";
 }
 
 // ---------------------------------------------------------------------------
