@@ -80,9 +80,10 @@ export interface Reservation {
   clientKey?: string;
   /**
    * Source IP recorded for the per-IP held-seats cap (see
-   * RESERVATION_MAX_SEATS_PER_IP). Read from x-forwarded-for /
-   * cf-connecting-ip at the route layer; never trusted for identity,
-   * only as a flood-control hint.
+   * RESERVATION_MAX_SEATS_PER_IP). Derived at the route layer by `clientIp()`
+   * from `cf-connecting-ip` ONLY — never `x-forwarded-for`, whose first element
+   * the caller writes (#179). Still never trusted for identity, only as a
+   * flood-control hint.
    */
   ip?: string;
 }

@@ -19,6 +19,7 @@ import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
+import { clientIp } from "../lib/http/client-ip.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -30,13 +31,6 @@ const readRateMap = new Map<string, number[]>();
 const READ_RATE_LIMIT  = 200;
 const READ_RATE_WINDOW = 60_000;
 
-function clientIp(c: Context<AppEnv>): string {
-  return (
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
-    c.req.header("cf-connecting-ip") ||
-    "unknown"
-  );
-}
 
 function checkReadRate(ip: string): boolean {
   const now = Date.now();
