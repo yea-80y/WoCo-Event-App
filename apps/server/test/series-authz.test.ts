@@ -3,8 +3,8 @@
  *
  * The endpoints proved the caller owned the EVENT in the URL, then acted on the
  * SERIES in the URL. Nothing joined them, so an organiser could authorise
- * against an event of their own — free to create — and approve or reject pending
- * claims on anybody else's. Series ids are public: they are in the event feed
+ * against an event of their own — free to create — and act on pending claims that
+ * belong to a different event. Series ids are public: they are in the event feed
  * and in claim URLs.
  *
  * The crossed-identifier case is the third test here. The rest exist because the
