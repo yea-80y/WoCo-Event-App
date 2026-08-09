@@ -8,7 +8,29 @@ import {
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
-import { isKernelOwner } from "./kernel-owner.js";
+import { isKernelOwner, readKernelOwner } from "./kernel-owner.js";
+import { isKernelKnownDeployed } from "./kernel-deployed.js";
+import { decideSmartWalletPath } from "./smart-wallet-gate.js";
+
+/**
+ * Seam for the two authorities the smart-wallet gate consults (#209).
+ *
+ * Injected rather than imported at the call site so the gate can be tested
+ * without a live chain or a live verifier — including the property that most
+ * matters, that a verifier which WOULD accept is never reached for a gated
+ * account. Production passes nothing and gets the real implementations.
+ */
+export interface DelegationVerifyDeps {
+  isKernelKnownDeployed: (address: string) => boolean;
+  readKernelOwner: (address: string) => Promise<string | null | "error">;
+  verifySmartWalletTypedData: typeof verifySmartWalletTypedData;
+}
+
+const DEFAULT_DEPS: DelegationVerifyDeps = {
+  isKernelKnownDeployed,
+  readKernelOwner,
+  verifySmartWalletTypedData,
+};
 
 /**
  * Verify a session delegation bundle.
@@ -36,6 +58,7 @@ export async function verifyDelegation(
   delegation: SessionDelegation,
   claimedSession: string,
   allowedHosts?: string[],
+  deps: DelegationVerifyDeps = DEFAULT_DEPS,
 ): Promise<VerifyDelegationResult> {
   try {
     if (!delegation?.message || !delegation?.parentSig) {
@@ -113,8 +136,25 @@ export async function verifyDelegation(
       }
     }
     if (!validSig) {
+      // Both verification paths answer "is this the parent's signature", but not
+      // with the same authority — and only this one can be satisfied by
+      // simulating a deployment that has since been superseded. Once we can
+      // identify the account as one with an on-chain owner, that owner is the
+      // only authority that applies, so this path is not offered at all (#209).
+      const knownDeployed = deps.isKernelKnownDeployed(message.parent);
+      // Short-circuit: the store's memory alone settles it, at no chain cost.
+      const liveOwner = knownDeployed ? null : await deps.readKernelOwner(message.parent);
+      const gate = decideSmartWalletPath({ knownDeployed, liveOwner });
+      if (!gate.attempt) {
+        // The only trace a wedged pre-fix client would otherwise leave is an
+        // opaque 403 — exactly the diagnosability problem #107 exists to fix.
+        console.warn(
+          `[auth] smart-wallet verification not offered for ${message.parent}: ${gate.reason}`,
+        );
+        return { valid: false, error: "Invalid signature", code: AuthErrorCode.SESSION_INVALID };
+      }
       try {
-        validSig = await verifySmartWalletTypedData({
+        validSig = await deps.verifySmartWalletTypedData({
           address: message.parent as `0x${string}`,
           domain: SESSION_DOMAIN,
           types: SESSION_TYPES,
