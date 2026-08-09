@@ -1265,13 +1265,20 @@ async function loginWeb3Auth(): Promise<boolean> {
       const onChainOwner = await readKernelEcdsaOwner(override);
       if (onChainOwner !== null && onChainOwner.toLowerCase() !== address.toLowerCase()) {
         console.warn("[auth] local recovery binding stale (web3auth) — on-chain owner is", onChainOwner, "not", address, "— clearing");
-        await _deleteRecoveryBinding(address);
-        // The seed goes WITH the binding (#233). Without this the session falls
-        // through to this credential's OWN counterfactual account while the
-        // recovered account's seed is still in the slot — and the AAD cannot
-        // reject it, because it is derived from the address both share. The
-        // account would then sign and decrypt under the wrong identity, silently.
+        // SEED FIRST, BINDING SECOND (#233). Without the clear at all, the session
+        // falls through to this credential's OWN counterfactual account while the
+        // recovered account's seed is still in the slot — and the AAD cannot reject
+        // it, because it is derived from the address both share, so the account
+        // signs and decrypts under the wrong identity, silently.
+        //
+        // The ORDER matters for the same reason the binding is written first in the
+        // ceremony: a crash between these two lines must leave the benign residue.
+        // Seed-then-binding leaves "binding present, seed gone" — the next login
+        // re-fires this guard, or the derive guards refuse, and it heals.
+        // Binding-then-seed would leave "binding gone, foreign seed present", which
+        // is exactly the landmine being removed.
         await clearPodIdentity(address);
+        await _deleteRecoveryBinding(address);
         override = undefined;
       }
     }
@@ -1539,13 +1546,17 @@ async function loginPasskeyResult(
       const onChainOwner = await readKernelEcdsaOwner(override);
       if (onChainOwner !== null && onChainOwner.toLowerCase() !== account.address.toLowerCase()) {
         console.warn("[auth] local recovery binding stale — on-chain owner is", onChainOwner, "not PRF-EOA", account.address, "— clearing");
-        await _deleteRecoveryBinding(account.address);
-        // See the web3auth twin above (#233): the seed must go with the binding,
-        // or the fall-through to the counterfactual account adopts it and the AAD
-        // cannot object. A passkey PRF-EOA is fresh per credential, so this is the
-        // narrower case — but "narrower" is not "impossible", and the two branches
-        // must not drift apart again.
+        // Seed first, binding second — see the web3auth twin above for why the
+        // order is load-bearing. A passkey PRF-EOA is fresh per credential, so this
+        // is the narrower case, but "narrower" is not "impossible".
+        //
+        // There is a THIRD site that clears a stale binding:
+        // `_verifyRecoveredBindingInBackground` deletes it and relies on `logout()`
+        // reaching `clearAllAuth` to drop the seed. That is incidental rather than
+        // explicit, and it has escapes — tracked separately. Do not read these two
+        // as the complete set.
         await clearPodIdentity(account.address);
+        await _deleteRecoveryBinding(account.address);
         override = undefined;
       }
     }
@@ -2331,18 +2342,21 @@ async function recoverAndRekey(args: {
     onProgress?.("Confirming the change on-chain…");
     const { readKernelEcdsaOwner } = await import("./kernel-account.js");
     let rotatedOwner: string | null = null;
-    let sawAnOwner = false; // did ANY attempt get a real answer out of the chain?
     for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
       rotatedOwner = await readKernelEcdsaOwner(target);
-      if (rotatedOwner !== null) sawAnOwner = true;
       if (rotatedOwner?.toLowerCase() === newOwnerAddress.toLowerCase()) break;
       if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
         await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
       }
     }
     if (rotatedOwner?.toLowerCase() !== newOwnerAddress.toLowerCase()) {
+      // The discriminator is the FINAL read, not "did any attempt answer". A
+      // sticky any-attempt flag would let one stale pre-propagation answer,
+      // followed by three silent failures, print "still has its previous sign-in"
+      // — asserting from one old answer and then silence, which is the very thing
+      // this block exists to stop.
       throw new Error(
-        sawAnOwner
+        rotatedOwner !== null
           ? // The chain answered, and named somebody else. This is the only case
             // that justifies telling the user nothing changed.
             "The recovery didn't take effect — this account still has its previous sign-in. " +

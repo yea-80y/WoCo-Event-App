@@ -22,7 +22,6 @@
 import { recoveryContentTopic, type RecoveryEnvelope } from "@woco/shared";
 import {
   writeContentFeed,
-  readContentFeed,
   readContentFeedResult,
   type ContentFeedResult,
 } from "./content-feed.js";
@@ -53,26 +52,17 @@ export async function uploadRecoveryEnvelopeSoc(args: {
  * SOC signer address the client derives LOCALLY from the connected backup wallet
  * (`deriveGuardianKeys().socSigner.address`) — no platform lookup in the loop. The
  * read is self-verifying (see `probeSoc`). Resolves the latest version and falls
- * back to the legacy fixed identifier. Returns null if absent (e.g. a pre-§13
- * account whose envelope is still on the legacy platform feed).
- */
-export async function readRecoveryEnvelopeSoc(
-  socOwnerAddress: string,
-  kernelAddress: string,
-): Promise<RecoveryEnvelope | null> {
-  return readContentFeed<RecoveryEnvelope>(socOwnerAddress, recoveryContentTopic(kernelAddress));
-}
-
-/**
- * The same read, keeping "this account has no backup" apart from "we could not
- * find out" (#228).
+ * back to the legacy fixed identifier.
  *
- * The lenient twin above collapses both into `null`, and the recovery ceremony
- * then told a locked-out user "No backup found — recovery isn't possible", which is
+ * It keeps "this account has no backup" apart from "we could not find out" (#228).
+ *
+ * A lenient twin used to sit here, collapsing both into `null`, and the recovery
+ * ceremony then told a locked-out user "No backup found — recovery isn't possible":
  * terminal-sounding, frequently false, and delivered at the exact moment they are
- * most likely to give up. A gateway blip must never read as a missing escrow.
- *
- * Use this on any path that ACTS on the absence. The lenient one is for display.
+ * most likely to give up. A gateway blip must never read as a missing escrow. It
+ * has been REMOVED rather than kept for display, because nothing displays this and
+ * a lenient reader left lying around next to a security decision is the thing
+ * somebody reaches for by mistake.
  */
 export async function readRecoveryEnvelopeSocResult(
   socOwnerAddress: string,
