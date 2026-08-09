@@ -494,11 +494,20 @@ async function _restoreCachedAuth(): Promise<void> {
  * cached SESSION before adopting the new account — the session key + delegation
  * are still single-slot, so without this a delegation signed by the previous
  * wallet would be misattributed to the newly-logged-in identity (cross-identity
- * leak). The POD seed + feed signer are now per-account keyed (podSeedKey /
- * feedSignerKey) AND AAD-bound, so they cannot be misattributed and are left in
- * place so a switch back to the prior account restores instantly; each account's
- * blobs are wiped on ITS OWN logout (clearAllAuth). Only the in-memory feed-signer
- * memo must be reset, since it's keyed by the outgoing parent.
+ * leak). The POD seed + feed signer are per-account keyed (podSeedKey /
+ * feedSignerKey) and left in place, so a switch back to the prior account restores
+ * instantly; each account's blobs are wiped on ITS OWN logout (clearAllAuth). Only
+ * the in-memory feed-signer memo must be reset, since it's keyed by the outgoing
+ * parent.
+ *
+ * This used to say the blobs "are AAD-bound, so they cannot be misattributed".
+ * That is FALSE and was load-bearing (#227, #233): the POD seed's AAD is derived
+ * from the OWNER address, not the account, so two accounts reachable from one
+ * credential share an AAD byte-for-byte and each other's seeds decrypt cleanly.
+ * The AEAD cannot object, because there is nothing for it to object to. What
+ * actually keeps this safe is that every path which makes one credential point
+ * somewhere new now clears the seed alongside the binding — not the cryptography.
+ * Do not restore the old claim; it is the assumption that produced the bug.
  */
 async function _clearStaleAuthForSwitch(address: string): Promise<void> {
   const priorParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
@@ -1257,6 +1266,12 @@ async function loginWeb3Auth(): Promise<boolean> {
       if (onChainOwner !== null && onChainOwner.toLowerCase() !== address.toLowerCase()) {
         console.warn("[auth] local recovery binding stale (web3auth) — on-chain owner is", onChainOwner, "not", address, "— clearing");
         await _deleteRecoveryBinding(address);
+        // The seed goes WITH the binding (#233). Without this the session falls
+        // through to this credential's OWN counterfactual account while the
+        // recovered account's seed is still in the slot — and the AAD cannot
+        // reject it, because it is derived from the address both share. The
+        // account would then sign and decrypt under the wrong identity, silently.
+        await clearPodIdentity(address);
         override = undefined;
       }
     }
@@ -1525,6 +1540,12 @@ async function loginPasskeyResult(
       if (onChainOwner !== null && onChainOwner.toLowerCase() !== account.address.toLowerCase()) {
         console.warn("[auth] local recovery binding stale — on-chain owner is", onChainOwner, "not PRF-EOA", account.address, "— clearing");
         await _deleteRecoveryBinding(account.address);
+        // See the web3auth twin above (#233): the seed must go with the binding,
+        // or the fall-through to the counterfactual account adopts it and the AAD
+        // cannot object. A passkey PRF-EOA is fresh per credential, so this is the
+        // narrower case — but "narrower" is not "impossible", and the two branches
+        // must not drift apart again.
+        await clearPodIdentity(account.address);
         override = undefined;
       }
     }
@@ -2129,11 +2150,28 @@ async function recoverAndRekey(args: {
     // platform-signed feed for accounts protected before this migration. If there
     // is nothing to restore, recovery would strand the POD identity — refuse before
     // touching the chain.
-    const { readRecoveryEnvelopeSoc } = await import("../swarm/recovery-feed.js");
-    let envelope = await readRecoveryEnvelopeSoc(gk.socSigner.address, target);
+    // Tri-state, because this decides whether to tell a locked-out user their
+    // account cannot be recovered (#228). The lenient read collapses "no escrow"
+    // and "the gateway didn't answer" into one `null`, and the message below is
+    // terminal-sounding — a blip must not read as a missing backup. The portal's
+    // own pre-check already states this rule; the ceremony was not keeping it.
+    const { readRecoveryEnvelopeSocResult } = await import("../swarm/recovery-feed.js");
+    const socRead = await readRecoveryEnvelopeSocResult(gk.socSigner.address, target);
+    let envelope = socRead.status === "found" ? socRead.value : null;
     if (!envelope) {
-      const { fetchRecoveryEnvelope } = await import("../api/recovery.js");
-      envelope = await fetchRecoveryEnvelope(target);
+      // The legacy platform feed is only consulted when the guardian-owned SOC is
+      // definitively ABSENT — a pre-§13 account. An unreadable SOC is not evidence
+      // that this is such an account, and its absence on the legacy feed would then
+      // compound one unknown into a false verdict.
+      if (socRead.status === "absent") {
+        const { fetchRecoveryEnvelope } = await import("../api/recovery.js");
+        envelope = await fetchRecoveryEnvelope(target);
+      } else {
+        throw new Error(
+          "We couldn't reach your backup right now — this doesn't mean it's missing. " +
+            "Check your connection and try again in a moment.",
+        );
+      }
     }
     if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
 
@@ -2280,11 +2318,23 @@ async function recoverAndRekey(args: {
     // at this point, so refusing costs the user a retry, whereas proceeding
     // wrongly tells them "you're back in" and invites them to discard the old
     // device that still holds the only working credential.
+    // The message it fails with is NOT interchangeable (#226). `readKernelEcdsaOwner`
+    // returns null for BOTH "the owner is someone else" and "the read threw", so the
+    // original text — "your account has NOT been changed" — asserted a fact it had
+    // never observed. Said to the one user whose old credential may have just been
+    // retired on-chain, it is the worst possible advice: it tells them to keep using
+    // a dead sign-in and stop retrying, when a retry is exactly what heals it (the
+    // escrow, the guardian registration and doRecovery all survive).
+    //
+    // So the two answers are kept apart. `removeAllBackups` already does this —
+    // "did not take effect" vs "couldn't confirm; it may well have worked".
     onProgress?.("Confirming the change on-chain…");
     const { readKernelEcdsaOwner } = await import("./kernel-account.js");
     let rotatedOwner: string | null = null;
+    let sawAnOwner = false; // did ANY attempt get a real answer out of the chain?
     for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
       rotatedOwner = await readKernelEcdsaOwner(target);
+      if (rotatedOwner !== null) sawAnOwner = true;
       if (rotatedOwner?.toLowerCase() === newOwnerAddress.toLowerCase()) break;
       if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
         await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
@@ -2292,8 +2342,15 @@ async function recoverAndRekey(args: {
     }
     if (rotatedOwner?.toLowerCase() !== newOwnerAddress.toLowerCase()) {
       throw new Error(
-        "The recovery transaction did not take effect on-chain — your account has NOT been changed. " +
-          "Keep using your existing sign-in and try again.",
+        sawAnOwner
+          ? // The chain answered, and named somebody else. This is the only case
+            // that justifies telling the user nothing changed.
+            "The recovery didn't take effect — this account still has its previous sign-in. " +
+              "Keep using your existing sign-in, and try recovering again."
+          : // The chain never answered. It may have worked. Say so, and send them
+            // back to the portal rather than back to a sign-in that might be dead.
+            "We couldn't confirm the change on-chain — it may well have gone through. " +
+              "Don't assume either way: run recovery again and it will pick up wherever it landed.",
       );
     }
 
@@ -2303,10 +2360,23 @@ async function recoverAndRekey(args: {
 
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored POD seed).
-    // Clear any stale auth on this device FIRST — `_clearStaleAuthForSwitch`
-    // calls `clearPodIdentity()`, so the recovered seed must be stored AFTER it.
+    // Clear any stale auth on this device FIRST — it drops the cached SESSION,
+    // which belongs to whatever account was here before.
     onProgress?.("Restoring your tickets and history…");
     await _clearStaleAuthForSwitch(target);
+
+    // THE BINDING GOES FIRST (#230). It is the record every other write keys off:
+    // from it, `init` and the login paths rebuild at the preserved address, honour
+    // the anti-divergence guards, and back-fill the portability envelope. Every
+    // write below is recoverable from the binding; NOTHING recovers the binding.
+    //
+    // It used to be last. A tab killed between the KV writes and this line left a
+    // device claiming the preserved address with no binding: HTTP auth still passed
+    // (the server checks the on-chain owner), but every on-chain action threw a
+    // Kernel-address mismatch, and the next full login landed in the counterfactual
+    // and cached it — because the envelope back-fill requires the binding that was
+    // never written. Writing it first makes a half-finished commit heal instead.
+    await _putRecoveryBinding(newPodAddress, target);
     await storePodSeed(newPodAddress, podSeed);
     // Restore the original feed signer under the PRESERVED parent address (the
     // AAD key `_getContentFeedSigner` reads), so the recovered account keeps
@@ -2319,11 +2389,6 @@ async function recoverAndRekey(args: {
     await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.POD_ADDRESS, newPodAddress);
-    // Durable recovered-account binding: the new owner EOA (newPodAddress) controls
-    // the Kernel at the PRESERVED address `target`, whose counterfactual it does NOT
-    // match. loginPasskey/loginWeb3Auth/_ensureKernel*/init read this to rebuild at
-    // the preserved address on every future session (survives logout — clearAllAuth).
-    await _putRecoveryBinding(newPodAddress, target);
     // Cross-device portability (passkey only): `_maybeBackfillPortabilityEnvelope`
     // writes a PRF-sealed envelope on the first `ensureSession` after this ceremony,
     // so a passkey-recovered account can be re-opened on a THIRD device. A web3auth

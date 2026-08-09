@@ -20,7 +20,12 @@
  */
 
 import { recoveryContentTopic, type RecoveryEnvelope } from "@woco/shared";
-import { writeContentFeed, readContentFeed } from "./content-feed.js";
+import {
+  writeContentFeed,
+  readContentFeed,
+  readContentFeedResult,
+  type ContentFeedResult,
+} from "./content-feed.js";
 
 /**
  * Sign + upload the sealed recovery envelope as a guardian-owned SOC.
@@ -56,4 +61,22 @@ export async function readRecoveryEnvelopeSoc(
   kernelAddress: string,
 ): Promise<RecoveryEnvelope | null> {
   return readContentFeed<RecoveryEnvelope>(socOwnerAddress, recoveryContentTopic(kernelAddress));
+}
+
+/**
+ * The same read, keeping "this account has no backup" apart from "we could not
+ * find out" (#228).
+ *
+ * The lenient twin above collapses both into `null`, and the recovery ceremony
+ * then told a locked-out user "No backup found — recovery isn't possible", which is
+ * terminal-sounding, frequently false, and delivered at the exact moment they are
+ * most likely to give up. A gateway blip must never read as a missing escrow.
+ *
+ * Use this on any path that ACTS on the absence. The lenient one is for display.
+ */
+export async function readRecoveryEnvelopeSocResult(
+  socOwnerAddress: string,
+  kernelAddress: string,
+): Promise<ContentFeedResult<RecoveryEnvelope>> {
+  return readContentFeedResult<RecoveryEnvelope>(socOwnerAddress, recoveryContentTopic(kernelAddress));
 }
