@@ -23,19 +23,12 @@ import {
 import { getVerifiedReferral, relayDelegatedReferral } from "../lib/campaign/eas-campaign.js";
 import { getBadge, issueJoinedBadge } from "../lib/campaign/badges.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 export const campaignRoutes = new Hono<AppEnv>();
 
 const ADDR = /^0x[0-9a-fA-F]{40}$/;
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
-
-function clientIp(c: Context<AppEnv>): string {
-  return (
-    c.req.header("cf-connecting-ip") ??
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "unknown"
-  );
-}
 
 // Same sliding-window shape as likes /record. The relay endpoint spends
 // platform gas, so its funnel is tighter than the read-side default.

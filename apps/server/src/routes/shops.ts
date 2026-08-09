@@ -36,6 +36,7 @@ import { fiatToUSD } from "../lib/payment/eth-price.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
+import { clientIp } from "../lib/http/client-ip.js";
 import {
   priceOrder,
   moneyToMinor,
@@ -78,14 +79,6 @@ const ORDER_RATE_WINDOW = 60_000;
 const payRateMap = new Map<string, number[]>();
 const PAY_RATE_LIMIT = 30;
 const PAY_RATE_WINDOW = 60_000;
-
-function clientIp(c: { req: { header: (k: string) => string | undefined } }): string {
-  return (
-    c.req.header("cf-connecting-ip") ||
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown"
-  );
-}
 
 /** Sliding-window rate check. Returns true when the caller is over the limit. */
 function rateLimited(map: Map<string, number[]>, ip: string, limit: number, windowMs: number): boolean {
