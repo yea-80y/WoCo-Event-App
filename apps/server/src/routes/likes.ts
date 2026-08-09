@@ -14,7 +14,6 @@
  */
 
 import { Hono } from "hono";
-import type { Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { SubjectType } from "@woco/shared";
@@ -23,20 +22,13 @@ import {
   recordLike, removeLike, getLikeCount, getFollowing, getTrending,
 } from "../lib/likes/index-store.js";
 import { pokeAggregator, getTrendingOnChain } from "../lib/likes/stylus-aggregator.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 export const likesRoutes = new Hono<AppEnv>();
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const isHex32 = (s: unknown): s is string => typeof s === "string" && HEX32.test(s);
 const isSubjectType = (n: unknown): n is SubjectType => n === 0 || n === 1;
-
-function clientIp(c: Context<AppEnv>): string {
-  return (
-    c.req.header("cf-connecting-ip") ??
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "unknown"
-  );
-}
 
 // ── Rate limit (server-side; the on-chain gas cap bounds per-key drain, this
 //    bounds the funnel). Per parent AND per IP, sliding window. ───────────────
