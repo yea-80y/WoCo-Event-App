@@ -166,6 +166,89 @@ test("mixcloud widget feeds are validated and rebuilt, not passed through", () =
   rejected("https://player-widget.mixcloud.com/widget/iframe/", "missing feed");
 });
 
+test("instagram posts, reels and tv resolve to the iframe embed path", () => {
+  assert.equal(
+    ok("https://www.instagram.com/p/C1yZ8XkNQrS/").src,
+    "https://www.instagram.com/p/C1yZ8XkNQrS/embed/",
+  );
+  assert.equal(
+    ok("https://www.instagram.com/reel/C1yZ8XkNQrS/?igsh=tracking").src,
+    "https://www.instagram.com/reel/C1yZ8XkNQrS/embed/",
+  );
+  // Already an embed URL — idempotent, and the tracking query is dropped.
+  assert.equal(
+    ok("https://www.instagram.com/p/C1yZ8XkNQrS/embed/").src,
+    "https://www.instagram.com/p/C1yZ8XkNQrS/embed/",
+  );
+  rejected("https://www.instagram.com/someprofile/", "profile, not a post");
+  rejected("https://www.instagram.com/", "instagram root");
+});
+
+test("tiktok resolves from the share link or an existing embed url", () => {
+  assert.equal(
+    ok("https://www.tiktok.com/@scout2015/video/6718335390845095173").src,
+    "https://www.tiktok.com/embed/v2/6718335390845095173",
+  );
+  assert.equal(
+    ok("https://www.tiktok.com/embed/v2/6718335390845095173").src,
+    "https://www.tiktok.com/embed/v2/6718335390845095173",
+  );
+  rejected("https://www.tiktok.com/@scout2015", "profile, not a video");
+  rejected("https://www.tiktok.com/@x/video/notanid", "non-numeric id");
+  // Short links need a network round trip to resolve; this module makes none.
+  rejected("https://vm.tiktok.com/ZMabcdef/", "short link host");
+});
+
+test("facebook plugin href is validated and rebuilt, not passed through", () => {
+  const post = ok("https://www.facebook.com/20531316728/posts/10154009990506729");
+  assert.ok(post.src.startsWith("https://www.facebook.com/plugins/post.php?href="));
+  assert.ok(post.src.includes(encodeURIComponent("https://www.facebook.com/20531316728/posts/10154009990506729")));
+
+  const video = ok("https://www.facebook.com/somepage/videos/1234567890/");
+  assert.ok(video.src.startsWith("https://www.facebook.com/plugins/video.php?href="));
+  assert.equal(video.aspect, "16 / 9");
+
+  // An allowlisted plugin aimed off-provider — the frame origin would still be
+  // Facebook's, which is exactly why the href needs its own check.
+  rejected(
+    "https://www.facebook.com/plugins/post.php?href=https%3A%2F%2Fevil.test%2Fx",
+    "off-provider href",
+  );
+  rejected(
+    "https://www.facebook.com/plugins/post.php?href=http%3A%2F%2Fwww.facebook.com%2Fx%2Fposts%2F1",
+    "non-https href",
+  );
+  rejected(
+    "https://www.facebook.com/plugins/post.php?href=https%3A%2F%2Fwww.facebook.com%2Fplugins%2Fpost.php%3Fhref%3Dx",
+    "plugin nested in a plugin",
+  );
+  rejected("https://www.facebook.com/plugins/post.php", "missing href");
+});
+
+test("youtube playlists resolve, but a single video still wins", () => {
+  const list = "PLabcdefghijklmnop";
+  assert.equal(
+    ok(`https://www.youtube.com/playlist?list=${list}`).src,
+    `https://www.youtube-nocookie.com/embed/videoseries?list=${list}`,
+  );
+  assert.equal(
+    ok(`https://www.youtube.com/embed/videoseries?list=${list}`).src,
+    `https://www.youtube-nocookie.com/embed/videoseries?list=${list}`,
+  );
+  // A watch URL carrying both means "this video", not "this playlist".
+  assert.equal(
+    ok(`https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=${list}`).src,
+    "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+  );
+  rejected("https://www.youtube.com/playlist?list=short", "bad playlist id");
+});
+
+test("the new providers are exact-host too", () => {
+  rejected("https://instagram.com.evil.test/p/C1yZ8XkNQrS/", "instagram lookalike");
+  rejected("https://evil-tiktok.com/@x/video/6718335390845095173", "tiktok lookalike");
+  rejected("https://facebook.com.evil.test/x/posts/1", "facebook lookalike");
+});
+
 test("candidateUrls is bounded and strips trailing punctuation", () => {
   assert.deepEqual(candidateUrls("see https://vimeo.com/123456789."), ["https://vimeo.com/123456789"]);
   const many = candidateUrls(Array.from({ length: 50 }, () => "https://a.test/x").join(" "));
