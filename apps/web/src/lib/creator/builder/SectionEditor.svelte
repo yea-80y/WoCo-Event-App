@@ -15,6 +15,10 @@
     ShopDirectoryEntry,
     ProductCategory,
   } from "@woco/shared";
+  import {
+    resolveEmbed,
+    supportedProviderNames,
+  } from "../../components/site/sections/embed-src.js";
   import { uploadSiteImage } from "../../api/sites.js";
   import { getMyShops, getShop } from "../../api/shops.js";
   import { compressImage, imgPreset } from "../../utils.js";
@@ -480,13 +484,22 @@
       <input class="input" type="text" value={s.title ?? ''} placeholder="e.g. Book a Table, Follow Us"
         oninput={(e) => onpatch({ title: (e.currentTarget as HTMLInputElement).value || undefined })} />
     </label>
+    {@const embed = resolveEmbed(s.html)}
     <label class="field-row">
-      <span class="field-label">HTML embed</span>
+      <span class="field-label">Embed link</span>
       <textarea class="input textarea" rows="4" value={s.html}
-        placeholder="<iframe …></iframe>"
+        placeholder="https://www.youtube.com/watch?v=… — or paste the whole embed code"
         oninput={(e) => onpatch({ html: (e.currentTarget as HTMLTextAreaElement).value })}
       ></textarea>
-      <span class="hint warn">HTML is sanitized at render time — only &lt;iframe&gt; and basic HTML allowed.</span>
+      <!-- Resolution feedback belongs HERE, not on the published page: the
+           organiser is the one who can fix it, a visitor is not. -->
+      {#if embed.ok}
+        <span class="hint">✓ {embed.provider} embed — the link is used, the pasted code is not.</span>
+      {:else if s.html?.trim()}
+        <span class="hint warn">{embed.reason}</span>
+      {:else}
+        <span class="hint">Paste a share link or embed code. Supported: {supportedProviderNames().join(', ')}.</span>
+      {/if}
     </label>
   {/if}
 </div>

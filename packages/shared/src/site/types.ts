@@ -200,7 +200,13 @@ export interface EmbedSection extends SectionBase {
   type: "embed";
   /** Optional heading shown above the embed. */
   title?: string;
-  /** Sanitized at render time. Allowed: <iframe>, basic HTML, Instagram blockquote. */
+  /**
+   * A share link, or a pasted embed snippet to pull one out of. NOT rendered:
+   * the runtime extracts a URL, checks it against an exact-host provider
+   * allowlist and rebuilds the embed itself (#212). Anything that does not
+   * resolve renders nothing. Field name kept for compatibility with sites
+   * published before the allowlist.
+   */
   html: string;
 }
 
