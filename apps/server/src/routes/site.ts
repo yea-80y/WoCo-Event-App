@@ -12,7 +12,15 @@ import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-rout
 import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
-import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
+import {
+  allowedGatewayUrls,
+  isAllowedGatewayUrl,
+  injectBeforeHeadClose,
+  canonicalOrigin,
+  isSafeIdParam,
+  siteConfigScript,
+  resolveDeployApiUrl,
+} from "../lib/site/deploy-config.js";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -58,20 +66,33 @@ site.post("/deploy", requireAuth, async (c) => {
     };
     const { eventId, gatewayUrl, apiUrl: clientApiUrl } = body;
 
-    if (!eventId) {
-      return c.json({ ok: false, error: "eventId is required" }, 400);
+    // eventId is interpolated into the deployed page's SITE_CONFIG, so its shape
+    // is a security property, not just hygiene: the charset admits no `<`, `>`,
+    // quote or slash, which holds even if the escaping below is ever bypassed
+    // (#193).
+    if (!eventId || !isSafeIdParam(eventId)) {
+      return c.json({ ok: false, error: "eventId is missing or malformed" }, 400);
     }
 
-    // Substitute the server's own PUBLIC_API_BASE for any localhost / private /
-    // non-https value the client supplied. Without this, sites deployed from
-    // a local dev frontend bake `http://localhost:3001` into SITE_CONFIG and
-    // visitors on the public internet can't reach the API.
-    const apiUrl = sanitisePublicApiUrl(clientApiUrl);
+    // The API base every authenticated request from the deployed page is sent to.
+    // Taken from the server's own PUBLIC_API_BASE and the client's claim
+    // discarded — `sanitisePublicApiUrl` only rejected private/non-https hosts,
+    // so it admitted any https host the organiser chose, which would have
+    // received visitors' session delegation and signature headers (#193).
+    const apiUrl = resolveDeployApiUrl(clientApiUrl);
     if (!apiUrl) {
       return c.json({
         ok: false,
         error: "apiUrl is required and PUBLIC_API_BASE is not configured on the server",
       }, 400);
+    }
+
+    // Gateway is free-form in the body and reaches both the batch router and the
+    // deployed page's content reads. Empty/absent is NOT rejected — both consumers
+    // below already substitute a default for it, and turning that into a 400 would
+    // break a caller that omits the field rather than closing anything.
+    if (gatewayUrl?.trim() && !isAllowedGatewayUrl(gatewayUrl)) {
+      return c.json({ ok: false, error: `gatewayUrl must be one of: ${allowedGatewayUrls().join(", ")}` }, 400);
     }
 
     if (!existsSync(DIST_SITE_PATH)) {
@@ -120,15 +141,16 @@ site.post("/deploy", requireAuth, async (c) => {
 
     const config = {
       apiUrl,
-      gatewayUrl: gatewayUrl?.trim() || "https://gateway.woco-net.com",
+      // Canonical origin, never the submitted bytes — see canonicalOrigin().
+      gatewayUrl: (gatewayUrl?.trim() ? canonicalOrigin(gatewayUrl) : null) ?? "https://gateway.woco-net.com",
       // Event images (uploaded to WoCo Bee at event-creation time) must always
       // be fetched from the WoCo gateway, regardless of where the site is hosted.
       contentGatewayUrl: "https://gateway.woco-net.com",
       eventId,
       ...(eventSigner ? { eventSigner } : {}),
     };
-    const configScript = `<script>window.SITE_CONFIG=${JSON.stringify(config)};</script>`;
-    const injectedHtml = siteHtml.replace("</head>", `  ${configScript}\n  </head>`);
+    const configScript = siteConfigScript(config);
+    const injectedHtml = injectBeforeHeadClose(siteHtml, `  ${configScript}`);
 
     // 2) Copy dist-site to a temp dir, write modified site.html
     const ts = Date.now();

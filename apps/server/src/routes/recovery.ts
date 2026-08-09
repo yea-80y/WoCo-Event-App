@@ -83,9 +83,9 @@ recovery.post("/escrow/clear", requireAuth, async (c) => {
   const body = (c.get("body") ?? {}) as { guardianAddresses?: unknown };
 
   const requested = Array.isArray(body.guardianAddresses) ? body.guardianAddresses : [];
-  // Bound BEFORE validating or de-duplicating: a hostile client should not get the
-  // server to walk a multi-megabyte array at all. Reject rather than truncate, so a
-  // caller with more guardians than this learns instead of silently losing some.
+  // Bound BEFORE validating or de-duplicating: no request should get the server to
+  // walk a multi-megabyte array at all. Reject rather than truncate, so a caller
+  // with more guardians than this learns instead of silently losing some.
   if (requested.length > MAX_CLEAR_GUARDIANS) {
     return c.json({ ok: false, error: `Too many guardianAddresses (max ${MAX_CLEAR_GUARDIANS})` }, 400);
   }

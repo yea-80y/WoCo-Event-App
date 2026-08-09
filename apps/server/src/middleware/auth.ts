@@ -40,18 +40,18 @@ const MAX_TIMESTAMP_SKEW_MS = 5 * 60 * 1000;
 // ---------------------------------------------------------------------------
 //
 // The canonical challenge sig binds a request to method+path+body+ts+nonce.
-// Without replay tracking, an attacker who captured a signed request (would
-// require breaking TLS — non-trivial but not impossible on hostile networks)
-// could replay it within MAX_TIMESTAMP_SKEW_MS and re-execute the same
-// operation. Application-level idempotency guards (tx-hash dedup, Stripe
+// Without replay tracking, a captured signed request (capturing one requires
+// breaking TLS — non-trivial but not impossible on untrusted networks) could be
+// replayed within MAX_TIMESTAMP_SKEW_MS and re-execute the same operation.
+// Application-level idempotency guards (tx-hash dedup, Stripe
 // session dedup, slot reservations) cover most mutating endpoints, but not
 // all — e.g. POST /api/sites would re-publish stale site config on replay.
 //
 // We keep an in-memory Set keyed by (sessionAddress, nonce) with a TTL equal
 // to the timestamp-skew window. The set is bounded — at high throughput it
 // holds ~one entry per request for 5 min, then is GC'd. A server restart
-// loses the set, giving an attacker a worst-case 5-min replay window after
-// any restart; acceptable trade-off vs. paying file I/O on the hot path.
+// loses the set, leaving a worst-case 5-min replay window after any restart;
+// acceptable trade-off vs. paying file I/O on the hot path.
 //
 // Key includes sessionAddress so two different sessions can independently
 // use the (astronomically unlikely) same nonce. Nonces are UUIDv4 — 122 bits
@@ -105,8 +105,8 @@ function markNonceOrReject(
  *
  * The session address header and the host/session fields echoed into reason
  * strings are all caller-controlled and unvalidated — a newline or an ANSI
- * escape in them would let an attacker forge convincing `[auth]` lines in the
- * very log we added to diagnose attacks. Collapse control characters and cap
+ * escape in them would let a caller write convincing `[auth]` lines into the
+ * very log we added to diagnose auth failures. Collapse control characters and cap
  * the length; these fields are addresses and hostnames, never prose.
  */
 function safeForLog(value: string, max = 120): string {
@@ -249,8 +249,8 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   }
 
   // Replay protection: only mark the nonce as seen AFTER the signature has
-  // verified. Marking earlier would let an unauthenticated attacker grief
-  // the map by burning nonces a legitimate client might later present.
+  // verified. Marking earlier would let an unauthenticated caller burn nonces
+  // that a legitimate client might later present.
   if (markNonceOrReject(result.sessionAddress!, sessionNonce, tsNum)) {
     return rejectAuth(c, "Nonce replay detected", 403, AuthErrorCode.SESSION_REPLAY);
   }
@@ -278,7 +278,7 @@ function sha256Hex(text: string): string {
  *   - `null` — no auth headers present (anonymous path)
  *   - `{ bodyInvalid: true, error }` — auth headers present but invalid; the
  *     caller MUST reject the request (don't silently downgrade — that would
- *     let an attacker pretend to be anonymous after a bad sig).
+ *     let a caller fall back to the anonymous path after presenting a bad sig).
  *
  * Caller is responsible for reading the raw body via `c.req.text()` once and
  * passing it in — we must hash the exact bytes the client signed.

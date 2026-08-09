@@ -27,14 +27,12 @@ import { getEvent } from "../lib/event/service.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import { verifyGateToken } from "../lib/gate/token.js";
 import { bindTicket, getBindingsForParent, isTicketConsumed } from "../lib/gate/store.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 export const attendeeGate = new Hono<AppEnv>();
 
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 
-function clientIp(c: { req: { header: (n: string) => string | undefined } }): string {
-  return c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-}
 
 /** Was this series sold (any price on its payment config)? Feeds the sybil
  *  weighting `paid` flag on the binding — never used for authorisation. */

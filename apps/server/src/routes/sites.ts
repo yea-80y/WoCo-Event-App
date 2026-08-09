@@ -7,7 +7,13 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
-import { getCreatorSites, upsertCreatorSite, resolveSiteConfig } from "../lib/site/service.js";
+import { getCreatorSites, upsertCreatorSite, resolveSiteConfig, resolveSiteConfigOrNull } from "../lib/site/service.js";
+import {
+  escapeHtmlAttribute as escHtml,
+  injectBeforeHeadClose,
+  siteConfigScript,
+  resolveDeployUrls,
+} from "../lib/site/deploy-config.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
   readFeedPage,
@@ -45,6 +51,7 @@ import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { getLabelOwner, updateSubEnsContenthash } from "../lib/chain/sub-ens-contract.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 const sitesRouter = new Hono();
 
@@ -55,9 +62,14 @@ const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multis
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Config read for routes — follows the client-owned pointer (see service.ts). */
+/**
+ * Config read for DISPLAY routes — follows the client-owned pointer (see
+ * service.ts). Collapses "absent" and "unavailable" into null, which is right for
+ * a page that renders nothing and wrong for anything deciding ownership. The two
+ * ownership gates in this file call `resolveSiteConfig` directly for that reason.
+ */
 async function readSiteConfig(siteId: string): Promise<Site | null> {
-  return (await resolveSiteConfig(siteId))?.site ?? null;
+  return (await resolveSiteConfigOrNull(siteId))?.site ?? null;
 }
 
 /**
@@ -161,10 +173,6 @@ function spawnPromise(cmd: string, args: string[]): Promise<void> {
     });
     proc.on("error", rej);
   });
-}
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function buildContactHtml(name: string, email: string, message: string, siteName: string): string {
@@ -285,8 +293,20 @@ sitesRouter.post("/", requireAuth, async (c) => {
     }
 
     // If an existing site is published, only the owner may overwrite it.
+    //
+    // Three answers, and only ONE of them permits the write (#181). "absent" means
+    // the siteId is genuinely unclaimed. "unavailable" means we could not find out
+    // — and proceeding on that is what let a caller be stamped owner of somebody
+    // else's site by retrying until a Swarm read failed.
     const existing = await resolveSiteConfig(site.siteId);
-    if (existing && existing.site.ownerAddress.toLowerCase() !== parentAddress) {
+    if (existing.status === "unavailable") {
+      console.warn(`[sites/publish] ownership undecidable for ${site.siteId}: ${existing.reason}`);
+      return c.json({
+        ok: false,
+        error: "Could not verify site ownership right now — please try again",
+      }, 503);
+    }
+    if (existing.status === "found" && existing.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
 
@@ -330,7 +350,7 @@ sitesRouter.post("/", requireAuth, async (c) => {
       const siteToWrite: Site = {
         ...site,
         ownerAddress: parentAddress,
-        createdAt: existing?.site.createdAt ?? now,
+        createdAt: existing.status === "found" ? existing.site.createdAt : now,
         updatedAt: now,
       };
       const { pages, ...siteShell } = siteToWrite;
@@ -571,7 +591,7 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
 
 sitesRouter.post("/:id/contact", async (c) => {
   const siteId = c.req.param("id");
-  const ip = c.req.header("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  const ip = clientIp(c);
   const now = Date.now();
   const hits = (contactRateMap.get(ip) ?? []).filter((t) => now - t < CONTACT_RATE_WINDOW);
   if (hits.length >= CONTACT_RATE_LIMIT) {
@@ -633,8 +653,19 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
   try {
     const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site; clientFeed?: boolean };
-    const { apiUrl, gatewayUrl = "https://gateway.woco-net.com", wocoAppUrl = "https://woco.eth.limo" } = body;
-    if (!apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
+    if (!body.apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
+
+    // All three are free-form in the request body and all three are load-bearing
+    // in the deployed page — apiUrl receives visitors' session headers, gatewayUrl
+    // routes both content reads and batch payment, wocoAppUrl lands in an href.
+    // Allowlisted before anything else uses them (#180).
+    const resolvedUrls = resolveDeployUrls({
+      apiUrl: body.apiUrl,
+      gatewayUrl: body.gatewayUrl ?? "https://gateway.woco-net.com",
+      wocoAppUrl: body.wocoAppUrl ?? "https://woco.eth.limo",
+    });
+    if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
+    const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
     if (!existsSync(DIST_MULTISITE_PATH)) {
       return c.json({
@@ -649,15 +680,28 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Either way, an EXISTING siteId may only be deployed by its owner — without
     // this gate the body.site fast path would let any authenticated user overwrite
     // another site's woco-multisite feed and re-point its custom domains.
+    // As on publish: "unavailable" is not "unclaimed" (#181). This gate is the
+    // only thing standing between the body.site fast path and a caller taking over
+    // another site's woco-multisite feed, which is what the custom domains resolve
+    // through — so an undecidable read must refuse rather than fall through.
     const published = await resolveSiteConfig(siteId);
-    if (published && published.site.ownerAddress.toLowerCase() !== parentAddress) {
+    if (published.status === "unavailable") {
+      console.warn(`[sites/deploy] ownership undecidable for ${siteId}: ${published.reason}`);
+      return c.json({
+        ok: false,
+        error: "Could not verify site ownership right now — please try again",
+      }, 503);
+    }
+    if (published.status === "found" && published.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
     let site: Site;
     if (body.site && body.site.siteId === siteId) {
       site = { ...body.site, ownerAddress: parentAddress };
     } else {
-      if (!published) return c.json({ ok: false, error: "Site not found — publish first" }, 404);
+      if (published.status !== "found") {
+        return c.json({ ok: false, error: "Site not found — publish first" }, 404);
+      }
       site = published.site;
     }
 
@@ -691,8 +735,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // always fetches event images from WoCo Bee regardless of site host.
     const config: Record<string, unknown> = { site, gatewayUrl, apiUrl, wocoAppUrl };
     if (target === "etherna") config.contentGatewayUrl = "https://gateway.woco-net.com";
-    const configScript = `<script>window.SITE_CONFIG=${JSON.stringify(config)};</script>`;
-    const injectedHtml = html.replace("</head>", `  ${configScript}\n  </head>`);
+    const configScript = siteConfigScript(config);
+    const injectedHtml = injectBeforeHeadClose(html, `  ${configScript}`);
 
     const ts = Date.now();
     tmpDir = `/tmp/woco-multisite-${ts}`;
@@ -718,14 +762,15 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const descEsc = escHtml(desc);
     const logoRef = site.theme.logoSwarmRef;
     // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
-    const thumbnailUrl = logoRef && !/^0+$/.test(logoRef)
-      ? `${gatewayUrl}/bytes/${logoRef}`
-      : './logo.png';
+    const thumbnailUrl = escHtml(
+      logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : './logo.png',
+    );
+    const themeColorEsc = escHtml(site.theme.palette.accent ?? '');
 
     const headLines = [
       `  <link rel="manifest" href="./manifest.json">`,
       thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
-      `  <meta name="theme-color" content="${site.theme.palette.accent}">`,
+      `  <meta name="theme-color" content="${themeColorEsc}">`,
       desc ? `  <meta name="description" content="${descEsc}">` : '',
       `  <meta property="og:type" content="website">`,
       `  <meta property="og:title" content="${brandNameEsc}">`,
@@ -737,7 +782,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
     ].filter(Boolean).join('\n');
 
-    const injectedWithPwa = injectedHtml.replace("</head>", `${headLines}\n  </head>`);
+    const injectedWithPwa = injectBeforeHeadClose(injectedHtml, headLines);
 
     await fs.cp(DIST_MULTISITE_PATH, tmpDir, { recursive: true });
     await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
@@ -824,7 +869,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // that can't sign must keep the platform-signed feed, else the new manifest
     // would point at a feed with no updates). Both targets: Etherna is the
     // production path, so client ownership must hold there first of all.
-    const feedOwnerSigner = body.clientFeed ? published?.siteFeedSigner : undefined;
+    const feedOwnerSigner =
+      body.clientFeed && published.status === "found" ? published.siteFeedSigner : undefined;
 
     if (feedOwnerSigner && target === "etherna") {
       // Same steps as the platform-signed Etherna write, minus signing — the

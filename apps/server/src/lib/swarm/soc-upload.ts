@@ -31,6 +31,7 @@ import {
   socSignDigest,
   encodeSpan,
   readVersionedContentFeed,
+  type VersionedFeedRead,
   assembleContentFeed,
   contentFeedSocIdentifier,
   contentFeedPageTopic,
@@ -406,6 +407,28 @@ export async function readContentFeedJson(
   baseTopic: string,
   versionHint = 0,
 ): Promise<Uint8Array | null> {
+  const res = await readContentFeedJsonResult(ownerHex, baseTopic, versionHint);
+  return res.status === "found" ? res.bytes : null;
+}
+
+/**
+ * The same read, without collapsing the three answers into two.
+ *
+ * `readContentFeedJson` returns null for "this feed holds nothing" and for "the
+ * network did not answer" alike. That is fine for a display path that falls
+ * through to showing nothing. It is NOT fine for an AUTHORISATION gate, where the
+ * two answers point opposite ways: absent means the caller may claim the name,
+ * unavailable means we cannot say who owns it and must refuse (#181, and the
+ * #154/#155/#170/#171 class before it).
+ *
+ * `readVersionedContentFeed` already distinguishes them; this only stops throwing
+ * the distinction away.
+ */
+export async function readContentFeedJsonResult(
+  ownerHex: string,
+  baseTopic: string,
+  versionHint = 0,
+): Promise<VersionedFeedRead> {
   // `readSocPayload` THROWS every fault except a bee not-found, so a transient
   // fault propagates out of this function rather than being cached as "no such
   // feed" — the distinction the probe needs is mostly already there.
@@ -426,7 +449,7 @@ export async function readContentFeedJson(
   if (cached) {
     const ttl = cached.version === null ? CFV_ABSENT_TTL_MS : CFV_TTL_MS;
     if (Date.now() - cached.at < ttl) {
-      if (cached.version === null) return null;
+      if (cached.version === null) return { status: "absent" };
       // Exact-version read: existing chunks only — zero missing-chunk searches.
       const asm =
         cached.version === LEGACY_CONTENT_FEED_VERSION
@@ -434,7 +457,7 @@ export async function readContentFeedJson(
               contentFeedSocIdentifier(contentFeedPageTopic(baseTopic, p)))
           : await assembleContentFeed(read, versionedSocIdentifier(base, cached.version), (p) =>
               versionedPageIdentifier(base, cached.version as number, p));
-      if (asm.status === "found") return asm.bytes;
+      if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: cached.version };
       // Cached version unexpectedly unreadable — drop it and re-probe below.
       cfvCache.delete(key);
     }
@@ -447,7 +470,7 @@ export async function readContentFeedJson(
   // would serve "this feed does not exist" for the whole TTL off one bad read.
   if (res.status === "found") cfvCache.set(key, { version: res.version, at: Date.now() });
   else if (res.status === "absent") cfvCache.set(key, { version: null, at: Date.now() });
-  return res.status === "found" ? res.bytes : null;
+  return res;
 }
 
 /**
