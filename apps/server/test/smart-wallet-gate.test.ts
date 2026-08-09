@@ -19,13 +19,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { Wallet, TypedDataEncoder } from "ethers";
-import {
-  SESSION_DOMAIN,
-  SESSION_TYPES,
-  SESSION_PURPOSE,
-  SESSION_EXPIRY_MS,
-} from "@woco/shared";
+import { Wallet } from "ethers";
+import { SESSION_PURPOSE, SESSION_EXPIRY_MS, AuthErrorCode } from "@woco/shared";
 
 import { decideSmartWalletPath } from "../src/lib/auth/smart-wallet-gate.js";
 import {
@@ -73,9 +68,21 @@ const PARENT = "0x2222222222222222222222222222222222222222";
 const HOST = "gateway.woco-net.com";
 
 /**
- * A delegation naming `parent`, signed by somebody else — so path 1 cannot
- * validate and the gate is what decides the outcome. Message shape mirrors
- * `auth-rejection-codes.test.ts`, which mints exactly as the browser does.
+ * The 32-byte suffix an ERC-6492 wrapper ends with.
+ *
+ * The parent signature is deliberately NOT 65 bytes. A 65-byte signature is
+ * ecrecover-able, so path 1 would run the real `isKernelOwner` → live `eth_call`
+ * — a network dependency inside a unit test, and one that would make the seam's
+ * "no live chain" claim false by one leg. A wrapper-shaped signature makes
+ * `verifyTypedData` throw, path 1 is skipped without touching the chain, and the
+ * fixture matches the artefact this gate actually refuses.
+ */
+const ERC6492_SUFFIX = "6492".repeat(16);
+
+/**
+ * A delegation naming `parent`, carrying a wrapper-shaped signature — so path 1
+ * cannot validate and the gate is what decides the outcome. Message shape
+ * mirrors `auth-rejection-codes.test.ts`, which mints exactly as the browser does.
  */
 async function delegationFor(parent: string) {
   const session = Wallet.createRandom();
@@ -92,11 +99,7 @@ async function delegationFor(parent: string) {
     clientCodeHash: "0x" + "00".repeat(32),
     statement: `Authorize ${session.address} as session key for ${HOST}`,
   };
-  const parentSig = await Wallet.createRandom().signTypedData(
-    SESSION_DOMAIN,
-    SESSION_TYPES as unknown as Parameters<typeof TypedDataEncoder.hash>[1],
-    message,
-  );
+  const parentSig = "0x" + "ab".repeat(200) + ERC6492_SUFFIX;
   return { delegation: { message, parentSig }, session: session.address };
 }
 
@@ -123,6 +126,9 @@ test("a remembered account is refused even by a verifier that accepts everything
   const res = await verifyDelegation(delegation as never, session, ["gateway.woco-net.com"], d);
 
   assert.equal(res.valid, false);
+  // The client contract for this code is "wipe the delegation, re-mint once,
+  // replay" — which is the cure for every fixable case that lands here.
+  assert.equal(res.code, AuthErrorCode.SESSION_INVALID);
   assert.equal(d.calls, 0, "the smart-wallet verifier must never be reached for a gated account");
 });
 
@@ -136,6 +142,7 @@ test("an account whose owner reads live is refused the same way", async () => {
   const res = await verifyDelegation(delegation as never, session, ["gateway.woco-net.com"], d);
 
   assert.equal(res.valid, false);
+  assert.equal(res.code, AuthErrorCode.SESSION_INVALID);
   assert.equal(d.calls, 0, "a live owner read must gate the path just as the store does");
 });
 
