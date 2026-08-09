@@ -2192,6 +2192,60 @@ async function recoverAndRekey(args: {
       const web3 = await loginWithWeb3Auth();
       newOwnerAddress = web3.address;
       newOwnerPrivKey = web3.privateKey;
+
+      // (1b) COLLISION GUARD — a web3auth login yields ONE deterministic key per
+      // identity, so this is the only path that can point an EXISTING key at a
+      // DIFFERENT account. Doing so overwrites the other account's POD seed under a
+      // shared AAD, which makes it both unreachable AND, later, silently openable
+      // by the wrong account. See recovery-owner-collision.ts for the full chain.
+      //
+      // Placed here deliberately: after the login (the EOA is unknowable before it)
+      // and BEFORE `recoverAccount` — the irreversible boundary. Nothing local has
+      // been written at this point either, so an abort is clean and unlimited-retry.
+      const { decideOwnerCollision } = await import("./recovery-owner-collision.js");
+      const { readCounterfactualOwner, counterfactualKernelOf } = await import("./kernel-account.js");
+      // Every local read is caught: a FAILED read must reach the predicate as
+      // "could not tell", never as "clean". Only the seed read has a destructive
+      // consequence if misjudged, but a raw throw from any of them would abort with
+      // an unactionable error instead of the guard's own message.
+      const localOrNull = async <T,>(read: () => Promise<T> | T): Promise<T | null> => {
+        try {
+          return await read();
+        } catch {
+          return null;
+        }
+      };
+      let podSeedPresent: boolean | null;
+      try {
+        podSeedPresent = !!(await restorePodSeed(newOwnerAddress));
+      } catch {
+        podSeedPresent = null; // read FAILED — not evidence that the slot is free
+      }
+      const verdict = decideOwnerCollision({
+        newOwnerEoa: newOwnerAddress,
+        targetKernel: target,
+        existingBinding: (await localOrNull(() => _recoveryKernelFor(newOwnerAddress))) ?? undefined,
+        podSeedPresent,
+        cachedKernel: await localOrNull(() => readCachedKernelAddress("web3auth", newOwnerAddress)),
+        verifiedBinding: await localOrNull(() => readVerifiedBinding("web3auth", newOwnerAddress)),
+        counterfactualAddress: await counterfactualKernelOf(newOwnerAddress),
+        counterfactualOwner: await readCounterfactualOwner(newOwnerAddress),
+      });
+      if (verdict.status === "block") {
+        console.warn("[auth] recovery refused — owner collision:", verdict.reason);
+        // Drop the Web3Auth session, or the advice in the message is a lie: the SDK
+        // silently re-adopts a rehydrated session without showing the picker, so
+        // every retry would return the SAME identity and the user could never
+        // actually "use a different email". Best-effort — failing to log out must
+        // not replace the guard's message with a logout error.
+        try {
+          const { logoutWeb3Auth } = await import("./web3auth-account.js");
+          await logoutWeb3Auth();
+        } catch (e) {
+          console.warn("[auth] could not clear the Web3Auth session after a refused recovery:", e);
+        }
+        throw new Error(verdict.userMessage);
+      }
     } else {
       onProgress?.("Create a new passkey on this device…");
       const fresh = await createPasskeyAccount();
