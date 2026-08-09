@@ -36,11 +36,19 @@ import { isIPv4, isIPv6 } from "node:net";
 /**
  * Bucket key for callers that arrive without the edge header.
  *
- * Verified against the deployment: the only caller that reaches the origin
- * without traversing the edge is the container healthcheck
- * (`docker-compose.yml:12`), and it requests `/api/health`, which is not rate
- * limited. So on the nine limited routes this bucket should stay empty, and
- * {@link clientIp} logs when it does not.
+ * Verified against the DEPLOYED stack, `deploy/docker-compose.yml` — the one the
+ * ops runbook mirrors to /opt/woco. Its `server` service binds
+ * `127.0.0.1:3001:3001` and declares no healthcheck, and `apps/server/Dockerfile`
+ * has no HEALTHCHECK either, so nothing reaches the origin except through the
+ * tunnel. This bucket should therefore be empty on every route, not merely on the
+ * limited ones, and {@link clientIp} logs when it is not.
+ *
+ * NOT `docker-compose.yml` at the repo root — an earlier version of this comment
+ * cited it, and it is the wrong artefact twice over: it is not deployed, and it
+ * publishes `3001:3001` on ALL interfaces, which would make the loopback premise
+ * below false rather than support it. If that file ever becomes a deployment, or
+ * a second ingress is added, the premise this module rests on is what breaks —
+ * re-check it there, not in the header handling.
  *
  * Kept as a shared bucket rather than a refusal for now: refusing would change
  * what those routes return, and the case for it rests on "nothing legitimate
