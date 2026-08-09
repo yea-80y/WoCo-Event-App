@@ -29,7 +29,6 @@ const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /** The SAME address as the caller sees it — EIP-55 checksummed by getAddress(). */
 const OWNER_CHECKSUMMED = "0xAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaA";
 const STRANGER = "0xbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBb";
-const SIGNER = "0xcCCcCCcCCcCCcCCcCCcCCcCCcCCcCCcCCcCCcCCc";
 
 function readers(over: Partial<SiteConfigReaders> = {}): SiteConfigReaders {
   return {
