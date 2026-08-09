@@ -31,9 +31,42 @@ issue — `gh issue view <n>`. No detail here, or the two sources drift and neit
 
 | # | Item | Owner | State |
 |---|---|---|---|
-| **S1** | #139 + #140 — passkey ceremony safety + embed silent-mint | Claude | ✅ Merged `ae23a49` · ⚠️ **frontend deploy outstanding (owner)** |
-| **S2** | Recovery subsystem lockdown — review DONE, 20 findings filed. Index + running state: **#168** | Fable reviews / Opus fixes | 🔨 **IN PROGRESS** — `fix/recovery-lockdown` (6 commits, Fable-verified) + `fix/content-feed-len-170` **stacked on it, merges after** (needs a rebase — it branched at `0affa01`). Next: #150+#163 |
-| **S2b** | ~~#165 "Remove all backups"~~ ✅ **DONE `55412c9`** (unmerged) — real revoke-all via `uninstallModule(3,·,0xac39fd0f)`, proven by a block-pinned read-back. **#164 WoCo-owned caller hook is now the top S2 item**: #148 CANNOT close without it (a removed backup keeps `podSeed` + `feedSignerPrivKey` forever, and re-adding resurrects every past guardian — both are hook properties, not ours). Memory says `contracts/` got a remote 2026-08-04, so the old blocker may be gone — **confirm before scheduling** | Fable | #165 done · #164 **not started, verify unblocked** |
+| **S1** | #139 + #140 — passkey ceremony safety + embed silent-mint | Claude | ✅ Merged `ae23a49` · frontend DEPLOYED by owner 2026-08-09 |
+| **S2** | Recovery subsystem review + fixes | Fable reviews / Opus fixes | ✅ **DONE.** 8 PRs merged 2026-08-09: #208 #211 #215 #218 #224 #225 #232 #235. Server DEPLOYED, frontend DEPLOYED. Index: **#168** |
+| **S2b** | ~~#165 "Remove all backups"~~ ✅ **DONE + MERGED** — a real revoke-all, proven by a block-pinned read-back. **#164 (own caller hook, per-guardian revoke) is DEFERRED BY DECISION** — see the ruling below | Fable | #165 done · #164 deferred |
+
+---
+
+## ⬅️ THE ORDERED LIST — start here (2026-08-09)
+
+The security work spawned 29 open issues. This is the order, and the reason. **Do the top
+undone item.** Everything below tier 1 is real but does not gate launch.
+
+**TIER 1 — before launch, in this order**
+
+| # | Why it is here |
+|---|---|
+| **#212** | A free organiser account can run JS on the app's ORIGIN and read every visitor's session key + POD identity. Unsanitised `{@html}` in RichTextSection/EmbedSection, same origin as the app. Costs nothing to exploit, hits everyone. **Worst on the board** |
+| **#216** | `POST /api/domains` accepts any `siteId` with NO ownership check. An attacker binds their hostname to your site; your next deploy mirrors your content onto their phishing domain |
+| **#209** | The ERC-6492 fallback bypasses the kernel-deployed gate, so a retired key still authenticates — it **defeats the #208 fix already deployed today** |
+| **#219** | Three rate limiters still derive their own client identity with no normalisation. IPv6 /64 rotation mints unbounded buckets on the PAYMENT routes |
+
+**TIER 2 — before launch if time, otherwise immediately after**
+
+#234 (cross-device credential collision — specced + Fable-reviewed, ready to build) ·
+#161 (guardian config drift would silently kill EVERY installed backup, discovered only at
+recovery time) · #236 #237 #238 (recovery residuals from the #235 review) · #157 (guardian
+index poisoning + Kernel↔backup-EOA privacy leak) · #163 #210 (unbounded server caches)
+
+**TIER 3 — hardening and hygiene, not blocking**
+
+#138 residue · #156 · #158 · #159 · #160 · #166 · #167 · #213 · #214 · #217 · #220 · #221 ·
+#222 · #223 · #231 · #239
+
+**DEFERRED BY DECISION — do not start without revisiting the ruling**
+
+#164 (own caller hook) · #145 implementation · #57
+
 | **S3** | #146 — strict CSP + supply-chain pinning | Opus | Not started |
 | **S4** | #143 — embed `signClaimDigest` throws; then #144 — embed typecheck in CI | Opus | Not started |
 | **S5** | #145 **research only** — (A) does root-validator swap preserve the address? (B) does `@zerodev/webauthn-key` drop the hosted-server dep? | Fable | Not started |
