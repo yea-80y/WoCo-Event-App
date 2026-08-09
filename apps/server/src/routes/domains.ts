@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
+import { decideSiteBind } from "../lib/domains/site-ownership.js";
 import {
   registerDomain,
   verifyDomain,
@@ -26,7 +27,8 @@ function validateHostname(hostname: string): string | null {
 /**
  * POST /api/domains — register a custom domain for an event site or multi-page site
  * Body: { hostname, contentHash, feedManifestHash, eventId? } | { hostname, contentHash, feedManifestHash, siteId? }
- * Auth required. For siteId path, ownership = authenticated address (no event lookup).
+ * Auth required. BOTH branches verify the caller owns the target (#216) — the
+ * siteId branch used to assert ownership rather than check it.
  */
 domains.post("/", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
@@ -52,6 +54,12 @@ domains.post("/", requireAuth, async (c) => {
     let target: { eventId: string } | { siteId: string };
 
     if (siteId) {
+      // Site path: verify the caller owns the site. Without this, a hostname the
+      // caller legitimately controls could be pointed at anyone's siteId (#216).
+      const decision = await decideSiteBind(siteId, parentAddress);
+      if (!decision.ok) {
+        return c.json({ ok: false, error: decision.error }, decision.status);
+      }
       target = { siteId };
     } else {
       // Event path: verify event exists and caller is creator

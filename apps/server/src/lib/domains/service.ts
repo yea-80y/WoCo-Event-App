@@ -161,9 +161,19 @@ export async function registerDomain(
     if (existing.ownerAddress !== ownerAddress.toLowerCase()) {
       throw new Error("Domain already registered by another organiser");
     }
-    // Update existing entry
-    if ("eventId" in target) existing.eventId = target.eventId;
-    if ("siteId" in target) existing.siteId = target.siteId;
+    // Update existing entry. Clear the OTHER target id: an entry carrying both
+    // is re-pointed silently by `updateDomainsForSite`, which matches on
+    // `siteId` alone — so a hostname its owner deliberately moved from a site to
+    // an event would get dragged back to the site's content hash on that site's
+    // next deploy. One target, always.
+    if ("eventId" in target) {
+      existing.eventId = target.eventId;
+      delete existing.siteId;
+    }
+    if ("siteId" in target) {
+      existing.siteId = target.siteId;
+      delete existing.eventId;
+    }
     existing.feedManifestHash = feedManifestHash;
     existing.contentHash = contentHash;
     existing.verified = false;
