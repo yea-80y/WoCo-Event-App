@@ -25,8 +25,15 @@ import { fileURLToPath } from "node:url";
 
 const ROUTES_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "routes");
 
-function routeFiles(): string[] {
-  return readdirSync(ROUTES_DIR).filter((f) => f.endsWith(".ts"));
+/** Recursive: a future `routes/` subdirectory must not escape the scan silently. */
+function routeFiles(dir = ROUTES_DIR, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? join(prefix, entry.name) : entry.name;
+    if (entry.isDirectory()) out.push(...routeFiles(join(dir, entry.name), rel));
+    else if (entry.name.endsWith(".ts")) out.push(rel);
+  }
+  return out;
 }
 
 test("no route derives its own client identity", () => {
@@ -52,6 +59,23 @@ test("no route reads x-forwarded-for", () => {
     }
   }
   assert.deepEqual(offenders, [], `the first element is caller-supplied:\n${offenders.join("\n")}`);
+});
+
+test("no route names the edge header at all", () => {
+  // The broadest of the three, and the one that actually holds the line. The two
+  // guards above match the shape the drift has taken so far — a `function
+  // clientIp` copy reading x-forwarded-for — and are evadable by an arrow
+  // function, a renamed helper, a template literal, or `c.req.raw.headers.get`.
+  // But ANY working local derivation has to read this header, whatever it calls
+  // itself and whatever syntax it uses. So one string closes the whole realistic
+  // evasion class, and the threat model here is the careless next author rather
+  // than a deliberate one.
+  const offenders: string[] = [];
+  for (const file of routeFiles()) {
+    const src = readFileSync(join(ROUTES_DIR, file), "utf-8");
+    if (src.includes("cf-connecting-ip")) offenders.push(`${file}: names cf-connecting-ip`);
+  }
+  assert.deepEqual(offenders, [], `read it through clientIp(), not directly:\n${offenders.join("\n")}`);
 });
 
 test("the guard is looking at real files", () => {

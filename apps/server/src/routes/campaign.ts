@@ -12,7 +12,6 @@
  */
 
 import { Hono } from "hono";
-import type { Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import type { Hex0x, DelegatedSignature, ReferralStatus } from "@woco/shared";
