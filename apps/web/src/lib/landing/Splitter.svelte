@@ -429,10 +429,14 @@
          while showing no picture. The headline is pulled back up into that
          dissolve instead — the type emerges out of the light rather than
          starting below a gap, and the CTA moves ~80px closer to the fold. */
-      margin: 0 -1.5rem calc(var(--band-h) * -0.24);
-      -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 40%, transparent 92%);
+      margin: 0 -1.5rem calc(var(--band-h) * -0.4);
+      /* Holds full strength most of the way down so the crowd silhouettes
+         survive, then falls off only at the very bottom. The headline sits
+         over the crowd rather than over a fade — the photograph's own darkness
+         down there is what carries the type, so nothing needs dimming. */
+      -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 68%, transparent 100%);
       -webkit-mask-composite: source-over;
-      mask-image: linear-gradient(to bottom, #000 0%, #000 40%, transparent 92%);
+      mask-image: linear-gradient(to bottom, #000 0%, #000 68%, transparent 100%);
       mask-composite: add;
     }
     /* Short of full strength: screen-blending this at 1.0 blows the highlights
@@ -440,6 +444,18 @@
        the shot worth using. */
     .hero-light picture { --lit: 0.76; --lit-peak: 0.86; }
     .hero-light img { object-position: 46% 55%; }
+
+    /* The kicker is the one element small and quiet enough to lose against the
+       photograph — --text-muted at 11px is tuned for flat --bg and drops below
+       a comfortable read over lit image. Full bone, a heavier cut and a soft
+       halo of the page's own black keep it legible wherever the beams fall.
+       Size is deliberately untouched: 0.75rem wrapped it onto two lines at
+       390px, and the legibility came from colour, weight and halo anyway. */
+    .hero-kicker .mono-kicker {
+      color: var(--text);
+      font-weight: 700;
+      text-shadow: 0 0 2px var(--bg), 0 1px 8px var(--bg);
+    }
   }
   .hero-kicker {
     display: inline-flex;
@@ -680,18 +696,22 @@
     max-width: 1100px;
     margin: 0 auto;
     display: grid;
-    grid-template-columns: minmax(0, 380px) 1fr;
-    gap: 3.5rem;
+    /* Proportional rather than a fixed 460px: the plate has to keep shrinking
+       with the column so the pair stays side by side well down into tablet
+       widths. Stacking it was what made it tower over the text there. */
+    grid-template-columns: minmax(0, 42%) 1fr;
+    gap: 2.75rem;
     align-items: center;
   }
-  @media (max-width: 880px) {
-    .closing-grid { grid-template-columns: 1fr; gap: 2rem; }
+  @media (max-width: 640px) {
+    /* Only a true phone is too narrow to hold two columns. */
+    .closing-grid { grid-template-columns: 1fr; gap: 1.75rem; }
   }
 
   /* ── Closing plate — the decks photograph as an object ────────────────
-     Capped at 380px so it renders at or below its native 1080px even on a
+     Capped at 460px so it renders at or below its native 1080px even on a
      2× display. Every bit of its detail is the point; upscaling it is the
-     one thing that would make it look cheap. */
+     one thing that would make it look cheap. 5:4 matches the crop exactly. */
 
   .closing-plate {
     margin: 0;
@@ -699,7 +719,10 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     background: var(--bg);
-    aspect-ratio: 3 / 4;
+    aspect-ratio: 5 / 4;
+    /* Never wider than its own native 1080px at 2x — past this it upscales
+       and the fine detail that justifies the photograph starts to smear. */
+    max-width: 460px;
   }
   .closing-plate picture,
   .closing-plate img {
@@ -709,12 +732,6 @@
   }
   .closing-plate img { object-fit: cover; }
 
-  @media (max-width: 880px) {
-    /* A 3:4 plate at full phone width eats the screen. Crop to a band and
-       hold the jog wheels in frame. */
-    .closing-plate { aspect-ratio: 16 / 9; }
-    .closing-plate img { object-position: 50% 38%; }
-  }
 
   .closing-text h2 {
     font-size: clamp(1.5rem, 2.6vw, 2.125rem);
