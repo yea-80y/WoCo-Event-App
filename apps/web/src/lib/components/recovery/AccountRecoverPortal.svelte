@@ -44,6 +44,12 @@
   // Kernel owner); "passkey" mints a device passkey. This is a UX choice of the going-
   // forward credential — the escrow mechanism that unlocks the account is unchanged.
   let newOwnerKind = $state<"email" | "passkey">("email");
+  // Finalize-step outcome, shaping the warning screen: whether clicking "Try
+  // again" can actually change anything, and which half of the account is
+  // affected. Both only read while phase === "finalize-warn".
+  let warnRetryable = $state(true);
+  let warnStage = $state<"session" | "envelope">("envelope");
+  let finalizeInFlight = $state(false);
 
   const backupAddress = $derived(backup?.address ?? null);
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -179,21 +185,34 @@
   // renders only once the account is actually portable (passkey) or has
   // nothing to write (email owners have no envelope by design).
   async function finalize() {
+    if (finalizeInFlight) return; // double-click / key-repeat guard
+    finalizeInFlight = true;
     phase = "finalizing";
     restoreStep = newOwnerKind === "passkey"
       ? "Securing access from your other devices…"
       : "Finishing up…";
     try {
-      const result = await auth.finalizeRecovery();
+      // The kind is captured from the CEREMONY, not read live: signing out while
+      // parked on the warning below would otherwise route a passkey retry down
+      // the web3auth branch and render success with no envelope written.
+      const result = await auth.finalizeRecovery({ expectPasskey: newOwnerKind === "passkey" });
       if (result.status === "failed") {
-        console.warn("[recovery] finalize failed (retryable):", result.reason);
+        console.warn("[recovery] finalize failed:", result.reason);
+        warnRetryable = result.retryable;
+        warnStage = result.stage;
         phase = "finalize-warn";
         return;
       }
       phase = "recovered";
     } catch (e) {
-      console.warn("[recovery] finalize threw (retryable):", e);
+      // A throw here is the module/chunk load itself (the only code path outside
+      // finalizeRecovery's own handling), so it is transient by nature.
+      console.warn("[recovery] finalize threw:", e);
+      warnRetryable = true;
+      warnStage = "envelope";
       phase = "finalize-warn";
+    } finally {
+      finalizeInFlight = false;
     }
   }
 
@@ -224,7 +243,7 @@
       <h1>Account recovered</h1>
       <p class="lede">
         <code>{short(account.trim())}</code> is back on this device.
-        {#if newOwnerKind === "passkey"}
+        {#if newOwnerKind === "passkey" && phase === "finalizing"}
           One more step makes it reachable from your other devices.
         {/if}
       </p>
@@ -234,17 +253,47 @@
         </p>
       {:else}
         <div class="finalize-warn" role="alert">
-          <p class="result-title">We couldn't finish securing your other devices</p>
-          <p class="result-body">
-            Your account works on this device, but until this step completes, signing in
-            with this passkey on another device may not find it. Retrying is safe —
-            nothing is lost by trying again.
-          </p>
+          {#if warnStage === "session"}
+            <p class="result-title">We couldn't finish signing you in</p>
+            <p class="result-body">
+              Your account has been recovered to this device — that part is done and
+              permanent. We just couldn't start your session, so you may be asked to
+              sign in again.
+            </p>
+          {:else if newOwnerKind === "passkey" && !warnRetryable}
+            <p class="result-title">This account can't be secured for other devices</p>
+            <p class="result-body">
+              Your account works on this device and your tickets and history are intact.
+              Trying again won't help — this account is missing something we'd need to
+              make it available on your other devices. Carry on here, and let us know if
+              you need it on another device.
+            </p>
+          {:else if newOwnerKind === "passkey"}
+            <p class="result-title">We couldn't finish securing your other devices</p>
+            <p class="result-body">
+              Your account works on this device, but until this step completes, signing in
+              with this passkey on another device may not find it. Retrying is safe —
+              nothing is lost by trying again.
+            </p>
+          {:else}
+            <p class="result-title">We couldn't finish the last step</p>
+            <p class="result-body">
+              Your account has been recovered to this device and your tickets and history
+              are intact. You can carry on — signing in with your email will always find
+              this account.
+            </p>
+          {/if}
         </div>
-        <button class="btn btn--primary btn--lg cta" onclick={finalize}>Try again</button>
-        <button type="button" class="linkish skip" onclick={goToAccount}>
-          Skip for now — I'll only use this device
-        </button>
+        {#if warnRetryable}
+          <button class="btn btn--primary btn--lg cta" onclick={finalize} disabled={finalizeInFlight}>
+            Try again
+          </button>
+          <button type="button" class="linkish skip" onclick={goToAccount}>
+            {newOwnerKind === "passkey" ? "Skip for now — I'll only use this device" : "Skip for now"}
+          </button>
+        {:else}
+          <button class="btn btn--primary btn--lg cta" onclick={goToAccount}>Go to my account</button>
+        {/if}
       {/if}
     {:else}
       <p class="kicker">Account recovery</p>

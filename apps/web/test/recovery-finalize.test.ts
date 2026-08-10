@@ -87,6 +87,57 @@ test("a deferred backfill is a FAILURE — the envelope is not verifiably there"
   const r = await finalizeRecovery(d);
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /unreadable/);
+  // Transient by construction — the retry re-reads and skips cleanly.
+  assert.equal((r as { retryable: boolean }).retryable, true);
+});
+
+test("the DETERMINISTIC feed-signer guard is reported as NOT retryable", async () => {
+  // An account whose escrow carried no feed signer re-throws this identically on
+  // every call. Calling it retryable is an infinite loop with encouraging copy.
+  const { d } = deps({
+    getContentFeedSigner: async () => {
+      throw new Error(
+        "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
+      );
+    },
+  });
+  const r = await finalizeRecovery(d);
+  assert.equal(r.status, "failed");
+  assert.equal((r as { retryable: boolean }).retryable, false);
+});
+
+test("a transient feed-signer fault stays retryable — only the guard is terminal", async () => {
+  const { d } = deps({
+    getContentFeedSigner: async () => {
+      throw new Error("decrypt failed");
+    },
+  });
+  const r = await finalizeRecovery(d);
+  assert.equal(r.status, "failed");
+  assert.equal((r as { retryable: boolean }).retryable, true);
+});
+
+test("expectPasskey refuses when the store's kind was torn down mid-recovery", async () => {
+  // A Sign out while parked on the warning screen would otherwise route a passkey
+  // retry down the web3auth branch and render success with no envelope written.
+  const { d, calls } = deps({ kind: () => "none" });
+  const r = await finalizeRecovery(d, { expectPasskey: true });
+  assert.equal(r.status, "failed");
+  assert.equal((r as { retryable: boolean }).retryable, false);
+  assert.match((r as { reason: string }).reason, /auth state changed/);
+  assert.deepEqual(calls, [], "must not mint or write against a torn-down store");
+});
+
+test("expectPasskey is satisfied by a passkey store — the happy path is unaffected", async () => {
+  const { d } = deps();
+  const r = await finalizeRecovery(d, { expectPasskey: true });
+  assert.equal(r.status, "portable");
+});
+
+test("an email recovery still finalizes normally when expectPasskey is false", async () => {
+  const { d } = deps({ kind: () => "web3auth" });
+  const r = await finalizeRecovery(d, { expectPasskey: false });
+  assert.deepEqual(r, { status: "session-only" });
 });
 
 test("a throwing backfill surfaces as failed, never as an unhandled throw", async () => {
@@ -105,6 +156,7 @@ test("passkey with a failed session mint fails BEFORE the envelope write", async
   const r = await finalizeRecovery(d);
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /session/);
+  assert.equal((r as { stage: string }).stage, "session");
   assert.ok(!calls.includes("backfill"), "must not attempt an authenticated write with no session");
 });
 
@@ -116,7 +168,9 @@ test("no recovery binding on this device fails — nothing to point the envelope
   assert.ok(!calls.includes("backfill"));
 });
 
-test("a FAILED binding read reaches the caller as failure, not as 'no binding is fine'", async () => {
+test("a FAILED binding read says it FAILED — never 'no binding on this device'", async () => {
+  // The binding is written first (#230), so "absent" after a successful ceremony
+  // points debugging at the commit; a read fault must not assert that.
   const { d, calls } = deps({
     recoveryKernelFor: async () => {
       throw new Error("indexeddb unavailable");
@@ -124,7 +178,25 @@ test("a FAILED binding read reaches the caller as failure, not as 'no binding is
   });
   const r = await finalizeRecovery(d);
   assert.equal(r.status, "failed");
+  assert.match((r as { reason: string }).reason, /binding read failed/);
+  assert.equal((r as { retryable: boolean }).retryable, true);
   assert.ok(!calls.includes("backfill"));
+});
+
+test("a FAILED seed read is distinguished from a genuinely absent seed", async () => {
+  const { d } = deps({
+    restorePodSeed: async () => {
+      throw new Error("indexeddb unavailable");
+    },
+  });
+  const r = await finalizeRecovery(d);
+  assert.match((r as { reason: string }).reason, /seed read failed/);
+  assert.equal((r as { retryable: boolean }).retryable, true);
+
+  const { d: d2 } = deps({ restorePodSeed: async () => null });
+  const r2 = await finalizeRecovery(d2);
+  assert.match((r2 as { reason: string }).reason, /seed absent/);
+  assert.equal((r2 as { retryable: boolean }).retryable, false);
 });
 
 test("an unreadable POD seed fails — the envelope must carry the escrow-restored seed", async () => {

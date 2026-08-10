@@ -256,7 +256,22 @@ export interface PortabilityBackfill {
  * when the loser's version probe turns inconclusive. Concurrent callers for the
  * same passkey share one run and its outcome; cleared on settle, so a genuine
  * later call (new secrets, retry) always runs fresh.
+ *
+ * DEADLINE. Every network primitive underneath — the bee-js gateway chunk read,
+ * the server fallback, the authenticated SOC stamp — runs without an
+ * AbortController, and browsers impose no default fetch timeout, so a stalled
+ * (not dropped) connection leaves this promise pending forever. That was
+ * invisible while the only caller was fire-and-forget; now it gates the screen
+ * shown straight after an IRREVERSIBLE on-chain rotation, where a user who
+ * concludes it failed may re-run the whole ceremony. It also wedges the map: a
+ * run that never settles never clears its entry, pinning the raw passkey key and
+ * making every later call join the dead run. Bounding it converts both into the
+ * ordinary retryable failure the portal already handles. The underlying fetch is
+ * not cancelled (nothing downstream takes a signal) — it is abandoned, and a
+ * late write is harmless: the next read simply skips as already-current.
  */
+const BACKFILL_DEADLINE_MS = 120_000;
+
 const _backfillInFlight = new Map<string, Promise<PortabilityBackfill>>();
 
 export function backfillPortabilityEnvelope(args: {
@@ -264,13 +279,34 @@ export function backfillPortabilityEnvelope(args: {
   preservedKernelAddress: string;
   podSeed: string;
   feedSignerPrivKey?: string;
+  /** Test seam — override the deadline (ms). Production always takes the default. */
+  deadlineMs?: number;
 }): Promise<PortabilityBackfill> {
-  const key = normKey(args.passkeyPrivKey) ?? "";
+  // An unusable key would collapse every such caller onto one shared "" slot.
+  // Both production callers guard it; fail loudly rather than coalesce blind.
+  const key = normKey(args.passkeyPrivKey);
+  if (!key) return Promise.reject(new Error("backfillPortabilityEnvelope: passkeyPrivKey is required"));
   const existing = _backfillInFlight.get(key);
   if (existing) return existing;
-  const run = _backfillOnce(args).finally(() => _backfillInFlight.delete(key));
+
+  const run = _withDeadline(_backfillOnce(args), args.deadlineMs ?? BACKFILL_DEADLINE_MS).finally(
+    () => _backfillInFlight.delete(key),
+  );
   _backfillInFlight.set(key, run);
   return run;
+}
+
+function _withDeadline(
+  work: Promise<PortabilityBackfill>,
+  ms: number,
+): Promise<PortabilityBackfill> {
+  return new Promise<PortabilityBackfill>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`portability envelope timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+    work.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
 }
 
 async function _backfillOnce(args: {
