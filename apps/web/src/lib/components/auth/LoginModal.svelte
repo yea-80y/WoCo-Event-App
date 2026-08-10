@@ -6,6 +6,8 @@
   import ZupassLogin from "./ZupassLogin.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  // Type-only imports inside, so this pulls no runtime dependency into the modal.
+  import { AUTH_NOTICE_KEY } from "../../auth/envelope-reprobe.js";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
 
@@ -46,6 +48,25 @@
       finalizing: "Connecting your wallet…",
     },
   };
+
+  // A sign-out this app performed ON ITS OWN — today only the #245 envelope
+  // re-probe, which signs a device out of a phantom account the moment it proves
+  // the real one is reachable. Without a line here the user meets an unexplained
+  // logout, which reads as a fault rather than a repair. Read once and cleared, so
+  // it explains the sign-in it followed and never any later one.
+  let notice = $state<string | null>(null);
+  $effect(() => {
+    if (!visible) return;
+    try {
+      const pending = globalThis.sessionStorage?.getItem(AUTH_NOTICE_KEY);
+      if (pending) {
+        globalThis.sessionStorage?.removeItem(AUTH_NOTICE_KEY);
+        notice = pending;
+      }
+    } catch {
+      /* the notice is an explanation, never a step */
+    }
+  });
 
   // "waiting" until the credential step is done, then "finalizing". Wallet
   // flows that connect before auth.login runs (WalletConnect QR) read null —
@@ -104,6 +125,10 @@
           &times;
         </button>
       </header>
+
+      {#if notice && !authing}
+        <p class="notice" role="status">{notice}</p>
+      {/if}
 
       {#if authing}
         {@const c = sceneCopy[authing]}
@@ -225,6 +250,18 @@
     color: var(--text-muted);
     line-height: 1.4;
     max-width: 28ch;
+  }
+
+  .notice {
+    margin: 0 0 1rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-subtle);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
   }
 
   .close-btn {

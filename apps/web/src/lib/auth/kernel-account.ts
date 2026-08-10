@@ -1532,17 +1532,44 @@ export async function readCounterfactualOwner(
  * (owner unset / zero) or the read fails. No new on-chain writes; verification
  * only. The ECDSA validator singleton address is resolved per Kernel version, so
  * this stays correct if the version constant changes.
+ *
+ * The `null`-for-both collapse is SAFE for the verification callers — they apply
+ * an override only on a positive match, so an unreadable chain refuses rather
+ * than trusts. It is NOT safe for a caller that acts on "not deployed" as a fact;
+ * that one wants {@link readKernelEcdsaOwnerStrict}.
  */
 export async function readKernelEcdsaOwner(kernelAddress: string): Promise<string | null> {
-  const [{ createPublicClient, http, zeroAddress }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }] =
-    await Promise.all([
-      import("viem"),
-      import("viem/chains"),
-      import("@zerodev/sdk/constants"),
-      import("@zerodev/ecdsa-validator"),
-    ]);
+  const owner = await readKernelEcdsaOwnerStrict(kernelAddress);
+  return owner === "error" ? null : owner;
+}
 
+/**
+ * Same read, with the third state kept: `"error"` when nobody could answer, as
+ * distinct from `null` = the chain answered "this Kernel has no owner" (i.e. it
+ * is not deployed).
+ *
+ * That distinction is the #138 lesson applied in the other direction. A caller
+ * that treats "not deployed" as evidence — e.g. the background envelope re-probe,
+ * for which an undeployed parent is the signal that a device may be pinned to a
+ * phantom counterfactual — would otherwise read every RPC blip as evidence and
+ * act on a fact nobody established. Failed reads must stay unusable in BOTH
+ * directions: never "absent", never "present".
+ *
+ * The dynamic imports sit inside the try deliberately: a chunk that fails to load
+ * is a read that could not happen, which is `"error"`, not a throw for callers to
+ * rediscover.
+ */
+export async function readKernelEcdsaOwnerStrict(
+  kernelAddress: string,
+): Promise<string | null | "error"> {
   try {
+    const [{ createPublicClient, http, zeroAddress }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }] =
+      await Promise.all([
+        import("viem"),
+        import("viem/chains"),
+        import("@zerodev/sdk/constants"),
+        import("@zerodev/ecdsa-validator"),
+      ]);
     const validatorAddress = getValidatorAddress(getEntryPoint("0.7"), KERNEL_V3_1);
     const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
     const owner = (await publicClient.readContract({
@@ -1555,6 +1582,6 @@ export async function readKernelEcdsaOwner(kernelAddress: string): Promise<strin
     return owner.toLowerCase();
   } catch (e) {
     console.warn("[kernel] readKernelEcdsaOwner failed:", e);
-    return null;
+    return "error";
   }
 }
