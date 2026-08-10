@@ -25,6 +25,8 @@
     | "found"
     | "none"
     | "restoring"
+    | "finalizing"
+    | "finalize-warn"
     | "recovered"
     | "error";
   let phase = $state<Phase>("intro");
@@ -160,10 +162,38 @@
         newOwnerKind: newOwnerKind === "email" ? "web3auth" : "passkey",
         onProgress: (m) => { restoreStep = m; },
       });
-      phase = "recovered";
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Recovery couldn't be completed — please try again";
       phase = "error";
+      return;
+    }
+    // From here the rotation + local commit are done: this device holds the
+    // account whatever happens next. A later failure must never reach the
+    // generic error phase — that reads as "recovery failed, run it again",
+    // and each re-run mints a fresh credential and rotates the owner on-chain.
+    await finalize();
+  }
+
+  // #245 — the portability-envelope write is an awaited ceremony step with a
+  // visible, retryable outcome, never void + console-only. "You're back in"
+  // renders only once the account is actually portable (passkey) or has
+  // nothing to write (email owners have no envelope by design).
+  async function finalize() {
+    phase = "finalizing";
+    restoreStep = newOwnerKind === "passkey"
+      ? "Securing access from your other devices…"
+      : "Finishing up…";
+    try {
+      const result = await auth.finalizeRecovery();
+      if (result.status === "failed") {
+        console.warn("[recovery] finalize failed (retryable):", result.reason);
+        phase = "finalize-warn";
+        return;
+      }
+      phase = "recovered";
+    } catch (e) {
+      console.warn("[recovery] finalize threw (retryable):", e);
+      phase = "finalize-warn";
     }
   }
 
@@ -189,6 +219,33 @@
         and history intact. Your old device can no longer access it.
       </p>
       <button class="btn btn--primary btn--lg cta" onclick={goToAccount}>Go to my account</button>
+    {:else if phase === "finalizing" || phase === "finalize-warn"}
+      <p class="kicker kicker--hi">Almost there</p>
+      <h1>Account recovered</h1>
+      <p class="lede">
+        <code>{short(account.trim())}</code> is back on this device.
+        {#if newOwnerKind === "passkey"}
+          One more step makes it reachable from your other devices.
+        {/if}
+      </p>
+      {#if phase === "finalizing"}
+        <p class="restore-step" aria-live="polite">
+          <span class="spinner"></span>{restoreStep || "Finishing up…"}
+        </p>
+      {:else}
+        <div class="finalize-warn" role="alert">
+          <p class="result-title">We couldn't finish securing your other devices</p>
+          <p class="result-body">
+            Your account works on this device, but until this step completes, signing in
+            with this passkey on another device may not find it. Retrying is safe —
+            nothing is lost by trying again.
+          </p>
+        </div>
+        <button class="btn btn--primary btn--lg cta" onclick={finalize}>Try again</button>
+        <button type="button" class="linkish skip" onclick={goToAccount}>
+          Skip for now — I'll only use this device
+        </button>
+      {/if}
     {:else}
       <p class="kicker">Account recovery</p>
       <h1>Get back into your account</h1>
@@ -539,6 +596,17 @@
     margin: 0 0 0.9rem; text-align: left;
   }
   .restore-note strong { color: var(--text-secondary); }
+
+  .finalize-warn {
+    text-align: left;
+    padding: 1rem;
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
+    background: var(--error-subtle);
+    margin-bottom: 1rem;
+  }
+  .finalize-warn .result-body { margin: 0; }
+  .skip { display: block; margin: 0.8rem auto 0; }
 
   .restore-cta { white-space: nowrap; }
   .restore-step {

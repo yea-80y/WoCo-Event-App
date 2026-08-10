@@ -2374,10 +2374,16 @@ async function recoverAndRekey(args: {
 
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored POD seed).
-    // Clear any stale auth on this device FIRST — it drops the cached SESSION,
-    // which belongs to whatever account was here before.
+    // Clear stale auth FIRST. _clearStaleAuthForSwitch alone is NOT enough: it
+    // no-ops when the stored parent == target — i.e. recovering the very account
+    // this device is signed into — yet the rotation invalidates ANY session for
+    // target. Left alive, that dead session gets re-attached by _restoreCachedAuth
+    // below, ensureSession short-circuits on it, and the fresh credential's
+    // portability envelope is never written (#245). resetSession drops it
+    // unconditionally (client-side twin of #200's server-side revocation gap).
     onProgress?.("Restoring your tickets and history…");
     await _clearStaleAuthForSwitch(target);
+    await resetSession();
 
     // THE BINDING GOES FIRST (#230). It is the record every other write keys off:
     // from it, `init` and the login paths rebuild at the preserved address, honour
@@ -2657,6 +2663,21 @@ export const auth = {
   setupAccountRecovery,
   removeAccountBackups,
   recoverAndRekey,
+  // #245 — awaited post-recovery step: mint the session, then write + verify the
+  // cross-device portability envelope. Thin delegation only (this file is frozen);
+  // the logic and the reasoning live in recovery-finalize.ts.
+  finalizeRecovery: async () => {
+    const { finalizeRecovery } = await import("./recovery-finalize.js");
+    return finalizeRecovery({
+      kind: () => _kind,
+      ensureSession,
+      getPasskeyPrivKey: () => _passkeyPrivateKey,
+      getPodAddress: () => _podAddress,
+      recoveryKernelFor: _recoveryKernelFor,
+      restorePodSeed,
+      getContentFeedSigner: _getContentFeedSigner,
+    });
+  },
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass
   // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel
