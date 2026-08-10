@@ -16,6 +16,7 @@
  */
 
 import type { AuthKind } from "@woco/shared";
+import type { PortabilityBackfill } from "./recovery-portability.js";
 
 export interface RecoveryFinalizeDeps {
   kind: () => AuthKind;
@@ -27,6 +28,14 @@ export interface RecoveryFinalizeDeps {
   recoveryKernelFor: (podAddress: string) => Promise<`0x${string}` | undefined>;
   restorePodSeed: (podAddress: string) => Promise<string | null>;
   getContentFeedSigner: () => Promise<{ privKey: string } | null>;
+  /** Test seam — defaults to the real backfillPortabilityEnvelope, which
+   *  reaches the network (the repo's node --test runner has no module mocks). */
+  backfill?: (args: {
+    passkeyPrivKey: string;
+    preservedKernelAddress: string;
+    podSeed: string;
+    feedSignerPrivKey?: string;
+  }) => Promise<PortabilityBackfill>;
 }
 
 export type RecoveryFinalizeResult =
@@ -80,8 +89,9 @@ export async function finalizeRecovery(deps: RecoveryFinalizeDeps): Promise<Reco
   }
 
   try {
-    const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
-    const outcome = await backfillPortabilityEnvelope({
+    const backfill =
+      deps.backfill ?? (await import("./recovery-portability.js")).backfillPortabilityEnvelope;
+    const outcome = await backfill({
       passkeyPrivKey,
       preservedKernelAddress: preserved,
       podSeed,
