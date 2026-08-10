@@ -2375,7 +2375,8 @@ async function recoverAndRekey(args: {
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored POD seed).
     // Clear any stale auth on this device FIRST — it drops the cached SESSION,
-    // which belongs to whatever account was here before.
+    // which belongs to whatever account was here before. (Same-account recovery
+    // is the case it deliberately skips; `resetSession` below is what covers it.)
     onProgress?.("Restoring your tickets and history…");
     await _clearStaleAuthForSwitch(target);
 
@@ -2427,6 +2428,25 @@ async function recoverAndRekey(args: {
     // a divergent seed from the rotated credential).
     const restoredPod = await getPodKeypair(newPodAddress);
     _podPublicKeyHex = restoredPod?.publicKeyHex ?? null;
+
+    // Kill the session the rotation just invalidated — LAST, immediately before
+    // the restore that would otherwise resurrect it. `_clearStaleAuthForSwitch`
+    // cannot: it no-ops when the stored parent == target, i.e. recovering the
+    // very account this device is signed into, yet the rotation invalidates ANY
+    // session for target. Left alive, `_restoreCachedAuth` re-attaches it,
+    // `ensureSession` short-circuits on it, and the fresh credential's
+    // portability envelope is never written (#245) — client-side twin of #200's
+    // server-side revocation gap.
+    //
+    // Placed HERE, not before the commit block: clearing early makes `hasSession`
+    // false while `_kind`/`_parent`/the credential fields still hold the OLD
+    // identity, and `ensureSession` has no `_busy` gate — so any concurrent
+    // caller would mint a delegation signed by the rotated-out owner (dead on
+    // arrival server-side, and re-attached below because the parent matches),
+    // and its `finally` would clear THIS ceremony's `_busy` latch. Clearing after
+    // the identity is committed keeps the pre-existing short-circuit closed for
+    // the whole ceremony and leaves nothing for `_restoreCachedAuth` to find.
+    await resetSession();
     await _restoreCachedAuth();
 
     return { recoveredAddress: target, txHash };
@@ -2657,6 +2677,24 @@ export const auth = {
   setupAccountRecovery,
   removeAccountBackups,
   recoverAndRekey,
+  // #245 — awaited post-recovery step: mint the session, then write + verify the
+  // cross-device portability envelope. Thin delegation only (this file is frozen);
+  // the logic and the reasoning live in recovery-finalize.ts.
+  finalizeRecovery: async (opts?: { expectPasskey?: boolean }) => {
+    const { finalizeRecovery } = await import("./recovery-finalize.js");
+    return finalizeRecovery(
+      {
+        kind: () => _kind,
+        ensureSession,
+        getPasskeyPrivKey: () => _passkeyPrivateKey,
+        getPodAddress: () => _podAddress,
+        recoveryKernelFor: _recoveryKernelFor,
+        restorePodSeed,
+        getContentFeedSigner: _getContentFeedSigner,
+      },
+      opts,
+    );
+  },
   signRequest,
   // Bind to the POD address so callers don't need to pass it (and can't pass
   // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel
