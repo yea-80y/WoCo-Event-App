@@ -412,7 +412,9 @@
       min-height: 0;
       flex-direction: column;
       align-items: stretch;
-      padding-top: 0;
+      /* The band runs to the very top; the tail below the CTAs was dead space
+         on a screen where vertical room is the scarce resource. */
+      padding: 0 1.5rem 3rem;
     }
     .hero-light {
       position: relative;
@@ -421,13 +423,16 @@
       bottom: auto;
       /* Cancels the hero's side padding so the band is genuinely full-bleed. */
       width: auto;
-      margin: 0 -1.5rem 1.5rem;
-      /* Kept short on purpose: every pixel here pushes the primary CTA further
-         below the fold, and the pre-launch banner has already spent a lot. */
-      height: clamp(150px, 23vh, 220px);
-      -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 46%, transparent 100%);
+      --band-h: clamp(220px, 33vh, 310px);
+      height: var(--band-h);
+      /* The band's lower third is masked to nothing, so it costs vertical space
+         while showing no picture. The headline is pulled back up into that
+         dissolve instead — the type emerges out of the light rather than
+         starting below a gap, and the CTA moves ~80px closer to the fold. */
+      margin: 0 -1.5rem calc(var(--band-h) * -0.24);
+      -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 40%, transparent 92%);
       -webkit-mask-composite: source-over;
-      mask-image: linear-gradient(to bottom, #000 0%, #000 46%, transparent 100%);
+      mask-image: linear-gradient(to bottom, #000 0%, #000 40%, transparent 92%);
       mask-composite: add;
     }
     /* Short of full strength: screen-blending this at 1.0 blows the highlights
