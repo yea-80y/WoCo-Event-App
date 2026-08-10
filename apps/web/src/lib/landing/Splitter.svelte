@@ -14,6 +14,16 @@
   import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import Shield from "lucide-svelte/icons/shield-check";
+  // Two photographs, two jobs. `crowd` is screen-blended so its pure-black
+  // pixels resolve to exactly --bg and the frame dissolves — it is a light
+  // source, not a picture. `decks` is the opposite: a hard-edged plate, held
+  // under 420px so it never upscales past its native 1080px and goes soft.
+  import crowdAvif from "./media/crowd.avif";
+  import crowdWebp from "./media/crowd.webp";
+  import crowdJpg from "./media/crowd.jpg";
+  import decksAvif from "./media/decks.avif";
+  import decksWebp from "./media/decks.webp";
+  import decksJpg from "./media/decks.jpg";
   import Layers from "lucide-svelte/icons/layers";
   import Coins from "lucide-svelte/icons/coins";
   import HomeIcon from "lucide-svelte/icons/house";
@@ -41,6 +51,14 @@
 
   <!-- ── Hero ────────────────────────────────────────────────────────── -->
   <section class="hero scanlines grain">
+    <div class="hero-light" aria-hidden="true">
+      <picture>
+        <source srcset={crowdAvif} type="image/avif" />
+        <source srcset={crowdWebp} type="image/webp" />
+        <img src={crowdJpg} alt="" decoding="async" />
+      </picture>
+    </div>
+
     <div class="hero-inner">
       <div class="hero-kicker">
         <span class="live-dot" aria-hidden="true"></span>
@@ -181,6 +199,14 @@
   <!-- ── Closing CTA strip ───────────────────────────────────────────── -->
   <section class="closing">
     <div class="closing-grid">
+      <figure class="closing-plate">
+        <picture>
+          <source srcset={decksAvif} type="image/avif" />
+          <source srcset={decksWebp} type="image/webp" />
+          <img src={decksJpg} alt="" loading="lazy" decoding="async" />
+        </picture>
+      </figure>
+
       <div class="closing-text">
         <SprayCan size={42} color="var(--text)" paintColor="var(--accent)" />
         <h2>Ready to build something the platform can't take from you?</h2>
@@ -188,15 +214,15 @@
           Free to start. Your data, your audience, your call. Leave any
           time and your events come with you.
         </p>
-      </div>
-      <div class="closing-actions">
-        <button class="btn btn--primary btn--lg" onclick={() => navigate("/creator")}>
-          Open the creator portal
-          <ArrowRight size={18} strokeWidth={2.5} />
-        </button>
-        <button class="link link-quiet" onclick={() => navigate("/discover")}>
-          or browse events on the platform →
-        </button>
+        <div class="closing-actions">
+          <button class="btn btn--primary btn--lg" onclick={() => navigate("/creator")}>
+            Open the creator portal
+            <ArrowRight size={18} strokeWidth={2.5} />
+          </button>
+          <button class="link link-quiet" onclick={() => navigate("/discover")}>
+            or browse events on the platform →
+          </button>
+        </div>
       </div>
     </div>
   </section>
@@ -280,12 +306,135 @@
     padding: 4rem 1.5rem 5rem;
     border-bottom: 1px solid var(--border);
     overflow: hidden;
+    /* Required, not cosmetic: .scanlines sets `isolation: isolate`, so the
+       hero is its own blending group. Without an explicit backdrop the
+       screen-blended light layer composites against transparency and its
+       blacks render as black rectangles instead of dissolving. */
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    min-height: clamp(540px, 72vh, 780px);
   }
   .hero-inner {
     position: relative;
     max-width: 1100px;
     margin: 0 auto;
+    width: 100%;
     z-index: 2;
+  }
+
+  /* ── Hero light — the crowd photograph as a light source ──────────────
+     Screen blend against --bg makes every true-black pixel resolve to the
+     page background exactly, so the photo has no edges at all: only the
+     beams survive. Spills in from the right, where the headline isn't. */
+
+  .hero-light {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(64%, 900px);
+    z-index: 0;
+    pointer-events: none;
+    mix-blend-mode: screen;
+    /* Two feathers, intersected: one pulls the light off the headline on the
+       left, one keeps the beams from being guillotined by the hero's top and
+       bottom borders. Without the vertical one the light ends on a visible
+       horizontal seam and the whole effect reads as a pasted rectangle. */
+    -webkit-mask-image:
+      linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.3) 24%, #000 64%),
+      linear-gradient(to bottom, transparent 0%, #000 28%, #000 74%, transparent 100%);
+    -webkit-mask-composite: source-in;
+    mask-image:
+      linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.3) 24%, #000 64%),
+      linear-gradient(to bottom, transparent 0%, #000 28%, #000 74%, transparent 100%);
+    mask-composite: intersect;
+  }
+  .hero-light picture {
+    display: block;
+    width: 100%;
+    height: 100%;
+    /* One source of truth for how bright the room is — the keyframes read
+       these rather than repeating literals that drift out of step. */
+    --lit: 0.68;
+    --lit-peak: 0.8;
+    opacity: var(--lit);
+    /* The house lights come up once on load, then breathe. One deliberate
+       motion; the rest of the page is still. */
+    animation:
+      house-lights 1500ms cubic-bezier(0.22, 0.7, 0.2, 1) both,
+      light-breathe 15s ease-in-out 1500ms infinite;
+  }
+  .hero-light img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* Holds the light burst high and right, clear of the headline and the
+       CTA pair below it. */
+    object-position: 46% 58%;
+  }
+
+  @keyframes house-lights {
+    from { opacity: 0; transform: scale(1.05); }
+    to   { opacity: var(--lit); transform: scale(1); }
+  }
+  @keyframes light-breathe {
+    0%, 100% { opacity: var(--lit); }
+    50%      { opacity: var(--lit-peak); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-light picture { animation: none; opacity: var(--lit); }
+  }
+
+  /* Below desktop the text column claims most of the width, so the side-lit
+     composition stops working: the paragraph starts crossing the beams. The
+     light retreats to the top-right corner instead, where the headline's
+     second line leaves a genuine pocket of empty space at every width. */
+  @media (max-width: 1024px) {
+    .hero-light {
+      width: min(80%, 640px);
+      -webkit-mask-image: radial-gradient(90% 72% at 88% 26%, #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 82%);
+      -webkit-mask-composite: source-over;
+      mask-image: radial-gradient(90% 72% at 88% 26%, #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 82%);
+      mask-composite: add;
+    }
+    .hero-light picture { --lit: 0.5; --lit-peak: 0.6; }
+  }
+
+  /* Phone: stop overlaying and give the photograph its own band above the
+     headline. Behind type it had to be dimmed to about half strength to stay
+     legible, which wasted it; in a band of its own it runs at full strength.
+     The bottom edge is masked away entirely so the room dissolves down into
+     the headline rather than sitting in a box. */
+  @media (max-width: 720px) {
+    .hero {
+      min-height: 0;
+      flex-direction: column;
+      align-items: stretch;
+      padding-top: 0;
+    }
+    .hero-light {
+      position: relative;
+      top: auto;
+      right: auto;
+      bottom: auto;
+      /* Cancels the hero's side padding so the band is genuinely full-bleed. */
+      width: auto;
+      margin: 0 -1.5rem 1.5rem;
+      /* Kept short on purpose: every pixel here pushes the primary CTA further
+         below the fold, and the pre-launch banner has already spent a lot. */
+      height: clamp(150px, 23vh, 220px);
+      -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 46%, transparent 100%);
+      -webkit-mask-composite: source-over;
+      mask-image: linear-gradient(to bottom, #000 0%, #000 46%, transparent 100%);
+      mask-composite: add;
+    }
+    /* Short of full strength: screen-blending this at 1.0 blows the highlights
+       into a flat milky patch and throws away the beam structure that makes
+       the shot worth using. */
+    .hero-light picture { --lit: 0.76; --lit-peak: 0.86; }
+    .hero-light img { object-position: 46% 55%; }
   }
   .hero-kicker {
     display: inline-flex;
@@ -358,7 +507,10 @@
   .cta--primary .cta-sub { color: rgba(11, 11, 9, 0.7); }
 
   .cta--ghost {
-    background: transparent;
+    /* Not transparent any more: this button now sits over the hero light, and
+       a fully see-through panel let the beams run straight through the label.
+       Mostly-opaque --bg keeps it on solid ground at any light strength. */
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
     color: var(--text);
     border-color: var(--border-hover);
   }
@@ -523,13 +675,42 @@
     max-width: 1100px;
     margin: 0 auto;
     display: grid;
-    grid-template-columns: 1.4fr 1fr;
-    gap: 3rem;
+    grid-template-columns: minmax(0, 380px) 1fr;
+    gap: 3.5rem;
     align-items: center;
   }
   @media (max-width: 880px) {
-    .closing-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+    .closing-grid { grid-template-columns: 1fr; gap: 2rem; }
   }
+
+  /* ── Closing plate — the decks photograph as an object ────────────────
+     Capped at 380px so it renders at or below its native 1080px even on a
+     2× display. Every bit of its detail is the point; upscaling it is the
+     one thing that would make it look cheap. */
+
+  .closing-plate {
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg);
+    aspect-ratio: 3 / 4;
+  }
+  .closing-plate picture,
+  .closing-plate img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .closing-plate img { object-fit: cover; }
+
+  @media (max-width: 880px) {
+    /* A 3:4 plate at full phone width eats the screen. Crop to a band and
+       hold the jog wheels in frame. */
+    .closing-plate { aspect-ratio: 16 / 9; }
+    .closing-plate img { object-position: 50% 38%; }
+  }
+
   .closing-text h2 {
     font-size: clamp(1.5rem, 2.6vw, 2.125rem);
     margin: 1rem 0 0.875rem;
@@ -544,12 +725,13 @@
   }
   .closing-actions {
     display: flex;
-    flex-direction: column;
-    gap: 0.875rem;
-    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.875rem 1.5rem;
+    align-items: center;
+    margin-top: 1.75rem;
   }
   @media (max-width: 880px) {
-    .closing-actions { align-items: stretch; }
+    .closing-actions { flex-direction: column; align-items: stretch; }
   }
 
   /* ── Footer ─────────────────────────────────────────────────────── */
