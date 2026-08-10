@@ -247,8 +247,33 @@ export interface PortabilityBackfill {
  *
  * Compares against the OPENED envelope through the same resolver the writer uses.
  * A skip is only ever taken on a definitive read.
+ *
+ * SINGLE-FLIGHT (same idiom as auth-store's _sessionInFlight). Right after a
+ * recovery, two legitimate callers race by design: the session mint's
+ * fire-and-forget backfill (frozen, and load-bearing for later devices) and the
+ * portal's awaited finalizeRecovery (#245). Same process, same secrets — letting
+ * both run costs a redundant envelope version, or a spurious retryable warning
+ * when the loser's version probe turns inconclusive. Concurrent callers for the
+ * same passkey share one run and its outcome; cleared on settle, so a genuine
+ * later call (new secrets, retry) always runs fresh.
  */
-export async function backfillPortabilityEnvelope(args: {
+const _backfillInFlight = new Map<string, Promise<PortabilityBackfill>>();
+
+export function backfillPortabilityEnvelope(args: {
+  passkeyPrivKey: string;
+  preservedKernelAddress: string;
+  podSeed: string;
+  feedSignerPrivKey?: string;
+}): Promise<PortabilityBackfill> {
+  const key = normKey(args.passkeyPrivKey) ?? "";
+  const existing = _backfillInFlight.get(key);
+  if (existing) return existing;
+  const run = _backfillOnce(args).finally(() => _backfillInFlight.delete(key));
+  _backfillInFlight.set(key, run);
+  return run;
+}
+
+async function _backfillOnce(args: {
   passkeyPrivKey: string;
   preservedKernelAddress: string;
   podSeed: string;
