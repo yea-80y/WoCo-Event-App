@@ -52,8 +52,14 @@ export interface RecoveryFinalizeOptions {
 export type RecoveryFinalizeResult =
   /** Envelope verified current on Swarm — the account is portable to this passkey's other devices. */
   | { status: "portable"; action: "wrote" | "skipped" }
-  /** Web3auth owner: no PRF channel, no envelope by design — re-opening on a new device re-runs the portal. */
-  | { status: "session-only" }
+  /**
+   * Web3auth owner: no PRF channel, no envelope by design — re-opening on a new
+   * device re-runs the portal. `sessionMinted` is false when the best-effort mint
+   * failed; the recovery still stands, but the caller must not promise a working
+   * session it did not get. Telling this user "You're back in" unqualified is the
+   * same misimpression the whole step exists to prevent.
+   */
+  | { status: "session-only"; sessionMinted: boolean }
   /**
    * The recovery itself is committed; only this step failed.
    *
@@ -98,7 +104,7 @@ export async function finalizeRecovery(
     // the first authenticated action re-prompts — the pre-recovery norm.
     const ok = await deps.ensureSession();
     if (!ok) console.warn("[recovery-finalize] session mint failed (non-passkey) — first action will re-mint");
-    return { status: "session-only" };
+    return { status: "session-only", sessionMinted: ok };
   }
 
   // The envelope upload is an authenticated SOC stamp (authPost /api/swarm/soc),

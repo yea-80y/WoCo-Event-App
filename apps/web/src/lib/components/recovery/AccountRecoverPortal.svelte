@@ -203,6 +203,15 @@
         phase = "finalize-warn";
         return;
       }
+      // The recovery stands either way, but an email owner whose session mint
+      // failed must not be told "You're back in" unqualified — their very next
+      // action would ask them to sign in, reading as "recovery didn't work".
+      if (result.status === "session-only" && !result.sessionMinted) {
+        warnRetryable = true;
+        warnStage = "session";
+        phase = "finalize-warn";
+        return;
+      }
       phase = "recovered";
     } catch (e) {
       // A throw here is the module/chunk load itself (the only code path outside

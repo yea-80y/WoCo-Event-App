@@ -137,7 +137,7 @@ test("expectPasskey is satisfied by a passkey store — the happy path is unaffe
 test("an email recovery still finalizes normally when expectPasskey is false", async () => {
   const { d } = deps({ kind: () => "web3auth" });
   const r = await finalizeRecovery(d, { expectPasskey: false });
-  assert.deepEqual(r, { status: "session-only" });
+  assert.deepEqual(r, { status: "session-only", sessionMinted: true });
 });
 
 test("a throwing backfill surfaces as failed, never as an unhandled throw", async () => {
@@ -229,12 +229,14 @@ test("a genuinely absent feed signer proceeds, envelope simply carries none", as
 test("a web3auth owner is session-only: no envelope, and the write path is never touched", async () => {
   const { d, calls } = deps({ kind: () => "web3auth" });
   const r = await finalizeRecovery(d);
-  assert.deepEqual(r, { status: "session-only" });
+  assert.deepEqual(r, { status: "session-only", sessionMinted: true });
   assert.deepEqual(calls, ["ensureSession"]);
 });
 
-test("a web3auth mint failure is STILL session-only — best-effort, the first action re-mints", async () => {
+test("a web3auth mint failure stays session-only but REPORTS the missing session", async () => {
+  // Best-effort by design, but the caller must not render unqualified success:
+  // the user's next action would ask them to sign in, reading as "it didn't work".
   const { d } = deps({ kind: () => "web3auth", ensureSession: async () => false });
   const r = await finalizeRecovery(d);
-  assert.deepEqual(r, { status: "session-only" });
+  assert.deepEqual(r, { status: "session-only", sessionMinted: false });
 });
