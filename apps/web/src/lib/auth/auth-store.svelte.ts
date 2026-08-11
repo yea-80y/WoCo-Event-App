@@ -1165,6 +1165,10 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
           { kind: "passkey", eoa, cachedParent, passkeyPrivKey },
           {
             readKernelOwner: readKernelEcdsaOwnerStrict,
+            envelopeExists: async (key) => {
+              const { portabilityEnvelopeExists } = await import("./recovery-portability.js");
+              return portabilityEnvelopeExists({ passkeyPrivKey: key });
+            },
             readEnvelope: async (key) => {
               const { readPortabilityEnvelope } = await import("./recovery-portability.js");
               return readPortabilityEnvelope({ passkeyPrivKey: key });

@@ -30,16 +30,29 @@
  * orphaned BY a recovery reads a different owner and is deliberately left alone —
  * see the `orphaned` outcome.
  *
- * COST. Each probe that reaches Swarm is ~3 searches for chunks that are not
- * there (versions 0 and 1, then the legacy identifier), and a missing-chunk read
- * is a full network search. Missing-version probes melted the bee once. Hence:
- * the throttle gates EVERYTHING (a non-due login does zero network, not even the
- * eth_call), the cheap chain read gates the expensive Swarm probe, a positive
- * chain read is terminal, and the ladder is finite — five attempts per credential
- * per device, ever.
+ * COST, and why the shape is what it is. A Swarm lookup that MISSES is a full
+ * network search on our own gateway — the expensive direction, and the shape that
+ * melted the bee once. Missing is also the common answer here. So the cost is
+ * squeezed at four points:
+ *
+ *  - the throttle gates EVERYTHING: a non-due login does zero network, not even
+ *    the eth_call;
+ *  - a cheap on-chain owner read gates the Swarm lookup entirely, and a positive
+ *    one is TERMINAL — an account that has ever transacted never probes again;
+ *  - the Swarm question is existence only, which is ONE lookup (`envelopeExists`),
+ *    not the full read's three; the full read runs only after a hit, where its
+ *    lookups all succeed;
+ *  - the ladder is finite: five attempts per credential per device, ever.
+ *
+ * Worst case for a device that never transacts: five lookups, spread over at
+ * least eight days. Baseline for comparison — every device's FIRST passkey login
+ * already pays three on the slow path, unavoidably.
  */
 
-import type { PortabilityRead } from "./recovery-portability.js";
+import type { PortabilityRead, portabilityEnvelopeExists } from "./recovery-portability.js";
+
+/** The existence probe's three states, taken from its implementation so the two cannot drift. */
+export type EnvelopePresence = Awaited<ReturnType<typeof portabilityEnvelopeExists>>;
 
 /** Only passkey accounts have a PRF-derived envelope; web3auth owners have none by design. */
 export type ReprobeKind = "passkey";
@@ -47,7 +60,13 @@ export type ReprobeKind = "passkey";
 export interface EnvelopeReprobeDeps {
   /** 3-state on-chain owner read — `"error"` MUST stay distinct from `null`. */
   readKernelOwner: (kernelAddress: string) => Promise<string | null | "error">;
-  /** Read + open the PRF-sealed envelope. Never throws for the caller — status carries the outcome. */
+  /**
+   * ONE chunk lookup answering existence only. This is the question fix 4 asks in
+   * the common case, and the common answer is no — so it must cost one miss, not
+   * the full read's three. See `portabilityEnvelopeExists`.
+   */
+  envelopeExists: (passkeyPrivKey: string) => Promise<EnvelopePresence>;
+  /** Read + open the PRF-sealed envelope. Reached ONLY after a hit, so its lookups succeed. */
   readEnvelope: (passkeyPrivKey: string) => Promise<PortabilityRead>;
   /** Durable device-local fact: this PRF-EOA opens the preserved Kernel. THE heal. */
   putRecoveryBinding: (podAddress: string, kernel: string) => Promise<void>;
@@ -254,19 +273,39 @@ export async function reprobeEnvelope(
     }
 
     // Undeployed: consistent with poisoning AND with a legitimate account that has
-    // simply never transacted. Only Swarm can tell them apart.
+    // simply never transacted. Only Swarm can tell them apart — so ask it the
+    // cheapest question that separates them, and spend the full read only when the
+    // answer is yes. This is the one lookup the common case pays.
+    const spend = { n: state.n + 1, at: t, ok: state.ok };
+    let presence: EnvelopePresence;
+    try {
+      presence = await deps.envelopeExists(passkeyPrivKey);
+    } catch (e) {
+      writeState(store, kind, eoa, spend);
+      return { status: "inconclusive", reason: `envelope probe threw: ${(e as Error).message}` };
+    }
+    if (presence.status !== "present") {
+      writeState(store, kind, eoa, spend);
+      return presence.status === "absent"
+        ? { status: "clear", reason: "no envelope" }
+        : { status: "inconclusive", reason: presence.reason };
+    }
+
     let read: PortabilityRead;
     try {
       read = await deps.readEnvelope(passkeyPrivKey);
     } catch (e) {
-      writeState(store, kind, eoa, { n: state.n + 1, at: t, ok: state.ok });
+      writeState(store, kind, eoa, spend);
       return { status: "inconclusive", reason: `envelope read threw: ${(e as Error).message}` };
     }
     if (read.status !== "found") {
-      writeState(store, kind, eoa, { n: state.n + 1, at: t, ok: state.ok });
-      return read.status === "absent"
-        ? { status: "clear", reason: "no envelope" }
-        : { status: "inconclusive", reason: read.reason };
+      // Bytes are there and we could not use them. Never an absence — and never
+      // `clear`, which is the outcome that reads as "this device is fine".
+      writeState(store, kind, eoa, spend);
+      return {
+        status: "inconclusive",
+        reason: read.status === "absent" ? "envelope vanished between probe and read" : read.reason,
+      };
     }
 
     // The blob claims an address; the chain decides whether to believe it. Same
@@ -274,7 +313,7 @@ export async function reprobeEnvelope(
     const preserved = read.value.preservedKernelAddress.toLowerCase();
     const preservedOwner = await deps.readKernelOwner(preserved);
     if (preservedOwner !== eoa.toLowerCase()) {
-      writeState(store, kind, eoa, { n: state.n + 1, at: t, ok: state.ok });
+      writeState(store, kind, eoa, spend);
       return {
         status: "inconclusive",
         reason:

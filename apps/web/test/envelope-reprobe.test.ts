@@ -53,6 +53,7 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
   const notices: string[] = [];
   const base: EnvelopeReprobeDeps = {
     readKernelOwner: async (addr) => (addr === PRESERVED ? EOA : null),
+    envelopeExists: async () => ({ status: "present" }),
     readEnvelope: async () => FOUND,
     putRecoveryBinding: async (pod, kernel) => void bindings.push([pod, kernel]),
     clearCachedKernelAddress: (_kind, eoa) => void cleared.push(eoa),
@@ -71,6 +72,10 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
     readKernelOwner: async (addr) => {
       calls.push(`owner:${addr}`);
       return base.readKernelOwner(addr);
+    },
+    envelopeExists: async (key) => {
+      calls.push("exists");
+      return base.envelopeExists(key);
     },
     readEnvelope: async (key) => {
       calls.push("envelope");
@@ -98,7 +103,7 @@ test("heals: envelope found + chain confirms ownership → binding written, cach
   assert.equal(notices.length, 1, "the forced sign-out is explained, not silent");
   // Binding before the cache drop before the logout: every prefix leaves the
   // device correct or retrying.
-  assert.deepEqual(calls, [`owner:${PHANTOM}`, "envelope", `owner:${PRESERVED}`, "logout"]);
+  assert.deepEqual(calls, [`owner:${PHANTOM}`, "exists", "envelope", `owner:${PRESERVED}`, "logout"]);
   assert.equal(store.map.get(STATE_KEY), undefined, "throttle state is retired on a heal");
 });
 
@@ -163,14 +168,39 @@ test("an orphaned credential is reported, never acted on (#255 owns the fix)", a
   assert.deepEqual(calls, [`owner:${PHANTOM}`]);
 });
 
+test("the common case is ONE lookup: the full read never runs when nothing is there", async () => {
+  const { d, calls } = deps({ envelopeExists: async () => ({ status: "absent" }) });
+  const r = await reprobeEnvelope(args, d);
+
+  assert.deepEqual(r, { status: "clear", reason: "no envelope" });
+  assert.deepEqual(
+    calls,
+    [`owner:${PHANTOM}`, "exists"],
+    "a miss must cost one search, not the full read's three",
+  );
+});
+
+test("bytes that exist but cannot be opened are inconclusive, never 'clear'", async () => {
+  const store = memStore();
+  const { d, bindings } = deps(
+    { readEnvelope: async () => ({ status: "unusable", reason: "decrypt failed" }) },
+    store,
+  );
+  const r = await reprobeEnvelope(args, d);
+
+  assert.deepEqual(r, { status: "inconclusive", reason: "decrypt failed" });
+  assert.deepEqual(bindings, []);
+  assert.equal(JSON.parse(store.map.get(STATE_KEY)!).n, 1);
+});
+
 test("throttle: a second login inside the cooldown does nothing at all", async () => {
   const store = memStore();
-  const { d } = deps({ readEnvelope: async () => ({ status: "absent" }) }, store);
+  const { d } = deps({ envelopeExists: async () => ({ status: "absent" }) }, store);
   assert.deepEqual(await reprobeEnvelope(args, d), { status: "clear", reason: "no envelope" });
 
   _resetInFlightForTests();
   const { d: d2, calls } = deps(
-    { readEnvelope: async () => ({ status: "absent" }), now: () => 1_000 * DAY + 60_000 },
+    { envelopeExists: async () => ({ status: "absent" }), now: () => 1_000 * DAY + 60_000 },
     store,
   );
   assert.deepEqual(await reprobeEnvelope(args, d2), { status: "skipped", reason: "throttled" });
@@ -184,7 +214,7 @@ test("the ladder is finite: five verdicts and it stops for good", async () => {
   for (let i = 0; i < 7; i++) {
     _resetInFlightForTests();
     const { d } = deps(
-      { readEnvelope: async () => ({ status: "absent" }), now: () => t },
+      { envelopeExists: async () => ({ status: "absent" }), now: () => t },
       store,
     );
     seen.push((await reprobeEnvelope(args, d)).status);
@@ -193,10 +223,10 @@ test("the ladder is finite: five verdicts and it stops for good", async () => {
   assert.deepEqual(seen, ["clear", "clear", "clear", "clear", "clear", "skipped", "skipped"]);
 });
 
-test("an inconclusive Swarm read spends an attempt but asserts nothing", async () => {
+test("an inconclusive Swarm probe spends an attempt but asserts nothing", async () => {
   const store = memStore();
-  const { d, bindings, cleared } = deps(
-    { readEnvelope: async () => ({ status: "unreadable", reason: "gateway 503" }) },
+  const { d, bindings, cleared, calls } = deps(
+    { envelopeExists: async () => ({ status: "unreadable", reason: "gateway 503" }) },
     store,
   );
   const r = await reprobeEnvelope(args, d);
@@ -204,17 +234,20 @@ test("an inconclusive Swarm read spends an attempt but asserts nothing", async (
   assert.deepEqual(r, { status: "inconclusive", reason: "gateway 503" });
   assert.deepEqual(bindings, []);
   assert.deepEqual(cleared, [], "'could not tell' is not 'nothing is there'");
+  assert.ok(!calls.includes("envelope"), "and never escalates to the full read off it");
   assert.equal(JSON.parse(store.map.get(STATE_KEY)!).n, 1, "but the bee is still protected");
 });
 
-test("a throwing envelope read is contained, not propagated", async () => {
-  const { d } = deps({
-    readEnvelope: async () => {
-      throw new Error("boom");
-    },
-  });
-  const r = await reprobeEnvelope(args, d);
-  assert.equal(r.status, "inconclusive");
+test("a throwing probe or read is contained, not propagated", async () => {
+  const boom = async () => {
+    throw new Error("boom");
+  };
+  const { d } = deps({ envelopeExists: boom });
+  assert.equal((await reprobeEnvelope(args, d)).status, "inconclusive");
+
+  _resetInFlightForTests();
+  const { d: d2 } = deps({ readEnvelope: boom });
+  assert.equal((await reprobeEnvelope(args, d2)).status, "inconclusive");
 });
 
 test("offline skips before spending an attempt", async () => {
