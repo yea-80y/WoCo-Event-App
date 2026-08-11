@@ -87,6 +87,9 @@
   function close() {
     open = false;
     authing = null;
+    // The modal instance outlives its openings, so drop the notice here or it
+    // re-renders on every later open — sessionStorage was already cleared.
+    notice = null;
     loginRequest.resolve(false);
     onclose?.();
   }
@@ -94,6 +97,7 @@
   function handleComplete() {
     open = false;
     authing = null;
+    notice = null;
     loginRequest.resolve(true);
     onclose?.();
   }

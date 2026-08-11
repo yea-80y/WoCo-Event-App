@@ -1156,9 +1156,17 @@ function _verifyRecoveredBindingInBackground(
  *  seconds after login, and past any plausible first user action, so the sign-out
  *  a heal performs lands on an idle screen rather than mid-flow. */
 function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPrivKey: string): void {
+  const stillSignedInAs = (e: string, parent: string): boolean =>
+    _kind === "passkey" &&
+    _podAddress?.toLowerCase() === e.toLowerCase() &&
+    _parent?.toLowerCase() === parent.toLowerCase();
   setTimeout(() => {
     void (async () => {
       try {
+        // The 5s deferral can outlive the session (sign-out, account switch).
+        // Bail before the imports so a departed session spends no network, no
+        // ladder attempt, and never touches the PRF key after logout.
+        if (!stillSignedInAs(eoa, cachedParent)) return;
         const { reprobeEnvelope, AUTH_NOTICE_KEY } = await import("./envelope-reprobe.js");
         const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
         const outcome = await reprobeEnvelope(
@@ -1175,10 +1183,7 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
             },
             putRecoveryBinding: _putRecoveryBinding,
             clearCachedKernelAddress,
-            isStillSignedInAs: (e, parent) =>
-              _kind === "passkey" &&
-              _podAddress?.toLowerCase() === e.toLowerCase() &&
-              _parent?.toLowerCase() === parent.toLowerCase(),
+            isStillSignedInAs: stillSignedInAs,
             logout,
             postNotice: (message) => {
               try {
