@@ -1,455 +1,330 @@
-# Coaster Credits — Attested Credentials Plan
+# Coaster Credits — Rider-Signed Credentials Plan
 
-STATUS (2026-08-11): DESIGN. Not started. Origin: the Rita 100 charity challenge
+STATUS (2026-08-12): DESIGN. Not started. Origin: the Rita 100 charity challenge
 (Digital Dan, September 2026) as the pilot for a general ride-credit system.
 
-Companion to `docs/SWARM_SOCIAL_PLAN.md` — this shares its indexer, its trust model
-and its portability commitments. Read that first; this doc only states the deltas.
+Companion to `docs/SWARM_SOCIAL_PLAN.md` — this shares its indexer, its trust model and
+its portability commitments. Read that first; this doc states only the deltas.
 
 ## The model in one paragraph
 
-A **credit** is an issuer-signed attestation that a holder rode a coaster. Attestations
-accumulate as Merkle leaves; an issuer periodically signs ONE manifest over a batch of
-them and publishes it to Swarm. Counts are computed by an indexer that reads public
-batches, verifies signatures, and publishes a rebuildable index. No chain per credit,
-no pre-committed supply, no account required to hold one. The POD layer stays — as the
-display/identity object (name, artwork, subject, issuer) — but holdings come from
-attestations rather than on-chain slots.
+A **credit** is a statement, signed by the rider's own derived feed key and written to the
+rider's own Swarm feed, saying they rode a given coaster. An **issuer** — a park, or a
+challenge organiser — can optionally witness that statement, which raises its evidence
+level from self-reported to verified. Counts are computed by an indexer that reads public
+feeds, verifies signatures, and publishes a rebuildable index. No chain per credit, no
+pre-committed supply, no server holding anyone's data. The POD layer stays as the
+display/identity object; holdings are derived from statements rather than on-chain slots.
 
-## What a user actually holds — the shape, settled
+## What a user holds — settled
 
 **One POD per coaster, with a count attached. NOT one POD per ride.**
 
-- `Rita, Alton Towers` is a POD type. A rider holds it once, forever, from their first ride.
-- Their ride count is **derived**, not stored on the POD: it is the sum of `count` across
-  every attested leaf naming `(holder, subject)`. Ride 200 adds a leaf, not a POD.
-- The POD carries the identity and the artwork — the thing a rider recognises and collects.
-  The count is a computed property of it.
+- `Rita, Alton Towers` is a POD type. A rider holds it once, from their first ride, forever.
+- Their ride count is **derived**: the sum of `count` across every statement naming
+  `(holder, subject)`. Ride 200 adds a statement, not a POD.
+- The POD carries identity and artwork — what a rider recognises and collects. The count
+  is a computed property of it.
 
 Why not a POD per ride: a POD type is a fixed-supply, pre-signed Merkle batch registered
-on-chain (`issuePodType`), so "one per ride" would mean pre-committing to how many rides
-will ever happen on Rita and paying to register each one. The count belongs in the
-attestation layer, which is unbounded and free.
+on-chain (`issuePodType`), so per-ride would mean pre-committing to how many rides will ever
+happen on Rita and paying to register each. Counts belong in the statement layer, which is
+unbounded and free.
 
 **Nothing is minted when a credit is collected.** No transaction, no supply consumed, no
-per-rider cost. Collecting a credit appends a leaf to the next batch. That is the whole
-operation.
+per-rider cost. The rider signs a statement. That is the whole operation.
 
-The only on-chain surfaces in the entire design are optional and fixed-cost: an anchor
-(below), and eventually an issuer registry — one transaction per coaster, one per handover,
-never per credit or per rider.
+## Rider-signed base, issuer-witnessed upgrade
 
-## Why not an on-chain slot per credit
+The rider is the author. This is the load-bearing decision and it is deliberate:
 
-On-chain ownership earns its keep for a **ticket**: money, escrow, resale, an adversarial
-door. A ride credit has none of those. It is soulbound, nobody will litigate over it, and
-the property actually wanted — "the park attests this happened" — is a signature, not a
-chain. Per-credit gas is small on Arbitrum but structurally wrong: a free product with
-unbounded volume, marginal cost denominated in ETH, a permanently funded hot wallet to
-monitor, and a griefing surface. It also forces a pre-committed supply
-(`MAX_POD_SUPPLY = 10_000`), which the Rita challenge's "+1 lap per £1000" mechanic
-makes unknowable by design.
+- It works **day one with no park involvement** — including the "just tap that you rode it"
+  rollout, where no issuer exists at all.
+- The rider's history lives in the rider's own feed, so it survives WoCo losing interest,
+  a park pulling out, or any server dying. An issuer-authored design fails all three.
+- It is the `SWARM_SOCIAL_PLAN` shape exactly — same primitive, same indexer, no new
+  architecture.
+- It matches the community norm. Existing credit apps are all honour-system; verified
+  credits are an **additional tier**, never a replacement.
 
-### Anchoring, not sampling
+An issuer never authors a rider's history. It only ever adds a witness that references a
+statement the rider already made.
 
-Anchoring N credits with one transaction does NOT mean recording every 5th or 10th and
-losing the rest. One Merkle root commits to **all** of them: publish the root, and any
-single credit is provable by its inclusion proof. `manifestRef` is already exactly this.
-
-A root is not a pre-commitment to a count — it commits to whatever set exists when it is
-computed. So a challenge that grows from 100 laps to 109 needs no reservation, no resize
-and no migration. That "reserve N slots up front" problem was an artefact of the on-chain
-slot model and is deleted along with it.
-
-### The live tracker is NOT the anchor
-
-Two separate things, easily conflated:
-
-- **Live count** — updates on every scan, instantly, straight off the queue/batch. No
-  chain, no wait, no cost. This is what the tracker widget and the stream overlay read.
-- **Anchor** — an optional, periodic notarisation of the batch digest. Slow, rare, fixed
-  cost. Once per riding day, or once at the end.
-
-The anchor buys exactly one property: it stops the **issuer** rewriting history after the
-fact. That matters here precisely because WoCo is the issuer at launch and is also the
-party asserting the lap count — an independent timestamp means the count is credible
-without trusting us. It is not needed for the tracker to work.
-
-## Data structures
-
-New in `packages/shared/src/credit/`. Reuses the LOCKED primitives in
-`packages/shared/src/pod/{canonical,merkle}.ts` — same encoder, same tree scheme, same
-ed25519 signing. Do not fork them.
-
-### Leaf — one per (holder, subject, session)
-
-A leaf is a **session**, not a single ride. Proving 47 rides must not need 47 proofs, and
-"8 rides on 14 September" is how it will be displayed anyway.
-
-```ts
-interface CreditLeafV1 {
-  format: "woco.credit.v1";
-  /** keccak256("woco:coaster:v1:" + stableId). See "Subject identity" below. */
-  subject: Bytes32Hex;
-  /** The holder's DERIVED key address — a sign-to-derive sibling of the content-feed
-   *  signer. Never the parent address (see "Who signs what"), never a server burner. */
-  holder: Hex0x;
-  /** Rides in this session. */
-  count: number;
-  /** YYYY-MM-DD, issuer's local date. */
-  sessionDate: string;
-  firstAt?: string;   // ISO
-  lastAt?: string;    // ISO
-  evidence: "nfc" | "device" | "self";
-  /** Dedup key — makes a replayed upload idempotent. */
-  nonce: string;
-}
-```
-
-Leaf hash = `keccak256(dagCbor(leaf))`, mirroring `podLeafHash`.
-
-### Batch manifest — one signature per batch
-
-```ts
-interface CreditManifestV1Body {
-  format: "woco.credit.manifest.v1";
-  issuerPubkey: Hex32;        // ed25519
-  subject?: Bytes32Hex;       // set when the batch is single-subject
-  leafCount: number;
-  metadataRoot: Bytes32Hex;   // Merkle root over leaves
-  encoding: "cbor-v1";
-  treeScheme: "oz-simple-v1";
-  issuedAt: string;
-  /** Digest of the issuer's previous batch — makes issuer history a hash chain,
-   *  so an indexer can walk it and omission is detectable. */
-  prevBatch?: Bytes32Hex;
-}
-```
-
-Signed ed25519 by the issuer → `SignedCreditManifestV1`. One signature, one Swarm upload,
-N credits. Cost per credit is postage on a few hundred bytes, amortised.
-
-### Portable credit — what the holder actually keeps
-
-```ts
-interface PortableCreditV1 {
-  leaf: CreditLeafV1;
-  proof: MerkleProofV1;
-  manifest: SignedCreditManifestV1;  // header only, no leaves
-  batchRef: Hex64;                   // Swarm ref of the full batch
-}
-```
-
-A few hundred bytes, verifiable **standalone** — no server, no feed lookup, no chain.
-This is the object that makes "you own it" true rather than aspirational.
-
-## Subject identity — decide before writing code
-
-A POD type is *an issuance batch attesting to a subject*, never the identity itself.
-
-```
-subject = keccak256("woco:coaster:v1:" + <stable coaster id>)
-```
-
-Use **RCDB ids** as the stable id. RCDB is the Roller Coaster DataBase (`rcdb.com`) — a
-free public catalogue of essentially every coaster in the world, with a stable numeric id
-per ride (Rita is `rcdb.com/2919.htm` → `rcdb:2919`). It is the community's de facto
-reference and the existing credit apps already key on it, so it gives an import path for
-self-reported history. Caveat: there is no public API or data licence, so treat it as a
-**naming convention we reference**, never as a database to scrape or mirror.
-
-Add `subject` to `PodDirectoryEntry`.
-
-A holder's count for a coaster = sum across every batch naming that subject, from any
-issuer. That one indirection buys three things that are otherwise impossible:
-
-- **Growth without supply limits** — no registration, no cap, no top-up problem.
-- **Issuer handover** — a park issues under its own key, same subject, counts merge
-  instead of forking. See the issuer registry below.
-- **Trust display** — "47 rides · 12 verified by Alton Towers · 35 by WoCo".
-
-## Issuer registry — the one thing chain is genuinely right for
-
-Handing issuing rights to a park is a **trust** question: at the time a batch was signed,
-was that issuer authorised for that subject? Answering it without a live call to a WoCo
-server is exactly what a chain is good at, and the cost profile is the inverse of
-per-credit minting — one transaction per coaster, one per handover. Tens of transactions,
-ever, not millions.
-
-```
-IssuerRegistry:  subject => { issuer: bytes32 (ed25519 pubkey), since: uint64, until: uint64 }
-                 transferIssuer(subject, newIssuer)
-                 revokeIssuer(subject)
-```
-
-Why not a signed delegation instead: revocation. A signed "Alton Towers may issue for
-Nemesis" is easy to publish and free, but a verifier can never prove it *wasn't* revoked
-without a live source of truth. Revocation is chain-shaped; issuance is not.
-
-Recording the authorised **period** also means historical credits survive a handover — a
-batch signed by WoCo in 2026 stays valid after the park takes over in 2027, because the
-registry says WoCo was authorised then. Without that, handover silently invalidates
-everyone's back-catalogue.
-
-`contracts/src/ContentHashRegistry.sol` is the precedent for a minimal registry of this
-shape. Defer building it until a second issuer actually exists — but design the subject
-identity now so it can be added without migrating anything.
-
-## Identity — the minimum a collector needs
-
-Credits accrue to a **derived holder key** — a secp256k1 sibling of the content-feed
-signer, produced by the same sign-to-derive mechanism with its own domain string and
-nonce. Never the parent address, and **no server-generated user keys anywhere in this
-rail**.
-
-### Who signs what (the parent signs nothing here)
+### Who signs what
 
 `project_signing_role_architecture` is a hard rule: the parent signs ONLY the one EIP-712
 `AuthorizeSession` per session — never feeds, never requests, never tickets.
 
 | actor | key | signs |
 |---|---|---|
-| Issuer (WoCo now, park later) | ed25519 | the batch manifest — the attestation itself |
-| Issuer | its feed signer | the feed pointing at the latest batch |
-| Rider | derived holder key (secp256k1) | possession challenges, and resale listings |
+| Rider | derived **feed key** (secp256k1, sign-to-derive) | their own ride statements |
+| Rider | same key | possession challenges, resale listings |
+| Issuer device (exit) | issuer device key | rotating presence tokens (below) |
+| Issuer | ed25519 | witness batches referencing rider statements |
 | Rider's parent | — | **nothing in this rail** |
 
-**The rider never signs the "I rode Rita" attestation, and never writes a feed.** The
-issuer attests; that is what makes a credit worth more than a self-reported count, and
-it is the one structural difference from likes in `SWARM_SOCIAL_PLAN` (a like is an
-opinion, so self-attestation is fine; a credit is a claim about the world, so it needs a
-witness).
+`SWARM_SOCIAL_PLAN` commitment 1 fixes the rider's key: "The user's derived feed key signs
+every statement (sign-to-derive, the settled client-feed mechanism). NEVER the platform
+`FEED_PRIVATE_KEY`, NEVER the 30-day session key." ed25519 is the POD identity — it signs
+POD manifests, not statements.
 
-The rider's key is needed for exactly two things: being named as `holder` in a leaf
-(naming, not signing), and signing a fresh challenge when they need to prove a credit is
-theirs. The parent's only involvement is the one-time EIP-712 derivation signature that
-produces the sibling key — which is a key-stretch, not a feed write.
+The parent's only involvement anywhere is the one-time EIP-712 derivation signature that
+produces the feed key. That is a key-stretch, not a feed write.
 
-### Why a derived key rather than the parent address
+## The evidence ladder
 
-Two independent reasons, either sufficient:
+Every statement carries an `evidence` level. The indexer and the UI must surface it —
+conflating tiers is how a verified-credits product loses its credibility.
 
-1. **The signing rule above.** Whatever is named as holder will eventually need to sign a
-   possession challenge, and that must not be the parent.
-2. **Smart accounts cannot be recovered from a signature.** An EOA's address is derived
-   from its key, so `recoverMessageAddress` can work backwards to it. A smart-account
-   address comes from its deployment recipe — no key produces it — so offline ECDSA
-   verification can never resolve to it, and ERC-1271 needs a chain call. Three of four
-   login kinds give a smart-account parent (`auth-store.svelte.ts`: web3auth `:1298`,
-   passkey `:1486`, coinbase `:1423`; only web3 `:1183` is an EOA).
+**1. `self` — rider signs alone.** They tap "I rode this". Worth exactly what a
+self-reported count is worth today, which is not nothing: it is the existing ecosystem's
+norm and it works with zero infrastructure.
 
-The derived key solves both at once and works identically across all four kinds.
+**2. `presence` — rider's statement embeds a rotating issuer token.** The issuer's device
+at the ride exit holds a key and signs `(subject, windowStart, nonce)` every ~30 seconds,
+rendering it as a QR on a screen. The rider scans, receives the signed token, and includes
+it in their own statement. The indexer verifies the issuer signature and that the window
+matches the claimed time.
 
-Key separation, not reuse: derive a sibling rather than reusing the feed signer itself.
-`recovery-escrow.ts` already establishes the pattern — "Derive BOTH guardian keys from ONE
-deterministic EIP-712 signature… so neither reveals the other (textbook KDF hygiene)". The
-feed signer owns the user's Swarm SOCs; a leaked credit key should cost a credential, not
-the ability to rewrite all their content.
+This is the answer to "can the signature come from the QR the rider scans" — yes, provided
+it **rotates**. A static pre-signed QR is worth nothing: photograph it once and replay it
+forever. Rotation is what makes it evidence.
 
-- **Feed signer** — only to publish their OWN statements (self-reported credits, likes)
-  or to take postage custody. Not needed to receive or prove attested credits. Arrives at P3.
+Its honest limit: it proves someone was in front of that screen in that window, shared
+across everyone who scanned it. It does not bind a specific person. Combined with the
+plausibility rule below, that is enough to stop bulk fraud without pretending to more.
+
+**3. `verified` — issuer scans the rider and witnesses.** The device reads the rider's
+code and the issuer counter-signs a witness naming that holder. This binds identity, and
+it is the only tier that genuinely proves a specific person rode. It needs staff or a
+fixed installation, so it is an event/park-cooperation tier, not a default.
+
+Plus a **plausibility rule** in the indexer: ride cycle time bounds how many credits a
+holder can legitimately accrue per hour. Cheap, and it kills bulk fraud without needing
+any tier to be perfect.
+
+### Where park integration actually belongs
+
+Verifying a rider is physically in the park by reading the park's own admission ticket is
+the wrong shape, for two reasons. A park ticket QR is a static bearer token — a photo of a
+friend's ticket passes it — so it proves someone holds *a* ticket, not that *you* are
+there. And it would require the park to expose their ticket-verification surface, which is
+their revenue-protection boundary and the last thing they will hand out.
+
+The same commercial conversation gets a far better result: **the park becomes an issuer**.
+They already know who scanned in and who rode; having them witness credits directly is
+tier 3, needs no access to their internals, and is exactly the handover story this design
+is built for. Ask for attestation, not for read access.
+
+GPS stays a **soft plausibility signal only** — spoofable via devtools and mock-location
+apps, no attestation, and unable to separate a ride exit from the adjacent path under ride
+structures. It is also the worst possible signal for an under-18 audience (see Legal).
+Never gate a credit on it.
+
+## Data structures
+
+New in `packages/shared/src/credit/`. Reuses the LOCKED primitives in
+`packages/shared/src/pod/{canonical,merkle}.ts` — same encoder, same tree scheme. Do not
+fork them.
+
+### Rider statement — one per (holder, subject, session)
+
+A statement is a **session**, not a single ride. Proving 47 rides must not need 47 proofs,
+and "8 rides on 14 September" is how it will be displayed anyway.
+
+```ts
+interface CreditStatementV1 {
+  format: "woco.credit.v1";
+  /** keccak256("woco:coaster:v1:" + stableId). See "Subject identity". */
+  subject: Bytes32Hex;
+  /** The rider's derived feed-key address — the statement's author. */
+  holder: Hex0x;
+  count: number;
+  sessionDate: string;      // YYYY-MM-DD
+  firstAt?: string;         // ISO
+  lastAt?: string;
+  evidence: "self" | "presence" | "verified";
+  /** Present when evidence is "presence": the rotating token scanned at the exit. */
+  presenceToken?: PresenceTokenV1;
+  /** Dedup key — makes a replayed write idempotent. */
+  nonce: string;
+}
+```
+
+Written to the rider's own feed, signed by their feed key. Storage is Swarm: the statement
+is content-addressed, and the rider's feed points at it.
+
+### Presence token — issued by a device, embedded by the rider
+
+```ts
+interface PresenceTokenV1 {
+  format: "woco.presence.v1";
+  subject: Bytes32Hex;
+  deviceKey: Hex0x;         // the exit device's signing address
+  windowStart: string;      // ISO, ~30s granularity
+  nonce: string;
+  sig: string;              // deviceKey's signature over the above
+}
+```
+
+The device signs locally and needs no network — it can run all day offline at a ride exit.
+
+### Issuer witness batch — tier 3 only
+
+The issuer collects `(holder, subject, sessionDate)` tuples it observed, builds a Merkle
+tree, and ed25519-signs ONE manifest over the batch — same envelope shape as
+`ManifestV1Body`, with `prevBatch` chaining so an indexer can walk issuer history and
+omission is detectable. One signature and one upload per batch, regardless of size.
+
+A witness **references** rider statements; it never replaces or authors them.
+
+## Subject identity
+
+```
+subject = keccak256("woco:coaster:v1:" + <stable coaster id>)
+```
+
+Use **RCDB ids** — the Roller Coaster DataBase (`rcdb.com`) catalogues essentially every
+coaster with a stable numeric id (Rita is `rcdb.com/2919.htm` → `rcdb:2919`). It is the
+community's de facto reference and the existing credit apps key on it, giving an import
+path for self-reported history. No public API or data licence, so treat it as a **naming
+convention we reference**, never a database to scrape or mirror.
+
+Add `subject` to `PodDirectoryEntry`. A rider's count for a coaster is the sum across every
+statement naming that subject, whatever its evidence level and whoever witnessed it. That
+one indirection is what lets a park take over issuing without forking anyone's history.
+
+## Identity — the minimum a rider needs
+
+One key: the **derived feed key** (secp256k1, sign-to-derive). It authors statements, is
+named as `holder`, and signs possession challenges.
+
 - **POD signer (ed25519)** — only to ISSUE PODs or decrypt organiser data. A collector
   never needs one.
+- **Parent** — signs the derivation message once. Nothing else, ever.
 
-Require an account before the first credit. Passkey is one touch, no email, no password,
-no PII — cheaper than a device key that later has to be migrated. Do NOT reintroduce the
-local browser account (deleted in `e127c97` for bundle size).
+Why not the parent address as holder: two independent reasons, either sufficient. The
+signing rule above; and a smart-account address can never be recovered from an ECDSA
+signature — its address comes from the deployment recipe, not a key — which rules it out
+for three of four login kinds (`auth-store.svelte.ts`: web3auth `:1298`, passkey `:1486`,
+coinbase `:1423`; only web3 `:1183` is an EOA).
 
-### No burners here — and why the ticket rail has them
+Do NOT reintroduce the local browser account (deleted in `e127c97` for bundle size).
 
-The ticket rail generates burners **server-side** (`apps/server/src/routes/stripe.ts:1258`)
-for one specific reason: a card buyer completes checkout on Stripe and never returns to
-the browser, so at mint time the server is the only party present. It signs each ticket's
-canonical message with the burner, embeds that signature in the QR, and discards the key.
-
-That constraint does not exist here — the fan is standing in front of the app, so their own
-client can derive the holder key at the moment it is needed. No key is ever generated for a
-user by us, and nothing has to be persisted anywhere: the derivation is deterministic, so
-the same account reproduces the same key on any device.
-
-### Authenticity is not possession
-
-The POD proves **authenticity** — the issuer signed it. It cannot prove **possession**,
-because manifests and leaves are public data on Swarm; anyone can fetch and replay them.
-
-Note what the ticket QR actually proves, since it is easy to over-read: the signature in
-it is **static and pre-computed**, so it proves the ticket was genuinely *issued* for that
-slot, not that the bearer holds a secret. It is a bearer token, and a photo of it presents
-identically — the one-time-use nullifier is what stops reuse. See issue #264.
-
-Real possession proof needs a secret only the holder has, signed **freshly** over a
-server-issued challenge. Using the parent account's signer gives credits that property
-from day one, which the ticket rail does not have.
-
-### Durability, not "recovery"
+### Durability
 
 Existing passkey recovery (`recovery-escrow.ts`) is **guardian-based** — it needs a backup
-EOA whose deterministic EIP-712 signature derives the guardian keys. There is no email
-factor. That is unusable for this audience: a 13-year-old is not setting up a backup wallet.
+EOA whose deterministic EIP-712 signature derives the guardian keys. No email factor. That
+is unusable for this audience; a 13-year-old is not setting up a backup wallet.
 
-So do not promise recovery at v1, and do not build one. Because credits accrue to the
-parent address, durability is just account durability: a passkey with PRF derives
-deterministically and regenerates on any device the passkey syncs to (iCloud Keychain,
-Google Password Manager). No guardian, no email, no seed phrase.
+Do not promise recovery at v1. Durability is account durability: a passkey with PRF derives
+deterministically and regenerates on any device the passkey syncs to. Losing the passkey
+with no guardian loses the account — acceptable for a first outing, but say so plainly
+rather than implying permanence.
 
-Losing the passkey with no guardian set loses the account. Acceptable for a first outing —
-say so plainly in the UI rather than implying permanence. It becomes a real problem only
-once collections are years deep, which is the point to revisit it.
+## Optional on-chain surfaces
 
-## Presence proof — the ladder
+Neither is required to ship. Both are fixed-cost — per coaster or per handover, never per
+credit or per rider.
 
-A static QR proves someone scanned a URL. That is not proof, and this community will
-demonstrate it on camera if the claim is overstated. Layered, strongest first:
+**Anchor.** Periodically publish a batch digest on-chain. Buys one property: it stops an
+issuer rewriting history after the fact. Note the live tracker is NOT the anchor — the
+tracker updates on every statement, instantly, free; the anchor is a slow notarisation on
+top.
 
-1. **NTAG 424 DNA NFC tag** (~£1, no power, no signal). Each tap emits a unique
-   cryptographic SUN message that cannot be cloned or replayed. Phone reads it natively
-   (iOS background tag reading, Android). Tap → URL carrying the per-tap cryptogram →
-   PWA queues it → syncs later. This is the only option that proves *physical presence*.
-2. **Issuer device witness** — a marshal's tablet scans the rider and signs the session.
-   Offline-native (see below). This is the Rita-day answer.
-3. **Rotating code** on a device at the exit, ~30s validity. Proves proximity in time.
-4. **GPS** — soft signal ONLY. Works in a PWA over HTTPS with permission, but is
-   trivially spoofed (devtools override, Android mock-location), has no attestation, and
-   its accuracy under ride structures cannot separate a ride exit from the adjacent path.
-   For under-18s it is also the worst choice available (see Legal). Use for plausibility
-   scoring, never as the basis of a credit.
-5. **Self-reported** — keep it. The existing ecosystem runs on good will and verified
-   credits should be additive, never a replacement. Mark leaves `evidence: "self"`.
+A Merkle root commits to whatever set exists when computed, so a challenge growing from 100
+laps to 109 needs no reservation or resize. That "reserve N up front" problem was an
+artefact of the on-chain slot model.
 
-Plus a physical-plausibility rule in the indexer: ride cycle time bounds how many credits
-a holder can legitimately accrue per hour. Kills mass fraud without perfect security.
+**Issuer registry.** `subject => { issuer, since, until }` with transfer and revoke.
+Handing issuing rights to a park is a trust question — *was this issuer authorised for this
+subject when the batch was signed?* — and answering it without a live call to a WoCo server
+is what a chain is genuinely good at. Recording the authorised **period** means historical
+credits survive a handover instead of being silently invalidated.
 
-## Two keys, two questions — ed25519 vs EIP-191
+Why not a signed delegation: revocation. A verifier can never prove a delegation *wasn't*
+revoked without a live source of truth. `contracts/src/ContentHashRegistry.sol` is the
+precedent for the shape. Defer until a second issuer exists; design the subject identity
+now so it drops in with nothing to migrate.
 
-These are constantly conflated. They answer different questions and are checked at
-different times.
+## The Rita 100 pilot
 
-| | key | signs | proves | when checked |
-|---|---|---|---|---|
-| **Authenticity** | issuer ed25519 (POD identity) | the manifest | this credential really came from this issuer | once, at issuance (`verifySignedManifest`) |
-| **Possession** | holder secp256k1 (burner/passkey) | a fresh challenge | I am the person holding it *right now* | per scan, EIP-191 |
+**Dan is the issuer, not WoCo.** His team holds the exit device and his key witnesses the
+laps. That is honest — "attested by Dan" — and it avoids WoCo attesting to its own
+marketing claim, which would be the weakest part of the story. If Alton Towers later
+co-signs, that is a third layer on the same statements.
 
-For tickets, only the second is checked at the door: the pack carries `slotOwners` read
-from the chain, so the chain — not the manifest — is the door's authority
-(`packages/shared/src/checkin/types.ts`; the pack never carries the manifest).
+Fans self-sign or scan Dan's rotating token, depending on what the day allows. The
+deliverables that matter are the public verifiable counter, an embeddable widget for
+rita100.com, and a stream overlay — all of which read the live count, not the anchor.
 
-For credits there is no chain, so the **batch manifest travels with the pack**: the
-scanner verifies the issuer's ed25519 signature once on load, then EIP-191 per scan
-against the holders named in the verified leaves. Strictly better than the ticket path —
-same two guarantees, no chain read at the door.
-
-## Offline
-
-The existing scanner verifies **EIP-191 secp256k1** — `recoverMessageAddress` over
-`buildTicketCanonicalMessage`, compared against pre-downloaded on-chain `slotOwner`
-(`apps/web/src/lib/scanner/verify.ts`). The v1 path put the issuer's ed25519 edition sig
-in the QR, but that sig is public feed data — it proved the ticket existed, not who held
-it, which is why a one-time-use nullifier was doing the real work. It died with the v1 rail.
-
-Direction matters and determines the day plan:
-
-- **Issuer scans rider** — fully offline. Tablet holds the roster, verifies locally,
-  queues to IndexedDB, signs and uploads the batch when signal returns.
-- **Rider scans a poster** — cannot complete offline; collecting needs a network round
-  trip. Queue the intent device-side and sync later.
-
-Alton Towers sits in a valley with patchy signal at ride level, so option 1 is the
-architecturally correct choice, not merely the diplomatic one.
-
-## Portability — light clients, browser nodes, user-owned batches
-
-Non-negotiables, all cheap now and expensive later (mirrors SWARM_SOCIAL_PLAN §
-"Non-negotiable commitments"):
-
-1. **Every credit verifies standalone.** Leaf + proof + signed manifest header. No
-   dependency on our server, our feed, or our index.
-2. **Content-addressed, never feed-slot-authoritative.** Feeds are pointers and indexes.
-   A credit's identity is its hash, so it survives any re-hosting.
-3. **Postage is separable from authorship.** Chunks are re-stampable under a different
-   batch without re-signing (hash-preserving). Never bake the platform batch into the
-   identity of anything.
-4. **Dual custody.** The issuer publishes the canonical enumerable batch; the holder
-   keeps their own `PortableCreditV1`. If a park stops paying postage, holders' credits
-   survive. This is what makes the handover story honest.
-5. **Subjects and holders are keyed by their own identifiers** — never WoCo-internal ids.
-
-At P3 a browser node holds its own batch, re-stamps its own credits, and computes its own
-totals with no indexer. Nothing above changes for that to happen.
-
-## Indexer
-
-Same component as SWARM_SOCIAL_PLAN P1 — **not yet built** (no social/statement indexer
-exists in the tree). It reads issuer batch chains, verifies signatures, applies dedup by
-`nonce` and the plausibility rule, and publishes a per-holder projection plus an evidence
-manifest whose leaves point at the real batches. Server is a cache, not truth; the whole
-index is rebuildable from public data.
-
-Build it once for likes/follows/credits. Credits should be its second consumer, not a
-parallel system.
+Do not claim the system proves Dan physically rode 109 times. It proves he and his team
+attested to it, tamper-evidently and in public. Overclaiming to an audience that will test
+it on camera is the one unforced error available here.
 
 ## Scale
 
-Cost per credit is one Merkle leaf. Cost per *batch* is one ed25519 signature plus one
-Swarm upload, regardless of how many leaves it holds.
+Cost per credit is one signed statement. Worked example — 1,000 fans averaging 5 rides:
 
-Worked example — 1,000 fans averaging 5 rides each on a busy day:
-
-| | attested design | on-chain slot per credit |
+| | rider-signed | on-chain slot per credit |
 |---|---|---|
-| leaves / mints | 1,000 (one per rider per coaster per day) | 5,000 |
-| signatures | 1 | 5,000 |
-| Swarm uploads | 1 | — |
-| on-chain txs | 0 | ≥50 batched, through one sponsor nonce |
+| statements | 1,000 (one per rider per coaster per day) | 5,000 mints |
+| signatures | 1,000 rider-side (client CPU, free) | 5,000 |
+| server writes | 1 witness batch, if tier 3 | — |
+| on-chain txs | 0 | ≥50, through one sponsor nonce |
 
-The known write-path ceilings are untouched: `beeUploadSem` is 6-wide globally
+The known write-path ceilings stay off the critical path: `beeUploadSem` is 6-wide globally
 (`upload-queue.ts:19`), one postage batch means concurrent stamps hit 423 Locked, and the
-sponsor EOA serialises its nonce (`sponsor-nonce.ts`). A session batch is a single upload,
-so none of those are on the critical path. The on-chain variant puts all three there.
-
-Reads scale as normal cached HTTP — the index is a projection, servable from the edge.
+sponsor EOA serialises its nonce (`sponsor-nonce.ts`). Rider statements are client-signed
+and the witness batch is a single upload. The on-chain variant puts all three on the path.
 
 ## Security model
 
 | threat | what stops it |
 |---|---|
-| Forging a credit | Needs the issuer's ed25519 key. Same trust root as ticket manifests. |
-| Replaying a batch or leaf | Leaf `nonce` + indexer dedup; batches chain via `prevBatch`. |
-| Issuer inflating counts later | Optional anchor timestamps the batch digest; backdating becomes detectable. |
-| Indexer lying or omitting | Evidence manifest points at the real batches — count is list length, anyone can recount (SWARM_SOCIAL_PLAN commitment 4). |
-| Someone claiming rides they didn't take | The presence ladder, plus the indexer's cycle-time plausibility rule. This is the weak link and should be stated honestly rather than overclaimed. |
-| Self-reported passed off as verified | `evidence: "nfc" \| "device" \| "self"` on every leaf; surface it in the UI. |
-| Losing the server | Every batch is public and signed; the index is rebuildable from Swarm. `.data` holds no truth. |
+| Forging someone else's statement | Needs their feed key. Same trust root as all client feeds. |
+| Replaying a statement | `nonce` + indexer dedup. |
+| Replaying a presence token | Token binds `windowStart`; indexer rejects stale windows. |
+| Photographing the exit QR | Rotation — a captured token expires in ~30s. |
+| Inflating a self-reported count | Nothing, by design. That is what `evidence: "self"` declares. |
+| Bulk fraud across many accounts | Cycle-time plausibility rule + tier separation in the UI. |
+| Issuer backdating a witness batch | Optional anchor timestamps the digest. |
+| Indexer lying or omitting | Evidence manifest points at real statements — anyone can recount (`SWARM_SOCIAL_PLAN` commitment 4). |
+| Losing the server | Statements are public, signed, rider-owned. The index is rebuildable. `.data` holds no truth. |
 
-The property deliberately NOT claimed: that a credit proves someone physically rode. It
-proves an issuer attested that they did. Strengthening that is what the presence ladder is
-for, and no amount of cryptography substitutes for it.
+The property deliberately NOT claimed: that a credit proves someone physically rode. Tier 1
+proves they said so; tier 2 that someone was at the exit; tier 3 that an issuer vouched for
+them. No amount of cryptography substitutes for the ladder.
+
+## Legal — this is a children's service
+
+A coaster credit app is "likely to be accessed by children", so the ICO's **Age Appropriate
+Design Code** applies to all under-18s, not just under-13s: data minimisation, high-privacy
+defaults, geolocation OFF by default, no identity-linked public leaderboards by default,
+DPIA before launch.
+
+**Do not build an age rule.** Keying behaviour on age requires determining age, and age
+assurance is a larger regulatory problem than the one it solves. Instead: **collect no email
+from anyone in this rail, at any age.** Passkey for all. With no personal data there is no
+lawful basis to establish, and the under-13 consent question never arises.
+
+13 (DPA 2018 s.9) is only the age a child can consent for themselves. It is not the line
+that governs the design.
 
 ## Phasing
 
 - **P0** — subject identity + `PodDirectoryEntry.subject`. Cheapest thing to get wrong.
-- **P1** — leaf + manifest schema in `packages/shared`, issuer signing path, batch upload.
-- **P2** — indexer (shared with social), holdings reader gains an attested source.
-- **P3** — PWA scan/queue/sync against the parent account's existing signer.
-- **P4** — NFC tags, optional on-chain anchoring, self-report import.
-- **Later, not now** — issuer registry, once a second issuer actually exists. Design the
-  subject identity for it at P0 so it drops in with nothing to migrate.
-
-## Legal — this is a children's service
-
-A coaster credit app is "likely to be accessed by children", so the ICO's **Age
-Appropriate Design Code** applies to all under-18s, not just under-13s. Consequences:
-data minimisation, high-privacy defaults, geolocation OFF by default, no
-identity-linked public leaderboards by default, and a DPIA before launch. Under-13
-consent-based processing needs a parent — which is a positive argument for the
-burner/passkey path, since it collects no personal data at all.
-
-13 (DPA 2018 s.9) is only the age a child can consent for themselves. It is not the
-line that governs the design.
+- **P1** — statement schema in `packages/shared`; rider signs and publishes to their own
+  feed. Tier 1 only. Ships with no issuer and no park.
+- **P2** — indexer (shared with likes/follows in `SWARM_SOCIAL_PLAN`, **not yet built**);
+  holdings reader gains a statement source.
+- **P3** — exit device app: rotating presence tokens, offline-capable. Tier 2.
+- **P4** — issuer witness batches (tier 3), NFC tags, optional anchoring, self-report import.
+- **Later** — issuer registry, once a second issuer exists.
 
 ## Open questions
 
-- Mainnet vs Arb Sepolia for any anchoring at all (the POD rail is testnet-only today).
-- Does the platform or the issuer hold the NFC tag keys, and who provisions tags?
+- Where does the exit device's key live, and who provisions devices?
 - Self-report import from existing credit apps — is RCDB id mapping enough?
-- Postage: platform batch `56198fde…` expires ~2026-08-26. A September pilot needs this
-  resolved before anything is promised.
+- Postage: batches `7dad2b8c…` (~2026-08-24) and `56198fde…` (~2026-08-26) expire before
+  any September pilot. Resolve before promising dates.
