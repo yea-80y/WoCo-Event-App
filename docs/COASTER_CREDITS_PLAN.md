@@ -55,21 +55,34 @@ statement the rider already made.
 `project_signing_role_architecture` is a hard rule: the parent signs ONLY the one EIP-712
 `AuthorizeSession` per session — never feeds, never requests, never tickets.
 
-| actor | key | signs |
+Two rider keys, at two different layers. This is not a choice between them — it mirrors
+what `ClaimedTicket` already does for tickets.
+
+| layer | key | role |
 |---|---|---|
-| Rider | derived **feed key** (secp256k1, sign-to-derive) | their own ride statements |
-| Rider | same key | possession challenges, resale listings |
-| Issuer device (exit) | issuer device key | rotating presence tokens (below) |
-| Issuer | ed25519 | witness batches referencing rider statements |
-| Rider's parent | — | **nothing in this rail** |
+| **Identity** (in the content) | rider **ed25519 POD key** | named as `holder` — the owner-of-record |
+| **Storage** (the SOC) | rider **derived feed key** (secp256k1) | signs the feed write, because Swarm requires the feed owner to |
+| Presence | issuer device key | rotating exit tokens (below) |
+| Witness | issuer ed25519 | witness batches referencing rider statements |
+| **Parent** | — | **nothing in this rail** |
 
-`SWARM_SOCIAL_PLAN` commitment 1 fixes the rider's key: "The user's derived feed key signs
-every statement (sign-to-derive, the settled client-feed mechanism). NEVER the platform
-`FEED_PRIVATE_KEY`, NEVER the 30-day session key." ed25519 is the POD identity — it signs
-POD manifests, not statements.
+The precedent is `packages/shared/src/event/types.ts:473` — `ClaimedTicket.owner` is
+"Attendee ed25519 POD public key — the owner-of-record", with `ownerSig` (`:476`) a
+platform EIP-191 signature forming an "issued-to-identity attestation" over
+`(eventId, seriesId, edition, owner, claimedAt)`, built in
+`apps/server/src/lib/ticket/owner-binding.ts`.
 
-The parent's only involvement anywhere is the one-time EIP-712 derivation signature that
-produces the feed key. That is a key-stretch, not a feed write.
+A collected credit binds the same way, to the same identity. A rider's tickets and their
+coaster credits are then owned by ONE identity rather than two, which is what makes a
+passport view coherent — and an issuer witness is the direct analogue of `ownerSig`.
+
+Note `PodV2Body` has no owner field, deliberately: it is pre-signed at event creation,
+before anyone holds it. Ownership belongs to the *claimed* object, not the minted one.
+
+`SWARM_SOCIAL_PLAN` commitment 1 governs the storage layer: "The user's derived feed key
+signs every statement… NEVER the platform `FEED_PRIVATE_KEY`, NEVER the 30-day session
+key." The parent's only involvement anywhere is the one-time EIP-712 derivation signature
+that produces the feed key — a key-stretch, not a feed write.
 
 ## The evidence ladder
 
@@ -137,8 +150,10 @@ interface CreditStatementV1 {
   format: "woco.credit.v1";
   /** keccak256("woco:coaster:v1:" + stableId). See "Subject identity". */
   subject: Bytes32Hex;
-  /** The rider's derived feed-key address — the statement's author. */
-  holder: Hex0x;
+  /** The rider's ed25519 POD public key — the owner-of-record, exactly as
+   *  `ClaimedTicket.owner`. Never the parent, never a server burner. The SOC
+   *  carrying this statement is signed by their feed key (storage layer). */
+  holder: Hex32;
   count: number;
   sessionDate: string;      // YYYY-MM-DD
   firstAt?: string;         // ISO
@@ -196,15 +211,15 @@ one indirection is what lets a park take over issuing without forking anyone's h
 
 ## Identity — the minimum a rider needs
 
-One key: the **derived feed key** (secp256k1, sign-to-derive). It authors statements, is
-named as `holder`, and signs possession challenges.
+Two keys, both already derived for every account today — nothing new to build:
 
-- **POD signer (ed25519)** — only to ISSUE PODs or decrypt organiser data. A collector
-  never needs one.
-- **Parent** — signs the derivation message once. Nothing else, ever.
+- **ed25519 POD key** — the owner-of-record named as `holder`, and what signs possession
+  challenges. Same identity that owns their tickets.
+- **Derived feed key** (secp256k1) — signs the SOC the statement is written into.
+- **Parent** — signs the one derivation message. Nothing else, ever.
 
-Why not the parent address as holder: two independent reasons, either sufficient. The
-signing rule above; and a smart-account address can never be recovered from an ECDSA
+Why the parent address is never the holder: two independent reasons, either sufficient.
+The signing rule above; and a smart-account address can never be recovered from an ECDSA
 signature — its address comes from the deployment recipe, not a key — which rules it out
 for three of four login kinds (`auth-store.svelte.ts`: web3auth `:1298`, passkey `:1486`,
 coinbase `:1423`; only web3 `:1183` is an EOA).
