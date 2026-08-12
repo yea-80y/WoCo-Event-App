@@ -103,9 +103,19 @@ This is the answer to "can the signature come from the QR the rider scans" — y
 it **rotates**. A static pre-signed QR is worth nothing: photograph it once and replay it
 forever. Rotation is what makes it evidence.
 
-Its honest limit: it proves someone was in front of that screen in that window, shared
-across everyone who scanned it. It does not bind a specific person. Combined with the
-plausibility rule below, that is enough to stop bulk fraud without pretending to more.
+**Its honest limit — rotation does not close the relay window.** A rotating token stops
+someone reusing a captured code *later*. It does nothing about the same code being shared
+*now*: one person at the exit photographs the screen and sends it to fifty people, all of
+whom scan within the same ~30 seconds and all of whom get a valid token. A displayed QR
+cannot bind to who is scanning it, so this is structural, not a tuning problem.
+
+Shortening the window narrows the relay but never closes it, and short windows fail
+legitimate riders on poor signal — which at Alton Towers is the common case, not the edge.
+
+So state tier 2 as what it is: **a token was live at that exit at that minute, and this
+rider presented it**. Not "this rider was there". The mitigations are partial by design —
+rate-limit tokens per subject per window, and lean on the plausibility rule below. If that
+is not good enough for a given use, the answer is tier 3, not a stronger tier 2.
 
 **3. `verified` — issuer scans the rider and witnesses.** The device reads the rider's
 code and the issuer counter-signs a witness naming that holder. This binds identity, and
@@ -300,7 +310,8 @@ and the witness batch is a single upload. The on-chain variant puts all three on
 | Forging someone else's statement | Needs their feed key. Same trust root as all client feeds. |
 | Replaying a statement | `nonce` + indexer dedup. |
 | Replaying a presence token | Token binds `windowStart`; indexer rejects stale windows. |
-| Photographing the exit QR | Rotation — a captured token expires in ~30s. |
+| Reusing a photographed exit QR later | Rotation — a captured token expires in ~30s. |
+| Sharing a live exit QR within its window | **Not solved.** Structural to a displayed code; partially mitigated by per-window rate limits + the plausibility rule. Tier 2 claims presence of the token, not of the rider. |
 | Inflating a self-reported count | Nothing, by design. That is what `evidence: "self"` declares. |
 | Bulk fraud across many accounts | Cycle-time plausibility rule + tier separation in the UI. |
 | Issuer backdating a witness batch | Optional anchor timestamps the digest. |
