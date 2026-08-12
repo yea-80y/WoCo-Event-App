@@ -44,7 +44,6 @@ interface TicketContext {
   sig: string;
   qrContent: string;
   buyerName?: string;
-  buyerEmail?: string;
 }
 
 function escHtml(s: string): string {
@@ -65,7 +64,6 @@ function parseContext(c: Context<AppEnv>): TicketContext | null {
 
   const url = new URL(c.req.url);
   const buyerName = url.searchParams.get("n") ?? undefined;
-  const buyerEmail = url.searchParams.get("e") ?? undefined;
 
   return {
     eventId,
@@ -74,7 +72,6 @@ function parseContext(c: Context<AppEnv>): TicketContext | null {
     sig,
     qrContent: `woco://t/${eventId}/${seriesId}/${edition}/${sig}`,
     buyerName: buyerName?.trim() || undefined,
-    buyerEmail: buyerEmail?.trim() || undefined,
   };
 }
 
@@ -97,7 +94,6 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
 
   const url = new URL(c.req.url);
   const buyerName = url.searchParams.get("n")?.trim() || undefined;
-  const buyerEmail = url.searchParams.get("e")?.trim() || undefined;
 
   const siteId = url.searchParams.get("s")?.trim() || undefined;
 
@@ -125,7 +121,6 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
     eventDate,
     eventLocation,
     edition,
-    buyerEmail,
     buyerName,
     qrContent: `woco://t/${eventId}/${seriesId}/${edition}/${sig}`,
     palette,
@@ -134,7 +129,9 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
   // Convert Node Buffer to Uint8Array for the Response BodyInit type.
   return c.body(new Uint8Array(png), 200, {
     "content-type": "image/png",
-    "cache-control": "public, max-age=300, s-maxage=300",
+    // `private`: the URL embeds the ticket signature and may carry a display
+    // name, so no shared cache may key on it.
+    "cache-control": "private, max-age=300",
   });
 });
 
@@ -284,7 +281,6 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
     .footer { padding: 1.25rem 1.5rem 1.5rem; text-align: center; }
     .footer-label { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; color: ${pc.muted}; margin-bottom: 0.375rem; }
     .footer-name { font-size: 1rem; font-weight: 600; color: ${pc.text}; word-break: break-word; }
-    .footer-email { margin-top: 0.25rem; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.875rem; color: ${pc.muted}; word-break: break-all; }
     .actions { width: 100%; max-width: 420px; margin-top: 1rem; display: flex; gap: 0.5rem; }
     .btn { flex: 1; padding: 0.75rem; text-align: center; text-decoration: none; font-size: 0.8125rem; font-weight: 600; border-radius: 10px; transition: background 0.15s; }
     .btn-primary { background: ${pc.accent}; color: ${pc.bg}; }
@@ -312,11 +308,10 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
         <div class="qr">${qrSvg}</div>
         <div class="qr-cap">SHOW AT THE DOOR</div>
       </div>
-      ${ctx.buyerName || ctx.buyerEmail ? `
+      ${ctx.buyerName ? `
       <footer class="footer">
         <div class="footer-label">ISSUED TO</div>
-        ${ctx.buyerName ? `<div class="footer-name">${escHtml(ctx.buyerName)}</div>` : ""}
-        ${ctx.buyerEmail ? `<div class="footer-email">${escHtml(ctx.buyerEmail)}</div>` : ""}
+        <div class="footer-name">${escHtml(ctx.buyerName)}</div>
       </footer>` : ""}
     </article>
     <div class="actions">
