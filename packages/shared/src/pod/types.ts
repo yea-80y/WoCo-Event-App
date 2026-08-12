@@ -30,6 +30,8 @@ export type Bytes32Hex = string;
  */
 export interface PodV2Body {
   format: "woco.ticket.v2";
+  /** Informational only — same value as `ManifestV1Body.eventId`, and equally
+   *  unrelated to the on-chain eventId. See the note there. */
   eventId: Bytes32Hex;
   seriesId: string;
   /** 1-indexed edition number (1..totalSupply). Bound into the leaf hash. */
@@ -53,7 +55,20 @@ export interface PodV2Body {
  */
 export interface ManifestV1Body {
   format: "woco.manifest.v1";
-  /** 0x-prefixed bytes32 — matches the on-chain eventId derived in registerEvent. */
+  /**
+   * 0x-prefixed bytes32 — INFORMATIONAL ONLY. It does NOT match the on-chain
+   * eventId and cannot be used to join a manifest to its chain registration.
+   *
+   * The producer computes `keccak256(abi.encode(organiserAddress, 0))`
+   * (`event-builder.ts`, nonce hardcoded 0 at both call sites). The contract
+   * computes `keccak256(abi.encode(msg.sender, organiserNonce[msg.sender]++))`
+   * where `msg.sender` is the platform SPONSOR, not the organiser — so both the
+   * address and the nonce differ.
+   *
+   * The real chain binding is `manifestRef` = `keccak256(dagCbor(this body))`,
+   * which `registerEvent` stores. The authoritative eventId is the one that call
+   * emits.
+   */
   eventId: Bytes32Hex;
   totalSupply: number;
   /** ed25519 issuer pubkey (hex, lowercase, no 0x). */
