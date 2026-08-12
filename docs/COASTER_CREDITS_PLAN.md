@@ -52,8 +52,19 @@ statement the rider already made.
 
 ### Who signs what
 
-`project_signing_role_architecture` is a hard rule: the parent signs ONLY the one EIP-712
-`AuthorizeSession` per session — never feeds, never requests, never tickets.
+`project_signing_role_architecture` is a hard rule, stated precisely: **the parent never
+signs content, requests, tickets or listings. It signs session authorisation and
+deterministic key-derivation ceremonies only.**
+
+The looser "signs only `AuthorizeSession`" phrasing is wrong and worth not repeating: for
+the **web3 (EOA)** kind the parent wallet also signs the POD-identity derivation
+(`apps/web/src/lib/auth/pod-identity.ts:32-60`) and the feed-signer derivation — the latter
+*twice*, for the determinism self-check (`auth-store.svelte.ts:230-237`). Up to four parent
+signatures. For passkey and web3auth the derivations are signed by the raw POD signer and
+never the Kernel parent (`auth-store.svelte.ts:190-193,209-212`).
+
+Derivations are key-stretches, not authorship, so the architecture holds either way — but a
+doc that derives design conclusions from the rule should state the rule accurately.
 
 Two rider keys, at two different layers. This is not a choice between them — it mirrors
 what `ClaimedTicket` already does for tickets.
@@ -93,7 +104,7 @@ conflating tiers is how a verified-credits product loses its credibility.
 self-reported count is worth today, which is not nothing: it is the existing ecosystem's
 norm and it works with zero infrastructure.
 
-**2. `presence` — rider's statement embeds a rotating issuer token.** The issuer's device
+**2. `scanned` — rider's statement embeds rotating issuer tokens.** The issuer's device
 at the ride exit holds a key and signs `(subject, windowStart, nonce)` every ~30 seconds,
 rendering it as a QR on a screen. The rider scans, receives the signed token, and includes
 it in their own statement. The indexer verifies the issuer signature and that the window
@@ -113,9 +124,25 @@ Shortening the window narrows the relay but never closes it, and short windows f
 legitimate riders on poor signal — which at Alton Towers is the common case, not the edge.
 
 So state tier 2 as what it is: **a token was live at that exit at that minute, and this
-rider presented it**. Not "this rider was there". The mitigations are partial by design —
-rate-limit tokens per subject per window, and lean on the plausibility rule below. If that
-is not good enough for a given use, the answer is tier 3, not a stronger tier 2.
+rider presented it**. Not "this rider was there". The tier is named `scanned`, not
+`presence`, deliberately — the enum name in `packages/shared` becomes the badge label, and
+it is the claim that survives contact with users regardless of what this doc says.
+
+Two caps make the mitigation real rather than gestural. Both belong in the **indexer** —
+the exit device is offline by design and cannot rate-limit anything:
+
+- `MAX_STATEMENTS_PER_TOKEN_WINDOW = 40` — statements citing the same
+  `(deviceKey, windowStart)`. Sized above a full train's capacity so it never bites a
+  legitimate dispatch, while bounding one shared code at 40 rather than unbounded.
+- `MIN_MINUTES_BETWEEN_CREDITS = 5` per `(holder, subject)` — ride cycle plus queue. A
+  rider cannot legitimately accrue faster than the ride physically turns over.
+
+And `count` may not exceed `exitTokens.length` at this tier. Without that rule one
+scan silently upgrades an entire session, and `count: 20, evidence: "scanned"` on a single
+token would be a valid object — which would make the tier weaker than even the honest
+framing above admits.
+
+If that is not good enough for a given use, the answer is tier 3, not a stronger tier 2.
 
 **3. `verified` — issuer scans the rider and witnesses.** The device reads the rider's
 code and the issuer counter-signs a witness naming that holder. This binds identity, and
@@ -150,7 +177,7 @@ New in `packages/shared/src/credit/`. Reuses the LOCKED primitives in
 `packages/shared/src/pod/{canonical,merkle}.ts` — same encoder, same tree scheme. Do not
 fork them.
 
-### Rider statement — one per (holder, subject, session)
+### Rider statement — one CURRENT object per (holder, subject, sessionDate)
 
 A statement is a **session**, not a single ride. Proving 47 rides must not need 47 proofs,
 and "8 rides on 14 September" is how it will be displayed anyway.
@@ -161,29 +188,86 @@ interface CreditStatementV1 {
   /** keccak256("woco:coaster:v1:" + stableId). See "Subject identity". */
   subject: Bytes32Hex;
   /** The rider's ed25519 POD public key — the owner-of-record, exactly as
-   *  `ClaimedTicket.owner`. Never the parent, never a server burner. The SOC
-   *  carrying this statement is signed by their feed key (storage layer). */
+   *  `ClaimedTicket.owner`. Never the parent, never a server burner. */
   holder: Hex32;
+  /** Total rides for this subject on this date. CUMULATIVE, not a delta —
+   *  each tap rewrites this object with the new total. See "Aggregation". */
   count: number;
   sessionDate: string;      // YYYY-MM-DD
   firstAt?: string;         // ISO
   lastAt?: string;
-  evidence: "self" | "presence" | "verified";
-  /** Present when evidence is "presence": the rotating token scanned at the exit. */
-  presenceToken?: PresenceTokenV1;
-  /** Dedup key — makes a replayed write idempotent. */
+  evidence: "self" | "scanned" | "witnessed";
+  /** One per ride claimed at `scanned`. `count` may not exceed its length —
+   *  a single scan must not upgrade a whole session. */
+  exitTokens?: ExitTokenV1[];
+  /** Swarm ref of this rider's PREVIOUS session object for this subject.
+   *  Makes their history a walkable chain — see "Reachability". */
+  prevSession?: Hex64;
+  /** Write-replay dedup ONLY. Not the aggregation key. */
   nonce: string;
+  /** ed25519 signature by `holder` over the digest of every field above.
+   *  Without this the holder field is unauthenticated — see below. */
+  holderSig: string;
 }
 ```
 
-Written to the rider's own feed, signed by their feed key. Storage is Swarm: the statement
-is content-addressed, and the rider's feed points at it.
+### `holderSig` — why the identity layer must sign
 
-### Presence token — issued by a device, embedded by the rider
+The SOC signature proves only that *the feed owner* wrote the object. It says nothing
+about `holder`, which is a different key entirely: the ed25519 POD identity and the
+secp256k1 feed signer are derived under separate domains, neither is publicly
+recomputable, and no public mapping links them. The upload relay cannot help either —
+`apps/server/src/lib/swarm/soc-upload.ts:13-18`: "ANY authenticated user may stamp their
+OWN validly-signed SOC… we cannot bind owner == authenticated parent".
+
+So without `holderSig`, anyone can write a statement into **their own** feed naming
+**someone else's** `holder`, and an indexer keying counts by `holder` has no basis to
+reject it. Anyone's total could be inflated by a third party — including the pilot's
+headline counter.
+
+`holderSig` closes it and makes the statement self-authenticating, so it stays verifiable
+if re-hosted off the rider's feed. It also completes the `ClaimedTicket` mirror properly:
+the identity key signs the object, and the feed key is pure storage.
+
+### Aggregation — latest-wins within a session
+
+`SWARM_SOCIAL_PLAN` commitment 3 ("one statement per (user, subject), latest-wins") is
+re-applied here with **the session as the unit of state**, not abandoned:
+
+- The aggregation key is `(holder, subject, sessionDate)`. Exactly one current object per
+  key; a later write for the same key supersedes the earlier one.
+- `count` is **cumulative for that date**. A rider tapping after each ride rewrites the
+  same object 1, 2, … 8.
+- A rider's total for a coaster is the sum of `count` across **distinct sessionDates**,
+  never across writes within one date.
+- `nonce` catches literal write replays and nothing else.
+
+Getting this wrong is not subtle: summing every write for a day of 8 rides yields
+1+2+…+8 = 36. The rule also restores the free correction that latest-wins gives —
+an erroneous `count: 8` is fixed by writing `count: 5`, with no negative statements.
+
+### Reachability — history must survive overwrite
+
+The client-feed primitive is overwrite-in-place at a fixed `(owner, topic)`, so a naive
+single-topic design makes yesterday unreachable the moment today is written. Counts would
+then depend on data only our indexer ever saw, breaking `SWARM_SOCIAL_PLAN` commitment 6
+("Nothing may depend on data that exists only inside our server… rebuildable from public
+feeds") and weakening commitment 4's spot-check.
+
+Two mechanisms, both required:
+
+- **Topic includes the date** — `woco/credit/{holder}/{subject}/{sessionDate}`. Each day
+  is its own overwrite-in-place slot, so rewriting today never destroys yesterday.
+- **`prevSession` chains backwards** to the previous session's ref, so an indexer can walk
+  a rider's full history from their latest entry without knowing which dates to probe.
+  This is the same device `prevBatch` gives issuer batches; rider statements need it more,
+  not less.
+
+### Exit token — issued by a device, embedded by the rider
 
 ```ts
-interface PresenceTokenV1 {
-  format: "woco.presence.v1";
+interface ExitTokenV1 {
+  format: "woco.exit-token.v1";
   subject: Bytes32Hex;
   deviceKey: Hex0x;         // the exit device's signing address
   windowStart: string;      // ISO, ~30s granularity
@@ -226,7 +310,7 @@ Two keys, both already derived for every account today — nothing new to build:
 - **ed25519 POD key** — the owner-of-record named as `holder`, and what signs possession
   challenges. Same identity that owns their tickets.
 - **Derived feed key** (secp256k1) — signs the SOC the statement is written into.
-- **Parent** — signs the one derivation message. Nothing else, ever.
+- **Parent** — signs the derivation ceremonies only. Never authors anything.
 
 Why the parent address is never the holder: two independent reasons, either sufficient.
 The signing rule above; and a smart-account address can never be recovered from an ECDSA
@@ -307,11 +391,11 @@ and the witness batch is a single upload. The on-chain variant puts all three on
 
 | threat | what stops it |
 |---|---|
-| Forging someone else's statement | Needs their feed key. Same trust root as all client feeds. |
+| Writing a statement naming someone else as `holder` | `holderSig` — the ed25519 identity key signs the object. WITHOUT it this is trivial: the SOC signature proves only who wrote the feed, not who the holder is. |
 | Replaying a statement | `nonce` + indexer dedup. |
-| Replaying a presence token | Token binds `windowStart`; indexer rejects stale windows. |
+| Replaying an exit token | Token binds `windowStart`; indexer rejects stale windows. |
 | Reusing a photographed exit QR later | Rotation — a captured token expires in ~30s. |
-| Sharing a live exit QR within its window | **Not solved.** Structural to a displayed code; partially mitigated by per-window rate limits + the plausibility rule. Tier 2 claims presence of the token, not of the rider. |
+| Sharing a live exit QR within its window | **Not solved.** Structural to a displayed code. Bounded by `MAX_STATEMENTS_PER_TOKEN_WINDOW = 40` + `MIN_MINUTES_BETWEEN_CREDITS = 5`. Tier 2 claims the token was present, not the rider. |
 | Inflating a self-reported count | Nothing, by design. That is what `evidence: "self"` declares. |
 | Bulk fraud across many accounts | Cycle-time plausibility rule + tier separation in the UI. |
 | Issuer backdating a witness batch | Optional anchor timestamps the digest. |
@@ -344,7 +428,7 @@ that governs the design.
   feed. Tier 1 only. Ships with no issuer and no park.
 - **P2** — indexer (shared with likes/follows in `SWARM_SOCIAL_PLAN`, **not yet built**);
   holdings reader gains a statement source.
-- **P3** — exit device app: rotating presence tokens, offline-capable. Tier 2.
+- **P3** — exit device app: rotating exit tokens, offline-capable. Tier 2 (`scanned`).
 - **P4** — issuer witness batches (tier 3), NFC tags, optional anchoring, self-report import.
 - **Later** — issuer registry, once a second issuer exists.
 
