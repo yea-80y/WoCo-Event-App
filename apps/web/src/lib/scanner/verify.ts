@@ -1,16 +1,19 @@
 /**
  * Offline ticket verification — the cryptographic core of the scanner.
  *
- * v2 (on-chain series): recover the EIP-191 signer from the QR sig over the
- * locked canonical message and compare against the pre-downloaded on-chain
- * slotOwner. Public Swarm data cannot forge this — the burner private key
- * exists only in the buyer's ticket.
+ * ONE accept path: recover the EIP-191 signer from the QR sig over the locked
+ * canonical message and compare against the pre-downloaded on-chain slotOwner.
+ * Public Swarm data cannot forge this — the signing key is a per-purchase
+ * burner that is discarded immediately after signing, so the only valid QR for
+ * a slot is the one emitted at purchase.
  *
- * v1 (Swarm-only series): the QR sig is the creator's ed25519 edition sig,
- * which is public feed data. We match sha256(sig) against the claim ledger —
- * this proves the ticket was genuinely claimed, but NOT who holds it; the
- * one-time-use nullifier is the real gate. Surfaced as a distinct verdict so
- * the UI can badge it honestly.
+ * A series with no `onChainEventId` is rejected outright. The old v1 path
+ * matched sha256(sig) against a claim ledger and, when a ledger entry carried
+ * no sig hash, accepted on claim-presence with NO signature check at all. That
+ * ledger has not been written since the v1 rail was deleted, so the branch was
+ * unreachable from a fresh pack — but packs persist in IndexedDB for offline
+ * use, and a fail-open path inside the verifier is not something to leave
+ * sitting behind a data-shape coincidence.
  */
 
 import { recoverMessageAddress } from "viem";
@@ -23,17 +26,12 @@ import {
 } from "@woco/shared";
 
 export type VerifyVerdict =
-  | { status: "valid"; strength: "onchain" | "ledger"; ticket: TicketQr; seriesName: string }
+  | { status: "valid"; strength: "onchain"; ticket: TicketQr; seriesName: string }
   | { status: "invalid"; reason: string; ticket?: TicketQr }
   | { status: "wrong-event"; ticket: TicketQr }
   | { status: "unreadable" };
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-
-async function sha256Hex(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<VerifyVerdict> {
   const owner = series.slotOwners?.[ticket.edition - 1];
@@ -60,19 +58,6 @@ async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<Verify
   return { status: "valid", strength: "onchain", ticket, seriesName: series.name };
 }
 
-async function verifyV1(series: CheckinSeries, ticket: TicketQr): Promise<VerifyVerdict> {
-  const entry = series.claimedEditions?.find((e) => e.edition === ticket.edition);
-  if (!entry) {
-    return { status: "invalid", reason: "No claim recorded for this edition", ticket };
-  }
-  // Ledger entries without a sig hash (blob fetch failed at pack time) fall
-  // back to claim-presence only — still gated by the nullifier.
-  if (entry.sigHash && (await sha256Hex(ticket.sig)) !== entry.sigHash.toLowerCase()) {
-    return { status: "invalid", reason: "Signature does not match the claim ledger", ticket };
-  }
-  return { status: "valid", strength: "ledger", ticket, seriesName: series.name };
-}
-
 /** Verify a raw QR payload against the pack. Pure + offline; no nullifier check here. */
 export async function verifyTicket(raw: string, pack: CheckinPack): Promise<VerifyVerdict> {
   const ticket = parseTicketQr(raw);
@@ -84,6 +69,11 @@ export async function verifyTicket(raw: string, pack: CheckinPack): Promise<Veri
   if (ticket.edition > series.totalSupply) {
     return { status: "invalid", reason: "Edition number out of range", ticket };
   }
+  // Fail closed: without an on-chain event there is no trustworthy owner to
+  // recover against, so there is nothing to verify a signature with.
+  if (!series.onChainEventId) {
+    return { status: "invalid", reason: "Ticket type is not registered on-chain", ticket };
+  }
 
-  return series.onChainEventId ? verifyV2(series, ticket) : verifyV1(series, ticket);
+  return verifyV2(series, ticket);
 }
