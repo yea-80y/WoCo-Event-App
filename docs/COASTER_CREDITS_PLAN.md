@@ -91,7 +91,8 @@ interface CreditLeafV1 {
   format: "woco.credit.v1";
   /** keccak256("woco:coaster:v1:" + stableId). See "Subject identity" below. */
   subject: Bytes32Hex;
-  /** The holder's parent address — their durable account identity, not a burner. */
+  /** The holder's DERIVED key address — a sign-to-derive sibling of the content-feed
+   *  signer. Never the parent address (see "Who signs what"), never a server burner. */
   holder: Hex0x;
   /** Rides in this session. */
   count: number;
@@ -196,10 +197,54 @@ identity now so it can be added without migrating anything.
 
 ## Identity — the minimum a collector needs
 
-Credits accrue to the **parent address** — the account's durable identity. Possession is
-proven with whatever signer that account already uses (passkey, web3, …), through the
-existing `ensureSession` / `signRequest` path. No new key type, and critically **no
-server-generated user keys anywhere in this rail**.
+Credits accrue to a **derived holder key** — a secp256k1 sibling of the content-feed
+signer, produced by the same sign-to-derive mechanism with its own domain string and
+nonce. Never the parent address, and **no server-generated user keys anywhere in this
+rail**.
+
+### Who signs what (the parent signs nothing here)
+
+`project_signing_role_architecture` is a hard rule: the parent signs ONLY the one EIP-712
+`AuthorizeSession` per session — never feeds, never requests, never tickets.
+
+| actor | key | signs |
+|---|---|---|
+| Issuer (WoCo now, park later) | ed25519 | the batch manifest — the attestation itself |
+| Issuer | its feed signer | the feed pointing at the latest batch |
+| Rider | derived holder key (secp256k1) | possession challenges, and resale listings |
+| Rider's parent | — | **nothing in this rail** |
+
+**The rider never signs the "I rode Rita" attestation, and never writes a feed.** The
+issuer attests; that is what makes a credit worth more than a self-reported count, and
+it is the one structural difference from likes in `SWARM_SOCIAL_PLAN` (a like is an
+opinion, so self-attestation is fine; a credit is a claim about the world, so it needs a
+witness).
+
+The rider's key is needed for exactly two things: being named as `holder` in a leaf
+(naming, not signing), and signing a fresh challenge when they need to prove a credit is
+theirs. The parent's only involvement is the one-time EIP-712 derivation signature that
+produces the sibling key — which is a key-stretch, not a feed write.
+
+### Why a derived key rather than the parent address
+
+Two independent reasons, either sufficient:
+
+1. **The signing rule above.** Whatever is named as holder will eventually need to sign a
+   possession challenge, and that must not be the parent.
+2. **Smart accounts cannot be recovered from a signature.** An EOA's address is derived
+   from its key, so `recoverMessageAddress` can work backwards to it. A smart-account
+   address comes from its deployment recipe — no key produces it — so offline ECDSA
+   verification can never resolve to it, and ERC-1271 needs a chain call. Three of four
+   login kinds give a smart-account parent (`auth-store.svelte.ts`: web3auth `:1298`,
+   passkey `:1486`, coinbase `:1423`; only web3 `:1183` is an EOA).
+
+The derived key solves both at once and works identically across all four kinds.
+
+Key separation, not reuse: derive a sibling rather than reusing the feed signer itself.
+`recovery-escrow.ts` already establishes the pattern — "Derive BOTH guardian keys from ONE
+deterministic EIP-712 signature… so neither reveals the other (textbook KDF hygiene)". The
+feed signer owns the user's Swarm SOCs; a leaked credit key should cost a credential, not
+the ability to rewrite all their content.
 
 - **Feed signer** — only to publish their OWN statements (self-reported credits, likes)
   or to take postage custody. Not needed to receive or prove attested credits. Arrives at P3.
@@ -217,8 +262,10 @@ for one specific reason: a card buyer completes checkout on Stripe and never ret
 the browser, so at mint time the server is the only party present. It signs each ticket's
 canonical message with the burner, embeds that signature in the QR, and discards the key.
 
-That constraint does not exist here — the fan is standing in front of the app. So credits
-use the parent account directly and no key is ever generated for a user by us.
+That constraint does not exist here — the fan is standing in front of the app, so their own
+client can derive the holder key at the moment it is needed. No key is ever generated for a
+user by us, and nothing has to be persisted anywhere: the derivation is deterministic, so
+the same account reproduces the same key on any device.
 
 ### Authenticity is not possession
 
