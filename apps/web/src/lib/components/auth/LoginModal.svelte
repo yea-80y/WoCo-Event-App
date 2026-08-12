@@ -6,8 +6,9 @@
   import ZupassLogin from "./ZupassLogin.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  // Type-only imports inside, so this pulls no runtime dependency into the modal.
-  import { AUTH_NOTICE_KEY } from "../../auth/envelope-reprobe.js";
+  // From its own module: importing this key from envelope-reprobe.ts would hoist
+  // that deliberately-lazy module into the entry chunk.
+  import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
 

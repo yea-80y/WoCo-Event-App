@@ -8,6 +8,7 @@ import {
   FEED_SIGNER_DERIVE_NONCE,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
+import { AUTH_NOTICE_KEY } from "./auth-notice.js";
 import {
   requestSessionDelegation,
   restoreSession,
@@ -1167,7 +1168,7 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
         // Bail before the imports so a departed session spends no network, no
         // ladder attempt, and never touches the PRF key after logout.
         if (!stillSignedInAs(eoa, cachedParent)) return;
-        const { reprobeEnvelope, AUTH_NOTICE_KEY } = await import("./envelope-reprobe.js");
+        const { reprobeEnvelope } = await import("./envelope-reprobe.js");
         const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
         const outcome = await reprobeEnvelope(
           { kind: "passkey", eoa, cachedParent, passkeyPrivKey },

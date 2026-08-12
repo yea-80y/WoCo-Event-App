@@ -251,9 +251,12 @@ export async function readPortabilityEnvelope(args: {
 export async function portabilityEnvelopeExists(args: {
   passkeyPrivKey: string;
 }): Promise<{ status: "present" } | { status: "absent" } | { status: "unreadable"; reason: string }> {
-  const keys = await derivePortabilityKeys(args.passkeyPrivKey);
-  const { probeSoc } = await import("../swarm/client-soc.js");
-  const { contentFeedSocIdentifier, versionedSocIdentifier } = await import("@woco/shared");
+  const [keys, { probeSoc }, { contentFeedSocIdentifier, versionedSocIdentifier }] =
+    await Promise.all([
+      derivePortabilityKeys(args.passkeyPrivKey),
+      import("../swarm/client-soc.js"),
+      import("@woco/shared"),
+    ]);
 
   const base = contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT);
   try {

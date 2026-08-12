@@ -108,8 +108,6 @@ export type ReprobeOutcome =
   | { status: "healed"; preserved: string; signedOut: boolean };
 
 const REPROBE_PREFIX = "woco:kreprobe:";
-/** One-shot sign-out explanation; sessionStorage, read + cleared by the login modal. */
-export const AUTH_NOTICE_KEY = "woco:auth-notice";
 
 /**
  * Cooldown before attempt n+1, indexed by attempts already made. Five attempts,
@@ -258,8 +256,10 @@ export async function reprobeEnvelope(
       // the strict 3-state read.
       return { status: "inconclusive", reason: "owner read failed" };
     }
+    // Past the free gate every path below is a verdict, so one attempt record
+    // serves them all; the heal path's clearState overrides it.
+    const spent = { n: state.n + 1, at: t, ok: state.ok };
     if (owner !== null) {
-      const spent = { n: state.n + 1, at: t, ok: state.ok };
       if (owner === eoa.toLowerCase()) {
         writeState(store, kind, eoa, { ...spent, ok: cachedParent.toLowerCase() });
         return { status: "confirmed" };
@@ -276,16 +276,14 @@ export async function reprobeEnvelope(
     // simply never transacted. Only Swarm can tell them apart — so ask it the
     // cheapest question that separates them, and spend the full read only when the
     // answer is yes. This is the one lookup the common case pays.
-    const spend = { n: state.n + 1, at: t, ok: state.ok };
+    writeState(store, kind, eoa, spent);
     let presence: EnvelopePresence;
     try {
       presence = await deps.envelopeExists(passkeyPrivKey);
     } catch (e) {
-      writeState(store, kind, eoa, spend);
       return { status: "inconclusive", reason: `envelope probe threw: ${(e as Error).message}` };
     }
     if (presence.status !== "present") {
-      writeState(store, kind, eoa, spend);
       return presence.status === "absent"
         ? { status: "clear", reason: "no envelope" }
         : { status: "inconclusive", reason: presence.reason };
@@ -295,13 +293,11 @@ export async function reprobeEnvelope(
     try {
       read = await deps.readEnvelope(passkeyPrivKey);
     } catch (e) {
-      writeState(store, kind, eoa, spend);
       return { status: "inconclusive", reason: `envelope read threw: ${(e as Error).message}` };
     }
     if (read.status !== "found") {
       // Bytes are there and we could not use them. Never an absence — and never
       // `clear`, which is the outcome that reads as "this device is fine".
-      writeState(store, kind, eoa, spend);
       return {
         status: "inconclusive",
         reason: read.status === "absent" ? "envelope vanished between probe and read" : read.reason,
@@ -313,7 +309,6 @@ export async function reprobeEnvelope(
     const preserved = read.value.preservedKernelAddress.toLowerCase();
     const preservedOwner = await deps.readKernelOwner(preserved);
     if (preservedOwner !== eoa.toLowerCase()) {
-      writeState(store, kind, eoa, spend);
       return {
         status: "inconclusive",
         reason:
