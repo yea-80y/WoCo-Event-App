@@ -8,6 +8,7 @@ import {
   FEED_SIGNER_DERIVE_NONCE,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
+import { AUTH_NOTICE_KEY } from "./auth-notice.js";
 import {
   requestSessionDelegation,
   restoreSession,
@@ -1060,6 +1061,19 @@ function writeCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string, ker
   }
 }
 
+/** Drop a cached entry. Only ever called on a HEAL (#245 fix 4) — this cache is
+ *  written from a definitive absence, so removing an entry is always safe and
+ *  re-writing one from a background path never is. */
+function clearCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string): void {
+  try {
+    globalThis.localStorage?.removeItem(
+      `${KERNEL_ADDR_CACHE_PREFIX}${kind}:${eoa.toLowerCase()}`,
+    );
+  } catch {
+    /* cache is best-effort */
+  }
+}
+
 // A RECOVERED account can never use the kaddr cache (its parent is the PRESERVED
 // Kernel address, not this EOA's counterfactual), so every explicit login re-paid
 // the on-chain owner read + the Kernel build. Both are skippable on a RETURNING
@@ -1130,6 +1144,68 @@ function _verifyRecoveredBindingInBackground(
       /* transient RPC failure — the next fast-path login re-checks */
     }
   })();
+}
+
+/** Sibling of the above for the NEVER-recovered fast path (#245 fix 4): a cached
+ *  parent that the chain says is undeployed may be a phantom counterfactual this
+ *  device was pinned to during the rotation → envelope-write race, so re-probe the
+ *  portability envelope and heal if one is now there. Everything that makes this
+ *  safe to run — the throttle, the cheap chain gate, what may be written — lives
+ *  in `envelope-reprobe.ts`; this is scheduling only.
+ *
+ *  Deferred past the Kernel prebuild so the two don't contend for the first
+ *  seconds after login, and past any plausible first user action, so the sign-out
+ *  a heal performs lands on an idle screen rather than mid-flow. */
+function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPrivKey: string): void {
+  const stillSignedInAs = (e: string, parent: string): boolean =>
+    _kind === "passkey" &&
+    _podAddress?.toLowerCase() === e.toLowerCase() &&
+    _parent?.toLowerCase() === parent.toLowerCase();
+  setTimeout(() => {
+    void (async () => {
+      try {
+        // The 5s deferral can outlive the session (sign-out, account switch).
+        // Bail before the imports so a departed session spends no network, no
+        // ladder attempt, and never touches the PRF key after logout.
+        if (!stillSignedInAs(eoa, cachedParent)) return;
+        const { reprobeEnvelope } = await import("./envelope-reprobe.js");
+        const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+        const outcome = await reprobeEnvelope(
+          { kind: "passkey", eoa, cachedParent, passkeyPrivKey },
+          {
+            readKernelOwner: readKernelEcdsaOwnerStrict,
+            envelopeExists: async (key) => {
+              const { portabilityEnvelopeExists } = await import("./recovery-portability.js");
+              return portabilityEnvelopeExists({ passkeyPrivKey: key });
+            },
+            readEnvelope: async (key) => {
+              const { readPortabilityEnvelope } = await import("./recovery-portability.js");
+              return readPortabilityEnvelope({ passkeyPrivKey: key });
+            },
+            putRecoveryBinding: _putRecoveryBinding,
+            clearCachedKernelAddress,
+            isStillSignedInAs: stillSignedInAs,
+            logout,
+            postNotice: (message) => {
+              try {
+                globalThis.sessionStorage?.setItem(AUTH_NOTICE_KEY, message);
+              } catch {
+                /* the notice is an explanation, never a step */
+              }
+            },
+          },
+        );
+        if (outcome.status === "healed") {
+          console.warn("[auth] portability envelope found on re-probe — bound to", outcome.preserved);
+        } else if (outcome.status === "orphaned") {
+          // #255 owns the fix; saying it out loud is what this fix can honestly do.
+          console.warn("[auth] this credential no longer owns its cached account — on-chain owner is", outcome.owner);
+        }
+      } catch (e) {
+        console.warn("[auth] envelope re-probe failed (non-fatal):", e);
+      }
+    })();
+  }, 5_000);
 }
 
 /** After a fast-path login the Kernel is deliberately unbuilt, so the FIRST
@@ -1489,6 +1565,10 @@ async function loginPasskeyResult(
         _kernel = null;
         await _restoreCachedAuth();
         _scheduleKernelPrebuild();
+        // The cache entry was seeded from an ABSENCE, and #245 proved an absence
+        // can be true at the time and false forever after. Throttled, chain-gated
+        // re-check — see _scheduleEnvelopeReprobe.
+        _scheduleEnvelopeReprobe(cachedKernel, account.address, account.privateKey);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
