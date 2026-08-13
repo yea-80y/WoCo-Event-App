@@ -90,6 +90,58 @@ possession of ≥1 ticket. Wallet-claimed tickets need no gate (claimer address 
 - Organiser resale policy hook: max price (face + x%), royalty bp, resale on/off — enforceable
   at the sequencer since the platform runs settlement.
 
+### Anonymous purchase → account import → resale (verified 2026-08-12)
+
+The launch model sells to buyers with no account: Stripe only, ticket by email, on-chain
+slot owned by a burner the server generates and **destroys** (`stripe.ts:1258-1309`,
+"Nothing about the burner is persisted apart from its address"). Resale therefore always
+begins with an import. Three facts govern how that works.
+
+**1. The seller never needs the burner key.** §5's listing is signed with the seller's
+ed25519 POD key, not the slot key — a signed offer delegating settlement to the platform.
+The burner dying at purchase is not an obstacle to resale and must not be "solved" by
+retaining it. Retaining burner keys is explicitly rejected: it would make the platform
+able to forge a valid QR for any slot it minted, which destroying the key is what prevents.
+
+**2. Import binds in OUR records; the chain still names the dead burner.** After a §3
+Route A/B import, `slotOwner[eventId][slot]` is unchanged — it is still the discarded
+burner address. The account↔edition binding exists only server-side, so the contract
+cannot act on it and §5's settlement step 1 has nothing to authorise against. Any design
+that assumes an imported ticket is on-chain-owned by the importer is wrong.
+
+**3. `WoCoEventV2` has no transfer function.** `slots[eventId][slot]` is written at
+`:315`, `:360`, `:422`, `:460` — all inside claim functions — and never again;
+`slotOwner` (`:687`) is a view. The contract is immutable (no proxy, no initialize). So
+step 1 of §5 settlement cannot execute today, and the old-QR invalidation it depends on
+(`slotOwner` rotation) does not happen either. Tracked as #266.
+
+Two routes out, to decide before launch:
+
+- **V3 with `transferSlot`.** Keeps the chain as the ticket ledger and keeps invalidation
+  automatic. Authorisation is the design question: the current owner cannot sign (key
+  destroyed), so either the sponsor may transfer slots it minted, or import performs a
+  one-time sponsor-authorised move onto a key the holder controls and every later transfer
+  is owner-authorised. Note that 3 of 4 login kinds give a smart-account parent
+  (`auth-store.svelte.ts` — web3auth `:1298`, passkey `:1486`, coinbase `:1423` vs EOA
+  `:1183`), and a smart-account address can never be recovered from an ECDSA signature, so
+  the holder-controlled key must be a derived EOA, not the parent address itself.
+- **Off-chain reassignment in the CheckinPack.** `scanner/verify.ts` compares the recovered
+  signer against `series.slotOwners[edition - 1]`, which is server-built and pre-downloaded
+  — reassign there and the old QR dies identically, with no contract change and no key
+  anyone needs to hold. Cost: ticket ownership becomes platform-asserted rather than chain
+  truth, reversing the position taken when the v1 rail was deleted.
+
+**Resale timing edge.** The seller's old QR stops working only once the organiser's
+CheckinPack is rebuilt. Between settlement and that refresh both QRs verify, and a seller
+who arrives first gets in while the buyer is bounced. Same class of problem as the
+double-sell sequencer above and wants the same answer — treat pack freshness as part of
+settlement, not as a background job.
+
+**Forwarded-email import is first-click-wins by design** (§3 Route A: "buyer forwarding
+email = implicit consent — supports group buys"). That is a deliberate group-buy
+affordance, but it carries different weight once an imported ticket can be sold for money:
+whoever clicks first acquires a sellable asset. Revisit the tradeoff when resale ships.
+
 ### Stripe rail for seller payout (from Connect decision matrix)
 - Seller = connected account via **Accounts v2** with `configuration.recipient` ONLY
   (request `stripe_transfers` on `stripe_balance`; do NOT request `merchant`/`card_payments` —
