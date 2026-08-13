@@ -10,6 +10,12 @@ import {
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
 import {
+  provenOrphanOwner,
+  isOrphanedCredentialError,
+  refuseOrphanedCredential,
+  postOrphanedCredentialNotice,
+} from "./orphaned-credential.js";
+import {
   requestSessionDelegation,
   restoreSession,
   signWithSession,
@@ -650,15 +656,6 @@ async function _putRecoveryBinding(podAddress: string, kernel: string): Promise<
   await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
 }
 
-/** Drop only THIS passkey's binding (e.g. proven stale on-chain), keep the rest. */
-async function _deleteRecoveryBinding(podAddress: string): Promise<void> {
-  const bindings = await _getRecoveryBindings();
-  if (podAddress.toLowerCase() in bindings) {
-    delete bindings[podAddress.toLowerCase()];
-    await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
-  }
-}
-
 /**
  * NEW-DEVICE recovered-passkey check (CROSS_DEVICE_RECOVERY.md §3). When a passkey
  * logs in with NO local recovery binding, it could still be a recovered account
@@ -666,20 +663,29 @@ async function _deleteRecoveryBinding(podAddress: string): Promise<void> {
  * VERIFY ON-CHAIN that the preserved Kernel's current ECDSA owner equals this
  * device's PRF-EOA before trusting it — the chain, not the blob, is the authority.
  *
- * Pure check: returns `{ preserved, podSeed }` to apply, `null` ONLY when the read
+ * Pure check: returns `{ preserved, podSeed }` to apply; `null` ONLY when the read
  * stack definitively established that no envelope chunk exists (the cacheable
- * answer for a never-recovered account), or `"unavailable"` for every other
- * non-result — the read failed, the envelope was unusable, or it was found but
- * could not be verified on-chain. `"unavailable"` is treated as absent for THIS
- * login but is never cached. The caller does the storage writes (storePodSeed + binding)
- * AFTER `_clearStaleAuthForSwitch`, which would otherwise wipe a freshly-stored
+ * answer for a never-recovered account); `{ orphaned }` when the envelope was
+ * found and the chain ANSWERED that its preserved Kernel is owned by someone
+ * else — an envelope only decrypts under this credential's own PRF key, so
+ * that answer is proof the account was later recovered away from it (#255),
+ * never a forgery; or `"unavailable"` for every other non-result — the read
+ * failed, the envelope was unusable, or nobody could answer the owner check.
+ * `"unavailable"` is treated as absent for THIS login but is never cached.
+ * The caller does the storage writes (storePodSeed + binding) AFTER
+ * `_clearStaleAuthForSwitch`, which would otherwise wipe a freshly-stored
  * seed. The read is unauthenticated, so this works during login before any
  * session exists.
  */
 async function _verifyPortabilityEnvelope(
   passkeyPrivKey: string,
   podAddress: string,
-): Promise<{ preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string } | null | "unavailable"> {
+): Promise<
+  | { preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string }
+  | { orphaned: { preserved: string; onChainOwner: string } }
+  | null
+  | "unavailable"
+> {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
     const read = await readPortabilityEnvelope({ passkeyPrivKey });
@@ -695,14 +701,19 @@ async function _verifyPortabilityEnvelope(
     const opened = read.value;
 
     // Trust backstop: the override is applied ONLY if the deployed Kernel at the
-    // claimed address currently has THIS PRF-EOA as its ECDSA sudo owner. A
-    // stale/forged envelope pointing elsewhere fails here and is discarded —
-    // but as "unavailable", not "absent": an RPC blip on the owner read must
-    // not poison the returning-device cache.
+    // claimed address currently has THIS PRF-EOA as its ECDSA sudo owner. An
+    // ANSWERED foreign owner is proof of orphaning and is returned as such so
+    // the login can refuse honestly (#255). Silence (null read) stays
+    // "unavailable", not "absent": an RPC blip on the owner read must neither
+    // poison the returning-device cache nor condemn the credential.
     const { readKernelEcdsaOwner } = await import("./kernel-account.js");
     const owner = await readKernelEcdsaOwner(opened.preservedKernelAddress);
-    if (!owner || owner.toLowerCase() !== podAddress.toLowerCase()) {
-      console.warn("[auth] portability envelope failed on-chain owner check — ignoring");
+    const foreignOwner = provenOrphanOwner(owner, podAddress);
+    if (foreignOwner) {
+      return { orphaned: { preserved: opened.preservedKernelAddress, onChainOwner: foreignOwner } };
+    }
+    if (!owner) {
+      console.warn("[auth] portability envelope owner check unanswered — ignoring for this login");
       return "unavailable";
     }
     return {
@@ -1119,9 +1130,13 @@ function clearVerifiedBinding(kind: "passkey" | "web3auth", eoa: string): void {
 
 /** Off-critical-path twin of the login-time stale-binding guard: re-check the
  *  preserved Kernel's on-chain ECDSA owner after a recovered-account fast-path
- *  login. On a confirmed mismatch the binding + marker are cleared and the user
- *  is logged out — the next login takes the slow path and lands correctly. RPC
- *  errors change nothing (the marker was only ever written after a full check). */
+ *  login. A confirmed mismatch means this credential was orphaned by a recovery
+ *  elsewhere: drop the fast-path marker, explain through the one-shot notice,
+ *  and log out. The BINDING deliberately survives — it routes the next login
+ *  into the slow path's owner guard, which refuses honestly (#255) instead of
+ *  minting a counterfactual account. (Deleting it here was also the last writer
+ *  of the #233 landmine shape, "binding gone, seed still present".) RPC errors
+ *  change nothing (the marker was only ever written after a full check). */
 function _verifyRecoveredBindingInBackground(
   kind: "passkey" | "web3auth",
   kernel: `0x${string}`,
@@ -1130,14 +1145,14 @@ function _verifyRecoveredBindingInBackground(
   void (async () => {
     try {
       const { readKernelEcdsaOwner } = await import("./kernel-account.js");
-      const onChainOwner = await readKernelEcdsaOwner(kernel);
-      if (onChainOwner !== null && onChainOwner.toLowerCase() !== eoa.toLowerCase()) {
+      const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(kernel), eoa);
+      if (foreignOwner) {
         console.warn(
           "[auth] recovered-account binding went stale — on-chain owner is",
-          onChainOwner, "not", eoa, "— clearing and logging out",
+          foreignOwner, "not", eoa, "— signing out; binding kept for the honest refusal (#255)",
         );
-        await _deleteRecoveryBinding(eoa);
         clearVerifiedBinding(kind, eoa);
+        postOrphanedCredentialNotice(kind);
         await logout();
       }
     } catch {
@@ -1198,7 +1213,9 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
         if (outcome.status === "healed") {
           console.warn("[auth] portability envelope found on re-probe — bound to", outcome.preserved);
         } else if (outcome.status === "orphaned") {
-          // #255 owns the fix; saying it out loud is what this fix can honestly do.
+          // The BINDING-carrying twin of this state now refuses honestly at
+          // login (#255); a kaddr-cached orphan has no binding to trip that
+          // guard, so saying it out loud is still all this path can do (#283).
           console.warn("[auth] this credential no longer owns its cached account — on-chain owner is", outcome.owner);
         }
       } catch (e) {
@@ -1333,29 +1350,32 @@ async function loginWeb3Auth(): Promise<boolean> {
     // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
     // NEW device recovers by re-running the portal.)
     const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
-    let override = fastOverride;
+    const override = fastOverride;
     if (override) {
-      // Stale-binding guard: only trust the local binding if the preserved Kernel
-      // still has THIS EOA as its on-chain ECDSA owner (mirror loginPasskey) —
-      // otherwise a never-confirmed recovery tx would lock the user out.
-      const onChainOwner = await readKernelEcdsaOwner(override);
-      if (onChainOwner !== null && onChainOwner.toLowerCase() !== address.toLowerCase()) {
-        console.warn("[auth] local recovery binding stale (web3auth) — on-chain owner is", onChainOwner, "not", address, "— clearing");
-        // SEED FIRST, BINDING SECOND (#233). Without the clear at all, the session
-        // falls through to this credential's OWN counterfactual account while the
-        // recovered account's seed is still in the slot — and the AAD cannot reject
-        // it, because it is derived from the address both share, so the account
-        // signs and decrypts under the wrong identity, silently.
-        //
-        // The ORDER matters for the same reason the binding is written first in the
-        // ceremony: a crash between these two lines must leave the benign residue.
-        // Seed-then-binding leaves "binding present, seed gone" — the next login
-        // re-fires this guard, or the derive guards refuse, and it heals.
-        // Binding-then-seed would leave "binding gone, foreign seed present", which
-        // is exactly the landmine being removed.
-        await clearPodIdentity(address);
-        await _deleteRecoveryBinding(address);
-        override = undefined;
+      // Stale-binding guard (mirror loginPasskey): only trust the local binding
+      // if the preserved Kernel still has THIS EOA as its on-chain ECDSA owner.
+      // A different answered owner is proof this credential was orphaned by a
+      // recovery elsewhere — fail honestly (#255) instead of clearing state and
+      // falling through to a fresh counterfactual account. Binding and seed
+      // stay (nothing signs in, so the #233 foreign-seed landmine has no
+      // trigger, and the kept binding is what keeps that path unreachable).
+      const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(override), address);
+      if (foreignOwner) {
+        clearVerifiedBinding("web3auth", address);
+        const refusal = refuseOrphanedCredential("web3auth", { boundKernel: override, onChainOwner: foreignOwner });
+        // Drop the Web3Auth session or the message's advice is a lie: the SDK
+        // silently re-adopts a rehydrated session without showing the picker,
+        // so "sign in with the one you chose during recovery" could never reach
+        // a different identity. Same reasoning as the owner-collision refusal
+        // in recoverAndRekey. Best-effort — a failed logout must not replace
+        // the honest message.
+        try {
+          const { logoutWeb3Auth } = await import("./web3auth-account.js");
+          await logoutWeb3Auth();
+        } catch (e2) {
+          console.warn("[auth] could not clear the Web3Auth session after an orphaned-credential refusal:", e2);
+        }
+        throw refusal;
       }
     }
     const kernel = await buildKernelFromPrivateKey(
@@ -1395,6 +1415,10 @@ async function loginWeb3Auth(): Promise<boolean> {
 
     return true;
   } catch (e) {
+    // The honest refusal must reach the caller as itself — a `false` here
+    // renders as "Sign-in failed — please try again", which is exactly the
+    // advice an orphaned credential must not get.
+    if (isOrphanedCredentialError(e)) throw e;
     console.error("[auth] web3auth login failed:", e);
     return false;
   } finally {
@@ -1527,7 +1551,7 @@ async function loginPasskey(mode: "signin" | "create" = "signin"): Promise<boole
 /** Same flow, but surfaces WHY it failed so the UI can offer the right next step. */
 async function loginPasskeyResult(
   mode: "signin" | "create" = "signin",
-): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean }> {
+): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean; orphaned?: boolean }> {
   // Not a ceremony failure — no prompt ran. Say so, rather than letting the UI
   // render "authentication failed" for a collision with an in-flight login.
   if (_busy) return { ok: false, error: new Error("A sign-in is already in progress.") };
@@ -1617,27 +1641,21 @@ async function loginPasskeyResult(
     const hadBinding = !!override;
 
     // Guard: verify the local binding's Kernel still has this PRF-EOA as its
-    // on-chain ECDSA owner before trusting it. A stale binding (recovery tx
-    // written to IndexedDB but never confirmed, or owner later rotated away)
-    // would otherwise lock the user out — the Kernel's isValidSignature returns
-    // false for a key it doesn't own. Mirror: _verifyPortabilityEnvelope already
-    // does this guard for the portability path.
+    // on-chain ECDSA owner before trusting it blindly — the Kernel's
+    // isValidSignature returns false for a key it doesn't own, so a rotated-away
+    // binding would otherwise wedge the session. A DIFFERENT answered owner is
+    // proof this credential was orphaned by a recovery elsewhere (bindings are
+    // written only after a confirmed rotation), so the login FAILS HONESTLY
+    // (#255) instead of clearing state and falling through to a fresh
+    // counterfactual account. The binding and POD seed deliberately stay: the
+    // binding is what keeps the counterfactual path unreachable, and nothing
+    // signs in, so the #233 foreign-seed landmine has no trigger. Only the
+    // fast-path marker — a claim this read just disproved — is dropped.
     if (override) {
-      const onChainOwner = await readKernelEcdsaOwner(override);
-      if (onChainOwner !== null && onChainOwner.toLowerCase() !== account.address.toLowerCase()) {
-        console.warn("[auth] local recovery binding stale — on-chain owner is", onChainOwner, "not PRF-EOA", account.address, "— clearing");
-        // Seed first, binding second — see the web3auth twin above for why the
-        // order is load-bearing. A passkey PRF-EOA is fresh per credential, so this
-        // is the narrower case, but "narrower" is not "impossible".
-        //
-        // There is a THIRD site that clears a stale binding:
-        // `_verifyRecoveredBindingInBackground` deletes it and relies on `logout()`
-        // reaching `clearAllAuth` to drop the seed. That is incidental rather than
-        // explicit, and it has escapes — tracked separately. Do not read these two
-        // as the complete set.
-        await clearPodIdentity(account.address);
-        await _deleteRecoveryBinding(account.address);
-        override = undefined;
+      const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(override), account.address);
+      if (foreignOwner) {
+        clearVerifiedBinding("passkey", account.address);
+        throw refuseOrphanedCredential("passkey", { boundKernel: override, onChainOwner: foreignOwner });
       }
     }
 
@@ -1666,6 +1684,18 @@ async function loginPasskeyResult(
       if (check === null) {
         envelopeAbsent = true; // definitive — makes this login cacheable below
       } else if (check !== "unavailable") {
+        if ("orphaned" in check) {
+          // Same proof as the binding guard above, reached without a local
+          // binding (e.g. a twice-recovered account's older credential on a
+          // new device): the credential's own envelope names a Kernel the
+          // chain says belongs to someone else now. Refuse honestly (#255)
+          // rather than mint the counterfactual.
+          clearVerifiedBinding("passkey", account.address);
+          throw refuseOrphanedCredential("passkey", {
+            boundKernel: check.orphaned.preserved,
+            onChainOwner: check.orphaned.onChainOwner,
+          });
+        }
         portabilityRestore = check;
         if (!override) override = check.preserved;
       }
@@ -1736,6 +1766,9 @@ async function loginPasskeyResult(
       ok: false,
       error: err,
       noAssertion: err.name === "PasskeyAssertionUnavailableError",
+      // The modal's one-shot notice already explains this refusal — the flag
+      // lets the button suppress a duplicate error line, not restyle it.
+      orphaned: isOrphanedCredentialError(err),
     };
   } finally {
     _busy = false;

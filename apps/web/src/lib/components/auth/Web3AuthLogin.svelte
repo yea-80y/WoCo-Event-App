@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { isOrphanedCredentialError } from "../../auth/orphaned-credential.js";
 
   interface Props {
     oncomplete?: () => void;
@@ -28,7 +29,11 @@
       if (ok) oncomplete?.();
       else error = "Sign-in failed — please try again.";
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message.slice(0, 120) : "Sign-in failed";
+      // An orphaned-credential refusal (#255) is explained by the modal's
+      // one-shot notice — don't repeat it here.
+      if (!isOrphanedCredentialError(e)) {
+        error = e instanceof Error ? e.message.slice(0, 120) : "Sign-in failed";
+      }
     } finally {
       onsettle?.();
     }

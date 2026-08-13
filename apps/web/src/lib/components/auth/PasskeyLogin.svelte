@@ -39,7 +39,10 @@
         oncomplete?.();
         return;
       }
-      if (res.noAssertion && mode === "signin") {
+      if (res.orphaned) {
+        // The modal's one-shot notice explains this refusal (#255) — a red
+        // line here would say the same thing twice.
+      } else if (res.noAssertion && mode === "signin") {
         offerCreate = true;
         error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
       } else {

@@ -50,14 +50,17 @@
     },
   };
 
-  // A sign-out this app performed ON ITS OWN — today only the #245 envelope
-  // re-probe, which signs a device out of a phantom account the moment it proves
-  // the real one is reachable. Without a line here the user meets an unexplained
-  // logout, which reads as a fault rather than a repair. Read once and cleared, so
-  // it explains the sign-in it followed and never any later one.
+  // Something this app did ON ITS OWN and must explain: the #245 envelope
+  // re-probe signing a device out of a phantom account, or a login refused
+  // because its credential was orphaned by a recovery elsewhere (#255). Without
+  // a line here the user meets an unexplained logout or a dead sign-in button.
+  // Read once and cleared, so it explains the attempt it followed and never any
+  // later one. `authing` is a dependency on purpose: a refusal posts the notice
+  // mid-attempt, so it must be re-read when the scene settles back to the
+  // picker, not only when the modal opens.
   let notice = $state<string | null>(null);
   $effect(() => {
-    if (!visible) return;
+    if (!visible || authing) return;
     try {
       const pending = globalThis.sessionStorage?.getItem(AUTH_NOTICE_KEY);
       if (pending) {
