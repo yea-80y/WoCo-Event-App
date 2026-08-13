@@ -39,7 +39,6 @@ apps/web/              # Vite + Svelte main platform UI
 apps/server/           # Hono API server (Swarm relay + auth)
 packages/shared/       # Shared types, POD schema, constants (single source of truth)
 packages/embed/        # <woco-tickets> Web Component (IIFE ~71KB)
-packages/site-builder/ # Static site generator for organiser events
 contracts/             # WoCoEscrow.sol + deploy scripts
 
 ============================================================================
@@ -167,14 +166,9 @@ CLAIMS:
 - Server uses the VERIFIED parentAddress, never an address from the request body
 - Double-spend prevention: in-flight lock + per-series async queue serialises writes
 
-APPROVAL FLOW:
-- Series flag `approvalRequired: true` at creation
-- Claim returns `{ approvalPending: true, pendingId }` instead of a ticket
-- Slot reserved immediately (prevents double-assign on concurrent approvals)
-- `GET /api/events/:id/pending-claims` — organiser queue (header auth)
-- `POST .../pending-claims/:pendingId/approve|reject`
-- ClaimButton shows "Request to attend" / amber "Pending Approval" badge
-- `GET /claim-status` returns `userPendingId` (pending) or `userEdition` (approved)
+APPROVAL FLOW — REMOVED with the v1 claim-rail retirement (#207): routes, flags and
+UI are all gone. Do not reintroduce from old docs; #202 tracks its return on the v2
+contract rail.
 
 ============================================================================
 EAS LIKES / SOCIAL GRAPH (#4)
@@ -264,7 +258,6 @@ AUTH (server):
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim endpoint + wallet auth + email rate limit
   apps/server/src/routes/events.ts                   # create / discover / list / unlist
-  apps/server/src/routes/approvals.ts                # approve/reject pending
   apps/server/src/routes/tickets.ts                  # email send (composite PNG + /t link)
   apps/server/src/lib/event/claim-service.ts         # core claim + approval logic
   apps/server/src/lib/event/service.ts               # event creation
