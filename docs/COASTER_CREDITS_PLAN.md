@@ -371,6 +371,57 @@ Do not claim the system proves Dan physically rode 109 times. It proves he and h
 attested to it, tamper-evidently and in public. Overclaiming to an audience that will test
 it on camera is the one unforced error available here.
 
+### Approaching Dan — the partnership risks
+
+Recorded because they shaped the technical design and would otherwise live only in a chat log.
+
+**Park permission is the biggest risk, and it is not ours to spend.** Nothing goes on ride
+furniture or in an exit path without Merlin sign-off — brand, ride ops and their own app
+ecosystem all point the same way. Dan needs the park's cooperation for a 100-lap challenge,
+so that goodwill is his most valuable asset, and a proposal that quietly risks it is worse
+than no proposal. Put the QR on his lanyard, his phone, a card he holds, or the stream
+overlay — never on park property. Ask whether he already has a park contact rather than
+assuming a cold approach; if he does, that contact is the real door.
+
+**Stay off the charity money rail.** JustGiving keeps the funds, we keep the counter. A
+crypto-adjacent startup handling charity donations is a headline with no upside, and it
+drags in fundraising regulation for nothing. The "+1 lap per £1000" mechanic is still a
+good demo — mirror the total into a signed public counter, with Dan attesting milestones if
+their API is not open to us.
+
+**Get the vocabulary right or the community writes us off.** A *credit* means a coaster
+ridden once, ever. Repeat rides are *laps* or *rides*. Calling 109 laps "109 credits" marks
+us as outsiders on day one. Keep crypto words out of the fan-facing UX entirely — "collect",
+"keepsake", never "wallet" or "mint".
+
+**Verification must be additive, never corrective.** The enthusiast community runs on an
+honour system and is proud of it; existing credit apps are all self-reported. Verified
+credits are an extra tier for people who want one, not an audit of anyone's count. Pitching
+it as the latter loses the exact audience we need.
+
+**The verification page is the marketing asset, not the app.** "Verify all 109 laps" is what
+gets shared and screenshotted. Build that first and build it well. The OBS overlay is the
+highest value-per-hour thing after it — a live verified counter on the stream is immediate,
+obvious value to Dan and near-free from `packages/embed`.
+
+**Merlin is the wrong first customer; the trail is the right first product.** Merlin
+procurement is a multi-year sale against an incumbent stack. Their Minecraft trail activation
+— walk the park, collect stamps on card — is the identical primitive to this design, is a
+marketing budget decision rather than an IT one, is bounded with an end date, and has a
+knowable participant ceiling. That is the wedge. Separately, a UK independent (Drayton Manor,
+Paultons, Flamingo Land, Blackpool) is a far more winnable reference than Merlin corporate.
+
+**Single point of failure.** If Dan is injured, ill, or the challenge is pulled, the demo
+evaporates. The artifact has to stand alone.
+
+**Success is also a risk.** A YouTube-scale spike lands on one Hetzner VM behind one bee.
+See Scale above — the design keeps writes off the critical path, but the read path still
+wants edge caching before a stream day.
+
+**Opportunity cost is real.** This competes with launch work. Doing it thinly, in public, in
+front of the exact community we want to win, is worse than not doing it — so scope hard and
+say no to tier 3 if the day cannot support it.
+
 ## Scale
 
 Cost per credit is one signed statement. Worked example — 1,000 fans averaging 5 rides:
