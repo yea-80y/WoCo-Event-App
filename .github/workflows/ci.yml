@@ -8,7 +8,10 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # PR branches: a newer push supersedes the old run — cancel it (saves minutes).
+  # main: every commit keeps its own verdict — two quick merges used to leave the
+  # older one CANCELLED, which GitHub draws as the same red ✗ as a failure.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
