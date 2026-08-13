@@ -32,21 +32,54 @@ Read this first. Everything below is detail and history.
 | Device allowlist, subject definition | each issuer, on their own feed | Swarm | **no** |
 | The index | nobody — computed, rebuildable by anyone | — | **no** |
 
-**Nothing in this design touches a chain.** Not per ride, not per coaster, not per POD.
+**Nothing per ride, per POD or per rider touches a chain.** One exception, and it is there for a
+reason that is not handover — see "The walkaway test" below: subjects are registered on-chain
+lazily and in batches, so the namespace outlives us.
 
 ### Who vouches
 
 - **The rider always acts** — the tap is what creates the record and binds their identity.
-- **An issuer optionally vouches**, and only for what its device physically saw. For Dan's
-  challenge that is his team at the ride exit. For a park, the park.
-- **WoCo never attests.** We publish the allowlist of which device keys count for which subject —
-  curating who attests, not attesting. At v1 that curation is our editorial judgement, published
-  and auditable. The on-chain issuer registry, if ever built, is what would make "authorised"
-  objective instead of our opinion.
-- With no park and nobody at the exit, there is no tier 2 — everything is self-reported, which is
-  the honour system this community already runs on. Verification arrives park by park.
+- **Two different vouches, do not conflate them.** The issuer's signature on a POD type says *this
+  credential is genuine*. That is always present. Whether someone *actually rode* is a separate
+  question, and at v1 nobody answers it.
+- **v1 is option (c): no vouching at all.** Riders manage their own collections, exactly as the
+  ecosystem works today. No device keys, no allowlist, no tier computation. The `exitTokens` hook
+  exists in the schema but stays empty.
+- **The intended direction is option (b): open vouching, reputation-weighted.** Anyone may vouch;
+  the view layer weighs vouches by reputation computed from public statements — the shape
+  `SWARM_SOCIAL_PLAN` already describes for the forum ("reputation = recomputable formula over
+  public statements"). A park's vouch carries weight because the community trusts it, not because
+  we blessed it.
+- **Option (a), a platform allowlist, is REJECTED.** It puts us permanently in the middle deciding
+  whose word counts, which is the opposite of everything else here. It was in an earlier revision;
+  it should not come back.
+- **WoCo never attests to a ride**, under any option.
 
-### Why no chain, stated once
+### The walkaway test — the one thing that must be on-chain
+
+If WoCo stops existing tomorrow, what survives?
+
+Rider statements are signed and public, but they live on Swarm and **Swarm needs postage**. Our
+batch expires, chunks are garbage-collected, and the subject registry goes with them — so a
+rebuilder would not even know which subjects exist or who issued them. The design fails the
+walkaway test today, and not because of anything to do with verification.
+
+**The chain is the only component here that survives us paying for nothing.** Once written, it
+stays. So subjects are registered on-chain — not for handover mechanics, which is where this was
+assessed twice and found marginal, but for **namespace permanence**. Someone forking this after we
+vanish can enumerate the subjects and see who issued each.
+
+Scaling, since there are thousands of coasters: **register lazily and in batches.** A subject is
+registered the first time anyone actually rides it, and registrations accumulate into a periodic
+Merkle root rather than one transaction per coaster. That scales with usage rather than with
+RCDB's catalogue, and batching removes the sponsored-drain vector a per-user-triggered mint would
+create.
+
+If no park ever comes on board, what remains is a self-reported credit tracker with a verifiable
+public log and a permanent namespace — Coaster Count with cryptographic receipts. That is a
+product on its own, which is what the walkaway test is really asking.
+
+### Why nothing ELSE goes on chain
 
 A chain is genuinely good at three things: unforgeable ordering, ownership of a scarce
 transferable asset, and trustless enforcement inside a contract. A soulbound credential derived
