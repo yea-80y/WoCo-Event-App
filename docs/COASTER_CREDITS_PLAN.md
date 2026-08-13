@@ -8,6 +8,77 @@ remaining schema questions are listed there and must close before first write. O
 Companion to `docs/SWARM_SOCIAL_PLAN.md` — this shares its indexer, its trust model and
 its portability commitments. Read that first; this doc states only the deltas.
 
+## THE ARCHITECTURE, IN ONE PLACE
+
+Read this first. Everything below is detail and history.
+
+### What a rider does
+
+1. Rides Rita. Opens the app, **taps or scans**. That is the product — the collecting moment.
+2. First time on Rita, they get the **Rita POD** — a signed credential in their passport. In the
+   community's own vocabulary that *is* the credit: ridden once, ever.
+3. Every later ride increments a **count** carried on that POD.
+4. Rare milestones may issue a further POD. Events may issue a **commemorative** POD, which is
+   participation-based, not threshold-based.
+
+### What exists, and who signs it
+
+| object | signed by | where | on-chain? |
+|---|---|---|---|
+| Ride statement | rider's ed25519 holder key (`holderSig`) | rider's own Swarm feed, encrypted by default | **no** |
+| Coaster POD / milestone / commemorative | the issuer's ed25519 key | Swarm | **no** |
+| Exit token (tier 2) | the exit device's key | embedded in the rider's statement | **no** |
+| Witness batch (tier 3) | the issuer's ed25519 key | issuer's own feed | **no** |
+| Device allowlist, subject definition | each issuer, on their own feed | Swarm | **no** |
+| The index | nobody — computed, rebuildable by anyone | — | **no** |
+
+**Nothing in this design touches a chain.** Not per ride, not per coaster, not per POD.
+
+### Who vouches
+
+- **The rider always acts** — the tap is what creates the record and binds their identity.
+- **An issuer optionally vouches**, and only for what its device physically saw. For Dan's
+  challenge that is his team at the ride exit. For a park, the park.
+- **WoCo never attests.** We publish the allowlist of which device keys count for which subject —
+  curating who attests, not attesting. At v1 that curation is our editorial judgement, published
+  and auditable. The on-chain issuer registry, if ever built, is what would make "authorised"
+  objective instead of our opinion.
+- With no park and nobody at the exit, there is no tier 2 — everything is self-reported, which is
+  the honour system this community already runs on. Verification arrives park by park.
+
+### Why no chain, stated once
+
+A chain is genuinely good at three things: unforgeable ordering, ownership of a scarce
+transferable asset, and trustless enforcement inside a contract. A soulbound credential derived
+from signed attestations uses none of them.
+
+If a park signs "this holder rode Rita 100 times", that is verifiable by anyone, forever, with no
+chain. Minting a badge would not make it more true — it would copy a pointer into a more expensive
+database, and it would add two costs: a **sponsored-mint drain**, since tier-1 credits are free to
+manufacture and the gas is ours, and a **supply cap**, since `issuePodType` registers a fixed
+supply a farmer could exhaust to deny real riders.
+
+Tickets keep the chain because they need money, escrow and resale. Credits need none of that.
+
+### What a POD is without a chain
+
+A POD is a signed credential — a body plus an ed25519-signed manifest. The chain was never what
+made it a POD; it is the ownership *ledger* used for tickets, because tickets must be transferable
+and checkable offline at a door by an adversarial verifier.
+
+So a rider's coaster POD is issued, signed, names their holder key, lives in their passport, and
+can gate things. What dropping the chain costs is the ability to *sell* it and for a contract to
+read it — neither of which an achievement wants.
+
+### Gating, when it arrives
+
+A gate reads verified attestations directly. It needs no chain, because the trust root is the
+issuer's signature, and the index is rebuildable by anyone who distrusts ours. Offline gating
+works the way the door scanner already does: pre-download the verified holder list.
+
+The trust boundary to protect is **eligibility**: whatever decides a rider qualifies must read the
+**verified** count, never the blended self-reported total.
+
 ## The model in one paragraph
 
 A **credit** is a statement, signed by the rider's own derived feed key and written to the
@@ -600,9 +671,15 @@ It makes the hash invertible for UI and indexer alike, which nothing else in the
 provides, and it is where a subject's timezone and ride cadence are declared.
 
 PODs re-enter where the type system already invites them: `PodKind: "badge"` is literally
-"loyalty/achievement, issued at a milestone. Soulbound". Issue a real POD at a milestone —
-100 rides — computed off the credit total. That keeps the collectible story without
-contorting the directory model.
+"loyalty/achievement, issued at a milestone. Soulbound". Three shapes, all off-chain signed
+credentials:
+
+- **Coaster POD** — issued on FIRST ride. This is the credit in the community's sense, and it is
+  what carries the lap count.
+- **Milestone POD** — at rare thresholds only. Forty coasters times four tiers is 160 objects
+  cluttering a passport and cheapening each; scarcity is the point.
+- **Commemorative POD** — event-scoped participation, no threshold. This is Dan's, because a lap
+  target that moves with fundraising cannot be a threshold.
 
 ### What handover does not yet cover
 
