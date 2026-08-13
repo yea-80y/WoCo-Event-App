@@ -208,6 +208,76 @@ signs every statement… NEVER the platform `FEED_PRIVATE_KEY`, NEVER the 30-day
 key." The parent's only involvement anywhere is the one-time EIP-712 derivation signature
 that produces the feed key — a key-stretch, not a feed write.
 
+## Identity layering — parent, POD key, feed key
+
+The parent **is** the account identity. Both other keys derive beneath it, and the three do
+different jobs:
+
+| layer | key | job |
+|---|---|---|
+| Account identity | **parent** | who the user is. Signs only session authorisation and derivation ceremonies — never content |
+| Credential holder | **ed25519 POD key** | named as `holder`; signs possession challenges |
+| Storage | **derived feed key** (secp256k1) | signs the SOC carrying the statement |
+
+Why the holder is not the parent, despite the parent being "the identity": a credential needs an
+identifier that can **sign a challenge on demand**. The parent cannot — it never signs content by
+rule, and for three of four login kinds it is a smart account whose address can never be recovered
+from a signature. So the credential-level identifier sits one derivation down.
+
+The ed25519 POD key is chosen over the feed key because `ClaimedTicket.owner` already uses it as
+owner-of-record, so a rider's tickets and credits share one owner and the passport view coheres.
+The cost is one extra signature (`holderSig`), since the holder is not the feed owner — for likes
+and follows, where author IS feed owner, that signature would be unnecessary.
+
+### The key-binding statement — one object, two problems
+
+The POD key and the feed key are derived under separate domains and are cryptographically
+independent, with **no public link between them**. That causes two separate problems already noted
+elsewhere in this document: `holderSig` is required because nothing binds the named holder to the
+feed that carries the statement, and a from-scratch rebuilder cannot map a holder to their feed
+owner in order to find their statements at all.
+
+Both dissolve with a **key-binding statement**: one signed object declaring that a given parent,
+POD key and feed key belong to the same person. Published once per account.
+
+It makes the parent usable as the public identity — which is what a user expects — while keeping
+signing where it belongs. Design it alongside the schema freeze; it is cheap now and awkward once
+statements exist without it.
+
+## PODs versus statements — the dividing line
+
+**A POD is for what someone ELSE vouches for. A statement is for what you assert yourself.**
+
+- "I follow this account" is entirely self-assertable, so the signed statement already *is* the
+  credential. A POD would add an object without adding a guarantee. **Follows get no POD.**
+- A coaster POD's *type* is issuer-signed — this is genuinely Rita, with this artwork, in this
+  catalogue — even though under v1 the holding itself is self-asserted.
+
+Apply this test before inventing any new POD: if the holder could simply assert it, it is a
+statement.
+
+## Engagement and market data — pull, not push
+
+Published credits are public by construction, so a park can compute how many people have ridden
+Rita over 1,000 times, seasonality, repeat-visit patterns — **real commercial insight with no
+personal data involved at all**. Private credits stay invisible, so riders control what is
+countable. That aggregate story needs no consent machinery and no PII.
+
+**Contact is where the design should stay pull-shaped.** A statement carries a holder key, not an
+email, so a park sees `0xabc… has 1,200 credits` and no way to reach them. Building that bridge
+means a marketing list, and with a minor-heavy audience that is precisely where the children's-code
+problems live.
+
+The better pattern, which this architecture already supports: a park publishes an offer — "1,000+
+credit holders get early access" — and riders **prove their count** to claim it. No PII changes
+hands, no list to hold, no consent to manage. It is capability-based access doing commercial work,
+and it is only possible because possession proof is built in.
+
+Where a direct channel IS wanted, **a follow is the consent signal**: it is explicit, revocable,
+and carries an addressable identity without an email. Transport for that is Waku — see
+`docs/WAKU_DISCOVERY.md` and `SWARM_SOCIAL_PLAN` P3 — so messaging can exist without any server
+holding contact details.
+
 ## The evidence ladder — ⚠️ NOT v1, DIRECTION ONLY
 
 > **Scope warning.** v1 is option (c): **no vouching at all.** Nothing in this section is built
