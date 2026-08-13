@@ -27,7 +27,6 @@ export interface TicketCardData {
   /** Edition number (1-indexed). Null when claim is pending an edition. */
   edition: number | null;
   /** Buyer email — shown on the card so door staff can match ID */
-  buyerEmail?: string;
   /** Optional buyer name (from Stripe customer details, when present) */
   buyerName?: string;
   /** Full QR payload — `woco://t/{eventId}/{seriesId}/{edition}/{sig}` */
@@ -99,7 +98,7 @@ async function renderQrMatrix(content: string): Promise<{ size: number; modules:
 
 /** Build the SVG markup for the ticket card. Pure string concat — no DOM. */
 async function buildSvg(data: TicketCardData): Promise<string> {
-  const { eventTitle, eventDate, eventLocation, edition, buyerEmail, buyerName, qrContent, palette: p } = data;
+  const { eventTitle, eventDate, eventLocation, edition, buyerName, qrContent, palette: p } = data;
   // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
   const col = {
     bg:     p?.bg     ?? '#0B0B09',
@@ -129,7 +128,6 @@ async function buildSvg(data: TicketCardData): Promise<string> {
 
   // ── Buyer footer ───────────────────────────────────────────────────
   const nameLine = buyerName ? escapeXml(clip(buyerName, 32)) : "";
-  const emailLine = buyerEmail ? escapeXml(clip(buyerEmail, 36)) : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" font-family="'DejaVu Sans', 'Liberation Sans', Helvetica, Arial, sans-serif">
@@ -172,16 +170,13 @@ async function buildSvg(data: TicketCardData): Promise<string> {
   <text x="${WIDTH / 2}" y="${qrY + QR_BOX + 44}" text-anchor="middle" font-size="13"
         letter-spacing="2" fill="${col.dim}" font-weight="600">SHOW AT THE DOOR</text>
 
-  ${nameLine || emailLine ? `
+  ${nameLine ? `
   <!-- Buyer block -->
   <g transform="translate(${WIDTH / 2} ${qrY + QR_BOX + 90})">
     <text text-anchor="middle" font-size="11" letter-spacing="3" font-weight="600"
           fill="${col.dim}">ISSUED TO</text>
-    ${nameLine ? `<text y="28" text-anchor="middle" font-size="20" font-weight="600"
-                       fill="${col.text}">${nameLine}</text>` : ""}
-    ${emailLine ? `<text y="${nameLine ? 56 : 30}" text-anchor="middle" font-size="${nameLine ? 14 : 17}"
-                         fill="${nameLine ? col.muted : col.text}"
-                         font-family="'DejaVu Sans Mono', 'Liberation Mono', monospace">${emailLine}</text>` : ""}
+    <text y="28" text-anchor="middle" font-size="20" font-weight="600"
+          fill="${col.text}">${nameLine}</text>
   </g>` : ""}
 
   <!-- Footer note -->
