@@ -13,7 +13,7 @@
  *      when it builds `heldByCurrency`, so the tiles always equal the rows.
  */
 
-import type { PayoutEntryView, PayoutsResponse } from "@woco/shared";
+import { AuthErrorCode, type PayoutEntryView, type PayoutsResponse } from "@woco/shared";
 
 // ---------------------------------------------------------------------------
 // Failures
@@ -37,15 +37,22 @@ const NETWORK_HINTS = ["failed to fetch", "networkerror", "load failed", "networ
  * the server's `{ ok: false, error }` string — into one of three things the
  * organiser can act on. Money screens must never render a raw stack or an
  * "unexpected token" from a non-JSON error page.
+ *
+ * `code` is the envelope's machine code when the caller has one — the
+ * documented branch point. The text hints below survive only as a fallback for
+ * thrown Errors, which have no code: "Invalid delegation" and "Invalid host:
+ * …" match no hint, so without the code a session rejection classified as
+ * `server` and told the organiser to "try again in a moment" — advice that can
+ * never work (#256).
  */
-export function classifyFailure(input: unknown): PayoutsFailure {
+export function classifyFailure(input: unknown, code?: string): PayoutsFailure {
   const detail =
     input instanceof Error ? input.message
       : typeof input === "string" ? input
       : "Unknown error";
   const hay = detail.toLowerCase();
 
-  if (AUTH_HINTS.some((h) => hay.includes(h))) {
+  if (code === AuthErrorCode.SESSION_INVALID || AUTH_HINTS.some((h) => hay.includes(h))) {
     return { kind: "auth", detail, message: "Your session ended. Sign in again to see your payouts." };
   }
   if (NETWORK_HINTS.some((h) => hay.includes(h))) {

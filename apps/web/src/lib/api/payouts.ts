@@ -36,7 +36,7 @@ export function getPayoutsSWR(address: string): {
     try {
       const resp = await authGet<PayoutsResponse>("/api/stripe/payouts");
       if (!resp.ok || !resp.data) {
-        return { ok: false, error: classifyFailure(resp.error ?? "Empty response") };
+        return { ok: false, error: classifyFailure(resp.error ?? "Empty response", resp.code) };
       }
       // An empty ledger is a real answer here (no sales yet), unlike the creator
       // lists where empty usually means a transient auth mismatch — so it is
@@ -77,9 +77,10 @@ export async function getAccountSession(): Promise<
       clientSecret?: string;
       publishableKey?: string;
       error?: string;
+      code?: string;
     };
     if (!data.ok || !data.clientSecret || !data.publishableKey) {
-      const failure = classifyFailure(data.error ?? "No account session returned");
+      const failure = classifyFailure(data.error ?? "No account session returned", data.code);
       return {
         ok: false,
         // The server's 400s here are actionable organiser-facing sentences

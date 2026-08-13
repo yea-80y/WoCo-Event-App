@@ -7,6 +7,18 @@
  * These carry it across the throw.
  */
 
+import { AuthErrorCode } from "@woco/shared";
+
+/**
+ * The server rejected the session, so this response answers nothing about the
+ * data (#256): "unverifiable" must never render as a negative ("no events",
+ * "verify with Stripe"). Screens branch on this instead of collapsing
+ * `ok: false` into an empty result.
+ */
+export function isSessionInvalid(resp: { ok: boolean; code?: string }): boolean {
+  return !resp.ok && resp.code === AuthErrorCode.SESSION_INVALID;
+}
+
 /**
  * The platform has no marketing sending address configured, so a marketing send
  * was refused (#96).

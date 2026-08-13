@@ -7,18 +7,23 @@
     type StripeAccountStatus,
     type RequirementCategory,
   } from "../../api/stripe.js";
+  import { isSessionInvalid } from "../../api/errors.js";
 
   let status = $state<StripeAccountStatus | null>(null);
   let loading = $state(true);
   let actionLoading = $state(false);
   let error = $state<string | null>(null);
   let mounted = $state(false);
+  /** The server rejected the session, so the status is UNKNOWN (#256) — the
+   *  "not yet set up" pitch would be a guess presented as a fact. */
+  let sessionDead = $state(false);
 
   onMount(async () => {
     mounted = true;
     try {
       const resp = await getStripeAccountStatus();
       if (resp.ok) status = resp;
+      else sessionDead = isSessionInvalid(resp);
     } catch {
       // Not authenticated or server down
     } finally {
@@ -202,6 +207,17 @@
             </svg>
           {/if}
         </button>
+      </div>
+
+    {:else if sessionDead}
+      <!-- Status unknowable — never render the "not set up" pitch off a
+           rejected read; the shell's SessionEndedBanner offers the sign-in. -->
+      <div class="stripe-initial">
+        <p class="initial-title">Can't check your payments account</p>
+        <p class="initial-desc">
+          Your session ended, so your Stripe status can't be shown right now —
+          sign in again to see where you stand.
+        </p>
       </div>
 
     {:else}

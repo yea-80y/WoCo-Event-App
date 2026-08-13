@@ -13,6 +13,7 @@
    */
   import { onMount } from "svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
+  import { isSessionInvalid } from "../../api/errors.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
@@ -32,6 +33,9 @@
   }: Props = $props();
 
   let modalOpen = $state(false);
+  /** The server rejected the session, so the status is UNKNOWN (#256) — offer
+   *  sign-in, not Stripe onboarding an already-onboarded account can't need. */
+  let sessionDead = $state(false);
 
   onMount(refresh);
 
@@ -39,6 +43,7 @@
     if (!auth.isConnected) { verified = false; return; }
     try {
       const s = await getStripeAccountStatus();
+      sessionDead = isSessionInvalid(s);
       verified = !!(s.ok && s.onboardingComplete);
     } catch {
       // Non-fatal: the server's live charges_enabled check still gates publish.
@@ -47,8 +52,18 @@
   }
 
   function openSetup() {
-    if (!auth.isConnected) {
-      loginRequest.request().then((ok) => { if (ok) modalOpen = true; });
+    if (!auth.isConnected || sessionDead) {
+      loginRequest.request().then((ok) => {
+        if (!ok) return;
+        if (sessionDead) {
+          // Re-authed: re-ask the server instead of assuming either answer.
+          sessionDead = false;
+          verified = null;
+          void refresh();
+        } else {
+          modalOpen = true;
+        }
+      });
       return;
     }
     modalOpen = true;
@@ -74,9 +89,12 @@
         </svg>
       </span>
       <div class="gate-text">
-        <p class="gate-title">{title}</p>
+        <p class="gate-title">{sessionDead ? "Can't check your Stripe status" : title}</p>
         <p class="gate-sub">
-          {#if !auth.isConnected}
+          {#if sessionDead}
+            Your session ended, so your Stripe status can't be checked — sign in
+            again to see where you stand.
+          {:else if !auth.isConnected}
             Sign in, then connect Stripe — it verifies who you are.
           {:else if sub}
             {sub}
@@ -91,7 +109,7 @@
         </p>
       </div>
       <button class="setup-btn" onclick={openSetup}>
-        {#if !auth.isConnected}Sign in →{:else}Set up Stripe →{/if}
+        {#if !auth.isConnected || sessionDead}Sign in →{:else}Set up Stripe →{/if}
       </button>
     {/if}
   </div>
