@@ -131,8 +131,9 @@ This is the answer to "can the signature come from the QR the rider scans" — y
 binds a `deviceKey` to a legitimate issuer — anyone can generate a key, sign themselves exit
 tokens for Rita's subject hash, and self-mint `scanned` evidence that verifies perfectly. The
 issuer registry is deferred, so the pilot minimum is a **published allowlist of the issuer's
-device keys** (indexer config or a platform feed), rebuildable and public. The entire meaning
-of the tier depends on it; it is not optional.
+device keys**, signed by that issuer's own key and published on their own feed (see "What
+handover does not yet cover" — not a shared platform feed). Rebuildable and public. The entire
+meaning of the tier depends on it; it is not optional.
 
 **Its honest limit — rotation does not close the relay window.** Rotation stops a captured
 code being reused *later*. It does nothing about the same code being shared *now*: one person
@@ -367,8 +368,9 @@ exists whether or not RCDB ever goes away.
 
 An opaque WoCo id removes both. Aliases stay mutable metadata; identity stays immutable and
 ours. Interop is preserved through the alias — import and export by RCDB id still work, and a
-park taking over issuing attests about OUR subject hash and adds their canonical id as another
-alias. Nothing migrates.
+park taking over issuing attests about the same subject hash and adds their canonical id as
+another alias. The hash itself needs no migration — but see "What handover does not yet
+cover", because naming and authorisation are a different matter.
 
 The honest tradeoff: an opaque id means the registry is required for a hash to mean anything
 to a human. That is not a new dependency — the registry is needed regardless.
@@ -382,7 +384,8 @@ with **required** `manifestRef`, `kind`, `name` and `supply`
 editions — this design's own premise is that nothing is minted. Adding `subject` there would
 mean minting a meaningless manifest per coaster or leaving required fields as fiction.
 
-Instead: a small **subject registry** on a platform feed:
+Instead: a **subject definition**, published as a signed statement (see "What handover does
+not yet cover" — this is deliberately not a single platform-owned feed):
 
 ```ts
 subject → {
@@ -401,6 +404,42 @@ PODs re-enter where the type system already invites them: `PodKind: "badge"` is 
 "loyalty/achievement, issued at a milestone. Soulbound". Issue a real POD at a milestone —
 100 rides — computed off the credit total. That keeps the collectible story without
 contorting the directory model.
+
+### What handover does not yet cover
+
+The claim that a park can "take over issuing" is only partly true as designed, and the gap is
+worth stating plainly rather than discovering during a park conversation.
+
+**Genuinely portable today:**
+
+| | why |
+|---|---|
+| The subject hash | keccak over a string — no key involved, anyone can compute it |
+| Rider statements | rider's own feed, rider's own key |
+| Issuer witness batches | signed by whoever the issuer is; a park signs its own |
+| The index | rebuildable from public data by anyone |
+
+**Not portable, as an earlier revision wrote it:** the subject definition and the device-key
+allowlist were both put on "a platform feed". `SWARM_SOCIAL_PLAN:12` is explicit that "Swarm
+feeds have exactly one owner-signer, so shared state is impossible" — so those two would be
+WoCo's permanently. A park could sign witness batches, and nobody would be obliged to believe
+them, because *authorised* would be defined by our file. That is not handover.
+
+**The fix is the pattern this architecture already uses.** Do not create shared state; publish
+per-issuer signed statements and resolve at the view layer:
+
+- Each issuer publishes its own **subject definition** on its own feed, signed by its issuer key.
+- Each issuer publishes its own **device-key allowlist**, likewise.
+- The indexer resolves conflicts by a stated policy: prefer the issuer that the **on-chain
+  issuer registry** names as authorised for that subject.
+
+The on-chain issuer registry is therefore what turns "authorised" from our opinion into an
+objective fact. It can remain deferred — v1 works with WoCo as the sole issuer — but until it
+ships, the honest statement is "WoCo is the naming and authorisation authority", not "parks can
+take over". Prefer-WoCo is a documented v1 limitation with a defined end, not a design.
+
+Note this touches only the registry and authorisation layer, which is disposable machinery.
+`CreditStatementV1` is unaffected, so it does not block the schema freeze.
 
 ### Credits must never satisfy a POD gate
 
