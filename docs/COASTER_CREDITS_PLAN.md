@@ -32,9 +32,9 @@ Read this first. Everything below is detail and history.
 | Device allowlist, subject definition | each issuer, on their own feed | Swarm | **no** |
 | The index | nobody — computed, rebuildable by anyone | — | **no** |
 
-**Nothing per ride, per POD or per rider touches a chain.** One exception, and it is there for a
-reason that is not handover — see "The walkaway test" below: subjects are registered on-chain
-lazily and in batches, so the namespace outlives us.
+**Nothing in this design touches a chain.** Not per ride, not per coaster, not per POD, not for
+the subject namespace. The only chain-shaped question left is issuer authority, and it is
+deferred until a second issuer exists — see "The walkaway test".
 
 ### Who vouches
 
@@ -55,29 +55,32 @@ lazily and in batches, so the namespace outlives us.
   it should not come back.
 - **WoCo never attests to a ride**, under any option.
 
-### The walkaway test — the one thing that must be on-chain
+### The walkaway test — and why it does NOT justify a chain
 
 If WoCo stops existing tomorrow, what survives?
 
-Rider statements are signed and public, but they live on Swarm and **Swarm needs postage**. Our
-batch expires, chunks are garbage-collected, and the subject registry goes with them — so a
-rebuilder would not even know which subjects exist or who issued them. The design fails the
-walkaway test today, and not because of anything to do with verification.
+Rider statements are signed and public, but they live on Swarm and Swarm needs postage. An
+earlier revision of this section concluded that therefore the subject namespace must go on-chain,
+"because the chain is the only component that survives us paying for nothing".
 
-**The chain is the only component here that survives us paying for nothing.** Once written, it
-stays. So subjects are registered on-chain — not for handover mechanics, which is where this was
-assessed twice and found marginal, but for **namespace permanence**. Someone forking this after we
-vanish can enumerate the subjects and see who issued each.
+**That was wrong, and it is recorded here so it is not re-derived a fourth time.** Postage
+duration is a Swarm problem with a Swarm answer: batches can be bought long, and
+`SWARM_SOCIAL_PLAN` P2 already has users owning their own. Topping up a batch is far easier than
+running a server, which is the actual alternative. Moving a namespace on-chain to avoid buying
+storage imposes a permanent, usage-scaling cost to solve something the architecture already
+solves — and there are thousands of coasters.
 
-Scaling, since there are thousands of coasters: **register lazily and in batches.** A subject is
-registered the first time anyone actually rides it, and registrations accumulate into a periodic
-Merkle root rather than one transaction per coaster. That scales with usage rather than with
-RCDB's catalogue, and batching removes the sponsored-drain vector a per-user-triggered mint would
-create.
+So: **the namespace stays on Swarm.** Durability comes from long-lived batches now and
+user-owned batches at P2.
+
+The one thing that remains genuinely chain-shaped is **issuer authority**, and only because of
+revocation: a signed delegation can never prove it *was not* revoked without a live source of
+truth. That is deferred until a second issuer exists, at which point it is one transaction per
+handover — not per coaster and not per rider.
 
 If no park ever comes on board, what remains is a self-reported credit tracker with a verifiable
-public log and a permanent namespace — Coaster Count with cryptographic receipts. That is a
-product on its own, which is what the walkaway test is really asking.
+public log — Coaster Count with cryptographic receipts, running on storage anyone can keep paying
+for. That is a product on its own, and it is what the walkaway test is really asking.
 
 ### Why nothing ELSE goes on chain
 
