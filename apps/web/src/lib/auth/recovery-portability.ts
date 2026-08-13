@@ -323,14 +323,25 @@ const BACKFILL_DEADLINE_MS = 120_000;
 
 const _backfillInFlight = new Map<string, Promise<PortabilityBackfill>>();
 
-export function backfillPortabilityEnvelope(args: {
+/**
+ * The one payload shape an envelope write takes. Exported because it used to be
+ * declared inline at every seam (#260) — and a field added to one copy while
+ * the others pinned the old shape is exactly how an envelope ends up written
+ * without the new secret.
+ */
+export interface PortabilityBackfillArgs {
   passkeyPrivKey: string;
   preservedKernelAddress: string;
   podSeed: string;
   feedSignerPrivKey?: string;
-  /** Test seam — override the deadline (ms). Production always takes the default. */
-  deadlineMs?: number;
-}): Promise<PortabilityBackfill> {
+}
+
+export function backfillPortabilityEnvelope(
+  args: PortabilityBackfillArgs & {
+    /** Test seam — override the deadline (ms). Production always takes the default. */
+    deadlineMs?: number;
+  },
+): Promise<PortabilityBackfill> {
   // An unusable key would collapse every such caller onto one shared "" slot.
   // Both production callers guard it; fail loudly rather than coalesce blind.
   const key = normKey(args.passkeyPrivKey);
@@ -358,12 +369,7 @@ function _withDeadline(
   });
 }
 
-async function _backfillOnce(args: {
-  passkeyPrivKey: string;
-  preservedKernelAddress: string;
-  podSeed: string;
-  feedSignerPrivKey?: string;
-}): Promise<PortabilityBackfill> {
+async function _backfillOnce(args: PortabilityBackfillArgs): Promise<PortabilityBackfill> {
   const read = await readPortabilityEnvelope({ passkeyPrivKey: args.passkeyPrivKey });
 
   // Could not tell what is out there. Writing blind is what runs the version
