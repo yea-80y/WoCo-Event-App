@@ -27,17 +27,16 @@ export async function checkSubEnsLabel(label: string) {
 
 /**
  * Forward-resolve a WoCo name to its owner address. Accepts `label` or
- * `label.woco.eth`. A TAKEN label's `owner` is the resolved account; an available
- * (unregistered) one resolves to nothing. Used by recovery's manual fallback so a
- * user can type their name instead of a hex address.
+ * `label.woco.eth`. Used by recovery's manual fallback so a user can type
+ * their name instead of a hex address. Thin wrapper: the three-state
+ * classification ("none" is definitive, an unanswered lookup is "error",
+ * never absence — #177) lives in `sub-ens-resolve.ts`, runes-free and tested.
  */
-export async function resolveSubEnsAddress(input: string): Promise<string | null> {
-  const label = input.trim().toLowerCase().replace(/\.woco\.eth$/, "");
-  if (!/^[a-z0-9-]{1,63}$/.test(label)) return null;
-  const res = await checkSubEnsLabel(label);
-  // owner is present only when the label is registered (i.e. "not available").
-  const owner = res.ok && res.data && !res.data.available ? res.data.owner : undefined;
-  return owner && /^0x[a-fA-F0-9]{40}$/.test(owner) ? owner.toLowerCase() : null;
+export type { SubEnsResolve } from "./sub-ens-resolve.js";
+
+export async function resolveSubEnsAddress(input: string) {
+  const { resolveSubEnsWith } = await import("./sub-ens-resolve.js");
+  return resolveSubEnsWith(checkSubEnsLabel, input);
 }
 
 export async function claimSubEnsLabel(opts: {

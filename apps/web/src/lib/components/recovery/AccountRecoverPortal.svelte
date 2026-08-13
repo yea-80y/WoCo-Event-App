@@ -142,8 +142,19 @@
       if (/^0x[a-fA-F0-9]{40}$/.test(raw)) {
         addr = raw.toLowerCase();
       } else {
-        addr = await resolveSubEnsAddress(raw);
-        if (addr) name = raw.toLowerCase().endsWith(".woco.eth") ? raw.toLowerCase() : `${raw.toLowerCase()}.woco.eth`;
+        const resolved = await resolveSubEnsAddress(raw);
+        if (resolved.status === "error") {
+          // #177: a lookup nobody answered must never render as "no backup
+          // found" — that copy tells a recoverable, locked-out user to stop
+          // trying (the #169 rule, applied to the name route).
+          errorMsg = "Couldn't look up that name — please try again in a moment";
+          phase = "error";
+          return;
+        }
+        if (resolved.status === "found") {
+          addr = resolved.address;
+          name = raw.toLowerCase().endsWith(".woco.eth") ? raw.toLowerCase() : `${raw.toLowerCase()}.woco.eth`;
+        }
       }
       if (!addr) {
         phase = "none";
