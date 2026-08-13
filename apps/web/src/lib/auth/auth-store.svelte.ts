@@ -15,6 +15,7 @@ import {
   refuseOrphanedCredential,
   postOrphanedCredentialNotice,
 } from "./orphaned-credential.js";
+import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
 import {
   requestSessionDelegation,
   restoreSession,
@@ -1240,6 +1241,7 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
               return readPortabilityEnvelope({ passkeyPrivKey: key });
             },
             putRecoveryBinding: _putRecoveryBinding,
+            writeOrphanTombstone,
             clearCachedKernelAddress,
             isStillSignedInAs: stillSignedInAs,
             logout,
@@ -1255,10 +1257,11 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
         if (outcome.status === "healed") {
           console.warn("[auth] portability envelope found on re-probe — bound to", outcome.preserved);
         } else if (outcome.status === "orphaned") {
-          // The BINDING-carrying twin of this state now refuses honestly at
-          // login (#255); a kaddr-cached orphan has no binding to trip that
-          // guard, so saying it out loud is still all this path can do (#283).
-          console.warn("[auth] this credential no longer owns its cached account — on-chain owner is", outcome.owner);
+          console.warn(
+            "[auth] this credential no longer owns its cached account — on-chain owner is",
+            outcome.owner,
+            outcome.signedOut ? "— tombstoned + signed out (#283)" : "— tombstoned (#283)",
+          );
         }
       } catch (e) {
         console.warn("[auth] envelope re-probe failed (non-fatal):", e);
@@ -1607,6 +1610,21 @@ async function loginPasskeyResult(
       mode === "create" ? await createPasskeyAccount() : await authenticatePasskey();
     tCeremony = performance.now();
     _loginStage = "finalizing";
+
+    // A tombstone is kept chain-proof that this credential's account was
+    // recovered away (#283, written by the envelope re-probe). Checked before
+    // EVERY path — binding, marker, kaddr cache, envelope — because each of
+    // them would sign into an account whose every request now fails. Recovery
+    // always mints a fresh credential, so this fact cannot become false; the
+    // refusal reuses #255's message and notice channel.
+    const tombstone = readOrphanTombstone("passkey", account.address);
+    if (tombstone) {
+      clearVerifiedBinding("passkey", account.address);
+      throw refuseOrphanedCredential("passkey", {
+        boundKernel: tombstone.kernel,
+        onChainOwner: tombstone.owner,
+      });
+    }
 
     let override = await _recoveryKernelFor(account.address);
 
