@@ -41,7 +41,11 @@
     if (stripeStatus || stripeStatusError || stripeStatusLoading) return;
     stripeStatusLoading = true;
     import("./lib/api/stripe.js").then(m => m.getStripeAccountStatus()).then(s => {
-      stripeStatus = s;
+      // An error envelope is truthy — storing it as `stripeStatus` used to tell
+      // someone who JUST finished onboarding "your onboarding is not yet
+      // complete" off a rejected read (#256). Unverifiable is the error branch.
+      if (s.ok) stripeStatus = s;
+      else stripeStatusError = true;
       stripeStatusLoading = false;
     }).catch(() => {
       stripeStatusError = true;

@@ -51,11 +51,13 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
   const bindings: Array<[string, string]> = [];
   const cleared: string[] = [];
   const notices: string[] = [];
+  const tombstones: Array<{ eoa: string; kernel: string; owner: string }> = [];
   const base: EnvelopeReprobeDeps = {
     readKernelOwner: async (addr) => (addr === PRESERVED ? EOA : null),
     envelopeExists: async () => ({ status: "present" }),
     readEnvelope: async () => FOUND,
     putRecoveryBinding: async (pod, kernel) => void bindings.push([pod, kernel]),
+    writeOrphanTombstone: (_kind, eoa, fact) => void tombstones.push({ eoa, ...fact }),
     clearCachedKernelAddress: (_kind, eoa) => void cleared.push(eoa),
     isStillSignedInAs: () => true,
     logout: async () => {},
@@ -86,7 +88,7 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
       return base.logout();
     },
   };
-  return { d, store, calls, bindings, cleared, notices };
+  return { d, store, calls, bindings, cleared, notices, tombstones };
 }
 
 const args = { kind: "passkey" as const, eoa: EOA, cachedParent: PHANTOM, passkeyPrivKey: PRF_KEY };
@@ -157,15 +159,35 @@ test("a chain read that failed spends nothing — an RPC blip must not burn the 
   assert.equal(store.map.get(STATE_KEY), undefined, "no attempt recorded, no cooldown started");
 });
 
-test("an orphaned credential is reported, never acted on (#255 owns the fix)", async () => {
+test("an orphaned credential gets a tombstone, the notice, and a sign-out (#283)", async () => {
   const other = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-  const { d, bindings, cleared, calls } = deps({ readKernelOwner: async () => other });
+  const { d, bindings, cleared, calls, tombstones, notices } = deps({
+    readKernelOwner: async () => other,
+  });
   const r = await reprobeEnvelope(args, d);
 
-  assert.deepEqual(r, { status: "orphaned", owner: other });
-  assert.deepEqual(bindings, [], "clearing state here walks the user into #255's fallthrough");
-  assert.deepEqual(cleared, []);
-  assert.deepEqual(calls, [`owner:${PHANTOM}`]);
+  assert.deepEqual(r, { status: "orphaned", owner: other, signedOut: true });
+  // The proof is KEPT — this is what the next login's honest refusal trips on.
+  assert.deepEqual(tombstones, [{ eoa: EOA, kernel: PHANTOM, owner: other }]);
+  assert.equal(notices.length, 1, "the forced sign-out is explained, not silent");
+  assert.match(notices[0], /recovered on another device/i);
+  assert.deepEqual(bindings, [], "no binding for an account this credential does not own");
+  assert.deepEqual(cleared, [], "the kaddr entry stays — the tombstone gates everything");
+  assert.deepEqual(calls, [`owner:${PHANTOM}`, "logout"], "no Swarm probe off a settled verdict");
+});
+
+test("an orphan discovered after a sign-out is tombstoned QUIETLY — no bystander logout", async () => {
+  const other = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+  const { d, calls, tombstones, notices } = deps({
+    readKernelOwner: async () => other,
+    isStillSignedInAs: () => false,
+  });
+  const r = await reprobeEnvelope(args, d);
+
+  assert.deepEqual(r, { status: "orphaned", owner: other, signedOut: false });
+  assert.deepEqual(tombstones, [{ eoa: EOA, kernel: PHANTOM, owner: other }], "the fact is about the credential, not the session");
+  assert.deepEqual(notices, [], "no notice for a refusal that never happened to this session");
+  assert.ok(!calls.includes("logout"));
 });
 
 test("the common case is ONE lookup: the full read never runs when nothing is there", async () => {

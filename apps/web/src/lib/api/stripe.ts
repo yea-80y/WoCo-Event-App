@@ -13,6 +13,11 @@ export interface RequirementCategory {
 
 export interface StripeAccountStatus {
   ok: boolean;
+  /** Envelope fields that ride through the cast in `getStripeAccountStatus` —
+   *  on failure this IS an `ApiResponse` error, and `code` is what lets a
+   *  consumer tell "session rejected" from "not onboarded" (#256). */
+  error?: string;
+  code?: string;
   connected: boolean;
   stripeAccountId?: string;
   onboardingComplete?: boolean;

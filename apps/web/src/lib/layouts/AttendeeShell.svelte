@@ -12,6 +12,7 @@
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import SoonPill from "../attendee/coming-soon/SoonPill.svelte";
   import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
+  import SessionEndedBanner from "../components/auth/SessionEndedBanner.svelte";
 
   interface Props {
     children: Snippet;
@@ -21,6 +22,7 @@
 
 <main>
   <PreLaunchBanner variant="strip" />
+  <SessionEndedBanner />
   <header class="top-bar">
     <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
       <WocoWordmark height={20} variant="default" />

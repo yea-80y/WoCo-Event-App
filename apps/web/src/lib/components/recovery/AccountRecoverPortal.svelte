@@ -142,8 +142,19 @@
       if (/^0x[a-fA-F0-9]{40}$/.test(raw)) {
         addr = raw.toLowerCase();
       } else {
-        addr = await resolveSubEnsAddress(raw);
-        if (addr) name = raw.toLowerCase().endsWith(".woco.eth") ? raw.toLowerCase() : `${raw.toLowerCase()}.woco.eth`;
+        const resolved = await resolveSubEnsAddress(raw);
+        if (resolved.status === "error") {
+          // #177: a lookup nobody answered must never render as "no backup
+          // found" — that copy tells a recoverable, locked-out user to stop
+          // trying (the #169 rule, applied to the name route).
+          errorMsg = "Couldn't look up that name — please try again in a moment";
+          phase = "error";
+          return;
+        }
+        if (resolved.status === "found") {
+          addr = resolved.address;
+          name = raw.toLowerCase().endsWith(".woco.eth") ? raw.toLowerCase() : `${raw.toLowerCase()}.woco.eth`;
+        }
       }
       if (!addr) {
         phase = "none";
@@ -307,7 +318,7 @@
           <span class="spinner"></span>{restoreStep || "Finishing up…"}
         </p>
       {:else}
-        <div class="finalize-warn" role="alert">
+        <div class="result result--warn" role="alert">
           {#if warnStage === "session"}
             <p class="result-title">We couldn't finish signing you in</p>
             <p class="result-body">
@@ -720,15 +731,14 @@
   }
   .restore-note strong { color: var(--text-secondary); }
 
-  .finalize-warn {
-    text-align: left;
-    padding: 1rem;
-    border-radius: var(--radius-md);
-    border: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
+  /* The finalize warning is the .result card in .error's tint (#260) — a
+     modifier, not a re-implementation. Margin flipped: it leads its block. */
+  .result--warn {
+    border-color: color-mix(in srgb, var(--error) 35%, var(--border));
     background: var(--error-subtle);
-    margin-bottom: 1rem;
+    margin: 0 0 1rem;
   }
-  .finalize-warn .result-body { margin: 0; }
+  .result--warn .result-body { margin: 0; }
   .skip { display: block; margin: 0.8rem auto 0; }
 
   .restore-cta { white-space: nowrap; }

@@ -1,5 +1,6 @@
 import { AuthErrorCode, type ApiResponse, type SessionDelegation } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
+import { sessionHealth } from "./session-health.svelte.js";
 
 /** API base URL — runtime config wins, then build-time env var, then empty (dev proxy) */
 const BASE =
@@ -168,7 +169,13 @@ async function authFetch<T>(
   const generation = _recoveryGeneration;
   const result = await send();
 
-  if (result.ok || result.code !== AuthErrorCode.SESSION_INVALID) {
+  if (result.ok) {
+    // Any authenticated success proves the session works — the banner must
+    // never outlive the condition it reports.
+    sessionHealth.clear();
+    return result;
+  }
+  if (result.code !== AuthErrorCode.SESSION_INVALID) {
     // A wrong device clock is NOT fixable by re-signing — re-signing just
     // reproduces the same out-of-window timestamp. Say what is actually wrong
     // instead of letting "invalid signature" take the blame.
@@ -196,10 +203,18 @@ async function authFetch<T>(
   //    needless re-login; surface the transport failure instead.
   try {
     const retried = await send();
-    if (!retried.ok && retried.code === AuthErrorCode.SESSION_INVALID) {
+    if (retried.ok) {
+      sessionHealth.clear();
+      return retried;
+    }
+    if (retried.code === AuthErrorCode.SESSION_INVALID) {
       // A fresh delegation was just rejected the same way — re-minting is not
-      // the cure here. Stop burning signing prompts on it.
+      // the cure here. Stop burning signing prompts on it, and raise the one
+      // app-wide fact the screens can't each discover: reads are now
+      // unverifiable, not empty (#256). This is the ONLY writer of that flag,
+      // so it always means "proven", never "a request failed".
       _recoverySuppressedUntil = Date.now() + RECOVERY_SUPPRESSION_MS;
+      sessionHealth.markEnded();
       console.warn(
         "[api] a freshly-minted session was rejected too — pausing recovery; " +
           "check ALLOWED_HOSTS and the account's on-chain owner",
