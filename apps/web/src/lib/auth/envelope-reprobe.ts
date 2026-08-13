@@ -264,10 +264,11 @@ export async function reprobeEnvelope(
         writeState(store, kind, eoa, { ...spent, ok: cachedParent.toLowerCase() });
         return { status: "confirmed" };
       }
-      // Deployed, and this credential does not own it: proof of orphaning, which
-      // is #255's evidence, not this fix's. Acting on it here would clear the
-      // device's state and walk the user straight into #255's fallthrough — a
-      // fresh phantom account with an encouraging login. Report and stop.
+      // Deployed, and this credential does not own it: proof of orphaning. The
+      // binding-carrying twin of this state now fails honestly at login (#255),
+      // but this credential has no binding to trip that guard, and clearing the
+      // kaddr entry here would just let the next slow-path login re-mint and
+      // re-cache the same counterfactual. Report and stop — #283 tracks acting.
       writeState(store, kind, eoa, spent);
       return { status: "orphaned", owner };
     }
