@@ -1,6 +1,8 @@
 # Coaster Credits — Rider-Signed Credentials Plan
 
-STATUS (2026-08-12): DESIGN. Not started. Origin: the Rita 100 charity challenge
+STATUS (2026-08-13): DESIGN, revised after an independent Fable review (54/54 messages
+Fable-attested). Not started. Schema is NOT yet frozen — see the identity decision under
+Open questions. Origin: the Rita 100 charity challenge
 (Digital Dan, September 2026) as the pilot for a general ride-credit system.
 
 Companion to `docs/SWARM_SOCIAL_PLAN.md` — this shares its indexer, its trust model and
@@ -40,8 +42,12 @@ The rider is the author. This is the load-bearing decision and it is deliberate:
 
 - It works **day one with no park involvement** — including the "just tap that you rode it"
   rollout, where no issuer exists at all.
-- The rider's history lives in the rider's own feed, so it survives WoCo losing interest,
-  a park pulling out, or any server dying. An issuer-authored design fails all three.
+- The rider's history lives in the rider's own feed rather than an issuer's, so a park
+  pulling out cannot erase it. Note the limit honestly: statements are stamped with WoCo's
+  postage batch by default (`soc-upload.ts:191` → `requirePostageBatch()`), so rider history
+  currently dies when WoCo stops paying for stamps. Full independence arrives at
+  `SWARM_SOCIAL_PLAN` P2 (user-owned batches) — do not claim it before then, and especially
+  not in the pilot's public story.
 - It is the `SWARM_SOCIAL_PLAN` shape exactly — same primitive, same indexer, no new
   architecture.
 - It matches the community norm. Existing credit apps are all honour-system; verified
@@ -97,61 +103,78 @@ that produces the feed key — a key-stretch, not a feed write.
 
 ## The evidence ladder
 
-Every statement carries an `evidence` level. The indexer and the UI must surface it —
-conflating tiers is how a verified-credits product loses its credibility.
+Every credit has an evidence tier. **The tier is COMPUTED by the indexer from materials in
+the statement — it is never a field the rider declares.** A rider-signed `evidence:
+"witnessed"` is a claim about someone else's data, unverifiable at write time, and a
+schema-valid lie would exist on day one. The statement carries materials; the indexer
+derives the tier:
 
-**1. `self` — rider signs alone.** They tap "I rode this". Worth exactly what a
-self-reported count is worth today, which is not nothing: it is the existing ecosystem's
-norm and it works with zero infrastructure.
+| materials present | computed tier |
+|---|---|
+| valid exit tokens, count-bounded | `scanned` |
+| a join to an issuer witness batch | `witnessed` |
+| neither | `self` |
 
-**2. `scanned` — rider's statement embeds rotating issuer tokens.** The issuer's device
-at the ride exit holds a key and signs `(subject, windowStart, nonce)` every ~30 seconds,
-rendering it as a QR on a screen. The rider scans, receives the signed token, and includes
-it in their own statement. The indexer verifies the issuer signature and that the window
-matches the claimed time.
+**1. `self` — rider signs alone.** They tap "I rode this". Worth what a self-reported count
+is worth today, which is not nothing — it is the existing ecosystem's norm and works with
+zero infrastructure.
 
-This is the answer to "can the signature come from the QR the rider scans" — yes, provided
-it **rotates**. A static pre-signed QR is worth nothing: photograph it once and replay it
-forever. Rotation is what makes it evidence.
+**2. `scanned` — the statement embeds rotating exit tokens.** The issuer's device at the ride
+exit holds a key and signs `(subject, windowStart, nonce)` every ~30 seconds, rendering it as
+a QR. The rider scans, receives the token, includes it. Offline-native: the device signs
+locally and needs no network.
 
-**Its honest limit — rotation does not close the relay window.** A rotating token stops
-someone reusing a captured code *later*. It does nothing about the same code being shared
-*now*: one person at the exit photographs the screen and sends it to fifty people, all of
-whom scan within the same ~30 seconds and all of whom get a valid token. A displayed QR
-cannot bind to who is scanning it, so this is structural, not a tuning problem.
+This is the answer to "can the signature come from the QR the rider scans" — yes, provided it
+**rotates**. A static pre-signed QR is worth nothing: photograph it once, replay it forever.
 
-Shortening the window narrows the relay but never closes it, and short windows fail
-legitimate riders on poor signal — which at Alton Towers is the common case, not the edge.
+**Tier 2 needs an authorisation root, or it is tier 1 with extra steps.** Nothing inherently
+binds a `deviceKey` to a legitimate issuer — anyone can generate a key, sign themselves exit
+tokens for Rita's subject hash, and self-mint `scanned` evidence that verifies perfectly. The
+issuer registry is deferred, so the pilot minimum is a **published allowlist of the issuer's
+device keys** (indexer config or a platform feed), rebuildable and public. The entire meaning
+of the tier depends on it; it is not optional.
 
-So state tier 2 as what it is: **a token was live at that exit at that minute, and this
-rider presented it**. Not "this rider was there". The tier is named `scanned`, not
-`presence`, deliberately — the enum name in `packages/shared` becomes the badge label, and
-it is the claim that survives contact with users regardless of what this doc says.
+**Its honest limit — rotation does not close the relay window.** Rotation stops a captured
+code being reused *later*. It does nothing about the same code being shared *now*: one person
+photographs the screen and sends it to fifty people who all scan inside the same ~30 seconds.
+A displayed QR cannot bind to who is scanning, so this is structural. Shortening the window
+narrows it and starts failing legitimate riders on poor signal, which at Alton Towers is the
+common case.
 
-Two caps make the mitigation real rather than gestural. Both belong in the **indexer** —
-the exit device is offline by design and cannot rate-limit anything:
+State tier 2 as what it is: **a token was live at that exit at that minute and this rider
+presented it** — not "this rider was there". The tier is named `scanned` deliberately; the
+enum name becomes the badge label whatever this document says.
+
+**3. `witnessed` — the issuer observed the rider and attests.** The device reads the rider's
+code and the issuer counter-signs. This binds identity and is the only tier that proves a
+specific person rode. Needs staff or a fixed installation.
+
+**Witness leaves must be per-observation, not per-session.** If a witness batch joins on
+`(holder, subject, date)`, one observation validates a session claiming `count: 20` — the
+same unbounded-count bug fixed at tier 2, reappearing at the tier where it costs the most
+credibility. Verified count = observation count.
+
+Do not call tier 3 `verified`. That overclaims by this document's own tier-2 reasoning.
+
+### Caps — both live in the indexer, both need a deterministic rule
+
+The exit device is offline by design and cannot rate-limit anything.
 
 - `MAX_STATEMENTS_PER_TOKEN_WINDOW = 40` — statements citing the same
-  `(deviceKey, windowStart)`. Sized above a full train's capacity so it never bites a
-  legitimate dispatch, while bounding one shared code at 40 rather than unbounded.
-- `MIN_MINUTES_BETWEEN_CREDITS = 5` per `(holder, subject)` — ride cycle plus queue. A
-  rider cannot legitimately accrue faster than the ride physically turns over.
+  `(deviceKey, windowStart)`. Checkable from public data since tokens carry `windowStart`.
+  Under oversubscription the spec must say **which** 40 win: order by `holderSig` bytes
+  ascending, not by ingestion, or the cap is not rebuildable.
+- **Ride cadence** — per-subject configuration in the published indexer config, NOT a global
+  constant. A global 5 minutes would rate-limit this pilot's own headline: 109 laps × 5 min
+  is over nine hours of pure cycle time, before queues, against a park day of about that
+  length. Set Rita's from the actual planned cadence. Enforceable only at tiers 2/3, where
+  token windows and witness timestamps supply real times; at tier 1 it polices self-declared
+  data and is cosmetic.
 
-And `count` may not exceed `exitTokens.length` at this tier. Without that rule one
-scan silently upgrades an entire session, and `count: 20, evidence: "scanned"` on a single
-token would be a valid object — which would make the tier weaker than even the honest
-framing above admits.
+Token dedup scope: the same token nonce counts once, whether repeated within one statement or
+across two statements by the same holder.
 
-If that is not good enough for a given use, the answer is tier 3, not a stronger tier 2.
-
-**3. `verified` — issuer scans the rider and witnesses.** The device reads the rider's
-code and the issuer counter-signs a witness naming that holder. This binds identity, and
-it is the only tier that genuinely proves a specific person rode. It needs staff or a
-fixed installation, so it is an event/park-cooperation tier, not a default.
-
-Plus a **plausibility rule** in the indexer: ride cycle time bounds how many credits a
-holder can legitimately accrue per hour. Cheap, and it kills bulk fraud without needing
-any tier to be perfect.
+Offline device clock drift over a full day needs a stated tolerance on the window match.
 
 ### Where park integration actually belongs
 
@@ -177,91 +200,123 @@ New in `packages/shared/src/credit/`. Reuses the LOCKED primitives in
 `packages/shared/src/pod/{canonical,merkle}.ts` — same encoder, same tree scheme. Do not
 fork them.
 
-### Rider statement — one CURRENT object per (holder, subject, sessionDate)
+### Rider statement — one CURRENT object per (holder, subject)
 
-A statement is a **session**, not a single ride. Proving 47 rides must not need 47 proofs,
-and "8 rides on 14 September" is how it will be displayed anyway.
+One head topic per `(holder, subject)`, carrying the **lifetime total** plus the current
+day's block. Proof of a lifetime total is one chunk, which is what the counter, the widget
+and the passport view all actually want.
 
 ```ts
 interface CreditStatementV1 {
   format: "woco.credit.v1";
   /** keccak256("woco:coaster:v1:" + stableId). See "Subject identity". */
   subject: Bytes32Hex;
-  /** The rider's ed25519 POD public key — the owner-of-record, exactly as
-   *  `ClaimedTicket.owner`. Never the parent, never a server burner. */
+  /** The rider's ed25519 POD public key — the owner-of-record, as `ClaimedTicket.owner`. */
   holder: Hex32;
-  /** Total rides for this subject on this date. CUMULATIVE, not a delta —
-   *  each tap rewrites this object with the new total. See "Aggregation". */
-  count: number;
-  sessionDate: string;      // YYYY-MM-DD
-  firstAt?: string;         // ISO
-  lastAt?: string;
-  evidence: "self" | "scanned" | "witnessed";
-  /** One per ride claimed at `scanned`. `count` may not exceed its length —
-   *  a single scan must not upgrade a whole session. */
-  exitTokens?: ExitTokenV1[];
-  /** Swarm ref of this rider's PREVIOUS session object for this subject.
-   *  Makes their history a walkable chain — see "Reachability". */
+  /** Monotonic per (holder, subject). THE ordering authority — latest = highest seq.
+   *  Not derivable from anything else; see "Ordering". */
+  seq: number;
+  /** Lifetime rides for this subject. Cumulative — never a delta, never summed. */
+  total: number;
+  /** The current day's block. Older days are recovered by walking SOC versions. */
+  session: {
+    date: string;        // YYYY-MM-DD, timezone declared in the subject registry
+    count: number;
+    /** Evidence MATERIALS only — the tier is computed, never declared. */
+    exitTokens?: ExitTokenV1[];
+  };
+  /** Swarm ref of the previous version. Optional skip-list over intra-day rewrites,
+   *  NOT the history mechanism — SOC versions are that. */
   prevSession?: Hex64;
-  /** Write-replay dedup ONLY. Not the aggregation key. */
-  nonce: string;
-  /** ed25519 signature by `holder` over the digest of every field above.
-   *  Without this the holder field is unauthenticated — see below. */
+  /** ed25519 signature by `holder` over the domain-separated canonical digest.
+   *  See "holderSig". */
   holderSig: string;
 }
 ```
 
-### `holderSig` — why the identity layer must sign
+**No `firstAt`/`lastAt` by default.** Per-ride timestamps turn a credit log into a routine —
+"this key rode Rita at 14:32 every Saturday" — which is the pattern the ICO code's
+geolocation standard exists to prevent, and this audience is children. Tier-2 timing already
+lives inside the exit tokens where it is actually needed. Do not add them back for display.
 
-The SOC signature proves only that *the feed owner* wrote the object. It says nothing
-about `holder`, which is a different key entirely: the ed25519 POD identity and the
-secp256k1 feed signer are derived under separate domains, neither is publicly
-recomputable, and no public mapping links them. The upload relay cannot help either —
-`apps/server/src/lib/swarm/soc-upload.ts:13-18`: "ANY authenticated user may stamp their
-OWN validly-signed SOC… we cannot bind owner == authenticated parent".
+**No `evidence` field.** See "Evidence is computed".
 
-So without `holderSig`, anyone can write a statement into **their own** feed naming
-**someone else's** `holder`, and an indexer keying counts by `holder` has no basis to
-reject it. Anyone's total could be inflated by a third party — including the pilot's
-headline counter.
+**No `nonce`.** `seq` subsumes replay dedup and adds ordering, which `nonce` never had.
 
-`holderSig` closes it and makes the statement self-authenticating, so it stays verifiable
-if re-hosted off the rider's feed. It also completes the `ClaimedTicket` mirror properly:
-the identity key signs the object, and the feed key is pure storage.
+### Ordering — `seq` is the authority
 
-### Aggregation — latest-wins within a session
+Two validly-signed statements for the same `(holder, subject)` with different totals need an
+authenticated order, and nothing else in the object can supply one:
 
-`SWARM_SOCIAL_PLAN` commitment 3 ("one statement per (user, subject), latest-wins") is
-re-applied here with **the session as the unit of state**, not abandoned:
+- `total` cannot order them — downward correction breaks monotonicity, which is the whole
+  point of allowing corrections.
+- A timestamp cannot — it is self-declared and unverifiable.
+- The SOC version cannot — resolving it requires knowing which feed is authoritative for a
+  holder, and **no public mapping links the ed25519 holder to the secp256k1 feed owner**
+  (see "Identity"). The two keys are derived under separate domains and are cryptographically
+  independent.
+- Ingestion order cannot — that lives only in our server, violating `SWARM_SOCIAL_PLAN`
+  commitment 6.
 
-- The aggregation key is `(holder, subject, sessionDate)`. Exactly one current object per
-  key; a later write for the same key supersedes the earlier one.
-- `count` is **cumulative for that date**. A rider tapping after each ride rewrites the
-  same object 1, 2, … 8.
-- A rider's total for a coaster is the sum of `count` across **distinct sessionDates**,
-  never across writes within one date.
-- `nonce` catches literal write replays and nothing else.
+So `seq` is signed, monotonic per key, and **latest = highest seq**. A third party
+re-hosting an old statement loses; a correction still works; nobody can fabricate a higher
+`seq` without the holder key.
 
-Getting this wrong is not subtle: summing every write for a day of 8 rides yields
-1+2+…+8 = 36. The rule also restores the free correction that latest-wins gives —
-an erroneous `count: 8` is fixed by writing `count: 5`, with no negative statements.
+### `holderSig` — why the identity layer must sign, and over what
 
-### Reachability — history must survive overwrite
+The SOC signature proves only that *the feed owner* wrote the object. It says nothing about
+`holder`, which is a different key entirely, and the upload relay cannot help —
+`apps/server/src/lib/swarm/soc-upload.ts:13-18`: "ANY authenticated user may stamp their OWN
+validly-signed SOC… we cannot bind owner == authenticated parent".
 
-The client-feed primitive is overwrite-in-place at a fixed `(owner, topic)`, so a naive
-single-topic design makes yesterday unreachable the moment today is written. Counts would
-then depend on data only our indexer ever saw, breaking `SWARM_SOCIAL_PLAN` commitment 6
-("Nothing may depend on data that exists only inside our server… rebuildable from public
-feeds") and weakening commitment 4's spot-check.
+Without `holderSig`, anyone can write a statement into **their own** feed naming **someone
+else's** `holder`, and an indexer keying counts by `holder` has no basis to reject it.
 
-Two mechanisms, both required:
+The digest must be **specified and domain-separated**, not "a digest of the fields above":
+canonical CBOR via `packages/shared/src/pod/canonical.ts` under an explicit
+`woco-credit-v1` prefix, and the doc must record why this signature cannot collide with the
+same key's other uses — mirroring the cross-protocol argument in
+`apps/server/src/lib/ticket/owner-binding.ts:8-10`.
 
-- **Topic includes the date** — `woco/credit/{holder}/{subject}/{sessionDate}`. Each day
-  is its own overwrite-in-place slot, so rewriting today never destroys yesterday.
-- **`prevSession` chains backwards** to the previous session's ref, so an indexer can walk
-  a rider's full history from their latest entry without knowing which dates to probe.
-  This is the same device `prevBatch` gives issuer batches; rider statements need it more,
-  not less.
+### Aggregation — nothing is ever summed across writes
+
+A rider's total for a subject is `total` from the highest-`seq` statement. Full stop. No
+summation across writes, so the "8 taps read as 36 rides" trap cannot occur by construction.
+Their total across coasters is the sum over subjects, one head each.
+
+Corrections are free: write a lower `total` at a higher `seq`.
+
+### Reachability — SOC versions ARE the history
+
+**Correcting an earlier error in this document:** the client-feed primitive is NOT
+overwrite-in-place. A SOC is immutable — re-uploading at the same identifier is silently
+discarded (`packages/shared/src/swarm/soc.ts:229-232`) — and mutability comes from writing
+update N at a **new versioned identifier**, `keccak256(base || uint64BE(version))`
+(`:242-245`). Versions are "contiguous from 0 and immutable (a version once written can
+never disappear)" (`:390-392`), resolved by probing forward (`resolveLatestSocVersion`,
+`:399-425`).
+
+So every historical statement stays permanently readable at a computed address. History is
+free, and needs no chaining mechanism.
+
+An earlier revision of this plan put the date in the topic and chained with `prevSession`,
+to solve a problem that does not exist. That scheme actively causes a worse one: with a
+topic per date there is **no stable head**, so an indexer cannot enumerate which dates a
+rider rode without probing candidate dates — and an absent-chunk probe is the most expensive
+read on Swarm; a window of 8 melted the bee on 2026-07-06 (`soc.ts:359-367`). Rebuild would
+then depend on our ingestion log, breaking commitment 6.
+
+One head topic per `(holder, subject)`. History is the version sequence beneath it.
+
+### Subject enumeration — the level the head topic does not solve
+
+A head topic per `(holder, subject)` makes one coaster's history walkable, but nothing
+enumerates **which subjects a rider has ridden**. A rider with 40 coasters has 40 head
+topics and no index over them, which reintroduces the same discovery problem one level up.
+
+So a rider also writes a per-holder subject index — one head topic listing the subjects they
+hold, updated when a new subject is first ridden. Cheap now, awkward to retrofit once
+statements exist.
 
 ### Exit token — issued by a device, embedded by the rider
 
@@ -299,9 +354,35 @@ community's de facto reference and the existing credit apps key on it, giving an
 path for self-reported history. No public API or data licence, so treat it as a **naming
 convention we reference**, never a database to scrape or mirror.
 
-Add `subject` to `PodDirectoryEntry`. A rider's count for a coaster is the sum across every
-statement naming that subject, whatever its evidence level and whoever witnessed it. That
-one indirection is what lets a park take over issuing without forking anyone's history.
+Verify RCDB's id semantics before P0 — whether ids survive relocation and re-tracking — since
+subject hashes are permanent. This is unconfirmed.
+
+### A subject registry, NOT `PodDirectoryEntry`
+
+An earlier revision said to add `subject` to `PodDirectoryEntry`. That is shape-forcing and is
+now rejected. That entry's identity is a `manifestRef`, "the on-chain/manifest commitment",
+with **required** `manifestRef`, `kind`, `name` and `supply`
+(`packages/shared/src/pod/types.ts`). A coaster subject has no manifest, no supply and no
+editions — this design's own premise is that nothing is minted. Adding `subject` there would
+mean minting a meaningless manifest per coaster or leaving required fields as fiction.
+
+Instead: a small **subject registry** on a platform feed, `subject → { name, park, rcdbId,
+timezone }`. It makes the hash invertible for UI and indexer alike, which nothing in the
+design otherwise provides, and it is where `sessionDate`'s timezone is declared.
+
+PODs re-enter where the type system already invites them: `PodKind: "badge"` is literally
+"loyalty/achievement, issued at a milestone. Soulbound". Issue a real POD at a milestone —
+100 rides — computed off the credit total. That keeps the collectible story without
+contorting the directory model.
+
+### Credits must never satisfy a POD gate
+
+`PodHolding` is documented as read from "the TRUSTLESS on-chain source … NOT the
+platform-written collection feed, which is spoofable and would undercut the gate", and
+`PodGateRule` evaluation feeds claim and order authorisation. If statement-derived holdings
+flow into that reader, **a self-signed tier-1 statement could pass a gate that today requires
+chain truth.** Statement-derived holdings must never satisfy a `PodGateRule` unless a gate
+explicitly opts in. Stated here because it would otherwise ship by default.
 
 ## Identity — the minimum a rider needs
 
@@ -443,7 +524,7 @@ and the witness batch is a single upload. The on-chain variant puts all three on
 | threat | what stops it |
 |---|---|
 | Writing a statement naming someone else as `holder` | `holderSig` — the ed25519 identity key signs the object. WITHOUT it this is trivial: the SOC signature proves only who wrote the feed, not who the holder is. |
-| Replaying a statement | `nonce` + indexer dedup. |
+| Replaying an old statement | `seq` — latest = highest seq. Without it there is NO rebuildable ordering, since `total` breaks monotonicity under correction and no public mapping links `holder` to its feed owner. |
 | Replaying an exit token | Token binds `windowStart`; indexer rejects stale windows. |
 | Reusing a photographed exit QR later | Rotation — a captured token expires in ~30s. |
 | Sharing a live exit QR within its window | **Not solved.** Structural to a displayed code. Bounded by `MAX_STATEMENTS_PER_TOKEN_WINDOW = 40` + `MIN_MINUTES_BETWEEN_CREDITS = 5`. Tier 2 claims the token was present, not the rider. |
@@ -472,20 +553,81 @@ lawful basis to establish, and the under-13 consent question never arises.
 13 (DPA 2018 s.9) is only the age a child can consent for themselves. It is not the line
 that governs the design.
 
+## Scope: general schema, pilot-only machinery
+
+The deciding asymmetry: **the schema is permanent and the machinery is disposable by design.**
+Rider feeds are write-once and public, so a schema mistake is inherited by every future credit
+and cannot be revisited. The indexer is explicitly a rebuildable cache. So spend the scarce
+design effort where mistakes are unfixable, and ship the pilot on deliberately minimal
+machinery.
+
+**Freeze in `packages/shared` before any code:** `CreditStatementV1` with `seq`, the head
+topic, computed evidence, the domain-separated `holderSig` digest, and the identity decision
+below. Do not defer any schema question — that is the one category that cannot be revisited.
+
+**Ship the pilot minimally:** hardcoded subject, published allowlist of the issuer's device
+keys, a single-subject counter endpoint, the embed widget and the stream overlay. None of the
+pilot's deliverables needs a general indexer.
+
+**Defer:** the general indexer (merge with #172), witness batches if the device app slips
+(the rider's own statements plus the device's tokens still carry the story), the issuer
+registry, self-report import, NFC.
+
 ## Phasing
 
-- **P0** — subject identity + `PodDirectoryEntry.subject`. Cheapest thing to get wrong.
-- **P1** — statement schema in `packages/shared`; rider signs and publishes to their own
-  feed. Tier 1 only. Ships with no issuer and no park.
-- **P2** — indexer (shared with likes/follows in `SWARM_SOCIAL_PLAN`, **not yet built**);
-  holdings reader gains a statement source.
-- **P3** — exit device app: rotating exit tokens, offline-capable. Tier 2 (`scanned`).
+- **P0** — subject identity + subject registry + **frozen statement schema**. The only
+  irreversible step.
+- **P1** — rider signs and publishes to their own feed. Tier 1 only. No issuer, no park.
+- **P2** — single-subject projection for the pilot; general indexer merged with #172 after.
+- **P3** — exit device app: rotating tokens, offline-capable, published key allowlist. Tier 2.
 - **P4** — issuer witness batches (tier 3), NFC tags, optional anchoring, self-report import.
 - **Later** — issuer registry, once a second issuer exists.
 
 ## Open questions
 
-- Where does the exit device's key live, and who provisions devices?
-- Self-report import from existing credit apps — is RCDB id mapping enough?
-- Postage: batches `7dad2b8c…` (~2026-08-24) and `56198fde…` (~2026-08-26) expire before
-  any September pilot. Resolve before promising dates.
+### DECISION REQUIRED before first write — one identity or pairwise?
+
+`holder` is currently the rider's raw ed25519 POD key, the same key that owns their tickets.
+That is what makes a single passport view coherent, and it was a deliberate product choice.
+
+The cost: a permanent, public, pseudonymous record of which coasters an identity rode and on
+which dates — for an audience that is largely children — under the same key that owns tickets
+whose order blobs an organiser can decrypt to a real name and email. That chain is what turns
+pseudonymous into identified.
+
+The alternative is a **pairwise key**: derive a separate credit identity from the same
+account, so credits and tickets share no public identifier. It protects the diary and
+**breaks the passport view**.
+
+Erasure is also unimplementable as designed: superseding a statement does not unpublish it —
+old SOC versions stay readable at computed addresses while stamped. The honest framing is
+"erasure = stop re-stamping + gateway suppression", and that must be stated rather than implied.
+
+Mitigations already applied that narrow the question: `firstAt`/`lastAt` are gone from the
+default payload, so the routine-pattern risk is largely removed; date granularity remains.
+
+A third option worth weighing: **one identity, publication opt-in.** Keep a single key and a
+private default — a rider's credits stay device-local until they choose to publish. No
+statement, no exposure, and a private-by-default posture is a stronger answer to the ICO
+code's data-minimisation and high-privacy-default standards than a pairwise key on a
+public-by-default feed. It preserves the passport view for those who opt in.
+
+This is a product and legal decision, not a technical one. It is cheap now and impossible
+after the first statement exists.
+
+### Still open
+
+- RCDB id stability under relocation/re-tracking — unverified, and subject hashes are forever.
+- `sessionDate` timezone: park-local or UTC. Declared in the subject registry; pick one.
+- Statement size at tier 2 grows with the day — ~300 bytes per token, so a 100-lap tier-2 day
+  is ~30KB of tokens re-uploaded on every tap. The multi-chunk path exists (up to 256 pages),
+  so it works, but the cost is quadratic in rides; consider chunking token lists by reference
+  once large.
+- The evidence manifest needs restating for weighted counts: commitment 4's "count = list
+  length" spot-check does not hold when a total is carried rather than summed, so the manifest
+  must carry the per-statement values it used.
+- The attendee gate: profile creation is gated on ticket possession, and pilot fans have no
+  WoCo tickets, so the credits write path must be deliberately ungated — which reopens
+  free-account statement spam stamped on our postage batch. Needs a rate limit on the relay.
+- Postage: both current batches expire before any September pilot. Mandatory infra work before
+  a date is promised.
