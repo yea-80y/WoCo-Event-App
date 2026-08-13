@@ -345,17 +345,33 @@ A witness **references** rider statements; it never replaces or authors them.
 ## Subject identity
 
 ```
-subject = keccak256("woco:coaster:v1:" + <stable coaster id>)
+subject = keccak256("woco:coaster:v1:" + <WoCo-minted ULID>)
 ```
 
-Use **RCDB ids** — the Roller Coaster DataBase (`rcdb.com`) catalogues essentially every
-coaster with a stable numeric id (Rita is `rcdb.com/2919.htm` → `rcdb:2919`). It is the
-community's de facto reference and the existing credit apps key on it, giving an import
-path for self-reported history. No public API or data licence, so treat it as a **naming
-convention we reference**, never a database to scrape or mirror.
+The id is **ours and opaque**. External ids — RCDB, Captain Coaster, a park's own — are
+recorded as **aliases in the subject registry**, never as the hash input.
 
-Verify RCDB's id semantics before P0 — whether ids survive relocation and re-tracking — since
-subject hashes are permanent. This is unconfirmed.
+### Why not hash an RCDB id directly
+
+An earlier revision did exactly that. Two problems, and the second is the one that bites:
+
+**Shutdown is the smaller risk.** The id is only an input to a hash; once hashed, a subject is
+a bytes32 that needs nothing external. Every existing statement, count and index would keep
+working if RCDB vanished. What would break is minting NEW subjects and cross-app interop —
+real, but survivable.
+
+**Instability is the real risk, and it is live now.** RCDB id semantics under relocation and
+re-tracking are unverified. If a coaster moves parks or is re-tracked and its id changes, a
+subject hash derived from it is orphaned — and subject hashes are permanent. That exposure
+exists whether or not RCDB ever goes away.
+
+An opaque WoCo id removes both. Aliases stay mutable metadata; identity stays immutable and
+ours. Interop is preserved through the alias — import and export by RCDB id still work, and a
+park taking over issuing attests about OUR subject hash and adds their canonical id as another
+alias. Nothing migrates.
+
+The honest tradeoff: an opaque id means the registry is required for a hash to mean anything
+to a human. That is not a new dependency — the registry is needed regardless.
 
 ### A subject registry, NOT `PodDirectoryEntry`
 
@@ -366,9 +382,20 @@ with **required** `manifestRef`, `kind`, `name` and `supply`
 editions — this design's own premise is that nothing is minted. Adding `subject` there would
 mean minting a meaningless manifest per coaster or leaving required fields as fiction.
 
-Instead: a small **subject registry** on a platform feed, `subject → { name, park, rcdbId,
-timezone }`. It makes the hash invertible for UI and indexer alike, which nothing in the
-design otherwise provides, and it is where `sessionDate`'s timezone is declared.
+Instead: a small **subject registry** on a platform feed:
+
+```ts
+subject → {
+  name: string;          // "Rita"
+  park: string;          // "Alton Towers"
+  timezone: string;      // declares what sessionDate means for this subject
+  cadenceMinutes: number;// per-subject, NOT a global constant — see Caps
+  aliases?: { rcdb?: string; captainCoaster?: string; park?: string };
+}
+```
+
+It makes the hash invertible for UI and indexer alike, which nothing else in the design
+provides, and it is where a subject's timezone and ride cadence are declared.
 
 PODs re-enter where the type system already invites them: `PodKind: "badge"` is literally
 "loyalty/achievement, issued at a milestone. Soulbound". Issue a real POD at a milestone —
@@ -651,8 +678,10 @@ Consequence for record claims — "most laps in a day" and similar: those must r
 
 ### Still open
 
-- RCDB id stability under relocation/re-tracking — unverified, and subject hashes are forever.
-- `sessionDate` timezone: park-local or UTC. Declared in the subject registry; pick one.
+- RCDB id semantics under relocation/re-tracking — still worth verifying before relying on
+  the alias for import matching, though subject identity no longer depends on it.
+- `sessionDate` timezone: park-local or UTC. The registry declares it per subject; pick the
+  convention.
 - Statement size at tier 2 grows with the day — ~300 bytes per token, so a 100-lap tier-2 day
   is ~30KB of tokens re-uploaded on every tap. The multi-chunk path exists (up to 256 pages),
   so it works, but the cost is quadratic in rides; consider chunking token lists by reference
