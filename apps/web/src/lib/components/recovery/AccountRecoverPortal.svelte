@@ -24,6 +24,7 @@
     | "checking"
     | "found"
     | "none"
+    | "signed-in-block"
     | "restoring"
     | "finalizing"
     | "finalize-warn"
@@ -54,6 +55,37 @@
   const backupAddress = $derived(backup?.address ?? null);
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const manualReady = $derived(manualInput.trim().length > 0);
+
+  // #272 — this portal's premise is "no session" (see header). A signed-in device
+  // recovering its own account is #245 run B; any other live session would be
+  // clobbered mid-ceremony. Hard block; the only forward path is signing out.
+  // Ceremony phases are exempt — recoverAndRekey's step 5 signs the user in.
+  const signedInIsTarget = $derived(
+    !!auth.parent && !!account && auth.parent.toLowerCase() === account,
+  );
+  // "error" is deliberately NOT gated: a throw late in the ceremony (after the
+  // proven rotation, during session establishment) exits signed-in, and masking
+  // that error with this screen — whose forward action re-runs the ceremony —
+  // invites a second rotation. Every path OUT of the error screen passes
+  // through a gated phase anyway, so nothing is lost.
+  $effect(() => {
+    if (!auth.parent) return;
+    if (
+      phase === "intro" || phase === "connecting" || phase === "checking" ||
+      phase === "found" || phase === "none"
+    ) {
+      phase = "signed-in-block";
+    }
+  });
+
+  async function signOutAndContinue() {
+    try {
+      await auth.logout();
+    } catch {
+      /* still signed in — keep blocking rather than proceed blind */
+    }
+    if (!auth.parent) phase = "intro";
+  }
 
   async function connectWith(method: "email" | "wallet" | "passkey") {
     phase = "connecting";
@@ -156,6 +188,12 @@
 
   async function restore() {
     if (!backup) return;
+    // #272 — final pre-flight, in case a sign-in landed mid-ceremony (another
+    // tab). recoverAndRekey enforces the same invariant and would throw.
+    if (auth.parent) {
+      phase = "signed-in-block";
+      return;
+    }
     phase = "restoring";
     errorMsg = "";
     try {
@@ -195,7 +233,15 @@
       // The kind is captured from the CEREMONY, not read live: signing out while
       // parked on the warning below would otherwise route a passkey retry down
       // the web3auth branch and render success with no envelope written.
-      const result = await auth.finalizeRecovery({ expectPasskey: newOwnerKind === "passkey" });
+      const result = await auth.finalizeRecovery({
+        expectPasskey: newOwnerKind === "passkey",
+        // Silent retries happen inside the step (#273); this keeps the spinner
+        // honest and puts the real failure reason in the console for diagnosis.
+        onRetry: (attempt, reason) => {
+          console.warn(`[recovery] finalize retry ${attempt}:`, reason);
+          restoreStep = "Taking a little longer than usual — still securing your other devices…";
+        },
+      });
       if (result.status === "failed") {
         console.warn("[recovery] finalize failed:", result.reason);
         warnRetryable = result.retryable;
@@ -280,9 +326,10 @@
           {:else if newOwnerKind === "passkey"}
             <p class="result-title">We couldn't finish securing your other devices</p>
             <p class="result-body">
-              Your account works on this device, but until this step completes, signing in
-              with this passkey on another device may not find it. Retrying is safe —
-              nothing is lost by trying again.
+              We tried a few times automatically. Your account is safe and working on this
+              device — but until this step completes, signing in with this passkey on
+              another device may not find it. Trying again is safe, now or later; nothing
+              is lost by retrying.
             </p>
           {:else}
             <p class="result-title">We couldn't finish the last step</p>
@@ -304,6 +351,24 @@
           <button class="btn btn--primary btn--lg cta" onclick={goToAccount}>Go to my account</button>
         {/if}
       {/if}
+    {:else if phase === "signed-in-block"}
+      <p class="kicker">Account recovery</p>
+      <h1>{signedInIsTarget ? "You're already signed in to this account" : "You're signed in on this device"}</h1>
+      <p class="lede">
+        {#if signedInIsTarget}
+          This device already has access to <code>{short(account)}</code>, so there is
+          nothing to recover here. Recovery is for a device that has <strong>lost</strong>
+          access — running it now would replace this account's sign-in everywhere,
+          including here.
+        {:else}
+          Recovery re-keys an account onto this device, replacing what is signed in
+          here. Sign out first so that can't happen mid-way.
+        {/if}
+      </p>
+      <button class="btn btn--primary btn--lg cta" onclick={goToAccount}>Cancel — back to my account</button>
+      <button type="button" class="linkish skip" onclick={signOutAndContinue}>
+        Sign out and continue with recovery
+      </button>
     {:else}
       <p class="kicker">Account recovery</p>
       <h1>Get back into your account</h1>

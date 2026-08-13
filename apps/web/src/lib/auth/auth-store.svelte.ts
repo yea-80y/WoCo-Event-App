@@ -2219,6 +2219,13 @@ async function recoverAndRekey(args: {
   const { backup, targetAddress, onProgress } = args;
   const newOwnerKind = args.newOwnerKind ?? "passkey";
   if (_busy) throw new Error("Please wait — another operation is in progress");
+  // #272 — the documented premise above ("no session") is enforced, not hoped
+  // for: a signed-in device recovering its own account is #245 run B, and any
+  // live session would be clobbered mid-ceremony. The portal blocks with UI
+  // first; this makes the invariant structural.
+  if (_parent) {
+    throw new Error("This device is signed in. Sign out first, then run recovery.");
+  }
   if (!backup.recoveryReady || !backup.getGuardianSigner) {
     throw new Error("This backup wallet can't complete a recovery. Connect a wallet that can sign on Arbitrum.");
   }
@@ -2760,7 +2767,7 @@ export const auth = {
   // #245 — awaited post-recovery step: mint the session, then write + verify the
   // cross-device portability envelope. Thin delegation only (this file is frozen);
   // the logic and the reasoning live in recovery-finalize.ts.
-  finalizeRecovery: async (opts?: { expectPasskey?: boolean }) => {
+  finalizeRecovery: async (opts?: import("./recovery-finalize.js").RecoveryFinalizeOptions) => {
     const { finalizeRecovery } = await import("./recovery-finalize.js");
     return finalizeRecovery(
       {
