@@ -84,7 +84,7 @@ test("a deferred backfill is a FAILURE — the envelope is not verifiably there"
   const { d } = deps({
     backfill: async () => ({ action: "deferred", reason: "envelope chunk unreadable" }),
   });
-  const r = await finalizeRecovery(d);
+  const r = await finalizeRecovery(d, { attempts: 1 });
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /unreadable/);
   // Transient by construction — the retry re-reads and skips cleanly.
@@ -112,7 +112,7 @@ test("a transient feed-signer fault stays retryable — only the guard is termin
       throw new Error("decrypt failed");
     },
   });
-  const r = await finalizeRecovery(d);
+  const r = await finalizeRecovery(d, { attempts: 1 });
   assert.equal(r.status, "failed");
   assert.equal((r as { retryable: boolean }).retryable, true);
 });
@@ -146,14 +146,14 @@ test("a throwing backfill surfaces as failed, never as an unhandled throw", asyn
       throw new Error("probe was inconclusive");
     },
   });
-  const r = await finalizeRecovery(d);
+  const r = await finalizeRecovery(d, { attempts: 1 });
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /inconclusive/);
 });
 
 test("passkey with a failed session mint fails BEFORE the envelope write", async () => {
   const { d, calls } = deps({ ensureSession: async () => false });
-  const r = await finalizeRecovery(d);
+  const r = await finalizeRecovery(d, { attempts: 1 });
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /session/);
   assert.equal((r as { stage: string }).stage, "session");
@@ -176,7 +176,7 @@ test("a FAILED binding read says it FAILED — never 'no binding on this device'
       throw new Error("indexeddb unavailable");
     },
   });
-  const r = await finalizeRecovery(d);
+  const r = await finalizeRecovery(d, { attempts: 1 });
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /binding read failed/);
   assert.equal((r as { retryable: boolean }).retryable, true);
@@ -189,7 +189,7 @@ test("a FAILED seed read is distinguished from a genuinely absent seed", async (
       throw new Error("indexeddb unavailable");
     },
   });
-  const r = await finalizeRecovery(d);
+  const r = await finalizeRecovery(d, { attempts: 1 });
   assert.match((r as { reason: string }).reason, /seed read failed/);
   assert.equal((r as { retryable: boolean }).retryable, true);
 
@@ -213,7 +213,7 @@ test("a feed-signer read THROW fails the step — never write a signer-stripped 
       throw new Error("decrypt failed");
     },
   });
-  const r = await finalizeRecovery(d);
+  const r = await finalizeRecovery(d, { attempts: 1 });
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /feed signer/);
   assert.ok(!calls.includes("backfill"));
@@ -239,4 +239,88 @@ test("a web3auth mint failure stays session-only but REPORTS the missing session
   const { d } = deps({ kind: () => "web3auth", ensureSession: async () => false });
   const r = await finalizeRecovery(d);
   assert.deepEqual(r, { status: "session-only", sessionMinted: false });
+});
+
+test("#273: a transient failure is retried silently into success", async () => {
+  // The live observation this pins: the user's SECOND manual click succeeded,
+  // so the machine clicks for them before any warning renders.
+  let writes = 0;
+  const slept: number[] = [];
+  const retries: string[] = [];
+  const { d } = deps({
+    backfill: async () => {
+      writes++;
+      if (writes === 1) return { action: "deferred", reason: "version probe inconclusive" };
+      return { action: "wrote", reason: "absent" };
+    },
+  });
+  const r = await finalizeRecovery(d, {
+    onRetry: (attempt, reason) => retries.push(`${attempt}:${reason}`),
+    _sleep: async (ms) => {
+      slept.push(ms);
+    },
+  });
+  assert.deepEqual(r, { status: "portable", action: "wrote" });
+  assert.equal(writes, 2, "second attempt ran without user input");
+  assert.deepEqual(slept, [1500], "one backoff before the silent retry");
+  assert.deepEqual(retries, ["2:version probe inconclusive"], "the UI is told, with the reason");
+});
+
+test("#273: retries stop at the cap and surface the LAST failure", async () => {
+  let writes = 0;
+  const slept: number[] = [];
+  const { d } = deps({
+    backfill: async () => {
+      writes++;
+      return { action: "deferred", reason: `attempt ${writes} inconclusive` };
+    },
+  });
+  const r = await finalizeRecovery(d, {
+    _sleep: async (ms) => {
+      slept.push(ms);
+    },
+  });
+  assert.equal(r.status, "failed");
+  assert.match((r as { reason: string }).reason, /attempt 3/);
+  assert.equal(writes, 3, "default cap is three total attempts");
+  assert.deepEqual(slept, [1500, 3000], "backoff doubles between attempts");
+});
+
+test("#273: a NON-retryable failure is never retried — the guard would loop identically", async () => {
+  let reads = 0;
+  const slept: number[] = [];
+  const { d } = deps({
+    getContentFeedSigner: async () => {
+      reads++;
+      throw new Error(
+        "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
+      );
+    },
+  });
+  const r = await finalizeRecovery(d, {
+    _sleep: async (ms) => {
+      slept.push(ms);
+    },
+  });
+  assert.equal(r.status, "failed");
+  assert.equal((r as { retryable: boolean }).retryable, false);
+  assert.equal(reads, 1, "deterministic failure runs exactly once");
+  assert.deepEqual(slept, [], "no backoff is ever taken");
+});
+
+test("#273: the WHOLE step re-runs on retry — session checked first each time", async () => {
+  // The session could have died between attempts; each accessor is where its
+  // own staleness is detected, so no sub-read is skipped on the retry.
+  let writes = 0;
+  const { d, calls } = deps({
+    backfill: async () => {
+      writes++;
+      if (writes === 1) throw new Error("stamp timed out");
+      return { action: "wrote", reason: "absent" };
+    },
+  });
+  const r = await finalizeRecovery(d, { _sleep: async () => {} });
+  assert.equal(r.status, "portable");
+  assert.equal(writes, 2);
+  assert.deepEqual(calls, ["ensureSession", "ensureSession"], "mint re-verified on every attempt");
 });

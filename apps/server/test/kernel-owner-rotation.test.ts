@@ -201,3 +201,90 @@ test("a missing store is silent — that is a normal first boot", async () => {
   const s = await freshStore();
   assert.equal(s.kernelDeployedLoadFailed(), false);
 });
+
+// ── #273: a cached read may CONFIRM a signer, never CONDEMN one ──────────────
+//
+// The live incident: a sibling device's session traffic keeps the owner cache
+// warm with the PRE-rotation owner; recovery rotates the owner on-chain and the
+// new key's first delegation arrives seconds later — inside the TTL. Deciding
+// the rejection from cache locked the legitimate new owner out ("Invalid
+// signature") for the cache lifetime, un-healable by any number of retries.
+
+const KERNEL_A = "0x3333333333333333333333333333333333333333";
+const OLD_KEY = "0xcccc000000000000000000000000000000000003";
+const NEW_KEY = "0xdddd000000000000000000000000000000000004";
+
+async function ownerModule() {
+  const m = await import("../src/lib/auth/kernel-owner.js");
+  m._resetOwnerCacheForTests();
+  return m;
+}
+
+test("#273: the rotated-in key passes on first contact despite a warm stale cache", async () => {
+  const m = await ownerModule();
+  let chainOwner: string = OLD_KEY;
+  let fetches = 0;
+  m._setOwnerFetchForTests(async () => {
+    fetches++;
+    return chainOwner;
+  });
+  try {
+    // Sibling traffic warms the cache with the pre-rotation owner…
+    assert.equal(await m.isKernelOwner(OLD_KEY, KERNEL_A), true);
+    assert.equal(fetches, 1);
+    // …the ceremony rotates the owner on-chain…
+    chainOwner = NEW_KEY;
+    // …and the new key's first delegation must NOT be decided by the cache.
+    assert.equal(await m.isKernelOwner(NEW_KEY, KERNEL_A), true, "rotated-in key condemned from cache");
+    assert.equal(fetches, 2, "a cache-decided rejection must re-read live");
+  } finally {
+    m._setOwnerFetchForTests(null);
+  }
+});
+
+test("#273: a cached match still confirms with no extra chain read", async () => {
+  const m = await ownerModule();
+  let fetches = 0;
+  m._setOwnerFetchForTests(async () => {
+    fetches++;
+    return OLD_KEY;
+  });
+  try {
+    assert.equal(await m.isKernelOwner(OLD_KEY, KERNEL_A), true);
+    assert.equal(await m.isKernelOwner(OLD_KEY, KERNEL_A), true);
+    assert.equal(fetches, 1, "steady-state traffic must stay off the RPC");
+  } finally {
+    m._setOwnerFetchForTests(null);
+  }
+});
+
+test("#273: a FRESH mismatch is decided once — no doubled read", async () => {
+  const m = await ownerModule();
+  let fetches = 0;
+  m._setOwnerFetchForTests(async () => {
+    fetches++;
+    return OLD_KEY;
+  });
+  try {
+    assert.equal(await m.isKernelOwner(NEW_KEY, KERNEL_A), false);
+    assert.equal(fetches, 1, "the answer was already live; re-reading buys nothing");
+  } finally {
+    m._setOwnerFetchForTests(null);
+  }
+});
+
+test("#200: the refresh retires the rotated-out key at first contact, not at TTL", async () => {
+  const m = await ownerModule();
+  let chainOwner: string = OLD_KEY;
+  m._setOwnerFetchForTests(async () => chainOwner);
+  try {
+    assert.equal(await m.isKernelOwner(OLD_KEY, KERNEL_A), true); // warm: OLD
+    chainOwner = NEW_KEY; // rotation
+    assert.equal(await m.isKernelOwner(NEW_KEY, KERNEL_A), true); // heal refreshes cache to NEW
+    // The old key's next request now mismatches the REFRESHED cache, re-reads,
+    // and is refused — no ≤TTL grace left.
+    assert.equal(await m.isKernelOwner(OLD_KEY, KERNEL_A), false);
+  } finally {
+    m._setOwnerFetchForTests(null);
+  }
+});

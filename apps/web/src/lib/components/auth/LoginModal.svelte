@@ -6,6 +6,9 @@
   import ZupassLogin from "./ZupassLogin.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  // From its own module: importing this key from envelope-reprobe.ts would hoist
+  // that deliberately-lazy module into the entry chunk.
+  import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
 
@@ -47,6 +50,25 @@
     },
   };
 
+  // A sign-out this app performed ON ITS OWN — today only the #245 envelope
+  // re-probe, which signs a device out of a phantom account the moment it proves
+  // the real one is reachable. Without a line here the user meets an unexplained
+  // logout, which reads as a fault rather than a repair. Read once and cleared, so
+  // it explains the sign-in it followed and never any later one.
+  let notice = $state<string | null>(null);
+  $effect(() => {
+    if (!visible) return;
+    try {
+      const pending = globalThis.sessionStorage?.getItem(AUTH_NOTICE_KEY);
+      if (pending) {
+        globalThis.sessionStorage?.removeItem(AUTH_NOTICE_KEY);
+        notice = pending;
+      }
+    } catch {
+      /* the notice is an explanation, never a step */
+    }
+  });
+
   // "waiting" until the credential step is done, then "finalizing". Wallet
   // flows that connect before auth.login runs (WalletConnect QR) read null —
   // treat that as still waiting.
@@ -66,6 +88,9 @@
   function close() {
     open = false;
     authing = null;
+    // The modal instance outlives its openings, so drop the notice here or it
+    // re-renders on every later open — sessionStorage was already cleared.
+    notice = null;
     loginRequest.resolve(false);
     onclose?.();
   }
@@ -73,6 +98,7 @@
   function handleComplete() {
     open = false;
     authing = null;
+    notice = null;
     loginRequest.resolve(true);
     onclose?.();
   }
@@ -104,6 +130,10 @@
           &times;
         </button>
       </header>
+
+      {#if notice && !authing}
+        <p class="notice" role="status">{notice}</p>
+      {/if}
 
       {#if authing}
         {@const c = sceneCopy[authing]}
@@ -225,6 +255,18 @@
     color: var(--text-muted);
     line-height: 1.4;
     max-width: 28ch;
+  }
+
+  .notice {
+    margin: 0 0 1rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-subtle);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
   }
 
   .close-btn {

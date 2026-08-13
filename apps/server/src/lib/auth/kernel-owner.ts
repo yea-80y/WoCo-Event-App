@@ -52,9 +52,30 @@ const _kernelOfCache = new Map<string, string>();
 /** kernel (lower) → { owner (lower) | null (undeployed/unset), fetchedAt }.
  *  Owners rotate (recovery), so reads expire; a rotated-away key stops
  *  authenticating within TTL. Undeployed (null) results are cached too so
- *  fresh counterfactual accounts don't eth_call on every request. */
+ *  fresh counterfactual accounts don't eth_call on every request.
+ *
+ *  RULE (#273): a cached read may CONFIRM a signer, never CONDEMN one.
+ *  Recovery rotates the owner in a single transaction and the rotated-IN key's
+ *  first delegation arrives seconds later — inside any useful TTL. A sibling
+ *  session's traffic keeps this entry warm with the PRE-rotation owner, so
+ *  deciding a rejection from cache locked the legitimate new owner out for the
+ *  full TTL ("Invalid signature" on every fresh delegation). isKernelOwner
+ *  therefore re-reads the chain before any rejection that a cached value
+ *  decided. Steady-state traffic (owner matches) never pays the extra call;
+ *  a wrong-key attempt pays one eth_call, behind the auth rate limits. */
 const _ownerCache = new Map<string, { owner: string | null; fetchedAt: number }>();
 const OWNER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Test seam — replaces the on-chain owner fetch (RPC-free tests); null restores. */
+let _ownerFetchOverride: ((kernel: string) => Promise<string | null | "error">) | null = null;
+export function _setOwnerFetchForTests(
+  f: ((kernel: string) => Promise<string | null | "error">) | null,
+): void {
+  _ownerFetchOverride = f;
+}
+export function _resetOwnerCacheForTests(): void {
+  _ownerCache.clear();
+}
 
 /**
  * ECDSAValidator singleton per-account owner storage getter (mirrors the
@@ -100,13 +121,25 @@ export async function readKernelOwner(kernelAddress: string): Promise<string | n
   const key = kernelAddress.toLowerCase();
   const cached = _ownerCache.get(key);
   if (cached && Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS) return cached.owner;
+  return _fetchAndCacheOwner(key);
+}
+
+/** The live read itself: caches definitive answers, never caches "error". */
+async function _fetchAndCacheOwner(key: string): Promise<string | null | "error"> {
   try {
+    if (_ownerFetchOverride) {
+      const owner = await _ownerFetchOverride(key);
+      if (owner === "error") return "error";
+      if (owner) markKernelDeployed(key);
+      _ownerCache.set(key, { owner, fetchedAt: Date.now() });
+      return owner;
+    }
     const validatorAddress = getValidatorAddress(entryPoint, kernelVersion);
     const owner = (await client().readContract({
       address: validatorAddress as Address,
       abi: ECDSA_VALIDATOR_STORAGE_ABI,
       functionName: "ecdsaValidatorStorage",
-      args: [kernelAddress as Address],
+      args: [key as Address],
     })) as Address;
     const lower = !owner || owner.toLowerCase() === zeroAddress ? null : owner.toLowerCase();
     // A real owner means this account is deployed and has one. Remember that
@@ -197,7 +230,25 @@ export function decideKernelOwnership(args: {
 export async function isKernelOwner(eoaAddress: string, parentAddress: string): Promise<boolean> {
   const eoa = eoaAddress.toLowerCase();
   const parent = parentAddress.toLowerCase();
-  const ownerRead = await readKernelOwner(parent);
+
+  const cached = _ownerCache.get(parent);
+  const cacheFresh = cached !== undefined && Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS;
+  const ownerRead = cacheFresh ? cached.owner : await _fetchAndCacheOwner(parent);
+  const allowed = await _decideFromRead(ownerRead, eoa, parent);
+  if (allowed || !cacheFresh) return allowed;
+
+  // A cached answer may confirm ownership, never deny it (#273): re-read the
+  // chain before rejecting. The refresh also retires a rotated-OUT key on its
+  // very next request instead of at TTL expiry — the #200 grace window shrinks
+  // to first contact by the new owner.
+  return _decideFromRead(await _fetchAndCacheOwner(parent), eoa, parent);
+}
+
+async function _decideFromRead(
+  ownerRead: string | null | "error",
+  eoa: string,
+  parent: string,
+): Promise<boolean> {
   const knownDeployed =
     ownerRead === null || ownerRead === "error" ? isKernelKnownDeployed(parent) : false;
 
