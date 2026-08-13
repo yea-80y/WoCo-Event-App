@@ -278,6 +278,36 @@ and carries an addressable identity without an email. Transport for that is Waku
 `docs/WAKU_DISCOVERY.md` and `SWARM_SOCIAL_PLAN` P3 — so messaging can exist without any server
 holding contact details.
 
+## Going on-chain later — a MAYBE, not a plan
+
+Recorded only so the option is known to be open. **Nothing here is proposed, scheduled, or
+assumed.** Credits are off-chain and the reasoning for that is above; this note exists so nobody
+concludes the door was shut.
+
+If it ever became worthwhile, three properties already make migration cheap — none of them chosen
+for that reason:
+
+- **`subject` is a bytes32.** Chain-native already; no identifier remapping.
+- **Statements are canonically encoded with a deterministic digest.** Anchorable as-is.
+- **`seq` gives an unambiguous latest.** So a well-defined state exists to snapshot, with no
+  competing-version reconciliation.
+
+The shape would be a **snapshot, not a replay**: take the index state at a block, anchor a Merkle
+root, riders claim inclusion. Off-chain statements keep working as the write path; the chain
+becomes a settlement layer underneath. Nothing is rewritten and no history is lost.
+
+The one real obstacle is **ed25519** — EVM contracts cannot verify it natively and Arbitrum has no
+precompile. Two existing routes through: a **Stylus** contract, where ed25519 verification in Rust
+is cheap and where there is already precedent (`docs/STYLUS_AGGREGATOR.md`); or the **key-binding
+statement** (see "Identity layering"), which links the ed25519 holder to a secp256k1 address so
+plain Solidity can verify the secp256k1 side.
+
+That is a third reason to build the key-binding statement at P0: it makes `holderSig` verifiable
+by a third party, it fixes indexer discovery, and it is the bridge if this option is ever taken.
+One small object, three problems.
+
+Staying off-chain therefore costs no optionality, which is the opposite of the usual trade.
+
 ## The evidence ladder — ⚠️ NOT v1, DIRECTION ONLY
 
 > **Scope warning.** v1 is option (c): **no vouching at all.** Nothing in this section is built
