@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
+import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import {
@@ -106,6 +107,14 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     // Registration never completed — nothing can be minted, so a seat hold
     // has nothing to hold. Same refusal create-checkout and claim-status give.
     return c.json({ ok: false, error: "Tickets for this event are not currently on sale" }, 409);
+  }
+
+  // Past-event gate (#241) — a hold exists only to become a paid checkout,
+  // and create-checkout refuses ended events, so refuse the hold up front
+  // with the same 409 rather than granting a seat that can never be sold.
+  const salesWindow = checkSalesWindow(event);
+  if (!salesWindow.open) {
+    return c.json({ ok: false, error: salesClosedMessage(salesWindow.reason) }, 409);
   }
 
   // Closure that the reservation store uses to ask "what is available right
