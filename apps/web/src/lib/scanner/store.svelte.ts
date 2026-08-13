@@ -21,7 +21,7 @@ const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
 
 export type ScanOutcome =
-  | { kind: "checked-in"; strength: "onchain" | "ledger"; seriesName: string; edition: number; attendee?: RosterEntry }
+  | { kind: "checked-in"; strength: "onchain"; seriesName: string; edition: number; attendee?: RosterEntry }
   | { kind: "duplicate"; record: CheckinRecord; seriesName?: string; edition: number; attendee?: RosterEntry }
   | { kind: "rejected"; reason: string }
   | { kind: "wrong-event" }

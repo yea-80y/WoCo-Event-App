@@ -88,12 +88,11 @@ function parseQrContent(qr: string): { eventId: string; seriesId: string; editio
 
 /** Build the public URL for a ticket — both the HTML page and the composite
  *  PNG share the same base; the .png suffix toggles between them. */
-function ticketUrl(qrContent: string, buyerEmail?: string, buyerName?: string, png = false, siteId?: string): string | null {
+function ticketUrl(qrContent: string, buyerName?: string, png = false, siteId?: string): string | null {
   const p = parseQrContent(qrContent);
   if (!p) return null;
   const params = new URLSearchParams();
   if (buyerName) params.set("n", buyerName);
-  if (buyerEmail) params.set("e", buyerEmail);
   if (siteId) params.set("s", siteId);
   const q = params.toString();
   const path = `/t/${p.eventId}/${p.seriesId}/${p.edition}/${p.sig}${png ? ".png" : ""}`;
@@ -126,7 +125,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
   const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
     const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
     // Standalone HTML page: fast server-rendered, no SPA load.
-    const pageUrl = ticketUrl(qrContent, to, buyerName, false, siteId);
+    const pageUrl = ticketUrl(qrContent, buyerName, false, siteId);
     const cid = `woco-card-${i}`;
     // Group buys: each ticket carries its own one-shot signup link — forward a
     // ticket to a friend and their click binds THAT edition, not the buyer's.
@@ -238,7 +237,6 @@ export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
         eventDate,
         eventLocation,
         edition,
-        buyerEmail: to,
         buyerName,
         qrContent,
         palette,
