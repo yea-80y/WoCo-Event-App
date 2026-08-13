@@ -312,6 +312,88 @@ Ship: tier 1, the hook, and a counter. Nothing more.
   the per-session join the "witness leaves must be per-observation" paragraph forbids one section
   earlier. Leaves need an observation discriminator. P4 machinery, not freeze-blocking.
 
+## The five blockers, closed (2026-08-13)
+
+### 1. Topic derivation — one scheme, a salt that differs
+
+```
+PUBLIC_SALT = utf8("woco-credit-public-v1")            // a fixed, public constant
+privateSalt = HMAC-SHA256(encryptionPrivKey, "woco-credit-topic-salt-v1")
+
+salt        = published ? PUBLIC_SALT : privateSalt
+
+statement topic = "woco/credit/v1/"       + hex(HMAC-SHA256(salt, subjectHex))
+subject index   = "woco/credit/v1/index/" + hex(HMAC-SHA256(salt, "subject-index"))
+```
+
+`encryptionPrivKey` is the rider's X25519 key from `deriveEncryptionKeypairFromPodSeed`
+(`packages/shared/src/crypto/keys.ts:71`) — deterministic, regenerable on any device, never
+transmitted.
+
+**This fully closes the presence leak, not just narrows it.** The review's attack was: opting in
+reveals your feed-owner address, after which every private head topic becomes probeable. With a
+salted private topic, knowing the feed owner is *not enough* — an observer also needs the salt,
+which is derived from a key only the rider holds. So publishing one coaster never exposes the
+addresses of the others.
+
+Opt-in is a republish at the public topic. Prior private versions stay where they were: encrypted,
+at addresses nobody else can compute. Opting in exposes what you publish from then on, and nothing
+retroactively.
+
+The subject index gets the same treatment, which the earlier revision never specified at all —
+unsalted it would have leaked exactly what the sealed statements hide.
+
+### 2. `holderSig` digest — written down
+
+```
+signedBytes = utf8("woco-credit-v1\n") || dagCbor(statement without holderSig)
+digest      = keccak256(signedBytes)
+holderSig   = ed25519.sign(digest, holderPrivKey)
+```
+
+Encoder is the LOCKED `packages/shared/src/pod/canonical.ts`. The explicit domain prefix, rather
+than relying on the `format` field alone, mirrors the cross-protocol argument in
+`apps/server/src/lib/ticket/owner-binding.ts:8-10`: a signature over these bytes cannot collide
+with the same key's POD-manifest signatures, because a manifest digest is `keccak256(dagCbor(body))`
+with no prefix, so the byte strings can never be equal.
+
+Absent optional fields are **omitted, never null**.
+
+### 3. `sessionDate` is UTC in the signed object
+
+The signed object carries UTC. Park-local display is a view-layer concern resolved through the
+subject registry.
+
+Rejected: park-local in the payload. The registry is mutable, so a later timezone correction would
+retroactively reinterpret already-signed statements — a signed field must not depend on mutable
+external state. Rejected too: carrying a UTC offset per statement, which adds permanent schema
+surface to solve a display problem.
+
+Consequence to accept: a session running past local midnight splits across two dates. Display can
+recombine; the signed record stays unambiguous forever.
+
+### 4. `woco.credit.v1` is CLOSED
+
+Because `holderSig` covers canonical DAG-CBOR of the whole object, **any added field is
+`woco.credit.v2`.** No exceptions, including "harmless" optional additions.
+
+Indexers must reject unknown fields rather than ignore them, so a v2 object can never be silently
+misread as a v1 one. This is why the `session` block and the `exitTokens` hook must exist in v1
+even while empty — see the scope carve-out.
+
+### 5. `seq` equivocation — lower digest wins
+
+Two validly-signed statements at the same `(holder, subject, seq)`:
+
+- **Lower canonical digest wins.** Deterministic, so two honest indexers always agree, and no data
+  is lost — which rejecting both would risk on an ordinary device-sync bug.
+- The indexer **flags** the equivocation rather than hiding it. Repeated equivocation by one holder
+  is a signal worth surfacing.
+
+Grindability is acceptable here: a rider could craft two statements and pick which wins, but at
+tier 1 they already control their own count, so it buys nothing. The same reasoning applies to the
+holderSig-bytes-ascending rule for the per-window cap.
+
 ## Data structures
 
 New in `packages/shared/src/credit/`. Reuses the LOCKED primitives in
@@ -453,7 +535,7 @@ The device signs locally and needs no network — it can run all day offline at 
 
 ### Issuer witness batch — tier 3 only
 
-The issuer collects `(holder, subject, sessionDate)` tuples it observed, builds a Merkle
+The issuer collects PER-OBSERVATION leaves it witnessed — `(holder, subject, sessionDate, observationNonce)`, never one tuple per session, or a single observation would validate a session claiming any count, builds a Merkle
 tree, and ed25519-signs ONE manifest over the batch — same envelope shape as
 `ManifestV1Body`, with `prevBatch` chaining so an indexer can walk issuer history and
 omission is detectable. One signature and one upload per batch, regardless of size.
@@ -710,7 +792,7 @@ and the witness batch is a single upload. The on-chain variant puts all three on
 | Replaying an old statement | `seq` — latest = highest seq. Without it there is NO rebuildable ordering, since `total` breaks monotonicity under correction and no public mapping links `holder` to its feed owner. |
 | Replaying an exit token | Token binds `windowStart`; indexer rejects stale windows. |
 | Reusing a photographed exit QR later | Rotation — a captured token expires in ~30s. |
-| Sharing a live exit QR within its window | **Not solved.** Structural to a displayed code. Bounded by `MAX_STATEMENTS_PER_TOKEN_WINDOW = 40` + `MIN_MINUTES_BETWEEN_CREDITS = 5`. Tier 2 claims the token was present, not the rider. |
+| Sharing a live exit QR within its window | **Not solved.** Structural to a displayed code. Bounded by `MAX_STATEMENTS_PER_TOKEN_WINDOW = 40` + the per-subject `cadenceMinutes` from the subject registry. Tier 2 claims the token was present, not the rider. |
 | Inflating a self-reported count | Nothing, by design. That is what `evidence: "self"` declares. |
 | Bulk fraud across many accounts | Cycle-time plausibility rule + tier separation in the UI. |
 | Issuer backdating a witness batch | Optional anchor timestamps the digest. |
