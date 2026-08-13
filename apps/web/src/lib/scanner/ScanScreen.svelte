@@ -86,9 +86,7 @@
           <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
         {/if}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
-        <span class="verdict-badge">
-          {outcome.strength === "onchain" ? "✓ on-chain signature verified" : "✓ claim-ledger verified"}
-        </span>
+        <span class="verdict-badge">✓ on-chain signature verified</span>
       {:else if outcome.kind === "duplicate"}
         <span class="verdict-title">ALREADY IN</span>
         {#if outcome.attendee?.name || outcome.attendee?.email}
