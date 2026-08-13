@@ -4,12 +4,9 @@ import type { Hex0x } from "../types.js";
 // Door check-in — shared between server, dashboard, and the scanner PWA.
 //
 // Trust model:
-// - v2 (on-chain) series: the QR sig recovers to the on-chain slotOwner. The
-//   scanner verifies this offline against `slotOwners` from the CheckinPack.
-// - v1 (Swarm-only) series: the QR sig is the creator's ed25519 edition sig,
-//   which is public feed data — it proves the ticket exists, not who holds
-//   it. The scanner matches sha256(sig) against the claim ledger and relies
-//   on the one-time-use nullifier as the real gate.
+// - The QR sig must recover to the on-chain slotOwner. The scanner verifies
+//   this offline against `slotOwners` from the CheckinPack. A series with no
+//   `onChainEventId` is rejected — there is no owner to recover against.
 // - The roster is AES-GCM ciphertext end-to-end: the key travels only in the
 //   door-pass URL fragment and is never sent to the server.
 // ---------------------------------------------------------------------------
@@ -49,13 +46,12 @@ export interface CheckinSeries {
   seriesId: string;
   name: string;
   totalSupply: number;
-  /** Present for v2 series — enables offline ecrecover verification. */
+  /** Required for a series to be verifiable — enables offline ecrecover.
+   *  Absent means the scanner rejects every ticket for this series. */
   onChainEventId?: Hex0x;
-  /** v2: lowercase owner address per slot (index = edition - 1); zero-address
+  /** Lowercase owner address per slot (index = edition - 1); zero-address
    *  slots are unclaimed. */
   slotOwners?: string[];
-  /** v1: claimed editions with sha256(originalSignature) hex for QR matching. */
-  claimedEditions?: Array<{ edition: number; sigHash: string }>;
 }
 
 /** Everything a scanner device needs to operate offline. */
