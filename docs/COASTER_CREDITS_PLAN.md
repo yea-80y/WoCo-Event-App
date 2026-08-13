@@ -195,6 +195,123 @@ apps, no attestation, and unable to separate a ride exit from the adjacent path 
 structures. It is also the worst possible signal for an under-18 audience (see Legal).
 Never gate a credit on it.
 
+## FREEZE BLOCKERS — five items, from the second Fable review (2026-08-13)
+
+Second independent review, 30/30 messages Fable-attested. It verified every Swarm claim in the
+revision against source and found them all correct — the two earlier primitive errors are
+genuinely fixed and no third exists. The field list survived adversarial reading.
+
+**But the schema is NOT safe to freeze**, because a freeze today would freeze a payload without
+its addressing. These five must close first. All are days, not weeks, and none disturbs any
+decided item.
+
+**1. The head-topic derivation is never specified.** The plan lists "the head topic" among
+things to freeze and then never gives a topic string — not for the statement head, not for the
+subject index. Everything addresses through it: `identifier = keccak256(topic)`
+(`soc.ts:190-192`), `chunk address = keccak256(identifier || owner)` (`:85-89`). Freezing
+`CreditStatementV1` without the topic scheme freezes the passenger, not the vehicle.
+
+**2. Private topics must be SALTED — this is a real privacy hole, not a nicety.**
+
+Plain version: sealing a letter but filing it in a public cabinet under a drawer labelled with
+your name and the coaster's name. Anyone can see you have a Nemesis drawer and count how often
+you refile it, without ever reading a letter.
+
+Encryption protects the payload; it does nothing about **presence at a deterministically
+computable address**. Worse, `apps/server/src/lib/swarm/soc-upload.ts:222-231` whitelists every
+relayed SOC on the public gateway — verbatim, "so ANY device can read it directly from the
+gateway" — and versions are contiguous, so **version count ≈ activity count** is readable too.
+
+The only protection is that a rider's feed-owner address is not publicly linked to them. That
+evaporates at the first opt-in: the published evidence manifest must point at the rider's actual
+signed chunks (`SWARM_SOCIAL_PLAN.md:34-36`), revealing their feed owner — after which **every
+private head topic they own becomes probeable**. Publish your Rita count, leak the cadence of
+everything else. For a children's service that is precisely the routine-inference this plan bans
+timestamps to prevent.
+
+Fix, and it must be inside the freeze because it cannot be retrofitted once statements exist at
+unsalted addresses: derive private topics from `HMAC(encryptionKey, subject)` rather than the
+plain subject, migrating to the public derivation on opt-in. The per-holder subject index needs
+the same treatment — it otherwise leaks everything the sealed statements hide, and the plan
+never states its visibility at all.
+
+Note **ACT does not solve this.** Confirmed against the Swarm API docs: `POST /soc/{owner}/{id}`
+and `POST /feeds/{owner}/{topic}` do accept `swarm-act`, so ACT *is* available for SOCs — but it
+encrypts the payload, not the address. Presence remains observable. ECIES-to-self also stays the
+better choice for credits regardless: a grantee list of one buys nothing, and ACT adds a history
+reference whose loss is permanent and irrecoverable, where an ECIES key re-derives from the POD
+seed on any device.
+
+**3. The `holderSig` digest is named but not written.** "Canonical CBOR, domain-separated" is a
+description, not a spec. It must be written before the first signature exists.
+
+**4. No closed-schema rule.** Because `holderSig` covers canonical DAG-CBOR of the whole object,
+`woco.credit.v1` must be declared **closed** — any added field is `woco.credit.v2`. Deterministic
+DAG-CBOR is unambiguous about absent optionals provided v1 specifies omitted-not-null. Say so.
+
+**5. `seq` equivocation has no rule.** Two validly-signed statements at the same `seq` with
+different totals — a device-sync bug, or deliberate — have no resolution, so two honest indexers
+can disagree, breaking "rebuildable identically". Any deterministic tie-break works; pick one.
+Same class as the holderSig-bytes-ascending rule for the 40-per-window cap (note that rule is
+grindable by choosing keys — acceptable, but say so).
+
+### Verdict on scope, with one carve-out
+
+The verification stack is **not v1**. Devices, allowlists, witness batches and the issuer
+registry are correctly deferrable, because the materials-in/tier-computed design makes them
+addable without migrating a single statement.
+
+**The carve-out:** the `session` block and the `exitTokens` hook **are v1 schema**. Since
+`holderSig` covers a closed canonical object, they cannot be added later without a format bump —
+and that is the one migration this plan cannot afford to need mid-park-conversation. The hook
+only needs to *exist* in v1; the token format can be pinned at P3.
+
+Ship: tier 1, the hook, and a counter. Nothing more.
+
+### Corrections to this document, also from that review
+
+- **"Nothing is ever summed" overclaims.** True of the self-declared `total` only. The *verified*
+  count — the number that eventually matters for gating — is necessarily a sum of deduped
+  observations across the walked version history. Two aggregation rules exist; both must be named.
+- **Badge eligibility is the actual trust boundary, and it is unpinned.** The gate never sees a
+  count, but the badge *issuer* does when deciding who crossed 100. If that policy reads the
+  blended `total`, a self-reported number becomes chain-anchored the moment the badge mints. The
+  issuer must read the **verified** count, never `total`, and the per-badge evidence requirement
+  belongs in the badge's own definition.
+- **The identity bridge is real work.** Credits accrue to the ed25519 holder; on-chain slots are
+  owned by wallet addresses. Badge claim must bind them — reuse the existing claim rail
+  (`ClaimedTicket.owner` + server-verified parent) rather than inventing a second binding.
+- **Rebuildability needs a named enumeration.** A from-scratch rebuilder cannot compute a single
+  address without a public holder→feed-owner mapping. The evidence manifest or a public carrier
+  is an acceptable answer — the same shape `SWARM_SOCIAL_PLAN` accepts — but it must be stated,
+  and it is in direct tension with blocker 2 for private riders. The topic decision has to serve
+  both.
+- **Commitment 2 exception must be recorded.** `SWARM_SOCIAL_PLAN.md:29-31` says subjects are
+  never keyed by WoCo-internal ids; a WoCo-minted ULID is exactly that. Defensible — a coaster is
+  not a sovereign identity and aliases restore interop — but the exception and its reasoning must
+  be written down rather than silently taken.
+- **`prevSession` is derivable** from `(owner, base, version)` and is schema surface frozen
+  forever for something a reader can compute. Consider dropping it.
+- **Opt-in copy has a disclosure consequence.** `ClaimedTicket.owner` is the same ed25519 key, so
+  publishing credits links a rider's coaster identity to their event-attendance identity. The
+  consent wording must say so.
+- **Pilot-day write load is unexamined.** In the P1 relay shape every statement transits
+  `uploadSignedSoc` — one batch, 6-wide semaphore (`upload-queue.ts:19`), 423-per-bucket
+  contention. 1,000 fans × 5 rides is ~5,000 relayed SOCs on the same VM serving stream-day
+  reads. The plan flags the read spike, not the write one.
+- **"History is free" is storage-only.** Reads are O(versions) sequential probes, and computing a
+  verified count means walking every version, since tokens live in per-day session blocks. A
+  109-lap tier-2 day is 109 versions. Amortisable with hints, but the index cache becomes
+  semi-load-bearing.
+
+### Contradictions to clean up
+
+- The security table still cites `MIN_MINUTES_BETWEEN_CREDITS = 5` as a global constant; the Caps
+  section abolished it in favour of per-subject `cadenceMinutes`. Leftover from the prior revision.
+- The witness-batch section defines leaves as `(holder, subject, sessionDate)` tuples — exactly
+  the per-session join the "witness leaves must be per-observation" paragraph forbids one section
+  earlier. Leaves need an observation discriminator. P4 machinery, not freeze-blocking.
+
 ## Data structures
 
 New in `packages/shared/src/credit/`. Reuses the LOCKED primitives in
