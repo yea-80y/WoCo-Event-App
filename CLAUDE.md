@@ -132,10 +132,8 @@ FEED TOPICS:
   woco/event/directory                    # Global event listing
   woco/event/{eventId}                    # Event details + ticket series
   woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
-  woco/pod/editions/{seriesId}[/p{N}]     # Tickets, 128 per page
-  woco/pod/claims/{seriesId}[/p{N}]       # Mirrors editions
-  woco/pod/claimers/{seriesId}            # Who claimed what
   woco/pod/collection/{ethAddress}        # User's collection
+  woco/recovery/{kernelAddress}[...]      # Recovery escrow + status + by-guardian hint (see topics.ts)
   woco/profile/data/{ethAddress}          # User profile
   woco/profile/avatar/{ethAddress}        # Avatar ref (separate feed → independent updates)
   woco/marketing/list/{ethAddress}        # Sealed contact-list pointer
