@@ -6,7 +6,14 @@ export interface SeriesManifestData {
   seriesId: string;
   podBodies: PodV2Body[];
   signedManifest: SignedManifestV1;
-  /** keccak256(abi.encode(organiserAddress, nonce+i)) — the predicted on-chain eventId */
+  /**
+   * `keccak256(abi.encode(organiserAddress, nonce+i))` — INFORMATIONAL, despite
+   * the name. It does not match the on-chain eventId: the contract derives that
+   * from the SPONSOR address and the sponsor's own `organiserNonce`, while both
+   * call sites here pass the organiser address with nonce hardcoded to 0.
+   * The authoritative id is the one `registerEvent` emits; the chain join is
+   * `manifestDigestHex`.
+   */
   predictedOnChainEventId: string;
   /** keccak256(dagCbor(manifestBody)) == on-chain manifestRef */
   manifestDigestHex: string;
@@ -35,7 +42,13 @@ export interface BuildEventManifestsOpts {
 
 const _abiCoder = AbiCoder.defaultAbiCoder();
 
-/** Predict the on-chain eventId for a given organiser address and nonce. */
+/**
+ * Derive the informational eventId baked into manifests and pod bodies.
+ *
+ * NOT a prediction of the on-chain eventId — `registerEvent` keys on the sponsor
+ * address and the sponsor's nonce, neither of which is available here. Kept
+ * because the value is committed inside signed manifests already in the wild.
+ */
 export function predictOnChainEventId(organiserAddress: string, nonce: bigint): string {
   return keccak256(_abiCoder.encode(["address", "uint256"], [organiserAddress, nonce]));
 }
