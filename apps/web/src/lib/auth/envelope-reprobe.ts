@@ -27,8 +27,8 @@
  * not control TO one it provably controls right now. A hostile RPC can suppress
  * the heal; it cannot redirect it (the envelope is sealed to a PRF-derived HPKE
  * key, so a forged or replayed one decrypts to nothing else). A credential
- * orphaned BY a recovery reads a different owner and is deliberately left alone —
- * see the `orphaned` outcome.
+ * orphaned BY a recovery reads a different owner and gets a TOMBSTONE (#283) —
+ * the honest refusal at its next login — see the `orphaned` outcome.
  *
  * COST, and why the shape is what it is. A Swarm lookup that MISSES is a full
  * network search on our own gateway — the expensive direction, and the shape that
@@ -50,6 +50,7 @@
  */
 
 import type { PortabilityRead, portabilityEnvelopeExists } from "./recovery-portability.js";
+import { orphanedCredentialMessage } from "./orphaned-credential.js";
 
 /** The existence probe's three states, taken from its implementation so the two cannot drift. */
 export type EnvelopePresence = Awaited<ReturnType<typeof portabilityEnvelopeExists>>;
@@ -70,6 +71,9 @@ export interface EnvelopeReprobeDeps {
   readEnvelope: (passkeyPrivKey: string) => Promise<PortabilityRead>;
   /** Durable device-local fact: this PRF-EOA opens the preserved Kernel. THE heal. */
   putRecoveryBinding: (podAddress: string, kernel: string) => Promise<void>;
+  /** Durable device-local fact, the opposite direction (#283): this PRF-EOA's
+   *  account was recovered away — the next login refuses honestly. */
+  writeOrphanTombstone: (kind: ReprobeKind, eoa: string, fact: { kernel: string; owner: string }) => void;
   /** Drop the poisoned `woco:kaddr:` entry (auth-store owns that key's format). */
   clearCachedKernelAddress: (kind: ReprobeKind, eoa: string) => void;
   /** True only while the store still holds the identity this probe was launched for. */
@@ -96,10 +100,11 @@ export type ReprobeOutcome =
   | { status: "confirmed" }
   /**
    * The chain says this parent is deployed and owned by SOMEONE ELSE — proof the
-   * credential was orphaned by a recovery (#255). Reported, never acted on: see
-   * the note at the call site for why acting here makes it worse.
+   * credential was orphaned by a recovery. The tombstone is written (#283) so
+   * the next login refuses honestly (#255's message), and the phantom session
+   * is signed out if the user is still in it.
    */
-  | { status: "orphaned"; owner: string }
+  | { status: "orphaned"; owner: string; signedOut: boolean }
   /** Nobody could answer. No durable state written, no attempt consumed. */
   | { status: "inconclusive"; reason: string }
   /** A probe ran and produced no envelope to apply. An attempt IS consumed. */
@@ -194,6 +199,10 @@ export function _resetInFlightForTests(): void {
  *    assertion plus the server's owner-of-Kernel authorization still stand behind
  *    it. Worst case for a corrupt `ok` is a heal that never happens.
  *  - the recovery binding, on a heal, after the chain has proven ownership.
+ *  - the orphan tombstone (#283), ONLY on a positive, definitive chain read of
+ *    a FOREIGN owner for the cached parent — the mirror image of `ok`. It gates
+ *    the next login into the honest refusal; a wrong one can only refuse a
+ *    login that recovery repairs, never grant one.
  *
  * MUST NOT write, ever:
  *  - a new or refreshed `woco:kaddr:` entry. This path can only DELETE one. A
@@ -264,13 +273,23 @@ export async function reprobeEnvelope(
         writeState(store, kind, eoa, { ...spent, ok: cachedParent.toLowerCase() });
         return { status: "confirmed" };
       }
-      // Deployed, and this credential does not own it: proof of orphaning. The
-      // binding-carrying twin of this state now fails honestly at login (#255),
-      // but this credential has no binding to trip that guard, and clearing the
-      // kaddr entry here would just let the next slow-path login re-mint and
-      // re-cache the same counterfactual. Report and stop — #283 tracks acting.
+      // Deployed, and this credential does not own it: proof of orphaning.
+      // This credential has no binding or envelope to trip #255's login guard,
+      // so the proof is KEPT as a tombstone (#283) — the login checks it before
+      // any cache and refuses honestly. The kaddr entry is deliberately left:
+      // the tombstone gates everything, and deleting the entry would only make
+      // a tombstone-less login (storage partially cleared) re-mint and re-cache
+      // the same counterfactual. The phantom session is torn down only if the
+      // user is still in it — it can answer nothing anyway (#256's banner is
+      // the fallback explainer if they stay).
       writeState(store, kind, eoa, spent);
-      return { status: "orphaned", owner };
+      deps.writeOrphanTombstone(kind, eoa, { kernel: cachedParent, owner });
+      const orphanSignedOut = deps.isStillSignedInAs(eoa, cachedParent);
+      if (orphanSignedOut) {
+        deps.postNotice?.(orphanedCredentialMessage(kind));
+        await deps.logout();
+      }
+      return { status: "orphaned", owner, signedOut: orphanSignedOut };
     }
 
     // Undeployed: consistent with poisoning AND with a legitimate account that has
