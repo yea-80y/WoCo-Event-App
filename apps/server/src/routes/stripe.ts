@@ -24,6 +24,7 @@ import {
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
+import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { hashEmail, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
@@ -564,6 +565,22 @@ stripe.post("/create-checkout", async (c) => {
       { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
       409,
     );
+  }
+
+  // Past-event gate (#241). The "This event has ended" banner is client-side
+  // only — a stale tab, deep link, or direct API call otherwise reaches a
+  // live Checkout Session for an event that is over, and the mint behind it
+  // reverts SalesClosed, i.e. charge-then-auto-refund. Refuse before charging,
+  // the same trade as the registration gate above. Fails CLOSED on a feed
+  // whose dates don't parse (see lib/event/sales-window.ts).
+  const salesWindow = checkSalesWindow(event);
+  if (!salesWindow.open) {
+    console.warn(
+      `[stripe/create-checkout] BLOCKED — sales window ${salesWindow.reason}; refusing to charge ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+      `end=${event.endDate || event.startDate || "<none>"})`,
+    );
+    return c.json({ ok: false, error: salesClosedMessage(salesWindow.reason) }, 409);
   }
 
   // One contract read serves the sold-out pre-check and the firstN tier count.

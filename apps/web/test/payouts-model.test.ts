@@ -88,6 +88,19 @@ test("anything else is a server problem, with the raw text kept for the console 
   assert.notEqual(f.message, f.detail);
 });
 
+test("the envelope's machine code decides auth, whatever the text says (#256)", () => {
+  // These are real verify-delegation reason strings. None contains an
+  // AUTH_HINTS substring, so before the code was consulted they classified as
+  // `server` — "try again in a moment", advice that can never work.
+  for (const text of ["Invalid delegation", "Invalid host: evil.example", "Verification failed"]) {
+    assert.equal(classifyFailure(text).kind, "server", `hint fallback moved: ${text}`);
+    assert.equal(classifyFailure(text, "SESSION_INVALID").kind, "auth", `code ignored: ${text}`);
+  }
+  // A non-auth code changes nothing — the text hints still decide.
+  assert.equal(classifyFailure("HTTP 500: boom", "SOMETHING_ELSE").kind, "server");
+  assert.equal(classifyFailure("HTTP 401: Unauthorized", "SOMETHING_ELSE").kind, "auth");
+});
+
 // ── 1. Money ───────────────────────────────────────────────────────────────
 
 test("currency exponents come from Intl, not an assumption of 2 decimals", () => {

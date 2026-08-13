@@ -12,8 +12,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   finalizeRecovery,
+  gatherBackfillArgs,
   type RecoveryFinalizeDeps,
 } from "../src/lib/auth/recovery-finalize.js";
+// The REAL payload type (#260): a local copy here would let the test's
+// deepEqual keep pinning a shape production no longer sends.
+import type { PortabilityBackfillArgs } from "../src/lib/auth/recovery-portability.js";
 
 const PRESERVED = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as const;
 const PRF_EOA = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -21,17 +25,10 @@ const PRF_KEY = "0x1111111111111111111111111111111111111111111111111111111111111
 const POD_SEED = "seed-restored-from-escrow";
 const FEED_KEY = "0x2222222222222222222222222222222222222222222222222222222222222222";
 
-type BackfillArgs = {
-  passkeyPrivKey: string;
-  preservedKernelAddress: string;
-  podSeed: string;
-  feedSignerPrivKey?: string;
-};
-
 /** Happy-path deps for a passkey recovery, with call recording. */
 function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
   const calls: string[] = [];
-  const backfillArgs: BackfillArgs[] = [];
+  const backfillArgs: PortabilityBackfillArgs[] = [];
   const d: RecoveryFinalizeDeps = {
     kind: () => "passkey",
     ensureSession: async () => {
@@ -70,6 +67,23 @@ test("passkey happy path: session first, then the envelope for the PRESERVED Ker
       feedSignerPrivKey: FEED_KEY,
     },
   ]);
+});
+
+test("#260: the gather helper is the ONE owner of the preamble — payload pinned at the source", async () => {
+  // finalizeRecovery and auth-store's mint-time backfill both feed from this,
+  // so a field added to the payload changes exactly one gatherer — the
+  // ping-pong drift (#153 class) has nowhere to start.
+  const { d } = deps();
+  const g = await gatherBackfillArgs(d);
+  assert.deepEqual(g, {
+    status: "ready",
+    args: {
+      passkeyPrivKey: PRF_KEY,
+      preservedKernelAddress: PRESERVED,
+      podSeed: POD_SEED,
+      feedSignerPrivKey: FEED_KEY,
+    },
+  });
 });
 
 test("an already-current envelope is success, not a retry loop", async () => {
