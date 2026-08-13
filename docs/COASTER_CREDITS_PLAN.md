@@ -1,8 +1,8 @@
 # Coaster Credits — Rider-Signed Credentials Plan
 
 STATUS (2026-08-13): DESIGN, revised after an independent Fable review (54/54 messages
-Fable-attested). Not started. Schema is NOT yet frozen — see the identity decision under
-Open questions. Origin: the Rita 100 charity challenge
+Fable-attested). Not started. Identity and visibility are DECIDED (see Open questions);
+remaining schema questions are listed there and must close before first write. Origin: the Rita 100 charity challenge
 (Digital Dan, September 2026) as the pilot for a general ride-credit system.
 
 Companion to `docs/SWARM_SOCIAL_PLAN.md` — this shares its indexer, its trust model and
@@ -585,35 +585,69 @@ registry, self-report import, NFC.
 
 ## Open questions
 
-### DECISION REQUIRED before first write — one identity or pairwise?
+### Identity and visibility — DECIDED 2026-08-13
 
-`holder` is currently the rider's raw ed25519 POD key, the same key that owns their tickets.
-That is what makes a single passport view coherent, and it was a deliberate product choice.
+**One identity, encrypted by default, publication opt-in.** Locked; do not reopen without
+new facts.
 
-The cost: a permanent, public, pseudonymous record of which coasters an identity rode and on
-which dates — for an audience that is largely children — under the same key that owns tickets
-whose order blobs an organiser can decrypt to a real name and email. That chain is what turns
-pseudonymous into identified.
+- `holder` stays the rider's raw ed25519 POD key — the same identity that owns their tickets,
+  so the passport view is coherent and tickets and credits share an owner.
+- A credit statement is **ECIES-sealed to the rider's own X25519 key by default**, derived via
+  `deriveEncryptionKeypairFromPodSeed` (`packages/shared/src/crypto/keys.ts:71`) — deterministic,
+  same on any device, no extra wallet prompt. Seal/open are `sealJson`/`openJson`
+  (`packages/shared/src/crypto/ecies.ts`). No new crypto and no new key ceremony.
+- Publishing writes the statement in the clear. An indexer cannot count what it cannot read,
+  so encrypted credits are the rider's private record and published ones feed public counts.
 
-The alternative is a **pairwise key**: derive a separate credit identity from the same
-account, so credits and tickets share no public identifier. It protects the diary and
-**breaks the passport view**.
+Why not a pairwise key: it protects the location record but breaks the passport view **and
+still publishes everything by default**. Encryption protects the record and keeps the passport.
 
-Erasure is also unimplementable as designed: superseding a statement does not unpublish it —
-old SOC versions stay readable at computed addresses while stamped. The honest framing is
-"erasure = stop re-stamping + gateway suppression", and that must be stated rather than implied.
+Why not "just don't write it": that was the earlier suggestion and it is worse — nothing
+durable exists, so losing the device loses the history. Encrypted-on-Swarm is private *and*
+durable *and* portable.
 
-Mitigations already applied that narrow the question: `firstAt`/`lastAt` are gone from the
-default payload, so the routine-pattern risk is largely removed; date granularity remains.
+**Publishing is a one-way door.** SOC versions are immutable, so private → public is fine and
+public → private is impossible. The UI must say so at the moment of choosing, not in a policy
+page.
 
-A third option worth weighing: **one identity, publication opt-in.** Keep a single key and a
-private default — a rider's credits stay device-local until they choose to publish. No
-statement, no exposure, and a private-by-default posture is a stronger answer to the ICO
-code's data-minimisation and high-privacy-default standards than a pairwise key on a
-public-by-default feed. It preserves the passport view for those who opt in.
+#### The publication choice is asked, not defaulted
 
-This is a product and legal decision, not a technical one. It is cheap now and impossible
-after the first statement exists.
+Public counts are core to this culture — Captain Coaster has public profiles and rankings,
+enthusiasts carry counts in forum signatures, comparing is half the hobby. A silently private
+default would bury the feature the most engaged users actually want.
+
+So: **ask once, at the first credit**, private pre-selected, neutral wording, no nudge
+patterns. An active choice is a stronger children's-code posture than a silent default, needs
+no age question, and puts the public count one tap away.
+
+Pilot: Dan publishes — a public counter is the point. Fans default to a private keepsake and
+opt in to appear on the leaderboard. A keepsake must never require a publication decision from
+a child standing in a queue.
+
+#### Erasure, stated honestly
+
+Superseding a statement does not unpublish it — old SOC versions stay readable at computed
+addresses while stamped. Erasure means "stop re-stamping, plus gateway suppression". Say that
+plainly rather than implying deletion.
+
+### Times: attested only, never declared
+
+`firstAt`/`lastAt` are deliberately absent, for two independent reasons.
+
+**Privacy:** per-ride times turn a credit log into a routine — "this key rode Rita at 14:32
+every Saturday" — which is what the ICO code's geolocation standard exists to prevent for this
+audience.
+
+**And they would not work anyway.** A self-declared timestamp proves nothing: a rider claiming
+50 rides in an hour will declare plausible times alongside them. Declared times add *false*
+confidence to a self-reported count, which is worse than none.
+
+Attested times already exist where they are needed: exit tokens carry `windowStart` signed by
+the device, which the rider cannot forge. That is what the per-window cap and the cadence rule
+read, and it is why both are enforceable only at tiers 2/3.
+
+Consequence for record claims — "most laps in a day" and similar: those must require tier 2 or
+3. A record is never creditable from self-reported data, whatever times it carries.
 
 ### Still open
 
