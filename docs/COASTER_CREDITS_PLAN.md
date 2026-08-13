@@ -208,7 +208,18 @@ signs every statement… NEVER the platform `FEED_PRIVATE_KEY`, NEVER the 30-day
 key." The parent's only involvement anywhere is the one-time EIP-712 derivation signature
 that produces the feed key — a key-stretch, not a feed write.
 
-## The evidence ladder
+## The evidence ladder — ⚠️ NOT v1, DIRECTION ONLY
+
+> **Scope warning.** v1 is option (c): **no vouching at all.** Nothing in this section is built
+> for v1 — no exit tokens, no device keys, no allowlists, no cadence caps, no tier computation.
+> The `exitTokens` field exists in the frozen schema but stays **empty**, purely so verification
+> can arrive later without a format bump.
+>
+> This section is retained because the schema must accommodate it, and because the reasoning
+> (especially the relay-window limits and the count-bounding rules) is expensive to re-derive.
+> Read it as design intent, not as a build list.
+
+### The ladder (when it eventually exists)
 
 Every credit has an evidence tier. **The tier is COMPUTED by the indexer from materials in
 the statement — it is never a field the rider declares.** A rider-signed `evidence:
