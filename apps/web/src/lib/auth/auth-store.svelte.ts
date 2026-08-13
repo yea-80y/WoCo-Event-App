@@ -2767,7 +2767,7 @@ export const auth = {
   // #245 — awaited post-recovery step: mint the session, then write + verify the
   // cross-device portability envelope. Thin delegation only (this file is frozen);
   // the logic and the reasoning live in recovery-finalize.ts.
-  finalizeRecovery: async (opts?: { expectPasskey?: boolean }) => {
+  finalizeRecovery: async (opts?: import("./recovery-finalize.js").RecoveryFinalizeOptions) => {
     const { finalizeRecovery } = await import("./recovery-finalize.js");
     return finalizeRecovery(
       {

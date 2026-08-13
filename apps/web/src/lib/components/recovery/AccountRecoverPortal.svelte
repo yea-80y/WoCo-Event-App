@@ -233,7 +233,15 @@
       // The kind is captured from the CEREMONY, not read live: signing out while
       // parked on the warning below would otherwise route a passkey retry down
       // the web3auth branch and render success with no envelope written.
-      const result = await auth.finalizeRecovery({ expectPasskey: newOwnerKind === "passkey" });
+      const result = await auth.finalizeRecovery({
+        expectPasskey: newOwnerKind === "passkey",
+        // Silent retries happen inside the step (#273); this keeps the spinner
+        // honest and puts the real failure reason in the console for diagnosis.
+        onRetry: (attempt, reason) => {
+          console.warn(`[recovery] finalize retry ${attempt}:`, reason);
+          restoreStep = "Taking a little longer than usual — still securing your other devices…";
+        },
+      });
       if (result.status === "failed") {
         console.warn("[recovery] finalize failed:", result.reason);
         warnRetryable = result.retryable;
@@ -318,9 +326,10 @@
           {:else if newOwnerKind === "passkey"}
             <p class="result-title">We couldn't finish securing your other devices</p>
             <p class="result-body">
-              Your account works on this device, but until this step completes, signing in
-              with this passkey on another device may not find it. Retrying is safe —
-              nothing is lost by trying again.
+              We tried a few times automatically. Your account is safe and working on this
+              device — but until this step completes, signing in with this passkey on
+              another device may not find it. Trying again is safe, now or later; nothing
+              is lost by retrying.
             </p>
           {:else}
             <p class="result-title">We couldn't finish the last step</p>
