@@ -142,6 +142,55 @@ email = implicit consent — supports group buys"). That is a deliberate group-b
 affordance, but it carries different weight once an imported ticket can be sold for money:
 whoever clicks first acquires a sellable asset. Revisit the tradeoff when resale ships.
 
+### Why holder-signed tickets are worth more than the resale case alone (2026-08-13)
+
+#265 was assessed on resale and judged close to vanity. That undersold it. Three properties come
+from the same change, and only one is resale:
+
+**1. A per-user unique QR that cannot be shared.** Today the QR carries a signature made once at
+purchase that never changes — static and bearer, so a photograph is as good as the original. If
+the holder signs a **fresh challenge** at the door instead, a copy is worthless without the key.
+That is the difference between a claim about the past and a live demonstration.
+
+**2. The ticket becomes an authentication credential.** A credential bound to a key, whose
+possession is provable on demand, gates things — venue access, member content, a returning-customer
+discount. A bearer token cannot do this, because possession proves nothing about identity.
+
+**3. Owner-authorised resale**, the original case.
+
+**The supply question, and why "one POD claimed by many" does not work for tickets.** Credits are
+unbounded and tickets are not — 600 people must not claim into a 500-capacity event. The on-chain
+slot is the supply ledger; removing it means reintroducing a counter with a single point of truth.
+
+But the pre-signing IS removable, and should be. Today the organiser pre-signs N ticket bodies at
+creation, which is the linear cost in #263 and commits metadata for editions nobody has bought.
+Better shape:
+
+| concern | today | proposed |
+|---|---|---|
+| Metadata | organiser pre-signs N bodies | organiser signs ONE template + supply |
+| Scarcity | on-chain slot | unchanged — on-chain slot |
+| Ownership | server burner, key discarded | **holder signs their own edition** |
+| QR | static, bearer | fresh challenge, unforgeable |
+
+**Two tiers, deliberately.** An anonymous card buyer has no persistent key, and platform-signs-
+bound-to-email does not fix it — that is an attestation, not possession proof, so the photocopy
+still works. So:
+
+- **Anonymous buyer** → bearer ticket in an email, scanned at the door, checked against chain
+  records. Identical to Skiddle and every incumbent. Completely fine, and it is the launch path.
+- **Account holder** → holder-signed, unique QR, possession-proven, resaleable, reusable as a
+  credential.
+
+The account path being genuinely *better* is the reason to create one — not tidiness. And §3's
+import flow is where the transition happens: buy anonymously, import later, and ownership moves
+from "bearer in an inbox" to "a key you control".
+
+That makes this architecture better than the incumbents rather than a reimplementation of them:
+the basic path matches what people already expect, and the account path offers what no incumbent
+can — a ticket that cannot be copied, resells without the platform brokering it, and later works
+as a key.
+
 ### Stripe rail for seller payout (from Connect decision matrix)
 - Seller = connected account via **Accounts v2** with `configuration.recipient` ONLY
   (request `stripe_transfers` on `stripe_balance`; do NOT request `merchant`/`card_payments` —
