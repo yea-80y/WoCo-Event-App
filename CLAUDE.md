@@ -136,7 +136,6 @@ FEED TOPICS:
   woco/pod/claims/{seriesId}[/p{N}]       # Mirrors editions
   woco/pod/claimers/{seriesId}            # Who claimed what
   woco/pod/collection/{ethAddress}        # User's collection
-  woco/pod/pending-claims/{seriesId}      # Approval queue
   woco/profile/data/{ethAddress}          # User profile
   woco/profile/avatar/{ethAddress}        # Avatar ref (separate feed → independent updates)
   woco/marketing/list/{ethAddress}        # Sealed contact-list pointer
