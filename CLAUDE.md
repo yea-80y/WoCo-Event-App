@@ -39,7 +39,6 @@ apps/web/              # Vite + Svelte main platform UI
 apps/server/           # Hono API server (Swarm relay + auth)
 packages/shared/       # Shared types, POD schema, constants (single source of truth)
 packages/embed/        # <woco-tickets> Web Component (IIFE ~71KB)
-packages/site-builder/ # Static site generator for organiser events
 contracts/             # WoCoEscrow.sol + deploy scripts
 
 ============================================================================
@@ -133,11 +132,8 @@ FEED TOPICS:
   woco/event/directory                    # Global event listing
   woco/event/{eventId}                    # Event details + ticket series
   woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
-  woco/pod/editions/{seriesId}[/p{N}]     # Tickets, 128 per page
-  woco/pod/claims/{seriesId}[/p{N}]       # Mirrors editions
-  woco/pod/claimers/{seriesId}            # Who claimed what
   woco/pod/collection/{ethAddress}        # User's collection
-  woco/pod/pending-claims/{seriesId}      # Approval queue
+  woco/recovery/{kernelAddress}[...]      # Recovery escrow + status + by-guardian hint (see topics.ts)
   woco/profile/data/{ethAddress}          # User profile
   woco/profile/avatar/{ethAddress}        # Avatar ref (separate feed → independent updates)
   woco/marketing/list/{ethAddress}        # Sealed contact-list pointer
@@ -167,14 +163,9 @@ CLAIMS:
 - Server uses the VERIFIED parentAddress, never an address from the request body
 - Double-spend prevention: in-flight lock + per-series async queue serialises writes
 
-APPROVAL FLOW:
-- Series flag `approvalRequired: true` at creation
-- Claim returns `{ approvalPending: true, pendingId }` instead of a ticket
-- Slot reserved immediately (prevents double-assign on concurrent approvals)
-- `GET /api/events/:id/pending-claims` — organiser queue (header auth)
-- `POST .../pending-claims/:pendingId/approve|reject`
-- ClaimButton shows "Request to attend" / amber "Pending Approval" badge
-- `GET /claim-status` returns `userPendingId` (pending) or `userEdition` (approved)
+APPROVAL FLOW — REMOVED with the v1 claim-rail retirement (#207): routes, flags and
+UI are all gone. Do not reintroduce from old docs; #202 tracks its return on the v2
+contract rail.
 
 ============================================================================
 EAS LIKES / SOCIAL GRAPH (#4)
@@ -264,7 +255,6 @@ AUTH (server):
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim endpoint + wallet auth + email rate limit
   apps/server/src/routes/events.ts                   # create / discover / list / unlist
-  apps/server/src/routes/approvals.ts                # approve/reject pending
   apps/server/src/routes/tickets.ts                  # email send (composite PNG + /t link)
   apps/server/src/lib/event/claim-service.ts         # core claim + approval logic
   apps/server/src/lib/event/service.ts               # event creation
