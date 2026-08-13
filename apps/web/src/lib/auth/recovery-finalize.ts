@@ -47,6 +47,20 @@ export interface RecoveryFinalizeOptions {
    * the web3auth branch and render unqualified success with no envelope written.
    */
   expectPasskey?: boolean;
+  /**
+   * Total attempts before a retryable failure is surfaced (default 3). The live
+   * #273 observation: the envelope step fails transiently under a concurrent
+   * session's activity and the user's SECOND manual click succeeds — so the
+   * machine clicks for them. Non-retryable failures are never retried; the
+   * deterministic feed-signer guard would loop identically forever.
+   */
+  attempts?: number;
+  /** Base delay before the first retry, doubling each attempt (default 1500ms). */
+  retryDelayMs?: number;
+  /** Called before each silent retry — lets the UI say it is still working. */
+  onRetry?: (attempt: number, reason: string) => void;
+  /** Test seam — replaces the real backoff sleep. */
+  _sleep?: (ms: number) => Promise<void>;
 }
 
 export type RecoveryFinalizeResult =
@@ -82,6 +96,27 @@ function isDeterministicSignerFailure(message: string): boolean {
 export async function finalizeRecovery(
   deps: RecoveryFinalizeDeps,
   opts: RecoveryFinalizeOptions = {},
+): Promise<RecoveryFinalizeResult> {
+  const attempts = Math.max(1, opts.attempts ?? 3);
+  const baseDelay = opts.retryDelayMs ?? 1500;
+  const sleep = opts._sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  let result = await finalizeOnce(deps, opts);
+  for (let attempt = 2; attempt <= attempts; attempt++) {
+    if (result.status !== "failed" || !result.retryable) return result;
+    opts.onRetry?.(attempt, result.reason);
+    await sleep(baseDelay * 2 ** (attempt - 2));
+    // The WHOLE step re-runs, not just the failed sub-read: the session could
+    // have died between attempts, and each accessor is where its own staleness
+    // is detected.
+    result = await finalizeOnce(deps, opts);
+  }
+  return result;
+}
+
+async function finalizeOnce(
+  deps: RecoveryFinalizeDeps,
+  opts: RecoveryFinalizeOptions,
 ): Promise<RecoveryFinalizeResult> {
   const kind = deps.kind();
 

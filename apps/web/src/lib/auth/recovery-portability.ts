@@ -222,6 +222,55 @@ export async function readPortabilityEnvelope(args: {
   }
 }
 
+/**
+ * Does an envelope exist for this passkey — ONE chunk lookup, not the full read.
+ *
+ * `readPortabilityEnvelope` costs three lookups when the answer is no: versions 0
+ * and 1 (the resolver's probe window), then the pre-versioning identifier. Every
+ * one of those is a search for a chunk that is not there, and a miss is a full
+ * network search on our own gateway — the expensive direction in Swarm, and the
+ * shape that melted the bee once.
+ *
+ * The background re-probe (#245 fix 4) only ever asks EXISTENCE, and existence
+ * needs exactly one question: `writeContentFeed` computes `(latest ?? -1) + 1`, so
+ * a feed's first write is always version 0 and any envelope at all implies a v0
+ * base chunk — including a paged one, whose manifest IS that base chunk. Ask v0;
+ * escalate to the full read only on a hit, where the lookups then all succeed.
+ *
+ * Two deliberate narrowings, neither a regression:
+ *  - a hint-less full read ALREADY reports absent when v0 is missing but a later
+ *    version exists (`resolveLatestSocVersion` starts at 0 and stops on the first
+ *    gap), so this inherits that behaviour rather than introducing it;
+ *  - the legacy pre-versioning identifier is not consulted. An envelope written
+ *    before versioning landed would be missed here — the cost is that such a
+ *    device does not self-heal, which is the status quo it is being lifted out of,
+ *    never a wrong address.
+ *
+ * Three states, for the usual reason: a failed lookup is not an absence.
+ */
+export async function portabilityEnvelopeExists(args: {
+  passkeyPrivKey: string;
+}): Promise<{ status: "present" } | { status: "absent" } | { status: "unreadable"; reason: string }> {
+  const [keys, { probeSoc }, { contentFeedSocIdentifier, versionedSocIdentifier }] =
+    await Promise.all([
+      derivePortabilityKeys(args.passkeyPrivKey),
+      import("../swarm/client-soc.js"),
+      import("@woco/shared"),
+    ]);
+
+  const base = contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT);
+  try {
+    const probe = await probeSoc(keys.socOwnerAddress, versionedSocIdentifier(base, 0));
+    if (probe.status === "found") return { status: "present" };
+    if (probe.status === "absent") return { status: "absent" };
+    return { status: "unreadable", reason: probe.reason ?? "envelope probe unavailable" };
+  } catch (e) {
+    // probeSoc throws on a client-side network exception (deliberately loud).
+    // Here that is "nobody could answer", never "nothing is there".
+    return { status: "unreadable", reason: `envelope probe threw: ${(e as Error).message}` };
+  }
+}
+
 /** Normalise a secp256k1 private key for comparison (0x-prefixed, lowercase). */
 function normKey(k: string | undefined): string | undefined {
   if (!k) return undefined;
