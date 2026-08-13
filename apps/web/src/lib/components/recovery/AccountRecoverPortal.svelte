@@ -307,7 +307,7 @@
           <span class="spinner"></span>{restoreStep || "Finishing up…"}
         </p>
       {:else}
-        <div class="finalize-warn" role="alert">
+        <div class="result result--warn" role="alert">
           {#if warnStage === "session"}
             <p class="result-title">We couldn't finish signing you in</p>
             <p class="result-body">
@@ -720,15 +720,14 @@
   }
   .restore-note strong { color: var(--text-secondary); }
 
-  .finalize-warn {
-    text-align: left;
-    padding: 1rem;
-    border-radius: var(--radius-md);
-    border: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
+  /* The finalize warning is the .result card in .error's tint (#260) — a
+     modifier, not a re-implementation. Margin flipped: it leads its block. */
+  .result--warn {
+    border-color: color-mix(in srgb, var(--error) 35%, var(--border));
     background: var(--error-subtle);
-    margin-bottom: 1rem;
+    margin: 0 0 1rem;
   }
-  .finalize-warn .result-body { margin: 0; }
+  .result--warn .result-body { margin: 0; }
   .skip { display: block; margin: 0.8rem auto 0; }
 
   .restore-cta { white-space: nowrap; }

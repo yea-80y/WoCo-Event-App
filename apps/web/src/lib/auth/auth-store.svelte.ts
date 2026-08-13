@@ -481,7 +481,6 @@ async function _restoreCachedAuth(): Promise<void> {
   if (session) {
     _sessionAddress = session.sessionWallet.address;
   }
-
   // POD is keyed by the PRF-EOA address for passkey (invariant #1), the parent
   // for everyone else. restorePodSeed deletes the blob on an AAD mismatch, so
   // it must never be called with the Kernel address for a passkey user — the
@@ -494,6 +493,26 @@ async function _restoreCachedAuth(): Promise<void> {
       _podPublicKeyHex = kp?.publicKeyHex ?? null;
     }
   }
+}
+
+/**
+ * Session-slot step shared by the two paths that rotate a credential INTO an
+ * account this device may already hold a session for: `recoverAndRekey`, and
+ * `loginPasskey`'s portability-apply (#260 — the sibling #259 missed). The
+ * rotation invalidates ANY session for the target; parent equality says
+ * nothing, so `_clearStaleAuthForSwitch` no-ops exactly here by design.
+ * Without the reset, `_restoreCachedAuth` re-attaches a delegation signed by
+ * the rotated-away owner — degraded-until-self-heal at best (client.ts wipes
+ * and re-mints on SESSION_INVALID), and the #245 short-circuit at worst.
+ *
+ * ORDER IS LOAD-BEARING (see recoverAndRekey's site note): this MUST run only
+ * after the new identity is fully committed. Cleared earlier, a concurrent
+ * `ensureSession` (no `_busy` gate) would mint under the rotated-out owner
+ * still in the store, and the restore below would re-attach it.
+ */
+async function _restoreAuthAfterRotation(): Promise<void> {
+  await resetSession();
+  await _restoreCachedAuth();
 }
 
 /**
@@ -737,31 +756,42 @@ async function _verifyPortabilityEnvelope(
  * The decide-and-write lives in `recovery-portability.ts`
  * (`backfillPortabilityEnvelope`) — it skips when the stored envelope already
  * carries these exact secrets, so this settles after one write per account
- * instead of re-uploading on every session mint (#153).
+ * instead of re-uploading on every session mint (#153). The secret-gathering
+ * preamble is `gatherBackfillArgs` (#260) — the SAME one finalizeRecovery
+ * uses, so the two callers can never drift on fields; this caller's posture is
+ * best-effort, so any `unavailable` is its silent no-op.
  */
 async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
   try {
-    if (_kind !== "passkey" || !_passkeyPrivateKey || !_podAddress) return;
-    const override = await _recoveryKernelFor(_podAddress);
-    if (!override) return; // only recovered accounts carry a binding
-
-    const seed = await restorePodSeed(_podAddress);
-    if (!seed) return;
-    // Carry the feed signer too, so a recovered account's FURTHER devices restore
-    // it (same role the guardian escrow plays on the recovery device itself).
-    const feedSigner = await _getContentFeedSigner();
+    if (_kind !== "passkey") return;
+    const { gatherBackfillArgs } = await import("./recovery-finalize.js");
+    const gathered = await gatherBackfillArgs(_backfillGatherDeps());
+    if (gathered.status !== "ready") {
+      // "no recovery binding" is the everyday non-recovered account — silence is
+      // right there. A FAULT staying silent is how #245 hid; keep it visible.
+      if (!gathered.reason.startsWith("no recovery binding")) {
+        console.warn(`[auth] portability back-fill not attempted: ${gathered.reason}`);
+      }
+      return;
+    }
 
     const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
-    const outcome = await backfillPortabilityEnvelope({
-      passkeyPrivKey: _passkeyPrivateKey,
-      preservedKernelAddress: override,
-      podSeed: seed,
-      feedSignerPrivKey: feedSigner?.privKey,
-    });
+    const outcome = await backfillPortabilityEnvelope(gathered.args);
     console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
   }
+}
+
+/** The one accessor bundle both backfill preambles read through (#260). */
+function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherDeps {
+  return {
+    getPasskeyPrivKey: () => _passkeyPrivateKey,
+    getPodAddress: () => _podAddress,
+    recoveryKernelFor: _recoveryKernelFor,
+    restorePodSeed,
+    getContentFeedSigner: _getContentFeedSigner,
+  };
 }
 
 /**
@@ -1152,8 +1182,20 @@ function _verifyRecoveredBindingInBackground(
           foreignOwner, "not", eoa, "— signing out; binding kept for the honest refusal (#255)",
         );
         clearVerifiedBinding(kind, eoa);
-        postOrphanedCredentialNotice(kind);
-        await logout();
+        // Tear down only the session this probe was launched for (#285): this
+        // is a background task racing the user, and after a sign-out or account
+        // switch inside the RPC window the logout would hit a bystander session
+        // and the notice would explain a refusal that never happened to it. The
+        // marker clear above stays unconditional — it records a fact about the
+        // CREDENTIAL, not the session. Mirrors reprobeEnvelope's gate.
+        const stillThisSession =
+          _kind === kind &&
+          _getPodAddress()?.toLowerCase() === eoa.toLowerCase() &&
+          _parent?.toLowerCase() === kernel.toLowerCase();
+        if (stillThisSession) {
+          postOrphanedCredentialNotice(kind);
+          await logout();
+        }
       }
     } catch {
       /* transient RPC failure — the next fast-path login re-checks */
@@ -1735,7 +1777,15 @@ async function loginPasskeyResult(
     _podAddress = account.address;
     _kernel = kernel;
 
-    await _restoreCachedAuth();
+    // An applied envelope means a rotation put THIS credential in charge — any
+    // session this device already holds for the preserved parent predates it
+    // and is dead on the server. Placed here, after the identity commit, per
+    // the helper's ordering rule.
+    if (portabilityRestore) {
+      await _restoreAuthAfterRotation();
+    } else {
+      await _restoreCachedAuth();
+    }
 
     // Seed the returning-device fast path: only a never-recovered login may
     // cache (no binding, probe DEFINITIVELY empty — "unavailable" never lands
@@ -2550,24 +2600,17 @@ async function recoverAndRekey(args: {
     _podPublicKeyHex = restoredPod?.publicKeyHex ?? null;
 
     // Kill the session the rotation just invalidated — LAST, immediately before
-    // the restore that would otherwise resurrect it. `_clearStaleAuthForSwitch`
-    // cannot: it no-ops when the stored parent == target, i.e. recovering the
-    // very account this device is signed into, yet the rotation invalidates ANY
-    // session for target. Left alive, `_restoreCachedAuth` re-attaches it,
-    // `ensureSession` short-circuits on it, and the fresh credential's
-    // portability envelope is never written (#245) — client-side twin of #200's
-    // server-side revocation gap.
-    //
-    // Placed HERE, not before the commit block: clearing early makes `hasSession`
-    // false while `_kind`/`_parent`/the credential fields still hold the OLD
-    // identity, and `ensureSession` has no `_busy` gate — so any concurrent
-    // caller would mint a delegation signed by the rotated-out owner (dead on
-    // arrival server-side, and re-attached below because the parent matches),
-    // and its `finally` would clear THIS ceremony's `_busy` latch. Clearing after
-    // the identity is committed keeps the pre-existing short-circuit closed for
-    // the whole ceremony and leaves nothing for `_restoreCachedAuth` to find.
-    await resetSession();
-    await _restoreCachedAuth();
+    // the restore that would otherwise resurrect it (client-side twin of #200's
+    // server-side revocation gap; left alive, `ensureSession` short-circuits on
+    // it and the portability envelope is never written, #245). Placed HERE, not
+    // before the commit block: clearing early makes `hasSession` false while
+    // `_kind`/`_parent`/the credential fields still hold the OLD identity, and
+    // `ensureSession` has no `_busy` gate — so any concurrent caller would mint
+    // a delegation signed by the rotated-out owner (dead on arrival server-side,
+    // and re-attached below because the parent matches), and its `finally` would
+    // clear THIS ceremony's `_busy` latch. The invalidate-then-restore pair is
+    // shared with the portability-apply login (#260) — see the helper's doc.
+    await _restoreAuthAfterRotation();
 
     return { recoveredAddress: target, txHash };
   } finally {
@@ -2803,15 +2846,7 @@ export const auth = {
   finalizeRecovery: async (opts?: import("./recovery-finalize.js").RecoveryFinalizeOptions) => {
     const { finalizeRecovery } = await import("./recovery-finalize.js");
     return finalizeRecovery(
-      {
-        kind: () => _kind,
-        ensureSession,
-        getPasskeyPrivKey: () => _passkeyPrivateKey,
-        getPodAddress: () => _podAddress,
-        recoveryKernelFor: _recoveryKernelFor,
-        restorePodSeed,
-        getContentFeedSigner: _getContentFeedSigner,
-      },
+      { kind: () => _kind, ensureSession, ..._backfillGatherDeps() },
       opts,
     );
   },

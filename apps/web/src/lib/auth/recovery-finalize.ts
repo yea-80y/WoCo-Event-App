@@ -11,16 +11,16 @@
  * credential's own counterfactual Kernel. "You're back in" must not render until
  * this step has actually completed.
  *
- * auth-store.svelte.ts is frozen: it delegates here with accessors to its private
- * state, and this module imports nothing from it.
+ * auth-store delegates here with accessors to its private state, and this module
+ * imports nothing from it.
  */
 
 import type { AuthKind } from "@woco/shared";
-import type { PortabilityBackfill } from "./recovery-portability.js";
+import type { PortabilityBackfill, PortabilityBackfillArgs } from "./recovery-portability.js";
 
-export interface RecoveryFinalizeDeps {
-  kind: () => AuthKind;
-  ensureSession: () => Promise<boolean>;
+/** The accessors the gather step needs — a subset of the finalize deps, shared
+ *  with auth-store's mint-time backfill so both callers feed the SAME preamble. */
+export interface BackfillGatherDeps {
   getPasskeyPrivKey: () => string | null;
   /** PRF-EOA address — the key the POD seed and recovery binding are stored under. */
   getPodAddress: () => string | null;
@@ -28,14 +28,14 @@ export interface RecoveryFinalizeDeps {
   recoveryKernelFor: (podAddress: string) => Promise<`0x${string}` | undefined>;
   restorePodSeed: (podAddress: string) => Promise<string | null>;
   getContentFeedSigner: () => Promise<{ privKey: string } | null>;
+}
+
+export interface RecoveryFinalizeDeps extends BackfillGatherDeps {
+  kind: () => AuthKind;
+  ensureSession: () => Promise<boolean>;
   /** Test seam — defaults to the real backfillPortabilityEnvelope, which
    *  reaches the network (the repo's node --test runner has no module mocks). */
-  backfill?: (args: {
-    passkeyPrivKey: string;
-    preservedKernelAddress: string;
-    podSeed: string;
-    feedSignerPrivKey?: string;
-  }) => Promise<PortabilityBackfill>;
+  backfill?: (args: PortabilityBackfillArgs) => Promise<PortabilityBackfill>;
 }
 
 export interface RecoveryFinalizeOptions {
@@ -93,6 +93,103 @@ function isDeterministicSignerFailure(message: string): boolean {
   return message.includes("Recovered account feed signer unavailable");
 }
 
+export type BackfillGather =
+  | { status: "ready"; args: PortabilityBackfillArgs }
+  | { status: "unavailable"; reason: string; retryable: boolean; stage: "session" | "envelope" };
+
+/**
+ * Collect everything a portability-envelope write needs, with the read-fault
+ * classification the callers rely on. THE single owner of this preamble (#260):
+ * it used to live twice — here and in auth-store's mint-time backfill — and two
+ * owners disagree on failure posture and drift on fields (the #153 growth
+ * class: a secret added to one writer ping-pongs envelope versions with the
+ * field-poor one, which strips it). `finalizeRecovery` surfaces `unavailable`
+ * as a failed ceremony step; the fire-and-forget mint-time caller treats every
+ * `unavailable` as its silent no-op. Same facts, different posture — by
+ * design, in one place.
+ *
+ * Classification rules, all incident-proven:
+ *  - a read that THREW is not evidence the record is absent (#226 class) — the
+ *    reason always says which happened, and only faults are retryable;
+ *  - a feed-signer THROW must fail the gather, not degrade it: `null` means
+ *    "this account has no feed signer" and writes an envelope without one,
+ *    which would strand the account's content feeds on its future devices if
+ *    the signer exists but the read faulted;
+ *  - the anti-divergence signer guard is DETERMINISTIC (an account whose escrow
+ *    carried no feed signer re-throws identically forever) — calling it
+ *    retryable is an infinite loop with encouraging copy.
+ */
+export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<BackfillGather> {
+  const passkeyPrivKey = deps.getPasskeyPrivKey();
+  const podAddress = deps.getPodAddress();
+  if (!passkeyPrivKey || !podAddress) {
+    return {
+      status: "unavailable",
+      reason: "passkey key material not in memory",
+      retryable: false,
+      stage: "session",
+    };
+  }
+
+  let preserved: `0x${string}` | undefined;
+  try {
+    preserved = await deps.recoveryKernelFor(podAddress);
+  } catch (e) {
+    return {
+      status: "unavailable",
+      reason: `recovery binding read failed: ${e instanceof Error ? e.message : String(e)}`,
+      retryable: true,
+      stage: "envelope",
+    };
+  }
+  if (!preserved) {
+    return {
+      status: "unavailable",
+      reason: "no recovery binding for this passkey on this device",
+      retryable: false,
+      stage: "envelope",
+    };
+  }
+
+  let podSeed: string | null;
+  try {
+    podSeed = await deps.restorePodSeed(podAddress);
+  } catch (e) {
+    return {
+      status: "unavailable",
+      reason: `POD seed read failed: ${e instanceof Error ? e.message : String(e)}`,
+      retryable: true,
+      stage: "envelope",
+    };
+  }
+  if (!podSeed) {
+    return { status: "unavailable", reason: "POD seed absent", retryable: false, stage: "envelope" };
+  }
+
+  let feedSigner: { privKey: string } | null;
+  try {
+    feedSigner = await deps.getContentFeedSigner();
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      status: "unavailable",
+      reason: `feed signer read failed: ${message}`,
+      retryable: !isDeterministicSignerFailure(message),
+      stage: "envelope",
+    };
+  }
+
+  return {
+    status: "ready",
+    args: {
+      passkeyPrivKey,
+      preservedKernelAddress: preserved,
+      podSeed,
+      feedSignerPrivKey: feedSigner?.privKey,
+    },
+  };
+}
+
 export async function finalizeRecovery(
   deps: RecoveryFinalizeDeps,
   opts: RecoveryFinalizeOptions = {},
@@ -148,87 +245,20 @@ async function finalizeOnce(
   const ok = await deps.ensureSession();
   if (!ok) return { status: "failed", reason: "session mint failed", retryable: true, stage: "session" };
 
-  const passkeyPrivKey = deps.getPasskeyPrivKey();
-  const podAddress = deps.getPodAddress();
-  if (!passkeyPrivKey || !podAddress) {
+  const gathered = await gatherBackfillArgs(deps);
+  if (gathered.status !== "ready") {
     return {
       status: "failed",
-      reason: "passkey key material not in memory",
-      retryable: false,
-      stage: "session",
-    };
-  }
-
-  // A read that THREW is not evidence the record is absent (#226 class). Both
-  // reasons say which happened, so a log never asserts a fact nobody observed.
-  let preserved: `0x${string}` | undefined;
-  try {
-    preserved = await deps.recoveryKernelFor(podAddress);
-  } catch (e) {
-    return {
-      status: "failed",
-      reason: `recovery binding read failed: ${e instanceof Error ? e.message : String(e)}`,
-      retryable: true,
-      stage: "envelope",
-    };
-  }
-  if (!preserved) {
-    return {
-      status: "failed",
-      reason: "no recovery binding for this passkey on this device",
-      retryable: false,
-      stage: "envelope",
-    };
-  }
-
-  let podSeed: string | null;
-  try {
-    podSeed = await deps.restorePodSeed(podAddress);
-  } catch (e) {
-    return {
-      status: "failed",
-      reason: `POD seed read failed: ${e instanceof Error ? e.message : String(e)}`,
-      retryable: true,
-      stage: "envelope",
-    };
-  }
-  if (!podSeed) {
-    return { status: "failed", reason: "POD seed absent", retryable: false, stage: "envelope" };
-  }
-
-  // A throw here must fail the step, not degrade it: `null` means "this account
-  // has no feed signer" and writes an envelope without one, which would strand
-  // the account's content feeds on its future devices if the signer actually
-  // exists but the read faulted.
-  //
-  // One throw is DETERMINISTIC, and calling it retryable is the difference
-  // between a warning and an infinite loop: for an account whose escrow bundle
-  // carried no feed signer (protected before feed-signer escrow existed), the
-  // accessor's anti-divergence guard fires on every call — a binding exists and
-  // no signer is stored — so every "Try again" re-throws identically. Those
-  // users need to be told the truth, not invited to keep clicking.
-  let feedSigner: { privKey: string } | null;
-  try {
-    feedSigner = await deps.getContentFeedSigner();
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return {
-      status: "failed",
-      reason: `feed signer read failed: ${message}`,
-      retryable: !isDeterministicSignerFailure(message),
-      stage: "envelope",
+      reason: gathered.reason,
+      retryable: gathered.retryable,
+      stage: gathered.stage,
     };
   }
 
   try {
     const backfill =
       deps.backfill ?? (await import("./recovery-portability.js")).backfillPortabilityEnvelope;
-    const outcome = await backfill({
-      passkeyPrivKey,
-      preservedKernelAddress: preserved,
-      podSeed,
-      feedSignerPrivKey: feedSigner?.privKey,
-    });
+    const outcome = await backfill(gathered.args);
     // "deferred" = the read was inconclusive and the backfill refused to write
     // blind. The envelope is not verifiably there, so for THIS caller it is a
     // failure — retrying re-reads and skips cleanly if a concurrent write (the
