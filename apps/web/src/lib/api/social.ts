@@ -6,16 +6,16 @@
  * the sign-in gate, the mapping from a UI variant to a statement kind, and the
  * seam where public counts arrive.
  *
- * COUNTS ARE NOT AVAILABLE YET, and that is structural rather than unfinished:
- * a count is a tally over MANY users' feeds, which is an indexer's job, and the
- * indexer is the next piece of #172. A user's own state needs only their own
- * feed, so it works today. `count: null` means "nobody has counted", which the
- * UI renders as absent — deliberately distinct from `0`, which would be a claim
- * that nobody liked it.
+ * A user's own state comes from their own feed; a COUNT is a tally over many
+ * feeds, so it comes from an indexer. `count: null` still means "nobody has
+ * counted" — the indexer was unreachable, or has never been asked about this
+ * subject — and the UI renders that as absent, deliberately distinct from `0`,
+ * which would be a claim that nobody liked it.
  */
 
 import type { LikeSubject, Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
+import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
 
 export interface SocialState {
@@ -29,18 +29,44 @@ export function kindForVariant(variant: "heart" | "follow"): SocialKind {
   return variant === "follow" ? "follow" : "like";
 }
 
+/** The statement format each kind tallies under, for the indexer query. */
+const FORMAT: Record<SocialKind, string> = {
+  like: "woco.like.v1",
+  follow: "woco.follow.v1",
+};
+
 /**
- * The caller's own state for a subject. Never throws — a display path that
- * cannot read a feed should show "not liked", not an error, and the next visit
- * re-reads.
+ * The public count, or null if nobody could tell us. Never throws: a count is
+ * decoration on a button that works without it, so an unreachable indexer must
+ * degrade to "no number" rather than to a broken control.
+ */
+async function fetchCount(kind: SocialKind, subject: Hex0x): Promise<number | null> {
+  try {
+    const res = await get<{ count: number }>(
+      `/api/social/count?format=${encodeURIComponent(FORMAT[kind])}&subject=${encodeURIComponent(subject)}`,
+    );
+    return res.ok && res.data && typeof res.data.count === "number" ? res.data.count : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The caller's own state for a subject, plus the public count.
+ *
+ * The two are fetched CONCURRENTLY and fail independently, because they come
+ * from different places and one failing says nothing about the other: own state
+ * is a read of the user's own feed, the count is an indexer's tally over many.
+ * Never throws — a display path that cannot read should show "not liked", not
+ * an error, and the next visit re-reads.
  */
 export async function getSocialState(kind: SocialKind, subject: LikeSubject): Promise<SocialState> {
-  try {
-    const liked = await readMyStatement(kind, subject.id as Hex0x);
-    return { liked: liked === true, count: null };
-  } catch {
-    return { liked: false, count: null };
-  }
+  const id = subject.id as Hex0x;
+  const [liked, count] = await Promise.all([
+    readMyStatement(kind, id).catch(() => null),
+    fetchCount(kind, id),
+  ]);
+  return { liked: liked === true, count };
 }
 
 /**
@@ -59,5 +85,11 @@ export async function toggleSocial(
   const next = !prevLiked;
   const res = await writeMyStatement(kind, subject.id as Hex0x, next);
   if (!res.ok) throw new Error(res.error);
+
+  // Deliberately no count refetch. The statement has only just been relayed and
+  // the indexer caches for 30s, so an immediate re-ask returns the number from
+  // BEFORE this toggle — which would overwrite a correct optimistic value with
+  // a stale one and make the button appear to undo itself. The caller keeps its
+  // optimistic count; the next natural load reconciles.
   return { liked: next, count: null };
 }

@@ -111,7 +111,10 @@
         count = prevCount;
       } else {
         liked = r.liked;
-        count = r.count ?? prevCount;
+        // Keep the OPTIMISTIC count when the write path has no fresh number —
+        // falling back to prevCount would undo the ±1 we just applied and show
+        // the pre-toggle figure beside a toggled heart.
+        count = r.count ?? count;
         skipRefetchFor = subject.id;
       }
     } catch (err) {
