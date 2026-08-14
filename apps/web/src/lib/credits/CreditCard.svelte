@@ -10,7 +10,7 @@
    * anything a fan reads: collect and keepsake, never wallet or mint.
    */
   import { onMount } from "svelte";
-  import { lookupSubject, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
+  import { lookupSubject, currentEra, formerNames, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
   import { readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
 
   interface Props {
@@ -31,6 +31,11 @@
   let lastTapAt = 0;
 
   const definition = $derived(lookupSubject(WOCO_SUBJECTS, subject));
+  const era = $derived(definition ? currentEra(definition) : null);
+  /** Names it used to carry. A re-theme keeps the count (same track, same
+   *  credit) but a rider who rode it under the old name wants that on the
+   *  record — so the previous name is shown, not overwritten. */
+  const previously = $derived(definition ? formerNames(definition) : []);
   const laps = $derived(head?.statement.total ?? 0);
   const today = $derived(head?.statement.session.count ?? 0);
   const isPublic = $derived(head?.visibility === "public");
@@ -101,8 +106,11 @@
 <article class="card" class:held={laps > 0}>
   <header>
     <div class="ident">
-      <h3>{definition?.name ?? "Unknown coaster"}</h3>
-      <p class="park">{definition?.park ?? subject.slice(0, 10) + "…"}</p>
+      <h3>{era?.name ?? "Unknown coaster"}</h3>
+      <p class="park">{era?.park ?? subject.slice(0, 10) + "…"}</p>
+      {#if previously.length > 0}
+        <p class="formerly">Ridden as {previously.join(", ")}</p>
+      {/if}
     </div>
     {#if loaded && laps > 0}
       <span class="badge" class:pub={isPublic}>
@@ -148,7 +156,7 @@
          lifetime total — not merely rides from here on. -->
     <div class="confirm">
       <p>
-        Publishing shows your <strong>whole count for {definition?.name ?? "this coaster"}</strong>,
+        Publishing shows your <strong>whole count for {era?.name ?? "this coaster"}</strong>,
         including the {laps} {laps === 1 ? "lap" : "laps"} you rode privately — not just rides from now on.
       </p>
       <p class="oneway">This cannot be undone. A public count can never be made private again.</p>
@@ -200,6 +208,15 @@
     margin: 0.1875rem 0 0;
     font-size: 0.8125rem;
     color: var(--text-muted);
+  }
+
+  .formerly {
+    margin: 0.25rem 0 0;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-dim);
   }
 
   .badge {
