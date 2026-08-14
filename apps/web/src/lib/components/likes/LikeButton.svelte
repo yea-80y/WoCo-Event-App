@@ -41,12 +41,23 @@
   // refresh otherwise (post-toggle reconcile, login state change).
   let lastLoadedId: string | null = null;
 
+  // Set when a toggle lands, to skip exactly one post-settle refetch. Without
+  // it, a freshly written statement that the gateway has not finished
+  // whitelisting reads back stale, and the button silently flips back despite
+  // the write having succeeded. A plain `let`, not $state — reading it must not
+  // make the effect depend on it.
+  let skipRefetchFor: string | null = null;
+
   $effect(() => {
     // Read auth so the effect re-runs on sign-in: own state is unreadable until
     // there is an account whose feed to read it from.
     void auth.parent;
     const { id } = subject;
     if (inFlight) return; // re-runs when the toggle settles (inFlight is a dep)
+    if (skipRefetchFor === id) {
+      skipRefetchFor = null;
+      return;
+    }
     const token = ++fetchToken;
     if (lastLoadedId !== id) loaded = false;
     getSocialState(kindForVariant(variant), subject).then((res) => {
@@ -101,6 +112,7 @@
       } else {
         liked = r.liked;
         count = r.count ?? prevCount;
+        skipRefetchFor = subject.id;
       }
     } catch (err) {
       liked = prevLiked;

@@ -124,6 +124,9 @@ export async function writeMyStatement(
   }
 }
 
+/** Re-reads of the index after losing a write race, before giving up. */
+const INDEX_WRITE_ATTEMPTS = 3;
+
 /**
  * Add `subject` to the caller's index for this kind, if absent.
  *
@@ -132,10 +135,17 @@ export async function writeMyStatement(
  * statement at that head, so the head stays live and the entry stays correct.
  * Removing it would hide a `false` the indexer needs in order to stop counting.
  *
- * Failures here are swallowed: the statement is already written and valid, and
- * surfacing "your like worked but its index entry did not" is noise the user
- * cannot act on. The next write for any subject rebuilds the list from the
- * index that is actually there.
+ * This is a read-modify-write with no compare-and-swap underneath, so losing
+ * the race has to be handled rather than assumed away. `writeContentFeedVerified`
+ * serialises same-device writes per topic and reports `superseded` when another
+ * writer took our version; the only sound response is to re-read and union,
+ * because retrying with the list we already computed would rewrite stale data
+ * over the winner.
+ *
+ * Failures are swallowed after that: the statement is already written and
+ * valid, and "your like worked but its index entry did not" is noise the user
+ * cannot act on. It costs enumeration of THIS subject until the user next
+ * toggles it — a write for a different subject does not repair it.
  */
 async function addToSubjectIndex(
   kind: SocialKind,
@@ -145,29 +155,32 @@ async function addToSubjectIndex(
   const k = KINDS[kind];
   const topic = k.indexTopic();
   try {
-    const res = await readContentFeedResult<unknown>(signer.address, topic);
+    for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
+      const res = await readContentFeedResult<unknown>(signer.address, topic);
 
-    // Only `absent` may be treated as "no index yet". Writing a fresh one over
-    // an index we merely FAILED to read would drop every subject it holds —
-    // the lenient-read-on-a-write-path trap.
-    let subjects: Hex0x[];
-    if (res.status === "found") {
-      if (!k.validateIndex(res.value)) return;
-      subjects = (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
-      if (subjects.includes(subject)) return;
-      subjects = [...subjects, subject];
-    } else if (res.status === "absent") {
-      subjects = [subject];
-    } else {
-      return;
+      // Only `absent` may be treated as "no index yet". Writing a fresh one over
+      // an index we merely FAILED to read would drop every subject it holds —
+      // the lenient-read-on-a-write-path trap.
+      let subjects: Hex0x[];
+      if (res.status === "found") {
+        if (!k.validateIndex(res.value)) return;
+        subjects = (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
+        if (subjects.includes(subject)) return;
+        subjects = [...subjects, subject];
+      } else if (res.status === "absent") {
+        subjects = [subject];
+      } else {
+        return;
+      }
+
+      const written = await writeContentFeedVerified({
+        signerPrivKey: signer.privKey,
+        ownerAddress: signer.address,
+        topic,
+        data: { format: k.indexFormat, subjects },
+      });
+      if (written.status !== "superseded") return;
     }
-
-    await writeContentFeedVerified({
-      signerPrivKey: signer.privKey,
-      ownerAddress: signer.address,
-      topic,
-      data: { format: k.indexFormat, subjects },
-    });
   } catch {
     // See doc comment — the statement stands regardless.
   }

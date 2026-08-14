@@ -13,18 +13,33 @@
  * recommended setup (a phone plus a warm spare logged into the same account)
  * is exactly two writers on one topic.
  *
- * So: write, then read back, and report which of the three things happened.
+ * The check reads back the EXACT version written, never "latest". Reading
+ * latest cannot answer the question: a scan that resolves an OLDER version has
+ * not shown our write was discarded, it has only failed to retrieve it —
+ * a discarded write means our version exists carrying the WINNER's bytes. An
+ * earlier revision conflated those and reported `superseded` on a stale scan,
+ * which told a rider their ride had not been recorded when it had. They retry,
+ * their own landed statement is now the previous one, and the carried total
+ * increments twice for a single ride — permanently, in a write-once feed.
+ *
  * Three states rather than two, for the same reason `SocReadOutcome` has three
  * — "I could not check" is not "it failed", and collapsing them either cries
  * wolf on a gateway hiccup or hides a genuinely lost write.
  */
 
-import { writeContentFeed, readContentFeedResult } from "./content-feed.js";
+import {
+  assembleContentFeed,
+  contentFeedSocIdentifier,
+  versionedSocIdentifier,
+  versionedPageIdentifier,
+  type SocChunkProbe,
+} from "@woco/shared";
+import { writeContentFeed } from "./content-feed.js";
 
 export type VerifiedWriteResult =
-  /** Our bytes are what the feed holds. */
+  /** Our bytes are what this version of the feed holds. */
   | { status: "verified"; version: number }
-  /** Someone else's bytes are at our version — this write is LOST, not late. */
+  /** Another writer's bytes are AT our version — this write is LOST, not late. */
   | { status: "superseded"; version: number }
   /** The write was accepted but could not be confirmed. Not a failure. */
   | { status: "unconfirmed"; version: number; reason: string };
@@ -35,6 +50,32 @@ const VERIFY_ATTEMPTS = 3;
 const VERIFY_BACKOFF_MS = 400;
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * One in-flight write per (owner, topic), serialised.
+ *
+ * A read-modify-write on a feed — which every subject-index update is — has no
+ * compare-and-swap underneath it, so two overlapping updates on the SAME device
+ * are a straightforward lost update: both read version V, both compute from it,
+ * and either the second write is discarded at V+1 or (worse, and staggered) it
+ * lands at V+2 carrying a list computed from V, erasing the first update with a
+ * write that verifies perfectly. Tapping two like buttons on one page is enough.
+ *
+ * Serialising per topic removes the same-device case entirely. The cross-device
+ * case is structural and cannot be fixed here; it is survivable because SOC
+ * versions are immutable, so an enumeration can union across versions later.
+ */
+const writeChain = new Map<string, Promise<unknown>>();
+
+function serialise<T>(owner: string, topic: string, job: () => Promise<T>): Promise<T> {
+  const key = `${owner.toLowerCase()}|${topic}`;
+  const prior = writeChain.get(key) ?? Promise.resolve();
+  // Chain off settlement, not success — one failed write must not wedge the
+  // topic for the rest of the session.
+  const next = prior.catch(() => undefined).then(job);
+  writeChain.set(key, next.catch(() => undefined));
+  return next;
+}
 
 /**
  * Write `data` to the caller's own content feed and confirm the bytes landed.
@@ -52,6 +93,16 @@ export async function writeContentFeedVerified(args: {
   data: unknown;
   gatewayUrl?: string;
 }): Promise<VerifiedWriteResult> {
+  return serialise(args.ownerAddress, args.topic, () => writeAndVerify(args));
+}
+
+async function writeAndVerify(args: {
+  signerPrivKey: string;
+  ownerAddress: string;
+  topic: string;
+  data: unknown;
+  gatewayUrl?: string;
+}): Promise<VerifiedWriteResult> {
   const version = await writeContentFeed({
     signerPrivKey: args.signerPrivKey,
     topic: args.topic,
@@ -63,29 +114,37 @@ export async function writeContentFeedVerified(args: {
   // `JSON.stringify(data)`, and re-stringifying the parsed read-back reproduces
   // that text exactly (JSON.parse preserves the encoded key order).
   const intended = JSON.stringify(args.data);
+  const base = contentFeedSocIdentifier(args.topic);
+  // `thorough` so a chunk still settling on the public net is not read as
+  // missing — the same reason the write path's own probe uses it.
+  const { probeSoc } = await import("./client-soc.js");
+  const read: SocChunkProbe = (id) => probeSoc(args.ownerAddress, id, { thorough: true });
+
   let lastReason = "read-back did not resolve";
 
   for (let attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++) {
     if (attempt > 0) await wait(VERIFY_BACKOFF_MS * attempt);
-    const res = await readContentFeedResult<unknown>(args.ownerAddress, args.topic);
 
-    if (res.status === "found") {
-      if (JSON.stringify(res.value) === intended) return { status: "verified", version };
-      // A HIGHER version means someone wrote after us and our bytes may still
-      // be intact underneath — that is a normal concurrent update, not a lost
-      // write, and the caller's next read gets the current truth either way.
-      // Only a different payload AT OUR VERSION proves we were discarded.
-      if (res.version > version) {
-        return { status: "unconfirmed", version, reason: `feed advanced to version ${res.version} during verification` };
-      }
-      return { status: "superseded", version };
+    const asm = await assembleContentFeed(
+      read,
+      versionedSocIdentifier(base, version),
+      (page) => versionedPageIdentifier(base, version, page),
+    );
+
+    if (asm.status === "found") {
+      const landed = new TextDecoder().decode(asm.bytes);
+      // Bytes at OUR version decide it, and nothing else can. A later version
+      // existing is a normal concurrent update and says nothing about ours.
+      return landed === intended
+        ? { status: "verified", version }
+        : { status: "superseded", version };
     }
 
     // Freshly relayed chunks are gateway-whitelisted asynchronously
     // (soc-upload.ts), so an immediate read can miss bytes that are genuinely
     // there. Absent is as inconclusive as unavailable at this instant — the one
     // moment in this codebase where `absent` may NOT be cached.
-    lastReason = res.status === "absent" ? "written chunk not yet readable" : (res.reason ?? "feed unavailable");
+    lastReason = asm.status === "absent" ? "written chunk not yet readable" : (asm.reason ?? "feed unavailable");
   }
 
   return { status: "unconfirmed", version, reason: lastReason };

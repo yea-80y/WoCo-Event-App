@@ -3,7 +3,14 @@
  * opaque bytes32 (`social/types.ts`), which makes derivation the one place
  * fragmentation can happen: two call sites hashing the same profile differently
  * split its followers across mismatched ids, and no indexer can detect it —
- * both sides verify perfectly. So every subject in the app comes from here.
+ * both sides verify perfectly.
+ *
+ * There is ONE profile derivation and it lives in `likes/subject.ts`. Callers
+ * reach it either through `profileLikeSubject` (which packages it as a
+ * `LikeSubject` for the button) or through this module; both are the same
+ * function, so the bytes cannot diverge. What this module adds is the EVENT
+ * derivation, which previously existed only as an inline `toLowerCase()` at a
+ * call site with no width guard, and the follow/like distinction below.
  *
  * These derivations SURVIVE the EAS retirement even though the attestation
  * layer does not. They were never chain-specific: a namehash is a namehash, and
