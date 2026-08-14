@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { LikeSubject, Hex0x } from "@woco/shared";
-  import { getLikeCount, toggleLike } from "../../api/likes.js";
+  import type { LikeSubject } from "@woco/shared";
+  import { getSocialState, toggleSocial, kindForVariant } from "../../api/social.js";
   import { auth } from "../../auth/auth-store.svelte.js";
 
   interface Props {
@@ -8,7 +8,9 @@
     /**
      * "heart" (default) = like a happening (event onChainEventId): heart + count.
      * "follow" = follow a name (sub-ENS namehash): "Follow"/"Following" pill.
-     * Same EAS attest/revoke mechanism underneath — only the framing differs.
+     * Both write a signed statement to the user's own Swarm feed; the variant
+     * selects the statement KIND (woco.like.v1 / woco.follow.v1), which are
+     * separate topics, so a like and a follow of the same name never collide.
      */
     variant?: "heart" | "follow";
     /** Names WHAT is being liked (e.g. "event") — shown as a muted mono caption
@@ -20,9 +22,10 @@
 
   let { subject, variant = "heart", caption, readonly = false }: Props = $props();
 
-  let count = $state(0);
+  // null = nobody has counted yet (no indexer), which renders as ABSENT. Zero
+  // would be a claim that nobody liked it — a different, and wrong, statement.
+  let count = $state<number | null>(null);
   let liked = $state(false);
-  let viewerUid = $state<Hex0x | undefined>(undefined);
   let inFlight = $state(false);
   let loaded = $state(false);
   let errMsg = $state<string | null>(null);
@@ -39,17 +42,17 @@
   let lastLoadedId: string | null = null;
 
   $effect(() => {
-    const viewer = auth.parent?.toLowerCase();
-    const { type, id } = subject;
+    // Read auth so the effect re-runs on sign-in: own state is unreadable until
+    // there is an account whose feed to read it from.
+    void auth.parent;
+    const { id } = subject;
     if (inFlight) return; // re-runs when the toggle settles (inFlight is a dep)
     const token = ++fetchToken;
     if (lastLoadedId !== id) loaded = false;
-    getLikeCount(type, id, viewer).then((res) => {
+    getSocialState(kindForVariant(variant), subject).then((res) => {
       if (token !== fetchToken) return;
-      if (!res) { loaded = true; return; }
       count = res.count;
-      liked = res.likedByViewer;
-      viewerUid = res.viewerUid;
+      liked = res.liked;
       lastLoadedId = id;
       loaded = true;
     });
@@ -58,10 +61,11 @@
   function friendlyError(err: unknown): string {
     const m = err instanceof Error ? err.message : String(err);
     if (/reject|denied|cancel/i.test(m)) return "Cancelled";
-    if (/paymaster|sponsor|userOperation|user operation|bundler|aa[0-9]{2}/i.test(m)) {
-      return "Couldn't sponsor the transaction — try again";
-    }
-    if (/not available for/i.test(m)) return m; // unsupported account kind — show as-is
+    // Both are "try again" for genuinely different reasons, and both are real:
+    // another device won the same feed version, or the version probe could not
+    // reach a conclusion and the write correctly refused rather than guessing.
+    if (/another device|inconclusive/i.test(m)) return "Try again";
+    if (/sign in/i.test(m)) return m; // already phrased for a person
     return "Not saved — tap to retry";
   }
 
@@ -83,26 +87,24 @@
 
     const prevLiked = liked;
     const prevCount = count;
-    const prevUid = viewerUid;
     liked = !prevLiked;
-    count = prevLiked ? Math.max(0, prevCount - 1) : prevCount + 1;
+    // An unknown count stays unknown — nudging null to 1 would invent a tally
+    // out of the viewer's own action.
+    if (prevCount !== null) count = prevLiked ? Math.max(0, prevCount - 1) : prevCount + 1;
 
     try {
-      const r = await toggleLike(subject, prevLiked, prevUid);
+      const r = await toggleSocial(kindForVariant(variant), subject, prevLiked);
       if (r === null) {
         // User dismissed the sign-in popup — quiet revert, not an error.
         liked = prevLiked;
         count = prevCount;
-        viewerUid = prevUid;
       } else {
         liked = r.liked;
-        count = r.count;
-        viewerUid = r.viewerUid;
+        count = r.count ?? prevCount;
       }
     } catch (err) {
       liked = prevLiked;
       count = prevCount;
-      viewerUid = prevUid;
       showError(err);
     } finally {
       inFlight = false;
@@ -117,7 +119,7 @@
       <circle cx="12" cy="8" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>
       <path d="M5 19.5c1.4-3.1 4-4.7 7-4.7s5.6 1.6 7 4.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>
-    {#if !loaded}·{:else}{count}{/if}
+    {#if !loaded || count === null}·{:else}{count}{/if}
     <span class="stat-label">{count === 1 ? "follower" : "followers"}</span>
   </span>
 {:else if variant === "follow"}
@@ -143,7 +145,7 @@
     <span class="follow-label">
       {#if !loaded}·{:else}{liked ? "Following" : "Follow"}{/if}
     </span>
-    {#if loaded && count > 0}<span class="follow-count">{count}</span>{/if}
+    {#if loaded && count !== null && count > 0}<span class="follow-count">{count}</span>{/if}
   </button>
   {#if errMsg}<span class="like-err" role="status">{errMsg}</span>{/if}
 {:else}
@@ -166,8 +168,8 @@
         stroke-linejoin="round"
       />
     </svg>
-    <span class="count" class:zero={count === 0 && !liked}>
-      {#if !loaded}·{:else}{count > 0 ? count : ""}{/if}
+    <span class="count" class:zero={count === null || (count === 0 && !liked)}>
+      {#if !loaded}·{:else}{count !== null && count > 0 ? count : ""}{/if}
     </span>
     {#if caption}<span class="caption">{caption}</span>{/if}
   </button>
