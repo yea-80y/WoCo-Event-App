@@ -1,8 +1,9 @@
 # Coaster Credits — Rider-Signed Credentials Plan
 
-STATUS (2026-08-13): DESIGN, revised after an independent Fable review (54/54 messages
-Fable-attested). Not started. Identity and visibility are DECIDED (see Open questions);
-remaining schema questions are listed there and must close before first write. Origin: the Rita 100 charity challenge
+STATUS (2026-08-14): P0 FROZEN. The statement discipline and the v1 payload schemas are
+frozen — see "FROZEN AT P0" below; the normative code is
+`packages/shared/src/{statement,credit,social}/`. Build not started. Identity and
+visibility are DECIDED (see Open questions). Origin: the Rita 100 charity challenge
 (Digital Dan, September 2026) as the pilot for a general ride-credit system.
 
 Companion to `docs/SWARM_SOCIAL_PLAN.md` — this shares its indexer, its trust model and
@@ -224,10 +225,17 @@ identifier that can **sign a challenge on demand**. The parent cannot — it nev
 rule, and for three of four login kinds it is a smart account whose address can never be recovered
 from a signature. So the credential-level identifier sits one derivation down.
 
-The ed25519 POD key is chosen over the feed key because `ClaimedTicket.owner` already uses it as
-owner-of-record, so a rider's tickets and credits share one owner and the passport view coheres.
+The ed25519 POD key is chosen over the feed key for **key-exposure containment**, not passport
+aesthetics. The feed signer is a deliberately independent, LOW-stakes identity — "rotating or
+leaking it never exposes POD, encryption, or funds" (`soc.ts:166-178`) — and it is escrowed in
+the recovery/portability bundles and effectively unrotatable, since its address owns every feed
+the user has. Naming it as the credential identity would raise its stakes and collapse the
+separation that derivation domain deliberately built. The ed25519 key sits on the identity side
+of that wall. That `ClaimedTicket.owner` already uses it — so tickets and credits share one
+owner and the passport view coheres — is a benefit, not the reason.
 The cost is one extra signature (`holderSig`), since the holder is not the feed owner — for likes
-and follows, where author IS feed owner, that signature would be unnecessary.
+and follows, where author IS feed owner, no identity signature is needed at all (see "FROZEN AT
+P0": stakes-driven tiering).
 
 ### The key-binding statement — one object, two problems
 
@@ -238,11 +246,69 @@ feed that carries the statement, and a from-scratch rebuilder cannot map a holde
 owner in order to find their statements at all.
 
 Both dissolve with a **key-binding statement**: one signed object declaring that a given parent,
-POD key and feed key belong to the same person. Published once per account.
+POD key and feed key belong to the same person.
+
+**NOT frozen at P0 — deliberately.** The concept is settled; the contents are not: the parent
+leg (named-only vs platform-attested vs ERC-1271, given three of four login kinds are smart
+accounts whose address is unrecoverable from a signature), the mutual-signature shape between
+the two derived keys, the placement/enumeration carrier, and its equivocation rule are all
+unspecified. Freezing a guess would be worse than freezing late — the binding is the one object
+every other key links through. Design it before P1: the indexer needs it to discover public
+riders' feeds.
+
+Two rules ARE fixed now:
+
+- **Publish lazily, at the first public act — never per account.** "Published once per account"
+  was a privacy regression: `ClaimedTicket.owner` is the same ed25519 key, so an
+  account-creation binding would link every user's event-attendance identity to their account
+  identity even if they never publish a credit — in a children's service. Private riders need
+  no public mapping; public riders are exactly the set the indexer must discover. Lazy
+  publication serves both.
+- **The binding must be extensible to additional keys.** It is the designated carrier for any
+  future key the identity grows — in particular a post-quantum holder key (see "Post-quantum
+  posture"). Do not design it as exactly-three-keys-forever.
 
 It makes the parent usable as the public identity — which is what a user expects — while keeping
-signing where it belongs. Design it alongside the schema freeze; it is cheap now and awkward once
-statements exist without it.
+signing where it belongs.
+
+### Post-quantum posture — DECIDED 2026-08-14
+
+Prompted by the EF dropping Poseidon for L1 (2026-08-13, SHA/BLAKE for leanVM). **No impact
+here, and `holder` stays ed25519.** Recorded so it is not re-litigated per headline:
+
+- Poseidon is a SNARK-circuit hash, not a signature scheme. Zupass PODs use EdDSA-Poseidon so
+  they are ZK-provable; WoCo's POD borrowed the name only — the stack is DAG-CBOR + keccak256 +
+  OZ SimpleMerkleTree + ed25519 (`pod/canonical.ts`, `pod/merkle.ts`; zero Poseidon anywhere in
+  the repo, verified by grep 2026-08-14). An EF hash decision touches nothing here.
+- "SHA-2/BLAKE signs instead" is a category error — a hash has no secret. The real hash-BASED
+  signature scheme, SLH-DSA (FIPS 205), signs at 7,856 B (128s) to 29,792 B (256s); lattice
+  ML-DSA-44 (FIPS 204) is a 2,420 B signature + 1,312 B pubkey. A SOC payload caps at 4,096 B
+  (`SOC_MAX_PAYLOAD_SIZE`), so every standardised PQ signature breaks the single-chunk
+  statement (only the unfinalised, floating-point-hazardous FN-DSA/Falcon-512 at ~666 B would
+  fit) — and none is needed for forgery resistance on any relevant horizon.
+- Swapping ed25519 alone moves one of FOUR quantum-exposed keys: the secp256k1 parent (the
+  Ethereum account itself), the secp256k1 feed signer (mandated by Swarm's SOC format —
+  `SOC_SIGNATURE_SIZE = 65` is protocol, not ours), and X25519 all remain. The stack's PQ floor
+  is Ethereum's and Swarm's own migrations.
+- **The real PQ exposure is the encryption path, not signing** — the inversion the question
+  missed. AES-256-GCM is fine (Grover leaves ~128-bit strength); the exposed half is the X25519
+  ECDH, and sealed boxes on a public network are harvest-now-decrypt-later: a signature only
+  needs to resist forgery while it matters and can be rotated before capable quantum machines
+  exist, but a chunk sealed today cannot be un-harvested. For encrypted ride history of minors,
+  that is the exposure that cannot be fixed later.
+
+Recorded now so migration is never blocked, none of it v1 work:
+
+- The closed-schema/format-version rule IS signature agility — `woco.credit.v2` can carry a
+  different holder-key type without touching v1 history.
+- The key-binding statement must be key-extensible (above); it is where a PQ holder key would
+  bind to the same identity.
+- The designated encryption outlet is a **hybrid KEM** (X25519 + ML-KEM-768, the TLS/Signal
+  shape; ~1.1 KB ciphertext overhead per box — fits). `SealedBox` has no version discriminator
+  today, so the hybrid box must introduce one. Until then, data minimisation inside sealed
+  payloads is the real PQ defence — this plan already bans timestamps.
+- The optional anchor doubles as pre-quantum provenance: a root anchored before ed25519 falls
+  proves the statement set predates forgery becoming possible.
 
 ## PODs versus statements — the dividing line
 
@@ -482,7 +548,10 @@ addable without migrating a single statement.
 **The carve-out:** the `session` block and the `exitTokens` hook **are v1 schema**. Since
 `holderSig` covers a closed canonical object, they cannot be added later without a format bump —
 and that is the one migration this plan cannot afford to need mid-park-conversation. The hook
-only needs to *exist* in v1; the token format can be pinned at P3.
+exists in v1 as **opaque format-tagged strings** (`exitTokens?: string[]`, each
+`"{formatId}:{base64url}"`), so the closed v1 schema pins the FIELD while the token format
+inside the string stays independently versioned and genuinely can be pinned at P3 — with no
+contradiction against "v1 is CLOSED". See closure 7.
 
 Ship: tier 1, the hook, and a counter. Nothing more.
 
@@ -509,7 +578,7 @@ Ship: tier 1, the hook, and a counter. Nothing more.
   not a sovereign identity and aliases restore interop — but the exception and its reasoning must
   be written down rather than silently taken.
 - **`prevSession` is derivable** from `(owner, base, version)` and is schema surface frozen
-  forever for something a reader can compute. Consider dropping it.
+  forever for something a reader can compute. Consider dropping it. (Dropped in the freeze.)
 - **Opt-in copy has a disclosure consequence.** `ClaimedTicket.owner` is the same ed25519 key, so
   publishing credits links a rider's coaster identity to their event-attendance identity. The
   consent wording must say so.
@@ -522,15 +591,12 @@ Ship: tier 1, the hook, and a counter. Nothing more.
   109-lap tier-2 day is 109 versions. Amortisable with hints, but the index cache becomes
   semi-load-bearing.
 
-### Contradictions to clean up
+### Contradictions to clean up — RESOLVED 2026-08-14
 
-- The security table still cites `MIN_MINUTES_BETWEEN_CREDITS = 5` as a global constant; the Caps
-  section abolished it in favour of per-subject `cadenceMinutes`. Leftover from the prior revision.
-- The witness-batch section defines leaves as `(holder, subject, sessionDate)` tuples — exactly
-  the per-session join the "witness leaves must be per-observation" paragraph forbids one section
-  earlier. Leaves need an observation discriminator. P4 machinery, not freeze-blocking.
+Both fixed in the current text: the security table reads the per-subject `cadenceMinutes`, and
+witness leaves carry an `observationNonce` discriminator.
 
-## The five blockers, closed (2026-08-13)
+## The freeze blockers, closed (2026-08-13; closures 6–7 added at the freeze, 2026-08-14)
 
 ### 1. Topic derivation — one scheme, a salt that differs
 
@@ -548,18 +614,31 @@ subject index   = "woco/credit/v1/index/" + hex(HMAC-SHA256(salt, "subject-index
 (`packages/shared/src/crypto/keys.ts:71`) — deterministic, regenerable on any device, never
 transmitted.
 
-**This fully closes the presence leak, not just narrows it.** The review's attack was: opting in
-reveals your feed-owner address, after which every private head topic becomes probeable. With a
-salted private topic, knowing the feed owner is *not enough* — an observer also needs the salt,
-which is derived from a key only the rider holds. So publishing one coaster never exposes the
-addresses of the others.
+Pinned encodings — the freeze exists to kill exactly this class of ambiguity: the HMAC message
+for a statement topic is the **raw 32 subject bytes**, never hex text; for the index it is
+`utf8("subject-index")`; the topic suffix is lowercase hex, no 0x.
+`statement/discipline.ts` is normative.
 
-Opt-in is a republish at the public topic. Prior private versions stay where they were: encrypted,
-at addresses nobody else can compute. Opting in exposes what you publish from then on, and nothing
-retroactively.
+**This closes the presence leak to PUBLIC observers — and only to them.** The review's attack
+was: opting in reveals your feed-owner address, after which every private head topic becomes
+probeable. With a salted private topic, knowing the feed owner is *not enough* — an observer
+also needs the salt, which derives from a key only the rider holds. So publishing one coaster
+never exposes the ADDRESSES of the others. Two honest limits: the relay still sees
+(authenticated parent, SOC owner, upload time) and whitelists every relayed SOC address on the
+public gateway (`soc-upload.ts:222-231`) — the platform is not inside this protection. And
+"exposes nothing retroactively" is address-true but content-false: the first public statement
+carries the lifetime `total` and the current `seq`, disclosing prior private magnitude and
+prior write count. The opt-in consent copy must say both.
+
+Opt-in is a republish at the public topic — a one-way migration, not a fork (closure 6). `seq`
+continues across it; versions at the new topic restart at 0. Prior private versions stay where
+they were: encrypted, at addresses nobody else can compute.
 
 The subject index gets the same treatment, which the earlier revision never specified at all —
-unsalted it would have leaked exactly what the sealed statements hide.
+unsalted it would have leaked exactly what the sealed statements hide. **Partition rule:** a
+subject lives in exactly ONE of the two indexes — the private index (private salt) before
+opt-in, the public index (public salt) after — and opt-in moves it. The index is therefore not
+just discovery hygiene: it is how a fresh device learns which head is live for each subject.
 
 ### 2. `holderSig` digest — written down
 
@@ -572,10 +651,24 @@ holderSig   = ed25519.sign(digest, holderPrivKey)
 Encoder is the LOCKED `packages/shared/src/pod/canonical.ts`. The explicit domain prefix, rather
 than relying on the `format` field alone, mirrors the cross-protocol argument in
 `apps/server/src/lib/ticket/owner-binding.ts:8-10`: a signature over these bytes cannot collide
-with the same key's POD-manifest signatures, because a manifest digest is `keccak256(dagCbor(body))`
-with no prefix, so the byte strings can never be equal.
+with the same key's POD-manifest signatures — the same account's ed25519 key signs manifests
+when they create events — because a manifest digest is `keccak256(dagCbor(body))` with no
+prefix, and the digest PREIMAGES can never be equal: a canonical manifest encodes as a CBOR map
+(first byte 0xa0–0xbb), while these bytes start `0x77` ("w").
 
 Absent optional fields are **omitted, never null**.
+
+Two rules join the freeze with this:
+
+- **The holder key never signs an externally supplied digest.** Every protocol wanting a holder
+  signature — statements, possession challenges, anything later — hands structured bytes to a
+  signer that hashes them under its own registry prefix. A signer accepting a raw 32-byte
+  "challenge" would sign anything, including another protocol's digest.
+- **A prefix registry.** Signing prefixes are `"woco-{type}-v{n}\n"`, type names `[a-z0-9-]+`
+  (no newline can occur; the trailing `-v{n}\n` parse is unambiguous). The registry lives in
+  `statement/discipline.ts`; a new identity-signed type claims its prefix there or does not
+  sign. Note the deliberate distinction: `format` ids are dotted (`woco.credit.v1`), signing
+  prefixes hyphenated with a trailing newline — they can never be confused for one another.
 
 ### 3. `sessionDate` is UTC in the signed object
 
@@ -587,8 +680,9 @@ retroactively reinterpret already-signed statements — a signed field must not 
 external state. Rejected too: carrying a UTC offset per statement, which adds permanent schema
 surface to solve a display problem.
 
-Consequence to accept: a session running past local midnight splits across two dates. Display can
-recombine; the signed record stays unambiguous forever.
+Consequence to accept, stated accurately: the split is at UTC midnight, not local midnight — at
+a UTC-8 park EVERY day splits mid-afternoon, not just sessions running past local midnight.
+Display recombines through the registry timezone; the signed record stays unambiguous forever.
 
 ### 4. `woco.credit.v1` is CLOSED
 
@@ -598,6 +692,11 @@ Because `holderSig` covers canonical DAG-CBOR of the whole object, **any added f
 Indexers must reject unknown fields rather than ignore them, so a v2 object can never be silently
 misread as a v1 one. This is why the `session` block and the `exitTokens` hook must exist in v1
 even while empty — see the scope carve-out.
+
+Strict validation means the **exact field set at every nesting level** — the `session` block is
+as closed as the top level. And **format dispatch happens before strict validation**: a reader
+reads `format` first, then applies that format's validator, so a v2 object fails v1 validation
+whole instead of half-parsing.
 
 ### 5. `seq` equivocation — lower digest wins
 
@@ -612,9 +711,102 @@ Grindability is acceptable here: a rider could craft two statements and pick whi
 tier 1 they already control their own count, so it buys nothing. The same reasoning applies to the
 holderSig-bytes-ascending rule for the per-window cap.
 
+Three clarifications frozen with it:
+
+- Comparison is lexicographic over the **32 raw digest bytes** (equivalently the lowercase hex).
+- Agreement is a deterministic function of the INGESTED set. No tie-break can canonicalise the
+  input set — two indexers that saw different statements still differ — which is what the
+  evidence manifest is for: it makes two indexers' inputs comparable, so a dispute reduces to
+  "show me your set".
+- A same-version race on ONE feed cannot equivocate at all: a SOC is immutable, so the first
+  write at a version wins and the second is silently discarded (201 returned, old payload
+  kept). The consequence is a client rule, not an indexer rule — **read back after write**,
+  because a "successful" write may not be what landed.
+
+### 6. One live head per (holder, subject) — opt-in retires the private head (2026-08-14)
+
+A salt change is a topic change: the public head is a NEW feed whose versions restart at 0
+while `seq` continues. If a client kept writing the private head after opting in, one
+(holder, subject) would have two live heads, the same `seq` could appear twice with different
+totals, and closure 5's tie-break would resolve the rider's own history arbitrarily. So:
+**opt-in is a one-way migration, not a fork.** The client stops writing the private head; the
+subject moves between index partitions (closure 1); a device that missed the opt-in and writes
+a stale private `seq` loses to the public head by the ordinary seq rule — self-healing, no
+tombstone machinery needed.
+
+### 7. Statements are JSON on the wire — the schema is JSON-safe (2026-08-14)
+
+`assembleContentFeed` JSON-parses the base payload to detect the multi-chunk manifest
+(`soc.ts:457-463`); a non-JSON payload silently falls through as single-chunk with NO paging
+path. So the wire format is JSON, and every frozen schema must survive a JSON round-trip into
+the same canonical object: strings, booleans, safe integers, arrays, objects — no CBOR byte
+strings, no floats, no null (absent = omitted, closure 2). `holderSig` still covers DAG-CBOR of
+the parsed object — dag-cbor sorts map keys, so JSON key order cannot change the digest. The
+closed schema also guarantees a statement can never collide with the paging manifest's
+`_woco_mc` marker key.
+
+This is what settles `exitTokens` as format-tagged STRINGS rather than a pinned `ExitTokenV1`
+struct (which would freeze a format not built for a year inside an object that can never
+change) or opaque bytes (which break paging). It also falsified the earlier "~30KB of tokens
+works because the multi-chunk path exists" note as written — true again for base64url strings
+at ~400 B per token (~40 KB for a 100-lap tier-2 day, well inside the 256-page cap).
+
+## FROZEN AT P0 (2026-08-14) — the shared discipline and the v1 payloads
+
+Code is normative: `packages/shared/src/statement/discipline.ts` (shared discipline),
+`packages/shared/src/credit/` (credit payloads), `packages/shared/src/social/` (like/follow
+payloads — chain-free; deliberately NOT an extension of the superseded EAS `likes/` module).
+Changing any frozen item is a format bump, never an edit.
+
+What is frozen is a **DISCIPLINE plus per-type payloads, not a shared envelope**.
+`CreditStatementV1` is not the envelope other types ride: likes and follows need none of
+`holder`/`holderSig`/`seq`, because there the author IS the feed owner — the SOC signature
+already binds authorship and the SOC version sequence already orders. The principle is
+**stakes-driven tiering**: low-stakes statements ride the storage key alone; gate-feeding
+credentials carry an identity signature.
+
+**The shared discipline** (every statement type rides all of it):
+
+1. Signing-prefix registry — `"woco-{type}-v{n}\n"`; the holder key never signs an externally
+   supplied digest (closure 2).
+2. Digest recipe — `keccak256(prefix || dagCbor(object minus its sig field))`, encoder locked
+   to `pod/canonical.ts`.
+3. Closed schemas, JSON-safe wire form, omitted-not-null, dispatch-before-validation
+   (closures 4 and 7).
+4. Topic scheme — `"woco/{type}/v{n}/" + hex(HMAC-SHA256(salt, subject bytes))`, `salt` a
+   parameter: public types pin `utf8("woco-{type}-public-v{n}")`; the private salt is
+   `HMAC(encryptionPrivKey, "woco-{type}-topic-salt-v{n}")` (closure 1).
+5. Per-holder subject index per type, same salt treatment, partition rule (closure 1); one
+   live head per (holder, subject) (closure 6).
+6. Ordering — SOC versions where author = feed owner; signed `seq` where they differ;
+   lower-digest tie-break; read-back-after-write (closure 5).
+7. Evidence-manifest REQUIREMENT (its form is deliberately NOT frozen — view plane, freely
+   versionable): the published index lists the ingested statement digests AND the
+   per-statement values used, because "count = list length" does not hold for carried totals.
+
+**Per-type payloads:**
+
+- `woco.credit.v1` — `{ format, subject, holder, seq, total, session { date, count,
+  exitTokens?: string[] }, holderSig }`. CLOSED. `prevSession` is DROPPED from the earlier
+  draft: it is derivable from `(owner, base, version)` — SOC versions ARE the history — and
+  schema surface frozen forever for a computable value is pure liability.
+- `woco.credit-index.v1` — `{ format, subjects[] }`, storage-key-signed only. Deliberately
+  low-stakes: a forged index can only hide subjects or point at statements whose `holderSig`
+  will not verify.
+- `woco.like.v1` / `woco.follow.v1` — `{ format, subject, value }`. Latest SOC version wins;
+  `value: false` is the overwrite that "unlike/unfollow = overwrite" (SWARM_SOCIAL_PLAN
+  commitment 3) requires, since absence cannot be distinguished from never-liked.
+
+**Deliberately NOT frozen, with reasons:** the key-binding statement (see Identity layering —
+two rules fixed, contents open, design before P1); the exit-token format inside the strings
+(P3, independently versioned); the evidence-manifest type (view plane); witness batches (P4);
+subject-bytes32 derivation for social subjects (#172's build — the profile namehash in
+`likes/subject.ts` is identity-level, survives the EAS retirement, and remains the intended
+derivation).
+
 ## Data structures
 
-New in `packages/shared/src/credit/`. Reuses the LOCKED primitives in
+Code lives in `packages/shared/src/{statement,credit,social}/`. Reuses the LOCKED primitives in
 `packages/shared/src/pod/{canonical,merkle}.ts` — same encoder, same tree scheme. Do not
 fork them.
 
@@ -627,30 +819,34 @@ and the passport view all actually want.
 ```ts
 interface CreditStatementV1 {
   format: "woco.credit.v1";
-  /** keccak256("woco:coaster:v1:" + stableId). See "Subject identity". */
-  subject: Bytes32Hex;
-  /** The rider's ed25519 POD public key — the owner-of-record, as `ClaimedTicket.owner`. */
-  holder: Hex32;
+  /** keccak256("woco:coaster:v1:" + stableId), 0x-prefixed lowercase. See "Subject identity". */
+  subject: Hex0x;
+  /** The rider's ed25519 POD public key (hex, no 0x) — the owner-of-record, as
+   *  `ClaimedTicket.owner`. */
+  holder: string;
   /** Monotonic per (holder, subject). THE ordering authority — latest = highest seq.
-   *  Not derivable from anything else; see "Ordering". */
+   *  Not derivable from anything else; see "Ordering". Continues across the
+   *  private→public migration (closures 1 and 6). */
   seq: number;
-  /** Lifetime rides for this subject. Cumulative — never a delta, never summed. */
+  /** Lifetime rides for this subject. Cumulative — carried, never a delta, never summed. */
   total: number;
   /** The current day's block. Older days are recovered by walking SOC versions. */
   session: {
-    date: string;        // YYYY-MM-DD, timezone declared in the subject registry
+    date: string;        // UTC calendar date, YYYY-MM-DD (closure 3)
     count: number;
-    /** Evidence MATERIALS only — the tier is computed, never declared. */
-    exitTokens?: ExitTokenV1[];
+    /** Evidence MATERIALS only — opaque "{formatId}:{base64url}" strings (closure 7).
+     *  The tier is computed, never declared. Empty or absent at v1. */
+    exitTokens?: string[];
   };
-  /** Swarm ref of the previous version. Optional skip-list over intra-day rewrites,
-   *  NOT the history mechanism — SOC versions are that. */
-  prevSession?: Hex64;
-  /** ed25519 signature by `holder` over the domain-separated canonical digest.
-   *  See "holderSig". */
+  /** ed25519 signature by `holder` (hex, no 0x) over the closure-2 digest. See "holderSig". */
   holderSig: string;
 }
 ```
+
+**No `prevSession`.** The earlier draft carried the previous version's Swarm ref as an optional
+skip-list. Dropped in the freeze: it is derivable from `(owner, base, version)` — SOC versions
+ARE the history — and it would have been frozen surface a reader can compute, plus a
+consistency question (what if it disagrees with the actual previous version?) for free.
 
 **No `firstAt`/`lastAt` by default.** Per-ride timestamps turn a credit log into a routine —
 "this key rode Rita at 14:32 every Saturday" — which is the pattern the ICO code's
@@ -696,11 +892,16 @@ canonical CBOR via `packages/shared/src/pod/canonical.ts` under an explicit
 same key's other uses — mirroring the cross-protocol argument in
 `apps/server/src/lib/ticket/owner-binding.ts:8-10`.
 
-### Aggregation — nothing is ever summed across writes
+### Aggregation — the self-declared total is carried, never summed
 
-A rider's total for a subject is `total` from the highest-`seq` statement. Full stop. No
-summation across writes, so the "8 taps read as 36 rides" trap cannot occur by construction.
-Their total across coasters is the sum over subjects, one head each.
+A rider's self-declared total for a subject is `total` from the highest-`seq` statement. Full
+stop. No summation across writes, so the "8 taps read as 36 rides" trap cannot occur by
+construction. Their total across coasters is the sum over subjects, one head each.
+
+The VERIFIED count — the number gating eventually reads — is the OTHER aggregation rule, and it
+IS a sum: deduped observations (token nonces / witness leaves) across the walked version
+history. Two rules, both named; conflating them is how a self-reported number would leak into a
+gate.
 
 Corrections are free: write a lower `total` at a higher `seq`.
 
@@ -736,20 +937,17 @@ So a rider also writes a per-holder subject index — one head topic listing the
 hold, updated when a new subject is first ridden. Cheap now, awkward to retrofit once
 statements exist.
 
-### Exit token — issued by a device, embedded by the rider
+### Exit token — issued by a device, embedded by the rider as an opaque string
 
-```ts
-interface ExitTokenV1 {
-  format: "woco.exit-token.v1";
-  subject: Bytes32Hex;
-  deviceKey: Hex0x;         // the exit device's signing address
-  windowStart: string;      // ISO, ~30s granularity
-  nonce: string;
-  sig: string;              // deviceKey's signature over the above
-}
-```
+At v1 the hook is frozen as `exitTokens?: string[]`, each `"{formatId}:{base64url}"` (base64url
+unpadded). The statement schema pins the FIELD; the token format pins itself at P3 under its
+own version (closure 7). The intended P3 content, recorded as direction and NOT frozen:
+`subject`, `deviceKey` (the exit device's signing address), `windowStart` (ISO, ~30s
+granularity), `nonce`, and the device's signature over those.
 
-The device signs locally and needs no network — it can run all day offline at a ride exit.
+The device signs locally and needs no network — it can run all day offline at a ride exit. The
+rider's `holderSig` covers the embedded strings verbatim, so the rider commits to exactly the
+tokens they presented; the device's own signature lives inside the blob.
 
 ### Issuer witness batch — tier 3 only
 
@@ -808,7 +1006,7 @@ not yet cover" — this is deliberately not a single platform-owned feed):
 subject → {
   name: string;          // "Rita"
   park: string;          // "Alton Towers"
-  timezone: string;      // declares what sessionDate means for this subject
+  timezone: string;      // DISPLAY-ONLY: how views localise the UTC sessionDate (closure 3)
   cadenceMinutes: number;// per-subject, NOT a global constant — see Caps
   aliases?: { rcdb?: string; captainCoaster?: string; park?: string };
 }
@@ -937,9 +1135,22 @@ Fans self-sign or scan Dan's rotating token, depending on what the day allows. T
 deliverables that matter are the public verifiable counter, an embeddable widget for
 rita100.com, and a stream overlay — all of which read the live count, not the anchor.
 
+⚠️ **OWNER DECISION, not taken here:** this paragraph still promises Dan's exit device and
+rotating tokens in September, while the scope section ships "tier 1, the hook, and a counter.
+Nothing more." That changes what is promised to a partner — settle it before the approach, not
+in this doc.
+
 Do not claim the system proves Dan physically rode 109 times. It proves he and his team
-attested to it, tamper-evidently and in public. Overclaiming to an audience that will test
-it on camera is the one unforced error available here.
+attested to it — **signed and publicly recountable**, not "tamper-evident": the issuer can
+always supersede their own history at a higher `seq`, and nothing timestamps a write, so a
+version history could be fabricated after the fact. Nobody expects a self-attested counter to
+be tamper-evident against the attester, and tier 1 explicitly does not prove anyone rode.
+Running the on-chain anchor for the pilot was considered and REJECTED: it would service one
+adverb of copy while putting a chain dependency into the one design whose headline is that
+nothing touches a chain — and on a stream day the audience watching the counter live is better
+liveness evidence than a notary. The anchor stays documented as an upgrade (it is also the
+pre-quantum provenance mechanism — see "Post-quantum posture"). Overclaiming to an audience
+that will test it on camera is the one unforced error available here.
 
 ### Approaching Dan — the partnership risks
 
@@ -1017,7 +1228,7 @@ and the witness batch is a single upload. The on-chain variant puts all three on
 | Replaying an exit token | Token binds `windowStart`; indexer rejects stale windows. |
 | Reusing a photographed exit QR later | Rotation — a captured token expires in ~30s. |
 | Sharing a live exit QR within its window | **Not solved.** Structural to a displayed code. Bounded by `MAX_STATEMENTS_PER_TOKEN_WINDOW = 40` + the per-subject `cadenceMinutes` from the subject registry. Tier 2 claims the token was present, not the rider. |
-| Inflating a self-reported count | Nothing, by design. That is what `evidence: "self"` declares. |
+| Inflating a self-reported count | Nothing, by design. That is what the COMPUTED `self` tier means (there is no `evidence` field to declare). |
 | Bulk fraud across many accounts | Cycle-time plausibility rule + tier separation in the UI. |
 | Issuer backdating a witness batch | Optional anchor timestamps the digest. |
 | Indexer lying or omitting | Evidence manifest points at real statements — anyone can recount (`SWARM_SOCIAL_PLAN` commitment 4). |
@@ -1050,9 +1261,10 @@ and cannot be revisited. The indexer is explicitly a rebuildable cache. So spend
 design effort where mistakes are unfixable, and ship the pilot on deliberately minimal
 machinery.
 
-**Freeze in `packages/shared` before any code:** `CreditStatementV1` with `seq`, the head
-topic, computed evidence, the domain-separated `holderSig` digest, and the identity decision
-below. Do not defer any schema question — that is the one category that cannot be revisited.
+**Freeze in `packages/shared` before any code** (DONE 2026-08-14 — "FROZEN AT P0"):
+`CreditStatementV1` with `seq`, the head topic, computed evidence, the domain-separated
+`holderSig` digest, and the identity decision below. Do not defer any schema question — that
+is the one category that cannot be revisited.
 
 **Ship the pilot minimally:** hardcoded subject, published allowlist of the issuer's device
 keys, a single-subject counter endpoint, the embed widget and the stream overlay. None of the
@@ -1065,7 +1277,8 @@ registry, self-report import, NFC.
 ## Phasing
 
 - **P0** — subject identity + subject registry + **frozen statement schema**. The only
-  irreversible step.
+  irreversible step. **DONE 2026-08-14** — see "FROZEN AT P0". The registry SHAPE is recorded
+  above; publishing registries is P1 machinery (disposable, not signed-forever).
 - **P1** — rider signs and publishes to their own feed. Tier 1 only. No issuer, no park.
 - **P2** — single-subject projection for the pilot; general indexer merged with #172 after.
 - **P3** — exit device app: rotating tokens, offline-capable, published key allowlist. Tier 2.
@@ -1105,13 +1318,15 @@ Public counts are core to this culture — Captain Coaster has public profiles a
 enthusiasts carry counts in forum signatures, comparing is half the hobby. A silently private
 default would bury the feature the most engaged users actually want.
 
-So: **ask once, at the first credit**, private pre-selected, neutral wording, no nudge
-patterns. An active choice is a stronger children's-code posture than a silent default, needs
-no age question, and puts the public count one tap away.
+So: **ask once — but never in the tap flow.** The first credit writes private with NO decision
+attached; the ask happens at the first calm view of the collection afterwards, private
+pre-selected, neutral wording, no nudge patterns. An active choice is a stronger
+children's-code posture than a silent default, needs no age question, and puts the public count
+one tap away — while a keepsake never requires a publication decision from a child standing in
+a queue. (The earlier "ask at the first credit" wording contradicted exactly that sentence.)
 
 Pilot: Dan publishes — a public counter is the point. Fans default to a private keepsake and
-opt in to appear on the leaderboard. A keepsake must never require a publication decision from
-a child standing in a queue.
+opt in to appear on the leaderboard.
 
 #### Erasure, stated honestly
 
@@ -1135,6 +1350,10 @@ Attested times already exist where they are needed: exit tokens carry `windowSta
 the device, which the rider cannot forge. That is what the per-window cap and the cadence rule
 read, and it is why both are enforceable only at tiers 2/3.
 
+Where a rider genuinely wants their own times, the designated future outlet is a **sealed
+private sidecar** — ECIES-to-self, never inside the public statement, explicitly NOT v1.
+Recorded so "add timestamps back" has a landing place that is not the signed public object.
+
 Consequence for record claims — "most laps in a day" and similar: those must require tier 2 or
 3. A record is never creditable from self-reported data, whatever times it carries.
 
@@ -1142,15 +1361,10 @@ Consequence for record claims — "most laps in a day" and similar: those must r
 
 - RCDB id semantics under relocation/re-tracking — still worth verifying before relying on
   the alias for import matching, though subject identity no longer depends on it.
-- `sessionDate` timezone: park-local or UTC. The registry declares it per subject; pick the
-  convention.
-- Statement size at tier 2 grows with the day — ~300 bytes per token, so a 100-lap tier-2 day
-  is ~30KB of tokens re-uploaded on every tap. The multi-chunk path exists (up to 256 pages),
-  so it works, but the cost is quadratic in rides; consider chunking token lists by reference
-  once large.
-- The evidence manifest needs restating for weighted counts: commitment 4's "count = list
-  length" spot-check does not hold when a total is carried rather than summed, so the manifest
-  must carry the per-statement values it used.
+- Statement size at tier 2 grows with the day — ~400 bytes per base64url token string, so a
+  100-lap tier-2 day is ~40KB re-uploaded on every tap. The multi-chunk path handles it (JSON
+  wire form, closure 7; up to 256 pages), but the cost is quadratic in rides; consider
+  chunking token lists by reference once large.
 - The attendee gate: profile creation is gated on ticket possession, and pilot fans have no
   WoCo tickets, so the credits write path must be deliberately ungated — which reopens
   free-account statement spam stamped on our postage batch. Needs a rate limit on the relay.

@@ -5,6 +5,10 @@ likes design (`docs/EAS_LIKES_HANDOVER.md`) for launch — EAS likes are built b
 launch; no chain dependency for social. The EAS doc remains useful for its abuse model
 and UI notes only.
 
+2026-08-14: the statement discipline + `woco.like.v1`/`woco.follow.v1` payloads are FROZEN —
+`packages/shared/src/{statement,social}/`, design record in `docs/COASTER_CREDITS_PLAN.md`
+("FROZEN AT P0"). Commitment 5 is now satisfied in code.
+
 ## The model in one paragraph
 
 Every social action (like, follow, later: post, comment, vote, mod action) is a statement
