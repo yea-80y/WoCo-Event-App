@@ -48,6 +48,7 @@ import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.j
 import { whitelistHashes } from "./whitelist.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
+import { observeStatementBytes } from "../social/participants.js";
 
 const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
 
@@ -240,6 +241,14 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
           console.warn("[swarm] Etherna SOC offer failed (non-fatal):", e);
         }
       }
+      // Learn who to read later. The identifier is a hash, so the topic cannot
+      // be inverted from it — but a PUBLIC statement's payload names its own
+      // format and subject, which is everything needed to recompute the topic.
+      // A sealed payload simply does not parse, so an encrypted credit is never
+      // registered and never counted: privacy falls out of the same mechanism
+      // that makes counting possible, rather than depending on a flag.
+      // Bookkeeping for a view-plane cache — it must never fail a user's write.
+      observeStatementBytes(ownerHex, payload);
       return { owner: ownerHex, identifier: identifierHex, address: socAddress };
     } catch (err: unknown) {
       const e = err as { code?: string; message?: string; status?: number };

@@ -38,6 +38,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
 import { likesRoutes } from "./routes/likes.js";
+import { socialRoutes } from "./routes/social.js";
 import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
 import { swarmRoutes } from "./routes/swarm.js";
@@ -481,6 +482,11 @@ app.route("/api/attendee-gate", attendeeGate);
 
 // EAS likes (#4) — verify-on-chain record + projection reads
 app.route("/api/likes", likesRoutes);
+// Swarm-native social + credits (#172). Separate from /api/likes, which serves
+// the superseded on-chain EAS projection — the two count different things from
+// different sources, so sharing a prefix would make which one answered a
+// question of routing order.
+app.route("/api/social", socialRoutes);
 
 // Onboarding campaign — referral attribution/relay + cohort badges
 app.route("/api/campaign", campaignRoutes);
