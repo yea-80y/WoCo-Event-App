@@ -1697,7 +1697,7 @@ async function loginPasskeyResult(
     // If this passkey is the rotated owner of a RECOVERED account, its Kernel
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
-    const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
+    const { buildKernelFromPrivateKey, readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
     const hadBinding = !!override;
 
     // Guard: verify the local binding's Kernel still has this PRF-EOA as its
@@ -1711,12 +1711,21 @@ async function loginPasskeyResult(
     // binding is what keeps the counterfactual path unreachable, and nothing
     // signs in, so the #233 foreign-seed landmine has no trigger. Only the
     // fast-path marker — a claim this read just disproved — is dropped.
+    //
+    // The read is STRICT (#166.1): an errored read still passes the guard
+    // (silence never condemns a signer, #277) but is remembered as NOT an
+    // on-chain check, so the fast-path marker below cannot record a
+    // verification that never ran.
+    let ownerAffirmed = false;
     if (override) {
-      const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(override), account.address);
+      const ownerRead = await readKernelEcdsaOwnerStrict(override);
+      const answered = ownerRead !== "error" ? ownerRead : null;
+      const foreignOwner = provenOrphanOwner(answered, account.address);
       if (foreignOwner) {
         clearVerifiedBinding("passkey", account.address);
         throw refuseOrphanedCredential("passkey", { boundKernel: override, onChainOwner: foreignOwner });
       }
+      ownerAffirmed = answered !== null && answered.toLowerCase() === account.address.toLowerCase();
     }
 
     // Recovered-account secret restore. A recovered passkey's PRF credential has
@@ -1812,10 +1821,15 @@ async function loginPasskeyResult(
       writeCachedKernelAddress("passkey", account.address, kernel.address);
     }
 
-    // Seed the recovered-account fast path: reaching here with an override means
-    // this login passed an on-chain owner check (the login-time guard, or the
-    // envelope's — both verify before the override is trusted).
-    if (override) {
+    // Seed the recovered-account fast path — ONLY when an on-chain owner check
+    // actually AFFIRMED this credential (#166.1): either the login-time guard
+    // read the owner and it matched, or the portability envelope verified it
+    // (_verifyPortabilityEnvelope returns a result only on an owner match).
+    // An override alone is not enough: with an errored read the guard passes
+    // vacuously (silence never condemns), and the marker used to be written
+    // anyway — recording a check that never ran. The cost of skipping is one
+    // slow-path login next time; the cost of lying is a fast path built on it.
+    if (override && (ownerAffirmed || portabilityRestore)) {
       writeVerifiedBinding("passkey", account.address, kernel.address);
     }
 
@@ -2495,7 +2509,7 @@ async function recoverAndRekey(args: {
     onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
     const guardianSigner = await backup.getGuardianSigner();
     const { recoverAccount } = await import("./kernel-account.js");
-    const { txHash } = await recoverAccount({
+    const { txHash, blockNumber } = await recoverAccount({
       targetAddress: target,
       // The SAME config object the pre-flight derived `expectedGuardian` from —
       // reconstructing it separately here is how setup-time and recovery-time
@@ -2528,28 +2542,37 @@ async function recoverAndRekey(args: {
     // So the two answers are kept apart. `removeAllBackups` already does this —
     // "did not take effect" vs "couldn't confirm; it may well have worked".
     onProgress?.("Confirming the change on-chain…");
-    const { readKernelEcdsaOwner } = await import("./kernel-account.js");
-    let rotatedOwner: string | null = null;
+    // PINNED to the block the rotation landed in (#236) — the removeAllBackups
+    // precedent, now plumbed through recoverAccount. Reaching this loop at all
+    // means the userOp receipt SUCCEEDED (#151 throws on included-but-reverted),
+    // so at "latest" the common way to see a non-matching owner was a replica
+    // lagging the receipt — and the user was then told "this account still has
+    // its previous sign-in" about a rotation that landed. A pinned replica that
+    // lacks the block errors instead (→ "unconfirmed", retried below), and a
+    // pinned ANSWER is immutable block state — final either way, judged by
+    // rotation-confirm.ts. Only errored reads are worth the remaining attempts.
+    const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+    const { judgeRotationRead, rotationReadIsFinal } = await import("./rotation-confirm.js");
+    let verdict: import("./rotation-confirm.js").RotationReadVerdict = "unconfirmed";
     for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
-      rotatedOwner = await readKernelEcdsaOwner(target);
-      if (rotatedOwner?.toLowerCase() === newOwnerAddress.toLowerCase()) break;
+      verdict = judgeRotationRead(
+        await readKernelEcdsaOwnerStrict(target, blockNumber),
+        newOwnerAddress,
+      );
+      if (rotationReadIsFinal(verdict, blockNumber !== undefined)) break;
       if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
         await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
       }
     }
-    if (rotatedOwner?.toLowerCase() !== newOwnerAddress.toLowerCase()) {
-      // The discriminator is the FINAL read, not "did any attempt answer". A
-      // sticky any-attempt flag would let one stale pre-propagation answer,
-      // followed by three silent failures, print "still has its previous sign-in"
-      // — asserting from one old answer and then silence, which is the very thing
-      // this block exists to stop.
+    if (verdict !== "confirmed") {
       throw new Error(
-        rotatedOwner !== null
-          ? // The chain answered, and named somebody else. This is the only case
-            // that justifies telling the user nothing changed.
+        verdict === "not-effective"
+          ? // The chain answered — at the rotation's own block, when pinned —
+            // and named somebody else. The only case that justifies telling
+            // the user nothing changed.
             "The recovery didn't take effect — this account still has its previous sign-in. " +
               "Keep using your existing sign-in, and try recovering again."
-          : // The chain never answered. It may have worked. Say so, and send them
+          : // Nobody could answer. It may have worked. Say so, and send them
             // back to the portal rather than back to a sign-in that might be dead.
             "We couldn't confirm the change on-chain — it may well have gone through. " +
               "Don't assume either way: run recovery again and it will pick up wherever it landed.",
