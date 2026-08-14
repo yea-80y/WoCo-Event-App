@@ -730,9 +730,18 @@ while `seq` continues. If a client kept writing the private head after opting in
 (holder, subject) would have two live heads, the same `seq` could appear twice with different
 totals, and closure 5's tie-break would resolve the rider's own history arbitrarily. So:
 **opt-in is a one-way migration, not a fork.** The client stops writing the private head; the
-subject moves between index partitions (closure 1); a device that missed the opt-in and writes
-a stale private `seq` loses to the public head by the ordinary seq rule — self-healing, no
-tombstone machinery needed.
+subject moves between index partitions (closure 1); no tombstone machinery is needed.
+
+Two honest limits, found implementing this (2026-08-14) and recorded so the paragraph above is
+not read as stronger than it is. Publishing re-signs at `P+1`, so a device that missed the
+opt-in and writes its next private statement **ties** at `P+1` rather than losing outright — it
+resolves by closure 5's digest tie-break and is flagged as an equivocation, not by "the ordinary
+seq rule", which an earlier version of this paragraph claimed. There is no seq the public head
+could start at that strictly beats a stale device's next write, so this is the best achievable
+rather than a gap to close. And rides recorded on such a stale private fork are **never migrated
+into the public total** — the public head carries the total as of the moment of publication.
+Both are acceptable pre-launch and neither is a schema question; a client that reads its own
+index before writing (which is the rule) does not reach either state.
 
 ### 7. Statements are JSON on the wire — the schema is JSON-safe (2026-08-14)
 
