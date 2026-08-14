@@ -8,8 +8,8 @@ import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
-import { getActiveChainId, getOnChainEvent } from "../chain/event-contract.js";
-import { heldFor } from "./reservation-store.js";
+import { getActiveChainId } from "../chain/event-contract.js";
+import { assertNoOrders } from "./delete-safety.js";
 import { validatePodGate } from "../pod/gate-check.js";
 import { upsertCreatorPod } from "../pod/directory.js";
 import { recordOnChainEventId, applyOnChainEventIds } from "./onchain-registry.js";
@@ -592,22 +592,12 @@ async function patchDirectoryEntryMeta(
 // Delete event (only when zero orders exist)
 // ---------------------------------------------------------------------------
 
-/** Thrown when a delete is blocked by existing tickets/holds; `blockers` lists
- *  the human-readable reasons per series. Mapped to HTTP 409 by the route. */
-export class DeleteBlockedError extends Error {
-  readonly blockers: string[];
-  constructor(blockers: string[]) {
-    super(`Event has existing orders — cannot delete. ${blockers.join("; ")}`);
-    this.name = "DeleteBlockedError";
-    this.blockers = blockers;
-  }
-}
-
 /**
  * Delete an event iff NO tickets exist anywhere: on-chain claims (v2 series),
  * Swarm claim feeds (legacy series), pending approval requests, and live buyer
  * reservations must ALL be zero. Fail-closed: if any count cannot be verified,
- * the delete is refused rather than risking orphaned paid tickets.
+ * the delete is refused rather than risking orphaned paid tickets. The gate
+ * itself lives in delete-safety.ts (throws DeleteBlockedError → HTTP 409).
  *
  * "Delete" = tombstone the feed (Swarm feeds can't be erased; every read path
  * treats `deleted: true` as not-found) + remove the entry from BOTH directories.
@@ -628,34 +618,7 @@ export async function deleteEventIfNoOrders(opts: {
   const { feed, source } = await resolveEventForOwner(eventId, addr, signerHint);
 
   if (!feed.deleted) {
-    const blockers: string[] = [];
-    for (const s of feed.series) {
-      // The contract is the only ticket ledger. A series with no on-chain
-      // record has no count to verify ANYWHERE — there is nothing to
-      // substitute, so it fails closed: refuse rather than read "cannot
-      // verify" as zero. (A registered-but-EventNotFound series reads null,
-      // which IS a verified zero — nothing can have minted; transport
-      // failures throw, per getOnChainEventV2.)
-      if (!s.onChainEventId) {
-        blockers.push(`"${s.name}": series has no on-chain record — ticket count cannot be verified`);
-        continue;
-      }
-      let claimed: number;
-      try {
-        const onChain = await getOnChainEvent(s.onChainEventId, getActiveChainId());
-        // nextSlot = slots ever allocated (refunds flag, never free, slots) —
-        // overcounting after refunds is the safe direction for delete-safety.
-        claimed = onChain ? Number(onChain.nextSlot) : 0;
-      } catch (err) {
-        console.error(`[event] delete order-check failed for series ${s.seriesId}:`, err);
-        throw new Error("Could not verify order status — try again");
-      }
-      if (claimed > 0) blockers.push(`"${s.name}": ${claimed} ticket(s) issued`);
-
-      const held = heldFor(s.seriesId);
-      if (held > 0) blockers.push(`"${s.name}": ${held} seat(s) currently held by buyers`);
-    }
-    if (blockers.length > 0) throw new DeleteBlockedError(blockers);
+    await assertNoOrders(feed.series);
   }
 
   // Directory removals FIRST (the publicly visible effect), tombstone last —

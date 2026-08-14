@@ -4,7 +4,8 @@ import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirector
 import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, DeleteBlockedError, type EventMetaUpdates } from "../lib/event/service.js";
+import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
+import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { setListed } from "../lib/event/listing-state.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
