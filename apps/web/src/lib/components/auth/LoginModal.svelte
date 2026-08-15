@@ -4,6 +4,7 @@
   import PasskeyLogin from "./PasskeyLogin.svelte";
   import Web3AuthLogin from "./Web3AuthLogin.svelte";
   import ZupassLogin from "./ZupassLogin.svelte";
+  import { FEATURES } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   // From its own module: importing this key from envelope-reprobe.ts would hoist
@@ -182,7 +183,9 @@
 
         <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
 
-        <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />
+        {#if FEATURES.coinbaseLoginAllowed}
+          <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />
+        {/if}
 
         <div class="group-label"><span>Coming soon</span></div>
 

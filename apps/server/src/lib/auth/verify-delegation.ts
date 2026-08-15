@@ -3,6 +3,7 @@ import {
   SESSION_DOMAIN,
   SESSION_TYPES,
   AuthErrorCode,
+  FEATURES,
   type SessionDelegation,
   type VerifyDelegationResult,
 } from "@woco/shared";
@@ -50,7 +51,8 @@ const DEFAULT_DEPS: DelegationVerifyDeps = {
  *       message.parent stays the Kernel identity;
  *    c. ERC-1271 (deployed smart account) or ERC-6492 (counterfactual smart
  *       account) via RPC — smart wallets (CSW) and pre-fix Kernel-signed
- *       delegations.
+ *       delegations. Feature-flagged with FEATURES.coinbaseLoginAllowed
+ *       (#173): while CSW login is off, this path is not offered at all.
  * 7. sessionProof was signed by the claimed session key
  * 8. Session not revoked
  */
@@ -136,6 +138,17 @@ export async function verifyDelegation(
       }
     }
     if (!validSig) {
+      // Feature gate first (#173): while CSW login is off, the 1271/6492 path
+      // has no intended client, so it is not offered at all — before any
+      // chain read. This is the server half of the flag: without it, an old
+      // client (or a crafted request) could still authenticate a CSW
+      // delegation past the missing button.
+      if (!FEATURES.coinbaseLoginAllowed) {
+        console.warn(
+          `[auth] smart-wallet (1271/6492) verification not offered for ${message.parent}: coinbaseLoginAllowed is off (#173)`,
+        );
+        return { valid: false, error: "Invalid signature", code: AuthErrorCode.SESSION_INVALID };
+      }
       // Both verification paths answer "is this the parent's signature", but not
       // with the same authority — and only this one can be satisfied by
       // simulating a deployment that has since been superseded. Once we can
