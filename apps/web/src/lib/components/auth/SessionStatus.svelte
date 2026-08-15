@@ -1,6 +1,9 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
 
+  let signingOut = $state(false);
+  let signOutError = $state<string | null>(null);
+
   function truncateAddress(addr: string): string {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   }
@@ -8,6 +11,22 @@
   const kindLabel = $derived(
     auth.kind === "web3" ? "wallet" : auth.kind === "passkey" ? "passkey" : auth.kind,
   );
+
+  // Sign-out can now FAIL honestly (#182: ending the provider session is part
+  // of signing out) — a fire-and-forget click would swallow that and leave the
+  // user believing they signed out on a shared device.
+  async function handleSignOut() {
+    if (signingOut) return;
+    signingOut = true;
+    signOutError = null;
+    try {
+      await auth.logout();
+    } catch (e) {
+      signOutError = e instanceof Error ? e.message : "Sign-out failed — please try again.";
+    } finally {
+      signingOut = false;
+    }
+  }
 </script>
 
 {#if auth.isConnected && auth.parent}
@@ -16,10 +35,13 @@
     <span class="address" title={auth.parent}>
       {truncateAddress(auth.parent)}
     </span>
-    <button class="action-btn logout-btn" onclick={() => auth.logout()} title="Sign out">
+    <button class="action-btn logout-btn" onclick={handleSignOut} disabled={signingOut} title="Sign out">
         &#10005;
     </button>
   </div>
+  {#if signOutError}
+    <p class="signout-error" role="alert">{signOutError}</p>
+  {/if}
 {/if}
 
 <style>
@@ -78,6 +100,13 @@
   .action-btn.logout-btn:hover {
     border-color: var(--error);
     color: var(--error);
+  }
+
+  .signout-error {
+    font-size: 0.6875rem;
+    color: var(--error);
+    max-width: 14rem;
+    margin: 0.25rem 0 0;
   }
 
   @media (max-width: 480px) {

@@ -9,6 +9,11 @@
  */
 
 import { buildWeb3AuthOptions, extractRawPrivateKey } from "./web3auth-config";
+import {
+  markWeb3AuthSessionEstablished,
+  clearWeb3AuthSessionFlag,
+  hasWeb3AuthSessionFlag,
+} from "./web3auth-session-flag.js";
 
 type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
 
@@ -21,7 +26,7 @@ type Web3AuthInstance = {
   cachedConnector: string | null;
   init(): Promise<void>;
   connect(): Promise<MinimalProvider | null>;
-  logout(): Promise<void>;
+  logout(options?: { cleanup?: boolean }): Promise<void>;
   on(event: string, fn: (...args: unknown[]) => void): void;
   removeListener(event: string, fn: (...args: unknown[]) => void): void;
 };
@@ -91,26 +96,49 @@ async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ addre
  * Open the Web3Auth PnP modal (email / social). Returns the address and raw
  * private key on success. Does NOT log out — the session stays active for
  * `restoreWeb3AuthSession` to pick up on the next page load.
+ *
+ * This function ALWAYS authenticates (#182). An explicit "Continue with
+ * Email" click is a request to prove who you are, not to resume whoever was
+ * here last: on a shared device a surviving session may be the previous
+ * user's, and adopting it here hands over their tickets, dashboard PII and
+ * payout config with no OTP and no visible sign. Any session that rehydrates
+ * is therefore ENDED before the modal opens. The one legitimate silent
+ * adoption — same person, page reload — is `restoreWeb3AuthSession`, the
+ * boot path, which runs before any click.
  */
 export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey: `0x${string}` }> {
   const w = await _getInstance();
   if (!w) throw new Error("Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).");
 
-  // A cached session may still be rehydrating from a prior visit; adopt it silently
-  // rather than opening the modal (and never double-prompting the OTP).
   if (await _awaitRehydration(w)) {
-    if (w.provider) return _extractKeyAndAddress(w.provider);
+    // Throws are surfaced, not swallowed: a survivor we could not end must
+    // never be adopted, and proceeding to connect() would adopt it.
+    await w.logout({ cleanup: true });
   }
 
   try {
     const provider = await w.connect();
-    if (provider) return _extractKeyAndAddress(provider);
+    if (provider) {
+      markWeb3AuthSessionEstablished();
+      return _extractKeyAndAddress(provider);
+    }
   } catch (e) {
-    // A session rehydrating while the modal is open can close it and reject with
-    // "User closed the modal" even though we ARE now connected — recover from that.
-    if (!w.connected) throw e instanceof Error ? e : new Error("Email sign-in was cancelled.");
+    // A stored session hydrating LATE (past _awaitRehydration's 5s window)
+    // can close the modal and reject with "User closed the modal". The old
+    // recovery here ADOPTED the freshly-hydrated session — the #182 bug
+    // through a race window. End it instead and ask for one retry, which
+    // will find it already hydrated and take the logout-then-modal path.
+    if (w.connected) {
+      try {
+        await w.logout({ cleanup: true });
+      } catch {
+        /* the retry's pre-modal logout gets another attempt */
+      }
+      _instance = null;
+      throw new Error("A previous email session interfered with sign-in — please try again.");
+    }
+    throw e instanceof Error ? e : new Error("Email sign-in was cancelled.");
   }
-  if (w.connected && w.provider) return _extractKeyAndAddress(w.provider);
   throw new Error("Email sign-in was cancelled.");
 }
 
@@ -156,8 +184,15 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
       "[web3auth] restore:",
       { cachedConnector: w.cachedConnector, rehydrated, connected: w.connected, hasProvider: !!w.provider },
     );
-    if (!w.connected || !w.provider) return { status: "expired" };
+    if (!w.connected || !w.provider) {
+      // Definitive: the SDK initialised and reports no session — keep the
+      // sign-out flag honest so future logouts stay cheap (#182).
+      clearWeb3AuthSessionFlag();
+      return { status: "expired" };
+    }
     const { address, privateKey } = await _extractKeyAndAddress(w.provider);
+    // Self-healing: any moment we hold a live session, the flag is on.
+    markWeb3AuthSessionEstablished();
     return { status: "restored", address, privateKey };
   } catch (e) {
     // Initialised but couldn't pull the key (provider glitch) — transient too.
@@ -166,13 +201,56 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
   }
 }
 
-/** Best-effort logout — clears Web3Auth's stored session. */
+/**
+ * Deterministic logout — ends Web3Auth's stored session, or THROWS (#182).
+ *
+ * The old best-effort version no-opped in reachable states: `_instance` null
+ * (per-page-load singleton never built), `connected` false while a valid
+ * session was still rehydrating, or `logout()` throwing into an empty catch.
+ * All three left Web3Auth's localStorage session alive behind a UI that said
+ * "signed out" — and the next "Continue with Email" resumed it, as the
+ * previous user, with no OTP. So: skip only when no session was ever
+ * established here (the flag — keeps sign-out free of the SDK chunk for
+ * everyone else), build the instance if absent, await rehydration before
+ * trusting `connected`, and surface failure to the caller. "Signed out" must
+ * not be displayed unless the stored session is actually gone; the caller
+ * decides whether local state may clear anyway (security-refusal paths do).
+ */
 export async function logoutWeb3Auth(): Promise<void> {
+  if (!_instance && !hasWeb3AuthSessionFlag()) return;
+
+  let w: Web3AuthInstance | null;
   try {
-    if (_instance?.connected) await _instance.logout();
-  } catch {
-    // best effort
+    w = await _getInstance();
+  } catch (e) {
+    _instance = null;
+    console.warn("[web3auth] logout: could not build the SDK to end the session:", e);
+    throw new Error(
+      "Couldn't reach the sign-in service to end your email session — check your connection and try signing out again.",
+    );
+  }
+  // No clientId: the SDK cannot be built, but neither can anything resume a
+  // stored session through our code — nothing further to do this build.
+  if (!w) return;
+
+  try {
+    await _awaitRehydration(w);
+    if (w.connected) {
+      await w.logout({ cleanup: true });
+    } else if (w.cachedConnector) {
+      // A stored session exists but would not hydrate; logout() needs a
+      // connected instance, so the stored session would survive it.
+      throw new Error("stored session did not rehydrate");
+    }
+    clearWeb3AuthSessionFlag();
+  } catch (e) {
+    console.warn("[web3auth] logout failed — the stored session may survive:", e);
+    throw new Error(
+      "Sign-out couldn't end your email session — you may still be signed in to email login. Try signing out again.",
+    );
   } finally {
+    // Next call rebuilds from storage: after success that's a clean slate;
+    // after failure it gives rehydration a fresh attempt.
     _instance = null;
   }
 }
