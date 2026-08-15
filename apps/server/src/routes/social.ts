@@ -12,9 +12,9 @@
  */
 
 import { Hono } from "hono";
+import { recountManifest } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { indexSubject, type IndexableFormat } from "../lib/social/indexer.js";
-import { mergeParticipants } from "../lib/social/participants.js";
 
 export const socialRoutes = new Hono<AppEnv>();
 
@@ -103,6 +103,21 @@ socialRoutes.get("/manifest", async (c) => {
 
   try {
     const { value } = await tally(p.format, p.subject);
+
+    // Recount our own manifest before serving it. Circular as a proof and not
+    // meant as one — a reader still has to recount independently, which is the
+    // point of publishing leaves. What it catches is OUR bug: a tally and a
+    // manifest builder that disagree would otherwise ship a headline number the
+    // published evidence does not support, and be discovered by a stranger.
+    const check = recountManifest(value.manifest);
+    if (!check.consistent) {
+      console.error(
+        `[social] manifest self-check failed for ${p.format} ${p.subject}: ` +
+        `declared ${value.manifest.count}, leaves sum to ${check.recounted}`,
+      );
+      return c.json({ ok: false, error: "manifest failed its own recount" }, 500);
+    }
+
     c.header("Cache-Control", `public, max-age=${Math.floor(CACHE_TTL_MS / 1000)}`);
     return c.json({ ok: true, data: { ...value.manifest, unreadable: value.unreadable } });
   } catch (e) {
@@ -111,34 +126,21 @@ socialRoutes.get("/manifest", async (c) => {
 });
 
 /**
- * Restore an input set from a published manifest — the rebuild path commitment
- * 6 requires. Unauthenticated because it cannot do harm: a participant is only
- * an address whose feed we will READ, every statement found there still has to
- * verify, and an address with nothing to say contributes nothing. The worst a
- * caller achieves is making us do reads that return nothing.
+ * Restoring an input set from a published manifest is the rebuild path
+ * commitment 6 requires, and it lives on the OPERATOR surface (`/api/ops`),
+ * not here.
+ *
+ * It was briefly a public endpoint on the reasoning that it could not do harm:
+ * a participant is only an address whose feed we will read, and every statement
+ * found still has to verify. That reasoning was wrong in the dimension that
+ * matters — not authenticity, but COST. Each admitted address becomes one
+ * versioned feed read on every later tally for that subject, and a read that
+ * finds nothing is the most expensive kind this node performs
+ * (`swarm/soc.ts:358-367`, the class that overwhelmed the bee node on
+ * 2026-07-06). An unauthenticated caller could therefore set the standing price
+ * of every subsequent count. Rebuilds are rare and operator-initiated, so the
+ * ops surface costs nothing to use and removes the exposure entirely.
  */
-socialRoutes.post("/participants", async (c) => {
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: "invalid JSON" }, 400);
-  }
-  const b = body as { format?: string; subject?: string; participants?: unknown };
-  if (!FORMATS.includes(b.format as IndexableFormat)) {
-    return c.json({ ok: false, error: "unknown format" }, 400);
-  }
-  if (typeof b.subject !== "string" || !SUBJECT_RE.test(b.subject.toLowerCase())) {
-    return c.json({ ok: false, error: "subject must be a 0x-prefixed bytes32" }, 400);
-  }
-  if (!Array.isArray(b.participants) || b.participants.some((p) => typeof p !== "string")) {
-    return c.json({ ok: false, error: "participants must be an array of addresses" }, 400);
-  }
-  if (b.participants.length > 10_000) {
-    return c.json({ ok: false, error: "too many participants in one call" }, 413);
-  }
-
-  const added = mergeParticipants(b.format!, b.subject.toLowerCase(), b.participants as string[]);
+export function clearTallyCache(): void {
   cache.clear();
-  return c.json({ ok: true, data: { added } });
-});
+}

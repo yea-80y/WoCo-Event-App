@@ -243,6 +243,11 @@ export interface EvidenceManifestV1<L> {
 
 export const EVIDENCE_MANIFEST_FORMAT = "woco.evidence.v1" as const;
 
+/** A leaf carrying something a recount can add up — a boolean that counts as
+ *  one, or a carried total. Both shapes are needed because a manifest's
+ *  headline means different things for the two families. */
+export type CountableLeaf = { value: boolean } | { total: number };
+
 /** Build the manifest for a boolean tally. */
 export function booleanEvidenceManifest(args: {
   statementFormat: string;
@@ -288,8 +293,11 @@ export function carriedEvidenceManifest(args: {
  * separate, heavier checks. What it catches is the cheapest lie: a headline
  * number that the published evidence does not support.
  */
-export function recountManifest<L extends { value: boolean } | { total: number }>(
-  manifest: EvidenceManifestV1<L>,
+export function recountManifest(
+  // Structural rather than generic: a caller holding the UNION of the two
+  // manifest types (which any dispatching route does) cannot infer a single `L`,
+  // and the recount does not need one — it only reads a countable field.
+  manifest: EvidenceManifestV1<CountableLeaf>,
 ): { consistent: boolean; recounted: number } {
   const recounted = manifest.leaves.reduce((n, leaf) => {
     if ("total" in leaf) return n + leaf.total;
