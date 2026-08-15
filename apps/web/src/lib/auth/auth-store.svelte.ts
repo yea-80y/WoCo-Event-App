@@ -1195,7 +1195,9 @@ function _verifyRecoveredBindingInBackground(
           _parent?.toLowerCase() === kernel.toLowerCase();
         if (stillThisSession) {
           postOrphanedCredentialNotice(kind);
-          await logout();
+          // force: the refusal already decided this session ends — a failed
+          // provider logout must not keep the orphan signed in locally.
+          await logout({ force: true });
         }
       }
     } catch {
@@ -1244,7 +1246,9 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
             writeOrphanTombstone,
             clearCachedKernelAddress,
             isStillSignedInAs: stillSignedInAs,
-            logout,
+            // force: same rationale as the background binding probe — the
+            // reprobe's sign-out is a security decision already taken.
+            logout: () => logout({ force: true }),
             postNotice: (message) => {
               try {
                 globalThis.sessionStorage?.setItem(AUTH_NOTICE_KEY, message);
@@ -2746,7 +2750,14 @@ async function sha256Hex(text: string): Promise<string> {
 // Logout / Forget Identity
 // ---------------------------------------------------------------------------
 
-async function logout(): Promise<void> {
+/**
+ * `force` is for security-refusal paths (orphan probes, envelope reprobe):
+ * there, clearing the LOCAL session is the point of the call and must not be
+ * blocked by an unreachable provider. The user-facing sign-out passes nothing
+ * and stays honest — it fails visibly, keeping the session, rather than
+ * displaying "signed out" over a provider session that survived (#182).
+ */
+async function logout(opts: { force?: boolean } = {}): Promise<void> {
   _cleanupAccountListener?.();
   _cleanupAccountListener = null;
   // Disconnect WalletConnect if it was used (no injected wallet present)
@@ -2754,9 +2765,16 @@ async function logout(): Promise<void> {
     const { disconnectWalletConnect } = await import("../wallet/wc-provider.js");
     await disconnectWalletConnect();
   }
-  if (_kind === "web3auth") {
+  // NOT gated on `_kind` (#182): a cleared or mismatched kind must not skip
+  // ending Web3Auth's stored session, or the next "Continue with Email"
+  // silently resumes the previous user. Cheap no-op (no SDK chunk) unless a
+  // Web3Auth session was actually established on this device.
+  try {
     const { logoutWeb3Auth } = await import("./web3auth-account.js");
     await logoutWeb3Auth();
+  } catch (e) {
+    if (!opts.force) throw e;
+    console.warn("[auth] forced sign-out proceeding despite a failed Web3Auth logout:", e);
   }
   if (_kind === "coinbase") {
     const { logoutCoinbase } = await import("./coinbase-account.js");
