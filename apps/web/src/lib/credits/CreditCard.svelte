@@ -12,6 +12,7 @@
   import { onMount } from "svelte";
   import { lookupSubject, currentEra, formerNames, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
   import { readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
+  import { utcSessionDate } from "./next-statement.js";
 
   interface Props {
     subject: Hex0x;
@@ -37,7 +38,15 @@
    *  record — so the previous name is shown, not overwritten. */
   const previously = $derived(definition ? formerNames(definition) : []);
   const laps = $derived(head?.statement.total ?? 0);
-  const today = $derived(head?.statement.session.count ?? 0);
+  /**
+   * The session block is TODAY'S only when its date is today. It rolls over at
+   * WRITE time, not at midnight, so a rider who logged three laps on Saturday
+   * and opened the app on Sunday was being shown "3 today" without having
+   * ridden — the stored block was still Saturday's and nothing had rewritten it.
+   */
+  const today = $derived(
+    head && head.statement.session.date === utcSessionDate() ? head.statement.session.count : 0,
+  );
   const isPublic = $derived(head?.visibility === "public");
 
   async function refresh() {

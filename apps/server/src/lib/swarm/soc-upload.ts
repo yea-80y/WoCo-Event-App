@@ -244,10 +244,10 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
       // Learn who to read later. The identifier is a hash, so the topic cannot
       // be inverted from it — but a PUBLIC statement's payload names its own
       // format and subject, which is everything needed to recompute the topic.
-      // A sealed payload simply does not parse, so an encrypted credit is never
-      // registered and never counted: privacy falls out of the same mechanism
-      // that makes counting possible, rather than depending on a flag.
-      // Bookkeeping for a view-plane cache — it must never fail a user's write.
+      // Sealed payloads are refused there by an explicit shape check, NOT by
+      // being unreadable: a SealedBox is ordinary JSON and parses fine (see
+      // `looksSealed`). Bookkeeping for a view-plane cache — never awaited, and
+      // it must never fail a user's write.
       observeStatementBytes(ownerHex, payload);
       return { owner: ownerHex, identifier: identifierHex, address: socAddress };
     } catch (err: unknown) {

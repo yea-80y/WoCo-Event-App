@@ -248,6 +248,26 @@ export const EVIDENCE_MANIFEST_FORMAT = "woco.evidence.v1" as const;
  *  headline means different things for the two families. */
 export type CountableLeaf = { value: boolean } | { total: number };
 
+/**
+ * How a BOOLEAN leaf's `digest` is computed — stated here rather than left in
+ * an indexer's source, because a second indexer cannot produce a comparable
+ * manifest against a recipe it cannot read.
+ *
+ *   digest = "0x" + hex(keccak256(rawStoredPayloadBytes))
+ *
+ * The raw bytes as stored, with no domain prefix and no re-encoding. It is
+ * deliberately NOT the identity-signature digest recipe: a boolean statement
+ * carries no identity signature, and this value neither orders anything (the
+ * SOC version does) nor gates acceptance. Its only jobs are distinguishing two
+ * statements and letting a reader confirm they fetched the same bytes we did.
+ *
+ * A CARRIED-TOTAL leaf is different and uses the FROZEN statement digest, since
+ * closure 5's tie-break is defined over that exact value — using anything else
+ * would make two honest indexers resolve ties differently.
+ */
+export const BOOLEAN_LEAF_DIGEST_RECIPE =
+  "keccak256(raw stored payload bytes), 0x-prefixed lowercase hex" as const;
+
 /** Build the manifest for a boolean tally. */
 export function booleanEvidenceManifest(args: {
   statementFormat: string;

@@ -15,16 +15,22 @@
  * registry is populated by READING what we were already asked to store, not by
  * trusting a client-supplied label.
  *
- * That has a property worth naming: an ENCRYPTED statement is opaque to us, so
- * it is never registered and never counted. Privacy is enforced by the same
- * mechanism that makes counting possible, rather than by a flag we must
- * remember to honour.
+ * ENCRYPTED STATEMENTS ARE REFUSED STRUCTURALLY, not incidentally — see
+ * {@link looksSealed}. It is tempting to say an encrypted payload is opaque to
+ * us and therefore stops here by itself. That is false, and believing it is how
+ * the privacy property would later be lost.
  *
  * REBUILDABILITY (commitment 6). This file is a cache, not truth. Losing it
  * shrinks the index to whoever writes next — bad, not fatal, and honest to say
- * out loud. The durable copy is the `participants` list inside each published
- * evidence manifest, which is exactly why that field exists: an index rebuilt
- * from a manifest recovers the input set without asking us.
+ * out loud. The intended recovery is the `participants` list inside an evidence
+ * manifest, which is why that field exists.
+ *
+ * State that honestly, though: nothing durably PUBLISHES a manifest today.
+ * `/api/social/manifest` computes one on demand from this very registry, so if
+ * this file is lost the manifest can no longer name what was lost either.
+ * Recovery therefore depends on someone having fetched and kept a manifest
+ * while the registry was intact. Publishing manifests to Swarm is the
+ * `SWARM_SOCIAL_PLAN` P1.5 step; until it lands, "published" means "served".
  */
 
 import { readFileSync } from "node:fs";
@@ -36,9 +42,30 @@ const STORE_FILE = join(process.cwd(), ".data", "social-participants.json");
 /** format -> subject -> feed owners known to have written about it. */
 type Registry = Record<string, Record<string, string[]>>;
 
-/** Statement formats the relay may register. Public types only — a sealed
- *  payload never parses, so credits appear here only once published. */
+/** Statement formats the relay may register. Public types only. */
 const INDEXABLE_FORMATS = new Set(["woco.like.v1", "woco.follow.v1", "woco.credit.v1"]);
+
+/**
+ * A sealed statement must NEVER be registered — registering one publishes the
+ * (subject, feed owner) pair through the manifest's participant list, which is
+ * precisely the participation fact the salted private topic exists to hide.
+ *
+ * This is a STRUCTURAL refusal, and it needs to be. It would be easy to assume
+ * an encrypted payload is simply unreadable to us and stops here on its own —
+ * it does not. A `SealedBox` is `{ephemeralPublicKey, iv, ciphertext}`: plain
+ * JSON that parses perfectly well. Today it is filtered only because it happens
+ * to carry no `format` key, which is a coincidence of the envelope's shape
+ * rather than a property anyone guaranteed. Add a cleartext routing hint to
+ * that envelope — a reasonable-looking change for client-side dispatch — and
+ * every private credit would start flowing into the registry silently, with the
+ * counts still perfectly correct and the privacy property simply gone.
+ *
+ * So the sealed shape is recognised and rejected on its own terms, before any
+ * format check, and this stays true whatever fields the envelope later grows.
+ */
+function looksSealed(o: Record<string, unknown>): boolean {
+  return typeof o.ephemeralPublicKey === "string" && typeof o.ciphertext === "string" && typeof o.iv === "string";
+}
 
 const SUBJECT_RE = /^0x[0-9a-f]{64}$/;
 const OWNER_RE = /^0x[0-9a-f]{40}$/;
@@ -69,9 +96,13 @@ const PERSIST_DEBOUNCE_MS = 2_000;
 let registry: Registry = load();
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 let persistPending = false;
-/** Serialises the read-modify-write so two concurrent relays cannot each
- *  rewrite the file from a stale copy — the same lost-update shape the client
- *  index has, with the same fix. */
+/**
+ * Serialises the disk writes themselves. There is no read-modify-write of the
+ * FILE to protect — the in-memory registry is the single authority and
+ * `persist` writes a snapshot of it — so the hazard is narrower and different:
+ * two overlapping async writes could land out of order, leaving an OLDER
+ * snapshot on disk than one already written. Chaining orders them.
+ */
 let writeChain: Promise<unknown> = Promise.resolve();
 
 function load(): Registry {
@@ -101,6 +132,8 @@ export function observeStatementBytes(ownerHex: string, payload: Uint8Array): vo
     const parsed: unknown = JSON.parse(new TextDecoder().decode(payload));
     if (!parsed || typeof parsed !== "object") return;
     const o = parsed as Record<string, unknown>;
+
+    if (looksSealed(o)) return; // see looksSealed — checked BEFORE format
 
     const format = o.format;
     const subject = o.subject;
@@ -179,11 +212,30 @@ export function knownSubjects(format: string): string[] {
 export function mergeParticipants(format: string, subject: string, owners: readonly string[]): number {
   if (!INDEXABLE_FORMATS.has(format) || !SUBJECT_RE.test(subject)) return 0;
   registry[format] ??= {};
-  const list = (registry[format]![subject] ??= []);
+  const bySubject = registry[format]!;
+
+  // The SAME ceilings the relay path enforces. An operator restoring several
+  // manifests is exactly how the declared bound would otherwise be exceeded,
+  // and a ceiling one entry point ignores is not a ceiling — it is a comment.
+  if (!bySubject[subject] && Object.keys(bySubject).length >= MAX_SUBJECTS_PER_FORMAT) {
+    console.warn(`[social] subject ceiling reached for ${format} — refusing to restore ${subject}`);
+    return 0;
+  }
+  const list = (bySubject[subject] ??= []);
+
+  // Set membership rather than `Array.includes` in the loop: a restore is the
+  // one path that arrives with thousands of addresses at once, which is where
+  // the quadratic scan would actually bite.
+  const seen = new Set(list);
   let added = 0;
   for (const raw of owners) {
+    if (list.length >= MAX_PARTICIPANTS_PER_SUBJECT) {
+      console.warn(`[social] participant ceiling reached for ${format} ${subject} — restore truncated`);
+      break;
+    }
     const owner = raw.toLowerCase();
-    if (!OWNER_RE.test(owner) || list.includes(owner)) continue;
+    if (!OWNER_RE.test(owner) || seen.has(owner)) continue;
+    seen.add(owner);
     list.push(owner);
     added++;
   }

@@ -250,9 +250,18 @@ ops.post("/email-failures/:id/resolve", async (c) => {
  * admitted address becomes one versioned feed read on each later tally for that
  * subject, and a read that finds nothing is the most expensive kind this node
  * performs (`swarm/soc.ts:358-367` — the class that overwhelmed the bee on
- * 2026-07-06). Left open, a caller could set the standing price of every
- * subsequent count. Rebuilds are rare and deliberate, so the ops surface costs
- * an operator nothing and removes the exposure.
+ * 2026-07-06). Rebuilds are rare and deliberate, so the ops surface costs an
+ * operator nothing.
+ *
+ * Stated precisely, because the obvious phrasing would overclaim: gating this
+ * removes ANONYMOUS bulk admission. It does not close every route into the
+ * registry — `POST /api/swarm/soc` still admits one participant per relayed
+ * statement, and that endpoint deliberately cannot bind the SOC owner to the
+ * authenticated parent, so an authenticated account can register many distinct
+ * feed owners over time (issue #301 tracks its missing rate limit). Admitted
+ * participants are also permanent until the ceiling is reached; registry
+ * hygiene — retiring owners whose feeds have read absent for a long time — is
+ * unbuilt and wants its own design.
  */
 ops.post("/social/participants", async (c) => {
   let body: unknown;
@@ -268,6 +277,12 @@ ops.post("/social/participants", async (c) => {
   }
   if (!Array.isArray(b.participants) || b.participants.some((p) => typeof p !== "string")) {
     return c.json({ ok: false, error: "participants must be an array of addresses" }, 400);
+  }
+  // The public version of this endpoint capped the array; losing that on the
+  // move to ops was an oversight, not a decision — an operator paging through
+  // a large manifest wants a bounded request as much as anyone.
+  if (b.participants.length > 10_000) {
+    return c.json({ ok: false, error: "too many participants in one call — page the restore" }, 413);
   }
 
   // `mergeParticipants` re-validates format and subject against the indexable

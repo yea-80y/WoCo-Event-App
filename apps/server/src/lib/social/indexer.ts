@@ -75,8 +75,51 @@ function topicFor(format: IndexableFormat, subject: Hex0x): string {
   }
 }
 
-/** Content digest of exactly the bytes read. Used for boolean types, where the
- *  digest only has to distinguish two statements, never to order them. */
+/**
+ * How many participant feeds are read at once.
+ *
+ * Deliberately small, and not an arbitrary number. Each read ends in a probe
+ * for a version that does not exist, which `swarm/soc.ts:358-367` records as
+ * the most expensive read this node performs — and a fan-out that launched one
+ * per participant would put the whole participant list on the wire
+ * simultaneously. The tally cache bounds how OFTEN a fan-out happens; it does
+ * nothing about how WIDE each one is, which is what this bounds.
+ *
+ * Sized under `beeUploadSem`'s 6 (upload-queue.ts) so a tally cannot crowd out
+ * the writes it exists to count.
+ */
+const READ_CONCURRENCY = 4;
+
+/**
+ * Map with a bounded number of in-flight tasks, preserving input order.
+ * Sequential workers over a shared cursor — no library, and no batching (which
+ * would idle every worker waiting on the slowest member of each batch).
+ */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/**
+ * Content digest of exactly the bytes read — `keccak256(payload)`, over the raw
+ * stored bytes with no prefix and no re-encoding.
+ *
+ * FROZEN by publication, not by the statement schema: a boolean leaf's digest
+ * never orders anything (the SOC version does that) and never gates acceptance,
+ * so the schema has no opinion on it. But `tally.ts` promises that two indexers
+ * with the same inputs publish byte-identical manifests, and a second indexer
+ * cannot honour that against a recipe defined only in our source. See
+ * BOOLEAN_LEAF_DIGEST_RECIPE in the shared tally module, which states it.
+ */
 function bytesDigest(bytes: Uint8Array): Hex0x {
   return `0x${bytesToHex(keccak_256(bytes))}` as Hex0x;
 }
@@ -94,21 +137,19 @@ export async function indexSubject(format: IndexableFormat, subject: Hex0x): Pro
   const topic = topicFor(format, subject);
   const unreadable: string[] = [];
 
-  const reads = await Promise.all(
-    participants.map(async (owner) => {
-      try {
-        const res = await readContentFeedJsonResult(owner, topic);
-        if (res.status === "found") return { owner, bytes: res.bytes, version: res.version };
-        // `absent` means read successfully and empty — the participant is
-        // declared but contributed nothing. Only `unavailable` is a gap.
-        if (res.status === "unavailable") unreadable.push(owner);
-        return null;
-      } catch {
-        unreadable.push(owner);
-        return null;
-      }
-    }),
-  );
+  const reads = await mapLimit(participants, READ_CONCURRENCY, async (owner) => {
+    try {
+      const res = await readContentFeedJsonResult(owner, topic);
+      if (res.status === "found") return { owner, bytes: res.bytes, version: res.version };
+      // `absent` means read successfully and empty — the participant is
+      // declared but contributed nothing. Only `unavailable` is a gap.
+      if (res.status === "unavailable") unreadable.push(owner);
+      return null;
+    } catch {
+      unreadable.push(owner);
+      return null;
+    }
+  });
 
   const found = reads.filter((r): r is NonNullable<typeof r> => r !== null);
 

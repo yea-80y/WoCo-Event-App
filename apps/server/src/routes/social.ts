@@ -29,11 +29,46 @@ const SUBJECT_RE = /^0x[0-9a-f]{64}$/;
  */
 const CACHE_TTL_MS = 30_000;
 
+/**
+ * Cache entries retained. The endpoint is unauthenticated and its key includes
+ * a caller-supplied subject, so any well-formed bytes32 mints an entry — an
+ * unevicted Map would grow for as long as anyone kept asking about subjects
+ * that do not exist. Staleness alone never removes anything, so retention has
+ * to be explicit.
+ */
+const CACHE_MAX_ENTRIES = 500;
+
 type Cached = { at: number; value: Awaited<ReturnType<typeof indexSubject>> };
 const cache = new Map<string, Cached>();
 /** One in-flight tally per subject: without this a burst of misses all start
  *  their own fan-out, which is the read spike the cache exists to prevent. */
 const inflight = new Map<string, Promise<Cached["value"]>>();
+
+/**
+ * Store a result, dropping expired entries first and then the oldest insertion
+ * if still at capacity. A Map iterates in insertion order, so the first key is
+ * the least recently ADDED — good enough here, since every entry expires in
+ * 30 seconds anyway and the point is a ceiling, not an eviction policy.
+ *
+ * A tally over ZERO participants is never cached: it is the cheapest possible
+ * computation (no reads at all) and it is exactly what an unknown subject
+ * produces, so caching it would fill the map with the one result that gains
+ * nothing by being remembered.
+ */
+function remember(key: string, value: Cached["value"]): void {
+  if (value.manifest.participants.length === 0) return;
+
+  if (cache.size >= CACHE_MAX_ENTRIES) {
+    const now = Date.now();
+    for (const [k, v] of cache) if (now - v.at >= CACHE_TTL_MS) cache.delete(k);
+    while (cache.size >= CACHE_MAX_ENTRIES) {
+      const oldest = cache.keys().next();
+      if (oldest.done) break;
+      cache.delete(oldest.value);
+    }
+  }
+  cache.set(key, { at: Date.now(), value });
+}
 
 async function tally(format: IndexableFormat, subject: string): Promise<{ value: Cached["value"]; ageMs: number }> {
   const key = `${format}|${subject}`;
@@ -45,7 +80,7 @@ async function tally(format: IndexableFormat, subject: string): Promise<{ value:
   if (!run) {
     run = indexSubject(format, subject as `0x${string}`)
       .then((value) => {
-        cache.set(key, { at: Date.now(), value });
+        remember(key, value);
         return value;
       })
       .finally(() => inflight.delete(key));
@@ -139,7 +174,11 @@ socialRoutes.get("/manifest", async (c) => {
  * (`swarm/soc.ts:358-367`, the class that overwhelmed the bee node on
  * 2026-07-06). An unauthenticated caller could therefore set the standing price
  * of every subsequent count. Rebuilds are rare and operator-initiated, so the
- * ops surface costs nothing to use and removes the exposure entirely.
+ * ops surface costs nothing to use.
+ *
+ * What that closed, precisely: anonymous BULK admission. It is not the only
+ * route into the registry — the relay still admits one participant per statement
+ * it stamps (see #301) — so this narrowed the surface rather than eliminating it.
  */
 export function clearTallyCache(): void {
   cache.clear();
