@@ -43,7 +43,32 @@ const INDEXABLE_FORMATS = new Set(["woco.like.v1", "woco.follow.v1", "woco.credi
 const SUBJECT_RE = /^0x[0-9a-f]{64}$/;
 const OWNER_RE = /^0x[0-9a-f]{40}$/;
 
+/**
+ * Capacity bounds. This registry grows with participation and never shrinks, so
+ * "it is only a cache" is not on its own a reason to leave it open-ended: an
+ * unbounded in-memory structure that is also rewritten to disk has two costs
+ * that both scale with it.
+ *
+ * The numbers are sized well above any plausible pilot (a stream-day audience
+ * is thousands, not tens of thousands) and are a CEILING, not a target. Hitting
+ * one is a signal worth logging rather than a condition to handle silently —
+ * and the consequence of hitting it is a smaller index, never a failed write.
+ */
+const MAX_PARTICIPANTS_PER_SUBJECT = 50_000;
+const MAX_SUBJECTS_PER_FORMAT = 10_000;
+
+/**
+ * Minimum gap between disk writes. Persisting on EVERY new participant means a
+ * full rewrite of the whole registry per first-time write for a subject, which
+ * is quadratic in the number of participants across a busy day. Coalescing
+ * costs at most this long of in-memory-ahead-of-disk, which for a rebuildable
+ * cache is the right trade.
+ */
+const PERSIST_DEBOUNCE_MS = 2_000;
+
 let registry: Registry = load();
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+let persistPending = false;
 /** Serialises the read-modify-write so two concurrent relays cannot each
  *  rewrite the file from a stale copy — the same lost-update shape the client
  *  index has, with the same fix. */
@@ -86,12 +111,45 @@ export function observeStatementBytes(ownerHex: string, payload: Uint8Array): vo
     if (owners?.includes(owner)) return; // already known — no write, no churn
 
     registry[format] ??= {};
-    registry[format]![subject] ??= [];
-    registry[format]![subject]!.push(owner);
-    persist();
+    const bySubject = registry[format]!;
+
+    // Refuse to grow past the ceilings rather than trimming: dropping a subject
+    // or an owner already in the set would silently un-index someone who is
+    // genuinely there, which is worse than declining to add one more.
+    if (!bySubject[subject] && Object.keys(bySubject).length >= MAX_SUBJECTS_PER_FORMAT) {
+      console.warn(`[social] subject ceiling reached for ${format} — not indexing ${subject}`);
+      return;
+    }
+    const list = (bySubject[subject] ??= []);
+    if (list.length >= MAX_PARTICIPANTS_PER_SUBJECT) {
+      console.warn(`[social] participant ceiling reached for ${format} ${subject} — not indexing ${owner}`);
+      return;
+    }
+
+    list.push(owner);
+    schedulePersist();
   } catch {
     // Not JSON, sealed, or malformed — all mean "not an indexable statement".
   }
+}
+
+/**
+ * Coalesced write. Never awaited by a caller: this observes a user's write and
+ * must not extend it, so a slow or failing disk costs index freshness rather
+ * than the write it was watching. `writeJsonAtomic` already reports its own
+ * failures loudly and returns false rather than throwing.
+ */
+function schedulePersist(): void {
+  persistPending = true;
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = undefined;
+    if (!persistPending) return;
+    persistPending = false;
+    persist();
+  }, PERSIST_DEBOUNCE_MS);
+  // Do not hold the process open for a cache flush.
+  persistTimer.unref?.();
 }
 
 function persist(): void {
@@ -129,7 +187,7 @@ export function mergeParticipants(format: string, subject: string, owners: reado
     list.push(owner);
     added++;
   }
-  if (added > 0) persist();
+  if (added > 0) schedulePersist();
   return added;
 }
 
