@@ -6,6 +6,7 @@ import {
   FEED_SIGNER_DERIVE_DOMAIN,
   FEED_SIGNER_DERIVE_TYPES,
   FEED_SIGNER_DERIVE_NONCE,
+  FEATURES,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
@@ -1016,6 +1017,13 @@ async function init(): Promise<void> {
         await clearAllAuth();
       }
     } else if (kind === "coinbase") {
+      // #173: a persisted CSW session from before the flag flip must not
+      // outlive it — restore refuses and clears, same as an expired session.
+      if (!FEATURES.coinbaseLoginAllowed) {
+        console.warn("[auth] stored coinbase session not restored: coinbaseLoginAllowed is off (#173)");
+        await clearAllAuth();
+        return;
+      }
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
       const { restoreCoinbaseSession } = await import("./coinbase-account.js");
       const session = await restoreCoinbaseSession();
@@ -1555,6 +1563,14 @@ function prefetchCoinbaseSdk(): Promise<void> {
  * sign explicitly via `ensureSession()`.
  */
 async function loginCoinbase(): Promise<boolean> {
+  // #173: the flag must hold even if some path other than the (already
+  // gated) LoginModal button reaches this — CSW's 1271/6492 signatures are
+  // not byte-reproducible, so the POD identity it would mint forks on an
+  // ordinary logout→login.
+  if (!FEATURES.coinbaseLoginAllowed) {
+    console.warn("[auth] coinbase login refused: coinbaseLoginAllowed is off (#173)");
+    return false;
+  }
   if (_busy) return false;
   _busy = true;
   _loginStage = "waiting";

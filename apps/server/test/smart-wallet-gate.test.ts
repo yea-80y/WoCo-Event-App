@@ -146,23 +146,31 @@ test("an account whose owner reads live is refused the same way", async () => {
   assert.equal(d.calls, 0, "a live owner read must gate the path just as the store does");
 });
 
-test("an unremembered account with no owner still reaches the verifier", async () => {
-  // The CSW case. This is the test that fails if the gate is made too strict.
+test("an unremembered account with no owner is refused by the FLAG, before the #209 gate", async () => {
+  // Pre-#173 this pinned the CSW allow-case: #209's gate offers the path and
+  // the verifier is reached. With coinbaseLoginAllowed OFF, the flag sits in
+  // FRONT of the #209 gate, so even an account #209 would allow is refused
+  // before any chain read. The #209 allow-verdicts themselves stay pinned on
+  // decideSmartWalletPath above; when the flag flips on (post-#164), restore
+  // this test's original expectations (calls === 1, valid === true) — and
+  // coinbase-flag-gate.test.ts will fail alongside as the reminder.
   const { delegation, session } = await delegationFor(PARENT);
   const d = deps();
 
   const res = await verifyDelegation(delegation as never, session, ["gateway.woco-net.com"], d);
 
-  assert.equal(d.calls, 1, "a smart wallet must still be offered the path");
-  assert.equal(res.valid, true);
+  assert.equal(d.calls, 0, "flag off: the verifier must not be reached even for a #209-allowed account");
+  assert.equal(res.valid, false);
 });
 
-test("an unreadable chain leaves the path open rather than bricking sessions", async () => {
+test("an unreadable chain changes nothing while the flag is off — refused before the read", async () => {
+  // Pre-#173: an unreadable chain left the path open rather than bricking
+  // sessions (calls === 1, valid === true) — restore that with the flag flip.
   const { delegation, session } = await delegationFor(PARENT);
   const d = deps({ readKernelOwner: async () => "error" });
 
   const res = await verifyDelegation(delegation as never, session, ["gateway.woco-net.com"], d);
 
-  assert.equal(d.calls, 1);
-  assert.equal(res.valid, true);
+  assert.equal(d.calls, 0);
+  assert.equal(res.valid, false);
 });
