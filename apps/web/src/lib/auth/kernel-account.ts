@@ -1292,12 +1292,27 @@ export interface RecoverAccountArgs {
  * Perform recovery: the guardian account (weighted-ECDSA Kernel) calls
  * target.doRecovery, rotating the target's sudo ECDSA owner to `newOwnerAddress`.
  * The caller hook authorises by msg.sender == the registered guardian account.
- * Guardians can ONLY rotate the signer — never spend. Kernel address preserved.
+ * Kernel address preserved.
+ *
+ * A guardian's power is NOT "rotate the signer only" (#166.5): the recovery
+ * action runs by DELEGATECALL in the target Kernel's context with a
+ * caller-supplied `_validator`, so a registered guardian can also make the
+ * Kernel issue zero-value calls to arbitrary addresses — selectors fixed to
+ * `onUninstall(bytes)`/`onInstall(bytes)`, tail bytes guardian-chosen — e.g.
+ * re-`onInstall` an ERC-7579 module already on the account with new config.
+ * The action itself performs no SSTORE, and none of this exceeds what
+ * rotate-sudo already grants, so it is no escalation for today's
+ * self-guardian model — but no future SEMI-trusted-guardian design (social
+ * N-of-M with non-family signers) may lean on "rotate-only".
  *
  * Run from the recovery portal where the guardian factor(s) are present
  * (e.g. the user's backup EOA). Sponsored (the locked-out user has no gas).
+ * `blockNumber` is surfaced (from the userOp receipt) so the caller can PIN
+ * its confirm read to the block the rotation landed in (#236).
  */
-export async function recoverAccount(args: RecoverAccountArgs): Promise<{ userOpHash: string; txHash: string }> {
+export async function recoverAccount(
+  args: RecoverAccountArgs,
+): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const guardianAccount = await buildGuardianAccount(d, args.guardianConfig, args.guardianSigners);
   const guardianClient = d.createKernelAccountClient({
@@ -1323,49 +1338,13 @@ export async function recoverAccount(args: RecoverAccountArgs): Promise<{ userOp
   });
 }
 
-/**
- * Escape hatch — sweep funds OUT of the Kernel to a self-custodied external
- * address while the passkey still works (so funds are never structurally
- * trapped, independent of recovery being configured). Sudo-signed, sponsored.
- * Sweeps native ETH (full balance — gas is paymaster-paid) and any listed ERC-20s
- * (full balanceOf) in a single userOp. No-op (throws) if nothing to move.
- */
-export async function sweepToExternal(
-  builtKernel: BuiltKernel,
-  args: { to: string; erc20Tokens?: string[] },
-): Promise<{ userOpHash: string; txHash: string }> {
-  const d = await loadRecoveryDeps();
-  const account = builtKernel.address as Address;
-  const to = args.to as Address;
-
-  const calls: { to: Address; data: Hex; value?: bigint }[] = [];
-
-  const nativeBalance = await d.publicClient.getBalance({ address: account });
-  if (nativeBalance > 0n) {
-    calls.push({ to, value: nativeBalance, data: "0x" });
-  }
-
-  for (const token of args.erc20Tokens ?? []) {
-    const bal = (await d.publicClient.readContract({
-      address: token as Address,
-      abi: d.erc20Abi,
-      functionName: "balanceOf",
-      args: [account],
-    })) as bigint;
-    if (bal > 0n) {
-      calls.push({
-        to: token as Address,
-        value: 0n,
-        data: d.encodeFunctionData({ abi: d.erc20Abi, functionName: "transfer", args: [to, bal] }),
-      });
-    }
-  }
-
-  if (calls.length === 0) throw new Error("sweepToExternal: nothing to sweep (no native or token balance).");
-
-  const callData = await builtKernel.account.encodeCalls(calls);
-  return sendSudoUserOp(builtKernel.kernelClient, { callData });
-}
+// `sweepToExternal` used to live here — deleted with zero callers (#166.2).
+// It was not the drain primitive it looked like (anyone holding a BuiltKernel
+// can already do anything the account can), and it carried two latent bugs for
+// whoever wired it up: a TOCTOU between reading the native balance and spending
+// it, and sweeping the ENTIRE balance on the assumption gas is paymaster-paid —
+// wrong the moment sponsorship declines. If an escape hatch ships, it needs a
+// real UI with a to-address confirmation and a gas buffer, not this.
 
 /**
  * Caller-hook guardian registry getter — `allowed(guardian, kernel) → bool`
@@ -1558,9 +1537,15 @@ export async function readKernelEcdsaOwner(kernelAddress: string): Promise<strin
  * The dynamic imports sit inside the try deliberately: a chunk that fails to load
  * is a read that could not happen, which is `"error"`, not a throw for callers to
  * rediscover.
+ *
+ * `blockNumber` pins the read to a specific block (#236): a replica that has
+ * not seen that block then ERRORS instead of answering with older state, so a
+ * caller confirming a write it holds the receipt for can never be lied to by
+ * replica lag — the same reasoning as removeAllBackups' pinned re-read.
  */
 export async function readKernelEcdsaOwnerStrict(
   kernelAddress: string,
+  blockNumber?: bigint,
 ): Promise<string | null | "error"> {
   try {
     const [{ createPublicClient, http, zeroAddress }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }] =
@@ -1577,6 +1562,7 @@ export async function readKernelEcdsaOwnerStrict(
       abi: ECDSA_VALIDATOR_STORAGE_ABI,
       functionName: "ecdsaValidatorStorage",
       args: [kernelAddress as Address],
+      ...(blockNumber !== undefined ? { blockNumber } : {}),
     })) as Address;
     if (!owner || owner.toLowerCase() === zeroAddress.toLowerCase()) return null;
     return owner.toLowerCase();

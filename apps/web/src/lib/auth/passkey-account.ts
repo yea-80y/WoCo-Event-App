@@ -1,6 +1,6 @@
 /// <reference path="./webauthn-prf.d.ts" />
 
-import { StorageKeys, PASSKEY_PRF_SALT_INPUT } from "@woco/shared";
+import { StorageKeys, PASSKEY_PRF_SALT_INPUT, resolvePasskeyRpId } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 /** Credential metadata stored in IndexedDB (not secret) */
@@ -9,21 +9,10 @@ interface PasskeyCredentialMeta {
   rpId: string;
 }
 
-/**
- * Get the RP ID for passkey operations.
- * Uses woco.eth.limo in production so all ENS subdomains share the same
- * passkey identity. Falls back to window.location.hostname for localhost dev.
- */
-const PRODUCTION_RP_ID = "woco.eth.limo";
-
+// RP-ID policy lives in @woco/shared (resolvePasskeyRpId) — identity-critical,
+// and the embed resolves it too, so a local copy is how #175 shipped.
 function getPasskeyRpId(): string {
-  const hostname = window.location.hostname;
-  // On any woco.eth.limo subdomain (or itself), use the shared RP ID
-  if (hostname === PRODUCTION_RP_ID || hostname.endsWith(`.${PRODUCTION_RP_ID}`)) {
-    return PRODUCTION_RP_ID;
-  }
-  // Dev / other environments: use hostname directly
-  return hostname;
+  return resolvePasskeyRpId(window.location.hostname);
 }
 
 // ---------------------------------------------------------------------------

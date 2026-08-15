@@ -2,7 +2,7 @@
 
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
-import { PASSKEY_PRF_SALT_INPUT } from "@woco/shared";
+import { PASSKEY_PRF_SALT_INPUT, resolvePasskeyRpId } from "@woco/shared";
 
 // ---------------------------------------------------------------------------
 // Feature detection
@@ -81,19 +81,13 @@ export function getAddress(privateKey: Uint8Array): string {
 
 const CRED_KEY = "woco:embed:passkey-credential";
 
-/**
- * Get the RP ID for passkey operations.
- * Uses woco.eth.limo in production so all ENS subdomains share the same
- * passkey identity. Falls back to window.location.hostname for other environments.
- */
-const PRODUCTION_RP_ID = "woco.eth.limo";
-
+// RP-ID policy lives in @woco/shared (resolvePasskeyRpId) — the embed runs on
+// organiser domains, where it resolves to the ORGANISER's hostname: a WebAuthn
+// constraint (the RP ID must be a registrable suffix of the document origin),
+// which is why this module can sign in with an existing credential but must
+// never create one (#175) — see the note above restorePasskey.
 function getPasskeyRpId(): string {
-  const hostname = window.location.hostname;
-  if (hostname === PRODUCTION_RP_ID || hostname.endsWith(`.${PRODUCTION_RP_ID}`)) {
-    return PRODUCTION_RP_ID;
-  }
-  return hostname;
+  return resolvePasskeyRpId(window.location.hostname);
 }
 
 interface CredentialMeta {
@@ -138,15 +132,6 @@ export class PasskeyAssertionUnavailableError extends Error {
   }
 }
 
-/** A ceremony was cancelled or refused — wrapped so the raw spec prose (Chrome
- *  appends a w3.org URL) never reaches the claimer. */
-export class PasskeyCeremonyCancelledError extends Error {
-  constructor(action: "creation" | "authentication") {
-    super(`Passkey ${action} was cancelled or not permitted by your device.`);
-    this.name = "PasskeyCeremonyCancelledError";
-  }
-}
-
 function loadCredential(): CredentialMeta | null {
   try {
     const raw = localStorage.getItem(CRED_KEY);
@@ -175,8 +160,8 @@ function saveCredential(meta: CredentialMeta): void {
  * picker asks the authenticator, which actually knows.
  *
  * Order: pinned get() when we hold metadata (no picker, fastest), else — or on
- * an ambiguous failure — a discoverable get(). Only an explicit user decision
- * reaches passkeyCreateAccount().
+ * an ambiguous failure — a discoverable get(). There is no create path in the
+ * embed at all (see the note below discoverPasskey).
  */
 export async function passkeySignIn(): Promise<{ privateKey: Uint8Array; address: string }> {
   return withCeremonyLock(_passkeySignInImpl);
@@ -232,83 +217,14 @@ async function discoverPasskey(): Promise<{ privateKey: Uint8Array; address: str
   return deriveKey(prfOutput);
 }
 
-/**
- * Create a NEW passkey account. Only ever call this behind an explicit user
- * choice — it mints a new identity, it does not recover an existing one.
- */
-export async function passkeyCreateAccount(): Promise<{ privateKey: Uint8Array; address: string }> {
-  return withCeremonyLock(() =>
-    createPasskey().catch((e: unknown) => {
-      if (e instanceof DOMException && e.name === "NotAllowedError") {
-        throw new PasskeyCeremonyCancelledError("creation");
-      }
-      throw e;
-    }),
-  );
-}
-
-async function createPasskey(): Promise<{ privateKey: Uint8Array; address: string }> {
-  const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
-
-  const credential = (await navigator.credentials.create({
-    publicKey: {
-      rp: { name: "WoCo Tickets", id: rpId },
-      user: {
-        id: crypto.getRandomValues(new Uint8Array(32)),
-        name: "WoCo Ticket Holder",
-        displayName: "WoCo Ticket Holder",
-      },
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      pubKeyCredParams: [
-        { alg: -7, type: "public-key" },
-        { alg: -257, type: "public-key" },
-      ],
-      authenticatorSelection: {
-        residentKey: "required",
-        userVerification: "required",
-      },
-      extensions: {
-        prf: { eval: { first: salt } },
-      },
-    },
-  })) as PublicKeyCredential | null;
-
-  if (!credential) {
-    throw new Error("Passkey creation was cancelled.");
-  }
-
-  const extensions = credential.getClientExtensionResults();
-
-  let prfOutput: ArrayBuffer;
-  if (extensions.prf?.results?.first) {
-    prfOutput = extensions.prf.results.first;
-  } else if (extensions.prf?.enabled) {
-    const credentialId = new Uint8Array(credential.rawId);
-    const getResult = (await navigator.credentials.get({
-      publicKey: {
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        rpId,
-        allowCredentials: [{ id: credentialId, type: "public-key" }],
-        userVerification: "required",
-        extensions: {
-          prf: { eval: { first: salt } },
-        },
-      },
-    })) as PublicKeyCredential | null;
-
-    if (!getResult) throw new Error("Passkey authentication was cancelled.");
-    prfOutput = extractPrfResult(getResult.getClientExtensionResults());
-  } else {
-    throw new Error(
-      "Your passkey does not support the PRF extension. " +
-      "Try a different authenticator (e.g. iCloud Keychain, Google Password Manager, or 1Password).",
-    );
-  }
-
-  saveCredential({ credentialId: toBase64url(credential.rawId), rpId });
-  return deriveKey(prfOutput);
-}
+// There is deliberately NO passkey-create path in this module (#175). The RP ID
+// here is the ORGANISER's hostname, so a passkey minted by the embed would live
+// under that domain's credential scope: a separate WoCo account per organiser
+// site, none of them the account the buyer holds on woco.eth.limo, invisible to
+// the canonical origin, and unrecoverable from it. Per #140's rule a claim must
+// never mint an account. Create can only return when the ceremony runs in a
+// WoCo-origin context (popup/iframe on woco.eth.limo) — a design change, not a
+// config value.
 
 async function restorePasskey(meta: CredentialMeta): Promise<{ privateKey: Uint8Array; address: string }> {
   const salt = await getPrfSalt();
