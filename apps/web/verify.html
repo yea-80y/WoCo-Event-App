@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="./logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      A standalone artefact. No app shell, no sign-in, no nav — the whole page is
+      a count and the working behind it, so that someone who has never heard of
+      the app that computed it can still check the number.
+
+      The meta text stays STATIC and modest. There is no server rendering here,
+      so a crawler sees only what is written below; a headline number baked into
+      it would go stale the moment anyone rode again, and a page whose preview
+      claims a total its own body contradicts is exactly the sort of thing this
+      audience screenshots.
+    -->
+    <title>The lap count, and how to check it</title>
+    <meta
+      name="description"
+      content="Every lap in this count is a record the rider signed themselves. The working is published, and this page adds it up again in your browser."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="The lap count, and how to check it" />
+    <meta
+      property="og:description"
+      content="Every lap in this count is a record the rider signed themselves. The working is published, and this page adds it up again in your browser."
+    />
+    <meta name="twitter:card" content="summary" />
+    <meta name="theme-color" content="#0B0B09" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/verify-main.ts"></script>
+  </body>
+</html>
