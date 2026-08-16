@@ -44,14 +44,25 @@
   const raw = new URLSearchParams(window.location.search).get("subject") ?? RITA_SUBJECT;
   const coaster = resolveCoaster(raw);
 
+  /**
+   * The entry check, plus the two states it can be in that are not results:
+   * nothing has come back yet, and there was nothing worth checking. "Nothing
+   * worth checking" is reachable — a record carrying no laps is schema-valid —
+   * and without it the page would sit forever claiming a check was in flight.
+   */
+  type EntryState = SpotCheck | { state: "pending" } | { state: "none" };
+
   let report = $state<VerifyReport | null>(null);
   let error = $state<string | null>(null);
   let checking = $state(false);
+  /** Last SUCCESSFUL check — what "checked N ago" reports. */
   let checkedAt = $state(0);
+  /** Last ATTEMPT — what paces re-asking. Kept apart from the above so that a
+   *  counter which is down is retried on the same 60s cadence rather than on
+   *  every 15s tick, which is what happens when failure never moves the clock. */
+  let attemptedAt = $state(0);
   let now = $state(Date.now());
-  /** The result of going and reading one entry. Null while it is in flight. */
-  let entry = $state<SpotCheck | null>(null);
-  let entryLaps = $state(0);
+  let entry = $state<EntryState>({ state: "pending" });
 
   const laps = $derived(report?.laps ?? 0);
   /** Above zero, every number on the page is a floor rather than a total. */
@@ -62,12 +73,17 @@
   async function check() {
     if (!coaster || checking) return;
     checking = true;
+    attemptedAt = Date.now();
     try {
       const next = await fetchVerifyReport(coaster);
       report = next;
       error = null;
       checkedAt = Date.now();
-      document.title = `${next.laps.toLocaleString()} laps on ${next.coaster.name}`;
+      // The floor qualifier travels with the number, including into the tab
+      // title — a shared screenshot reading "127 laps" from a page that said
+      // "at least 127" would have dropped the word that made it true.
+      const floor = next.read.unreadable > 0 ? "at least " : "";
+      document.title = `${floor}${next.laps.toLocaleString()} laps on ${next.coaster.name}`;
 
       // Then go and read one of the entries it named. Deliberately after the
       // count is on screen and never blocking it: this is a second, stronger
@@ -77,13 +93,7 @@
       // first would flash "fetching…" past the reader every minute for a claim
       // that has not changed.
       const target = leafToCheck(next.leaves, next.featured);
-      if (!target) {
-        entry = null;
-        entryLaps = 0;
-      } else {
-        entryLaps = target.total;
-        entry = await spotCheckLeaf(next.subject, target);
-      }
+      entry = target ? await spotCheckLeaf(next.subject, target) : { state: "none" };
     } catch (e) {
       // A failed re-check never blanks a number that was true a minute ago —
       // the staleness line says how old it is, which is the honest version.
@@ -100,7 +110,7 @@
     // One timer does both jobs: it moves the "checked N ago" line, and when the
     // page has been VISIBLE long enough it re-asks. Hidden tabs never re-ask —
     // a link left open in a background tab for a week should cost one check.
-    const due = () => document.visibilityState === "visible" && Date.now() - checkedAt >= RECHECK_MS;
+    const due = () => document.visibilityState === "visible" && Date.now() - attemptedAt >= RECHECK_MS;
     const tick = setInterval(() => {
       now = Date.now();
       if (due()) void check();
@@ -172,42 +182,64 @@
       {/if}
 
       {#if report.riders > 0}
+        <!-- "ridden it at least once" asserted as fact what the honesty panel
+             three sections down explicitly disclaims. What is known is what was
+             signed. -->
         <p class="riders">
           {report.riders.toLocaleString()}
-          {plural(report.riders, "rider has", "riders have")} the {report.coaster.name} credit — ridden it at least
-          once{#if report.scope === "rider"}, {report.communityLaps.toLocaleString()} laps between them{/if}.
+          {plural(report.riders, "rider has", "riders have")} signed at least one lap on
+          {report.coaster.name}{#if report.scope === "rider"}, {report.communityLaps.toLocaleString()} laps between
+          them{/if} — which is what having the credit means here.
         </p>
       {/if}
     </header>
 
     <!-- ── Did the working add up, here, in this browser? ──────────────── -->
-    <section class="verdict" class:verdict--bad={contradicted}>
-      {#if contradicted}
-        <p class="verdict-line">
-          <strong>The evidence does not support the total it came with.</strong>
-          The entries below add up to {report.reconciliation.recounted.toLocaleString()}, published alongside a total
-          of {report.reconciliation.declared.toLocaleString()}. This page will not show that as counted. The figure
-          above is the one the evidence actually supports.
-        </p>
-      {:else}
-        <p class="verdict-line">
-          <strong>Added up on your device.</strong>
-          The {report.leaves.length === 1 ? "entry" : `${report.leaves.length} entries`} listed below come to
-          {report.reconciliation.recounted.toLocaleString()}, which is the figure above. Nothing was taken on trust to
-          get there.
-        </p>
-      {/if}
-    </section>
+    <!-- Scope-aware, because it has to be BEFORE a rider is ever featured: with
+         a featured rider the headline is their entry's total, not the recount,
+         and "which is the figure above" would quietly become false while
+         looking exactly the same. The registry that switches this lives in
+         another file, so the copy cannot depend on someone remembering. -->
+    {#if report.leaves.length > 0}
+      <section class="verdict" class:verdict--bad={contradicted}>
+        {#if contradicted}
+          <p class="verdict-line">
+            <strong>The evidence does not support the total it came with.</strong>
+            The entries below add up to {report.reconciliation.recounted.toLocaleString()}, published alongside a
+            total of {report.reconciliation.declared.toLocaleString()}. This page will not show that as counted.
+            {report.scope === "rider" ? "Nothing here should be trusted until that is explained." : "The figure above is the one the evidence actually supports."}
+          </p>
+        {:else if report.scope === "rider"}
+          <p class="verdict-line">
+            <strong>Added up on your device.</strong>
+            The {report.leaves.length === 1 ? "entry" : `${report.leaves.length} entries`} listed below come to
+            {report.reconciliation.recounted.toLocaleString()} laps between them, and the figure above is this
+            rider's own {report.laps.toLocaleString()} of those. Nothing was taken on trust to get there.
+          </p>
+        {:else}
+          <p class="verdict-line">
+            <strong>Added up on your device.</strong>
+            The {report.leaves.length === 1 ? "entry" : `${report.leaves.length} entries`} listed below come to
+            {report.reconciliation.recounted.toLocaleString()}, which is the figure above. Nothing was taken on trust
+            to get there.
+          </p>
+        {/if}
+      </section>
+    {/if}
 
     <!-- ── And is the entry it counted actually there? ─────────────────── -->
     {#if report.leaves.length > 0}
-      <section class="verdict verdict--second" class:verdict--bad={entry?.state === "contradicted"}>
-        {#if entry === null}
+      <section class="verdict verdict--second" class:verdict--bad={entry.state === "contradicted"}>
+        {#if entry.state === "pending"}
           <p class="verdict-line muted">Fetching one of the entries to read it directly…</p>
+        {:else if entry.state === "none"}
+          <p class="verdict-line muted">
+            No entry here carries laps, so there is nothing yet to fetch and check.
+          </p>
         {:else if entry.state === "confirmed"}
           <p class="verdict-line">
             <strong>And that entry is really there.</strong>
-            The {entryLaps.toLocaleString()}-lap entry was fetched from storage at the address the working points to
+            The {entry.total.toLocaleString()}-lap entry was fetched from storage at the address the working points to
             — worked out here, not supplied by the counter — and the rider's own signature over exactly that number
             checked out in your browser.
           </p>
@@ -223,43 +255,63 @@
             nothing either way. The adding up above still stands.
           </p>
         {:else}
+          <!-- "could not be fetched" would be wrong for the branches where
+               bytes DID come back but could not be read — the sentence would
+               contradict its own reason. -->
           <p class="verdict-line">
-            <strong>That entry could not be fetched to check it</strong> — {entry.because}. Not a mark against anyone;
-            the check simply did not run.
+            <strong>That entry could not be checked</strong> — {entry.because}. Not a mark against anyone; the check
+            simply did not run.
           </p>
         {/if}
       </section>
     {/if}
 
     {#if partial}
+      <!-- "the truth is higher" is not quite a theorem: one rider can keep
+           several logbooks, so an unreachable one could hold a later downward
+           correction. Exotic, but the categorical version would be the kind of
+           overstatement this page exists to avoid. -->
       <p class="note note--warn">
         {report.read.unreadable === 1 ? "One logbook" : `${report.read.unreadable} logbooks`} could not be reached
-        when this was counted, so laps in {plural(report.read.unreadable, "it", "them")} are missing. Treat the number
-        as a floor, not a finished total.
+        when this was counted, so laps recorded only {plural(report.read.unreadable, "there", "in those")} are missing
+        from it. Treat the number as a floor rather than a finished total.
       </p>
     {/if}
 
     {#if report.equivocations.length > 0}
+      <!-- Not "a logbook disagrees with itself": only the HEAD of each logbook
+           is read, so one logbook can never yield two entries at one position.
+           An equivocation is by construction two logbooks belonging to the same
+           rider saying different things. -->
       <p class="note note--warn">
-        <strong>{report.equivocations.length === 1 ? "A logbook disagrees" : "Some logbooks disagree"} with
-        {plural(report.equivocations.length, "itself", "themselves")}.</strong>
-        Two different entries turned up at the same position in
-        {plural(report.equivocations.length, "one rider's logbook", "these riders' logbooks")}. The count picks one by
-        a fixed rule every counter applies the same way — and tells you it happened rather than smoothing it over.
+        <strong>{plural(report.equivocations.length, "A rider's logbooks disagree", "Some riders' logbooks disagree")}
+        with each other.</strong>
+        The same rider keeps a logbook on more than one device, and two of them carry different entries at the same
+        position. The count picks one by a fixed rule every counter applies the same way — and tells you it happened
+        rather than smoothing it over.
       </p>
     {/if}
 
     <!-- ── What was read ──────────────────────────────────────────────── -->
+    <!-- Labels name the right unit: the first and last count LOGBOOKS (feed
+         owners), the middle counts RIDERS (holders, after the tally picks a
+         winner per rider). One rider keeping two logbooks would otherwise
+         render as "2 riders looked up, 1 had a logbook" — both false. -->
     <section class="stats">
-      <div><span class="stat mono">{report.read.declared.toLocaleString()}</span><span class="stat-label">riders looked up</span></div>
-      <div><span class="stat mono">{report.read.contributing.toLocaleString()}</span><span class="stat-label">had a logbook</span></div>
-      <div><span class="stat mono">{report.read.unreadable.toLocaleString()}</span><span class="stat-label">out of reach</span></div>
+      <div><span class="stat mono">{report.read.declared.toLocaleString()}</span><span class="stat-label">{plural(report.read.declared, "logbook", "logbooks")} looked up</span></div>
+      <div><span class="stat mono">{report.read.contributing.toLocaleString()}</span><span class="stat-label">{plural(report.read.contributing, "rider", "riders")} with an entry</span></div>
+      <div><span class="stat mono">{report.read.unreadable.toLocaleString()}</span><span class="stat-label">{plural(report.read.unreadable, "logbook", "logbooks")} out of reach</span></div>
     </section>
 
     {#if silent}
+      <!-- "Nobody has signed a lap yet" would assert something the counter
+           cannot know: this is also exactly what a counter looks like after it
+           has lost track of whose logbooks to read. A rider who published a lap
+           and then read that sentence would have caught the page in a lie. -->
       <p class="note">
-        Nobody has signed a lap on {report.coaster.name} yet. The total is added up from riders' own logbooks, so
-        until somebody writes one there is nothing to add up — which is not the same as a total of nought.
+        This counter does not know of a signed lap on {report.coaster.name} yet. The total is added up from riders'
+        own logbooks, so until it knows of one there is nothing to add up — which is not the same as a total of
+        nought.
       </p>
     {/if}
 
@@ -279,17 +331,22 @@
                that did not run — on a page whose entire argument is that it does
                not overstate what it did. -->
           <strong>
-            {entry?.state === "confirmed" ? "And it read one entry for itself." : "It also goes and reads one entry."}
+            {entry.state === "confirmed" ? "And it read one entry for itself." : "It also goes and reads one entry."}
           </strong>
           Working out where an entry lives needs nothing from us — the list says whose logbook and which position, and
           the address follows from public rules.
-          {#if entry?.state === "confirmed"}
+          {#if entry.state === "confirmed"}
             So the page fetched one straight from storage and checked the rider's signature on it. Every other row can
             be checked the same way.
+          {:else if entry.state === "contradicted"}
+            <!-- "it could not" would be false here: the page DID fetch and read
+                 the entry. It disagreed, which is the one state whose accuracy
+                 matters most. -->
+            It did so here, and what it found did not match — see above. Every row can be checked the same way by
+            anyone.
           {:else}
-            The page fetches one straight from storage and checks the rider's signature on
-            it{#if entry !== null} — this time it could not, as it says above{/if}. Every row can be checked the same
-            way by anyone.
+            The page fetches one straight from storage and checks the rider's signature on it{#if entry.state === "missing" || entry.state === "unchecked"}&nbsp;— this time it could not, as it says above{/if}. Every row can
+            be checked the same way by anyone.
           {/if}
         </p>
         <p>
@@ -300,8 +357,9 @@
         </p>
         <p>
           <strong>Counts can change.</strong>
-          Riders own their logbooks and can correct them at any time, up or down. This page always shows the latest
-          entry, not a sealed history — so read it as a signed, public, re-addable tally rather than a permanent one.
+          Riders own their logbooks and can correct them at any time, up or down. This page shows the latest entry the
+          counter could read, not a sealed history — so read it as a signed, public, re-addable tally rather than a
+          permanent one.
         </p>
         <p>
           <strong>When we cannot see everything, we say so.</strong>
@@ -373,7 +431,7 @@
       </ol>
 
       <p class="muted small">
-        Straight about the limits. One entry is fetched and checked here, never all of them — checking every row would
+        Straight about the limits. Only ever one entry is fetched and checked here, never all of them — checking every row would
         read as this page auditing riders' counts, which is not what it is for. The evidence list is served on
         request rather than published to durable storage, so "published" means "served" for now. And none of this is
         independent of us: the storage and the counter are both ours to run. What happens on your device is the
@@ -382,8 +440,12 @@
     </section>
 
     <footer>
+      <!-- The counter's own answer can be up to its cache window old, so
+           "checked just now" alone would overstate freshness by up to half a
+           minute — visible against laps happening on camera. -->
       <p class="muted small">
-        Counted by <code>{report.sources.indexer}</code>, checked {ago(now - checkedAt)}.
+        Counted by <code>{report.sources.indexer}</code>, checked {ago(now - checkedAt)}{#if report.ageMs >= 1000},
+        from an answer {Math.round(report.ageMs / 1000)}s old{/if}.
         {#if error}<span class="stale"> Last try failed: {error}</span>{/if}
       </p>
       <button class="btn btn--ghost" onclick={check} disabled={checking}>

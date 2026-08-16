@@ -73,6 +73,12 @@ const DIGEST_RE = /^0x[0-9a-f]{64}$/;
  * mathematics. The signature proves the holder identity signed; that this
  * identity is a given rider is something their team said. The copy must not
  * blur the two.
+ *
+ * Adding an entry here CHANGES WHAT THE HEADLINE MEANS — from every rider's
+ * laps on the coaster to one rider's — so `VerifyApp.svelte` branches its
+ * verdict and its rider line on `scope`. Both are already written for both
+ * cases; this note exists so that whoever fills this in knows to check them
+ * rather than discovering it on a stream day.
  */
 export const FEATURED_HOLDERS: Readonly<Record<string, string>> = {};
 
