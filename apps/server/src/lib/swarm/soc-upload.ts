@@ -29,6 +29,7 @@ import {
   calculateCacAddress,
   calculateSocAddress,
   socSignDigest,
+  splitStoredSoc,
   encodeSpan,
   readVersionedContentFeed,
   type VersionedFeedRead,
@@ -48,6 +49,7 @@ import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.j
 import { whitelistHashes } from "./whitelist.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
+import { observeStatementBytes } from "../social/participants.js";
 
 const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
 
@@ -240,6 +242,14 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
           console.warn("[swarm] Etherna SOC offer failed (non-fatal):", e);
         }
       }
+      // Learn who to read later. The identifier is a hash, so the topic cannot
+      // be inverted from it — but a PUBLIC statement's payload names its own
+      // format and subject, which is everything needed to recompute the topic.
+      // Sealed payloads are refused there by an explicit shape check, NOT by
+      // being unreadable: a SealedBox is ordinary JSON and parses fine (see
+      // `looksSealed`). Bookkeeping for a view-plane cache — never awaited, and
+      // it must never fail a user's write.
+      observeStatementBytes(ownerHex, payload);
       return { owner: ownerHex, identifier: identifierHex, address: socAddress };
     } catch (err: unknown) {
       const e = err as { code?: string; message?: string; status?: number };
@@ -354,12 +364,12 @@ async function readSocFromEtherna(ownerHex: string, identifierHex: string): Prom
     return null;
   }
 
-  // Stored SOC layout: identifier(32) || signature(65) || span(8) || payload(1..4096).
-  if (raw.length < SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8 + 1) return null;
-  const id = raw.subarray(0, SOC_IDENTIFIER_SIZE);
-  const sig = raw.subarray(SOC_IDENTIFIER_SIZE, SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE);
-  const span = raw.subarray(SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE, SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8);
-  const payload = raw.subarray(SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8);
+  // Stored SOC layout lives in shared — a browser-side evidence spot-check
+  // needs the same split, and two readers disagreeing about where the payload
+  // starts surfaces as garbled JSON rather than as an error.
+  const parts = splitStoredSoc(raw);
+  if (!parts) return null;
+  const { identifier: id, signature: sig, span, payload } = parts;
   if (bytesToHex(id) !== bytesToHex(identifier)) return null;
   try {
     const digest = socSignDigest(id, calculateCacAddress(span, payload));

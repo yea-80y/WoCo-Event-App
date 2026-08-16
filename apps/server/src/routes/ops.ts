@@ -36,6 +36,8 @@ import {
   type EmailFailure,
 } from "../lib/email/failure-ledger.js";
 import { forgetRetries } from "../lib/email/retry-queue.js";
+import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social/participants.js";
+import { clearTallyCache } from "./social.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -230,6 +232,79 @@ ops.post("/email-failures/:id/resolve", async (c) => {
 
   console.log(`[ops] Ledger entry ${id} marked resolved by ${by}`);
   return c.json({ ok: true, data: { resolved: true, health: failureHealth() } });
+});
+
+// ---------------------------------------------------------------------------
+// Social / credits index rebuild (#172)
+// ---------------------------------------------------------------------------
+
+/**
+ * Restore an index's input set from a published evidence manifest.
+ *
+ * `SWARM_SOCIAL_PLAN` commitment 6 requires the index be rebuildable from
+ * public data, and the manifest's `participants` list is what makes that true —
+ * a rebuilder cannot compute a single feed address without knowing whose feeds
+ * to read. This is the action that consumes it.
+ *
+ * OPERATOR-ONLY, and the reason is cost rather than authenticity. Every
+ * admitted address becomes one versioned feed read on each later tally for that
+ * subject, and a read that finds nothing is the most expensive kind this node
+ * performs (`swarm/soc.ts:358-367` — the class that overwhelmed the bee on
+ * 2026-07-06). Rebuilds are rare and deliberate, so the ops surface costs an
+ * operator nothing.
+ *
+ * Stated precisely, because the obvious phrasing would overclaim: gating this
+ * removes ANONYMOUS bulk admission. It does not close every route into the
+ * registry — `POST /api/swarm/soc` still admits one participant per relayed
+ * statement, and that endpoint deliberately cannot bind the SOC owner to the
+ * authenticated parent, so an authenticated account can register many distinct
+ * feed owners over time (issue #301 tracks its missing rate limit). Admitted
+ * participants are also permanent until the ceiling is reached; registry
+ * hygiene — retiring owners whose feeds have read absent for a long time — is
+ * unbuilt and wants its own design.
+ */
+ops.post("/social/participants", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "invalid JSON" }, 400);
+  }
+  const b = body as { format?: string; subject?: string; participants?: unknown };
+
+  if (typeof b.format !== "string" || typeof b.subject !== "string") {
+    return c.json({ ok: false, error: "format and subject are required" }, 400);
+  }
+  if (!Array.isArray(b.participants) || b.participants.some((p) => typeof p !== "string")) {
+    return c.json({ ok: false, error: "participants must be an array of addresses" }, 400);
+  }
+  // The public version of this endpoint capped the array; losing that on the
+  // move to ops was an oversight, not a decision — an operator paging through
+  // a large manifest wants a bounded request as much as anyone.
+  if (b.participants.length > 10_000) {
+    return c.json({ ok: false, error: "too many participants in one call — page the restore" }, 413);
+  }
+
+  // `mergeParticipants` re-validates format and subject against the indexable
+  // set and returns 0 for anything it does not recognise, so a typo restores
+  // nothing rather than creating a phantom entry to read forever.
+  const added = mergeParticipants(b.format, b.subject.toLowerCase(), b.participants as string[]);
+  clearTallyCache();
+  console.log(`[ops] social rebuild: +${added} participants for ${b.format} ${b.subject}`);
+  return c.json({ ok: true, data: { added } });
+});
+
+/** What the index currently believes it should read, for verifying a rebuild. */
+ops.get("/social/subjects", (c) => {
+  const format = c.req.query("format") ?? "";
+  const subjects = knownSubjects(format);
+  return c.json({
+    ok: true,
+    data: {
+      format,
+      subjects: subjects.map((subject) => ({ subject, participants: participantsFor(format, subject).length })),
+    },
+  });
 });
 
 /** Tests only — clears the failed-attempt window between cases. */

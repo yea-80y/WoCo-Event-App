@@ -55,6 +55,11 @@ export default defineConfig(({ mode }) => {
         input: {
           main: 'index.html',
           multisite: 'multi-site.html',
+          // Standalone page, built into the same collection so it ships with the
+          // existing frontend deploy and needs no new step. It shares only the
+          // design tokens — its entry never reaches the app shell or the auth
+          // stack, so a reader with no account boots a page, not an app.
+          verify: 'verify.html',
         },
       },
     },

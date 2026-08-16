@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { EventFeed, Hex0x } from "@woco/shared";
-  import { SubjectType, profileLikeSubject } from "@woco/shared";
+  import { SubjectType, profileLikeSubject, socialEventSubject } from "@woco/shared";
   import { rememberLabel } from "../../likes/label-cache.js";
   import { getEvent } from "../../api/events.js";
   import ClaimButton from "./ClaimButton.svelte";
@@ -78,7 +78,14 @@
   const eventSubject = $derived((() => {
     const eid = event?.series.find(s => s.onChainEventId)?.onChainEventId;
     if (!eid) return null;
-    return { type: SubjectType.Event, id: eid.toLowerCase() as Hex0x };
+    // Through the canonical derivation rather than a local lowercase: it also
+    // trims and rejects anything that is not a bytes32. A wrong-width id used
+    // to become a plausible-looking topic nobody would ever read back.
+    try {
+      return { type: SubjectType.Event, id: socialEventSubject(eid) };
+    } catch {
+      return null;
+    }
   })());
 
   const isPastEvent = $derived(!!event && checkPast(event, now));
