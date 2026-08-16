@@ -206,6 +206,15 @@ test("a leaf without the feed version is refused", () => {
   assert.equal(parseEvidence(served({ leaves: [noVersion] }), RITA_SUBJECT), null);
 });
 
+test("a logbook written before versioning does not sink the whole manifest", () => {
+  // -1 is the pre-versioning sentinel, a legal value naming a fixed-identifier
+  // entry. Refusing it would throw away every OTHER rider's laps over one whose
+  // logbook predates a change they had no part in.
+  const parsed = parseEvidence(served({ leaves: [leaf({ version: -1 })] }), RITA_SUBJECT);
+  assert.ok(parsed);
+  assert.equal(parsed.manifest.leaves[0]!.version, -1);
+});
+
 test("a manifest for a different subject is refused", () => {
   assert.equal(parseEvidence(served({ subject: OTHER_SUBJECT }), RITA_SUBJECT), null);
 });
@@ -224,7 +233,8 @@ test("a malformed leaf refuses the WHOLE manifest, not just itself", () => {
     { ...leaf(), digest: "deadbeef" },
     { ...leaf(), seq: -1 },
     { ...leaf(), total: 1.5 },
-    { ...leaf(), version: -1 },
+    { ...leaf(), version: -2 },
+    { ...leaf(), version: 1.5 },
     { ...leaf(), holder: undefined },
     null,
   ]) {

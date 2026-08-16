@@ -28,6 +28,7 @@
   import { onMount } from "svelte";
   import { RITA_SUBJECT } from "@woco/shared";
   import { fetchVerifyReport, resolveCoaster, type VerifyReport } from "./lib/credits/verify-report.js";
+  import { leafToCheck, spotCheckLeaf, type SpotCheck } from "./lib/credits/spot-check.js";
 
   /** How often the page re-asks, and how often the "checked N ago" line moves. */
   const RECHECK_MS = 60_000;
@@ -48,6 +49,9 @@
   let checking = $state(false);
   let checkedAt = $state(0);
   let now = $state(Date.now());
+  /** The result of going and reading one entry. Null while it is in flight. */
+  let entry = $state<SpotCheck | null>(null);
+  let entryLaps = $state(0);
 
   const laps = $derived(report?.laps ?? 0);
   /** Above zero, every number on the page is a floor rather than a total. */
@@ -59,10 +63,27 @@
     if (!coaster || checking) return;
     checking = true;
     try {
-      report = await fetchVerifyReport(coaster);
+      const next = await fetchVerifyReport(coaster);
+      report = next;
       error = null;
       checkedAt = Date.now();
-      document.title = `${report.laps.toLocaleString()} laps on ${report.coaster.name}`;
+      document.title = `${next.laps.toLocaleString()} laps on ${next.coaster.name}`;
+
+      // Then go and read one of the entries it named. Deliberately after the
+      // count is on screen and never blocking it: this is a second, stronger
+      // claim, and a storage gateway having a bad minute must not stop the
+      // first one being made.
+      // The previous result stays on screen until this one lands: blanking it
+      // first would flash "fetching…" past the reader every minute for a claim
+      // that has not changed.
+      const target = leafToCheck(next.leaves, next.featured);
+      if (!target) {
+        entry = null;
+        entryLaps = 0;
+      } else {
+        entryLaps = target.total;
+        entry = await spotCheckLeaf(next.subject, target);
+      }
     } catch (e) {
       // A failed re-check never blanks a number that was true a minute ago —
       // the staleness line says how old it is, which is the honest version.
@@ -178,6 +199,39 @@
       {/if}
     </section>
 
+    <!-- ── And is the entry it counted actually there? ─────────────────── -->
+    {#if report.leaves.length > 0}
+      <section class="verdict verdict--second" class:verdict--bad={entry?.state === "contradicted"}>
+        {#if entry === null}
+          <p class="verdict-line muted">Fetching one of the entries to read it directly…</p>
+        {:else if entry.state === "confirmed"}
+          <p class="verdict-line">
+            <strong>And that entry is really there.</strong>
+            The {entryLaps.toLocaleString()}-lap entry was fetched from storage at the address the working points to
+            — worked out here, not supplied by the counter — and the rider's own signature over exactly that number
+            checked out in your browser.
+          </p>
+        {:else if entry.state === "contradicted"}
+          <p class="verdict-line">
+            <strong>That entry does not match the working.</strong>
+            {entry.because}. This is the check doing its job; treat the count above with suspicion until it is
+            explained.
+          </p>
+        {:else if entry.state === "missing"}
+          <p class="verdict-line">
+            <strong>Nothing came back from that address.</strong>
+            An entry that has not finished settling on the network looks exactly like this, so on its own it proves
+            nothing either way. The adding up above still stands.
+          </p>
+        {:else}
+          <p class="verdict-line">
+            <strong>That entry could not be fetched to check it.</strong>
+            {entry.because}. Not a mark against anyone — the check simply did not run.
+          </p>
+        {/if}
+      </section>
+    {/if}
+
     {#if partial}
       <p class="note note--warn">
         {report.read.unreadable === 1 ? "One logbook" : `${report.read.unreadable} logbooks`} could not be reached
@@ -220,6 +274,12 @@
           Every lap here comes from a signed entry — a logbook only its author can write in. This page downloaded the
           full evidence list and did the adding up itself, on your device. The headline is your machine's arithmetic,
           not a number we typed in.
+        </p>
+        <p>
+          <strong>And it read one entry for itself.</strong>
+          Working out where an entry lives needs nothing from us — the list says whose logbook and which position, and
+          the address follows from public rules. So the page fetched one straight from storage and checked the rider's
+          signature on it. Every other row can be checked the same way.
         </p>
         <p>
           <strong>What it does not prove.</strong>
@@ -291,8 +351,8 @@
         </li>
         <li>
           <strong>Go to the entries themselves.</strong> Each one names the signing identity, the logbook it was read
-          from and the position in it, which is everything needed to fetch that entry and check its signature without
-          involving this page.
+          from and the position in it — everything needed to work out where that entry is stored and check its
+          signature, without involving this page. That is what the check above does for one of them.
         </li>
         <li>
           <strong>Or count it all again.</strong> The <code>participants</code> list is the input set — the same
@@ -302,11 +362,11 @@
       </ol>
 
       <p class="muted small">
-        Straight about the limits. This page re-adds the published working; it does not itself go and re-read each
-        rider's entry from the network, which is step 3 and a heavier check. The evidence is served on request rather
-        than published to durable storage, so "published" here means "served" for now. And nothing above is
-        independent of us — what happens on your device is the arithmetic; what makes it checkable by anyone is that
-        the inputs are public.
+        Straight about the limits. One entry is fetched and checked here, not all of them — checking every row would
+        read as this page auditing riders' counts, which is not what it is for. The evidence list is served on
+        request rather than published to durable storage, so "published" means "served" for now. And none of this is
+        independent of us: the storage and the counter are both ours to run. What happens on your device is the
+        arithmetic and the signature check; what makes it checkable by anyone at all is that the inputs are public.
       </p>
     </section>
 
@@ -399,6 +459,15 @@
   .verdict--bad {
     border-left-color: var(--error);
     background: var(--error-subtle);
+  }
+  /* The second claim is a step further, not a second headline. */
+  .verdict--second {
+    background: transparent;
+    border-left-color: var(--border-hover);
+  }
+  .verdict--second.verdict--bad {
+    background: var(--error-subtle);
+    border-left-color: var(--error);
   }
   .verdict-line { margin: 0; line-height: 1.6; color: var(--text-secondary); }
   .verdict strong { color: var(--text); }

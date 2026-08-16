@@ -1212,6 +1212,51 @@ wants edge caching before a stream day.
 front of the exact community we want to win, is worse than not doing it — so scope hard and
 say no to tier 3 if the day cannot support it.
 
+### The verification page — BUILT 2026-08-16
+
+`apps/web/verify.html` → `src/VerifyApp.svelte`, its own entry in the main build (no app
+shell, no auth, no router), reachable at `/verify.html?subject=…`. Fable-consulted before
+building; the findings below are its.
+
+Two claims, made in this order and kept apart:
+
+1. **Recounted here.** It fetches `/api/social/manifest` ONLY and adds the leaves up in the
+   browser. `/count` is not fetched: both are served from the same 30s cache entry, so
+   comparing them cannot detect dishonesty and *can* manufacture a false mismatch across a
+   cache boundary. `/manifest` therefore now carries `unreadable` and `equivocations` too —
+   a reader who needs a second request to learn whether a count is complete will publish a
+   floor as a total. Note `/manifest` already recounts server-side and 500s rather than
+   serve an inconsistent manifest, so a browser recount cannot catch THIS server lying; it
+   catches a corrupted intermediary or a third-party manifest. Copy says "recounted", never
+   "verified".
+2. **One entry read for itself.** `lib/credits/spot-check.ts` derives the chunk address from
+   the leaf by the public scheme, fetches it from the storage gateway, and checks the
+   rider's `holderSig` and the digest. One entry only — fanning out over every leaf would
+   read as auditing fans' counts. Silence NEVER accuses: 404/403/timeout are "not checked".
+   Verified live 2026-08-16: gateway `/chunks/*` sends `access-control-allow-origin: *`, and
+   an unlisted address answers 403 "not whitelisted" (a routine answer, not a fault).
+
+`CarriedEvidenceLeaf` gained `version` to make (2) possible: it carried `seq`, which is the
+HOLDER's ordering and continues across the private→public migration, while the version is
+the FEED's and restarts at 0 — so the ADDRESSING NOTE in `indexer.ts` was true of boolean
+leaves and false of credit ones. Legal because the manifest form is deliberately unfrozen
+(P0 item 7, view plane).
+
+Two refusals: a subject that resolves to no coaster in `WOCO_SUBJECTS` gets a neutral state,
+because anyone can mint a subject id and publish genuinely signed entries against it and a
+crafted link would otherwise borrow this page's authority for an invented coaster; and there
+is no `?indexer=`/`?api=` override — the honest form of "run your own" is a fork on your own
+domain, not a query string on a page that exists to be screenshotted.
+
+⚠️ **OPEN, OWNER DECISION — the headline is community-scoped, not Dan's.** `manifest.count`
+SUMS every rider's total for the subject, so the moment a second rider publishes a Rita
+count, a page headlining it stops meaning "one rider's laps" while looking identical.
+"Verify all 109 laps" is holder-scoped. The featured-rider mechanism ships and its registry
+(`FEATURED_HOLDERS` in `verify-report.ts`) is EMPTY, because nothing publishes Dan's holder
+key. Filling it needs his team to publish that key — and the key→person link is an
+announcement, not mathematics, so the copy must say "the identity Dan's team published",
+never "signed by Dan".
+
 ## Scale
 
 Cost per credit is one signed statement. Worked example — 1,000 fans averaging 5 rides:

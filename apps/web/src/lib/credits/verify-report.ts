@@ -37,6 +37,7 @@ import {
   currentEra,
   formerNames,
   WOCO_SUBJECTS,
+  LEGACY_CONTENT_FEED_VERSION,
   type SubjectCatalogue,
   type CarriedEvidenceLeaf,
   type EvidenceManifestV1,
@@ -116,7 +117,14 @@ function parseLeaf(value: unknown): CarriedEvidenceLeaf | null {
   if (typeof l.holder !== "string" || !HOLDER_RE.test(l.holder)) return null;
   if (typeof l.feedOwner !== "string" || !OWNER_RE.test(l.feedOwner)) return null;
   if (typeof l.digest !== "string" || !DIGEST_RE.test(l.digest)) return null;
-  if (!isCount(l.seq) || !isCount(l.total) || !isCount(l.version)) return null;
+  if (!isCount(l.seq) || !isCount(l.total)) return null;
+  // Versions are >= 0 EXCEPT the pre-versioning sentinel (-1), which names a
+  // fixed-identifier chunk written before the versioning fix. Rejecting it
+  // would refuse a whole manifest — every other entry included — over one
+  // rider whose logbook predates a change they had no part in.
+  if (typeof l.version !== "number" || !Number.isSafeInteger(l.version) || l.version < LEGACY_CONTENT_FEED_VERSION) {
+    return null;
+  }
   return {
     holder: l.holder,
     feedOwner: l.feedOwner as Hex0x,

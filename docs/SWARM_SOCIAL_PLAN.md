@@ -53,6 +53,12 @@ Violating any of these forfeits portability/self-sovereignty later. All are chea
 - **P1.5: verifiability.** Publish the index to Swarm as evidence manifest (commitment 4);
   clients auto-check their own inclusion ("am I in the count?") — turns "omission is
   detectable" into "omission is detected". Organiser audience export.
+  The READER side of commitment 4 landed 2026-08-16 (see COASTER_CREDITS_PLAN, "The
+  verification page"): a browser recounts the published leaves and reads one of the named
+  chunks straight from storage. What is still missing is the word "published" — manifests
+  are SERVED on request, not written to Swarm, so the input set survives only in whatever
+  copies readers kept. That is this phase's actual work, and it is also what makes the
+  registry rebuildable by someone who is not us.
 - **P2: user-owned batches.** Platform pays `createBatch` with the USER'S address as
   `_owner` (verified: payer ≠ owner in the contract; bee validates stamps against owner).
   Users stamp client-side; old chunks re-stampable without re-signing (hash-preserving).
