@@ -20,6 +20,20 @@ export const FEATURES = {
   // That rail is now DELETED — settleAgentTicketPurchase refuses outright (see
   // lib/agent/spend-authority.ts). Turn on with a v2 on-chain mint path, not before.
   agentCommerceAllowed: false,
+  // Coinbase Smart Wallet login. OFF for launch (#173, owner decision
+  // 2026-08-04): CSW is a smart account, so its ERC-1271/6492 signatures are
+  // not byte-reproducible (6492-wrapped before deployment, bare 1271 after —
+  // definitional, not a quirk), and POD identity + content feeds are
+  // sign-to-derive. Feeds already park CSW; POD does not, so a CSW user's
+  // ticket-signing and dashboard-decryption identity forks on ordinary
+  // logout→login. Gates in lockstep: the login button + loginCoinbase +
+  // session restore (client) AND the server's 1271/6492 delegation-verify
+  // path (its only intended client — pre-08209a1 Kernel delegations also
+  // used it, but pre-launch those are test sessions that just re-login).
+  // Turn on with the CSW escrow path (random POD seed + feed key, escrowed
+  // and restored per device), after #164. Never sign-to-derive for smart
+  // accounts.
+  coinbaseLoginAllowed: false,
   // Organiser custom sending domains. OFF for launch, for two independent
   // reasons: the production Resend key is send-only, so the Domains API 401s and
   // the panel could only ever show an error; and PRICING_AND_EMAIL.md §6 forbids
