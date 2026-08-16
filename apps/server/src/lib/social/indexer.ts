@@ -80,6 +80,34 @@ export interface IndexResult {
   equivocations: string[];
 }
 
+/**
+ * Does this statement say it is about the subject being tallied?
+ *
+ * The address already binds it — the topic derives from the subject — so this
+ * looks redundant, and for a long time the argument was that a mislabelled
+ * write buys its author exactly the one vote a correct write would.
+ *
+ * That argument does not survive carried totals, and it never survived
+ * publication. A rider can sign a statement naming ANOTHER subject with any
+ * total they like and store it at this subject's head: the signature verifies,
+ * the schema is closed and valid, and the total lands in this coaster's count.
+ * Worse, the evidence is now spot-checkable — a reader fetching that entry
+ * finds a statement about a different coaster and the page correctly calls it a
+ * contradiction, so a manufactured red banner sits over an honest count.
+ *
+ * An acceptance rule that a verifier disagrees with is not a small
+ * inconsistency; it is a way to make the honest path look dishonest. So the
+ * indexer checks what the reader checks, for both statement families.
+ *
+ * Both sides are lowercase already — the frozen topic scheme rejects a subject
+ * that is not (`subjectToBytes` throws before a topic exists), and every
+ * statement validator pins the same lowercase form. The normalisation here is
+ * belt-and-braces against a validator that ever loosens, not a live concern.
+ */
+function isAboutSubject(statement: { subject: string }, subject: Hex0x): boolean {
+  return statement.subject.toLowerCase() === subject.toLowerCase();
+}
+
 function topicFor(format: IndexableFormat, subject: Hex0x): string {
   switch (format) {
     case "woco.like.v1":
@@ -191,6 +219,7 @@ export async function indexSubject(
       // check exists to reject, and it is the only thing standing between a
       // count and anyone writing anyone else's history into their own feed.
       if (!verifyCreditStatement(parsed)) continue;
+      if (!isAboutSubject(parsed, subject)) continue;
       const { holderSig: _sig, ...unsigned } = parsed;
       observed.push({
         feedOwner: r.owner as Hex0x,
@@ -219,6 +248,7 @@ export async function indexSubject(
     // already verified by Bee on retrieval — is the authorship proof. An extra
     // identity signature would be schema surface without a guarantee.
     if (!validate(parsed)) continue;
+    if (!isAboutSubject(parsed, subject)) continue;
     observed.push({
       feedOwner: r.owner as Hex0x,
       version: r.version,

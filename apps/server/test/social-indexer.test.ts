@@ -204,23 +204,42 @@ test("a payload that is not this exact statement format is not counted", async (
   assert.deepEqual(res.unreadable, []);
 });
 
-test("the ADDRESS is the subject binding, and a payload naming another subject still buys one vote", async () => {
-  // Pinned rather than assumed, because it is the first thing a reviewer asks:
-  // the frozen validator checks shape, not payload-subject against topic. It
-  // costs nothing — the topic derives from the subject, so writing this took a
-  // deliberate act by an owner who could have written a correct statement to
-  // the same address for the same one vote. Recorded here so that if the rule
-  // ever does tighten, it is a decision rather than a drift.
-  seed("woco.like.v1", [ALICE]);
+test("a statement naming another subject is not counted for this one", async () => {
+  // The address binds it already, so this looks redundant — and for booleans it
+  // nearly is, since a mislabelled write buys the one vote a correct write
+  // would. It is checked anyway because the RULE has to be the same one a
+  // reader applies: the page fetches an entry and compares its subject, so an
+  // indexer that accepted what the page rejects would render a red
+  // contradiction over an honest count.
+  seed("woco.like.v1", [ALICE, BOB]);
   const { read } = readerOver({
     [ALICE]: found(likeStatement(true, `0x${"cc".repeat(32)}` as Hex0x), 1),
+    [BOB]: found(likeStatement(true), 1),
   });
 
   const res = await indexer.indexSubject("woco.like.v1", SUBJECT, read);
   assert.equal(res.manifest.count, 1);
-  assert.equal(res.manifest.leaves.length, 1);
-  assert.equal(booleanLeaves(res.manifest)[0]!.feedOwner, ALICE);
+  assert.deepEqual(booleanLeaves(res.manifest).map((l) => l.feedOwner), [BOB]);
 });
+
+test("a credit naming another coaster cannot put its laps on this one", async () => {
+  // The sharp version, and the reason the check is not optional. A rider signs
+  // a statement about a DIFFERENT coaster with any total they like and stores
+  // it at this coaster's head: signature valid, schema valid, and without this
+  // the total lands in this coaster's count. It then fails the page's own
+  // entry check, so an honest count gets a manufactured contradiction over it.
+  seed("woco.credit.v1", [ALICE, BOB]);
+  const elsewhere = credit({ subject: `0x${"cc".repeat(32)}` as Hex0x, total: 100_000 });
+  const { read } = readerOver({
+    [ALICE]: found(elsewhere, 1),
+    [BOB]: found(credit({ total: 7 }, OTHER_KEY), 1),
+  });
+
+  const res = await indexer.indexSubject("woco.credit.v1", SUBJECT, read);
+  assert.equal(res.manifest.count, 7);
+  assert.deepEqual(carriedLeaves(res.manifest).map((l) => l.holder), [OTHER_RIDER]);
+});
+
 
 test("follows tally under their own topic, separately from likes", async () => {
   seed("woco.follow.v1", [ALICE]);
