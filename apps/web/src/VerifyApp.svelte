@@ -213,9 +213,8 @@
           </p>
         {:else if entry.state === "contradicted"}
           <p class="verdict-line">
-            <strong>That entry does not match the working.</strong>
-            {entry.because}. This is the check doing its job; treat the count above with suspicion until it is
-            explained.
+            <strong>That entry does not match the working</strong> — {entry.because}. This is the check doing its job;
+            treat the count above with suspicion until it is explained.
           </p>
         {:else if entry.state === "missing"}
           <p class="verdict-line">
@@ -225,8 +224,8 @@
           </p>
         {:else}
           <p class="verdict-line">
-            <strong>That entry could not be fetched to check it.</strong>
-            {entry.because}. Not a mark against anyone — the check simply did not run.
+            <strong>That entry could not be fetched to check it</strong> — {entry.because}. Not a mark against anyone;
+            the check simply did not run.
           </p>
         {/if}
       </section>
@@ -276,10 +275,22 @@
           not a number we typed in.
         </p>
         <p>
-          <strong>And it read one entry for itself.</strong>
+          <!-- Conditional, because this paragraph would otherwise claim a check
+               that did not run — on a page whose entire argument is that it does
+               not overstate what it did. -->
+          <strong>
+            {entry?.state === "confirmed" ? "And it read one entry for itself." : "It also goes and reads one entry."}
+          </strong>
           Working out where an entry lives needs nothing from us — the list says whose logbook and which position, and
-          the address follows from public rules. So the page fetched one straight from storage and checked the rider's
-          signature on it. Every other row can be checked the same way.
+          the address follows from public rules.
+          {#if entry?.state === "confirmed"}
+            So the page fetched one straight from storage and checked the rider's signature on it. Every other row can
+            be checked the same way.
+          {:else}
+            The page fetches one straight from storage and checks the rider's signature on
+            it{#if entry !== null} — this time it could not, as it says above{/if}. Every row can be checked the same
+            way by anyone.
+          {/if}
         </p>
         <p>
           <strong>What it does not prove.</strong>
@@ -342,8 +353,8 @@
       <ol>
         <li>
           <strong>Read the evidence.</strong>
-          <a href={report.sources.manifestUrl} rel="nofollow noreferrer">the full list this page counted</a> — every
-          rider looked up, every entry used, every value.
+          Open <a href={report.sources.manifestUrl} rel="nofollow noreferrer">the full list this page counted</a> —
+          every rider looked up, every entry used, every value.
         </li>
         <li>
           <strong>Do the arithmetic somewhere else.</strong> Add up <code>total</code> across <code>leaves</code>.
@@ -362,7 +373,7 @@
       </ol>
 
       <p class="muted small">
-        Straight about the limits. One entry is fetched and checked here, not all of them — checking every row would
+        Straight about the limits. One entry is fetched and checked here, never all of them — checking every row would
         read as this page auditing riders' counts, which is not what it is for. The evidence list is served on
         request rather than published to durable storage, so "published" means "served" for now. And none of this is
         independent of us: the storage and the counter are both ours to run. What happens on your device is the
@@ -488,7 +499,9 @@
 
   .stats {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    /* Wraps rather than squeezing: three uppercase mono labels in a 390px
+       viewport would each be a two-line column about 90px wide. */
+    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
     gap: 1px;
     background: var(--border);
     border: 1px solid var(--border);
@@ -581,6 +594,10 @@
   }
   .diy li::marker { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.75rem; }
   .diy strong { color: var(--text); }
+  /* The raw evidence is the point of the section, so its link has to read as
+     one at a glance rather than as a hairline under grey body text. */
+  .diy a { color: var(--accent-text); border-bottom-color: var(--accent); }
+  .diy a:hover { color: var(--accent); }
 
   /* ── Footer ───────────────────────────────────────────────────────── */
 

@@ -41,17 +41,13 @@ import {
   versionedSocIdentifier,
   calculateSocAddress,
   isContentFeedManifest,
+  splitStoredSoc,
   LEGACY_CONTENT_FEED_VERSION,
-  SOC_IDENTIFIER_SIZE,
-  SOC_SIGNATURE_SIZE,
   type CarriedEvidenceLeaf,
   type Hex0x,
 } from "@woco/shared";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { WOCO_GATEWAY_URL } from "../swarm/gateways.js";
-
-/** Bytes before the payload in a stored chunk: identifier, signature, span. */
-const SOC_HEADER_SIZE = SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8;
 
 /** Long enough for a cold network search, short enough that a stuck read does
  *  not leave the page saying "checking…" for the length of a stream segment. */
@@ -94,15 +90,6 @@ export function leafToCheck(leaves: readonly CarriedEvidenceLeaf[], featured: Ca
   let best: CarriedEvidenceLeaf | null = null;
   for (const leaf of leaves) if (leaf.total > 0 && (!best || leaf.total > best.total)) best = leaf;
   return best;
-}
-
-/** Split a stored chunk into its parts, or null if it is not one. */
-function parseStoredChunk(raw: Uint8Array): { identifier: Uint8Array; payload: Uint8Array } | null {
-  if (raw.length < SOC_HEADER_SIZE + 1) return null;
-  return {
-    identifier: raw.subarray(0, SOC_IDENTIFIER_SIZE),
-    payload: raw.subarray(SOC_HEADER_SIZE),
-  };
 }
 
 /**
@@ -150,7 +137,7 @@ export async function spotCheckLeaf(
     return { state: "unchecked", address, because: "the storage gateway could not be reached" };
   }
 
-  const chunk = parseStoredChunk(raw);
+  const chunk = splitStoredSoc(raw);
   if (!chunk) return { state: "unchecked", address, because: "what came back is not a stored entry" };
 
   // The address was derived FROM this identifier, so a stored chunk carrying a

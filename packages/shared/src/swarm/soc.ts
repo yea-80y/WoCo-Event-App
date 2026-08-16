@@ -32,6 +32,30 @@ export const SOC_SIGNATURE_SIZE = 65;
 /** SOC identifier length (bytes). */
 export const SOC_IDENTIFIER_SIZE = 32;
 
+/**
+ * Split a SOC as it is STORED — `identifier(32) || signature(65) || span(8) ||
+ * payload(1..4096)` — or null if the bytes are too short to be one.
+ *
+ * Here rather than at a call site because it is a wire layout, and two readers
+ * disagreeing about where the payload starts is the kind of bug that surfaces
+ * as garbled JSON rather than as an error. Both a server-side gateway read and
+ * a browser-side spot-check of an evidence leaf need it.
+ *
+ * Returns views over the input, not copies: callers only read.
+ */
+export function splitStoredSoc(
+  raw: Uint8Array,
+): { identifier: Uint8Array; signature: Uint8Array; span: Uint8Array; payload: Uint8Array } | null {
+  const headerSize = SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + SOC_SPAN_SIZE;
+  if (raw.length < headerSize + 1) return null;
+  return {
+    identifier: raw.subarray(0, SOC_IDENTIFIER_SIZE),
+    signature: raw.subarray(SOC_IDENTIFIER_SIZE, SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE),
+    span: raw.subarray(SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE, headerSize),
+    payload: raw.subarray(headerSize),
+  };
+}
+
 /** Encode a payload length as the 8-byte little-endian Swarm span. */
 export function encodeSpan(length: number): Uint8Array {
   const span = new Uint8Array(SOC_SPAN_SIZE);

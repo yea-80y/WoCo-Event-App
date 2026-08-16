@@ -29,6 +29,7 @@ import {
   calculateCacAddress,
   calculateSocAddress,
   socSignDigest,
+  splitStoredSoc,
   encodeSpan,
   readVersionedContentFeed,
   type VersionedFeedRead,
@@ -363,12 +364,12 @@ async function readSocFromEtherna(ownerHex: string, identifierHex: string): Prom
     return null;
   }
 
-  // Stored SOC layout: identifier(32) || signature(65) || span(8) || payload(1..4096).
-  if (raw.length < SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8 + 1) return null;
-  const id = raw.subarray(0, SOC_IDENTIFIER_SIZE);
-  const sig = raw.subarray(SOC_IDENTIFIER_SIZE, SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE);
-  const span = raw.subarray(SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE, SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8);
-  const payload = raw.subarray(SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE + 8);
+  // Stored SOC layout lives in shared — a browser-side evidence spot-check
+  // needs the same split, and two readers disagreeing about where the payload
+  // starts surfaces as garbled JSON rather than as an error.
+  const parts = splitStoredSoc(raw);
+  if (!parts) return null;
+  const { identifier: id, signature: sig, span, payload } = parts;
   if (bytesToHex(id) !== bytesToHex(identifier)) return null;
   try {
     const digest = socSignDigest(id, calculateCacAddress(span, payload));
