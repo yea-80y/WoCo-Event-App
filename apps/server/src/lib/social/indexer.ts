@@ -42,10 +42,21 @@ import {
 } from "@woco/shared";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import type { VersionedFeedRead } from "@woco/shared";
 import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
 import { participantsFor } from "./participants.js";
 
 export type IndexableFormat = "woco.like.v1" | "woco.follow.v1" | "woco.credit.v1";
+
+/**
+ * How a participant's feed gets read. Injected for the same reason
+ * `SiteConfigReaders` is (`site/service.ts`): the properties worth pinning here
+ * are the failure ones — an unreadable feed counted as a GAP rather than as
+ * silence, a thrown read not taking the tally down with it — and a live Swarm
+ * read cannot be made to fail on demand. Defaults to the real reader, so no
+ * call site changes.
+ */
+export type StatementFeedReader = (ownerHex: string, baseTopic: string) => Promise<VersionedFeedRead>;
 
 export interface IndexResult {
   manifest: EvidenceManifestV1<BooleanEvidenceLeaf> | EvidenceManifestV1<CarriedEvidenceLeaf>;
@@ -132,14 +143,18 @@ function bytesDigest(bytes: Uint8Array): Hex0x {
  * both advance together on a given feed. A holder writing from two devices is
  * handled by the tally, which takes the max across feeds.
  */
-export async function indexSubject(format: IndexableFormat, subject: Hex0x): Promise<IndexResult> {
+export async function indexSubject(
+  format: IndexableFormat,
+  subject: Hex0x,
+  readFeed: StatementFeedReader = readContentFeedJsonResult,
+): Promise<IndexResult> {
   const participants = participantsFor(format, subject);
   const topic = topicFor(format, subject);
   const unreadable: string[] = [];
 
   const reads = await mapLimit(participants, READ_CONCURRENCY, async (owner) => {
     try {
-      const res = await readContentFeedJsonResult(owner, topic);
+      const res = await readFeed(owner, topic);
       if (res.status === "found") return { owner, bytes: res.bytes, version: res.version };
       // `absent` means read successfully and empty — the participant is
       // declared but contributed nothing. Only `unavailable` is a gap.
@@ -152,6 +167,12 @@ export async function indexSubject(format: IndexableFormat, subject: Hex0x): Pro
   });
 
   const found = reads.filter((r): r is NonNullable<typeof r> => r !== null);
+
+  // Gaps arrive from concurrent workers, so their order is a race. They are
+  // served as part of the same evidence object as the manifest, and evidence
+  // that reshuffles between two identical passes is not comparable — the same
+  // reason `tally.ts` sorts its leaves and participants.
+  unreadable.sort();
 
   if (format === "woco.credit.v1") {
     const observed: ObservedStatement<CreditStatementV1>[] = [];
