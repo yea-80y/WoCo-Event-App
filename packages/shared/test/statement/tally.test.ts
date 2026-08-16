@@ -31,14 +31,21 @@ function like(feedOwner: Hex0x, version: number, value: boolean, d = "01"): Obse
   return { feedOwner, version, digest: digest(d), statement: { value } };
 }
 
+/**
+ * `version` defaults to 0 rather than to `seq`, deliberately: they are
+ * different numbers (the holder's ordering vs the feed's, and the feed's
+ * restarts at 0 on the public topic), and a helper that quietly set one from
+ * the other would hide the distinction the evidence leaf now has to carry.
+ */
 function credit(
   feedOwner: Hex0x,
   holder: string,
   seq: number,
   total: number,
   d = "01",
+  version = 0,
 ): ObservedStatement<{ holder: string; seq: number; total: number }> {
-  return { feedOwner, version: seq, digest: digest(d), statement: { holder, seq, total } };
+  return { feedOwner, version, digest: digest(d), statement: { holder, seq, total } };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +201,17 @@ test("a carried-total manifest carries the VALUES, since list length proves noth
   assert.equal(m.leaves.length, 2);
   assert.deepEqual(recountManifest(m), { consistent: true, recounted: 50 });
   assert.deepEqual(m.leaves.map((l) => l.total), [47, 3]);
+});
+
+test("a carried leaf carries the FEED version, not the holder's seq", () => {
+  // The two are different numbers and the leaf needs the feed's: `seq` is the
+  // holder's ordering and continues across the private→public topic migration,
+  // while the version restarts at 0 on the new topic. Without this a reader
+  // cannot derive the chunk address and has to walk versions from zero — the
+  // absent-chunk probe the indexer is otherwise careful never to provoke.
+  const tally = tallyCarriedTotals([credit(OWNER_A, "aa", 41, 41, "01", 2)]);
+  assert.equal(tally.evidence[0]!.seq, 41);
+  assert.equal(tally.evidence[0]!.version, 2);
 });
 
 test("participants are declared even when they contributed nothing", () => {

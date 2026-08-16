@@ -18,6 +18,14 @@
  * `keccak256(identifier || owner)` where the identifier folds in the version —
  * both of which the leaf already carries. The leaf therefore points at the
  * author's actual signed chunk, by derivation rather than by restating it.
+ *
+ * That was true of boolean leaves and FALSE of carried-total ones until
+ * `CarriedEvidenceLeaf.version` was added: a credit leaf carried `seq`, which
+ * is the holder's ordering and continues across the private→public topic
+ * migration, while the version is the feed's and restarts at 0. A reader
+ * following this note with only `seq` would have derived the wrong identifier
+ * and then walked versions from zero to find the right one — the absent-chunk
+ * probe class this file is otherwise careful to avoid.
  */
 
 import {

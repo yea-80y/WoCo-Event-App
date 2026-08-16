@@ -131,13 +131,23 @@ socialRoutes.get("/count", async (c) => {
   }
 });
 
-/** The working: input set and per-statement values. Recountable offline. */
+/**
+ * The working: input set and per-statement values. Recountable offline.
+ *
+ * Serves the two qualifiers alongside it — the feeds that could not be read and
+ * the holders who equivocated — so this ONE response is everything a reader
+ * needs to state the number honestly. They live outside the manifest proper
+ * (they are not leaves) but a reader who has to make a second request for
+ * "is this count complete?" will not make it, and will publish a floor as a
+ * total. `/count` remains the endpoint for a bare number: a widget or an
+ * overlay wants the figure, not the evidence.
+ */
 socialRoutes.get("/manifest", async (c) => {
   const p = parseParams(c);
   if (!p.ok) return c.json({ ok: false, error: p.error }, 400);
 
   try {
-    const { value } = await tally(p.format, p.subject);
+    const { value, ageMs } = await tally(p.format, p.subject);
 
     // Recount our own manifest before serving it. Circular as a proof and not
     // meant as one — a reader still has to recount independently, which is the
@@ -154,7 +164,10 @@ socialRoutes.get("/manifest", async (c) => {
     }
 
     c.header("Cache-Control", `public, max-age=${Math.floor(CACHE_TTL_MS / 1000)}`);
-    return c.json({ ok: true, data: { ...value.manifest, unreadable: value.unreadable } });
+    return c.json({
+      ok: true,
+      data: { ...value.manifest, unreadable: value.unreadable, equivocations: value.equivocations, ageMs },
+    });
   } catch (e) {
     return c.json({ ok: false, error: e instanceof Error ? e.message : "tally failed" }, 502);
   }

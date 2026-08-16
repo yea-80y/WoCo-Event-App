@@ -129,6 +129,23 @@ export interface CarriedEvidenceLeaf {
   holder: string;
   feedOwner: Hex0x;
   seq: number;
+  /**
+   * SOC version the statement was read at — NOT `seq`, and the distinction is
+   * the whole reason this field exists. `seq` is the holder's own ordering and
+   * continues across the private→public topic migration; the version is the
+   * feed's, and restarts at 0 on the new topic. So a reader holding only `seq`
+   * cannot address the chunk, and would have to walk versions from zero, ending
+   * in the absent-chunk probe that is the most expensive read on the network.
+   *
+   * With it, a leaf points at the author's actual signed chunk by derivation:
+   * topic from (statementFormat, subject), identifier from topic + version,
+   * address = keccak256(identifier || owner). That is what makes an evidence
+   * leaf spot-checkable by a stranger rather than merely re-addable.
+   *
+   * Legal to add because the manifest form is deliberately unfrozen (P0 item 7,
+   * view plane) — unlike the statement schema, which is closed forever.
+   */
+  version: number;
   digest: Hex0x;
   /**
    * The value this leaf contributed. Commitment 4's "count = list length"
@@ -198,6 +215,7 @@ export function tallyCarriedTotals<T extends CarriedTotalStatement>(
       holder: o.statement.holder.toLowerCase(),
       feedOwner: o.feedOwner.toLowerCase() as Hex0x,
       seq: o.statement.seq,
+      version: o.version,
       digest: o.digest,
       total: o.statement.total,
     }))
