@@ -14,11 +14,12 @@
 import { Hono } from "hono";
 import { recountManifest } from "@woco/shared";
 import type { AppEnv } from "../types.js";
-import { indexSubject, type IndexableFormat } from "../lib/social/indexer.js";
+import { INDEXABLE_FORMATS, indexSubject, type IndexableFormat } from "../lib/social/indexer.js";
+import { publishedHint } from "../lib/social/publisher.js";
 
 export const socialRoutes = new Hono<AppEnv>();
 
-const FORMATS: readonly IndexableFormat[] = ["woco.like.v1", "woco.follow.v1", "woco.credit.v1"];
+const FORMATS = INDEXABLE_FORMATS;
 const SUBJECT_RE = /^0x[0-9a-f]{64}$/;
 
 /**
@@ -166,7 +167,20 @@ socialRoutes.get("/manifest", async (c) => {
     c.header("Cache-Control", `public, max-age=${Math.floor(CACHE_TTL_MS / 1000)}`);
     return c.json({
       ok: true,
-      data: { ...value.manifest, unreadable: value.unreadable, equivocations: value.equivocations, ageMs },
+      data: {
+        ...value.manifest,
+        unreadable: value.unreadable,
+        equivocations: value.equivocations,
+        ageMs,
+        // Where the same evidence is PUBLISHED (#312) — the feed owner and topic
+        // a reader can compute for themselves, plus the version this process
+        // last wrote. Returned so a client can go straight to the right chunk
+        // instead of probing forward from zero, and so that "read it yourself
+        // instead of trusting this response" is one field away rather than a
+        // paragraph of documentation. Null when this deployment publishes
+        // nothing, which is the honest answer to "where else can I get this".
+        published: publishedHint(p.format, p.subject),
+      },
     });
   } catch (e) {
     return c.json({ ok: false, error: e instanceof Error ? e.message : "tally failed" }, 502);

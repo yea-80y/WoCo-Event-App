@@ -47,6 +47,7 @@ import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
+import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
@@ -200,6 +201,13 @@ app.get("/api/health", (c) =>
     // deployed account over a parse error is worse — but that is exactly why the
     // condition has to be visible rather than inferred from a log line.
     kernelDeployedStore: { ok: !kernelDeployedLoadFailed() },
+    // Evidence publishing (#312). The alarm shape is `dirty` climbing while
+    // `lastPublishedAt` stands still: counts are still served, but nothing is
+    // being written to Swarm any more, so the durability the plan claims is
+    // quietly absent. `batchTTL` falling toward zero is the usual cause — a
+    // bee behind on the postage contract stamps against a dead batch and the
+    // uploads still look successful.
+    evidencePublisher: evidencePublisherHealth(),
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
@@ -612,3 +620,8 @@ startPayoutReleaseJob();
 // locks the organiser out of resuming it for 24 hours.
 for (const job of reconcileOnBoot()) settleReservation(job);
 startDrainWorker();
+// Social counts are computed on demand and, from here, also PUBLISHED to feeds
+// the indexer owns (#312) — so a count survives this server being unreachable
+// and the participant registry becomes rebuildable by someone who is not us.
+// Inert without SOCIAL_INDEXER_PRIVATE_KEY; the served tally is unaffected.
+startEvidencePublisher();

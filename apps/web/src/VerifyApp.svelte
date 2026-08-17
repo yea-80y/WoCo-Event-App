@@ -411,8 +411,19 @@
       <ol>
         <li>
           <strong>Read the evidence.</strong>
-          Open <a href={report.sources.manifestUrl} rel="nofollow noreferrer">the full list this page counted</a> —
-          every rider looked up, every entry used, every value.
+          {#if report.sources.via === "published" && report.sources.feed}
+            <!-- The link would point at a counter this page just failed to
+                 reach. The address is the honest alternative: it is where the
+                 working actually came from, and it is computable from the
+                 coaster alone by the rules below. -->
+            This working came from storage, not from the counter: it is the last report
+            <code>{report.sources.indexer}</code> published, read from the address anyone can work out from the
+            coaster alone — <code>{report.sources.feed.topic}</code>, signed by
+            <code>{report.sources.feed.indexer}</code>. Every rider looked up, every entry used, every value.
+          {:else}
+            Open <a href={report.sources.manifestUrl} rel="nofollow noreferrer">the full list this page counted</a> —
+            every rider looked up, every entry used, every value.
+          {/if}
         </li>
         <li>
           <strong>Do the arithmetic somewhere else.</strong> Add up <code>total</code> across <code>leaves</code>.
@@ -432,9 +443,10 @@
 
       <p class="muted small">
         Straight about the limits. Only ever one entry is fetched and checked here, never all of them — checking every row would
-        read as this page auditing riders' counts, which is not what it is for. The evidence list is served on
-        request rather than published to durable storage, so "published" means "served" for now. And none of this is
-        independent of us: the storage and the counter are both ours to run. What happens on your device is the
+        read as this page auditing riders' counts, which is not what it is for. The counter also writes each evidence
+        list to storage, at an address anyone can work out from the coaster alone, so it can be read without asking
+        the counter anything — but a written copy is only as current as the last time the number changed. And none of
+        this is independent of us: the storage and the counter are both ours to run. What happens on your device is the
         arithmetic and the signature check; what makes it checkable by anyone at all is that the inputs are public.
       </p>
     </section>
@@ -444,7 +456,12 @@
            "checked just now" alone would overstate freshness by up to half a
            minute — visible against laps happening on camera. -->
       <p class="muted small">
-        Counted by <code>{report.sources.indexer}</code>, checked {ago(now - checkedAt)}{#if report.ageMs >= 1000},
+        <!-- "Counted by X" alone would credit X with answering, which on the
+             published path it did not do — the page read a copy X left behind.
+             The age then means something different too: not cache staleness,
+             but how long ago the count last changed enough to be republished. -->
+        Counted by <code>{report.sources.indexer}</code>{#if report.sources.via === "published"}, which could not be
+        reached — this is the last working it published, read from storage and added up here{/if}, checked {ago(now - checkedAt)}{#if report.ageMs >= 1000},
         from an answer {Math.round(report.ageMs / 1000)}s old{/if}.
         {#if error}<span class="stale"> Last try failed: {error}</span>{/if}
       </p>
