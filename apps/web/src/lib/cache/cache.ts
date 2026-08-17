@@ -104,6 +104,14 @@ export const TTL = {
    * TTL so a freshly published profile appears within minutes.
    */
   PROFILE_MISS: 10 * 60,
+  /**
+   * Last observed public like/follow count. Long enough that a returning reader
+   * paints a number instead of a dot; short enough that a browser stops
+   * repeating a figure nobody has been able to confirm for a day. The entry is
+   * always shown while it lives — TTL is the point at which an unconfirmed
+   * count stops being worth asserting, not a refresh interval.
+   */
+  SOCIAL_COUNT: 24 * 60 * 60,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -144,6 +152,12 @@ export const cacheKey = {
   profileMiss: (address: string) => `profile-miss:${address.toLowerCase()}`,
   /** Organiser's own held/released takings — keyed by organiser address. */
   payouts: (address: string) => `payouts:${address.toLowerCase()}`,
+  /**
+   * Public like/follow tally for one subject. Keyed by KIND as well as subject
+   * because a like and a follow of the same name are separate topics with
+   * separate totals — one key would let a follower count paint as likes.
+   */
+  socialCount: (kind: string, subject: string) => `social-count:${kind}:${subject.toLowerCase()}`,
 };
 
 // ---------------------------------------------------------------------------
