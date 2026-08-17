@@ -30,9 +30,10 @@
  * count if the requested quantity can't be satisfied.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "reservations.json");
@@ -112,12 +113,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify([...reservations.values()]), "utf-8");
-  } catch (err) {
-    console.error("[reservations] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(STORE_FILE, [...reservations.values()], "reservations");
 }
 
 /** Sweep expired + long-consumed reservations from memory + disk. */

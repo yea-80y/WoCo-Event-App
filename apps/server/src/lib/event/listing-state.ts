@@ -20,9 +20,10 @@
  * builder-only events into the public directory. `createEventV2` seeds the row.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SnapshotCard } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const FILE = join(DATA_DIR, "event-listing-state.json");
@@ -66,12 +67,7 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(FILE, JSON.stringify(Object.fromEntries(rows)), "utf-8");
-  } catch (err) {
-    console.error("[listing-state] Failed to persist:", err);
-  }
+  writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state");
 }
 
 /** Set the global-directory listing flag. `seed` (when given) refreshes the card

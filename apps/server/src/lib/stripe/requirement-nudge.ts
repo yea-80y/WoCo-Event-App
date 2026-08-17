@@ -23,8 +23,9 @@
  */
 
 import type Stripe from "stripe";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 /** Long enough not to nag, short enough that held money is not forgotten. */
 export const NUDGE_COOLDOWN_MS = 72 * 60 * 60 * 1000;
@@ -179,14 +180,9 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    // 600: this names organisers who are blocked, alongside Stripe account ids.
-    writeFileSync(NUDGE_FILE, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
-  } catch (err) {
-    // Losing this degrades to over-emailing, never to a missed requirement.
-    console.error("[stripe-nudge] Failed to persist:", err);
-  }
+  // 600: this names organisers who are blocked, alongside Stripe account ids.
+  // Losing it degrades to over-emailing, never to a missed requirement.
+  writeJsonAtomic(NUDGE_FILE, store, "stripe-nudge", { pretty: true });
 }
 
 export function getNudgeState(stripeAccountId: string): NudgeState | undefined {

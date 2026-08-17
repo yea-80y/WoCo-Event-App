@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import dns from "node:dns/promises";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DOMAINS_FILE = join(process.cwd(), ".data", "domains.json");
 
@@ -49,11 +50,6 @@ interface DomainsStore {
 let cache: DomainsStore = { v: 1, domains: [] };
 let loaded = false;
 
-async function ensureDataDir() {
-  const dir = dirname(DOMAINS_FILE);
-  await fs.mkdir(dir, { recursive: true });
-}
-
 async function loadDomains(): Promise<DomainsStore> {
   if (loaded) return cache;
   try {
@@ -68,8 +64,13 @@ async function loadDomains(): Promise<DomainsStore> {
 }
 
 async function saveDomains(): Promise<void> {
-  await ensureDataDir();
-  await fs.writeFile(DOMAINS_FILE, JSON.stringify(cache, null, 2), "utf-8");
+  // Sync, inside an async signature its callers already await: the store is small
+  // and this is the writer that gets 0600 + atomicity for free (#130). Still
+  // throws, as the awaited fs.writeFile did — a registration reported as saved
+  // but absent after a restart is a custom domain the organiser will not revisit.
+  if (!writeJsonAtomic(DOMAINS_FILE, cache, "domains", { pretty: true })) {
+    throw new Error("custom-domain registry could not be persisted");
+  }
 }
 
 // ---------------------------------------------------------------------------
