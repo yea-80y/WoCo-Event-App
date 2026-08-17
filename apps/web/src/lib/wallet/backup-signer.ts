@@ -193,12 +193,55 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
   const mod = await import("@web3auth/modal");
   const web3auth = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
   await web3auth.init();
+  // The survivor-relevant slice of the instance (same cast the login side uses —
+  // `cachedConnector` isn't in the SDK's public typings).
+  const w = web3auth as unknown as import("../auth/web3auth-survivor.js").Web3AuthSessionInstance;
+
+  // #307: this instance shares clientId AND localStorage with the primary email
+  // login, so a session surviving there rehydrates HERE, and connect() can then
+  // resolve as the survivor — no modal, no OTP. At setup that identity would be
+  // registered as the on-chain guardian and the escrow sealed to it: on a shared
+  // device, a stranger's takeover power recorded as a deliberate choice.
+  // Choosing a guardian must always be an explicit authentication, so end any
+  // survivor first — and refuse rather than adopt when it cannot be ended.
+  const { endSurvivingWeb3AuthSession } = await import("../auth/web3auth-survivor.js");
+  const { markWeb3AuthSessionEstablished, clearWeb3AuthSessionFlag } = await import(
+    "../auth/web3auth-session-flag.js"
+  );
+  try {
+    await endSurvivingWeb3AuthSession(w);
+  } catch {
+    throw new Error(
+      "Couldn't clear a previous email session, so the backup sign-in can't run safely — check your connection and try again.",
+    );
+  }
 
   // Opens the Web3Auth modal (email + socials). Returns null if the user closes it.
-  const provider = await web3auth.connect();
+  let provider: Awaited<ReturnType<typeof web3auth.connect>>;
+  try {
+    provider = await web3auth.connect();
+  } catch (e) {
+    // A stored session hydrating LATE (past the rehydration wait's 5s window)
+    // can close the modal and reject — while the instance quietly becomes
+    // connected as the survivor. Same race the primary login guards (#182):
+    // never adopt it, end it and ask for one retry.
+    if (w.connected) {
+      try {
+        await w.logout({ cleanup: true });
+      } catch {
+        /* the retry's pre-modal ending gets another attempt */
+      }
+      throw new Error("A previous email session interfered with the backup sign-in — please try again.");
+    }
+    throw e instanceof Error ? e : new Error("Email backup sign-in was cancelled.");
+  }
   if (!provider) {
     throw new Error("Email backup sign-in was cancelled.");
   }
+  // A session now exists in shared storage. The flag keeps sign-out honest if
+  // the cleanup logout below fails (its contract: set when a key is extracted,
+  // cleared only when the stored session is known ended).
+  markWeb3AuthSessionEstablished();
 
   try {
     const raw = await extractRawPrivateKey(provider);
@@ -229,9 +272,11 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
     // Clear the Web3Auth session: the LocalAccount already holds the key, so the
     // instance is no longer needed, and a backup factor must not stay connected
     // (it shares this clientId with the primary email login). Non-fatal — the key
-    // is already extracted by here.
+    // is already extracted by here, and on failure the flag set above stays, so
+    // sign-out / the next explicit email authentication ends the leftover (#307).
     try {
       await web3auth.logout({ cleanup: true });
+      clearWeb3AuthSessionFlag();
     } catch {
       /* ignore — session cleanup is best-effort */
     }
