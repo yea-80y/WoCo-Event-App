@@ -8,8 +8,9 @@
  * File-backed, atomic write, survives restarts. Same pattern as stripe-accounts.ts.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 import { ensureEthernaToken } from "./auth.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
@@ -50,10 +51,11 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = `${BATCHES_FILE}.tmp`;
-  writeFileSync(tmp, JSON.stringify(store, null, 2), "utf-8");
-  renameSync(tmp, BATCHES_FILE);
+  // Throws, unlike most stores: the entry records a batch the user has already
+  // PAID for. Losing it silently loses the batch — the caller must see it.
+  if (!writeJsonAtomic(BATCHES_FILE, store, "etherna-batches", { pretty: true })) {
+    throw new Error("etherna batch registry could not be persisted");
+  }
 }
 
 export function getUserBatch(addr: string): UserBatchEntry | null {

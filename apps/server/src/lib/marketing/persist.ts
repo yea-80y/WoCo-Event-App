@@ -1,5 +1,10 @@
 /**
- * Durable JSON persistence for the compliance stores.
+ * Durable JSON persistence for every `.data` store (#130).
+ *
+ * It started as the compliance stores' writer and is now the only sanctioned way
+ * to write `.data` — `test/data-store-modes.test.ts` fails the build if a store
+ * reaches for `writeFileSync` again. It lives under `marketing/` for history
+ * alone; nothing in it is marketing-specific.
  *
  * These files are not caches. Losing `marketing-suppression.json` means mailing
  * people who unsubscribed; losing `marketing-consent.json` destroys the Art. 7(1)
@@ -73,18 +78,26 @@ export function persistFailureCount(): number {
 /**
  * Atomically replace `file` with the JSON encoding of `value`.
  *
+ * @param opts.pretty indent the JSON. Only for the few stores an operator reads
+ *   by hand (`docs/NEXT.md` says `cat .data/storage-ledger.json`); it exists so
+ *   moving a store onto this function cannot silently reformat its file.
  * @returns true on success. Callers that are servicing an operator request
  *   (erasure, in particular) MUST check it — reporting "erased" for a write that
  *   did not land is worse than failing loudly.
  */
-export function writeJsonAtomic(file: string, value: unknown, tag: string): boolean {
+export function writeJsonAtomic(
+  file: string,
+  value: unknown,
+  tag: string,
+  opts: { pretty?: boolean } = {},
+): boolean {
   const tmp = `${file}.tmp`;
   let fd: number | undefined;
   try {
     mkdirSync(dirname(file), { recursive: true, mode: STORE_DIR_MODE });
 
     fd = openSync(tmp, "w", STORE_FILE_MODE);
-    writeSync(fd, JSON.stringify(value));
+    writeSync(fd, JSON.stringify(value, null, opts.pretty ? 2 : undefined));
     // `openSync`'s mode argument only applies when it CREATES the file, and it
     // is masked by the umask. A temp file left behind by a crashed write is
     // reopened at whatever mode it already had, so set it explicitly on the

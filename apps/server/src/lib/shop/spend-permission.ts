@@ -26,7 +26,7 @@
  */
 
 import { createHmac } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { JsonRpcProvider } from "ethers";
 import type {
@@ -36,6 +36,7 @@ import type {
   RegisterSpendPermissionRequest,
 } from "@woco/shared";
 import { USDC_ADDRESSES } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 import { getRpcUrl, ERC20_TRANSFER_TOPIC, getMinConfirmations } from "../payment/constants.js";
 
 /** Locked pull chain — Kernel + gasless paymaster run here (Arb Sepolia). */
@@ -121,21 +122,11 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify([...store.values()]), "utf-8");
-  } catch (err) {
-    console.error("[spend-permission] Failed to persist:", err);
-  }
+  writeJsonAtomic(STORE_FILE, [...store.values()], "spend-permission");
 }
 
 function persistSettled(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(SETTLED_FILE, JSON.stringify(Object.fromEntries(settledOrders)), "utf-8");
-  } catch (err) {
-    console.error("[spend-permission] Failed to persist settled orders:", err);
-  }
+  writeJsonAtomic(SETTLED_FILE, Object.fromEntries(settledOrders), "spend-permission-settled");
 }
 
 // --- Per-permission mutex: serialize draws so concurrent orders can't race the cap.

@@ -10,9 +10,10 @@
  * permanent (the attestation is non-revocable). Keyed by lowercase referee.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Hex0x, ReferralRecord } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "referrals.json");
@@ -47,12 +48,7 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify(store), "utf-8");
-  } catch (err) {
-    console.error("[referrals] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(STORE_FILE, store, "referrals");
 }
 
 export function getPendingReferral(referee: string): PendingReferral | undefined {

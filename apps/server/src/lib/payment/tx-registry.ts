@@ -5,8 +5,9 @@
  * In-memory Set backed by a JSON file so state survives restarts.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const REGISTRY_FILE = join(DATA_DIR, "consumed-tx-hashes.json");
@@ -31,12 +32,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(REGISTRY_FILE, JSON.stringify([...consumed]), "utf-8");
-  } catch (err) {
-    console.error("[tx-registry] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(REGISTRY_FILE, [...consumed], "tx-registry");
 }
 
 /**

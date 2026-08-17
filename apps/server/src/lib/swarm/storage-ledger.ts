@@ -14,8 +14,9 @@
  * `.data/storage-ledger.json` MUST survive restarts.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const LEDGER_FILE = join(DATA_DIR, "storage-ledger.json");
@@ -57,12 +58,7 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(LEDGER_FILE, JSON.stringify(store, null, 2), "utf-8");
-  } catch (err) {
-    console.error("[storage-ledger] Failed to persist:", err);
-  }
+  writeJsonAtomic(LEDGER_FILE, store, "storage-ledger", { pretty: true });
 }
 
 export function recordUpload(ownerAddress: string, upload: Omit<StoredUpload, "at">): void {
