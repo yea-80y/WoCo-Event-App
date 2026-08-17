@@ -42,12 +42,22 @@ export function checkSalesWindow(
   event: { startDate?: string; endDate?: string },
   now: number = Date.now(),
 ): SalesWindowVerdict {
-  const raw =
-    event.endDate && event.endDate.length > 0 ? event.endDate : event.startDate;
-  const ts = raw ? new Date(raw).getTime() : NaN;
+  const ts = salesEndMs(event);
   if (Number.isNaN(ts)) return { open: false, reason: "undated" };
   if (now >= ts + SALES_END_GRACE_MS) return { open: false, reason: "ended" };
   return { open: true };
+}
+
+/**
+ * The instant sales end for an event, in epoch ms — `endDate` when present and
+ * non-empty, `startDate` otherwise; `NaN` when neither parses. Extracted so
+ * this gate and create-checkout's `expires_at` clamp (#300, checkout-expiry.ts)
+ * can never disagree about when an event's sales end.
+ */
+export function salesEndMs(event: { startDate?: string; endDate?: string }): number {
+  const raw =
+    event.endDate && event.endDate.length > 0 ? event.endDate : event.startDate;
+  return raw ? new Date(raw).getTime() : NaN;
 }
 
 /** Buyer-facing refusal copy, shared by create-checkout and reserve so the

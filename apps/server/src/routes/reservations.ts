@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
+import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import {
@@ -115,6 +116,13 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   const salesWindow = checkSalesWindow(event);
   if (!salesWindow.open) {
     return c.json({ ok: false, error: salesClosedMessage(salesWindow.reason) }, 409);
+  }
+
+  // Series sale-window gate (#295) — same refusal create-checkout gives, so a
+  // hold is never granted for a tier that cannot become a paid checkout.
+  const seriesWindow = checkSeriesSaleWindow(series);
+  if (!seriesWindow.open) {
+    return c.json({ ok: false, error: seriesSaleMessage(seriesWindow.reason) }, 409);
   }
 
   // Closure that the reservation store uses to ask "what is available right
