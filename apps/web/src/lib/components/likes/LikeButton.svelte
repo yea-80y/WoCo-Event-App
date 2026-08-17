@@ -116,6 +116,13 @@
     errMsg = null;
     fetchToken++; // invalidate any read still in the air
 
+    // WHICH subject this click is about, captured before any await. `subject` is
+    // a prop: a parent that swaps it while the write is in flight changes what
+    // `subject.id` reads afterwards, and stamping the skip with the NEW id would
+    // suppress the new subject's only fetch — leaving it displaying the old
+    // subject's state, marked loaded, until some other dependency moved.
+    const togglingFor = subject.id;
+
     const prevLiked = liked;
     const prevCount = count;
     liked = !prevLiked;
@@ -135,7 +142,7 @@
         // falling back to prevCount would undo the ±1 we just applied and show
         // the pre-toggle figure beside a toggled heart.
         count = r.count ?? count;
-        skipRefetchFor = subject.id;
+        skipRefetchFor = togglingFor;
       }
     } catch (err) {
       liked = prevLiked;
@@ -154,7 +161,6 @@
       <circle cx="12" cy="8" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>
       <path d="M5 19.5c1.4-3.1 4-4.7 7-4.7s5.6 1.6 7 4.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>
-    <!-- A remembered count shows straight away; the dot is only for never having had one. -->
     {#if count === null}·{:else}{count}{/if}
     <span class="stat-label">{count === 1 ? "follower" : "followers"}</span>
   </span>

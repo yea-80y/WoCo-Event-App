@@ -15,9 +15,16 @@ import type { Hex0x } from "@woco/shared";
 import { cacheGet, cacheSet, cacheKey, TTL } from "../cache/cache.js";
 import type { SocialKind } from "./social.js";
 
-/** A tally is a whole, non-negative number of statements — anything else is not one. */
-function isCount(v: unknown): v is number {
-  return typeof v === "number" && Number.isInteger(v) && v >= 0;
+/**
+ * A tally is a whole, non-negative, EXACTLY representable number of statements.
+ *
+ * Safe-integer rather than integer: `1e21` is an integer to JavaScript and
+ * would render as "1e+21" under a heart. Exported because the same question is
+ * asked of a number arriving from the indexer — a display path looser than the
+ * storage path would show a figure it then refused to remember.
+ */
+export function isObservedCount(v: unknown): v is number {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 }
 
 /**
@@ -30,11 +37,19 @@ function isCount(v: unknown): v is number {
  */
 export function readCachedCount(kind: SocialKind, subject: Hex0x): number | null {
   const v = cacheGet<unknown>(cacheKey.socialCount(kind, subject));
-  return isCount(v) ? v : null;
+  return isObservedCount(v) ? v : null;
 }
 
-/** Remember a count an indexer actually returned. */
-export function writeCachedCount(kind: SocialKind, subject: Hex0x, count: number): void {
-  if (!isCount(count)) return;
+/**
+ * Remember what an indexer answered — and, when it answered nothing, remember
+ * nothing.
+ *
+ * `null` is accepted and dropped rather than rejected at the call site, because
+ * "an unreachable indexer must not overwrite the last good figure" is the rule
+ * this module exists to hold, and a rule enforced by every caller separately is
+ * a rule one caller will eventually forget.
+ */
+export function rememberCount(kind: SocialKind, subject: Hex0x, count: number | null): void {
+  if (!isObservedCount(count)) return;
   cacheSet(cacheKey.socialCount(kind, subject), count, TTL.SOCIAL_COUNT);
 }

@@ -23,7 +23,7 @@ import type { LikeSubject, Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
 import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
-import { readCachedCount, writeCachedCount } from "../social/count-cache.js";
+import { isObservedCount, readCachedCount, rememberCount } from "../social/count-cache.js";
 
 export interface SocialState {
   liked: boolean;
@@ -55,8 +55,12 @@ async function fetchCount(kind: SocialKind, subject: Hex0x): Promise<number | nu
     const res = await get<{ count: number }>(
       `/api/social/count?format=${encodeURIComponent(FORMAT[kind])}&subject=${encodeURIComponent(subject)}`,
     );
-    const count = res.ok && res.data && typeof res.data.count === "number" ? res.data.count : null;
-    if (count !== null) writeCachedCount(kind, subject, count);
+    // Same test the cache applies, deliberately: a display path that accepts a
+    // number the cache would refuse renders a figure ("NaN followers") that no
+    // later visit can reproduce.
+    const answered: unknown = res.ok && res.data ? res.data.count : undefined;
+    const count = isObservedCount(answered) ? answered : null;
+    rememberCount(kind, subject, count);
     return count;
   } catch {
     return null;

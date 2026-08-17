@@ -47,7 +47,7 @@ class MemoryStorage {
 const storage = new MemoryStorage();
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = storage;
 
-const { readCachedCount, writeCachedCount } = await import("../src/lib/social/count-cache.js");
+const { readCachedCount, rememberCount } = await import("../src/lib/social/count-cache.js");
 const { TTL, cacheKey } = await import("../src/lib/cache/cache.js");
 
 type Hex0x = `0x${string}`;
@@ -64,7 +64,7 @@ test("a subject this browser has never seen reads as absent, not as zero", () =>
 
 test("an observed count is remembered", () => {
   storage.clear();
-  writeCachedCount("like", SUBJECT, 42);
+  rememberCount("like", SUBJECT, 42);
   assert.equal(readCachedCount("like", SUBJECT), 42);
 });
 
@@ -72,21 +72,21 @@ test("an observed zero survives as zero", () => {
   storage.clear();
   // Distinct from the miss above, and the distinction has to survive storage:
   // an indexer that answered "0" was reachable and counted.
-  writeCachedCount("like", SUBJECT, 0);
+  rememberCount("like", SUBJECT, 0);
   assert.equal(readCachedCount("like", SUBJECT), 0);
 });
 
 test("a like and a follow of the same subject are remembered separately", () => {
   storage.clear();
-  writeCachedCount("like", SUBJECT, 7);
-  writeCachedCount("follow", SUBJECT, 900);
+  rememberCount("like", SUBJECT, 7);
+  rememberCount("follow", SUBJECT, 900);
   assert.equal(readCachedCount("like", SUBJECT), 7);
   assert.equal(readCachedCount("follow", SUBJECT), 900);
 });
 
 test("two subjects do not share an entry", () => {
   storage.clear();
-  writeCachedCount("like", SUBJECT, 7);
+  rememberCount("like", SUBJECT, 7);
   assert.equal(readCachedCount("like", OTHER), null);
 });
 
@@ -95,12 +95,12 @@ test("the same subject in a different case is the same entry", () => {
   // Subject ids reach the UI from several producers (namehash, on-chain event
   // id); a casing difference splitting the entry would silently blank the
   // number on one route and not the other.
-  writeCachedCount("like", SUBJECT.toUpperCase().replace("0X", "0x") as Hex0x, 12);
+  rememberCount("like", SUBJECT.toUpperCase().replace("0X", "0x") as Hex0x, 12);
   assert.equal(readCachedCount("like", SUBJECT), 12);
 });
 
 test("a stored value that is not a whole count reads as absent", () => {
-  for (const bad of ['"12"', "{}", "[1,2]", "-3", "1.5", "null", '"NaN"', "true"]) {
+  for (const bad of ['"12"', "{}", "[1,2]", "-3", "1.5", "null", '"NaN"', "true", "1e21"]) {
     storage.clear();
     // Hand-written entry: another tab, an extension, or a user with devtools.
     // `"12"` is the dangerous one — it passes `> 0` and would render.
@@ -110,16 +110,32 @@ test("a stored value that is not a whole count reads as absent", () => {
 });
 
 test("a value that is not a whole count is never written", () => {
-  for (const bad of [-1, 1.5, NaN, Infinity]) {
+  // 1e21 is an integer to JavaScript and would render as "1e+21" under a heart.
+  for (const bad of [-1, 1.5, NaN, Infinity, 1e21]) {
     storage.clear();
-    writeCachedCount("like", SUBJECT, bad);
+    rememberCount("like", SUBJECT, bad);
     assert.equal(storage.getItem(RAW_KEY("like", SUBJECT)), null, `wrote ${bad}`);
   }
 });
 
+test("a count that never arrived is not remembered, and does not erase one that did", () => {
+  // The rule the whole issue turns on: an unreachable indexer answers `null`,
+  // and null must leave the last good figure exactly where it was. A mutant
+  // that wrote it through would blank the number on the first outage — the
+  // behaviour this change exists to remove.
+  storage.clear();
+  assert.equal(readCachedCount("like", SUBJECT), null);
+  rememberCount("like", SUBJECT, null);
+  assert.equal(storage.getItem(RAW_KEY("like", SUBJECT)), null);
+
+  rememberCount("like", SUBJECT, 9);
+  rememberCount("like", SUBJECT, null);
+  assert.equal(readCachedCount("like", SUBJECT), 9);
+});
+
 test("a count nobody has confirmed for longer than the TTL is dropped", () => {
   storage.clear();
-  writeCachedCount("like", SUBJECT, 55);
+  rememberCount("like", SUBJECT, 55);
   const realNow = Date.now;
   try {
     // Eviction, not staleness: inside the window the number is shown however
