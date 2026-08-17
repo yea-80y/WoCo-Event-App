@@ -12,10 +12,11 @@
  * it dedups against the projection AND an in-flight set, and never throws.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BadgeRecord, Hex0x } from "@woco/shared";
 import { BadgeType, EARLY_ADOPTER_EPOCH } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 import { attestJoinedBadge } from "./eas-campaign.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
@@ -38,12 +39,7 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify(badges), "utf-8");
-  } catch (err) {
-    console.error("[badges] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(STORE_FILE, badges, "badges");
 }
 
 export function getBadge(address: string): BadgeRecord | undefined {

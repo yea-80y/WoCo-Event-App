@@ -5,8 +5,9 @@
  * Survives server restarts.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const ACCOUNTS_FILE = join(DATA_DIR, "stripe-accounts.json");
@@ -54,12 +55,7 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(ACCOUNTS_FILE, JSON.stringify(store, null, 2), "utf-8");
-  } catch (err) {
-    console.error("[stripe-accounts] Failed to persist:", err);
-  }
+  writeJsonAtomic(ACCOUNTS_FILE, store, "stripe-accounts", { pretty: true });
 }
 
 export function getStripeAccount(organiserAddress: string): StripeAccountRecord | undefined {

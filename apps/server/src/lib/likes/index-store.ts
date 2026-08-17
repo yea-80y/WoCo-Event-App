@@ -18,10 +18,11 @@
  * like per (attester, subject)" (dedup-on-count).
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Hex0x, LikeSubject, LikeCount, TrendingSubject } from "@woco/shared";
 import { SubjectType } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "likes-index.json");
@@ -54,12 +55,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify([...likes.values()]), "utf-8");
-  } catch (err) {
-    console.error("[likes] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(STORE_FILE, [...likes.values()], "likes");
 }
 
 /** Per-subject mutex: serialises record/remove for a single subject. */

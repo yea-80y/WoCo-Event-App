@@ -15,8 +15,9 @@
  * payout per group per run. MUST survive restarts, same as the ledger it protects.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const INTENTS_FILE = join(DATA_DIR, "stripe-payout-intents.json");
@@ -55,18 +56,11 @@ function ensureLoaded(): void {
   }
 }
 
-function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    // Write-then-rename, 0600: same rationale as the ledger — a truncated journal
-    // would erase the record of an in-flight payout, which is the one state this
-    // file exists to remember.
-    const tmp = `${INTENTS_FILE}.tmp`;
-    writeFileSync(tmp, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
-    renameSync(tmp, INTENTS_FILE);
-  } catch (err) {
-    console.error("[payout-intents] Failed to persist:", err);
-  }
+function persist(): boolean {
+  // Same rationale as the ledger, and the fsync matters more: this journal is
+  // written immediately BEFORE the Stripe call it protects, so a rename that
+  // outlives its own bytes is exactly the crash window it exists to close.
+  return writeJsonAtomic(INTENTS_FILE, store, "payout-intents", { pretty: true });
 }
 
 export function getIntent(stripeAccountId: string, currency: string): PayoutIntent | undefined {
@@ -79,10 +73,28 @@ export function listIntents(): PayoutIntent[] {
   return Object.values(store);
 }
 
-export function saveIntent(intent: PayoutIntent): void {
+/**
+ * Journal an intent. Returns FALSE if it did not reach disk — and the caller
+ * must not call Stripe in that case.
+ *
+ * A journal that exists only in memory is not a journal: it is written seconds
+ * before the payout it protects, so the crash it guards against is precisely the
+ * one that takes the in-memory copy with it, and the disk failure that caused it
+ * correlates with that crash (a full disk). Aborting is the safe direction —
+ * funds stay held and the next sweep re-selects them.
+ *
+ * The in-memory entry is rolled back on failure so it cannot drive a recovery
+ * for a payout that was never attempted.
+ */
+export function saveIntent(intent: PayoutIntent): boolean {
   ensureLoaded();
-  store[keyFor(intent.stripeAccountId, intent.currency)] = intent;
-  persist();
+  const key = keyFor(intent.stripeAccountId, intent.currency);
+  const previous = store[key];
+  store[key] = intent;
+  if (persist()) return true;
+  if (previous) store[key] = previous;
+  else delete store[key];
+  return false;
 }
 
 export function clearIntent(stripeAccountId: string, currency: string): void {

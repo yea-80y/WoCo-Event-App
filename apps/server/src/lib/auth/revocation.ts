@@ -14,9 +14,10 @@
  * on load and periodically in-memory so the file doesn't grow unbounded.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SESSION_EXPIRY_MS } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const REVOCATION_FILE = join(DATA_DIR, "revoked-sessions.json");
@@ -119,12 +120,7 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(REVOCATION_FILE, JSON.stringify(state), "utf-8");
-  } catch (err) {
-    console.error("[revocation] Failed to persist:", err);
-  }
+  writeJsonAtomic(REVOCATION_FILE, state, "revocation");
 }
 
 /** Check if a session nonce has been revoked */

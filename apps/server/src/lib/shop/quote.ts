@@ -13,9 +13,10 @@
  */
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Hex0x, PaymentChainId, FiatCurrency, ShopPaymentQuote } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const REGISTRY_FILE = join(DATA_DIR, "consumed-shop-quotes.json");
@@ -41,12 +42,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(REGISTRY_FILE, JSON.stringify([...consumed]), "utf-8");
-  } catch (err) {
-    console.error("[shop-quote] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(REGISTRY_FILE, [...consumed], "shop-quote");
 }
 
 function getSecret(): string {
