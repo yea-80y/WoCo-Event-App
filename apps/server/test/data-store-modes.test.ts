@@ -311,9 +311,18 @@ test("the hand-read stores keep their indentation, and the machine-read ones sta
 // 2. The ratchet
 // ---------------------------------------------------------------------------
 
-/** Raw write primitives. `openSync` is included because that is how a store would
- *  hand-roll its way around `writeFileSync` while still creating a 0644 file. */
-const RAW_WRITE = /\b(writeFileSync|appendFileSync|openSync|createWriteStream)\s*\(|\bfs\.(writeFile|appendFile)\s*\(/;
+/**
+ * Raw write primitives, matched on the CALL rather than the import, so the style
+ * a new async store would naturally use — `import { writeFile } from
+ * "node:fs/promises"` — is caught as readily as `fs.writeFile(`. An earlier
+ * version keyed on the `fs.` prefix and would have missed it; `domains/service.ts`
+ * was one import-rename away from slipping through.
+ *
+ * `openSync` is here because that is how a store would hand-roll its way around
+ * `writeFileSync` and still create a 0644 file. A renamed import
+ * (`writeFileSync as wf`) still slips, but that is sabotage, not an accident.
+ */
+const RAW_WRITE = /\b(writeFileSync|appendFileSync|writeFile|appendFile|openSync|createWriteStream)\s*\(/;
 
 /**
  * Every file allowed to write bytes itself, and why. A new entry here is a
