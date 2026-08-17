@@ -43,6 +43,7 @@ import {
   openRecoveryBundle,
   type GuardianEncryptionKeypair,
 } from "./recovery-escrow.js";
+import { UnknownRecoveryEnvelopeVersionError } from "./recovery-aad.js";
 import { writeContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
 
 /** Domain-separated 32-byte seed = keccak256(utf8(domain) || prfPrivKeyBytes). */
@@ -116,6 +117,7 @@ export async function writePortabilityEnvelope(args: {
   const envelope = await sealRecoveryBundle({
     bundle: { version: PORTABILITY_ENVELOPE_VERSION, secrets },
     kernelAddress: keys.socOwnerAddress,
+    role: "portability",
     guardianPublicKeysHex: [keys.hpke.publicKeyHex],
   });
 
@@ -152,17 +154,20 @@ export interface OpenedPortability {
  *
  * `unreadable` and `unusable` are separate because the BACK-FILL acts on them
  * oppositely: an envelope that is present but stale/corrupt should be rewritten
- * (that is the documented self-heal), while one we simply could not fetch must be
- * left alone — rewriting on every transient fault is unbounded growth on the
- * shared postage batch (#153).
+ * (that is the documented self-heal), while one this client must not touch has
+ * to be left alone. Two things land in that second bucket: a transient fetch
+ * fault (rewriting on every one is unbounded growth on the shared postage
+ * batch, #153), and an envelope written by a NEWER client — rewriting that one
+ * would DOWNGRADE it, replacing a version this code cannot even read with an
+ * older one (#166). So "newer than me" reports `unreadable`, never `unusable`.
  */
 export type PortabilityRead =
   | { status: "found"; value: OpenedPortability }
   /** The read stack definitively established there is no envelope chunk. */
   | { status: "absent" }
-  /** Nobody could answer whether an envelope exists. */
+  /** No answer THIS CLIENT MAY ACT ON: a fetch fault, or a newer-version envelope. */
   | { status: "unreadable"; reason: string }
-  /** An envelope IS there, but this client cannot use it (version, integrity). */
+  /** An envelope IS there but is stale/corrupt (OLDER version, integrity fault) — the self-heal may rewrite it. */
   | { status: "unusable"; reason: string };
 
 /**
@@ -175,10 +180,12 @@ export type PortabilityRead =
  */
 export async function readPortabilityEnvelope(args: {
   passkeyPrivKey: string;
+  /** Test seam — production always takes the real content-feed read. */
+  readFeed?: typeof readContentFeedResult;
 }): Promise<PortabilityRead> {
   const keys = await derivePortabilityKeys(args.passkeyPrivKey);
 
-  const read = await readContentFeedResult<PortabilityEnvelope>(
+  const read = await (args.readFeed ?? readContentFeedResult)<PortabilityEnvelope>(
     keys.socOwnerAddress,
     PORTABILITY_SOC_IDENTIFIER_INPUT,
   );
@@ -188,11 +195,21 @@ export async function readPortabilityEnvelope(args: {
   }
   const parsed = read.value;
 
-  // A version we don't understand is an envelope that IS there. The back-fill
-  // rewrites it — but only on a device that already holds a recovery binding, so
-  // a new device must not read this as "never recovered".
-  if (parsed.v !== PORTABILITY_ENVELOPE_VERSION || !parsed.envelope) {
-    return { status: "unusable", reason: `envelope version ${String(parsed.v)} != ${PORTABILITY_ENVELOPE_VERSION}` };
+  // A wrapper version NEWER than this code is a healthy envelope we cannot
+  // read, not a stale one: report it un-actionable so no self-heal ever
+  // replaces it with the older format this client would write (#166).
+  if (typeof parsed?.v === "number" && parsed.v > PORTABILITY_ENVELOPE_VERSION) {
+    return {
+      status: "unreadable",
+      reason: `envelope version ${parsed.v} is newer than this client (${PORTABILITY_ENVELOPE_VERSION})`,
+    };
+  }
+
+  // An OLDER (or mangled) envelope that IS there. The back-fill rewrites it —
+  // but only on a device that already holds a recovery binding, so a new
+  // device must not read this as "never recovered".
+  if (parsed?.v !== PORTABILITY_ENVELOPE_VERSION || !parsed.envelope) {
+    return { status: "unusable", reason: `envelope version ${String(parsed?.v)} != ${PORTABILITY_ENVELOPE_VERSION}` };
   }
 
   try {
@@ -200,6 +217,7 @@ export async function readPortabilityEnvelope(args: {
     const bundle = await openRecoveryBundle({
       envelope: parsed.envelope,
       kernelAddress: keys.socOwnerAddress,
+      role: "portability",
       guardianKeypair: keys.hpke,
     });
     const preservedKernelAddress = bundle.secrets.preservedKernelAddress;
@@ -216,6 +234,12 @@ export async function readPortabilityEnvelope(args: {
       },
     };
   } catch (e) {
+    // The INNER envelope declaring a version this client doesn't know is the
+    // same "newer client's work" case as the wrapper check above — never let
+    // the self-heal downgrade it by classing it rewritable.
+    if (e instanceof UnknownRecoveryEnvelopeVersionError) {
+      return { status: "unreadable", reason: e.message };
+    }
     // Decrypt failure on bytes that exist — corruption, or someone else's chunk at
     // this address. An integrity fault, never an absence.
     return { status: "unusable", reason: `envelope decrypt failed: ${(e as Error).message}` };

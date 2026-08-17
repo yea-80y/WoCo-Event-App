@@ -74,39 +74,40 @@ async function main() {
   const envelope = await sealRecoveryBundle({
     bundle,
     kernelAddress: kernelA,
+    role: "guardian",
     guardianPublicKeysHex: [gk.publicKeyHex],
   });
   assert(envelope.kernelAddress === kernelA.toLowerCase(), "envelope bound to lowercased kernel A");
   assert(envelope.wrappedDeks.length === 1, "1-of-1 → single wrapped DEK");
 
   console.log("[2] open round-trip");
-  const opened = await openRecoveryBundle({ envelope, kernelAddress: kernelA, guardianKeypair: gk });
+  const opened = await openRecoveryBundle({ envelope, kernelAddress: kernelA, role: "guardian", guardianKeypair: gk });
   assert(opened.secrets.podSeed === bundle.secrets.podSeed, "recovered podSeed matches original");
   assert(opened.version === bundle.version, "recovered version matches");
 
   console.log("[3] deterministic re-derivation (recoverable on any device)");
   const gk2 = await deriveGuardianEncryptionKeypair(guardianAccount.address, guardianSign);
   assert(gk2.publicKeyHex === gk.publicKeyHex, "same EOA → identical X25519 key");
-  const openedAgain = await openRecoveryBundle({ envelope, kernelAddress: kernelA, guardianKeypair: gk2 });
+  const openedAgain = await openRecoveryBundle({ envelope, kernelAddress: kernelA, role: "guardian", guardianKeypair: gk2 });
   assert(openedAgain.secrets.podSeed === bundle.secrets.podSeed, "freshly re-derived key opens the same envelope");
 
   console.log("[4] AAD bind — transplant to kernel B rejected");
   await expectThrow(
-    () => openRecoveryBundle({ envelope, kernelAddress: kernelB, guardianKeypair: gk }),
+    () => openRecoveryBundle({ envelope, kernelAddress: kernelB, role: "guardian", guardianKeypair: gk }),
     "envelope for kernel A does not open against kernel B",
   );
 
   console.log("[5] wrong guardian rejected");
   const ak = await deriveGuardianEncryptionKeypair(attackerAccount.address, attackerSign);
   await expectThrow(
-    () => openRecoveryBundle({ envelope, kernelAddress: kernelA, guardianKeypair: ak }),
+    () => openRecoveryBundle({ envelope, kernelAddress: kernelA, role: "guardian", guardianKeypair: ak }),
     "attacker's derived key cannot open the envelope",
   );
 
   console.log("[6] ciphertext tamper rejected");
   const tampered = { ...envelope, ciphertext: flipFirstByte(envelope.ciphertext) };
   await expectThrow(
-    () => openRecoveryBundle({ envelope: tampered, kernelAddress: kernelA, guardianKeypair: gk }),
+    () => openRecoveryBundle({ envelope: tampered, kernelAddress: kernelA, role: "guardian", guardianKeypair: gk }),
     "Poly1305 tag fails on a flipped ciphertext byte",
   );
 

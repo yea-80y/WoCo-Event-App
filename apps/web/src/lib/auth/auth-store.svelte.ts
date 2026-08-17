@@ -2177,6 +2177,7 @@ async function setupAccountRecovery(backup: {
   const envelope = await sealRecoveryBundle({
     bundle: { version: 1, secrets },
     kernelAddress,
+    role: "guardian",
     guardianPublicKeysHex: [gk.encryption.publicKeyHex],
   });
 
@@ -2186,7 +2187,7 @@ async function setupAccountRecovery(backup: {
   // either make the bundle un-openable or orphan the guardian SOC — caught here,
   // failing loudly at setup instead of silently at recovery time.
   const gk2 = await deriveGuardianKeys(backup.address, backup.signTypedData);
-  const check = await openRecoveryBundle({ envelope, kernelAddress, guardianKeypair: gk2.encryption });
+  const check = await openRecoveryBundle({ envelope, kernelAddress, role: "guardian", guardianKeypair: gk2.encryption });
   if (
     check.secrets.podSeed !== seed ||
     check.secrets.feedSignerPrivKey !== secrets.feedSignerPrivKey ||
@@ -2411,13 +2412,19 @@ async function recoverAndRekey(args: {
     let podSeed: string;
     let feedSignerPrivKey: string | undefined;
     try {
-      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk.encryption });
+      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, role: "guardian", guardianKeypair: gk.encryption });
       if (!bundle.secrets.podSeed) throw new Error("missing podSeed");
       podSeed = bundle.secrets.podSeed;
       // Restored verbatim (not re-derived) so the recovered account keeps owning
       // the feeds it wrote under the original feed-signer address.
       feedSignerPrivKey = bundle.secrets.feedSignerPrivKey;
-    } catch {
+    } catch (e) {
+      // An envelope from a NEWER app version is the one failure that is not
+      // "wrong wallet" — the version is public metadata on a public feed, so
+      // being specific leaks nothing, and the generic message would send the
+      // user hunting through wallets when the fix is to update the app.
+      const { UnknownRecoveryEnvelopeVersionError } = await import("./recovery-aad.js");
+      if (e instanceof UnknownRecoveryEnvelopeVersionError) throw e;
       // Don't leak whether it was a wrong account vs a corrupt blob.
       throw new Error(
         "That backup wallet can't unlock this account. Check you connected the right backup wallet and chose the right account.",

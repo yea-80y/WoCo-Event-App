@@ -95,9 +95,10 @@ async function main() {
   const envelope = await sealRecoveryBundle({
     bundle,
     kernelAddress: kernel,
+    role: "guardian",
     guardianPublicKeysHex: [k1.publicKeyHex],
   });
-  const opened = await openRecoveryBundle({ envelope, kernelAddress: kernel, guardianKeypair: k2 });
+  const opened = await openRecoveryBundle({ envelope, kernelAddress: kernel, role: "guardian", guardianKeypair: k2 });
   assert(opened.secrets.podSeed === bundle.secrets.podSeed, "recovered podSeed matches original");
 
   console.log("[4] GUARDIAN role — the same key is a viem signer for the rotation userOp");

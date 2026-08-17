@@ -16,8 +16,9 @@
  *    its composed `seal`/`open`, not a self-assembled ECDH+KDF+AEAD. Each
  *    wrapped DEK is `enc(32B X25519) || ct` so an anonymous sender needs no key.
  *  - BUNDLE-AEAD = XChaCha20-Poly1305 (`@noble/ciphers`) under a random per-
- *    bundle DEK, with the Kernel address bound as additional-data so a stolen
- *    envelope cannot be replayed against another account.
+ *    bundle DEK, with role + envelope version + bound address as additional-
+ *    data (recovery-aad.ts) so a stolen envelope cannot be replayed against
+ *    another account or opened under the other role.
  *  - GUARDIAN KEY is DERIVED, never stored: the guardian EOA signs a fixed
  *    EIP-712 message (the deterministic-signature trick `requestPodIdentity`
  *    relies on) → keccak → 32-byte seed → HPKE `deriveKeyPair`. Same EOA always
@@ -50,6 +51,7 @@ import {
   type EIP712Signer,
   type RecoveryEnvelope,
 } from "@woco/shared";
+import { recoveryAadBytes, type RecoveryAadRole } from "./recovery-aad.js";
 
 /**
  * Plaintext escrow bundle — CLIENT-ONLY. Never serialised to the server (the
@@ -73,15 +75,6 @@ const hpke = new CipherSuite({
 const ENC_LEN = 32;
 /** XChaCha20-Poly1305 nonce length (bytes). */
 const XNONCE_LEN = 24;
-
-/**
- * The AEAD additional-data binding the envelope to one account. Namespaced (not
- * a bare address) so the tag is unambiguous, and lowercased so casing variation
- * cannot break the bind. MUST be byte-identical at seal and open.
- */
-function aadBytes(kernelAddress: string): Uint8Array {
-  return new TextEncoder().encode(`woco/recovery/v1:${kernelAddress.toLowerCase()}`);
-}
 
 function toArrayBuffer(b: Uint8Array): ArrayBuffer {
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
@@ -192,13 +185,16 @@ export async function deriveEncryptionKeypairFromSeed(
 
 /**
  * Seal a recovery bundle: fresh DEK → XChaCha20-Poly1305 over the bundle (AAD =
- * Kernel address) → HPKE-wrap the DEK to each guardian X25519 pubkey. The
- * returned envelope is safe to store on a public feed. The DEK is zeroed before
- * returning.
+ * role + version + bound address, see recovery-aad.ts) → HPKE-wrap the DEK to
+ * each guardian X25519 pubkey. Always seals at the CURRENT envelope version.
+ * The returned envelope is safe to store on a public feed. The DEK is zeroed
+ * before returning.
  */
 export async function sealRecoveryBundle(args: {
   bundle: RecoveryBundle;
   kernelAddress: string;
+  /** Which use of the escrow construction this is — baked into the AAD. */
+  role: RecoveryAadRole;
   /** Guardian X25519 public keys (hex). v1 = exactly one (1-of-1 backup EOA). */
   guardianPublicKeysHex: string[];
 }): Promise<RecoveryEnvelope> {
@@ -209,7 +205,7 @@ export async function sealRecoveryBundle(args: {
   const dek = randomBytes(32);
   try {
     const nonce = randomBytes(XNONCE_LEN);
-    const aad = aadBytes(args.kernelAddress);
+    const aad = recoveryAadBytes(args.role, RECOVERY_ENVELOPE_VERSION, args.kernelAddress);
     const plaintext = new TextEncoder().encode(JSON.stringify(args.bundle));
     const ciphertext = xchacha20poly1305(dek, nonce, aad).encrypt(plaintext);
 
@@ -241,13 +237,20 @@ export async function sealRecoveryBundle(args: {
 /**
  * Open a recovery bundle with a guardian's derived keypair. Verifies the bound
  * Kernel address, HPKE-unwraps the DEK (tries each wrapped entry — the matching
- * guardian's succeeds), then AEAD-decrypts the bundle. The recovered DEK is
- * zeroed before returning. Throws on any failure (wrong guardian, tampered
+ * guardian's succeeds), then AEAD-decrypts the bundle. The AAD is built from
+ * the envelope's DECLARED version (downgrade-proof — a lied-about version
+ * selects an AAD the tag cannot verify under; see recovery-aad.ts) and the
+ * caller's role, so a v1 envelope stays openable while an unknown version
+ * throws `UnknownRecoveryEnvelopeVersionError` — callers must surface that as
+ * "update the app", never as corruption. The recovered DEK is zeroed before
+ * returning. Throws on any other failure (wrong guardian, wrong role, tampered
  * envelope, account mismatch).
  */
 export async function openRecoveryBundle(args: {
   envelope: RecoveryEnvelope;
   kernelAddress: string;
+  /** Must match the role the envelope was sealed for (v2+; v1 predates roles). */
+  role: RecoveryAadRole;
   guardianKeypair: GuardianEncryptionKeypair;
 }): Promise<RecoveryBundle> {
   const { envelope } = args;
@@ -257,7 +260,7 @@ export async function openRecoveryBundle(args: {
   if (envelope.kernelAddress.toLowerCase() !== args.kernelAddress.toLowerCase()) {
     throw new Error("openRecoveryBundle: envelope is bound to a different Kernel address.");
   }
-  const aad = aadBytes(args.kernelAddress);
+  const aad = recoveryAadBytes(args.role, envelope.v, args.kernelAddress);
 
   let dek: Uint8Array | null = null;
   for (const wrappedHex of envelope.wrappedDeks) {
