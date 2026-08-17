@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { LikeSubject } from "@woco/shared";
-  import { getSocialState, toggleSocial, kindForVariant } from "../../api/social.js";
+  import { getSocialState, toggleSocial, kindForVariant, lastKnownCount } from "../../api/social.js";
   import { auth } from "../../auth/auth-store.svelte.js";
 
   interface Props {
@@ -24,7 +24,18 @@
 
   // null = nobody has counted yet (no indexer), which renders as ABSENT. Zero
   // would be a claim that nobody liked it — a different, and wrong, statement.
-  let count = $state<number | null>(null);
+  //
+  // Seeded from the last count this browser saw for THIS subject, so a returning
+  // reader gets the number at first paint instead of a dot, and keeps it if the
+  // indexer is unreachable. Own state (`liked`) is never seeded — it belongs to
+  // whoever is signed in now, which a previous visit cannot know.
+  //
+  // The init-capture is the point: this is the value to paint BEFORE the effect
+  // runs, and a later subject re-seeds it inside the effect below. A $derived
+  // would fight every reconcile, since the live count must overwrite the
+  // remembered one.
+  // svelte-ignore state_referenced_locally
+  let count = $state<number | null>(lastKnownCount(kindForVariant(variant), subject));
   let liked = $state(false);
   let inFlight = $state(false);
   let loaded = $state(false);
@@ -59,10 +70,19 @@
       return;
     }
     const token = ++fetchToken;
-    if (lastLoadedId !== id) loaded = false;
+    if (lastLoadedId !== id) {
+      loaded = false;
+      // A different subject's number must never sit under this subject's heart,
+      // so the displayed count is replaced by THIS subject's last-known one —
+      // or by nothing, if this browser has never seen it.
+      count = lastKnownCount(kindForVariant(variant), subject);
+    }
     getSocialState(kindForVariant(variant), subject).then((res) => {
       if (token !== fetchToken) return;
-      count = res.count;
+      // An unreachable indexer leaves the last-known number standing rather than
+      // blanking it: the reader loses freshness, not the figure. Only a count
+      // that actually arrived can replace one.
+      count = res.count ?? count;
       liked = res.liked;
       lastLoadedId = id;
       loaded = true;
@@ -134,7 +154,8 @@
       <circle cx="12" cy="8" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>
       <path d="M5 19.5c1.4-3.1 4-4.7 7-4.7s5.6 1.6 7 4.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>
-    {#if !loaded || count === null}·{:else}{count}{/if}
+    <!-- A remembered count shows straight away; the dot is only for never having had one. -->
+    {#if count === null}·{:else}{count}{/if}
     <span class="stat-label">{count === 1 ? "follower" : "followers"}</span>
   </span>
 {:else if variant === "follow"}
@@ -160,7 +181,9 @@
     <span class="follow-label">
       {#if !loaded}·{:else}{liked ? "Following" : "Follow"}{/if}
     </span>
-    {#if loaded && count !== null && count > 0}<span class="follow-count">{count}</span>{/if}
+    <!-- The count is public and may be remembered; the LABEL beside it is the
+         viewer's own state and waits for a real read. -->
+    {#if count !== null && count > 0}<span class="follow-count">{count}</span>{/if}
   </button>
   {#if errMsg}<span class="like-err" role="status">{errMsg}</span>{/if}
 {:else}
@@ -184,7 +207,7 @@
       />
     </svg>
     <span class="count" class:zero={count === null || (count === 0 && !liked)}>
-      {#if !loaded}·{:else}{count !== null && count > 0 ? count : ""}{/if}
+      {#if count !== null && count > 0}{count}{:else if !loaded}·{/if}
     </span>
     {#if caption}<span class="caption">{caption}</span>{/if}
   </button>

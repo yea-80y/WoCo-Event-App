@@ -11,12 +11,19 @@
  * counted" — the indexer was unreachable, or has never been asked about this
  * subject — and the UI renders that as absent, deliberately distinct from `0`,
  * which would be a claim that nobody liked it.
+ *
+ * Counts are also remembered between visits (`lastKnownCount`), so a reader who
+ * has seen the number once sees it again immediately and the fetch reconciles
+ * behind it. Own state is deliberately NOT remembered: it is per-account, and a
+ * stale "Following" would be this module asserting something about the person
+ * holding the phone rather than about the world.
  */
 
 import type { LikeSubject, Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
 import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
+import { readCachedCount, writeCachedCount } from "../social/count-cache.js";
 
 export interface SocialState {
   liked: boolean;
@@ -39,16 +46,33 @@ const FORMAT: Record<SocialKind, string> = {
  * The public count, or null if nobody could tell us. Never throws: a count is
  * decoration on a button that works without it, so an unreachable indexer must
  * degrade to "no number" rather than to a broken control.
+ *
+ * A number that arrives is remembered; a failure writes nothing, so the last
+ * good figure outlives the outage rather than being overwritten by not knowing.
  */
 async function fetchCount(kind: SocialKind, subject: Hex0x): Promise<number | null> {
   try {
     const res = await get<{ count: number }>(
       `/api/social/count?format=${encodeURIComponent(FORMAT[kind])}&subject=${encodeURIComponent(subject)}`,
     );
-    return res.ok && res.data && typeof res.data.count === "number" ? res.data.count : null;
+    const count = res.ok && res.data && typeof res.data.count === "number" ? res.data.count : null;
+    if (count !== null) writeCachedCount(kind, subject, count);
+    return count;
   } catch {
     return null;
   }
+}
+
+/**
+ * The last count this browser saw for a subject, or null if it has never seen
+ * one. Synchronous on purpose: the point is to have a number in hand at first
+ * render, not one promise sooner.
+ *
+ * Age is not reported alongside it because the caller has nowhere honest to put
+ * it — the value is either fresh enough to show or evicted (`TTL.SOCIAL_COUNT`).
+ */
+export function lastKnownCount(kind: SocialKind, subject: LikeSubject): number | null {
+  return readCachedCount(kind, subject.id as Hex0x);
 }
 
 /**
