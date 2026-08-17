@@ -14,8 +14,9 @@
  * Design doc: docs/ATTENDEE_GATE_RESALE_PLAN.md
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const BINDINGS_FILE = join(DATA_DIR, "attendee-gate-bindings.json");
@@ -71,8 +72,12 @@ function load(): void {
 }
 
 function persist(): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(BINDINGS_FILE, JSON.stringify(cache), "utf-8");
+  // Throws, unlike most stores: the nullifier is consumed in memory before this
+  // runs, so a swallowed failure would report an unlock the restart forgets —
+  // handing the same ticket a second profile. The caller must see the failure.
+  if (!writeJsonAtomic(BINDINGS_FILE, cache, "gate-bindings")) {
+    throw new Error("attendee-gate bindings could not be persisted");
+  }
 }
 
 /** Has this edition already been consumed for account gating? */

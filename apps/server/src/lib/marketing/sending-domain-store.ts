@@ -9,10 +9,11 @@
  * List-Unsubscribe — every send still goes through sendMarketingBatch.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SendingDomainRecord } from "@woco/shared";
 import { getMarketingFromAddress } from "../email/client.js";
+import { writeJsonAtomic } from "./persist.js";
 
 /**
  * Shown to the organiser when `resolveMarketingFrom` returns null. It names the
@@ -64,12 +65,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify(Object.fromEntries(domains)), "utf-8");
-  } catch (err) {
-    console.error("[marketing-domains] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(STORE_FILE, Object.fromEntries(domains), "marketing-domains");
 }
 
 export function getDomain(organiserAddress: string): SendingDomainEntry | null {

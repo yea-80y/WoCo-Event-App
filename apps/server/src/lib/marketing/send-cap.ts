@@ -5,8 +5,9 @@
  * volume). File-backed so restarts can't reset the window.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "./persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-send-log.json");
@@ -58,12 +59,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(STORE_FILE, JSON.stringify(Object.fromEntries(log)), "utf-8");
-  } catch (err) {
-    console.error("[send-cap] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(STORE_FILE, Object.fromEntries(log), "send-cap");
 }
 
 function recentEntries(organiserAddress: string): SendLogEntry[] {

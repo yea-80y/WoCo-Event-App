@@ -5,8 +5,9 @@
  * survive restarts.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "./persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const REGISTRY_FILE = join(DATA_DIR, "consumed-resend-events.json");
@@ -27,12 +28,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(REGISTRY_FILE, JSON.stringify([...consumed]), "utf-8");
-  } catch (err) {
-    console.error("[resend-events] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(REGISTRY_FILE, [...consumed], "resend-events");
 }
 
 /** True if this event id is new (now consumed); false on redelivery. */

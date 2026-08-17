@@ -232,6 +232,7 @@ the issue against `routes/broadcast-jobs.ts` and close it rather than assuming.
   no primary source (AWS, Google, Yahoo, M3AAWG) supports it. Do not build for it.
 - **`SendBulkEmail` is not worth adopting** and the previously recorded reason
   was wrong — see §5 of the SES handover for the corrected version.
-- **New `.data` stores need their modes checked.** `broadcast-jobs/` and
-  `broadcast-chunks/` are created 0700 with 0600 files, but the sweep in the ops
-  runbook is still the backstop.
+- **New `.data` stores get their modes for free now (#130).** `broadcast-jobs/`
+  and `broadcast-chunks/` set 0700/0600 themselves; every other store goes
+  through `writeJsonAtomic`, and `test/data-store-modes.test.ts` fails the build
+  if a new one writes files itself. The ops sweep is no longer the backstop.

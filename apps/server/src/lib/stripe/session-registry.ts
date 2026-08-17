@@ -9,8 +9,9 @@
  * In-memory Set backed by a JSON file so state survives restarts.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const REGISTRY_FILE = join(DATA_DIR, "consumed-stripe-sessions.json");
@@ -32,12 +33,7 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(REGISTRY_FILE, JSON.stringify([...consumed]), "utf-8");
-  } catch (err) {
-    console.error("[stripe-session-registry] Failed to persist to disk:", err);
-  }
+  writeJsonAtomic(REGISTRY_FILE, [...consumed], "stripe-session-registry");
 }
 
 /**

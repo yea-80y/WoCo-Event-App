@@ -382,7 +382,9 @@ email addresses, or any credential.
   `parentAddress` — an organiser cannot read another's.
 - **Gitignored** (`.data/` and `**/.data/`).
 - **File mode 0600**, directory 0700 on fresh installs; written write-then-rename so a
-  crash cannot truncate it.
+  crash cannot truncate it. Both come from `writeJsonAtomic` since #130 — which also
+  fsyncs before the rename, and reports a failed write on `/api/health` instead of
+  logging it and carrying on with in-memory state disk does not have.
 
 ✅ **Host hardening done 2026-07-27.** The live store was directory `755` / files `644` —
 world-readable to any host account — as were `server.env` (which holds `FEED_PRIVATE_KEY`,

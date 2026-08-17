@@ -18,9 +18,10 @@
  * releasing them without knowing which event they belong to.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PayoutEntryStatus } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const LEDGER_FILE = join(DATA_DIR, "stripe-payout-ledger.json");
@@ -96,20 +97,11 @@ function ensureLoaded(): void {
 }
 
 function persist(): void {
-  try {
-    // 0700 applies to a fresh install only — mkdir is a no-op on an existing dir,
-    // so it will not fight the current deployment's ownership.
-    mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    // Write-then-rename: a crash mid-write must not leave a truncated ledger,
-    // which would read back as "no funds held" and strand organiser money.
-    // 0600 because this is commercially sensitive organiser financial data and has
-    // no reason to be readable by other users on the host.
-    const tmp = `${LEDGER_FILE}.tmp`;
-    writeFileSync(tmp, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
-    renameSync(tmp, LEDGER_FILE);
-  } catch (err) {
-    console.error("[payout-ledger] Failed to persist:", err);
-  }
+  // 0600 + write-then-rename now come from writeJsonAtomic, which also fsyncs
+  // (this file's own rename could survive a power cut with unwritten bytes) and
+  // alarms on /api/health. A truncated ledger reads back as "no funds held" and
+  // strands organiser money, so the guarantee matters more here than anywhere.
+  writeJsonAtomic(LEDGER_FILE, store, "payout-ledger", { pretty: true });
 }
 
 /**

@@ -11,7 +11,7 @@
 
 import { test, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -44,7 +44,9 @@ before(async () => {
 
 function resetLedger(): void {
   rmSync(ledgerFile, { force: true });
-  rmSync(intentsFile, { force: true });
+  // `recursive` because one test replaces the intents file with a DIRECTORY to
+  // force an unwritable journal; a bare unlink would fail and poison the suite.
+  rmSync(intentsFile, { recursive: true, force: true });
   ledger.__resetForTests();
   intents.__resetForTests();
 }
@@ -453,6 +455,37 @@ test("a failed payout journals its intent and settles it on the next sweep", asy
   assert.equal(healthy.payouts[0]!.idempotencyKey, journalled!.idempotencyKey);
   assert.equal(ledger.getEntry("cs_a")?.status, "released");
   assert.equal(intents.getIntent(ACCT, "gbp"), undefined);
+});
+
+test("an unwritable journal defers the payout instead of paying unjournalled", async () => {
+  // The journal only closes the double-pay window while it is ON DISK: it is
+  // written seconds before the payout, so the crash it guards against is the one
+  // that takes the in-memory copy with it — and a full disk produces both. Paying
+  // anyway would leave Stripe paid, disk silent, and the next sweep free to
+  // re-select a grown set under a different key. Deferring is the safe direction:
+  // the funds stay held and nothing has been spent.
+  held("cs_j", { grossAmount: 5_000 });
+  // A directory where the file belongs: the temp write succeeds, the rename onto
+  // it cannot. Deterministic regardless of uid, unlike a permissions test.
+  mkdirSync(intentsFile, { recursive: true });
+  try {
+    const { gateway, payouts } = fakeGateway();
+    const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+
+    assert.equal(payouts.length, 0, "Stripe must not be called without a journalled intent");
+    assert.match(outcome!.error ?? "", /journal/);
+    assert.deepEqual(outcome!.deferred, ["cs_j"]);
+    assert.equal(ledger.getEntry("cs_j")?.status, "held", "funds stay held, nothing is lost");
+    assert.equal(intents.getIntent(ACCT, "gbp"), undefined, "a failed write must not leave a phantom intent in memory");
+  } finally {
+    rmSync(intentsFile, { recursive: true, force: true });
+  }
+
+  // …and the next sweep, with a writable journal, pays normally.
+  const { gateway, payouts } = fakeGateway();
+  await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(payouts.length, 1);
+  assert.equal(ledger.getEntry("cs_j")?.status, "released");
 });
 
 test("orphaned intents are settled even when nothing is held", async () => {

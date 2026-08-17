@@ -1332,17 +1332,33 @@ async function handleSuccessfulPayment(
       // group-buy reasoning as the v1 path.
       if (accountClaim && slotsForBurners.length > 0) {
         const firstEdition = slotsForBurners[0] + 1;
-        const bound = bindTicket({
-          seriesId,
-          edition: firstEdition,
-          eventId,
-          parentAddress: accountClaim.parentAddress,
-          podPubKey: accountClaim.podPubKey,
-          paid: true,
-          route: "claim",
-        });
-        if (bound) {
-          console.log(`[gate] bound ${seriesId}#${firstEdition} → ${accountClaim.parentAddress} (claim, on-chain)`);
+        // `bindTicket` throws when the binding cannot be persisted — correct at
+        // /redeem, wrong here. The tickets are already minted and this line sits
+        // ABOVE the refund decision and the ticket email, so an escaping throw
+        // would leave the buyer charged, the QR contents discarded with
+        // `claimedResults`, no email, no refund, and nothing in the
+        // undelivered-ticket ledger, because none of that code would run. The
+        // binding is an accessory at purchase — the email carries a bind-later
+        // path — so it degrades on its own rather than taking fulfilment with it.
+        try {
+          const bound = bindTicket({
+            seriesId,
+            edition: firstEdition,
+            eventId,
+            parentAddress: accountClaim.parentAddress,
+            podPubKey: accountClaim.podPubKey,
+            paid: true,
+            route: "claim",
+          });
+          if (bound) {
+            console.log(`[gate] bound ${seriesId}#${firstEdition} → ${accountClaim.parentAddress} (claim, on-chain)`);
+          }
+        } catch (err) {
+          console.error(
+            `[gate] could not bind ${seriesId}#${firstEdition} for ${accountClaim.parentAddress} — ` +
+              `fulfilment continues, attendee can bind from the ticket email:`,
+            err,
+          );
         }
       }
     }

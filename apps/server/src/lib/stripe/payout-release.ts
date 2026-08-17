@@ -474,7 +474,19 @@ export async function releaseForAccount(
     idempotencyKey: idempotencyKeyFor(sessionIds),
     createdAt: now.toISOString(),
   };
-  saveIntent(intent);
+  if (!saveIntent(intent)) {
+    // No journal, no payout. Paying with the intent only in memory would reopen
+    // the exact double-payout window the journal exists to close: a crash before
+    // `markManyReleased` leaves Stripe paid, disk silent, and the next sweep free
+    // to re-select a set that has since grown — a different key, a second payout.
+    outcome.error = "payout intent journal unwritable";
+    outcome.deferred.push(...sessionIds);
+    console.error(
+      `[payout-release] ${stripeAccountId} ${currency}: intent journal did not persist — ` +
+        `deferring ${sessionIds.length} sale(s). Funds stay held; see /api/health.`,
+    );
+    return outcome;
+  }
 
   try {
     const payoutId = await gateway.createPayout(payoutArgsFor(intent));

@@ -20,10 +20,11 @@
  * "cache, not truth" philosophy as the likes projection.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AbiCoder, keccak256 } from "ethers";
 import type { EventFeed } from "@woco/shared";
+import { writeJsonAtomic } from "../marketing/persist.js";
 import { getActiveChainId, getDeployedContract, getOnChainEvent } from "../chain/event-contract.js";
 import { getSponsorAddress } from "../chain/sponsor-wallet.js";
 
@@ -59,12 +60,9 @@ function ensureLoaded(): void {
 
 function persist(): void {
   if (!dirty) return;
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(byEventSeries)), "utf-8");
+  // Stays dirty on failure so the next record retries the whole map.
+  if (writeJsonAtomic(CACHE_FILE, Object.fromEntries(byEventSeries), "onchain-cache")) {
     dirty = false;
-  } catch (err) {
-    console.error("[onchain-cache] Failed to persist:", err);
   }
 }
 
@@ -156,12 +154,7 @@ function ensurePendingLoaded(): void {
 }
 
 function persistPending(): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(PENDING_FILE, JSON.stringify(Object.fromEntries(pending)), "utf-8");
-  } catch (err) {
-    console.error("[onchain-cache] Failed to persist pending registrations:", err);
-  }
+  writeJsonAtomic(PENDING_FILE, Object.fromEntries(pending), "onchain-pending");
 }
 
 /** Mark a registerEvent tx as broadcast. MUST be called before the tx can mine. */
