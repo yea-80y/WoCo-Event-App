@@ -56,11 +56,11 @@ function ensureLoaded(): void {
   }
 }
 
-function persist(): void {
+function persist(): boolean {
   // Same rationale as the ledger, and the fsync matters more: this journal is
   // written immediately BEFORE the Stripe call it protects, so a rename that
   // outlives its own bytes is exactly the crash window it exists to close.
-  writeJsonAtomic(INTENTS_FILE, store, "payout-intents", { pretty: true });
+  return writeJsonAtomic(INTENTS_FILE, store, "payout-intents", { pretty: true });
 }
 
 export function getIntent(stripeAccountId: string, currency: string): PayoutIntent | undefined {
@@ -73,10 +73,28 @@ export function listIntents(): PayoutIntent[] {
   return Object.values(store);
 }
 
-export function saveIntent(intent: PayoutIntent): void {
+/**
+ * Journal an intent. Returns FALSE if it did not reach disk — and the caller
+ * must not call Stripe in that case.
+ *
+ * A journal that exists only in memory is not a journal: it is written seconds
+ * before the payout it protects, so the crash it guards against is precisely the
+ * one that takes the in-memory copy with it, and the disk failure that caused it
+ * correlates with that crash (a full disk). Aborting is the safe direction —
+ * funds stay held and the next sweep re-selects them.
+ *
+ * The in-memory entry is rolled back on failure so it cannot drive a recovery
+ * for a payout that was never attempted.
+ */
+export function saveIntent(intent: PayoutIntent): boolean {
   ensureLoaded();
-  store[keyFor(intent.stripeAccountId, intent.currency)] = intent;
-  persist();
+  const key = keyFor(intent.stripeAccountId, intent.currency);
+  const previous = store[key];
+  store[key] = intent;
+  if (persist()) return true;
+  if (previous) store[key] = previous;
+  else delete store[key];
+  return false;
 }
 
 export function clearIntent(stripeAccountId: string, currency: string): void {

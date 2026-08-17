@@ -182,7 +182,9 @@ app.use(
 // public): if `payoutSweep.stale` is ever true, organiser money has stopped moving
 // and funds are drifting toward Stripe's hold ceiling. See docs/PAYOUTS.md.
 //
-// `compliancePersistence` covers the marketing stores. If one stops persisting,
+// `compliancePersistence` covers every `.data` store since #130, not just the
+// marketing ones (the JSON key keeps its name so anything watching the health
+// shape does not break). If one stops persisting,
 // every write after that point exists only in memory and is lost on the next
 // restart — for the suppression list that means mailing people who unsubscribed.
 // Store names only, no subject data: this endpoint is public.
