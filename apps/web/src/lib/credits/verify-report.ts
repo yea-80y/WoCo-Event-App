@@ -32,6 +32,8 @@
  */
 
 import {
+  SOCIAL_INDEXER_ADDRESS,
+  evidenceReportTopic,
   recountManifest,
   lookupSubject,
   currentEra,
@@ -43,6 +45,7 @@ import {
   type EvidenceManifestV1,
   type Hex0x,
 } from "@woco/shared";
+import { readPublishedReport } from "./published-report.js";
 
 /** The only statement format this page reads. Laps, not likes: the two tally
  *  families need different explanations of what their evidence proves, and one
@@ -239,7 +242,21 @@ export interface VerifyReport {
   /** The working, sorted as published. */
   leaves: CarriedEvidenceLeaf[];
   /** Where this came from, so a reader can re-run it without asking us. */
-  sources: { indexer: string; manifestUrl: string };
+  sources: {
+    indexer: string;
+    manifestUrl: string;
+    /**
+     * WHERE this evidence came from. `"indexer"` is the counter answering a
+     * request; `"published"` is its own published report, read from storage
+     * because the counter could not be reached. The page must say which — a
+     * published copy is signed evidence and perfectly checkable, but it is not
+     * the counter speaking now, and claiming otherwise would overstate how
+     * fresh the number is.
+     */
+    via: "indexer" | "published";
+    /** The feed the published copy was read from, when that is where it came from. */
+    feed?: { indexer: Hex0x; topic: string };
+  };
   ageMs: number;
 }
 
@@ -369,20 +386,102 @@ async function getJson(url: string, signal?: AbortSignal): Promise<unknown> {
   return envelope.data;
 }
 
+/**
+ * The last report the indexer PUBLISHED, read straight from Swarm.
+ *
+ * Not a cache and not a downgrade: it is the same evidence, signed into a
+ * single-owner chunk at an address derived from the subject, so this page
+ * recounts and spot-checks it exactly as it does a served one. What it costs is
+ * freshness — a published copy is as old as the last change to the count.
+ *
+ * It is also the only form that cannot be tailored to one reader. An HTTP
+ * response can say "you are in the count" to you and omit you for everyone
+ * else; a feed version is the same bytes for whoever reads it.
+ *
+ * `null` for every failure, including a report about another subject — this is
+ * a fallback, and a fallback that throws its own errors over the original one
+ * tells the reader about the wrong problem.
+ */
+export async function readPublishedEvidence(
+  subject: Hex0x,
+  opts: { indexer?: Hex0x; version?: number; now?: number; signal?: AbortSignal } = {},
+): Promise<Evidence | null> {
+  const report = await readPublishedReport(subject, CREDIT_FORMAT, parseLeaf, {
+    indexer: opts.indexer,
+    version: opts.version,
+    signal: opts.signal,
+  });
+  if (!report) return null;
+  return {
+    manifest: report.manifest,
+    unreadable: report.unreadable,
+    equivocations: report.equivocations,
+    // Self-declared by the publisher — nothing timestamps a Swarm write — so
+    // this is how old the indexer SAYS its copy is, not a measurement. Clamped
+    // at zero rather than shown negative when two clocks disagree.
+    ageMs: Math.max(0, (opts.now ?? Date.now()) - report.publishedAt),
+  };
+}
+
+/**
+ * Where the counter last said its published copy was, kept only for this page's
+ * lifetime. A hint, never a source: it changes how far a fallback has to scan
+ * and can never change what it finds.
+ */
+const publishedVersions = new Map<string, number>();
+
+function rememberPublishedVersion(subject: Hex0x, answer: unknown): void {
+  const p = (answer as { published?: { version?: unknown } } | null)?.published;
+  if (p && typeof p.version === "number" && Number.isSafeInteger(p.version) && p.version >= 0) {
+    publishedVersions.set(subject.toLowerCase(), p.version);
+  }
+}
+
 export async function fetchVerifyReport(
   coaster: NonNullable<ReturnType<typeof resolveCoaster>>,
-  opts: { base?: string; signal?: AbortSignal } = {},
+  opts: { base?: string; signal?: AbortSignal; indexer?: Hex0x } = {},
 ): Promise<VerifyReport> {
   const base = opts.base ?? indexerBase();
-  const sources = { indexer: indexerName(base), manifestUrl: manifestUrl(coaster.subject, base) };
+  const url = manifestUrl(coaster.subject, base);
+  const name = indexerName(base);
 
-  const evidence = parseEvidence(await getJson(sources.manifestUrl, opts.signal), coaster.subject);
-  if (!evidence) throw new Error("the working did not arrive in a form this page can add up");
+  let evidence: Evidence | null = null;
+  let via: "indexer" | "published" = "indexer";
+  let asked: unknown;
+  try {
+    const answer = await getJson(url, opts.signal);
+    rememberPublishedVersion(coaster.subject, answer);
+    evidence = parseEvidence(answer, coaster.subject);
+    if (!evidence) throw new Error("the working did not arrive in a form this page can add up");
+  } catch (e) {
+    // The counter could not be asked — unreachable, or answering something this
+    // page cannot add up. Its published report is a real second source, so try
+    // that before saying nothing; but keep the original failure, because if the
+    // fallback is empty too THAT is the one the reader can act on.
+    asked = e;
+    evidence = await readPublishedEvidence(coaster.subject, {
+      indexer: opts.indexer,
+      // A version the counter named while it was still answering. Only a lower
+      // bound, so a stale one costs a few reads — but it saves scanning from
+      // zero on exactly the path where the counter cannot be asked again.
+      version: publishedVersions.get(coaster.subject.toLowerCase()),
+      signal: opts.signal,
+    });
+    if (!evidence) throw asked;
+    via = "published";
+  }
 
   return buildReport({
     subject: coaster.subject,
     coaster: { name: coaster.name, park: coaster.park, formerNames: coaster.formerNames },
     evidence,
-    sources,
+    sources: {
+      indexer: name,
+      manifestUrl: url,
+      via,
+      ...(via === "published"
+        ? { feed: { indexer: opts.indexer ?? SOCIAL_INDEXER_ADDRESS, topic: evidenceReportTopic(CREDIT_FORMAT, coaster.subject) } }
+        : {}),
+    },
   });
 }

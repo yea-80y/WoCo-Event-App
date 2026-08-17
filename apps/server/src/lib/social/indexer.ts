@@ -56,6 +56,11 @@ import { participantsFor } from "./participants.js";
 
 export type IndexableFormat = "woco.like.v1" | "woco.follow.v1" | "woco.credit.v1";
 
+/** Every format this indexer can tally, in one place. Read surfaces validate
+ *  against it and the publisher sweeps it — a list that exists twice is a list
+ *  that will eventually disagree with itself about what gets counted. */
+export const INDEXABLE_FORMATS: readonly IndexableFormat[] = ["woco.like.v1", "woco.follow.v1", "woco.credit.v1"];
+
 /**
  * How a participant's feed gets read. Injected for the same reason
  * `SiteConfigReaders` is (`site/service.ts`): the properties worth pinning here

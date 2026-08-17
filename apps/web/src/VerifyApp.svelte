@@ -132,7 +132,11 @@
     const mins = Math.round(ms / 60_000);
     if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
     const hours = Math.round(mins / 60);
-    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    if (hours < 36) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    // A published copy can be days old when a count has not moved; "72 hours
+    // ago" is arithmetic rather than an answer.
+    const days = Math.round(hours / 24);
+    return `${days} day${days === 1 ? "" : "s"} ago`;
   }
 
   const short = (hex: string) => `${hex.slice(0, hex.startsWith("0x") ? 10 : 8)}…${hex.slice(-4)}`;
@@ -411,8 +415,19 @@
       <ol>
         <li>
           <strong>Read the evidence.</strong>
-          Open <a href={report.sources.manifestUrl} rel="nofollow noreferrer">the full list this page counted</a> —
-          every rider looked up, every entry used, every value.
+          {#if report.sources.via === "published" && report.sources.feed}
+            <!-- The link would point at a counter this page just failed to
+                 reach. The address is the honest alternative: it is where the
+                 working actually came from, and it is computable from the
+                 coaster alone by the rules below. -->
+            This working came from storage, not from the counter: it is the last report
+            <code>{report.sources.indexer}</code> published, read from the address anyone can work out from the
+            coaster alone — <code>{report.sources.feed.topic}</code>, signed by
+            <code>{report.sources.feed.indexer}</code>. Every rider looked up, every entry used, every value.
+          {:else}
+            Open <a href={report.sources.manifestUrl} rel="nofollow noreferrer">the full list this page counted</a> —
+            every rider looked up, every entry used, every value.
+          {/if}
         </li>
         <li>
           <strong>Do the arithmetic somewhere else.</strong> Add up <code>total</code> across <code>leaves</code>.
@@ -432,9 +447,10 @@
 
       <p class="muted small">
         Straight about the limits. Only ever one entry is fetched and checked here, never all of them — checking every row would
-        read as this page auditing riders' counts, which is not what it is for. The evidence list is served on
-        request rather than published to durable storage, so "published" means "served" for now. And none of this is
-        independent of us: the storage and the counter are both ours to run. What happens on your device is the
+        read as this page auditing riders' counts, which is not what it is for. The counter also writes each evidence
+        list to storage, at an address anyone can work out from the coaster alone, so it can be read without asking
+        the counter anything — but a written copy is only as current as the last time the number changed. And none of
+        this is independent of us: the storage and the counter are both ours to run. What happens on your device is the
         arithmetic and the signature check; what makes it checkable by anyone at all is that the inputs are public.
       </p>
     </section>
@@ -444,8 +460,19 @@
            "checked just now" alone would overstate freshness by up to half a
            minute — visible against laps happening on camera. -->
       <p class="muted small">
-        Counted by <code>{report.sources.indexer}</code>, checked {ago(now - checkedAt)}{#if report.ageMs >= 1000},
-        from an answer {Math.round(report.ageMs / 1000)}s old{/if}.
+        <!-- "Counted by X" alone would credit X with answering, which on the
+             published path it did not do — the page read a copy X left behind.
+             "Could not be asked" rather than "could not be reached": the
+             fallback also runs when the counter answered with something
+             unusable, and naming the wrong failure sends people to the wrong
+             place. The age means something different on that path too — not a
+             cache window but how long since the count last changed — so it is
+             rendered in the same human units as everything else, because it can
+             be days rather than the seconds a served answer is. -->
+        Counted by <code>{report.sources.indexer}</code>{#if report.sources.via === "published"}, which could not be
+        asked just now — this is the last working it published, read from storage and added up here, published
+        {ago(report.ageMs)}{:else}, checked {ago(now - checkedAt)}{#if report.ageMs >= 1000}, from an answer
+        {Math.round(report.ageMs / 1000)}s old{/if}{/if}.
         {#if error}<span class="stale"> Last try failed: {error}</span>{/if}
       </p>
       <button class="btn btn--ghost" onclick={check} disabled={checking}>

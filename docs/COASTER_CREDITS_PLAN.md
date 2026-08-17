@@ -1242,6 +1242,17 @@ the FEED's and restarts at 0 — so the ADDRESSING NOTE in `indexer.ts` was true
 leaves and false of credit ones. Legal because the manifest form is deliberately unfrozen
 (P0 item 7, view plane).
 
+**Reports are now PUBLISHED, and the page falls back to them — 2026-08-17 (#312).** The
+counter writes each subject's evidence to a feed it owns at an address derived from the
+subject (`SWARM_SOCIAL_PLAN` P1.5). When `/api/social/manifest` cannot be reached, the page
+reads that instead — same evidence, same recount, same spot-check — and SAYS SO: the footer
+names the counter as unreachable and the "check it yourself" step gives the feed owner and
+topic rather than a link to a counter that just failed. A published copy is signed evidence,
+not a cache, but it is only as current as the last change to the count, so the page must
+never present it as the counter answering now. If both the counter and its published copy
+are silent, the COUNTER's error is what surfaces — the fallback going quiet is not the thing
+a reader can act on.
+
 Two refusals: a subject that resolves to no coaster in `WOCO_SUBJECTS` gets a neutral state,
 because anyone can mint a subject id and publish genuinely signed entries against it and a
 crafted link would otherwise borrow this page's authority for an invented coaster; and there

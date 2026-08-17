@@ -76,7 +76,9 @@ DEV COMMANDS:
 - Required server env (names only; see `apps/server/.env.example`): EMAIL_HASH_SECRET,
   PAYMENT_QUOTE_SECRET, STRIPE_WEBHOOK_SECRET + STRIPE_WEBHOOK_SECRET_PLATFORM,
   SHOP_SPENDER_SECRET, ZERODEV_RPC, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, ALLOWED_HOSTS,
-  PUBLIC_API_BASE.
+  PUBLIC_API_BASE. Optional: SOCIAL_INDEXER_PRIVATE_KEY — signs the indexer's published
+  evidence reports (#312), never user data; its address must match `SOCIAL_INDEXER_ADDRESS`
+  in `packages/shared`. Unset = reports served on request, never published.
 
 ============================================================================
 AUTH ARCHITECTURE

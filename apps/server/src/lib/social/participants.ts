@@ -25,12 +25,12 @@
  * out loud. The intended recovery is the `participants` list inside an evidence
  * manifest, which is why that field exists.
  *
- * State that honestly, though: nothing durably PUBLISHES a manifest today.
- * `/api/social/manifest` computes one on demand from this very registry, so if
- * this file is lost the manifest can no longer name what was lost either.
- * Recovery therefore depends on someone having fetched and kept a manifest
- * while the registry was intact. Publishing manifests to Swarm is the
- * `SWARM_SOCIAL_PLAN` P1.5 step; until it lands, "published" means "served".
+ * Since #312 that recovery path is real rather than hypothetical: `publisher.ts`
+ * writes each subject's manifest to a feed the indexer owns, so the input set
+ * survives this file. It is not a backup — a report is only as current as the
+ * last publish, and a subject nobody has written about since the loss will not
+ * be in one — but "rebuildable by someone who is not us" stopped depending on a
+ * stranger having kept a copy of an HTTP response.
  */
 
 import { readFileSync } from "node:fs";
@@ -44,6 +44,30 @@ type Registry = Record<string, Record<string, string[]>>;
 
 /** Statement formats the relay may register. Public types only. */
 const INDEXABLE_FORMATS = new Set(["woco.like.v1", "woco.follow.v1", "woco.credit.v1"]);
+
+/**
+ * Told when a public statement lands for a subject, so something downstream can
+ * react to the tally having moved (today: the evidence publisher, #312).
+ *
+ * Injected rather than imported because the publisher already reads this
+ * registry, and a direct import back would close a cycle. It is also the honest
+ * shape: registering participants is this file's job, and what anyone does with
+ * the news is not.
+ */
+type StatementObserver = (format: string, subject: string) => void;
+let observer: StatementObserver | null = null;
+
+export function setStatementObserver(fn: StatementObserver | null): void {
+  observer = fn;
+}
+
+function notify(format: string, subject: string): void {
+  try {
+    observer?.(format, subject);
+  } catch {
+    // A downstream reaction must never fail the write it observed.
+  }
+}
 
 /**
  * A sealed statement must NEVER be registered — registering one publishes the
@@ -139,6 +163,13 @@ export function observeStatementBytes(ownerHex: string, payload: Uint8Array): vo
     const subject = o.subject;
     if (typeof format !== "string" || !INDEXABLE_FORMATS.has(format)) return;
     if (typeof subject !== "string" || !SUBJECT_RE.test(subject)) return;
+
+    // BEFORE the known-participant return below, deliberately. Registration is
+    // idempotent; the TALLY is not. An unlike, a re-follow and a new lap all
+    // come from participants already on file and all change the number, so an
+    // observer wired after that return would hear about a subject exactly once
+    // and then stay silent for every subsequent change to it.
+    notify(format, subject);
 
     const owners = registry[format]?.[subject];
     if (owners?.includes(owner)) return; // already known — no write, no churn
@@ -239,7 +270,12 @@ export function mergeParticipants(format: string, subject: string, owners: reado
     list.push(owner);
     added++;
   }
-  if (added > 0) schedulePersist();
+  if (added > 0) {
+    schedulePersist();
+    // A restore changes who gets read, so it changes the count — the published
+    // report has to be recomputed or it now contradicts the served one.
+    notify(format, subject);
+  }
   return added;
 }
 
