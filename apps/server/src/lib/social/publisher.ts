@@ -29,6 +29,7 @@
  */
 
 import {
+  SOCIAL_INDEXER_ADDRESS,
   evidenceReport,
   evidenceReportTopic,
   type BooleanEvidenceLeaf,
@@ -130,8 +131,13 @@ const health = {
   published: 0,
   unchanged: 0,
   failed: 0,
-  /** Subjects set down after repeated failure; the daily sweep picks them up. */
-  stuck: 0,
+  /**
+   * Lifetime count of subjects set down after repeated failure, NOT a live
+   * gauge — the sweep re-queues them and this never decrements. Named for what
+   * it is, because "stuck: 3" read as a current backlog would send someone
+   * looking for three broken subjects that recovered hours ago.
+   */
+  stuckTotal: 0,
   lastError: null as string | null,
   lastSkipReason: null as string | null,
   batchUsable: null as boolean | null,
@@ -332,7 +338,7 @@ function requeue(k: string, job: Job): void {
   // Set down, not forgotten: the sweep re-queues everything the registry knows
   // about, so this costs freshness until then rather than the subject.
   failures.delete(k);
-  health.stuck++;
+  health.stuckTotal++;
   console.error(
     `[social-publish] ${job.format} ${job.subject} failed ${n} passes running — set down until the next sweep`,
   );
@@ -417,6 +423,26 @@ export function startEvidencePublisher(): void {
     console.log("[social-publish] SOCIAL_INDEXER_PRIVATE_KEY unset — evidence reports are served, not published");
     return;
   }
+
+  // The key and the address clients read must be the same identity, and nothing
+  // else in the system would ever say otherwise. A mismatch publishes perfectly
+  // valid reports at an address no browser looks at: /api/health counts them as
+  // published, every reader gets "absent", and the failure looks like a Swarm
+  // problem rather than a config one. Refusing is the only honest option —
+  // publishing where nobody reads is worse than not publishing, because it also
+  // spends postage and reports success.
+  const owner = `0x${getSocialIndexerOwnerHex()}`;
+  if (owner !== SOCIAL_INDEXER_ADDRESS.toLowerCase()) {
+    health.configured = false;
+    health.lastSkipReason = `key derives ${owner}, clients read ${SOCIAL_INDEXER_ADDRESS}`;
+    console.error(
+      `\n[social-publish] FATAL (feature off): SOCIAL_INDEXER_PRIVATE_KEY derives ${owner}, but clients read ` +
+      `SOCIAL_INDEXER_ADDRESS ${SOCIAL_INDEXER_ADDRESS}.\nEither restore the matching key or update the shared ` +
+      `constant. Publishing is disabled; reports are still served on request.\n`,
+    );
+    return;
+  }
+
   if (flushTimer) return;
 
   setStatementObserver(markSubjectDirty);
@@ -463,7 +489,7 @@ export function __resetPublisher(): void {
     published: 0,
     unchanged: 0,
     failed: 0,
-    stuck: 0,
+    stuckTotal: 0,
     lastError: null,
     lastSkipReason: null,
   });

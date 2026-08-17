@@ -423,6 +423,20 @@ export async function readPublishedEvidence(
   };
 }
 
+/**
+ * Where the counter last said its published copy was, kept only for this page's
+ * lifetime. A hint, never a source: it changes how far a fallback has to scan
+ * and can never change what it finds.
+ */
+const publishedVersions = new Map<string, number>();
+
+function rememberPublishedVersion(subject: Hex0x, answer: unknown): void {
+  const p = (answer as { published?: { version?: unknown } } | null)?.published;
+  if (p && typeof p.version === "number" && Number.isSafeInteger(p.version) && p.version >= 0) {
+    publishedVersions.set(subject.toLowerCase(), p.version);
+  }
+}
+
 export async function fetchVerifyReport(
   coaster: NonNullable<ReturnType<typeof resolveCoaster>>,
   opts: { base?: string; signal?: AbortSignal; indexer?: Hex0x } = {},
@@ -435,15 +449,24 @@ export async function fetchVerifyReport(
   let via: "indexer" | "published" = "indexer";
   let asked: unknown;
   try {
-    evidence = parseEvidence(await getJson(url, opts.signal), coaster.subject);
+    const answer = await getJson(url, opts.signal);
+    rememberPublishedVersion(coaster.subject, answer);
+    evidence = parseEvidence(answer, coaster.subject);
     if (!evidence) throw new Error("the working did not arrive in a form this page can add up");
   } catch (e) {
-    // The counter is unreachable or answered something unusable. Its published
-    // report is a real second source, so try that before saying nothing — but
-    // remember the original failure: if the fallback is empty too, THAT is the
-    // error worth showing, since it is the one the reader can act on.
+    // The counter could not be asked — unreachable, or answering something this
+    // page cannot add up. Its published report is a real second source, so try
+    // that before saying nothing; but keep the original failure, because if the
+    // fallback is empty too THAT is the one the reader can act on.
     asked = e;
-    evidence = await readPublishedEvidence(coaster.subject, { indexer: opts.indexer, signal: opts.signal });
+    evidence = await readPublishedEvidence(coaster.subject, {
+      indexer: opts.indexer,
+      // A version the counter named while it was still answering. Only a lower
+      // bound, so a stale one costs a few reads — but it saves scanning from
+      // zero on exactly the path where the counter cannot be asked again.
+      version: publishedVersions.get(coaster.subject.toLowerCase()),
+      signal: opts.signal,
+    });
     if (!evidence) throw asked;
     via = "published";
   }

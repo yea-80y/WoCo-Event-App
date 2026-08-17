@@ -340,7 +340,7 @@ test("a subject that fails every pass is set down rather than retried forever", 
 
   const h = pub.evidencePublisherHealth();
   assert.equal(h.dirty, 0, "set down, not still queued");
-  assert.equal(h.stuck, 1);
+  assert.equal(h.stuckTotal, 1);
   assert.equal(writes.length, 5, "bounded by SOCIAL_PUBLISH_MAX_FAILURES");
 });
 
@@ -370,7 +370,27 @@ test("a subject that recovers loses its failure count", async () => {
   }
 
   // Four failures after the reset is still under the ceiling, so it is queued.
-  assert.equal(pub.evidencePublisherHealth().stuck, 0);
+  assert.equal(pub.evidencePublisherHealth().stuckTotal, 0);
   assert.equal(pub.evidencePublisherHealth().dirty, 1);
   assert.ok(writes.length > 0);
+});
+
+test("a key that does not derive the address clients read publishes NOTHING", async () => {
+  // The silent-dead-feature shape: reports would be written at an address no
+  // browser looks at, /api/health would count them as published, and every
+  // reader would see "absent" — a config fault wearing a Swarm fault's clothes.
+  // The test key here deliberately is not the shipped indexer's.
+  pub.startEvidencePublisher();
+
+  const h = pub.evidencePublisherHealth();
+  assert.equal(h.configured, false);
+  assert.match(String(h.lastSkipReason), /clients read/);
+
+  // And it stays off where it counts: the relay hook is never wired, so a
+  // statement landing produces no queued work at all. (Calling markSubjectDirty
+  // by hand would queue — nothing in production does, and a second gate there
+  // would cost the seam every other test in this file uses.)
+  const bytes = new TextEncoder().encode(JSON.stringify({ format: FORMAT, subject: SUBJECT, value: true }));
+  participants.observeStatementBytes(OWNER, bytes);
+  assert.equal(pub.evidencePublisherHealth().dirty, 0);
 });

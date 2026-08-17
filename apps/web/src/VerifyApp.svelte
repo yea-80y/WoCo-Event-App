@@ -132,7 +132,11 @@
     const mins = Math.round(ms / 60_000);
     if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
     const hours = Math.round(mins / 60);
-    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    if (hours < 36) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    // A published copy can be days old when a count has not moved; "72 hours
+    // ago" is arithmetic rather than an answer.
+    const days = Math.round(hours / 24);
+    return `${days} day${days === 1 ? "" : "s"} ago`;
   }
 
   const short = (hex: string) => `${hex.slice(0, hex.startsWith("0x") ? 10 : 8)}…${hex.slice(-4)}`;
@@ -458,11 +462,17 @@
       <p class="muted small">
         <!-- "Counted by X" alone would credit X with answering, which on the
              published path it did not do — the page read a copy X left behind.
-             The age then means something different too: not cache staleness,
-             but how long ago the count last changed enough to be republished. -->
+             "Could not be asked" rather than "could not be reached": the
+             fallback also runs when the counter answered with something
+             unusable, and naming the wrong failure sends people to the wrong
+             place. The age means something different on that path too — not a
+             cache window but how long since the count last changed — so it is
+             rendered in the same human units as everything else, because it can
+             be days rather than the seconds a served answer is. -->
         Counted by <code>{report.sources.indexer}</code>{#if report.sources.via === "published"}, which could not be
-        reached — this is the last working it published, read from storage and added up here{/if}, checked {ago(now - checkedAt)}{#if report.ageMs >= 1000},
-        from an answer {Math.round(report.ageMs / 1000)}s old{/if}.
+        asked just now — this is the last working it published, read from storage and added up here, published
+        {ago(report.ageMs)}{:else}, checked {ago(now - checkedAt)}{#if report.ageMs >= 1000}, from an answer
+        {Math.round(report.ageMs / 1000)}s old{/if}{/if}.
         {#if error}<span class="stale"> Last try failed: {error}</span>{/if}
       </p>
       <button class="btn btn--ghost" onclick={check} disabled={checking}>

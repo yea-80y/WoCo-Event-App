@@ -30,11 +30,38 @@ import {
   versionedSocIdentifier,
   type ContentFeedManifest,
 } from "@woco/shared";
-import { invalidateContentFeedVersion, readContentFeedJsonResult, uploadSignedSoc } from "./soc-upload.js";
+import type { VersionedFeedRead } from "@woco/shared";
+import {
+  invalidateContentFeedVersion,
+  readContentFeedJsonResult,
+  uploadSignedSoc,
+  type SignedSocInput,
+} from "./soc-upload.js";
 
 export type ContentFeedWrite =
   | { ok: true; version: number; unchanged: boolean }
   | { ok: false; reason: string };
+
+/**
+ * The three things this module does to the world, injectable.
+ *
+ * Not ceremony: the properties that matter here are the ones a live bee cannot
+ * be asked to produce — a head probe that cannot answer, a page uploaded before
+ * the manifest naming it, a version cache left holding the predecessor. Each of
+ * those is silent in production and would be found by a feed that stopped
+ * updating weeks later.
+ */
+export interface FeedWriteIo {
+  readHead: (ownerHex: string, topic: string) => Promise<VersionedFeedRead>;
+  upload: (input: SignedSocInput, batchId: string) => Promise<unknown>;
+  invalidate: (ownerHex: string, topic: string) => void;
+}
+
+const liveIo: FeedWriteIo = {
+  readHead: (owner, topic) => readContentFeedJsonResult(owner, topic),
+  upload: (input, batchId) => uploadSignedSoc(input, { target: "wocoBee", batchId }),
+  invalidate: invalidateContentFeedVersion,
+};
 
 function toHex(b: Uint8Array): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -46,19 +73,25 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-async function signAndUpload(signer: PrivateKey, identifier: Uint8Array, payload: Uint8Array, batchId: string): Promise<void> {
+async function signAndUpload(
+  io: FeedWriteIo,
+  signer: PrivateKey,
+  identifier: Uint8Array,
+  payload: Uint8Array,
+  batchId: string,
+): Promise<void> {
   const span = encodeSpan(payload.length);
   const cacAddress = calculateCacAddress(span, payload);
   // The SOC digest is the plain concatenation, not a hash of it — bee-js signs
   // what it is handed. `soc-upload.ts` recovers against exactly these bytes.
   const sig = signer.sign(new Uint8Array([...identifier, ...cacAddress])) as unknown as { toUint8Array(): Uint8Array };
-  await uploadSignedSoc({
+  await io.upload({
     owner: signer.publicKey().address().toHex().replace(/^0x/, ""),
     identifier: toHex(identifier),
     signature: toHex(sig.toUint8Array()),
     span: toHex(span),
     payload: toHex(payload),
-  }, { target: "wocoBee", batchId });
+  }, batchId);
 }
 
 /**
@@ -81,11 +114,11 @@ export async function writeVersionedContentFeed(args: {
   bytes: Uint8Array;
   batchId: string;
   unchanged?: (headBytes: Uint8Array) => boolean;
-}): Promise<ContentFeedWrite> {
+}, io: FeedWriteIo = liveIo): Promise<ContentFeedWrite> {
   if (args.bytes.length < 1) return { ok: false, reason: "payload must be at least one byte" };
 
   const owner = args.signer.publicKey().address().toHex().replace(/^0x/, "").toLowerCase();
-  const head = await readContentFeedJsonResult(owner, args.topic);
+  const head = await io.readHead(owner, args.topic);
   if (head.status === "unavailable") {
     return { ok: false, reason: `version probe inconclusive: ${head.reason ?? "unavailable"}` };
   }
@@ -97,7 +130,7 @@ export async function writeVersionedContentFeed(args: {
   const base = contentFeedSocIdentifier(args.topic);
 
   if (args.bytes.length <= SOC_MAX_PAYLOAD_SIZE) {
-    await signAndUpload(args.signer, versionedSocIdentifier(base, version), args.bytes, args.batchId);
+    await signAndUpload(io, args.signer, versionedSocIdentifier(base, version), args.bytes, args.batchId);
   } else {
     const pages = Math.ceil(args.bytes.length / SOC_MAX_PAYLOAD_SIZE);
     for (let i = 0; i < pages; i++) {
@@ -106,16 +139,16 @@ export async function writeVersionedContentFeed(args: {
       // queue with one subject's pages would stall the user writes the tally
       // exists to count.
       const slice = args.bytes.subarray(i * SOC_MAX_PAYLOAD_SIZE, (i + 1) * SOC_MAX_PAYLOAD_SIZE);
-      await signAndUpload(args.signer, versionedPageIdentifier(base, version, i + 1), slice, args.batchId);
+      await signAndUpload(io, args.signer, versionedPageIdentifier(base, version, i + 1), slice, args.batchId);
     }
     const manifest: ContentFeedManifest = { [CONTENT_FEED_MC_MARKER]: 1, pages, len: args.bytes.length };
     const encoded = new TextEncoder().encode(JSON.stringify(manifest));
-    await signAndUpload(args.signer, versionedSocIdentifier(base, version), encoded, args.batchId);
+    await signAndUpload(io, args.signer, versionedSocIdentifier(base, version), encoded, args.batchId);
   }
 
   // The in-process version cache still holds the PREVIOUS head; without this the
   // next write would compute the same version again and be silently discarded.
-  invalidateContentFeedVersion(owner, args.topic);
+  io.invalidate(owner, args.topic);
   return { ok: true, version, unchanged: false };
 }
 
@@ -132,8 +165,9 @@ export async function confirmContentFeedWrite(
   topic: string,
   expected: Uint8Array,
   expectedVersion: number,
+  io: FeedWriteIo = liveIo,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const res = await readContentFeedJsonResult(ownerHex, topic);
+  const res = await io.readHead(ownerHex, topic);
   if (res.status !== "found") return { ok: false, reason: `read-back ${res.status}` };
   if (res.version !== expectedVersion) return { ok: false, reason: `read-back version ${res.version} != ${expectedVersion}` };
   if (!sameBytes(res.bytes, expected)) return { ok: false, reason: "read-back bytes differ" };
