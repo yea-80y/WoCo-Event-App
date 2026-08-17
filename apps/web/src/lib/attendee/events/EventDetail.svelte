@@ -16,6 +16,7 @@
   import LikeButton from "../../components/likes/LikeButton.svelte";
   import { onMount, onDestroy } from "svelte";
   import { isPastEvent as checkPast } from "../../utils/events.js";
+  import { seriesSaleStatus, formatSaleDate } from "../../utils/sale-window.js";
   import { firstImageUrl, useNextImageUrl } from "../../components/site/image-fallback.js";
   import { buildEventJsonLd, eventMetaDescription } from "@woco/shared";
   import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
@@ -288,6 +289,7 @@
       <div class="series-list">
         {#each event.series as s}
           {@const isPaid = !!(s.payment && parseFloat(s.payment.price) > 0)}
+          {@const sale = seriesSaleStatus(s, now)}
           <div class="series-card" class:series-card--paid={isPaid}>
             <div class="series-top">
               <div class="series-info">
@@ -303,7 +305,7 @@
                   <p class="series-desc">{s.description}</p>
                 {/if}
               </div>
-              {#if isPaid}
+              {#if isPaid && sale === "active"}
                 <div class="series-qty">
                   <span class="qty-label">Qty</span>
                   <select
@@ -317,15 +319,24 @@
                 </div>
               {/if}
             </div>
-            <ClaimButton
-              eventId={event.eventId}
-              seriesId={s.seriesId}
-              encryptionKey={event.encryptionKey}
-              orderFields={event.orderFields}
-              apiUrl={externalApiUrl}
-              payment={s.payment}
-              quantity={ticketQty[s.seriesId] ?? 1}
-            />
+            <!-- The server enforces the same window on create-checkout and
+                 reserve (#295) — this keeps the page from offering a button
+                 those endpoints would 409. -->
+            {#if sale === "future"}
+              <div class="series-sale-status">Opens {formatSaleDate(s.saleStart!)}</div>
+            {:else if sale === "past"}
+              <div class="series-sale-status">Sales for this ticket have closed</div>
+            {:else}
+              <ClaimButton
+                eventId={event.eventId}
+                seriesId={s.seriesId}
+                encryptionKey={event.encryptionKey}
+                orderFields={event.orderFields}
+                apiUrl={externalApiUrl}
+                payment={s.payment}
+                quantity={ticketQty[s.seriesId] ?? 1}
+              />
+            {/if}
           </div>
         {/each}
       </div>
@@ -631,6 +642,17 @@
   .series-qty select:focus {
     outline: none;
     border-color: var(--accent);
+  }
+
+  .series-sale-status {
+    padding: 0.6rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--bg-elevated);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    text-align: center;
   }
 
   .series-card:hover {

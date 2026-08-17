@@ -25,6 +25,8 @@ import {
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
+import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
+import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { hashEmail, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
@@ -583,6 +585,20 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: salesClosedMessage(salesWindow.reason) }, 409);
   }
 
+  // Series sale-window gate (#295). saleStart/saleEnd were documented
+  // "(server-enforced)" while nothing read them on any money path, so an
+  // imported tier with a lapsed saleEnd stayed purchasable — while the event's
+  // own JSON-LD (offers.validFrom/validThrough) told search engines it wasn't.
+  const seriesWindow = checkSeriesSaleWindow(series);
+  if (!seriesWindow.open) {
+    console.warn(
+      `[stripe/create-checkout] BLOCKED — series window ${seriesWindow.reason}; refusing to charge ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+      `saleStart=${series.saleStart || "<none>"} saleEnd=${series.saleEnd || "<none>"})`,
+    );
+    return c.json({ ok: false, error: seriesSaleMessage(seriesWindow.reason) }, 409);
+  }
+
   // One contract read serves the sold-out pre-check and the firstN tier count.
   // The pre-check fails OPEN on a transport error (the contract re-checks
   // supply at mint and the webhook auto-refund is the backstop); the tier
@@ -692,6 +708,10 @@ stripe.post("/create-checkout", async (c) => {
     ? `${frontendUrl}/#/events/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`
     : `${frontendUrl}/#/event/${eventId}/purchased?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
 
+  // #300: the session must not outlive the event it sells for. Undefined keeps
+  // Stripe's 24 h default (event end is 24 h+ away, so the default is tighter).
+  const expiresAt = checkoutExpiresAt(event);
+
   try {
     const s = getStripe();
     const tStripe = performance.now();
@@ -701,6 +721,7 @@ stripe.post("/create-checkout", async (c) => {
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
+        ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
         line_items: [
           {
             price_data: {
@@ -1152,6 +1173,9 @@ async function handleSuccessfulPayment(
   let eventDate = "";
   /** Event END — anchors when these takings may be paid out (payout-policy.ts). */
   let eventEndDate = "";
+  /** True only when the event feed was definitively read — the #300 sales
+   *  re-check below must fail OPEN on a feed hiccup, never refund over one. */
+  let eventLoaded = false;
   /** Fallback organiser identity for the payout ledger if the account map misses. */
   let eventCreatorAddress = "";
   let eventLocation = "";
@@ -1167,6 +1191,7 @@ async function handleSuccessfulPayment(
     const siteSigner = metaSiteId ? await resolveSiteEventSigner(metaSiteId, eventId) : null;
     const ev = await getEvent(eventId, siteSigner ?? undefined);
     if (ev) {
+      eventLoaded = true;
       eventTitle = ev.title;
       eventDate = ev.startDate;
       eventEndDate = ev.endDate ?? "";
@@ -1237,7 +1262,29 @@ async function handleSuccessfulPayment(
   const claimedResults: Array<{ edition: number; qrContent: string }> = [];
   let stoppedReason: string | null = null;
 
-  if (isV2) {
+  // #300 rider: a payment can complete after the event's end — inside the
+  // expires_at floor window, or on a session created before the clamp shipped.
+  // The mint would revert SalesClosed at eventEndTs, i.e. the sponsor pays gas
+  // for a doomed tx before the same refund runs. Re-check the window here and
+  // go straight to the refund; the CONTRACT stays the authority — this only
+  // skips a broadcast the chain would refuse. Fails OPEN unless the event feed
+  // was definitively read, and only on a definitive "ended" — a feed hiccup or
+  // odd dates must never turn a paid mint into a refund.
+  if (isV2 && eventLoaded) {
+    const windowNow = checkSalesWindow({ startDate: eventDate, endDate: eventEndDate });
+    if (!windowNow.open && windowNow.reason === "ended") {
+      console.warn(
+        `[stripe-webhook] event ended before payment completed — refunding without broadcasting ` +
+        `(eventId=${eventId.slice(0, 8)} end=${eventEndDate || eventDate})`,
+      );
+      stoppedReason = "Event ended before payment completed — sales closed";
+    }
+  }
+
+  if (stoppedReason) {
+    // Sales re-check refused the mint — fall through to the refund + payout
+    // void below with zero claims, exactly as a SalesClosed revert would have.
+  } else if (isV2) {
     // ── v2 on-chain path ────────────────────────────────────────────────────
     // Resolve the orderRef once for the whole batch (all tickets share one
     // encrypted order blob — same buyer, same form submission).
