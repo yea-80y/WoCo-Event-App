@@ -23,7 +23,9 @@
     const snoozedUntil = Number(localStorage.getItem(SNOOZE_KEY) ?? 0);
     if (Date.now() < snoozedUntil) return;
     auth.getBackupInventory()
-      .then((entries) => { if (entries.length === 0) visible = true; })
+      // Only a DEFINITIVE "no backups" may nudge (#166 item 4): on a read that
+      // couldn't answer, this user may be protected — stay quiet.
+      .then((res) => { if (res.status === "known" && res.backups.length === 0) visible = true; })
       .catch(() => {});
   });
 
