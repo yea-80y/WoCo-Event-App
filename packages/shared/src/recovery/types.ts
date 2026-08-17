@@ -8,8 +8,16 @@
  * key or a sufficient share set (non-custodial, §11.3/§11.4).
  */
 
-/** Current envelope format. v1 = 1-of-1 backup-EOA escrow (single wrapped DEK). */
-export const RECOVERY_ENVELOPE_VERSION = 1 as const;
+/**
+ * Current envelope format. v2 binds a ROLE into the AEAD additional-data
+ * (`woco/recovery/{role}/v2:{addr}`) so the guardian escrow and the portability
+ * envelope can never authenticate each other's ciphertexts (#166 item 3). v1
+ * (legacy, still openable) bound `woco/recovery/v1:{addr}` with no role. The
+ * DEK scheme is unchanged across both: 1-of-1 backup-EOA escrow, single wrapped
+ * DEK; M-of-N is a future version. AAD construction + the version allowlist
+ * live client-side in `apps/web/src/lib/auth/recovery-aad.ts`.
+ */
+export const RECOVERY_ENVELOPE_VERSION = 2 as const;
 
 /**
  * Sealed escrow envelope. Confidentiality rests entirely on `wrappedDeks`

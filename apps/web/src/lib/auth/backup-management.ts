@@ -172,8 +172,8 @@ export async function removeAllAccountBackups(args: {
     try {
       const { MAX_CLEAR_GUARDIANS } = await import("@woco/shared");
       const { readUserManifestResult } = await import("../manifest/inventory.js");
-      // The tri-state read, NOT readBackupHistory: that one collapses "no manifest"
-      // and "couldn't read it" into the same empty array (#138/#155 class).
+      // The tri-state read — a lenient one would collapse "no manifest" and
+      // "couldn't read it" into the same empty array (#138/#155 class).
       const res = await readUserManifestResult({
         signer: { privKey: args.feedSigner.privKey, address: args.feedSigner.address },
         parentAddress: args.kernelAddress,

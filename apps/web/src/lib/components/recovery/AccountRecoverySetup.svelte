@@ -51,8 +51,11 @@
   let removeBookkeepingOk = $state(true);
   // Backups this account retired earlier. A LIVE hazard, not history: the caller
   // hook's guardian mapping survived the uninstall, so adding any new backup makes
-  // all of these work again. The user must be told before, not after.
+  // all of these work again. The user must be told before, not after — which is
+  // why `retiredKnown` exists (#166 item 4): when the history read can't answer,
+  // the warning must degrade to "we couldn't check", never silently vanish.
   let retiredCount = $state(0);
+  let retiredKnown = $state(true);
 
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const addrDisplay = (a: string) => `${a.slice(0, 10)}…${a.slice(-8)}`;
@@ -130,8 +133,8 @@
       // Separate + non-blocking: the resurrect warning is owed even when the
       // protection read failed, and a manifest hiccup must not stall the panel.
       auth.getRetiredBackups()
-        .then((r) => { retiredCount = r.length; })
-        .catch(() => {});
+        .then((r) => { retiredKnown = r.status === "known"; retiredCount = r.status === "known" ? r.backups.length : 0; })
+        .catch(() => { retiredKnown = false; });
     })();
   });
 
@@ -241,8 +244,8 @@
       phase = "removed";
       // These are now the resurrect hazard the add flow must warn about.
       auth.getRetiredBackups()
-        .then((r) => { retiredCount = r.length; })
-        .catch(() => {});
+        .then((r) => { retiredKnown = r.status === "known"; retiredCount = r.status === "known" ? r.backups.length : 0; })
+        .catch(() => { retiredKnown = false; });
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Couldn't remove your backups — please try again";
       phase = "error";
@@ -377,6 +380,12 @@
           active too</strong> — the recovery contract can't un-trust a wallet, so they came
           back with it.
         </p>
+      {:else if !retiredKnown}
+        <p class="security-note" role="note">
+          We couldn't check whether this account removed backups in the past. If it did,
+          <strong>those are active again too</strong> — the recovery contract can't un-trust
+          a wallet, so they came back with it.
+        </p>
       {/if}
       <p class="soft-warn" role="note">
         Adding another backup <strong>adds</strong> to what's already set up — it doesn't
@@ -404,6 +413,13 @@
           account earlier. Adding a new one now <strong>makes {retiredCount === 1 ? "that one" : "those"}
           work again</strong> — the recovery contract can't un-trust a wallet. Only continue if
           you still trust {retiredCount === 1 ? "it" : "them"}.
+        </p>
+      {:else if !retiredKnown}
+        <p class="security-note" role="note">
+          We couldn't check whether you removed backups from this account in the past. If you
+          did, adding a new one now <strong>makes those work again</strong> — the recovery
+          contract can't un-trust a wallet. Only continue if you'd still trust every backup
+          this account has ever had.
         </p>
       {/if}
       {#if isProtected === null && checkDone}
@@ -519,6 +535,12 @@
             This also <strong>reactivates the {retiredCount === 1 ? "backup" : `${retiredCount} backups`}
             you removed earlier</strong> — adding any backup switches the recovery route back on
             for every wallet this account has ever trusted.
+          </p>
+        {:else if !retiredKnown}
+          <p class="security-note" role="note">
+            We couldn't check for backups this account removed in the past. If there are any,
+            this <strong>reactivates them</strong> — adding any backup switches the recovery
+            route back on for every wallet this account has ever trusted.
           </p>
         {/if}
 

@@ -113,30 +113,9 @@ async function manifestBaseForWrite(args: {
   return read.status === "found" ? read.manifest : null;
 }
 
-/**
- * The account's LIVE backups — retired entries (`revoked`) are filtered out, so
- * every "your backups" surface keeps meaning what it always meant. Use
- * {@link readBackupHistory} when you need the retired ones too.
- */
-export async function readBackupInventory(args: {
-  signer: ManifestSigner;
-  parentAddress: string;
-}): Promise<BackupInventoryEntry[]> {
-  return (await readBackupHistory(args)).filter((b) => !b.revoked);
-}
-
-/**
- * Every backup entry the account has ever recorded, retired ones included. Two
- * callers need this and both are correctness-critical: the guardian list handed to
- * the hint-tombstone pass, and the "adding a backup will resurrect these" warning.
- */
-export async function readBackupHistory(args: {
-  signer: ManifestSigner;
-  parentAddress: string;
-}): Promise<BackupInventoryEntry[]> {
-  const manifest = await readUserManifest(args);
-  return manifest?.backups ?? [];
-}
+// Backup reads live in backup-inventory.ts (#166 item 4): every consumer of the
+// backup list is a security surface, so the lenient collapsed-to-[] readers that
+// used to sit here are gone — there is only the tri-state read.
 
 /** Seal + write a manifest to the user's SOC (the shared tail of every mutation). */
 async function writeUserManifest(args: {

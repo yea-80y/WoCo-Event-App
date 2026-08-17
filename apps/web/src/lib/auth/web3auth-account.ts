@@ -14,6 +14,7 @@ import {
   clearWeb3AuthSessionFlag,
   hasWeb3AuthSessionFlag,
 } from "./web3auth-session-flag.js";
+import { awaitWeb3AuthRehydration, endSurvivingWeb3AuthSession } from "./web3auth-survivor.js";
 
 type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
 
@@ -46,44 +47,6 @@ async function _getInstance() {
   return _instance;
 }
 
-/**
- * Wait for a cached Web3Auth session to finish rehydrating. In v10 the modal
- * rehydrates the stored connector INSIDE a non-awaited `CONNECTORS_UPDATED`
- * handler, so `w.connected` is still false the instant `init()` resolves — reading
- * it immediately makes a valid session look logged-out (silent logout on refresh)
- * and leaves the SDK in a half-connected state that then bypasses the OTP on the
- * next explicit login. We only block when `cachedConnector` says a session exists;
- * a fresh page (no cache) resolves instantly so the login screen isn't delayed.
- */
-async function _awaitRehydration(w: Web3AuthInstance): Promise<boolean> {
-  if (w.connected) return true;
-  if (!w.cachedConnector) return false;
-
-  const { CONNECTOR_EVENTS } = await import("@web3auth/modal");
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (v: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      w.removeListener(CONNECTOR_EVENTS.CONNECTED, onConnected);
-      w.removeListener(CONNECTOR_EVENTS.AUTHORIZED, onConnected);
-      w.removeListener(CONNECTOR_EVENTS.ERRORED, onFailed);
-      w.removeListener(CONNECTOR_EVENTS.REHYDRATION_ERROR, onFailed);
-      resolve(v);
-    };
-    const onConnected = () => finish(true);
-    const onFailed = () => finish(false);
-    // Fallback: don't hang the UI if the SDK never emits (fall back to whatever
-    // connected state it reached). Rehydration normally settles in well under 1s.
-    const timer = setTimeout(() => finish(w.connected), 5000);
-    w.on(CONNECTOR_EVENTS.CONNECTED, onConnected);
-    w.on(CONNECTOR_EVENTS.AUTHORIZED, onConnected);
-    w.on(CONNECTOR_EVENTS.ERRORED, onFailed);
-    w.on(CONNECTOR_EVENTS.REHYDRATION_ERROR, onFailed);
-  });
-}
-
 async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ address: string; privateKey: `0x${string}` }> {
   const { privateKeyToAccount } = await import("viem/accounts");
   const raw = await extractRawPrivateKey(provider);
@@ -110,11 +73,10 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
   const w = await _getInstance();
   if (!w) throw new Error("Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).");
 
-  if (await _awaitRehydration(w)) {
-    // Throws are surfaced, not swallowed: a survivor we could not end must
-    // never be adopted, and proceeding to connect() would adopt it.
-    await w.logout({ cleanup: true });
-  }
+  // Throws are surfaced, not swallowed: a survivor we could not end must
+  // never be adopted, and proceeding to connect() would adopt it. Shared with
+  // the guardian connector (#307), which has the same hole with higher stakes.
+  await endSurvivingWeb3AuthSession(w);
 
   try {
     const provider = await w.connect();
@@ -123,7 +85,7 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
       return _extractKeyAndAddress(provider);
     }
   } catch (e) {
-    // A stored session hydrating LATE (past _awaitRehydration's 5s window)
+    // A stored session hydrating LATE (past the rehydration wait's 5s window)
     // can close the modal and reject with "User closed the modal". The old
     // recovery here ADOPTED the freshly-hydrated session — the #182 bug
     // through a race window. End it instead and ask for one retry, which
@@ -179,7 +141,7 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
   try {
     // Give a cached session time to finish rehydrating before deciding it's gone —
     // otherwise every refresh reads connected=false and logs the user out.
-    const rehydrated = await _awaitRehydration(w);
+    const rehydrated = await awaitWeb3AuthRehydration(w);
     console.debug(
       "[web3auth] restore:",
       { cachedConnector: w.cachedConnector, rehydrated, connected: w.connected, hasProvider: !!w.provider },
@@ -234,7 +196,7 @@ export async function logoutWeb3Auth(): Promise<void> {
   if (!w) return;
 
   try {
-    await _awaitRehydration(w);
+    await awaitWeb3AuthRehydration(w);
     if (w.connected) {
       await w.logout({ cleanup: true });
     } else if (w.cachedConnector) {

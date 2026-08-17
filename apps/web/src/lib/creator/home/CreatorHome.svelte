@@ -52,6 +52,9 @@
   let ownedNames = $state<OwnedSubEnsName[]>([]);
   let loadingNames = $state(true);
   let backupInventory = $state<BackupInventoryEntry[]>([]);
+  // The read couldn't answer (#166 item 4) — the panel must say "couldn't
+  // check", never claim "No backup yet" over a fault.
+  let backupsUnknown = $state(false);
   let loadingBackups = $state(true);
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
@@ -86,6 +89,7 @@
     stripeReady = null;
     ownedNames = [];
     backupInventory = [];
+    backupsUnknown = false;
     loadingEvents = false;
     loadingSites = false;
     loadingShops = false;
@@ -161,11 +165,12 @@
     // Prompt-free: reads the stored feed-signer blob, no signature. Only
     // meaningful for the kinds that can install guardian recovery.
     if (canProtect) {
-      auth.getBackupInventory().then(entries => {
+      auth.getBackupInventory().then(res => {
         if (token !== loadToken) return;
-        backupInventory = entries;
+        backupsUnknown = res.status !== "known";
+        backupInventory = res.status === "known" ? res.backups : [];
         loadingBackups = false;
-      }).catch(() => { if (token === loadToken) loadingBackups = false; });
+      }).catch(() => { if (token === loadToken) { backupsUnknown = true; loadingBackups = false; } });
     } else {
       loadingBackups = false;
     }
@@ -543,12 +548,16 @@
                 {/if}
               </span>
               <button class="link-quiet" onclick={() => navigate("/protect")}>
-                {sortedBackups.length > 0 ? "Manage →" : "Set up →"}
+                {sortedBackups.length > 0 || backupsUnknown ? "Manage →" : "Set up →"}
               </button>
             </div>
 
             {#if loadingBackups}
               <div class="panel-empty">Loading…</div>
+            {:else if backupsUnknown}
+              <div class="panel-empty">
+                <span>Couldn't check this account's backups right now.</span>
+              </div>
             {:else if sortedBackups.length === 0}
               <div class="panel-empty">
                 <span>No backup yet — protect your dashboard.</span>

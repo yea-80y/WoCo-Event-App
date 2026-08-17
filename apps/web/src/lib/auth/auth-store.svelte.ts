@@ -421,31 +421,53 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
 // failed-SOC-probe fan-out (gateway 403s + server 404s) on EVERY passive panel
 // mount otherwise. In-memory only — this is decrypted private metadata (guardian
 // addresses) and must not land in localStorage. Concurrent callers (CreatorHome
-// + BackupNudge) share one in-flight read.
-let _backupInvMemo: { parent: string; at: number; entries: import("@woco/shared").BackupInventoryEntry[] } | null = null;
-let _backupInvFlight: { parent: string; promise: Promise<import("@woco/shared").BackupInventoryEntry[]> } | null = null;
+// + BackupNudge) share one in-flight read. Only DEFINITIVE answers are memoized
+// (#166 item 4): pinning "couldn't read" for 10 minutes would hide the panel's
+// recovery on the next mount, while pinning a definitive answer is exactly what
+// the memo is for.
+let _backupInvMemo: { parent: string; at: number; backups: import("@woco/shared").BackupInventoryEntry[] } | null = null;
+let _backupInvFlight: { parent: string; promise: Promise<BackupInventoryRead> } | null = null;
 const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * What the backup panels may claim (#166 item 4). `unavailable` means NOTHING
+ * may be rendered as "no backups": the manifest could not be read, or this
+ * device has no feed signer to read it with — which is also the state of a
+ * recovered device whose escrow restore never ran, i.e. an account that may
+ * well be protected.
+ */
+export type BackupInventoryRead =
+  | { status: "known"; backups: import("@woco/shared").BackupInventoryEntry[] }
+  | { status: "unavailable"; reason?: string };
+
 /** The account's LIVE backups — retired ones are filtered out (see getRetiredBackups). */
-async function getBackupInventory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
-  return (await _getBackupHistory()).filter((b) => !b.revoked);
+async function getBackupInventory(): Promise<BackupInventoryRead> {
+  const read = await _getBackupHistory();
+  if (read.status !== "known") return read;
+  return { status: "known", backups: read.backups.filter((b) => !b.revoked) };
 }
 
 /**
  * Backups retired by "Remove all backups" (#165). NOT dead history: uninstalling
  * the recovery route leaves the caller hook's guardian mapping intact, so adding
  * any new backup makes every one of these work again. The setup screen warns off
- * this list, which is why the entries are marked rather than deleted.
+ * this list, which is why the entries are marked rather than deleted — and why an
+ * `unavailable` here must surface as "couldn't check", never as "nothing to warn
+ * about".
  */
-async function getRetiredBackups(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
-  return (await _getBackupHistory()).filter((b) => b.revoked);
+async function getRetiredBackups(): Promise<BackupInventoryRead> {
+  const read = await _getBackupHistory();
+  if (read.status !== "known") return read;
+  return { status: "known", backups: read.backups.filter((b) => b.revoked) };
 }
 
-async function _getBackupHistory(): Promise<import("@woco/shared").BackupInventoryEntry[]> {
+async function _getBackupHistory(): Promise<BackupInventoryRead> {
   const parent = _parent;
-  if (!parent) return [];
+  if (!parent) return { status: "unavailable", reason: "not signed in" };
   const memo = _backupInvMemo;
-  if (memo && memo.parent === parent && Date.now() - memo.at < BACKUP_INV_TTL_MS) return memo.entries;
+  if (memo && memo.parent === parent && Date.now() - memo.at < BACKUP_INV_TTL_MS) {
+    return { status: "known", backups: memo.backups };
+  }
   if (_backupInvFlight?.parent === parent) return _backupInvFlight.promise;
   const promise = _readBackupInventoryUncached(parent).finally(() => {
     _backupInvFlight = null;
@@ -454,21 +476,26 @@ async function _getBackupHistory(): Promise<import("@woco/shared").BackupInvento
   return promise;
 }
 
-async function _readBackupInventoryUncached(parent: string): Promise<import("@woco/shared").BackupInventoryEntry[]> {
+async function _readBackupInventoryUncached(parent: string): Promise<BackupInventoryRead> {
+  // No prompt-free signer on this device (or none yet — it may appear right
+  // after login, so this is never memoized). Without it the manifest cannot be
+  // read, and "couldn't read" is not "no backups".
   const address = await _getContentFeedSignerAddress();
-  if (!address) return []; // no signer yet — cheap, don't memo (may appear right after login)
+  if (!address) return { status: "unavailable", reason: "no feed signer on this device" };
   const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
   const privKey = await restoreContentFeedSigner(parent);
-  if (!privKey) return [];
+  if (!privKey) return { status: "unavailable", reason: "no feed signer on this device" };
   try {
     // Read the FULL history — the memo backs both the live-backups view and the
     // retired-guardian warning, and one read serves both.
-    const { readBackupHistory } = await import("../manifest/inventory.js");
-    const entries = await readBackupHistory({ signer: { privKey, address }, parentAddress: parent });
-    _backupInvMemo = { parent, at: Date.now(), entries };
-    return entries;
-  } catch {
-    return [];
+    const { readBackupHistoryResult } = await import("../manifest/backup-inventory.js");
+    const read = await readBackupHistoryResult({ signer: { privKey, address }, parentAddress: parent });
+    if (read.status === "known") {
+      _backupInvMemo = { parent, at: Date.now(), backups: read.backups };
+    }
+    return read;
+  } catch (e) {
+    return { status: "unavailable", reason: String(e) };
   }
 }
 
@@ -2177,6 +2204,7 @@ async function setupAccountRecovery(backup: {
   const envelope = await sealRecoveryBundle({
     bundle: { version: 1, secrets },
     kernelAddress,
+    role: "guardian",
     guardianPublicKeysHex: [gk.encryption.publicKeyHex],
   });
 
@@ -2186,7 +2214,7 @@ async function setupAccountRecovery(backup: {
   // either make the bundle un-openable or orphan the guardian SOC — caught here,
   // failing loudly at setup instead of silently at recovery time.
   const gk2 = await deriveGuardianKeys(backup.address, backup.signTypedData);
-  const check = await openRecoveryBundle({ envelope, kernelAddress, guardianKeypair: gk2.encryption });
+  const check = await openRecoveryBundle({ envelope, kernelAddress, role: "guardian", guardianKeypair: gk2.encryption });
   if (
     check.secrets.podSeed !== seed ||
     check.secrets.feedSignerPrivKey !== secrets.feedSignerPrivKey ||
@@ -2411,13 +2439,19 @@ async function recoverAndRekey(args: {
     let podSeed: string;
     let feedSignerPrivKey: string | undefined;
     try {
-      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, guardianKeypair: gk.encryption });
+      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, role: "guardian", guardianKeypair: gk.encryption });
       if (!bundle.secrets.podSeed) throw new Error("missing podSeed");
       podSeed = bundle.secrets.podSeed;
       // Restored verbatim (not re-derived) so the recovered account keeps owning
       // the feeds it wrote under the original feed-signer address.
       feedSignerPrivKey = bundle.secrets.feedSignerPrivKey;
-    } catch {
+    } catch (e) {
+      // An envelope from a NEWER app version is the one failure that is not
+      // "wrong wallet" — the version is public metadata on a public feed, so
+      // being specific leaks nothing, and the generic message would send the
+      // user hunting through wallets when the fix is to update the app.
+      const { UnknownRecoveryEnvelopeVersionError } = await import("./recovery-aad.js");
+      if (e instanceof UnknownRecoveryEnvelopeVersionError) throw e;
       // Don't leak whether it was a wrong account vs a corrupt blob.
       throw new Error(
         "That backup wallet can't unlock this account. Check you connected the right backup wallet and chose the right account.",
