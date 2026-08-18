@@ -11,8 +11,9 @@
    */
   import { onMount } from "svelte";
   import { lookupSubject, currentEra, formerNames, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
-  import { readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
+  import { creditsUnlocked, readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
   import { utcSessionDate } from "./next-statement.js";
+  import { requireAccountForAction } from "../auth/ensure-action.js";
 
   interface Props {
     subject: Hex0x;
@@ -22,6 +23,15 @@
 
   let head = $state<CreditHead | null>(null);
   let loaded = $state(false);
+  /**
+   * Whether the rider's collection has been unlocked on this device. False
+   * covers both "no account" and "signed in but keys not yet established", and
+   * the card shows the same face for both: the honest thing to say to either is
+   * "ride it once to add the credit", because neither has a count we can read.
+   * "Not collected yet" would be a claim, and for a returning rider on a fresh
+   * device it would be a false one.
+   */
+  let unlocked = $state(false);
   let inFlight = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -54,7 +64,22 @@
     loaded = true;
   }
 
-  onMount(refresh);
+  /**
+   * Reading a private logbook needs the rider's own keys, and establishing
+   * those keys prompts — so the mount read is GATED on them already existing.
+   * Without the gate, merely opening this page pops a signing dialog at a rider
+   * who has not tapped anything, which is both alarming in a queue and false to
+   * a rail that promises nothing is written without a deliberate tap. The tap
+   * itself does the unlocking, where the rider has asked for it.
+   */
+  onMount(async () => {
+    unlocked = await creditsUnlocked();
+    if (unlocked) {
+      await refresh();
+    } else {
+      loaded = true;
+    }
+  });
 
   async function collect() {
     if (inFlight) return;
@@ -73,6 +98,19 @@
     error = null;
     notice = null;
     try {
+      // The tap IS the sign-in prompt. `recordRide` would otherwise throw "Sign
+      // in to collect a credit" into the error slot — a dead end, since nothing
+      // on this card offers a way in. Cancelling is not a failure and gets no
+      // error: the rider changed their mind, and the card is unchanged.
+      // No `context` deliberately: the attendee subtitle in the login modal
+      // tells riders that accounts are for organisers, which is exactly the
+      // wrong thing to say to the rider we just asked to sign in.
+      if (!(await requireAccountForAction())) return;
+      // From here a read costs no extra prompt, and `recordRide` does its own —
+      // it reads the live head to carry the lifetime total forward — so a
+      // pre-read here would be a second round trip that changes no outcome.
+      // A failed write still repaints the true count, below.
+      unlocked = true;
       const res = await recordRide(subject);
       if (res.ok) {
         lastTapAt = Date.now();
@@ -121,7 +159,7 @@
         <p class="formerly">Ridden as {previously.join(", ")}</p>
       {/if}
     </div>
-    {#if loaded && laps > 0}
+    {#if loaded && unlocked && laps > 0}
       <span class="badge" class:pub={isPublic}>
         {isPublic ? "Public" : "Private"}
       </span>
@@ -130,6 +168,8 @@
 
   {#if !loaded}
     <p class="state">Loading your collection…</p>
+  {:else if !unlocked}
+    <p class="state">Ride it once to add the credit.</p>
   {:else if laps === 0}
     <p class="state">Not collected yet. Ride it once to add the credit.</p>
   {:else}
@@ -143,8 +183,12 @@
       {/if}
     </div>
     <!-- The credit itself: held once, forever, from the first ride. The count
-         is a property of it, which is why it reads as a separate line. -->
-    <p class="credit">Credit collected</p>
+         is a property of it, which is why it reads as a separate line.
+         The private clause rides along rather than taking a slot of its own: a
+         child does not decode a "PRIVATE" badge as reassurance, and this is the
+         whole private-by-default statement said in words, always true, at the
+         one moment a rider is looking at what they just made. -->
+    <p class="credit">{isPublic ? "Credit collected" : "Credit collected — only you can see it"}</p>
   {/if}
 
   <div class="actions">
@@ -152,7 +196,7 @@
       {#if inFlight}Saving…{:else if laps === 0}I rode it{:else}Add a lap{/if}
     </button>
 
-    {#if loaded && laps > 0 && !isPublic && !confirmingPublish}
+    {#if loaded && unlocked && laps > 0 && !isPublic && !confirmingPublish}
       <button class="link" onclick={() => (confirmingPublish = true)} disabled={inFlight}>
         Make public
       </button>

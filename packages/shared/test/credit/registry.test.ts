@@ -168,3 +168,41 @@ test("the catalogue is frozen, so a caller cannot edit shipped meanings in place
     (WOCO_SUBJECTS as Record<string, SubjectDefinition>)[RITA_SUBJECT] = def();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The demo coaster
+// ---------------------------------------------------------------------------
+//
+// It exists so a live demo never needs a false tap on Rita — signing a lap
+// nobody rode, on the honesty product, on a permanent log. What keeps it safe
+// is that it labels itself in the two fields every surface renders, so the
+// label travels into its own screenshot with no flag for anyone to forget.
+// These pin that property rather than the entry's existence.
+
+const DEMO_SUBJECT = "0xadd9035a868daff172c831004fe5e8b1b1dd7d5240a907c0830922e8abe6c7e2" as Hex0x;
+
+test("the demo subject resolves, so the refusal to fake Rita has somewhere to go", () => {
+  assert.notEqual(lookupSubject(WOCO_SUBJECTS, DEMO_SUBJECT), null);
+});
+
+test("the demo coaster says it is not real in the fields every surface shows", () => {
+  const def = lookupSubject(WOCO_SUBJECTS, DEMO_SUBJECT)!;
+  const era = currentEra(def);
+  // Name AND park, because different surfaces lead with different ones: the
+  // collecting card heads with the name, the public counter's headline pairs
+  // both. Either one alone could be cropped out of a screenshot.
+  assert.match(era.name, /demo/i);
+  assert.match(era.park, /not a real ride/i);
+});
+
+test("the demo coaster does not arm the double-tap guard", () => {
+  // Demos tap in quick succession, and the guard only arms above zero.
+  assert.equal(lookupSubject(WOCO_SUBJECTS, DEMO_SUBJECT)!.cadenceMinutes, 0);
+});
+
+test("the demo entry did not disturb Rita's subject, which is a permanent hash", () => {
+  // An id here is a hash input riders sign against; editing one after anything
+  // has been written for it silently makes a different coaster.
+  assert.equal(RITA_SUBJECT, "0xf1b7f5115cfaf052619cad0d34ae3a26425e8a6d84647120174bf33f261b201b");
+  assert.equal(currentEra(lookupSubject(WOCO_SUBJECTS, RITA_SUBJECT)!).name, "Rita");
+});

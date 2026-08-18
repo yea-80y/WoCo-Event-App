@@ -222,6 +222,26 @@ export const WOCO_SUBJECT_DEFINITIONS: readonly SubjectDefinition[] = [
     // a launch coaster's cycle plus re-ride arrangement, not a guess here.
     cadenceMinutes: 2,
   },
+  {
+    // Minted 2026-08-18 so a demo never needs a false tap on Rita. Signing a
+    // lap nobody rode, on the honesty product, on a permanent log, is the one
+    // unforced error available — so the refusal gets a working alternative
+    // rather than relying on discipline.
+    //
+    // NOT A REAL COASTER, and it says so in the two fields every surface that
+    // resolves this catalogue renders — the collecting card's header and the
+    // public counter's headline both read the era name and park. The label
+    // therefore travels into its own screenshot, with no flag for anyone to
+    // forget and no new UI. That is what makes it safe for this entry to be
+    // publicly linkable, which it necessarily is.
+    // subject = 0xadd9035a868daff172c831004fe5e8b1b1dd7d5240a907c0830922e8abe6c7e2
+    id: "dmoqk7xr-w2h5ntb",
+    eras: [{ name: "Demo Coaster", park: "WoCo demo — not a real ride" }],
+    timezone: "Europe/London",
+    // Zero, not a default: demos tap in quick succession, and the double-tap
+    // guard only arms above zero (CoasterCredit.svelte).
+    cadenceMinutes: 0,
+  },
 ];
 
 /** The catalogue the app ships with. Replaced, not extended, once definitions

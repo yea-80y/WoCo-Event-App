@@ -22,6 +22,7 @@
   const loadRecoverySetup = () => import("./lib/components/recovery/AccountRecoverySetup.svelte");
   const loadRecoverPortal = () => import("./lib/components/recovery/AccountRecoverPortal.svelte");
   const loadSignupLanding = () => import("./lib/attendee/gate/SignupLanding.svelte");
+  const loadCoasterPage = () => import("./lib/credits/CoasterPage.svelte");
 
   // Warm the chunks behind the bottom-nav destinations once the landing
   // screen is idle, so first navigation doesn't pay a cold Swarm fetch.
@@ -69,6 +70,8 @@
     <LazyRoute loader={loadSignupLanding} props={{ token: router.params.gt }} />
   {:else if router.route === "profile"}
     <LazyRoute loader={loadProfilePage} props={{ address: router.params.address }} />
+  {:else if router.route === "coaster"}
+    <LazyRoute loader={loadCoasterPage} props={{ subject: router.params.subject }} />
   {:else if router.route === "soon"}
     <ComingSoon feature={router.params.feature} />
   {:else if router.route === "shop-tap"}

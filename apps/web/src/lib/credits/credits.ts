@@ -195,6 +195,38 @@ async function readHeadAt(
 }
 
 /**
+ * Whether this rider's keys are ALREADY to hand, established without asking
+ * them for anything.
+ *
+ * The read path needs the same keys the write path does — the private topics
+ * are salted by the rider's own key, so there is no reading a private logbook
+ * without unlocking it — but {@link riderKeys} ESTABLISHES what it cannot find,
+ * and establishing prompts. A screen that read on mount would therefore pop a
+ * signing prompt at a rider who had done nothing but open a page, which is
+ * both alarming and, on a rail whose whole promise is that nothing happens
+ * without a deliberate tap, untrue to the product.
+ *
+ * So this asks only what is already stored, by exactly the route `riderKeys`
+ * would take: `restorePodSeed` reads a device blob, and the feed-signer ADDRESS
+ * getter is documented prompt-free and returns null rather than deriving for
+ * the kinds that would need a ceremony. True here means a read costs nothing;
+ * false means the screen shows its signed-out face and lets the tap unlock.
+ */
+export async function creditsUnlocked(): Promise<boolean> {
+  const parent = auth.parent?.toLowerCase();
+  if (!parent) return false;
+  try {
+    const [seed, feedAddress] = await Promise.all([
+      restorePodSeed(parent),
+      auth.getContentFeedSignerAddress(),
+    ]);
+    return seed !== null && feedAddress !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The rider's current head for a subject, wherever it lives. Display path, so
  * it collapses every failure to `null` — the next visit re-reads. Nothing here
  * may feed a write decision; use the tri-state readers for that.
