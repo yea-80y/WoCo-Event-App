@@ -109,7 +109,11 @@
       // No pre-read: `recordRide` does its own — it reads the live head to carry
       // the lifetime total forward — so one here would be a round trip that
       // changes no outcome.
-      const res = await recordRide(subject);
+      // The head this page already read on mount, handed back so the tap does
+      // not re-read the rider's own index and head seconds later. `head` is
+      // only ever set from a CLEAN read, and null falls back to the full
+      // tri-state path — see `recordRide`.
+      const res = await recordRide(subject, 1, head);
       if (res.ok) {
         lastTapAt = Date.now();
         head = { statement: res.statement, visibility: res.visibility };

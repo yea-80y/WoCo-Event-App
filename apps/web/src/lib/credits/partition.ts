@@ -1,5 +1,6 @@
 /**
- * Which partition holds a rider's live head for a subject — the pure half.
+ * The pure decisions on the credit write path: which partition holds a
+ * rider's live head, and when a warm-head attempt must be redone cold.
  *
  * SEPARATED FROM `credits.ts` for the reason `next-statement.ts` already was:
  * that module reaches the auth store, which is a Svelte runes module and cannot
@@ -48,4 +49,30 @@ export function decideVisibility(
   if (pub.status === "ok" && pub.subjects.includes(subject)) return { status: "ok", visibility: "public" };
   if (priv.status === "ok" && priv.subjects.includes(subject)) return { status: "ok", visibility: "private" };
   return { status: "ok", visibility: null };
+}
+
+/**
+ * Whether a failed ride attempt should be retried from a full, cold read.
+ *
+ * ONLY when a warm head was used AND the write came back `superseded`. Both
+ * halves are load-bearing:
+ *
+ * - `superseded` is the one failure meaning the statement was NOT written —
+ *   our version carries another writer's bytes. Retrying anything else risks
+ *   writing a second time on top of a ride that already landed, which would
+ *   add the laps twice.
+ * - the WARM condition is what makes the retry honest rather than hopeful. A
+ *   cold attempt that was superseded lost a real race with another device, and
+ *   its message stands. A warm one only proves the head the page handed us went
+ *   stale between load and tap — which re-reading actually fixes.
+ *
+ * Never retry more than once: the second attempt reads everything fresh, so a
+ * further `superseded` is a live race the rider should be told about, not a
+ * loop to spin in.
+ */
+export function shouldRetryCold(
+  attempt: { ok: boolean; superseded?: boolean },
+  usedWarmHead: boolean,
+): boolean {
+  return !attempt.ok && attempt.superseded === true && usedWarmHead;
 }

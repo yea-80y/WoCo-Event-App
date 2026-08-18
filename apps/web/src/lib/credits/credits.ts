@@ -26,7 +26,7 @@
  */
 
 import { auth } from "../auth/auth-store.svelte.js";
-import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
+import { decideVisibility, shouldRetryCold, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
 import { readContentFeedResult } from "../swarm/content-feed.js";
 import { writeContentFeedVerified } from "../swarm/verified-write.js";
@@ -277,14 +277,67 @@ const CANNOT_READ = "Couldn't reach your collection just now — try again in a 
  * silently changes a rider's visibility. Only {@link publishSubject} does that,
  * and only in one direction.
  */
-export async function recordRide(subject: Hex0x, laps = 1): Promise<RideResult> {
+export async function recordRide(
+  subject: Hex0x,
+  laps = 1,
+  /**
+   * A head the CALLER already read cleanly, moments ago, in this session — the
+   * page's own mount read. Reusing it skips three feed reads per tap (both
+   * subject-index partitions and the head itself), each of which probes past
+   * its feed's latest version, and each such probe is a bee network search for
+   * a chunk that does not exist (#323).
+   *
+   * Only a CLEAN FOUND may be passed. `readMyCredit` collapses every failure to
+   * null, so a null caller-side head is indistinguishable from "unreadable" and
+   * must NOT be treated as "no previous laps" — that is the exact mistake that
+   * restarts a rider's lifetime count at zero. Null here therefore takes the
+   * full tri-state path rather than assuming anything.
+   *
+   * Staleness is backstopped, not hoped away: if another device wrote between
+   * the page's read and this tap, our write lands on a version that already
+   * holds someone else's bytes and comes back `superseded` — at which point we
+   * discard the warm head and redo the whole read honestly, once.
+   */
+  warm?: CreditHead | null,
+): Promise<RideResult> {
   if (!Number.isSafeInteger(laps) || laps < 1) return { ok: false, error: "laps must be a positive whole number" };
   try {
     const keys = await riderKeys();
 
+    const first = await attemptRide(keys, subject, laps, warm ?? null);
+    if (!shouldRetryCold(first, Boolean(warm))) return first;
+    return attemptRide(keys, subject, laps, null);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not save that ride." };
+  }
+}
+
+/**
+ * One honest attempt. `warm` non-null means the caller supplied a clean head
+ * and its partition; null means read everything.
+ */
+async function attemptRide(
+  keys: RiderKeys,
+  subject: Hex0x,
+  laps: number,
+  warm: CreditHead | null,
+): Promise<RideResult & { superseded?: boolean }> {
+  let visibility: CreditVisibility;
+  let prev: CreditStatementV1 | null;
+  /** Whether the subject is known to be in its partition's index already. A
+   *  warm head implies it: `readMyCredit` only produces one by way of
+   *  `liveVisibility`, which is the index read. */
+  let indexed: boolean;
+
+  if (warm) {
+    visibility = warm.visibility;
+    prev = warm.statement;
+    indexed = true;
+  } else {
     const where = await liveVisibility(keys, subject);
     if (where.status !== "ok") return { ok: false, error: CANNOT_READ };
-    const visibility = where.visibility ?? "private";
+    visibility = where.visibility ?? "private";
+    indexed = where.visibility !== null;
 
     // Only a CLEAN absent may start a new count. An unreadable head that
     // actually holds a lifetime total would otherwise restart the rider at
@@ -293,47 +346,39 @@ export async function recordRide(subject: Hex0x, laps = 1): Promise<RideResult> 
     // two would disagree indefinitely.
     const head = await readHeadAt(keys, subject, visibility);
     if (head.status === "unavailable") return { ok: false, error: CANNOT_READ };
-    const prev = head.status === "found" ? head.statement : null;
-
-    const statement = signCreditStatement(
-      nextCreditStatement({ prev, subject, holder: keys.holder, laps }),
-      keys.holderPrivKey,
-    );
-    const written = await writeStatement(keys, subject, visibility, statement);
-    if (!written.ok) return written;
-
-    // ONLY when this subject is not already indexed. `liveVisibility` returning
-    // a non-null partition IS the statement "that partition's index contains
-    // this subject" — it is the only way it can produce one. Calling
-    // `addToSubjectIndex` anyway re-reads a whole feed, including a probe past
-    // its latest version, to re-learn a fact this same call established. A
-    // probe past the end is a bee network search for a chunk that does not
-    // exist, the most expensive read on Swarm (#323).
-    //
-    // Skipping is also SAFER than re-reading, which is why this is not merely
-    // an optimisation. In the race where another device publishes this subject
-    // mid-tap, the re-read sees the freshly-swept private index, does not find
-    // the subject, and writes it back — undoing the publish. Doing nothing
-    // cannot undo anything.
-    //
-    // The read-modify-write loop still runs for the case it exists for: a first
-    // lap on a subject, where `visibility` was null and nothing indexes it yet.
-    if (where.visibility === null) {
-      // The ride is recorded and valid from here on. An index failure costs
-      // enumeration on a fresh device, not the count — so it must never turn a
-      // landed ride into a reported failure, because the rider's retry would
-      // read their own new statement as `prev` and add the laps a second time.
-      try {
-        await addToSubjectIndex(keys, subject, visibility);
-      } catch {
-        // Deliberately swallowed — see above.
-      }
-    }
-
-    return { ok: true, statement, visibility, confirmed: written.confirmed };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Could not save that ride." };
+    prev = head.status === "found" ? head.statement : null;
   }
+
+  const statement = signCreditStatement(
+    nextCreditStatement({ prev, subject, holder: keys.holder, laps }),
+    keys.holderPrivKey,
+  );
+  const written = await writeStatement(keys, subject, visibility, statement);
+  if (!written.ok) return written;
+
+  // ONLY when this subject is not already indexed. A non-null partition IS the
+  // statement "that partition's index contains this subject" — it is the only
+  // way `liveVisibility` can produce one, and a warm head carries the same
+  // fact. Calling `addToSubjectIndex` anyway re-reads a whole feed, including
+  // a probe past its latest version, to re-learn what this call already knows.
+  //
+  // Skipping is also SAFER than re-reading: in the race where another device
+  // publishes this subject mid-tap, the re-read sees the freshly-swept private
+  // index, does not find the subject, and writes it back — undoing the publish.
+  // Doing nothing cannot undo anything.
+  if (!indexed) {
+    // The ride is recorded and valid from here on. An index failure costs
+    // enumeration on a fresh device, not the count — so it must never turn a
+    // landed ride into a reported failure, because the rider's retry would
+    // read their own new statement as `prev` and add the laps a second time.
+    try {
+      await addToSubjectIndex(keys, subject, visibility);
+    } catch {
+      // Deliberately swallowed — see above.
+    }
+  }
+
+  return { ok: true, statement, visibility, confirmed: written.confirmed };
 }
 
 async function writeStatement(
@@ -341,7 +386,7 @@ async function writeStatement(
   subject: Hex0x,
   visibility: CreditVisibility,
   statement: CreditStatementV1,
-): Promise<{ ok: true; confirmed: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; confirmed: boolean } | { ok: false; error: string; superseded?: boolean }> {
   const body = visibility === "private"
     ? await sealJson(keys.encPubKeyHex, statement)
     : statement;
@@ -357,7 +402,11 @@ async function writeStatement(
   // version carries another writer's bytes, so the total we computed is stale.
   // Retrying blindly would write a WRONG number, not a duplicate one.
   if (res.status === "superseded") {
-    return { ok: false, error: "Another device recorded a ride at the same moment. Open again to see your count." };
+    return {
+      ok: false,
+      superseded: true,
+      error: "Another device recorded a ride at the same moment. Open again to see your count.",
+    };
   }
   return { ok: true, confirmed: res.status === "verified" };
 }

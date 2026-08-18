@@ -18,7 +18,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decideVisibility, type IndexRead } from "../src/lib/credits/partition.js";
+import { decideVisibility, shouldRetryCold, type IndexRead } from "../src/lib/credits/partition.js";
 import type { Hex0x } from "@woco/shared";
 
 const SUBJECT = `0x${"11".repeat(32)}` as Hex0x;
@@ -60,4 +60,38 @@ test("public wins when both list the subject, so a published rider is never demo
   // Publication is one-way (publishSubject). If both indexes somehow list it,
   // resolving to private would write the next lap to the retired topic.
   assert.deepEqual(decideVisibility(ok([SUBJECT]), ok([SUBJECT]), SUBJECT), { status: "ok", visibility: "public" });
+});
+
+// ---------------------------------------------------------------------------
+// The retry guard (#323)
+// ---------------------------------------------------------------------------
+//
+// `recordRide` now reuses the head the page read on mount, which removes three
+// feed reads from every tap. The guard below is what keeps that safe: it is the
+// difference between "the head we were handed went stale, re-read and try
+// again" and "write a second time on top of a ride that already landed".
+
+test("a superseded WARM attempt is retried cold — the head went stale", () => {
+  assert.equal(shouldRetryCold({ ok: false, superseded: true }, true), true);
+});
+
+test("a superseded COLD attempt is NOT retried — that is a real race", () => {
+  // Everything was read fresh, so re-reading changes nothing. The rider is told
+  // another device got there first, rather than watching a silent loop.
+  assert.equal(shouldRetryCold({ ok: false, superseded: true }, false), false);
+});
+
+test("no other failure is ever retried, warm or not", () => {
+  // This is the one that matters. `superseded` is the ONLY outcome meaning the
+  // statement was not written. Retrying an unreadable-index failure, or any
+  // future failure that forgets to set the flag, could add the laps twice.
+  for (const warm of [true, false]) {
+    assert.equal(shouldRetryCold({ ok: false }, warm), false);
+    assert.equal(shouldRetryCold({ ok: false, superseded: false }, warm), false);
+  }
+});
+
+test("a successful attempt is never retried", () => {
+  assert.equal(shouldRetryCold({ ok: true }, true), false);
+  assert.equal(shouldRetryCold({ ok: true, superseded: false }, true), false);
 });
