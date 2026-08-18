@@ -47,8 +47,23 @@ import {
 
 const HINT_PREFIX = "woco:cfv:"; // content-feed version
 
-function hintKey(owner: string, topic: string): string {
-  return `${HINT_PREFIX}${owner.toLowerCase()}:${topic}`;
+/** Exported ONLY so a test can prove the two call-site owner forms collide.
+ *  The bug this guards was invisible — everything worked, just slowly — so the
+ *  key derivation is the thing that has to be asserted directly. */
+export function hintKey(owner: string, topic: string): string {
+  // NORMALISED, both case AND `0x` prefix (#302). The write side derives its
+  // owner from `new Wallet(key).address` (0x-prefixed) and the read side strips
+  // the prefix before probing, so keying on the raw string meant the two never
+  // saw each other's hint — and `readVersionHint` returns 0 on a miss, so every
+  // operation restarted the forward scan from version 0.
+  //
+  // Cost, not correctness: the scan is sound either way. But a probe PAST the
+  // latest version is a bee network search for a chunk that does not exist —
+  // the most expensive read on Swarm, and the reason VERSION_PROBE_WINDOW was
+  // cut to 2 after a window of 8 melted the node. The hint is what keeps the
+  // scan short, and it had been silently inert on every client-owned feed.
+  const o = owner.startsWith("0x") || owner.startsWith("0X") ? owner.slice(2) : owner;
+  return `${HINT_PREFIX}${o.toLowerCase()}:${topic}`;
 }
 
 function readVersionHint(owner: string, topic: string): number {
