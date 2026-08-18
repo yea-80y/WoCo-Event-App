@@ -71,6 +71,12 @@ interface RiderKeys {
   feedAddress: string;
 }
 
+/** `0x`-prefixed or not, in; bare hex out. Tolerant of both because the two
+ *  sides of this boundary disagree and only one of them is frozen. */
+function stripHexPrefix(hex: string): string {
+  return hex.startsWith("0x") ? hex.slice(2) : hex;
+}
+
 async function riderKeys(): Promise<RiderKeys> {
   const parent = auth.parent?.toLowerCase();
   if (!parent) throw new Error("Sign in to collect a credit.");
@@ -98,7 +104,15 @@ async function riderKeys(): Promise<RiderKeys> {
   const enc = deriveEncryptionKeypairFromPodSeed(seed);
   return {
     holderPrivKey: pod.privateKey,
-    holder: pod.publicKeyHex,
+    // STRIPPED, and the schema is why. `deriveKeypair` returns an 0x-prefixed
+    // hex string (pod/keys.ts), the POD ticket rail is happy with that, and
+    // `woco.credit.v1` is not: `holder` is validated against /^[0-9a-f]{64}$/
+    // and the format is CLOSED (plan, P0 item 4), so the caller conforms rather
+    // than the schema loosening. Passing the prefix through made every signing
+    // attempt throw "invalid woco.credit.v1 unsigned statement" — invisible
+    // until the rail was reachable at all. The indexer agrees with the schema:
+    // evidence leaves carry bare 64-hex holders (verify-report `HOLDER_RE`).
+    holder: stripHexPrefix(pod.publicKeyHex),
     encPrivKey: enc.privateKey,
     encPubKeyHex: enc.publicKeyHex,
     feedPrivKey: feed.privKey,

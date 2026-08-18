@@ -107,3 +107,61 @@ test("ensurePodIdentity stores under the same resolver the accessors read by", (
   // And it is podAddr, never _parent, that the seed is written under.
   assert.match(body, /requestPodIdentity\(podAddr,/);
 });
+
+// ---------------------------------------------------------------------------
+// The holder format — the SECOND dead-path bug (#172)
+// ---------------------------------------------------------------------------
+//
+// Fixing the address binding exposed this one, because it lived one line
+// further down a path nothing could reach: `deriveKeypair` returns an
+// 0x-PREFIXED hex string, `woco.credit.v1` validates `holder` against bare
+// 64-hex, and `riderKeys` passed the prefixed value straight through. Every
+// signing attempt threw "invalid woco.credit.v1 unsigned statement".
+//
+// Two independent sources of truth are pinned against each other here, which
+// is what makes this a test rather than a restatement: what the POD derivation
+// actually emits, and what the frozen schema actually accepts.
+
+const { deriveKeypair } = await import("../src/lib/pod/keys.ts");
+const { creditStatementDigest, CREDIT_STATEMENT_FORMAT } = await import("@woco/shared");
+
+test("POD derivation emits an 0x prefix that the credit schema rejects", async () => {
+  const kp = await deriveKeypair("77".repeat(32));
+  // If this ever stops being true, the strip in credits.ts becomes a no-op
+  // rather than a bug — but silently, so it is worth knowing.
+  assert.match(kp.publicKeyHex, /^0x[0-9a-f]{64}$/);
+
+  const unsigned = {
+    format: CREDIT_STATEMENT_FORMAT,
+    subject: `0x${"11".repeat(32)}`,
+    holder: kp.publicKeyHex, // the prefixed form — what the bug shipped
+    seq: 0,
+    total: 1,
+    session: { date: "2026-08-18", count: 1 },
+  };
+  assert.throws(
+    () => creditStatementDigest(unsigned as never),
+    /invalid woco\.credit\.v1 unsigned statement/,
+    "the prefixed holder must be rejected — this is the exact throw riders saw",
+  );
+});
+
+test("the stripped holder is what the credit schema accepts", async () => {
+  const kp = await deriveKeypair("77".repeat(32));
+  const unsigned = {
+    format: CREDIT_STATEMENT_FORMAT,
+    subject: `0x${"11".repeat(32)}`,
+    holder: kp.publicKeyHex.slice(2),
+    seq: 0,
+    total: 1,
+    session: { date: "2026-08-18", count: 1 },
+  };
+  const digest = creditStatementDigest(unsigned as never);
+  assert.equal(digest.length, 32);
+});
+
+test("credits strips the prefix before it reaches the statement", () => {
+  // Source-level, because riderKeys reaches the auth store and cannot be
+  // loaded here. Pins the call, not the comment.
+  assert.match(CODE, /holder:\s*stripHexPrefix\(/);
+});
