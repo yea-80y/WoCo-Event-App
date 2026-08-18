@@ -1259,6 +1259,87 @@ crafted link would otherwise borrow this page's authority for an invented coaste
 is no `?indexer=`/`?api=` override — the honest form of "run your own" is a fork on your own
 domain, not a query string on a page that exists to be screenshotted.
 
+**SPLIT INTO TWO SURFACES — 2026-08-18.** The page above was rejected on sight:
+"far too many words", "we can't realistically send him that". The cause was not
+carelessness, it was the fix pattern — a review found nine overclaims and every
+repair ADDED a qualifying sentence, so a page whose job is to be screenshotted by
+coaster fans read as a legal disclaimer. None of that honesty was deleted. It
+moved one click away.
+
+The COUNTER is a kicker, the number, the coaster, ONE line and one link. The
+line, fixed: "Every lap here is signed by the rider who rode it. Nothing is taken
+on our word." ("Added up on your device" was rejected — it explains our plumbing,
+not what it means.) The kicker is the CHALLENGE (`CHALLENGE_LABELS` in
+`verify-report.ts`), never a person: "Dan's lap count" would be possessive over a
+figure that sums every rider. THE WORKING, behind "See the working →", carries
+the entries, the limits panel and check-it-yourself — verbatim where they were
+already right.
+
+ONE COMPONENT ON ONE REPORT, not a second Vite entry, and the reason is the same
+one that keeps `/count` unfetched: two fetches would let the working recount a
+DIFFERENT report across the 30s cache boundary — explaining a number the reader
+is no longer looking at, or manufacturing a mismatch from a lap that landed in
+between. An in-place `<details>` expander was also rejected: a challenged fan
+cannot link an expander, and the wall of words still ships inside the shareable
+artefact one tap from resurrecting the rejected page.
+
+FAILURE SURVIVES THE DIET. A contradicted recount or a contradicted entry
+REPLACES the claim on the counter — the page must never assert "nothing is taken
+on our word" beside a check that just failed — and reddens the figure on the
+working. Everything the spot-check can report that is not an accusation renders
+nothing there: silence never accuses, and on that surface silence never renders.
+
+⚠️ **RECORDED OBJECTION, owner's call.** A Fable review argues the agreed line
+asserts ridership — the one thing tier 1 may not claim — and cites this codebase
+striking "ridden it at least once" from the riders line for exactly that reason
+(`VerifyApp.svelte`, the comment above the riders paragraph). So the counter's
+only sentence may imply what the working denies one click away. Minimal repair
+that keeps the cadence: "Every lap here is signed by the rider it belongs to."
+Shipped verbatim as agreed pending that decision.
+
+⚠️ **The counter is now SCOPE-SILENT under a challenge kicker.** The old kicker
+said whose laps these were ("One rider's laps" / "Everyone's laps"); that moved
+to the working's scope line. Today the figure sums every rider on the coaster
+while the surface reads "Rita 100" — and the newly mounted collecting page
+invites the public to add to it. The label claims nothing arithmetically and the
+disambiguation is one click away, but the failure mode is concrete and on camera.
+Cheapest mitigations if wanted: show the kicker only when `scope === "rider"`, or
+carry the scope into the unit line. Not decided.
+
+### The collecting screen — MOUNTED 2026-08-18
+
+`CoasterCredit.svelte` had ZERO references outside its own file, so nobody could
+log a lap from any surface and the counter could only ever read 0. It now mounts
+at `#/coaster/:subject` via `CoasterPage.svelte`. The mounting was not mechanical:
+
+- A signed-out rider hit a dead-end red error — `riderKeys()` throws "Sign in to
+  collect a credit" and nothing on the card offered a way in. The TAP is now the
+  sign-in prompt, with NO `context`: the attendee subtitle tells riders accounts
+  are for organisers, which is the wrong thing to say to the rider you just asked
+  to sign in.
+- Opening the page could pop a signing dialog at a rider who had tapped nothing,
+  because the mount read derives keys. Gated on `creditsUnlocked()`, which asks
+  only for already-stored material.
+- The card rendered a WORKING COLLECT BUTTON for a subject nothing defines, so a
+  crafted link could have riders signing against an invented coaster. The
+  catalogue gate is a requirement of mounting, not polish — the same refusal the
+  verification page makes, for the same reason.
+- 🔴 The POD seed was looked up by `auth.parent`, which is the KERNEL address for
+  passkey and web3auth, while the seed is stored under the POD address (PRF-EOA /
+  Web3Auth EOA — invariant #1). So the rail was DEAD for its entire target
+  audience, and silently: `ensurePodIdentity()` succeeded, having just made the
+  rider approve a ceremony, and the next line failed with "could not unlock your
+  collection identity". Fixed by routing through the bound accessors
+  (`auth.getPodKeypair()` / `auth.getPodSeed()`), and pinned by a source ratchet,
+  `apps/web/test/credits-key-binding.test.ts`.
+
+A DEMO COASTER ships in `WOCO_SUBJECT_DEFINITIONS` so a demo never needs a false
+tap on Rita — signing a lap nobody rode, on the honesty product, on a permanent
+log. It labels itself in the era name and park, the two fields every surface that
+resolves the catalogue renders, so the label travels into its own screenshot with
+no flag for anyone to forget. That is what makes it safe for an entry that is
+necessarily publicly linkable.
+
 ⚠️ **OPEN, OWNER DECISION — the headline is community-scoped, not Dan's.** `manifest.count`
 SUMS every rider's total for the subject, so the moment a second rider publishes a Rita
 count, a page headlining it stops meaning "one rider's laps" while looking identical.

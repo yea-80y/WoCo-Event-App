@@ -106,25 +106,33 @@
       // tells riders that accounts are for organisers, which is exactly the
       // wrong thing to say to the rider we just asked to sign in.
       if (!(await requireAccountForAction())) return;
-      // From here a read costs no extra prompt, and `recordRide` does its own —
-      // it reads the live head to carry the lifetime total forward — so a
-      // pre-read here would be a second round trip that changes no outcome.
-      // A failed write still repaints the true count, below.
-      unlocked = true;
+      // No pre-read: `recordRide` does its own — it reads the live head to carry
+      // the lifetime total forward — so one here would be a round trip that
+      // changes no outcome.
       const res = await recordRide(subject);
       if (res.ok) {
         lastTapAt = Date.now();
         head = { statement: res.statement, visibility: res.visibility };
         loaded = true;
+        // Only NOW is the collection provably unlocked. Setting this before the
+        // write would make a declined key ceremony show the unlocked face —
+        // "Not collected yet" — which is a claim, and for a rider who has laps
+        // on another device a false one.
+        unlocked = true;
         // An unconfirmed write is not a failed one — the chunk is uploaded and
         // the gateway simply hasn't finished whitelisting it. Saying "saved,
         // still settling" is the honest version of a spinner that never ends.
         if (!res.confirmed) notice = "Saved — still settling on the network.";
       } else {
         error = res.error;
-        // The count we hold may be stale if another device won the write, so
-        // re-read rather than leaving a number on screen that lost a race.
-        await refresh();
+        // Re-derive rather than assume. This branch is right for a lost write
+        // race — the keys are fine and the count on screen may be stale — but
+        // the write can also have failed BECAUSE the rider declined the key
+        // ceremony, and a bare re-read then walks straight back into
+        // `ensurePodIdentity` and re-opens the prompt they just dismissed.
+        // Asking first costs one device read and never prompts.
+        unlocked = await creditsUnlocked();
+        if (unlocked) await refresh();
       }
     } finally {
       inFlight = false;

@@ -2964,6 +2964,13 @@ export const auth = {
   // the wrong one). For passkey this is the PRF-EOA address, NOT the Kernel
   // parent (invariant #1). Returns null when not logged in.
   getPodKeypair: () => { const a = _getPodAddress(); return a ? getPodKeypair(a) : Promise.resolve(null); },
+  // The RAW seed, bound to the same address for the same reason. Callers that
+  // need more than the ed25519 pair — the credits rail derives X25519 keys from
+  // the seed to seal a rider's private logbook — would otherwise reach for
+  // `restorePodSeed` directly and have to know which address it is keyed by.
+  // That is exactly the mistake `getPodKeypair` was bound to prevent, so the
+  // seed gets the same treatment rather than an invitation to guess.
+  getPodSeed: () => { const a = _getPodAddress(); return a ? restorePodSeed(a) : Promise.resolve(null); },
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).
   getContentFeedSigner: () => _getContentFeedSigner(),

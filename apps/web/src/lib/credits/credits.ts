@@ -26,7 +26,6 @@
  */
 
 import { auth } from "../auth/auth-store.svelte.js";
-import { getPodKeypair, restorePodSeed } from "../auth/pod-identity.js";
 import { readContentFeedResult } from "../swarm/content-feed.js";
 import { writeContentFeedVerified } from "../swarm/verified-write.js";
 import { nextCreditStatement } from "./next-statement.js";
@@ -80,9 +79,17 @@ async function riderKeys(): Promise<RiderKeys> {
   // allowed to sign for. Idempotent after the first time on a device.
   await auth.ensurePodIdentity();
 
+  // Through the BOUND accessors, never `getPodKeypair(parent)`. The POD seed is
+  // stored under the POD address — the PRF-EOA for passkey, the Web3Auth EOA
+  // for web3auth — and `auth.parent` is the KERNEL address for both. Looking it
+  // up by parent reads a slot that is never written, so `ensurePodIdentity()`
+  // above would succeed (storing under the right address, having just made the
+  // rider approve a ceremony) and this would still come back empty: every
+  // passkey and web3auth rider taps, signs, and gets "could not unlock".
+  // The accessors resolve the address themselves so no caller can pick wrong.
   const [pod, seed, feed] = await Promise.all([
-    getPodKeypair(parent),
-    restorePodSeed(parent),
+    auth.getPodKeypair(),
+    auth.getPodSeed(),
     auth.getContentFeedSigner(),
   ]);
   if (!pod || !seed) throw new Error("Could not unlock your collection identity.");
@@ -213,11 +220,13 @@ async function readHeadAt(
  * false means the screen shows its signed-out face and lets the tap unlock.
  */
 export async function creditsUnlocked(): Promise<boolean> {
-  const parent = auth.parent?.toLowerCase();
-  if (!parent) return false;
+  if (!auth.parent) return false;
   try {
+    // Both bound, both prompt-free: the seed getter reads a device blob under
+    // the POD address, and the feed-signer ADDRESS getter is documented to
+    // return null rather than derive for the kinds that would need a ceremony.
     const [seed, feedAddress] = await Promise.all([
-      restorePodSeed(parent),
+      auth.getPodSeed(),
       auth.getContentFeedSignerAddress(),
     ]);
     return seed !== null && feedAddress !== null;

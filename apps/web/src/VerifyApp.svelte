@@ -123,13 +123,15 @@
    * here: silence never accuses, and on this surface silence never renders.
    */
   const counterFailure = $derived(
-    report === null || report.leaves.length === 0
+    report === null
       ? null
       : contradicted
         ? "recount"
-        : entry.state === "contradicted"
-          ? "entry"
-          : null,
+        : report.leaves.length === 0
+          ? null
+          : entry.state === "contradicted"
+            ? "entry"
+            : null,
   );
 
   async function check() {
@@ -145,7 +147,8 @@
       // title — a shared screenshot reading "127 laps" from a page that said
       // "at least 127" would have dropped the word that made it true.
       const floor = next.read.unreadable > 0 ? "at least " : "";
-      document.title = `${floor}${next.laps.toLocaleString()} laps on ${next.coaster.name}`;
+      const unit = plural(next.laps, "lap", "laps");
+      document.title = `${floor}${next.laps.toLocaleString()} ${unit} on ${next.coaster.name}`;
 
       // Then go and read one of the entries it named. Deliberately after the
       // count is on screen and never blocking it: this is a second, stronger
@@ -369,12 +372,15 @@
     </p>
 
     <!-- ── Did the working add up, here, in this browser? ──────────────── -->
+    <!-- `|| contradicted` so a manifest declaring a total over NO entries still
+         gets explained. It recounts to nought and fails its own arithmetic, and
+         without this the counter would redden with nothing here to say why. -->
     <!-- Scope-aware, because it has to be BEFORE a rider is ever featured: with
          a featured rider the headline is their entry's total, not the recount,
          and "which is the figure above" would quietly become false while
          looking exactly the same. The registry that switches this lives in
          another file, so the copy cannot depend on someone remembering. -->
-    {#if report.leaves.length > 0}
+    {#if report.leaves.length > 0 || contradicted}
       <section class="verdict" class:verdict--bad={contradicted}>
         {#if contradicted}
           <p class="verdict-line">
