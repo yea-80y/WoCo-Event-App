@@ -287,8 +287,15 @@
         {/if}
       </p>
     {:else}
+      <!-- "it belongs to", NOT "who rode it". The whole page rests on this one
+           sentence, and a riding verb here would claim the single thing tier 1
+           cannot: that anyone actually rode. This file has struck that claim
+           once already — see the comment above the riders paragraph on the
+           working — so the counter asserting it would have been the working
+           denying, one click away, what the shareable surface implied. What a
+           signature proves is whose entry it is; that is what this says. -->
       <p class="claim">
-        Every lap here is signed by the rider who rode it. Nothing is taken on our word.
+        Every lap here is signed by the rider it belongs to. Nothing is taken on our word.
       </p>
     {/if}
 

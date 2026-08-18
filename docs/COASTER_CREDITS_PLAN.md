@@ -1267,9 +1267,9 @@ coaster fans read as a legal disclaimer. None of that honesty was deleted. It
 moved one click away.
 
 The COUNTER is a kicker, the number, the coaster, ONE line and one link. The
-line, fixed: "Every lap here is signed by the rider who rode it. Nothing is taken
-on our word." ("Added up on your device" was rejected — it explains our plumbing,
-not what it means.) The kicker is the CHALLENGE (`CHALLENGE_LABELS` in
+line, settled: "Every lap here is signed by the rider it belongs to. Nothing is
+taken on our word." ("Added up on your device" was rejected — it explains our
+plumbing, not what it means.) The kicker is the CHALLENGE (`CHALLENGE_LABELS` in
 `verify-report.ts`), never a person: "Dan's lap count" would be possessive over a
 figure that sums every rider. THE WORKING, behind "See the working →", carries
 the entries, the limits panel and check-it-yourself — verbatim where they were
@@ -1289,13 +1289,17 @@ on our word" beside a check that just failed — and reddens the figure on the
 working. Everything the spot-check can report that is not an accusation renders
 nothing there: silence never accuses, and on that surface silence never renders.
 
-⚠️ **RECORDED OBJECTION, owner's call.** A Fable review argues the agreed line
-asserts ridership — the one thing tier 1 may not claim — and cites this codebase
-striking "ridden it at least once" from the riders line for exactly that reason
-(`VerifyApp.svelte`, the comment above the riders paragraph). So the counter's
-only sentence may imply what the working denies one click away. Minimal repair
-that keeps the cadence: "Every lap here is signed by the rider it belongs to."
-Shipped verbatim as agreed pending that decision.
+✅ **THE COUNTER LINE — settled 2026-08-18, and worth not relitigating.** The
+first draft read "signed by the rider **who rode it**". A Fable review refused
+it: tier 1 cannot claim anyone rode, and this codebase had ALREADY struck
+"ridden it at least once" from the riders line for that exact reason (the
+comment above the riders paragraph in `VerifyApp.svelte` records it). The
+counter's only sentence would therefore have implied what the working denies one
+click away — a gotcha screenshot handed to an audience that films these things.
+"it belongs to" keeps the cadence and the second sentence, names the same
+relationship, and claims only what a signature actually proves: whose entry it
+is. Anything that reintroduces a riding verb here is a regression, not a
+tightening.
 
 ⚠️ **The counter is now SCOPE-SILENT under a challenge kicker.** The old kicker
 said whose laps these were ("One rider's laps" / "Everyone's laps"); that moved
