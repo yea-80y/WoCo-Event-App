@@ -144,6 +144,70 @@ unbounded and free.
 **Nothing is minted when a credit is collected.** No transaction, no supply consumed, no
 per-rider cost. The rider signs a statement. That is the whole operation.
 
+### Who issues it — WoCo at launch, and the transfer problem (2026-08-18)
+
+**Two different claims, and conflating them is what stalled this.**
+
+| claim | who may sign it |
+|---|---|
+| "This is genuinely Rita, at Alton Towers, with this artwork" | **WoCo.** We already ship that catalogue, and the verification page says so in as many words: "the coaster names come from a list this counter ships, and the counter is ours." |
+| "This rider rode it 109 times" | **Never WoCo.** Self-declared at tier 1; attested by the issuer's exit device at tier 2/3. |
+
+"Dan is the issuer, not WoCo" in the pilot section is about the SECOND row only. It
+was read as covering the first, which produced the false conclusion that the POD had
+to wait for an issuer we do not have. It does not. **WoCo issues the coaster POD type
+at launch**, because at launch we will be lucky to have one park signing anything, and
+a rider who collects nothing is a product that has not started.
+
+🔴 **THE ISSUER IS BOUND AT MINT AND IS NOT TRANSFERABLE.** This contradicts a
+recollection that transfer was built for, so it is written down: `SignedManifestV1`
+carries `issuerPubkey`, and `verifySignedManifest` checks the ed25519 signature over a
+digest that INCLUDES it. Change the issuer and the digest changes, which breaks the
+signature and the Merkle root already registered on-chain. There is no re-issue path;
+the only transferable POD kind is `authenticity` (ERC-721), and `issuance.ts` calls
+that "a deliberately unbuilt stage."
+
+So handing Rita to Alton Towers later is not a setting — it is a NEW POD type, and
+riders holding the old one hold a different object. Three ways out, none chosen:
+
+1. **Get it right at mint.** The park signs even if we operate the UI for them; the
+   manifest is signed CLIENT-side and the server never holds the key, so this is
+   already possible today for any park willing to hold an account.
+2. **Accept WoCo-issued v1** and treat a park handover as a new type plus a migration
+   riders opt into. Cheapest now, most expensive later, and it asks fans to re-collect.
+3. **Build supersession** — a later issuer co-signs or supersedes an existing type.
+   This is what "Later — issuer registry" would need anyway, and it is the only option
+   that does not make the first cohort second-class.
+
+Making a specific person the issuer is easy in the direction that matters: whoever is
+signed in when the type is created IS the issuer. Dan could issue one from his own
+account today. But a coaster POD asserts what the RIDE is, which is the park's fact
+rather than a rider's — so the natural split is the one the owner drew: WoCo (or the
+park) issues the coaster credit; Dan issues a **Rita 100 fan badge**, which is his
+challenge, his supply, his to hand out.
+
+### Supply — unbounded for a credit, fixed for a badge
+
+`buildPodTree` enforces `edition === index + 1`: every edition is a pre-signed leaf in
+a Merkle tree, committed by a root registered on-chain, and `supply must be an integer
+1..10_000`. **A leaf cannot be added to a committed root**, so the on-chain path cannot
+express "unlimited" — not as policy, as construction.
+
+That is the tell that it is the wrong mechanism for a credit. A coaster credit has no
+natural ceiling on how many riders may hold it, and the plan already says where
+unbounded things live: "counts belong in the statement layer, which is unbounded and
+free." The chain-free POD of the previous section has no supply because it has no
+ledger to allocate from — issue per holder, name their holder key, done.
+
+A **fan badge** is the opposite and the fixed supply is a feature: limited, countable,
+a thing worth having because not everyone has one. Both mechanisms ship; they are for
+different objects. Do not use the ticket ledger for the achievement.
+
+**Still open:** whether the coaster POD registers on-chain at all (the rail's headline
+is that nothing touches a chain, and the pilot anchor was already rejected on those
+grounds), and what the holding record is when it does not. Neither blocks deciding the
+issuer, which is why the issuer is decided here and these are not.
+
 ## Rider-signed base, issuer-witnessed upgrade
 
 The rider is the author. This is the load-bearing decision and it is deliberate:
@@ -1434,6 +1498,19 @@ registry, self-report import, NFC.
 - **P3** — exit device app: rotating tokens, offline-capable, published key allowlist. Tier 2.
 - **P4** — issuer witness batches (tier 3), NFC tags, optional anchoring, self-report import.
 - **Later** — issuer registry, once a second issuer exists.
+
+⚠️ **THE POD HAD NO PHASE — corrected 2026-08-18.** "What a user holds" was settled
+("one POD per coaster, with a count attached") and then never scheduled, so the list
+above ran P0→P4 without once naming the thing a rider is supposed to collect. That is
+the same gap that left `CoasterCredit.svelte` unmounted for weeks: settled in prose,
+absent from the plan of work. It is now **P1.5**, below.
+
+- **P1.5** — (this doc's phase list; not to be confused with `SWARM_SOCIAL_PLAN` P1.5,
+  which is the published-evidence work) the coaster POD: a rider holds one per coaster,
+  from their first lap.
+  Issued by WoCo at launch (owner's decision, 2026-08-18). No technical dependency on
+  P3/P4 — an earlier claim that it was blocked on issuer-witness machinery was WRONG
+  and is corrected below.
 
 ## Open questions
 
