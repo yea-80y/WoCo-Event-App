@@ -62,3 +62,48 @@ test("credits never keys POD material by auth.parent", () => {
   // a POD lookup as an address.
   assert.doesNotMatch(CODE, /(getPodKeypair|restorePodSeed|getPodSeed)\(\s*parent\s*\)/);
 });
+
+// ---------------------------------------------------------------------------
+// The property that makes the fix sound, not merely correct today
+// ---------------------------------------------------------------------------
+//
+// The bug was not "the wrong constant". It was TWO RESOLVERS: the store side
+// resolved the address with `_getPodAddress()` while the read side used
+// `auth.parent`, so for passkey and web3auth they were guaranteed to disagree.
+// What makes the repair robust is that every side now asks the same function —
+// so even where that function falls back (`_podAddress ?? _parent`), the write
+// and the read still agree, and no address can be right for one and wrong for
+// the other.
+//
+// Pinned at source because there is no seam to assert it through: these are
+// module-private resolvers inside a runes module the credits tests deliberately
+// do not load.
+
+const AUTH_STORE = readFileSync(
+  fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+  "utf8",
+);
+
+test("both bound POD accessors resolve the address through _getPodAddress()", () => {
+  for (const accessor of ["getPodKeypair", "getPodSeed"]) {
+    const line = AUTH_STORE.split("\n").find(
+      (l) => l.trimStart().startsWith(`${accessor}: () =>`),
+    );
+    assert.ok(line, `${accessor} must be exported as a bound accessor`);
+    assert.match(
+      line,
+      /_getPodAddress\(\)/,
+      `${accessor} must resolve the POD address the same way ensurePodIdentity ` +
+        `stores it — two resolvers is the bug, not the wrong constant`,
+    );
+  }
+});
+
+test("ensurePodIdentity stores under the same resolver the accessors read by", () => {
+  const body = AUTH_STORE.slice(
+    AUTH_STORE.indexOf("async function ensurePodIdentity"),
+  ).slice(0, 3000);
+  assert.match(body, /const podAddr = _getPodAddress\(\)/);
+  // And it is podAddr, never _parent, that the seed is written under.
+  assert.match(body, /requestPodIdentity\(podAddr,/);
+});
