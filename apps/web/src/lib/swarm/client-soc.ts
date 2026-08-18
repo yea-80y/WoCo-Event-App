@@ -13,6 +13,7 @@
  * envelope resolves on Etherna's Beehive fork too.
  */
 
+import { countProbe } from "./probe-stats.js";
 import { Bee, PrivateKey, Bytes, Span, Identifier, Reference } from "@ethersphere/bee-js";
 import { calculateCacAddress, encodeSpan, SOC_MAX_PAYLOAD_SIZE, type SocReadOutcome } from "@woco/shared";
 import { authPost, get } from "../api/client.js";
@@ -127,8 +128,10 @@ export async function probeSoc(
   let gatewayReason = "gateway read failed";
   try {
     const soc = await bee().makeSOCReader(`0x${owner}`).download(identifier);
+    countProbe("gatewayHit");
     return { status: "found", bytes: soc.payload.toUint8Array() };
   } catch (err) {
+    countProbe("gatewayMiss");
     // A gateway 404 means the bee node already ran a full network search and
     // found nothing — asking the server would repeat that exact search against
     // the SAME node (version probes make this the hot path). Only fall through
@@ -149,6 +152,7 @@ export async function probeSoc(
 
   // 2. Server fallback (availability only).
   const res = await get<{ payloadB64: string }>(`/api/swarm/soc/${owner}/${bytesToHex(identifier)}`);
+  countProbe(res.ok && res.data ? "serverHit" : "serverMiss");
   if (res.ok && res.data) {
     const bin = atob(res.data.payloadB64);
     const out = new Uint8Array(bin.length);

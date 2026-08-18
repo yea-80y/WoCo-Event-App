@@ -17,6 +17,7 @@
   import { requireAccountForAction } from "../auth/ensure-action.js";
   import { cacheGet, cacheSet, TTL } from "../cache/cache.js";
   import type { VerifiedWriteResult } from "../swarm/verified-write.js";
+  import { measured } from "../swarm/probe-stats.js";
 
   interface Props {
     subject: Hex0x;
@@ -88,7 +89,7 @@
   let cachedLaps = $state<number | null>(null);
 
   async function refresh() {
-    head = await readMyCredit(subject);
+    head = await measured("read own count", () => readMyCredit(subject));
     loaded = true;
     // Only a real read updates the remembered number. A failed read leaves the
     // previous one in place rather than writing a zero nobody rode.
@@ -153,7 +154,9 @@
       // not re-read the rider's own index and head seconds later. `head` is
       // only ever set from a CLEAN read, and null falls back to the full
       // tri-state path — see `recordRide`.
-      const res = await recordRide(subject, 1, settling ? null : head);
+      const res = await measured("record a lap", () =>
+        recordRide(subject, 1, settling ? null : head),
+      );
       if (res.ok) {
         lastTapAt = Date.now();
         head = { statement: res.statement, visibility: res.visibility, version: res.version };
@@ -278,6 +281,7 @@
       </div>
     </div>
     <p class="credit">Credit collected — only you can see it</p>
+    <p class="syncing">Checking your logbook…</p>
   {:else if !loaded}
     <p class="state">Loading your collection…</p>
   {:else if !unlocked}
@@ -304,7 +308,12 @@
   {/if}
 
   <div class="actions">
-    <button class="collect" onclick={collect} disabled={inFlight || !loaded}>
+    <!-- NOT gated on `loaded`. That flag means "the live read finished", and
+         the whole point of painting a remembered card is that a rider does not
+         wait for it. Tapping before it lands is SAFE: `head` is still null, so
+         `recordRide` takes the full tri-state path — the same reads the mount
+         was doing, just triggered by someone who actually wanted something. -->
+    <button class="collect" onclick={collect} disabled={inFlight}>
       {#if inFlight}Saving…{:else if laps === 0}I rode it{:else}Add a lap{/if}
     </button>
 
@@ -434,6 +443,15 @@
     font-family: var(--font-mono);
     font-size: 0.6875rem;
     letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+
+  /* A quiet note, not a blocker: the card is usable while this is on screen. */
+  .syncing {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.06em;
     color: var(--text-dim);
   }
 
