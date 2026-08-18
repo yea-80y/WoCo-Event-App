@@ -26,6 +26,8 @@
  */
 
 import { auth } from "../auth/auth-store.svelte.js";
+import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
+import type { CreditVisibility } from "./visibility.js";
 import { readContentFeedResult } from "../swarm/content-feed.js";
 import { writeContentFeedVerified } from "../swarm/verified-write.js";
 import { nextCreditStatement } from "./next-statement.js";
@@ -47,7 +49,8 @@ import {
   type Hex0x,
 } from "@woco/shared";
 
-export type CreditVisibility = "private" | "public";
+
+export type { CreditVisibility } from "./visibility.js";
 
 export interface CreditHead {
   statement: CreditStatementV1;
@@ -128,11 +131,6 @@ function saltFor(keys: RiderKeys, visibility: CreditVisibility): Uint8Array {
 // Reading — tri-state throughout, collapsed to null only for display
 // ---------------------------------------------------------------------------
 
-type IndexRead =
-  | { status: "ok"; subjects: Hex0x[] }
-  | { status: "absent" }
-  | { status: "unavailable"; reason: string };
-
 type HeadRead =
   | { status: "found"; statement: CreditStatementV1 }
   | { status: "absent" }
@@ -149,10 +147,6 @@ async function readSubjectIndex(keys: RiderKeys, visibility: CreditVisibility): 
   }
   return { status: "ok", subjects: (res.value as CreditSubjectIndexV1).subjects };
 }
-
-type PartitionRead =
-  | { status: "ok"; visibility: CreditVisibility | null }
-  | { status: "unavailable"; reason: string };
 
 /**
  * Which partition holds this subject's live head, `null` for never ridden.
@@ -177,11 +171,7 @@ async function liveVisibility(keys: RiderKeys, subject: Hex0x): Promise<Partitio
     readSubjectIndex(keys, "public"),
     readSubjectIndex(keys, "private"),
   ]);
-  if (pub.status === "unavailable") return pub;
-  if (priv.status === "unavailable") return priv;
-  if (pub.status === "ok" && pub.subjects.includes(subject)) return { status: "ok", visibility: "public" };
-  if (priv.status === "ok" && priv.subjects.includes(subject)) return { status: "ok", visibility: "private" };
-  return { status: "ok", visibility: null };
+  return decideVisibility(pub, priv, subject);
 }
 
 async function readHeadAt(
@@ -312,14 +302,32 @@ export async function recordRide(subject: Hex0x, laps = 1): Promise<RideResult> 
     const written = await writeStatement(keys, subject, visibility, statement);
     if (!written.ok) return written;
 
-    // The ride is recorded and valid from here on. An index failure costs
-    // enumeration on a fresh device, not the count — so it must never turn a
-    // landed ride into a reported failure, because the rider's retry would
-    // read their own new statement as `prev` and add the laps a second time.
-    try {
-      await addToSubjectIndex(keys, subject, visibility);
-    } catch {
-      // Deliberately swallowed — see above.
+    // ONLY when this subject is not already indexed. `liveVisibility` returning
+    // a non-null partition IS the statement "that partition's index contains
+    // this subject" — it is the only way it can produce one. Calling
+    // `addToSubjectIndex` anyway re-reads a whole feed, including a probe past
+    // its latest version, to re-learn a fact this same call established. A
+    // probe past the end is a bee network search for a chunk that does not
+    // exist, the most expensive read on Swarm (#323).
+    //
+    // Skipping is also SAFER than re-reading, which is why this is not merely
+    // an optimisation. In the race where another device publishes this subject
+    // mid-tap, the re-read sees the freshly-swept private index, does not find
+    // the subject, and writes it back — undoing the publish. Doing nothing
+    // cannot undo anything.
+    //
+    // The read-modify-write loop still runs for the case it exists for: a first
+    // lap on a subject, where `visibility` was null and nothing indexes it yet.
+    if (where.visibility === null) {
+      // The ride is recorded and valid from here on. An index failure costs
+      // enumeration on a fresh device, not the count — so it must never turn a
+      // landed ride into a reported failure, because the rider's retry would
+      // read their own new statement as `prev` and add the laps a second time.
+      try {
+        await addToSubjectIndex(keys, subject, visibility);
+      } catch {
+        // Deliberately swallowed — see above.
+      }
     }
 
     return { ok: true, statement, visibility, confirmed: written.confirmed };
