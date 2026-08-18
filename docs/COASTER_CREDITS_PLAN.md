@@ -704,6 +704,63 @@ subject lives in exactly ONE of the two indexes — the private index (private s
 opt-in, the public index (public salt) after — and opt-in moves it. The index is therefore not
 just discovery hygiene: it is how a fresh device learns which head is live for each subject.
 
+⚠️ **OPEN, AND THE CHEAPEST IT WILL EVER BE — head lookup is O(number of laps)
+(2026-08-19).** Measured, not inferred. One statement topic accumulates one SOC
+version per lap, and `resolveLatestSocVersion` walks FORWARD to find the newest,
+so reading a rider's own count costs a probe per version. Instrumented on a
+9-lap account (`probe-stats.ts`, dev-only):
+
+```
+record a lap:     555ms ·  0 probes                       ← the write path is fine
+read own count:  7925ms · 25 probes (16 miss) · gw 9/8 · api 0/8
+```
+
+Nine gateway HITS is the scan walking nine existing versions. At 109 laps it
+walks 109. The version hint exists to stop this and is not doing so; a probable
+mechanism is below, unconfirmed.
+
+**Batching laps was considered and REJECTED as the fix.** Writing every N laps
+divides the constant and leaves the shape — still linear, still degrading over a
+season — while costing the things that make the rail worth having: a lap is not
+recorded until the batch flushes (on the honesty product an unrecorded lap is a
+lap that did not happen), a phone closed in a queue loses it, and the instant
+tap-to-real moment IS the product.
+
+**The candidate is EPOCHED TOPICS, and this design already does it once.** Opt-in
+is precisely this move: a republish at a new topic where "versions at the new
+topic restart at 0" while `seq` continues. Generalising it bounds the scan. Two
+variants, with a real trade-off:
+
+| | count-banded (every N laps) | time-banded (month/year) |
+|---|---|---|
+| finding the epoch | must be discovered — scan or index | COMPUTABLE from the clock |
+| quiet rider | epochs always exist | walks BACK through empty bands, and misses are the expensive probe |
+| enumeration | epoch count ≈ lap count, already public | with the FIXED `PUBLIC_SALT`, anyone can enumerate months of a published subject and read off a rider's activity calendar |
+
+That last cell is the sharp one: on a children's service, "which months this
+child visited a park" is a materially different disclosure from "this child has
+109 laps", and only the latest `session.date` is exposed today.
+
+**Likely synthesis, to be pressure-tested rather than assumed:** band by time,
+but carry the last-written band in the SUBJECT INDEX, which is already read first
+and is salt-protected. That gives O(1) cold or warm, no walk-back, index growth
+once per band instead of once per lap, and it closes the enumeration leak by
+keeping the band behind the salt rather than in a guessable topic.
+
+**Cost of deciding late.** This changes topic derivation, which is frozen at P0.
+Pre-launch that is a registry edit and a re-test; post-launch it is a migration
+of every rider's logbook. It also has to be taught to the indexer.
+
+**Carry into that design pass:**
+- `api 0/8` — the server fallback resolved NOTHING across eight misses, so every
+  miss pays two round trips for one verdict. Whatever the scheme, this doubles
+  its cost. `client-soc.ts` documents why gateway-first is the sounder verdict
+  order, so this is not a reorder.
+- A chunk that exists but is not gateway-whitelisted reads as ABSENT (403 → server
+  404). That would invalidate a good version hint and force the full scan seen
+  above. Coherent, and a THEORY — the hint counter reports whether a hint existed,
+  not whether the resolver used it, so fix that instrument before trusting it.
+
 ### 2. `holderSig` digest — written down
 
 ```
