@@ -37,13 +37,24 @@
    */
   let unlocked = $state(false);
   /**
-   * A write whose read-back has not finished. While one is outstanding the NEXT
+   * How many writes have a read-back still outstanding. While ANY is, the next
    * tap goes cold — it re-reads instead of reusing `head` — because a head from
-   * a write that turns out `superseded` never actually landed, and building the
-   * next total on it would write a wrong number. Rare in practice: Rita's
-   * two-minute cadence guard blocks a repeat tap long before this matters.
+   * a write that turns out `superseded` never landed, and building the next
+   * total on it would write a wrong number.
+   *
+   * A COUNTER, not a flag. Two settlements can overlap: a `superseded` one
+   * fires the cold retry, and a rider may tap again while that retry is in
+   * flight. With a boolean, whichever read-back finished first cleared it while
+   * the other was still outstanding — and the next tap then warm-reused an
+   * unverified head, which is the double-count this is here to prevent.
+   *
+   * Rare in practice — Rita's two-minute cadence guard blocks a repeat tap —
+   * but the demo coaster ships `cadenceMinutes: 0` precisely so rapid taps are
+   * a supported flow.
    */
-  let settling = $state(false);
+  let settlingCount = $state(0);
+  /** Any write whose read-back is still outstanding. */
+  const settling = $derived(settlingCount > 0);
   let inFlight = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -171,7 +182,7 @@
         // when the rider's signed entry durably exists. The read-back finishes
         // on its own; it protects against one thing — another device's bytes
         // landing at our version — and the rider gains nothing by watching it.
-        settling = true;
+        settlingCount += 1;
         void res.settled.then((r) => settle(r, true));
       } else {
         error = res.error;
@@ -203,7 +214,7 @@
    * from a real read, so the number on screen is always one somebody wrote.
    */
   async function settle(r: VerifiedWriteResult, retry: boolean) {
-    settling = false;
+    settlingCount -= 1;
     if (r.status === "unconfirmed") {
       // Uploaded but not read back — freshly relayed chunks are whitelisted
       // asynchronously, so this is routine and NOT a failure.
@@ -217,10 +228,10 @@
       return;
     }
     // Cold: everything re-read, nothing reused from the attempt that lost.
-    settling = true;
+    settlingCount += 1;
     const again = await recordRide(subject, 1, null);
     if (!again.ok) {
-      settling = false;
+      settlingCount -= 1;
       error = again.error;
       await refresh();
       return;

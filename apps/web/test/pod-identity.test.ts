@@ -210,11 +210,12 @@ test("storing under the Kernel parent does not rescue a POD-address lookup eithe
   assert.equal(await getPodKeypair(PRF_EOA), null);
 });
 
-test("the two addresses derive DIFFERENT identities from the same stored seed", async () => {
-  // Worth stating explicitly: had the parent slot happened to be populated, the
-  // rail would not have errored — it would have signed a rider's laps under a
-  // second, divergent identity, and the counter would have read them as two
-  // riders. A loud failure was the better of the two outcomes available.
+test("the SEED decides the identity, not the address it was filed under", async () => {
+  // Worth stating explicitly, because it is what makes a wrong-address lookup
+  // SILENT rather than wrong-looking: the identity is a function of the seed,
+  // and the address only decides which seed you find. So a bad address yields
+  // nothing at all — never a second, divergent identity — and the rail failed
+  // loudly instead of quietly signing laps under a stranger.
   await clearBoth();
   const seed = "66".repeat(32);
   await storePodSeed(PRF_EOA, seed);

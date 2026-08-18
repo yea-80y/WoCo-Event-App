@@ -343,7 +343,13 @@ export async function recordRide(
     // `superseded` — the only failure a retry could fix — is not known until the
     // read-back settles. The caller reconciles from `settled`; see the card's
     // `settle()`.
-    return attemptRide(keys, subject, laps, warm ?? null);
+    // `return await`, NOT `return`. A bare return hands the promise back before
+    // the catch below can see it, so every async failure on the write path —
+    // an upload rejection, and `writeContentFeed`'s probe-inconclusive throw,
+    // which is live on every first lap — escaped as an unhandled rejection.
+    // The card's `collect()` has no catch, so the rider got no message at all:
+    // the button simply stopped saying "Saving…".
+    return await attemptRide(keys, subject, laps, warm ?? null);
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Could not save that ride." };
   }
@@ -358,19 +364,26 @@ async function attemptRide(
   subject: Hex0x,
   laps: number,
   warm: CreditHead | null,
-): Promise<RideResult & { superseded?: boolean }> {
-  // NOTE: `superseded` can no longer be known before returning — the read-back
-  // that detects it now runs after the upload is accepted. A warm-head attempt
-  // therefore reconciles through `settled` rather than through a synchronous
-  // retry; see `recordRide`.
+): Promise<RideResult> {
+  // `superseded` cannot be known before returning — the read-back that detects
+  // it runs after the upload is accepted — so this no longer advertises a
+  // synchronous failure channel for it. The caller reconciles through
+  // `settled`; see the card's `settle()`.
   let visibility: CreditVisibility;
   let prev: CreditStatementV1 | null;
   /** The version the PREVIOUS head sits at, when we know it. `undefined` means
    *  the write must probe. */
   let prevVersion: number | undefined;
-  /** Whether the subject is known to be in its partition's index already. A
-   *  warm head implies it: `readMyCredit` only produces one by way of
-   *  `liveVisibility`, which is the index read. */
+  /**
+   * Whether the subject is taken to be in its partition's index already.
+   *
+   * A warm head from `readMyCredit` proves it — that value only exists by way
+   * of `liveVisibility`, which IS the index read. A warm head handed back from
+   * a previous write does not: a first lap's `addToSubjectIndex` failure is
+   * deliberately swallowed, so the subject may be unindexed and this will not
+   * retry it. The cost is the documented, self-healing one — enumeration on a
+   * fresh device, never the count — and the next cold session repairs it.
+   */
   let indexed: boolean;
 
   if (warm) {
@@ -409,7 +422,6 @@ async function attemptRide(
     statement,
     prevVersion !== undefined ? prevVersion + 1 : undefined,
   );
-  if (!written.ok) return written;
 
   // ONLY when this subject is not already indexed. A non-null partition IS the
   // statement "that partition's index contains this subject" — it is the only
@@ -444,10 +456,7 @@ async function writeStatement(
   /** The exact SOC version to write at, when the caller read the previous head
    *  and therefore knows it. Omitted means probe — see `knownVersion`. */
   knownVersion?: number,
-): Promise<
-  | { ok: true; version: number; settled: Promise<VerifiedWriteResult> }
-  | { ok: false; error: string; superseded?: boolean }
-> {
+): Promise<{ version: number; settled: Promise<VerifiedWriteResult> }> {
   const body = visibility === "private"
     ? await sealJson(keys.encPubKeyHex, statement)
     : statement;
@@ -465,7 +474,10 @@ async function writeStatement(
     ...(knownVersion !== undefined ? { knownVersion } : {}),
   });
 
-  return { ok: true, version, settled };
+  // No `ok` flag: this function either returns the write or throws. The only
+  // failure a caller could once branch on here — `superseded` — is not knowable
+  // until the read-back settles, and lives on `settled`.
+  return { version, settled };
 }
 
 /**
@@ -563,7 +575,27 @@ export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
       keys.holderPrivKey,
     );
     const written = await writeStatement(keys, subject, "public", statement);
-    if (!written.ok) return written;
+
+    // PUBLISH WAITS FOR THE READ-BACK, unlike a lap. The tap returns at
+    // upload-accept because a rider is standing in a queue and the interesting
+    // settlement is equally actionable a second later. Publish is the opposite:
+    // a deliberate, confirm-dialogued, ONE-WAY act with no latency case at all,
+    // and what follows it is destructive — the private index entry is swept.
+    // Proceeding on an unverified public head could leave the subject in
+    // NEITHER partition, which reads as "never ridden" while a public head
+    // exists, and republishing then refuses.
+    //
+    // `superseded` is the one settlement meaning the statement did not land.
+    // `unconfirmed` is explicitly NOT a failure — the upload was accepted and
+    // the chunk is merely not readable back yet — so it proceeds, which is the
+    // same judgement the index writes below already make.
+    const settlement = await written.settled;
+    if (settlement.status === "superseded") {
+      return {
+        ok: false,
+        error: "Another device changed this count while publishing. Open this coaster again and retry.",
+      };
+    }
 
     // The private entry is removed ONLY once the public one is confirmed
     // present. Removing first — or removing after an unconfirmed add — can
