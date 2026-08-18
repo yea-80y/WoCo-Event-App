@@ -74,6 +74,26 @@ export const FLOOR_NOTE = "Some logbooks couldn't be read this update.";
 /** Consecutive failed polls before the figure on screen is marked as not current. */
 export const STALE_AFTER_FAILURES = 2;
 
+/**
+ * The rest of the fan-facing copy. It lives here rather than inline in the
+ * element for one reason: the vocabulary ratchet in the tests can only scan
+ * what this module exports, and copy the ratchet cannot see is copy that can
+ * drift back into the words this rail has agreed not to use.
+ */
+export const COPY = {
+  /** Card only. The overlay renders nothing at all in this state. */
+  waiting: "Waiting for the counter…",
+  /** Overlay badge — room for two words and no more. */
+  staleShort: "not updating",
+  /** Card badge, where there is room to say what is actually on screen. */
+  staleLong: "Not updating — showing the last count we read.",
+  /** The counter page's own phrase, reused rather than invented, so the two
+   *  surfaces do not name the same evidence differently. */
+  seeWorking: "See the working →",
+  /** Deliberately "counted", not "verified": this surface serves the figure. */
+  mark: "Counted by WoCo",
+} as const;
+
 export interface Display {
   /** "109", or "109+" when the figure is a floor. Null until a read succeeds. */
   figure: string | null;
@@ -140,6 +160,12 @@ export function describe(state: CountState): Display {
     // Gated on the COUNT, not on whether anyone has published: a rider whose
     // logbook is readable and totals zero still means "no laps logged yet", and
     // the signed-by line over an empty set reads as boilerplate.
-    line: count === 0 ? NO_LAPS_LINE : SIGNED_LINE,
+    //
+    // But a zero that is ALSO a floor states nothing: the laps may be sitting in
+    // the logbooks that could not be read this pass, so "no laps logged yet"
+    // would assert an absence the read did not establish. There the floor note
+    // is the whole honest answer and the line stays empty rather than guessing
+    // in either direction.
+    line: count === 0 ? (isFloor ? "" : NO_LAPS_LINE) : SIGNED_LINE,
   };
 }

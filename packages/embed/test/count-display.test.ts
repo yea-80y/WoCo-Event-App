@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 import {
   describe as describeCount,
   parseCountData,
+  COPY,
+  FLOOR_NOTE,
   SIGNED_LINE,
   NO_LAPS_LINE,
   STALE_AFTER_FAILURES,
@@ -105,23 +107,49 @@ test("with no laps the line does not assert that anything was signed", () => {
   assert.equal(describeCount(known({ count: 0 })).line, NO_LAPS_LINE);
 });
 
+const BANNED = [
+  "credit", "wallet", "mint", "decentralised", "decentralized",
+  "tamper-proof", "tamperproof", "immutable", "blockchain", "token",
+  "verified", "permanent",
+];
+
+function assertClean(text: string, where: string) {
+  const lower = text.toLowerCase();
+  for (const b of BANNED) {
+    assert.ok(!lower.includes(b), `"${b}" must never appear on a fan-facing count surface (${where}: "${text}")`);
+  }
+}
+
 test("no surface calls a lap a credit, and no crypto word reaches a fan", () => {
   const states = [
     describeCount({ kind: "pending" }),
     describeCount(known()),
     describeCount(known({ count: 0 })),
+    describeCount(known({ count: 0, unreadable: 3 })),
     describeCount(known({ unreadable: 4, contributors: 6 }, STALE_AFTER_FAILURES)),
   ];
-  const banned = [
-    "credit", "wallet", "mint", "decentralised", "decentralized",
-    "tamper-proof", "tamperproof", "immutable", "blockchain", "token",
-  ];
   for (const s of states) {
-    const words = [s.line, s.unit, s.riders ?? "", s.figure ?? ""].join(" ").toLowerCase();
-    for (const b of banned) {
-      assert.ok(!words.includes(b), `"${b}" must never appear on a fan-facing count surface`);
-    }
+    assertClean([s.line, s.unit, s.riders ?? "", s.figure ?? ""].join(" "), "computed display");
   }
+});
+
+test("the copy the element renders is scanned too, not just what describe() computes", () => {
+  // Every fan-facing string lives in the display module precisely so this
+  // ratchet can reach it. A string added straight into the element's markup
+  // would be invisible here, which is the drift this test exists to stop.
+  for (const [key, value] of Object.entries(COPY)) assertClean(value, `COPY.${key}`);
+  assertClean(FLOOR_NOTE, "FLOOR_NOTE");
+  assertClean(SIGNED_LINE, "SIGNED_LINE");
+  assertClean(NO_LAPS_LINE, "NO_LAPS_LINE");
+});
+
+test("a zero that is also a floor asserts nothing about laps not being logged", () => {
+  // The laps may be sitting in the logbooks that could not be read, so a flat
+  // "No laps logged yet" would claim an absence the read did not establish.
+  const d = describeCount(known({ count: 0, unreadable: 2 }));
+  assert.equal(d.figure, "0+");
+  assert.equal(d.isFloor, true);
+  assert.equal(d.line, "", "the floor note carries this state, not a claim of absence");
 });
 
 // ---------------------------------------------------------------------------

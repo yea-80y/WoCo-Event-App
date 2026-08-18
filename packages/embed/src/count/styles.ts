@@ -237,6 +237,9 @@ export function cardStyles(theme: "dark" | "light"): string {
       color: ${v.warn};
     }
     .wrap.stale .stale-mark { display: flex; }
+    /* Dimmed harder than the overlay's 0.72, and deliberately: this card owns
+       its own background, so the figure cannot disappear into footage the way
+       it did over a bright sky. The asymmetry is the point, not an oversight. */
     .wrap.stale .figure { opacity: 0.55; }
 
     .dot {

@@ -45,6 +45,7 @@ import type { Hex0x } from "@woco/shared/types";
 import {
   describe as describeCount,
   parseCountData,
+  COPY,
   FLOOR_NOTE,
   type CountState,
 } from "./display.js";
@@ -296,11 +297,17 @@ export class WocoLapCount extends HTMLElement {
         ? ""
         : `<div class="figure"><span>${this.esc(d.figure)}</span><span class="unit">${this.esc(d.unit)}</span></div>`;
 
+    // Everything here is gated on having heard from the counter, not just the
+    // figure. Gating the figure alone still composited a lone "Rita · Alton
+    // Towers" onto the broadcast during the pending state — a stray graphic
+    // nobody chose, and the opposite of "nothing before the first read".
     const subParts: string[] = [];
-    if (this.challenge && this.coasterLine()) {
-      subParts.push(`<span class="coaster">${this.esc(this.coasterLine())}</span>`);
+    if (d.figure !== null) {
+      if (this.challenge && this.coasterLine()) {
+        subParts.push(`<span class="coaster">${this.esc(this.coasterLine())}</span>`);
+      }
+      if (d.riders) subParts.push(`<span>${this.esc(d.riders)}</span>`);
     }
-    if (d.riders) subParts.push(`<span>${this.esc(d.riders)}</span>`);
 
     this.shadow.innerHTML = `
       <style>${overlayStyles()}</style>
@@ -308,7 +315,7 @@ export class WocoLapCount extends HTMLElement {
         ${d.figure === null ? "" : `<div class="kicker">${this.esc(kicker)}</div>`}
         ${figureHtml}
         ${subParts.length ? `<div class="sub">${subParts.join('<span aria-hidden="true">·</span>')}</div>` : ""}
-        <div class="stale-mark"><span class="dot"></span>not updating</div>
+        ${d.figure === null ? "" : `<div class="stale-mark"><span class="dot"></span>${this.esc(COPY.staleShort)}</div>`}
       </div>
     `;
   }
@@ -320,7 +327,7 @@ export class WocoLapCount extends HTMLElement {
 
     const figureHtml =
       d.figure === null
-        ? `<div class="empty">Waiting for the counter…</div>`
+        ? `<div class="empty">${this.esc(COPY.waiting)}</div>`
         : `<div class="figure"><span>${this.esc(d.figure)}</span><span class="unit">${this.esc(d.unit)}</span></div>`;
 
     const subParts: string[] = [];
@@ -335,13 +342,13 @@ export class WocoLapCount extends HTMLElement {
         ${subParts.length ? `<div class="sub">${subParts.join(" · ")}</div>` : ""}
         ${d.line ? `<p class="line">${this.esc(d.line)}</p>` : ""}
         ${d.isFloor ? `<p class="note">${this.esc(FLOOR_NOTE)}</p>` : ""}
-        <div class="stale-mark"><span class="dot"></span>Not updating — showing the last count we read.</div>
+        <div class="stale-mark"><span class="dot"></span>${this.esc(COPY.staleLong)}</div>
         ${
           SUBJECT_RE.test(this.subject)
-            ? `<div class="actions"><a class="verify" href="${this.esc(this.verifyHref())}" target="_blank" rel="noopener noreferrer">See the working →</a></div>`
+            ? `<div class="actions"><a class="verify" href="${this.esc(this.verifyHref())}" target="_blank" rel="noopener noreferrer">${this.esc(COPY.seeWorking)}</a></div>`
             : ""
         }
-        <div class="mark">Counted by WoCo</div>
+        <div class="mark">${this.esc(COPY.mark)}</div>
       </div>
     `;
   }

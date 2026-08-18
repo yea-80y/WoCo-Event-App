@@ -7,13 +7,13 @@
  * import specifiers, so importing `RITA_SUBJECT` there fails outright. A local
  * literal is the only thing the config can read.
  *
- * WHY IT CANNOT DRIFT. `test/pilot-subject.test.ts` imports the real
- * `RITA_SUBJECT` from the registry and fails if the two ever differ. The test
- * runs under tsx, where the shared package resolves normally, so the
- * constraint is checked in the one place that can check it. A subject hash is
- * permanent by construction — it is what riders sign against — so this is a
- * value that should never change; the test is there for the day somebody
- * assumes it can.
+ * WHY IT CANNOT DRIFT. `test/pilot-subject.test.ts` recomputes it from Rita's
+ * PERMANENT id and fails if the two differ. It is deliberately not pinned to
+ * the `RITA_SUBJECT` alias, which is positional — inserting any coaster ahead
+ * of Rita in `WOCO_SUBJECT_DEFINITIONS` redefines that alias, and a test
+ * anchored to it would fail telling you to repoint the live overlay at
+ * whatever now sits at index 0. A subject hash is permanent by construction —
+ * it is what riders sign against — so the id is the thing to hold on to.
  */
 
 export const RITA_SUBJECT_HASH =
