@@ -92,3 +92,40 @@ test("no other settlement is ever redone", () => {
     assert.equal(shouldRetryCold("unconfirmed", allowed), false);
   }
 });
+
+// ---------------------------------------------------------------------------
+// knownVersion must actually reach the write (#323)
+// ---------------------------------------------------------------------------
+//
+// It did not, for a whole round of testing. `writeContentFeedSettling` never
+// declared `knownVersion`, and credits passed it through a SPREAD — which does
+// not trip TypeScript's excess-property check. So it compiled clean, the value
+// was dropped on the floor, and every tap went on probing for a version the
+// caller already knew. The symptom was "still slow" with nothing in the types
+// or the tests to say why.
+//
+// Source-level, because the alternative is a live Swarm write.
+
+test("the settling write declares knownVersion, so callers cannot pass it into a void", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/swarm/verified-write.ts", import.meta.url)),
+    "utf8",
+  );
+  const fn = src.slice(src.indexOf("export function writeContentFeedSettling"));
+  const signature = fn.slice(0, fn.indexOf("): Promise<SettlingWrite>"));
+  assert.match(signature, /knownVersion\?: number/);
+});
+
+test("the settling write forwards knownVersion to the underlying write", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/swarm/verified-write.ts", import.meta.url)),
+    "utf8",
+  );
+  const fn = src.slice(src.indexOf("export function writeContentFeedSettling"));
+  // Declaring it without forwarding it would fail exactly the same way.
+  assert.match(fn, /knownVersion:\s*args\.knownVersion/);
+});

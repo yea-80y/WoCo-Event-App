@@ -204,6 +204,17 @@ export function writeContentFeedSettling(args: {
   topic: string;
   data: unknown;
   gatewayUrl?: string;
+  /**
+   * FORWARDED to `writeContentFeed` — see its doc for when this is safe. It is
+   * safe through THIS entry point in a way it is not through a bare write: the
+   * read-back verifies at exactly this version, so a wrong guess comes back
+   * `superseded` instead of silently losing the write.
+   *
+   * Declared explicitly because it was once omitted here while callers passed
+   * it: a spread does not trip excess-property checking, so the value was
+   * dropped silently and every write went on probing.
+   */
+  knownVersion?: number;
 }): Promise<SettlingWrite> {
   let accept!: (w: SettlingWrite) => void;
   let refuse!: (e: unknown) => void;
@@ -217,6 +228,7 @@ export function writeContentFeedSettling(args: {
         topic: args.topic,
         data: args.data,
         ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
+        ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
       });
     } catch (e) {
       // The upload itself failed — there is nothing to settle, and the caller
