@@ -26,7 +26,7 @@
  */
 
 import { auth } from "../auth/auth-store.svelte.js";
-import { decideVisibility, shouldRetryCold, type IndexRead, type PartitionRead } from "./partition.js";
+import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
 import { readContentFeedResult } from "../swarm/content-feed.js";
 import {
@@ -59,6 +59,20 @@ export type { CreditVisibility } from "./visibility.js";
 export interface CreditHead {
   statement: CreditStatementV1;
   visibility: CreditVisibility;
+  /**
+   * The SOC version this head sits at, so the next write can address
+   * `version + 1` directly instead of probing for it. A probe past a feed's
+   * latest version is a bee network search for a chunk that does not exist —
+   * the most expensive read on Swarm — and it was the last one left on the tap
+   * path (#323).
+   *
+   * `writeContentFeed` documents `knownVersion` as only safe when the caller
+   * can PROVE nothing was written there, because a SOC write to an existing
+   * address is silently deduped. Here the loss is not silent: the write is
+   * verified at that exact version and reports `superseded`, which the caller
+   * corrects. That is what makes an unprovable claim safe to act on.
+   */
+  version: number;
 }
 
 /** Re-reads after losing an index write race, before giving up. */
@@ -136,7 +150,7 @@ function saltFor(keys: RiderKeys, visibility: CreditVisibility): Uint8Array {
 // ---------------------------------------------------------------------------
 
 type HeadRead =
-  | { status: "found"; statement: CreditStatementV1 }
+  | { status: "found"; statement: CreditStatementV1; version: number }
   | { status: "absent" }
   | { status: "unavailable"; reason: string };
 
@@ -206,7 +220,7 @@ async function readHeadAt(
   if (!verifyCreditStatement(payload)) {
     return { status: "unavailable", reason: "head failed statement verification" };
   }
-  return { status: "found", statement: payload };
+  return { status: "found", statement: payload, version: res.version };
 }
 
 /**
@@ -254,7 +268,9 @@ export async function readMyCredit(subject: Hex0x): Promise<CreditHead | null> {
     const where = await liveVisibility(keys, subject);
     if (where.status !== "ok" || !where.visibility) return null;
     const head = await readHeadAt(keys, subject, where.visibility);
-    return head.status === "found" ? { statement: head.statement, visibility: where.visibility } : null;
+    return head.status === "found"
+      ? { statement: head.statement, visibility: where.visibility, version: head.version }
+      : null;
   } catch {
     return null;
   }
@@ -269,6 +285,9 @@ export type RideResult =
       ok: true;
       statement: CreditStatementV1;
       visibility: CreditVisibility;
+      /** The SOC version this statement was written at — the caller's next warm
+       *  head must carry it, or the following tap goes back to probing. */
+      version: number;
       /**
        * How the write ended up, resolving AFTER this result. The ride is
        * already recorded — the upload was accepted — so this is not a gate on
@@ -320,9 +339,11 @@ export async function recordRide(
   try {
     const keys = await riderKeys();
 
-    const first = await attemptRide(keys, subject, laps, warm ?? null);
-    if (!shouldRetryCold(first, Boolean(warm))) return first;
-    return attemptRide(keys, subject, laps, null);
+    // No synchronous retry here any more: the write returns at upload-accept, so
+    // `superseded` — the only failure a retry could fix — is not known until the
+    // read-back settles. The caller reconciles from `settled`; see the card's
+    // `settle()`.
+    return attemptRide(keys, subject, laps, warm ?? null);
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Could not save that ride." };
   }
@@ -344,6 +365,9 @@ async function attemptRide(
   // retry; see `recordRide`.
   let visibility: CreditVisibility;
   let prev: CreditStatementV1 | null;
+  /** The version the PREVIOUS head sits at, when we know it. `undefined` means
+   *  the write must probe. */
+  let prevVersion: number | undefined;
   /** Whether the subject is known to be in its partition's index already. A
    *  warm head implies it: `readMyCredit` only produces one by way of
    *  `liveVisibility`, which is the index read. */
@@ -352,6 +376,7 @@ async function attemptRide(
   if (warm) {
     visibility = warm.visibility;
     prev = warm.statement;
+    prevVersion = warm.version;
     indexed = true;
   } else {
     const where = await liveVisibility(keys, subject);
@@ -367,13 +392,23 @@ async function attemptRide(
     const head = await readHeadAt(keys, subject, visibility);
     if (head.status === "unavailable") return { ok: false, error: CANNOT_READ };
     prev = head.status === "found" ? head.statement : null;
+    if (head.status === "found") prevVersion = head.version;
   }
 
   const statement = signCreditStatement(
     nextCreditStatement({ prev, subject, holder: keys.holder, laps }),
     keys.holderPrivKey,
   );
-  const written = await writeStatement(keys, subject, visibility, statement);
+  // `prevVersion + 1` when we read the previous head — the last probe on the
+  // tap path. A first lap has no previous head and must probe, because version
+  // 0 may already exist from a partition we did not read.
+  const written = await writeStatement(
+    keys,
+    subject,
+    visibility,
+    statement,
+    prevVersion !== undefined ? prevVersion + 1 : undefined,
+  );
   if (!written.ok) return written;
 
   // ONLY when this subject is not already indexed. A non-null partition IS the
@@ -398,7 +433,7 @@ async function attemptRide(
     }
   }
 
-  return { ok: true, statement, visibility, settled: written.settled };
+  return { ok: true, statement, visibility, version: written.version, settled: written.settled };
 }
 
 async function writeStatement(
@@ -406,6 +441,9 @@ async function writeStatement(
   subject: Hex0x,
   visibility: CreditVisibility,
   statement: CreditStatementV1,
+  /** The exact SOC version to write at, when the caller read the previous head
+   *  and therefore knows it. Omitted means probe — see `knownVersion`. */
+  knownVersion?: number,
 ): Promise<
   | { ok: true; version: number; settled: Promise<VerifiedWriteResult> }
   | { ok: false; error: string; superseded?: boolean }
@@ -424,6 +462,7 @@ async function writeStatement(
     ownerAddress: keys.feedAddress,
     topic: creditStatementTopic(saltFor(keys, visibility), subject),
     data: body,
+    ...(knownVersion !== undefined ? { knownVersion } : {}),
   });
 
   return { ok: true, version, settled };

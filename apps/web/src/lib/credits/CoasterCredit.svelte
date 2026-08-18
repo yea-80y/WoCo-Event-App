@@ -12,9 +12,11 @@
   import { onMount } from "svelte";
   import { lookupSubject, currentEra, formerNames, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
   import { creditsUnlocked, readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
+  import { shouldRetryCold } from "./partition.js";
   import { utcSessionDate } from "./next-statement.js";
   import { requireAccountForAction } from "../auth/ensure-action.js";
   import { cacheGet, cacheSet, TTL } from "../cache/cache.js";
+  import type { VerifiedWriteResult } from "../swarm/verified-write.js";
 
   interface Props {
     subject: Hex0x;
@@ -154,7 +156,7 @@
       const res = await recordRide(subject, 1, settling ? null : head);
       if (res.ok) {
         lastTapAt = Date.now();
-        head = { statement: res.statement, visibility: res.visibility };
+        head = { statement: res.statement, visibility: res.visibility, version: res.version };
         loaded = true;
         // Only NOW is the collection provably unlocked. Setting this before the
         // write would make a declined key ceremony show the unlocked face —
@@ -167,20 +169,7 @@
         // on its own; it protects against one thing — another device's bytes
         // landing at our version — and the rider gains nothing by watching it.
         settling = true;
-        void res.settled.then((r) => {
-          settling = false;
-          if (r.status === "superseded") {
-            // The ONE outcome meaning the entry did not land. Never a silent
-            // decrement: say what happened and repaint the count from a real
-            // read, so the number on screen is always one somebody wrote.
-            error = "Another device recorded a ride at the same moment.";
-            void refresh();
-          } else if (r.status === "unconfirmed") {
-            // Uploaded but not read back — freshly relayed chunks are
-            // whitelisted asynchronously, so this is routine and NOT a failure.
-            notice = "Saved — still settling on the network.";
-          }
-        });
+        void res.settled.then((r) => settle(r, true));
       } else {
         error = res.error;
         // Re-derive rather than assume. This branch is right for a lost write
@@ -195,6 +184,46 @@
     } finally {
       inFlight = false;
     }
+  }
+
+  /**
+   * What a finished write means for the card.
+   *
+   * `superseded` is the ONE outcome meaning the entry did not land — another
+   * device's bytes are at our version. The rider tapped and their lap is not
+   * recorded through no fault of theirs, so the honest response is to record it,
+   * not to report a failure they cannot act on. `retry` is allowed exactly once
+   * and reads everything fresh; a second loss is a live race with another device
+   * and they are told.
+   *
+   * Never a silent decrement: if it does end in failure the count is repainted
+   * from a real read, so the number on screen is always one somebody wrote.
+   */
+  async function settle(r: VerifiedWriteResult, retry: boolean) {
+    settling = false;
+    if (r.status === "unconfirmed") {
+      // Uploaded but not read back — freshly relayed chunks are whitelisted
+      // asynchronously, so this is routine and NOT a failure.
+      notice = "Saved — still settling on the network.";
+      return;
+    }
+    if (!shouldRetryCold(r.status, retry)) {
+      if (r.status !== "superseded") return;
+      error = "Another device recorded a ride at the same moment.";
+      await refresh();
+      return;
+    }
+    // Cold: everything re-read, nothing reused from the attempt that lost.
+    settling = true;
+    const again = await recordRide(subject, 1, null);
+    if (!again.ok) {
+      settling = false;
+      error = again.error;
+      await refresh();
+      return;
+    }
+    head = { statement: again.statement, visibility: again.visibility, version: again.version };
+    void again.settled.then((r2) => settle(r2, false));
   }
 
   async function confirmPublish() {
@@ -233,9 +262,14 @@
   </header>
 
   {#if !loaded && cachedLaps !== null}
-    <!-- Remembered from this device's last visit, being re-checked right now.
-         Deliberately not labelled as provisional: it is the number this rider
-         last saw, the live read almost always agrees, and a caveat on a correct
+    <!-- The WHOLE held state, not just the figure. Painting the number alone
+         left the card visibly assembling itself: the count appeared at once and
+         "Credit collected" arrived seconds later when the live read landed,
+         which reads as broken rather than fast. A remembered card is either
+         shown or it is not.
+
+         Deliberately not labelled provisional: it is the number this rider last
+         saw, the live read almost always agrees, and a caveat on a correct
          figure teaches them to distrust it. -->
     <div class="tally">
       <div class="figure">
@@ -243,6 +277,7 @@
         <span class="unit">{cachedLaps === 1 ? "lap" : "laps"}</span>
       </div>
     </div>
+    <p class="credit">Credit collected — only you can see it</p>
   {:else if !loaded}
     <p class="state">Loading your collection…</p>
   {:else if !unlocked}

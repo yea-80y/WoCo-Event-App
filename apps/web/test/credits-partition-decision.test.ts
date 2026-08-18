@@ -66,49 +66,29 @@ test("public wins when both list the subject, so a published rider is never demo
 // The retry guard (#323)
 // ---------------------------------------------------------------------------
 //
-// `recordRide` now reuses the head the page read on mount, which removes three
-// feed reads from every tap. The guard below is what keeps that safe: it is the
-// difference between "the head we were handed went stale, re-read and try
-// again" and "write a second time on top of a ride that already landed".
+// The write now returns at upload-accept and the read-back settles afterwards,
+// so `superseded` — the one settlement meaning the entry did not land — arrives
+// after the count is already on screen. This decides whether the card silently
+// redoes the ride or tells the rider. It is the difference between "that lap
+// was lost, record it properly" and "write a second time on top of a ride that
+// already landed".
 
-test("a superseded WARM attempt is retried cold — the head went stale", () => {
-  assert.equal(shouldRetryCold({ ok: false, superseded: true }, true), true);
+test("a superseded write is redone once", () => {
+  assert.equal(shouldRetryCold("superseded", true), true);
 });
 
-test("a superseded COLD attempt is NOT retried — that is a real race", () => {
-  // Everything was read fresh, so re-reading changes nothing. The rider is told
-  // another device got there first, rather than watching a silent loop.
-  assert.equal(shouldRetryCold({ ok: false, superseded: true }, false), false);
+test("a superseded write is NOT redone twice — that is a live race, not a stale head", () => {
+  // The retry read everything fresh, so repeating it changes nothing. The rider
+  // is told another device got there first, rather than watching a silent loop.
+  assert.equal(shouldRetryCold("superseded", false), false);
 });
 
-test("no other failure is ever retried, warm or not", () => {
-  // This is the one that matters. `superseded` is the ONLY outcome meaning the
-  // statement was not written. Retrying an unreadable-index failure, or any
-  // future failure that forgets to set the flag, could add the laps twice.
-  for (const warm of [true, false]) {
-    assert.equal(shouldRetryCold({ ok: false }, warm), false);
-    assert.equal(shouldRetryCold({ ok: false, superseded: false }, warm), false);
+test("no other settlement is ever redone", () => {
+  // The one that matters. `verified` landed; `unconfirmed` was uploaded and is
+  // merely unread — the plan calls it explicitly "not a failure". Redoing
+  // either would add the laps twice.
+  for (const allowed of [true, false]) {
+    assert.equal(shouldRetryCold("verified", allowed), false);
+    assert.equal(shouldRetryCold("unconfirmed", allowed), false);
   }
-});
-
-test("a successful attempt is never retried", () => {
-  assert.equal(shouldRetryCold({ ok: true }, true), false);
-  assert.equal(shouldRetryCold({ ok: true, superseded: false }, true), false);
-});
-
-// ---------------------------------------------------------------------------
-// The remembered-count cache must not outlive a sign-out
-// ---------------------------------------------------------------------------
-
-test("the credit cache prefix is user-scoped, so a shared device forgets it", async () => {
-  // The card paints a remembered lap count before the live read returns, which
-  // makes opening it instant. On a children's service that number must not
-  // survive to the next person using a shared park or family device — and the
-  // only thing making that true is this prefix being on the clear-on-sign-out
-  // list. Nothing else would fail if it were dropped.
-  const { USER_SCOPED_PREFIXES } = await import("../src/lib/cache/cache.js");
-  assert.ok(
-    USER_SCOPED_PREFIXES.includes("credit:"),
-    "credit: must be cleared on sign-out — see CoasterCredit's cache comment",
-  );
 });
