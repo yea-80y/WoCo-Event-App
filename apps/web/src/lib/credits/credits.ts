@@ -29,7 +29,11 @@ import { auth } from "../auth/auth-store.svelte.js";
 import { decideVisibility, shouldRetryCold, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
 import { readContentFeedResult } from "../swarm/content-feed.js";
-import { writeContentFeedVerified } from "../swarm/verified-write.js";
+import {
+  writeContentFeedVerified,
+  writeContentFeedSettling,
+  type VerifiedWriteResult,
+} from "../swarm/verified-write.js";
 import { nextCreditStatement } from "./next-statement.js";
 import {
   CREDIT_SUBJECT_INDEX_FORMAT,
@@ -261,7 +265,19 @@ export async function readMyCredit(subject: Hex0x): Promise<CreditHead | null> {
 // ---------------------------------------------------------------------------
 
 export type RideResult =
-  | { ok: true; statement: CreditStatementV1; visibility: CreditVisibility; confirmed: boolean }
+  | {
+      ok: true;
+      statement: CreditStatementV1;
+      visibility: CreditVisibility;
+      /**
+       * How the write ended up, resolving AFTER this result. The ride is
+       * already recorded — the upload was accepted — so this is not a gate on
+       * showing the count. It is the rider's only chance to learn the write was
+       * SUPERSEDED, which is the one outcome meaning the entry did not land.
+       * Never rejects.
+       */
+      settled: Promise<VerifiedWriteResult>;
+    }
   | { ok: false; error: string };
 
 /** What a rider is told when a read the write depends on could not be made.
@@ -322,6 +338,10 @@ async function attemptRide(
   laps: number,
   warm: CreditHead | null,
 ): Promise<RideResult & { superseded?: boolean }> {
+  // NOTE: `superseded` can no longer be known before returning — the read-back
+  // that detects it now runs after the upload is accepted. A warm-head attempt
+  // therefore reconciles through `settled` rather than through a synchronous
+  // retry; see `recordRide`.
   let visibility: CreditVisibility;
   let prev: CreditStatementV1 | null;
   /** Whether the subject is known to be in its partition's index already. A
@@ -378,7 +398,7 @@ async function attemptRide(
     }
   }
 
-  return { ok: true, statement, visibility, confirmed: written.confirmed };
+  return { ok: true, statement, visibility, settled: written.settled };
 }
 
 async function writeStatement(
@@ -386,29 +406,27 @@ async function writeStatement(
   subject: Hex0x,
   visibility: CreditVisibility,
   statement: CreditStatementV1,
-): Promise<{ ok: true; confirmed: boolean } | { ok: false; error: string; superseded?: boolean }> {
+): Promise<
+  | { ok: true; version: number; settled: Promise<VerifiedWriteResult> }
+  | { ok: false; error: string; superseded?: boolean }
+> {
   const body = visibility === "private"
     ? await sealJson(keys.encPubKeyHex, statement)
     : statement;
 
-  const res = await writeContentFeedVerified({
+  // Returns at UPLOAD-ACCEPT, with the read-back still running. From that
+  // moment the rider's signed entry durably exists; the verification only
+  // catches the same-version dedupe, whose usual answer is "yes" and whose
+  // interesting answer is equally actionable a second later. The rider is
+  // standing in a queue, so they get the moment the entry became real.
+  const { version, settled } = await writeContentFeedSettling({
     signerPrivKey: keys.feedPrivKey,
     ownerAddress: keys.feedAddress,
     topic: creditStatementTopic(saltFor(keys, visibility), subject),
     data: body,
   });
 
-  // `superseded` is the one outcome that means the ride was NOT recorded: our
-  // version carries another writer's bytes, so the total we computed is stale.
-  // Retrying blindly would write a WRONG number, not a duplicate one.
-  if (res.status === "superseded") {
-    return {
-      ok: false,
-      superseded: true,
-      error: "Another device recorded a ride at the same moment. Open again to see your count.",
-    };
-  }
-  return { ok: true, confirmed: res.status === "verified" };
+  return { ok: true, version, settled };
 }
 
 /**

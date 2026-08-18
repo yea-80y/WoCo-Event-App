@@ -95,3 +95,20 @@ test("a successful attempt is never retried", () => {
   assert.equal(shouldRetryCold({ ok: true }, true), false);
   assert.equal(shouldRetryCold({ ok: true, superseded: false }, true), false);
 });
+
+// ---------------------------------------------------------------------------
+// The remembered-count cache must not outlive a sign-out
+// ---------------------------------------------------------------------------
+
+test("the credit cache prefix is user-scoped, so a shared device forgets it", async () => {
+  // The card paints a remembered lap count before the live read returns, which
+  // makes opening it instant. On a children's service that number must not
+  // survive to the next person using a shared park or family device — and the
+  // only thing making that true is this prefix being on the clear-on-sign-out
+  // list. Nothing else would fail if it were dropped.
+  const { USER_SCOPED_PREFIXES } = await import("../src/lib/cache/cache.js");
+  assert.ok(
+    USER_SCOPED_PREFIXES.includes("credit:"),
+    "credit: must be cleared on sign-out — see CoasterCredit's cache comment",
+  );
+});

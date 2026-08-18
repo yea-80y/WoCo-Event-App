@@ -14,6 +14,7 @@
   import { creditsUnlocked, readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
   import { utcSessionDate } from "./next-statement.js";
   import { requireAccountForAction } from "../auth/ensure-action.js";
+  import { cacheGet, cacheSet, TTL } from "../cache/cache.js";
 
   interface Props {
     subject: Hex0x;
@@ -32,6 +33,14 @@
    * device it would be a false one.
    */
   let unlocked = $state(false);
+  /**
+   * A write whose read-back has not finished. While one is outstanding the NEXT
+   * tap goes cold — it re-reads instead of reusing `head` — because a head from
+   * a write that turns out `superseded` never actually landed, and building the
+   * next total on it would write a wrong number. Rare in practice: Rita's
+   * two-minute cadence guard blocks a repeat tap long before this matters.
+   */
+  let settling = $state(false);
   let inFlight = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -59,9 +68,32 @@
   );
   const isPublic = $derived(head?.visibility === "public");
 
+  /**
+   * The last count this device SAW, for instant paint on load.
+   *
+   * DISPLAY ONLY, and the boundary is the whole safety argument. `readMyCredit`
+   * is already the lenient path — it collapses every failure to null — whereas
+   * `head` feeds the next write, where a stale value restarts a rider's
+   * lifetime count at zero. So the cache is never allowed to become `head`: it
+   * paints a number and nothing else, and the live read replaces it.
+   *
+   * The `credit:` prefix is registered in `USER_SCOPED_PREFIXES` so sign-out
+   * clears it. That is not hygiene here: this is a children's service, and a
+   * shared park or family device must not show the next person what the last
+   * one rode.
+   */
+  const cacheK = $derived(`credit:laps:${subject}`);
+  let cachedLaps = $state<number | null>(null);
+
   async function refresh() {
     head = await readMyCredit(subject);
     loaded = true;
+    // Only a real read updates the remembered number. A failed read leaves the
+    // previous one in place rather than writing a zero nobody rode.
+    if (head) {
+      cachedLaps = head.statement.total;
+      cacheSet(cacheK, head.statement.total, TTL.COLLECTION);
+    }
   }
 
   /**
@@ -75,6 +107,12 @@
   onMount(async () => {
     unlocked = await creditsUnlocked();
     if (unlocked) {
+      // Paint the remembered count FIRST. The live read walks the rider's feeds
+      // — several round trips, each of which may probe past a feed's end, which
+      // is the most expensive read on Swarm — and a rider opening their own
+      // card should not watch a spinner to be told a number their device
+      // already knew. The live read then replaces it.
+      cachedLaps = cacheGet<number>(cacheK);
       await refresh();
     } else {
       loaded = true;
@@ -113,7 +151,7 @@
       // not re-read the rider's own index and head seconds later. `head` is
       // only ever set from a CLEAN read, and null falls back to the full
       // tri-state path — see `recordRide`.
-      const res = await recordRide(subject, 1, head);
+      const res = await recordRide(subject, 1, settling ? null : head);
       if (res.ok) {
         lastTapAt = Date.now();
         head = { statement: res.statement, visibility: res.visibility };
@@ -123,10 +161,26 @@
         // "Not collected yet" — which is a claim, and for a rider who has laps
         // on another device a false one.
         unlocked = true;
-        // An unconfirmed write is not a failed one — the chunk is uploaded and
-        // the gateway simply hasn't finished whitelisting it. Saying "saved,
-        // still settling" is the honest version of a spinner that never ends.
-        if (!res.confirmed) notice = "Saved — still settling on the network.";
+
+        // The count is on screen the moment the UPLOAD was accepted, which is
+        // when the rider's signed entry durably exists. The read-back finishes
+        // on its own; it protects against one thing — another device's bytes
+        // landing at our version — and the rider gains nothing by watching it.
+        settling = true;
+        void res.settled.then((r) => {
+          settling = false;
+          if (r.status === "superseded") {
+            // The ONE outcome meaning the entry did not land. Never a silent
+            // decrement: say what happened and repaint the count from a real
+            // read, so the number on screen is always one somebody wrote.
+            error = "Another device recorded a ride at the same moment.";
+            void refresh();
+          } else if (r.status === "unconfirmed") {
+            // Uploaded but not read back — freshly relayed chunks are
+            // whitelisted asynchronously, so this is routine and NOT a failure.
+            notice = "Saved — still settling on the network.";
+          }
+        });
       } else {
         error = res.error;
         // Re-derive rather than assume. This branch is right for a lost write
@@ -178,7 +232,18 @@
     {/if}
   </header>
 
-  {#if !loaded}
+  {#if !loaded && cachedLaps !== null}
+    <!-- Remembered from this device's last visit, being re-checked right now.
+         Deliberately not labelled as provisional: it is the number this rider
+         last saw, the live read almost always agrees, and a caveat on a correct
+         figure teaches them to distrust it. -->
+    <div class="tally">
+      <div class="figure">
+        <span class="num">{cachedLaps}</span>
+        <span class="unit">{cachedLaps === 1 ? "lap" : "laps"}</span>
+      </div>
+    </div>
+  {:else if !loaded}
     <p class="state">Loading your collection…</p>
   {:else if !unlocked}
     <p class="state">Ride it once to add the credit.</p>
