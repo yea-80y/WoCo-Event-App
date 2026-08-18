@@ -70,7 +70,26 @@
    *  credit) but a rider who rode it under the old name wants that on the
    *  record — so the previous name is shown, not overwritten. */
   const previously = $derived(definition ? formerNames(definition) : []);
+  /** The remembered count's storage key, and the count itself. Declared here
+   *  because `shownLaps` below reads it. */
+  const cacheK = $derived(`credit:laps:${subject}`);
+  let cachedLaps = $state<number | null>(null);
+
+  /** Confirmed from a live read or a landed write. Gates ACTIONS — the badge,
+   *  "Make public", the publish confirmation — because each of those asserts
+   *  something about state we have actually seen. */
   const laps = $derived(head?.statement.total ?? 0);
+  /**
+   * What the card SHOWS, which falls back to the remembered count.
+   *
+   * The two must not disagree, and they did: a reload painted the remembered
+   * card — the count, "Credit collected" — while the button underneath still
+   * read "I rode it", the first-collection wording, because `laps` was 0 until
+   * the live read landed. The card said the credit was held and the only
+   * control on it said it was not. A remembered card has to be internally
+   * consistent or it is worse than a spinner.
+   */
+  const shownLaps = $derived(head?.statement.total ?? cachedLaps ?? 0);
   /**
    * The session block is TODAY'S only when its date is today. It rolls over at
    * WRITE time, not at midnight, so a rider who logged three laps on Saturday
@@ -96,8 +115,6 @@
    * shared park or family device must not show the next person what the last
    * one rode.
    */
-  const cacheK = $derived(`credit:laps:${subject}`);
-  let cachedLaps = $state<number | null>(null);
 
   async function refresh() {
     head = await measured("read own count", () => readMyCredit(subject));
@@ -287,8 +304,8 @@
          figure teaches them to distrust it. -->
     <div class="tally">
       <div class="figure">
-        <span class="num">{cachedLaps}</span>
-        <span class="unit">{cachedLaps === 1 ? "lap" : "laps"}</span>
+        <span class="num">{shownLaps}</span>
+        <span class="unit">{shownLaps === 1 ? "lap" : "laps"}</span>
       </div>
     </div>
     <p class="credit">Credit collected — only you can see it</p>
@@ -325,7 +342,9 @@
          `recordRide` takes the full tri-state path — the same reads the mount
          was doing, just triggered by someone who actually wanted something. -->
     <button class="collect" onclick={collect} disabled={inFlight}>
-      {#if inFlight}Saving…{:else if laps === 0}I rode it{:else}Add a lap{/if}
+      <!-- `shownLaps`, not `laps`: the label must agree with the card above it,
+           including while a remembered card waits for the live read. -->
+      {#if inFlight}Saving…{:else if shownLaps === 0}I rode it{:else}Add a lap{/if}
     </button>
 
     {#if loaded && unlocked && laps > 0 && !isPublic && !confirmingPublish}

@@ -20,6 +20,7 @@
 // this module is statically reachable from api/events + api/profiles at first
 // paint, and top-level imports here would drag both libraries into the boot
 // bundle.
+import { countHint } from "./probe-stats.js";
 import {
   CONTENT_FEED_MC_MARKER,
   contentFeedSocIdentifier,
@@ -258,7 +259,13 @@ export async function readContentFeedResult<T>(
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   const read: SocChunkProbe = (id) => probeSoc(owner, id);
-  const res = await readVersionedContentFeed(read, topic, readVersionHint(owner, topic));
+  // Counted, not assumed: a read that starts from 0 walks EVERY version the feed
+  // has, so its cost grows with a rider's lap count. That is the one scaling
+  // shape this must not have, and reading the resolver cannot tell you whether
+  // it is happening.
+  const hint = readVersionHint(owner, topic);
+  countHint(hint > 0 ? "hintHit" : "hintMiss");
+  const res = await readVersionedContentFeed(read, topic, hint);
   if (res.status !== "found") return res;
   if (res.version >= 0) bumpVersionHint(owner, topic, res.version);
   try {

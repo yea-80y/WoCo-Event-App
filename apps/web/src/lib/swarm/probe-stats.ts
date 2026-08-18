@@ -20,6 +20,22 @@
  * code path that changes behaviour — it counts and it prints.
  */
 
+/**
+ * Whether a feed read started from a stored version hint or from zero.
+ *
+ * The single most useful number after the probe count. A read that starts at 0
+ * walks EVERY version the feed has, so its cost grows with a rider's lap count
+ * — the one scaling shape this design must not have. `hintMiss` above zero on a
+ * feed that has been read before means the hint is not doing its job, and no
+ * amount of reasoning about the resolver substitutes for knowing that.
+ */
+export interface HintCounts {
+  /** Read started from a stored hint that validated. */
+  hintHit: number;
+  /** No hint, or the hinted version did not exist — full scan from 0. */
+  hintMiss: number;
+}
+
 export interface ProbeCounts {
   /** Resolved from the storage gateway — cheap, the bee had it. */
   gatewayHit: number;
@@ -32,8 +48,18 @@ export interface ProbeCounts {
 }
 
 const zero = (): ProbeCounts => ({ gatewayHit: 0, gatewayMiss: 0, serverHit: 0, serverMiss: 0 });
+const zeroHints = (): HintCounts => ({ hintHit: 0, hintMiss: 0 });
 
 let counts = zero();
+let hints = zeroHints();
+
+export function countHint(kind: keyof HintCounts): void {
+  hints[kind] += 1;
+}
+
+export function hintCounts(): HintCounts {
+  return { ...hints };
+}
 
 export function countProbe(kind: keyof ProbeCounts): void {
   counts[kind] += 1;
@@ -46,6 +72,7 @@ export function probeCounts(): ProbeCounts {
 
 export function resetProbeCounts(): void {
   counts = zero();
+  hints = zeroHints();
 }
 
 /** Total probes, and the subset that cost a network search. */
@@ -67,6 +94,7 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
   if (!import.meta.env?.DEV) return action();
 
   const before = probeCounts();
+  const hintsBefore = hintCounts();
   const started = performance.now();
   try {
     return await action();
@@ -79,11 +107,15 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
       serverMiss: after.serverMiss - before.serverMiss,
     };
     const { probes, misses } = probeTotals(delta);
+    const hintAfter = hintCounts();
+    const hitHints = hintAfter.hintHit - hintsBefore.hintHit;
+    const missHints = hintAfter.hintMiss - hintsBefore.hintMiss;
     const ms = Math.round(performance.now() - started);
     // One line, deliberately: this is read against a stopwatch, not parsed.
     console.info(
       `[probes] ${label}: ${ms}ms · ${probes} probes (${misses} miss) ` +
-        `· gw ${delta.gatewayHit}/${delta.gatewayMiss} · api ${delta.serverHit}/${delta.serverMiss}`,
+        `· gw ${delta.gatewayHit}/${delta.gatewayMiss} · api ${delta.serverHit}/${delta.serverMiss} ` +
+        `· hints ${hitHints} used / ${missHints} scanned-from-0`,
     );
   }
 }
