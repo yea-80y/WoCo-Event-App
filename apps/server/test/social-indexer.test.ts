@@ -430,3 +430,54 @@ test("credit tallies DO band-walk, because a lap appends", async () => {
   await indexer.indexSubject("woco.credit.v1", SUBJECT, read);
   assert.notEqual(seen[0], seen[1], "a credit topic family must vary with band");
 });
+
+// ── Format safety: the declaration must fail CLOSED ──────────────────────────
+
+test("every indexable format declares whether it bands", () => {
+  // A `Record` over the union rather than a Set of the banded ones, because a
+  // Set fails OPEN: a new banded format that nobody adds to it reads as pinned,
+  // capping its tally at 64 writes with no hang, no tripwire and no failing
+  // test — a count that simply stops. This asserts at runtime what the compiler
+  // asserts at build time, so the intent survives a refactor of either.
+  for (const format of indexer.INDEXABLE_FORMATS) {
+    assert.ok(
+      indexer.FORMAT_BANDING[format] === "banded" || indexer.FORMAT_BANDING[format] === "pinned",
+      `${format} must declare "banded" or "pinned"`,
+    );
+  }
+  assert.equal(
+    Object.keys(indexer.FORMAT_BANDING).length,
+    indexer.INDEXABLE_FORMATS.length,
+    "no format may be declared that is not indexable, or vice versa",
+  );
+});
+
+test("credits band and social does not — the declaration matches the data shape", () => {
+  // Not a restatement of the table: this is WHY each answer is what it is. A lap
+  // appends, so credits grow bands; a like is latest-wins, so its feed gains a
+  // version per toggle and never leaves band 0.
+  assert.equal(indexer.FORMAT_BANDING["woco.credit.v1"], "banded");
+  assert.equal(indexer.FORMAT_BANDING["woco.like.v1"], "pinned");
+  assert.equal(indexer.FORMAT_BANDING["woco.follow.v1"], "pinned");
+});
+
+test("the DEFAULT reader is selected by format — the path no injected fake covers", () => {
+  // Every other test in this file injects `readFeed`, so the default selection
+  // has never been exercised. That is the same fixture-hides-the-real-reader
+  // shape that let a non-terminating band walk ship: the fake replaced the very
+  // code that was broken. This calls `indexSubject` with NO reader and asserts
+  // it does not hang and does not throw, for both shapes.
+  //
+  // With no participants seeded there are no feeds to read, so this exercises
+  // reader SELECTION without touching the network.
+  const cases: Array<[Parameters<typeof indexer.indexSubject>[0], string]> = [
+    ["woco.like.v1", "pinned"],
+    ["woco.credit.v1", "banded"],
+  ];
+  return Promise.all(
+    cases.map(async ([format, shape]) => {
+      const res = await indexer.indexSubject(format, SUBJECT);
+      assert.equal(res.manifest.count, 0, `${format} (${shape}) resolves with no participants`);
+    }),
+  );
+});
