@@ -187,7 +187,9 @@
       );
       if (res.ok) {
         lastTapAt = Date.now();
-        head = { statement: res.statement, visibility: res.visibility, version: res.version };
+        // `band` too: the next tap hands this back as the warm head, and a
+        // band-less one cannot address the feed it was just read from.
+        head = { statement: res.statement, visibility: res.visibility, version: res.version, band: res.band };
         loaded = true;
         // Only NOW is the collection provably unlocked. Setting this before the
         // write would make a declined key ceremony show the unlocked face —
@@ -253,7 +255,7 @@
       await refresh();
       return;
     }
-    head = { statement: again.statement, visibility: again.visibility, version: again.version };
+    head = { statement: again.statement, visibility: again.visibility, version: again.version, band: again.band };
     void again.settled.then((r2) => settle(r2, false));
   }
 

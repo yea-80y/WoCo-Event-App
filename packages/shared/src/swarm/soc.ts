@@ -544,6 +544,20 @@ export async function resolveOpenBand(
     return outcome.status === "found";
   };
 
+  // TRIPWIRE. A `topicForBand` that ignores its argument makes every opener
+  // probe address the SAME chunk, so if that chunk exists the walk below can
+  // never find an absent opener and loops forever. This is not hypothetical: the
+  // social indexer passed `() => likeStatementTopic(subject)` — correct for a
+  // type pinned to band 0 — and hung on the first like it tried to tally.
+  // A type pinned to a constant band must not be band-walked at all; it should
+  // read its fixed topic directly.
+  if (topicForBand(0) === topicForBand(1)) {
+    throw new Error(
+      "resolveOpenBand requires a topic family that varies with band; " +
+        "a band-pinned feed must be read at its fixed topic instead",
+    );
+  }
+
   let band = Number.isSafeInteger(hintBand) && hintBand > 0 ? hintBand : 0;
   if (band > 0 && !(await openerExists(band))) band = 0; // hint unreliable → full walk
   if (band === 0 && !(await openerExists(0))) return { band: 0, exists: false, clean };

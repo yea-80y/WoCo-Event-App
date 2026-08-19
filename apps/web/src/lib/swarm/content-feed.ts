@@ -331,7 +331,19 @@ function bumpBandHint(owner: string, topicForBand: (band: number) => string, ban
   }
 }
 
-export type BandedContentFeedResult<T> = ContentFeedResult<T> & { band: number };
+export type BandedContentFeedResult<T> = ContentFeedResult<T> & {
+  band: number;
+  /**
+   * Whether the BAND walk answered definitively. False means the open band is a
+   * lower bound and nothing may be concluded from the walk stopping where it
+   * did — a writer must refuse rather than target that band, or it can land a
+   * version past the last slot of a band readers have already left.
+   *
+   * Kept apart from the read's own status on purpose: the head can be `found`
+   * and perfectly readable while the walk that chose its band was inconclusive.
+   */
+  bandClean: boolean;
+};
 
 /**
  * Read the head of a BANDED feed, resolving which band is open first.
@@ -362,11 +374,11 @@ export async function readBandedContentFeed<T>(
     // Band 0 never opened. Clean means the feed genuinely does not exist;
     // otherwise nobody could answer, which a caller must not cache as absence.
     return open.clean
-      ? { status: "absent", band: 0 }
-      : { status: "unavailable", reason: "band probe inconclusive", band: 0 };
+      ? { status: "absent", band: 0, bandClean: true }
+      : { status: "unavailable", reason: "band probe inconclusive", band: 0, bandClean: false };
   }
   bumpBandHint(owner, topicForBand, open.band);
 
   const res = await readContentFeedResult<T>(owner, topicForBand(open.band), { skipLegacy: true });
-  return { ...res, band: open.band };
+  return { ...res, band: open.band, bandClean: open.clean };
 }
