@@ -23,24 +23,45 @@ Last updated: 2026-08-04 (security workstream added — #139/#140 merged, recove
 
 ## #172 BANDING — open items (2026-08-19, branch `feat/credit-head-lookup`)
 
-Seven commits, `630d41a..7d0a73d`. Green: shared 196, web 403, server 735; server
-typechecks; `svelte-check` 3225 files / 0 errors. NOT merged, NOT pushed.
+Two Fable sign-off rounds done. Round 2 verdict: merge after changes; those changes have
+landed. Green: shared 196, web 403, server 735; server typechecks. NOT merged, NOT pushed.
 
-| # | Item | Owner | Why it is not done |
+**A claim in an earlier commit message was WRONG and is corrected here.** `b4a7faa` said the
+root cause of the rollover defect was "also closed" by surfacing `bandClean`. It was not:
+`bandClean` covered the BAND WALK only, while `readVersionedContentFeed` still dropped the
+in-band scan's `clean` on its found path. So a clean band walk plus a dirty version scan could
+still land a stale snapshot at the real latest version — VERIFIED, with every subject added
+since erased. Now genuinely closed: `scanClean` is threaded onto found reads and `bandClean`
+means the whole resolution.
+
+**Two more erasure paths found in round 2, both fixed:** `removeFromSubjectIndex` (credits)
+and `addToSubjectIndex` (social) were read-modify-writes with no dirty-resolution check — the
+same class the branch had just closed in `upsertSubjectBand`, left open in its siblings.
+
+**The `recordRide` question is RESOLVED as a non-defect** (option 4). A lap is an
+EXACT-ADDRESS write, so any staleness targets an address that already exists: Bee dedupes,
+the read-back reports `superseded`, and the retry rail handles it. A mis-banded lap is never
+written, and the not-writing is detected. Refusing the tap would fail the product's core
+moment to defend a harm that is already converted into detect-and-retry. The rule is recorded
+at `attemptRide`: **exact-address writes may proceed on an inconclusive read because the
+read-back guards them; read-modify-write snapshot writes must refuse.**
+
+| # | Item | Owner | State |
 |---|---|---|---|
-| 1 | **Fable sign-off on the final two commits** (`b4a7faa`, `7d0a73d`) | Fable | The review verdict "merge after changes" was given BEFORE these landed. Fable has not seen the tripwire, the `>=` rollover fix, `bandClean`, or the `RideResult` fix. **Blocks merge.** |
-| 2 | **Open question found while fixing review finding 4** | Fable | `upsertSubjectBand` refuses on a dirty band walk, but `readHeadAt`/`recordRide` do NOT check `bandClean` — so a lap can still be written into a band chosen by an inconclusive walk. Same defect class as finding 4. Refusing a lap is user-visible, so the treatment may differ from the index path. Ask before fixing. |
-| 3 | **Review finding 5 — scan-first resolution** | Opus build, Fable spec | The opener walk spends 2 guaranteed missing-chunk searches per read even on an exact hint (~3× the design target on the hot path). Fix: resolve in-band at the hinted band FIRST; if latest < `LAST_VERSION_IN_BAND` the invariant proves it is the head, so no opener probes at all. Non-blocking, resolver restructure. |
-| 4 | **Browser re-run of the measurement** | Owner | The cost table in COASTER_CREDITS_PLAN is a MODEL. Unit tests pin the shape; the 7925ms/25-probe figure came from a browser. Re-run with the fixed three-state hint instrument. Acceptance criteria are in the plan. |
-| 5 | Synchronous gateway whitelisting at write-accept (`soc-upload.ts`) | Opus | The `api 0/8` finding: an existing-but-unwhitelisted chunk reads as absent, which can invalidate a good hint. Confirm with `hintInvalidated` before tuning further. |
-| 6 | Gate B (emblem rail) implementation | Fable design done | Designed in SWARM_SOCIAL_PLAN; nothing frozen is needed for it. Not started. |
+| 1 | **Finding 5 — scan-first resolution** | Opus build | Fable has given a mechanical spec (in its round-2 review): resolve in-band at the hinted band FIRST; terminal when `latest < LAST_VERSION_IN_BAND` and the scan was clean, with ZERO opener probes; walk only on a full band or a bad hint. Cuts a warm read from ~2 hits + 4 misses to 1 hit + 2 misses. The tripwire must move to the new entry point. **Next build item.** |
+| 2 | **`BANDED_FORMATS` fails OPEN against undercounts** | Opus | A new banded format added to `INDEXABLE_FORMATS` but forgotten in `BANDED_FORMATS` reads as pinned — a silent 64-write tally cap, no hang, no failing test. Needs an exhaustiveness assertion tying every indexable format to an explicit banded/pinned declaration. |
+| 3 | **`indexSubject`'s default reader is never exercised** | Opus | Every test injects `readFeed`. This is the same fixture-hides-the-real-reader shape that let the non-terminating walk ship. |
+| 4 | **Browser re-run of the measurement** | Owner | The cost table in COASTER_CREDITS_PLAN is a MODEL. Re-run with the three-state hint instrument. Fable: this should stay BLOCKING for launch even though it does not block this merge. |
+| 5 | Synchronous gateway whitelisting at write-accept | Opus | Whitelist-lag false-absents read as CLEAN, so they bypass every `clean`-based guard in this branch. `hintInvalidated` is the tripwire — confirm before tuning. |
+| 6 | Declare banded-vs-pinned per format in `packages/shared` | Opus | A third-party indexer builds from shared and cannot see `BANDED_FORMATS`, which lives in `apps/server`. Non-blocking. |
+| 7 | Gate B (emblem rail) implementation | — | Designed in SWARM_SOCIAL_PLAN; nothing frozen is needed for it. Not started. |
 
-**Two process lessons from this branch, worth not repeating:** the test suites were green
-through a resolver that never terminated (the fixture replaced the real reader) and through
-four type-level defects. `svelte-check` is slow here and was run late both times. And a patch
-script using `replace()` without asserting the pattern matched silently no-opped and reported
-success — the same "reported done, never happened" shape as the bug itself.
-
+**Process lessons from this branch, worth not repeating:** the test suites were green through a
+resolver that never terminated (the fixture replaced the real reader), through four type-level
+defects, and through two snapshot-erasure paths. `svelte-check` is slow here and was run late.
+A patch script using `replace()` without asserting the pattern matched silently no-opped and
+reported success. And a commit message claimed a root cause was closed when it was two-thirds
+closed — the same "reported done, never happened" shape as the bugs themselves.
 
 ## Security workstream — passkey / accounts (added 2026-08-04)
 

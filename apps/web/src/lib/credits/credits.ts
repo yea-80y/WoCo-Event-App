@@ -417,6 +417,37 @@ export async function recordRide(
  * One honest attempt. `warm` non-null means the caller supplied a clean head
  * and its partition; null means read everything.
  */
+/**
+ * WHY THIS PATH DOES NOT CHECK `bandClean`, AND THE INDEX WRITERS DO.
+ *
+ * The asymmetry looks like an oversight and is not, so it is written down here
+ * rather than re-argued at every review.
+ *
+ * A lap is an EXACT-ADDRESS write: `knownVersion` is always supplied when there
+ * is a previous head (`prevVersion + 1`, or 0 on a rollover), and the only
+ * probing lap writes are a first lap — which requires a CLEAN resolution
+ * showing band 0 unopened — and `publishSubject`, which starts a fresh public
+ * family at band 0. So a lap computed from ANY stale state (stale band, stale
+ * version, stale prev) targets an address that already exists. Bee dedupes, the
+ * bytes never land, the read-back at that exact version reports `superseded`,
+ * and `shouldRetryCold` redoes it once from a cold read. A mis-banded lap is
+ * therefore never a durably-written-but-invisible ride; it is a ride that was
+ * NOT written, and the not-writing is detected.
+ *
+ * An index write is a READ-MODIFY-WRITE of a whole snapshot. Its writer probes
+ * for a fresh address independently of the resolution we read from, so a stale
+ * snapshot lands at the real latest version and VERIFIES — erasing everything
+ * added since. Nothing detects it. That is why those writers refuse and this
+ * one proceeds.
+ *
+ * The rule, generally: exact-address writes whose staleness always collides may
+ * proceed on an inconclusive read, because the read-back is their guard.
+ * Read-modify-write snapshot writes must refuse.
+ *
+ * Refusing the tap instead would fail the product's core moment — an unrecorded
+ * lap is a lap that did not happen — to defend against a harm the write path
+ * already converts into detect-and-retry.
+ */
 async function attemptRide(
   keys: RiderKeys,
   subject: Hex0x,
@@ -753,6 +784,11 @@ async function removeFromSubjectIndex(
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
     const existing = await readSubjectIndex(keys, visibility);
     if (existing.read.status !== "ok") return false;
+    // Same refusal as `upsertSubjectBand`, and for a sharper reason: this writes
+    // a snapshot with a subject REMOVED. Off an inconclusive resolution it can
+    // land an older band's snapshot at the live band's next version — verified —
+    // erasing every subject added since. A wrong answer, not a slow one.
+    if (!existing.bandClean) return false;
     if (!existing.read.entries.some((e) => e.subject === subject)) return false;
 
     const rollover = existing.indexVersion !== null && existing.indexVersion >= LAST_VERSION_IN_BAND;

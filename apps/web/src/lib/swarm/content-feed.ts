@@ -239,7 +239,14 @@ export async function writeContentFeed(args: {
 
 /** Tri-state result of a content-feed read. `absent` is the only cacheable negative. */
 export type ContentFeedResult<T> =
-  | { status: "found"; value: T; version: number }
+  | {
+      status: "found";
+      value: T;
+      version: number;
+      /** Whether the version scan that chose this version was conclusive. A
+       *  read-modify-write MUST refuse when false — see `VersionedFeedRead`. */
+      scanClean: boolean;
+    }
   | { status: "absent" }
   | { status: "unavailable"; reason?: string };
 
@@ -275,7 +282,12 @@ export async function readContentFeedResult<T>(
   if (res.status !== "found") return res;
   if (res.version >= 0) bumpVersionHint(owner, topic, res.version);
   try {
-    return { status: "found", value: JSON.parse(new TextDecoder().decode(res.bytes)) as T, version: res.version };
+    return {
+      status: "found",
+      value: JSON.parse(new TextDecoder().decode(res.bytes)) as T,
+      version: res.version,
+      scanClean: res.scanClean,
+    };
   } catch {
     // Bytes exist at this identifier but aren't our JSON — corrupt or foreign,
     // never "no feed here". Absent would be a lie a caller could cache.
@@ -334,13 +346,19 @@ function bumpBandHint(owner: string, topicForBand: (band: number) => string, ban
 export type BandedContentFeedResult<T> = ContentFeedResult<T> & {
   band: number;
   /**
-   * Whether the BAND walk answered definitively. False means the open band is a
-   * lower bound and nothing may be concluded from the walk stopping where it
-   * did — a writer must refuse rather than target that band, or it can land a
-   * version past the last slot of a band readers have already left.
+   * Whether the WHOLE resolution — the band walk AND the in-band version scan —
+   * answered definitively. One flag rather than two, because no caller wants to
+   * act on half of it.
+   *
+   * Who must care, and who need not: a READ-MODIFY-WRITE of a snapshot must
+   * refuse when this is false, because its writer probes for a fresh address
+   * independently, finds the real latest, and lands the stale snapshot there —
+   * verified, with everything added since silently erased. An EXACT-ADDRESS
+   * write (a lap) may proceed: a stale target already exists, so the write
+   * dedupes, the read-back reports `superseded`, and the retry rail handles it.
    *
    * Kept apart from the read's own status on purpose: the head can be `found`
-   * and perfectly readable while the walk that chose its band was inconclusive.
+   * and perfectly readable while the resolution that chose it was inconclusive.
    */
   bandClean: boolean;
 };
@@ -380,5 +398,6 @@ export async function readBandedContentFeed<T>(
   bumpBandHint(owner, topicForBand, open.band);
 
   const res = await readContentFeedResult<T>(owner, topicForBand(open.band), { skipLegacy: true });
-  return { ...res, band: open.band, bandClean: open.clean };
+  const scanClean = res.status === "found" ? res.scanClean : true;
+  return { ...res, band: open.band, bandClean: open.clean && scanClean };
 }

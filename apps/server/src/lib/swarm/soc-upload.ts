@@ -501,7 +501,13 @@ export async function readContentFeedJsonResult(
               contentFeedSocIdentifier(contentFeedPageTopic(baseTopic, p)))
           : await assembleContentFeed(read, versionedSocIdentifier(base, cached.version), (p) =>
               versionedPageIdentifier(base, cached.version as number, p));
-      if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: cached.version };
+      // `scanClean: true` is honest here ONLY because a dirty scan is never
+      // cached (see below). No scan ran on this path — the version is read
+      // exactly — so the flag reports the resolution that produced the cached
+      // version, not a fresh verdict.
+      if (asm.status === "found") {
+        return { status: "found", bytes: asm.bytes, version: cached.version, scanClean: true };
+      }
       // Cached version unexpectedly unreadable — drop it and re-probe below.
       cfvCache.delete(key);
     }
@@ -512,7 +518,12 @@ export async function readContentFeedJsonResult(
   const res = await readVersionedContentFeed(read, baseTopic, hint, { skipLegacy: opts.skipLegacy });
   // Only a definitive answer may be cached. Caching an `unavailable` as absent
   // would serve "this feed does not exist" for the whole TTL off one bad read.
-  if (res.status === "found") cfvCache.set(key, { version: res.version, at: Date.now() });
+  //
+  // And only a CLEAN scan's version, for the same reason one step further in: a
+  // dirty scan's latest is a lower BOUND, not the latest. Caching it would serve
+  // a stale version for the whole TTL and — worse — the exact-version path above
+  // would hand it back flagged clean, laundering "could not ask" into a verdict.
+  if (res.status === "found" && res.scanClean) cfvCache.set(key, { version: res.version, at: Date.now() });
   else if (res.status === "absent") cfvCache.set(key, { version: null, at: Date.now() });
   return res;
 }

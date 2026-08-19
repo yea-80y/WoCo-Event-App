@@ -174,6 +174,12 @@ async function addToSubjectIndex(
       // the lenient-read-on-a-write-path trap.
       let subjects: Hex0x[];
       if (res.status === "found") {
+        // A read-modify-write of a whole snapshot must refuse on an inconclusive
+        // resolution: the writer probes for a fresh address independently, and
+        // would land this stale list at the real latest — verified — erasing
+        // every subject added since. The statement is already written, so
+        // stopping here costs enumeration only.
+        if (!res.bandClean) return;
         if (!k.validateIndex(res.value)) return;
         subjects = (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
         if (subjects.includes(subject)) return;

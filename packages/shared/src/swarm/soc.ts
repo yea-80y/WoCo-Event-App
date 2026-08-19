@@ -393,7 +393,25 @@ const VERSION_PROBE_WINDOW = 2;
 
 /** A resolved feed read: the bytes plus the version they came from. */
 export type VersionedFeedRead =
-  | { status: "found"; bytes: Uint8Array; /** Resolved version, or {@link LEGACY_CONTENT_FEED_VERSION}. */ version: number }
+  | {
+      status: "found";
+      bytes: Uint8Array;
+      /** Resolved version, or {@link LEGACY_CONTENT_FEED_VERSION}. */
+      version: number;
+      /**
+       * Whether the VERSION scan that chose this version answered definitively.
+       *
+       * A found payload can be perfectly readable while the scan that picked it
+       * was inconclusive — the scan may have stopped early on an unanswerable
+       * probe with higher versions still present. Harmless for display, and
+       * harmless for an exact-address write (a stale target already exists, so
+       * the write dedupes and the read-back reports `superseded`). NOT harmless
+       * for a read-modify-write of a whole snapshot: its writer probes for a
+       * fresh address independently, finds the real latest, and lands the stale
+       * snapshot there — verified, with everything added since erased.
+       */
+      scanClean: boolean;
+    }
   | { status: "absent" }
   | { status: "unavailable"; reason?: string };
 
@@ -699,7 +717,7 @@ export async function readVersionedContentFeed(
       baseIdFor(latest),
       (page) => versionedPageIdentifier(base, latest, page),
     );
-    if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest };
+    if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest, scanClean: clean };
     // The probe just confirmed this version PRESENT, so an absent re-read is a
     // contradiction (a vanished chunk / a reader disagreeing with itself), never
     // evidence that the feed does not exist.
@@ -722,6 +740,6 @@ export async function readVersionedContentFeed(
     (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
   );
   return legacy.status === "found"
-    ? { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION }
+    ? { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean }
     : legacy;
 }
