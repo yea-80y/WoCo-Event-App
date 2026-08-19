@@ -704,62 +704,196 @@ subject lives in exactly ONE of the two indexes — the private index (private s
 opt-in, the public index (public salt) after — and opt-in moves it. The index is therefore not
 just discovery hygiene: it is how a fresh device learns which head is live for each subject.
 
-⚠️ **OPEN, AND THE CHEAPEST IT WILL EVER BE — head lookup is O(number of laps)
-(2026-08-19).** Measured, not inferred. One statement topic accumulates one SOC
-version per lap, and `resolveLatestSocVersion` walks FORWARD to find the newest,
-so reading a rider's own count costs a probe per version. Instrumented on a
-9-lap account (`probe-stats.ts`, dev-only):
+✅ **RESOLVED — head lookup is bounded by COUNT-BANDED TOPICS (2026-08-19, Fable design
+pass).** The problem, measured not inferred: one statement topic accumulated one SOC version
+per lap and `resolveLatestSocVersion` walks FORWARD, so reading a rider's own count cost a
+probe per version. Instrumented on a 9-lap account (`probe-stats.ts`, dev-only):
 
 ```
-record a lap:     555ms ·  0 probes                       ← the write path is fine
+record a lap:     555ms ·  0 probes                       ← the write path was already fine
 read own count:  7925ms · 25 probes (16 miss) · gw 9/8 · api 0/8
 ```
 
-Nine gateway HITS is the scan walking nine existing versions. At 109 laps it
-walks 109. The version hint exists to stop this and is not doing so; a probable
-mechanism is below, unconfirmed.
+Nine gateway hits is the scan walking nine existing versions. At 109 laps it walks 109.
 
-**Batching laps was considered and REJECTED as the fix.** Writing every N laps
-divides the constant and leaves the shape — still linear, still degrading over a
-season — while costing the things that make the rail worth having: a lap is not
-recorded until the batch flushes (on the honesty product an unrecorded lap is a
-lap that did not happen), a phone closed in a queue loses it, and the instant
-tap-to-real moment IS the product.
+**THE SCHEME.** A rider's logbook for one coaster is a sequence of BANDS. A band is a topic;
+each band holds exactly `STATEMENT_BAND_SIZE = 64` versions, contiguous from 0; a band opens
+only when the previous one is full. No clock appears anywhere in addressing.
 
-**The candidate is EPOCHED TOPICS, and this design already does it once.** Opt-in
-is precisely this move: a republish at a new topic where "versions at the new
-topic restart at 0" while `seq` continues. Generalising it bounds the scan. Two
-variants, with a real trade-off:
+```
+statementTopic(type, n, salt, subject, band)
+  = "woco/{type}/v{n}/" + hex(HMAC-SHA256(salt, subjectBytes(32) || uint64BE(band)))
+```
 
-| | count-banded (every N laps) | time-banded (month/year) |
-|---|---|---|
-| finding the epoch | must be discovered — scan or index | COMPUTABLE from the clock |
-| quiet rider | epochs always exist | walks BACK through empty bands, and misses are the expensive probe |
-| enumeration | epoch count ≈ lap count, already public | with the FIXED `PUBLIC_SALT`, anyone can enumerate months of a published subject and read off a rider's activity calendar |
+The band goes INSIDE the HMAC, not as a path segment: topics are hashed into identifiers
+anyway, so it costs nothing, and a partially disclosed private topic never yields its
+siblings. The message is a fixed 40 bytes — disjoint by construction from the existing
+32-byte message, so no collision with chunks already written. Band is always present,
+including band 0: no two-length special case, because the freeze exists to kill exactly that
+ambiguity class.
 
-That last cell is the sharp one: on a children's service, "which months this
-child visited a park" is a materially different disclosure from "this child has
-109 laps", and only the latest `session.date` is exposed today.
+**THE FULL-BAND INVARIANT (frozen, load-bearing).** Version 0 of band `b+1` MUST NOT be
+written unless version 63 of band `b` exists. Therefore every band but the current one is
+exactly full, band count = ⌊writes/64⌋, and a reader whose in-band scan ends below 63 KNOWS
+it holds the head. This is what makes a stale or missing band a HINT failure, never a
+correctness failure — and it is what lets the social index (below) find its band with no
+carrier at all.
 
-**Likely synthesis, to be pressure-tested rather than assumed:** band by time,
-but carry the last-written band in the SUBJECT INDEX, which is already read first
-and is salt-protected. That gives O(1) cold or warm, no walk-back, index growth
-once per band instead of once per lap, and it closes the enumeration leak by
-keeping the band behind the salt rather than in a guessable topic.
+**WHERE THE BAND IS CARRIED.** In the subject index, which the partition rule already
+forces every read to fetch first — so the band rides for free. That requires a format bump,
+because the v1 validator is closed:
 
-**Cost of deciding late.** This changes topic derivation, which is frozen at P0.
-Pre-launch that is a registry edit and a re-test; post-launch it is a migration
-of every rider's logbook. It also has to be taught to the indexer.
+```
+woco.credit-index.v2 = { format, entries: [{ subject: Hex0x, band: number }] }
+```
 
-**Carry into that design pass:**
-- `api 0/8` — the server fallback resolved NOTHING across eight misses, so every
-  miss pays two round trips for one verdict. Whatever the scheme, this doubles
-  its cost. `client-soc.ts` documents why gateway-first is the sounder verdict
-  order, so this is not a reorder.
-- A chunk that exists but is not gateway-whitelisted reads as ABSENT (403 → server
-  404). That would invalidate a good version hint and force the full scan seen
-  above. Coherent, and a THEORY — the hint counter reports whether a hint existed,
-  not whether the resolver used it, so fix that instrument before trusting it.
+Still storage-key-signed only; same stakes argument as v1, since a forged band can only make
+a reader walk, never lie about a count. `band` is a monotonic lower bound, like the version
+hint; the merge rule on `superseded` is union-subjects, per-subject max band. The statement
+payload `woco.credit.v1` is UNCHANGED — the band is derivable from where a statement sits,
+and carrying a computable value in a frozen schema is the `prevSession` mistake again.
+
+**COST.** Counting missing-chunk probes (the multi-second unit) and cheap hit round-trips,
+single never-published subject, cold device:
+
+| | 9 laps | 109 laps | 1,000 laps | 10,000 laps |
+|---|---|---|---|---|
+| before — misses | ~8 | ~8 | ~8 | ~8 |
+| before — hit RTTs | ~6 | ~56 | ~500 | ~5,000 |
+| after — misses | 4 | 4–6 | 4–6 | 4–6 |
+| after — hit RTTs | ~6 | ~24 | ~29 | ~110 |
+
+Warm reads are ~3 misses, flat in laps; an in-session warm tap stays 0 probes. The residual
+at 10,000 laps is the index feed (one version per 64 laps); the pressure valves, if it ever
+measures as material, are a larger `N` or K-sparse index updates — both shape-preserving,
+neither needed at pilot scale. **This holds on a rider's own light client or browser node**,
+which is the actual requirement: the misses are genuine DHT searches and there are O(1) of
+them regardless of lifetime count.
+
+**WHY NOT TIME-BANDED, which the earlier revision proposed.** Two reasons, and the second
+one is the durable one:
+
+1. A time band is a function of the ENVIRONMENT. A skewed clock, or a write straddling UTC
+   month-end, writes into the wrong band; two devices with disagreeing clocks both write, both
+   writes LAND, nothing dedupes and nothing reports `superseded`. That is a new, undetectable
+   fork class. A count band is a function of STORAGE STATE, so every wrong guess collapses into
+   machinery that already exists — Bee dedupes, the verified read-back reports `superseded`,
+   and `shouldRetryCold` redoes it honestly once.
+2. **A correction to the earlier revision's privacy argument, which was void.** It claimed
+   time-banding could be made safe by carrying the band in the salt-protected index. It cannot:
+   the public index is written UNSEALED and sits at a topic derived from the fixed
+   `PUBLIC_SALT`, so for a published subject it is world-readable BY DESIGN — that is its
+   indexer function. And if the band is an HMAC input, month topics stay enumerable under the
+   public salt no matter what the index records. Also false was the premise that "only the
+   latest `session.date` is exposed today": public heads are plaintext and versions are
+   contiguous and computable, so an observer can already reconstruct a published rider's full
+   visit calendar at day granularity.
+
+   The real argument against time-banding is therefore stronger and different: **the address
+   layer outlives the payload schema.** A future `woco.credit.v2` could coarsen or drop
+   `session.date` from public payloads; time-banded topics would keep leaking the calendar
+   forever, because a topic cannot be versioned away once written. On a service used by
+   children, do not weld a temporal signal into permanent addressing to solve a latency
+   problem that a counter solves.
+
+**WHAT AN OBSERVER GAINS: nothing.** Published rider — the same subjects, heads, history,
+dates, `total` and `seq` as before, plus band count = ⌊writes/64⌋, which `seq` already gave
+them. Never-published rider — zero public artifacts before and after. The #323 refusal to seed
+an empty public index is preserved: this scheme adds no public artifact before opt-in.
+
+**REJECTED, with reasons, so this is not re-derived:**
+
+- **Batching laps** — divides the constant, keeps the linear shape; an unrecorded lap on an
+  honesty product is a lap that did not happen, and the tap-to-real moment IS the product.
+- **A per-lap head pointer in the index** — the trap everyone proposes first: moves one version
+  per lap onto the index feed, whose own head resolution becomes the O(laps) scan. Circular.
+- **A mutable "latest" pointer chunk** — impossible. SOCs are immutable; every mutable cell on
+  this substrate is a versioned feed and inherits the problem. This is the root cause, and it
+  is why the answer is a COMPUTABLE address rather than a discoverable one.
+- **Galloping / binary search over versions** — O(log L) MISSES per read versus the linear
+  scan's O(1). Misses are the multi-second unit on every read source; ~7 at 109 laps recreates
+  the #323 blast radius. Same reasoning that cut `VERSION_PROBE_WINDOW` to 2.
+- **Milestone PODs as the structural anchor** — see "PODs as chapter markers" below.
+- **Bee-native epoch feeds** — depend on `/feeds` machinery this design avoids for
+  Etherna-safety, and epoch lookup is itself a multi-probe search with misses.
+- **Exponentially growing bands** — bounds band count but unbounds the in-band scan, breaking
+  the count-independence that is the whole requirement.
+- **Deriving band from `seq`** — `seq` counts statements, not per-topic writes (multi-lap
+  writes share a version) and continues across opt-in while bands restart. Band must be a
+  function of per-topic write count, never of a signed payload field.
+- **A server-side head cache as the answer** — violates indexer independence. Admissible later
+  strictly as hint-priming, never as correctness.
+- **Seeding an empty public index** — stays rejected (#323): a found-but-empty index at a
+  computable public address discloses rail usage for a rider with zero public artifacts.
+
+**WHAT MUST CHANGE, all pre-launch registry edits.** Discipline item 4 gains `band`; a new
+frozen `STATEMENT_BAND_SIZE = 64` and the full-band invariant; `woco.credit-index.v1` → `v2`;
+closure 6 extended (the public head restarts at band 0, `seq` continues, the moved index entry
+carries band 0). UNCHANGED: the `woco.credit.v1` schema, the `holderSig` recipe, `seq`
+authority and tie-break, both salts, the index topic's salt treatment, all of `soc.ts`.
+
+**TWO CODE FIXES THAT RIDE ALONG** (not frozen, but they distort every measurement):
+
+- The **hint instrument is wrong**. `content-feed.ts` counts whether a hint EXISTED, not
+  whether the resolver USED it — and `resolveLatestSocVersion` silently restarts from 0 when
+  the hinted version does not resolve, so a counted "hintHit" can be a full scan. Fix at the
+  resolver, the only place that knows: return `{ hintGiven, hintValidated, scannedFrom, probes }`
+  and count three states — `noHint`, `hintUsed`, `hintInvalidated`.
+- The **legacy fallback fires on every clean-absent statement read**, burning one guaranteed
+  missing-chunk search for a chunk that cannot exist: statement feeds were born versioned.
+  Add a statement-rail read variant that skips it.
+
+**THE `api 0/8` FINDING.** The server fallback resolved nothing across eight misses. This is
+NOT a reorder request — `client-soc.ts` documents why gateway-first is the sounder verdict
+order. The mechanism: `probeSoc` returns `absent` on a gateway 404 WITHOUT calling the server
+on the non-thorough path, so all eight falling through means none was a 404 — consistent with
+the whitelist theory (the gateway 403s a non-whitelisted address). Consequence worth acting on:
+an EXISTING but unwhitelisted version also reads absent, which can invalidate a good hint and
+force the full rescan measured above. Recommend making whitelisting synchronous with
+write-accept in `soc-upload.ts`, and letting the fixed hint instrument confirm or falsify this
+as the hint-killer before any further tuning.
+
+**ACCEPTANCE.** On fixtures at 9 / 109 / 1,000 laps: cold-read misses flat at ≤6 and
+independent of laps; warm-read misses ≤3; warm tap 0 probes; band-opening tap ≤ ~4 probes;
+`hintInvalidated = 0` on gateway-healthy runs.
+
+✅ **BUILT 2026-08-19** (`829b0e4`, `91325b9`) — shared discipline, client read/write with
+rollover, social index, server indexer, evidence leaves. Unit-level cost is asserted rather
+than argued (`test/swarm/soc-bands.test.ts` pins O(bands + band size) against the quadratic
+shape, and misses staying O(1) as bands grow). The three-state hint instrument shipped with
+it, so the BROWSER measurement above can now be re-run and trusted — that re-run is the
+outstanding acceptance step, and until it exists the table above is a model, not a result.
+
+⚠️ **OPEN — PODs as chapter markers (2026-08-19).** The owner's proposal: a milestone POD
+could START a new feed — hit 100, and the badge begins the next chapter. The instinct is
+right and the design already contains it, but **the dependency direction must be inverted**,
+and that inversion is the whole point.
+
+Milestone PODs cannot be the structural anchor. Four independent reasons: they are
+deliberately RARE and irregular ("scarcity is the point") where an anchor must be regular;
+they are ISSUER-signed, so a rider's own read latency would depend on a park's cadence and
+availability, and at v1 — "no vouching at all" — nobody would have one; they cannot exist for
+PRIVATE heads at all, which is the default state and the children; and badge eligibility must
+read the VERIFIED count, which is a sum over walked history, so a load-bearing anchor would
+require the very walk it exists to remove. Circular.
+
+Inverted, it works and costs nothing: **the band boundary comes first — structural,
+rider-signed, always available, deterministic — and a milestone POD is minted AT one and
+points BACK at it.** The band boundary IS the "chapter" the product wants; it just does not
+depend on an issuer to exist. Every 64 laps a rider genuinely starts a new feed, and a real
+badge can reference that boundary whenever an issuer chooses to mint one. Head lookup never
+reads a POD.
+
+Still open, and the reason this is not yet closed: the wider vision behind it — a POD that
+grants access to exclusive content, forums, club spaces — is an ENTITLEMENT gate, not an
+anchor, and it has its own constraints. See "Three gates, not one" in `SWARM_SOCIAL_PLAN.md`,
+and note the existing rule above: **credits must never satisfy a `PodGateRule`.** A
+self-signed statement passing a gate that today requires trustless truth is the failure mode;
+an ISSUER-signed emblem minted after the issuer reads the verified count is the shape that
+works. `ACT` is available for SOCs and encrypts the payload but not the address, so presence
+stays observable — it is a candidate for many-grantee club content, and remains the wrong tool
+for a grantee list of one.
+
 
 ### 2. `holderSig` digest — written down
 
@@ -903,11 +1037,16 @@ credentials carry an identity signature.
    to `pod/canonical.ts`.
 3. Closed schemas, JSON-safe wire form, omitted-not-null, dispatch-before-validation
    (closures 4 and 7).
-4. Topic scheme — `"woco/{type}/v{n}/" + hex(HMAC-SHA256(salt, subject bytes))`, `salt` a
-   parameter: public types pin `utf8("woco-{type}-public-v{n}")`; the private salt is
-   `HMAC(encryptionPrivKey, "woco-{type}-topic-salt-v{n}")` (closure 1).
-5. Per-holder subject index per type, same salt treatment, partition rule (closure 1); one
-   live head per (holder, subject) (closure 6).
+4. Topic scheme — `"woco/{type}/v{n}/" + hex(HMAC-SHA256(salt, subject bytes || uint64BE(band)))`,
+   `salt` a parameter: public types pin `utf8("woco-{type}-public-v{n}")`; the private salt is
+   `HMAC(encryptionPrivKey, "woco-{type}-topic-salt-v{n}")` (closure 1). **AMENDED 2026-08-19**
+   — the band was added pre-launch to bound head lookup; see "RESOLVED — head lookup is bounded
+   by COUNT-BANDED TOPICS". A band holds `STATEMENT_BAND_SIZE = 64` versions and the FULL-BAND
+   INVARIANT is frozen alongside it: version 0 of band `b+1` is written only after version 63 of
+   band `b` exists.
+5. Per-holder subject index per type, same salt treatment AND the same banding (HMAC message
+   `utf8("subject-index") || uint64BE(band)`, amended 2026-08-19), partition rule (closure 1);
+   one live head per (holder, subject) (closure 6).
 6. Ordering — SOC versions where author = feed owner; signed `seq` where they differ;
    lower-digest tie-break; read-back-after-write (closure 5).
 7. Evidence-manifest REQUIREMENT (its form is deliberately NOT frozen — view plane, freely
@@ -920,12 +1059,22 @@ credentials carry an identity signature.
   exitTokens?: string[] }, holderSig }`. CLOSED. `prevSession` is DROPPED from the earlier
   draft: it is derivable from `(owner, base, version)` — SOC versions ARE the history — and
   schema surface frozen forever for a computable value is pure liability.
-- `woco.credit-index.v1` — `{ format, subjects[] }`, storage-key-signed only. Deliberately
+- `woco.credit-index.v2` — `{ format, entries: [{ subject, band }] }`, storage-key-signed only.
+  **Bumped from v1 `{ format, subjects[] }` on 2026-08-19** to carry the band; the v1 validator
+  was closed, so this is a true format bump. Social index formats stay at v1 — each version is
+  already a full snapshot, so only their topic derivation moves. Deliberately
   low-stakes: a forged index can only hide subjects or point at statements whose `holderSig`
   will not verify.
 - `woco.like.v1` / `woco.follow.v1` — `{ format, subject, value }`. Latest SOC version wins;
   `value: false` is the overwrite that "unlike/unfollow = overwrite" (SWARM_SOCIAL_PLAN
   commitment 3) requires, since absence cannot be distinguished from never-liked.
+
+**Rail note (2026-08-19):** the STATEMENT DISCIPLINE — not the Merkle-batch / chain-slot rail —
+is the intended home for future ISSUER-SIGNED grant types (emblems, and anything else that
+grants rather than reports). Recorded so Gate B is not later built on the wrong rail out of
+momentum; the design is in `SWARM_SOCIAL_PLAN.md` under "Gate B is the EMBLEM rail". When
+landing the banding pass, keep `statementTopic` / `subjectIndexTopic` `type`/`version`
+parameters GENERIC — that is the only thing Gate B needs from this freeze.
 
 **Deliberately NOT frozen, with reasons:** the key-binding statement (see Identity layering —
 two rules fixed, contents open, design before P1); the exit-token format inside the strings

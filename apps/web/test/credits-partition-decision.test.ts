@@ -24,18 +24,21 @@ import type { Hex0x } from "@woco/shared";
 const SUBJECT = `0x${"11".repeat(32)}` as Hex0x;
 const OTHER = `0x${"22".repeat(32)}` as Hex0x;
 
-const ok = (subjects: Hex0x[]): IndexRead => ({ status: "ok", subjects });
+const ok = (subjects: Hex0x[], band = 0): IndexRead => ({
+  status: "ok",
+  entries: subjects.map((subject) => ({ subject, band })),
+});
 const absent: IndexRead = { status: "absent" };
 const down = (reason = "gateway said no"): IndexRead => ({ status: "unavailable", reason });
 
 test("a partition is returned only when that index actually lists the subject", () => {
-  assert.deepEqual(decideVisibility(ok([SUBJECT]), ok([]), SUBJECT), { status: "ok", visibility: "public" });
-  assert.deepEqual(decideVisibility(ok([]), ok([SUBJECT]), SUBJECT), { status: "ok", visibility: "private" });
+  assert.deepEqual(decideVisibility(ok([SUBJECT]), ok([]), SUBJECT), { status: "ok", visibility: "public", band: 0 });
+  assert.deepEqual(decideVisibility(ok([]), ok([SUBJECT]), SUBJECT), { status: "ok", visibility: "private", band: 0 });
 });
 
 test("a subject in neither index yields null — the case that still needs the index write", () => {
-  assert.deepEqual(decideVisibility(ok([OTHER]), ok([OTHER]), SUBJECT), { status: "ok", visibility: null });
-  assert.deepEqual(decideVisibility(absent, absent, SUBJECT), { status: "ok", visibility: null });
+  assert.deepEqual(decideVisibility(ok([OTHER]), ok([OTHER]), SUBJECT), { status: "ok", visibility: null, band: 0 });
+  assert.deepEqual(decideVisibility(absent, absent, SUBJECT), { status: "ok", visibility: null, band: 0 });
 });
 
 test("an UNAVAILABLE read never yields a partition, on either side", () => {
@@ -59,7 +62,7 @@ test("an unreadable PUBLIC index is not smoothed over by a readable private one"
 test("public wins when both list the subject, so a published rider is never demoted", () => {
   // Publication is one-way (publishSubject). If both indexes somehow list it,
   // resolving to private would write the next lap to the retired topic.
-  assert.deepEqual(decideVisibility(ok([SUBJECT]), ok([SUBJECT]), SUBJECT), { status: "ok", visibility: "public" });
+  assert.deepEqual(decideVisibility(ok([SUBJECT]), ok([SUBJECT]), SUBJECT), { status: "ok", visibility: "public", band: 0 });
 });
 
 // ---------------------------------------------------------------------------
@@ -128,4 +131,31 @@ test("the settling write forwards knownVersion to the underlying write", async (
   const fn = src.slice(src.indexOf("export function writeContentFeedSettling"));
   // Declaring it without forwarding it would fail exactly the same way.
   assert.match(fn, /knownVersion:\s*args\.knownVersion/);
+});
+
+test("the winning partition's band comes back with it", () => {
+  // The band rides out on the read the partition rule already forces, which is
+  // the whole reason head lookup stopped growing with a rider's lap count.
+  const pub = decideVisibility(ok([SUBJECT], 7), ok([], 0), SUBJECT);
+  assert.deepEqual(pub, { status: "ok", visibility: "public", band: 7 });
+
+  const priv = decideVisibility(ok([], 0), ok([SUBJECT], 3), SUBJECT);
+  assert.deepEqual(priv, { status: "ok", visibility: "private", band: 3 });
+});
+
+test("a subject in neither index reports band 0, not a special case", () => {
+  // A first lap opens band 0, which is also where a fresh feed resolves — so
+  // callers never branch on "never ridden" to pick a band.
+  assert.deepEqual(decideVisibility(ok([]), ok([]), SUBJECT), {
+    status: "ok",
+    visibility: null,
+    band: 0,
+  });
+});
+
+test("public wins on band as well as partition, mid-publish", () => {
+  // Both indexes list it only while a publish is in flight; the private entry is
+  // the one being retired, so its band must not be the one we write into.
+  const r = decideVisibility(ok([SUBJECT], 2), ok([SUBJECT], 9), SUBJECT);
+  assert.deepEqual(r, { status: "ok", visibility: "public", band: 2 });
 });

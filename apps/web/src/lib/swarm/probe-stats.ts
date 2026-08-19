@@ -21,19 +21,32 @@
  */
 
 /**
- * Whether a feed read started from a stored version hint or from zero.
+ * What actually happened to a feed read's version hint — THREE states, not two.
  *
- * The single most useful number after the probe count. A read that starts at 0
- * walks EVERY version the feed has, so its cost grows with a rider's lap count
- * — the one scaling shape this design must not have. `hintMiss` above zero on a
- * feed that has been read before means the hint is not doing its job, and no
- * amount of reasoning about the resolver substitutes for knowing that.
+ * The previous version of this counter recorded whether a hint EXISTED, which
+ * is not the question. `resolveLatestSocVersion` silently restarts the scan
+ * from 0 when the hinted version does not resolve, so a read counted as a "hit"
+ * could still have walked every version the feed has. The instrument could not
+ * distinguish the healthy case from the pathology it was installed to find.
+ *
+ * The three states separate a COLD DEVICE from a BROKEN HINT, which have the
+ * same cost and completely different causes:
+ *
+ * - `noHint` — nothing stored. Expected on a first read; not a problem.
+ * - `hintUsed` — the scan started at the hint and the hint's version resolved.
+ * - `hintInvalidated` — a hint was stored, its version read as NOT FOUND, and
+ *   the scan restarted from 0. On a feed this device wrote, that is the alarm:
+ *   a version we believe exists is reading as absent, which is the
+ *   whitelist-lag theory (an existing but non-whitelisted chunk 403s and reads
+ *   as absent). Anything above zero on a gateway-healthy run wants explaining.
  */
 export interface HintCounts {
-  /** Read started from a stored hint that validated. */
-  hintHit: number;
-  /** No hint, or the hinted version did not exist — full scan from 0. */
-  hintMiss: number;
+  /** No stored hint — cold read, scan from 0. Expected, not a fault. */
+  noHint: number;
+  /** Scan started at the stored hint and it resolved. The good case. */
+  hintUsed: number;
+  /** Hint stored but its version read as absent — full rescan from 0. The alarm. */
+  hintInvalidated: number;
 }
 
 export interface ProbeCounts {
@@ -48,7 +61,7 @@ export interface ProbeCounts {
 }
 
 const zero = (): ProbeCounts => ({ gatewayHit: 0, gatewayMiss: 0, serverHit: 0, serverMiss: 0 });
-const zeroHints = (): HintCounts => ({ hintHit: 0, hintMiss: 0 });
+const zeroHints = (): HintCounts => ({ noHint: 0, hintUsed: 0, hintInvalidated: 0 });
 
 let counts = zero();
 let hints = zeroHints();
@@ -108,14 +121,15 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
     };
     const { probes, misses } = probeTotals(delta);
     const hintAfter = hintCounts();
-    const hitHints = hintAfter.hintHit - hintsBefore.hintHit;
-    const missHints = hintAfter.hintMiss - hintsBefore.hintMiss;
+    const used = hintAfter.hintUsed - hintsBefore.hintUsed;
+    const cold = hintAfter.noHint - hintsBefore.noHint;
+    const bad = hintAfter.hintInvalidated - hintsBefore.hintInvalidated;
     const ms = Math.round(performance.now() - started);
     // One line, deliberately: this is read against a stopwatch, not parsed.
     console.info(
       `[probes] ${label}: ${ms}ms · ${probes} probes (${misses} miss) ` +
         `· gw ${delta.gatewayHit}/${delta.gatewayMiss} · api ${delta.serverHit}/${delta.serverMiss} ` +
-        `· hints ${hitHints} used / ${missHints} scanned-from-0`,
+        `· hints ${used} used / ${cold} cold / ${bad} INVALIDATED`,
     );
   }
 }

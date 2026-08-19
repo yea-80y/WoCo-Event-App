@@ -88,7 +88,11 @@ const EVIDENCE_REPORT_VERSION = 1;
  */
 export function evidenceReportTopic(statementFormat: string, subject: Hex0x): string {
   const salt = utf8ToBytes(`woco-${EVIDENCE_REPORT_TYPE}-public-v${EVIDENCE_REPORT_VERSION}-${statementFormat}`);
-  return statementTopic(EVIDENCE_REPORT_TYPE, EVIDENCE_REPORT_VERSION, salt, subjectToBytes(subject));
+  // Band 0 always. An evidence report is the indexer's own latest-wins statement
+  // about one subject, so its feed gains a version per REPUBLISH, not per event
+  // it describes — it has no growth axis to bound. It rides the banded scheme
+  // (band 0) rather than opting out, because the topic derivation is uniform.
+  return statementTopic(EVIDENCE_REPORT_TYPE, EVIDENCE_REPORT_VERSION, salt, subjectToBytes(subject), 0);
 }
 
 /**

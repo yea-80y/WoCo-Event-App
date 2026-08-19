@@ -44,7 +44,7 @@ const RITA = { name: "Rita", park: "Alton Towers", formerNames: [] as string[] }
 const SOURCES = { indexer: "example.test", manifestUrl: "https://example.test/m" };
 
 function leaf(over: Partial<CarriedEvidenceLeaf> = {}): CarriedEvidenceLeaf {
-  return { holder: RIDER, feedOwner: OWNER, seq: 1, version: 0, digest: DIGEST, total: 109, ...over };
+  return { holder: RIDER, feedOwner: OWNER, seq: 1, version: 0, band: 0, digest: DIGEST, total: 109, ...over };
 }
 
 function served(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -292,4 +292,27 @@ test("challengeLabel does not dress the demo coaster up as a challenge", () => {
     challengeLabel("0xadd9035a868daff172c831004fe5e8b1b1dd7d5240a907c0830922e8abe6c7e2"),
     null,
   );
+});
+
+test("a leaf with no band is refused rather than addressed at band 0", () => {
+  // Versions restart in each band, so guessing 0 for a missing band would send
+  // the spot-check to a different chunk, find nothing, and report a real rider's
+  // entry MISSING. Declining to check beats manufacturing an accusation.
+  const { band: _dropped, ...noBand } = leaf();
+  assert.equal(parseEvidence(served({ leaves: [noBand] }), RITA_SUBJECT), null);
+});
+
+test("a malformed band is refused on the same terms as a malformed version", () => {
+  for (const band of [-1, 1.5, "0", null]) {
+    assert.equal(
+      parseEvidence(served({ leaves: [{ ...leaf(), band }] }), RITA_SUBJECT),
+      null,
+      `band ${JSON.stringify(band)} must not parse`,
+    );
+  }
+});
+
+test("a banded leaf parses and keeps its band", () => {
+  const parsed = parseEvidence(served({ leaves: [leaf({ band: 3 })] }), RITA_SUBJECT);
+  assert.equal(parsed?.manifest.leaves[0]?.band, 3);
 });

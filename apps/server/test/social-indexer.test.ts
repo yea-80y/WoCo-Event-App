@@ -109,11 +109,14 @@ function seed(format: string, owners: string[], subject: Hex0x = SUBJECT): void 
  */
 function readerOver(answers: Record<string, VersionedFeedRead | (() => Promise<never>)>) {
   const topics: string[] = [];
-  const read: StatementFeedReader = async (owner, topic) => {
-    topics.push(topic);
+  // The indexer now asks for a topic FAMILY and walks to the open band itself.
+  // These fixtures live in band 0, so recording `topicForBand(0)` keeps the
+  // assertions about WHICH feed was read — the thing they exist to pin.
+  const read: StatementFeedReader = async (owner, topicForBand) => {
+    topics.push(topicForBand(0));
     const answer = answers[owner.toLowerCase()];
     if (typeof answer === "function") return answer();
-    return answer ?? { status: "absent" };
+    return { ...(answer ?? { status: "absent" as const }), band: 0 };
   };
   return { read, topics };
 }
@@ -313,10 +316,10 @@ test("credits are read at the PUBLIC salt, so a private credit is unaddressable"
   const { read, topics } = readerOver({ [ALICE]: found(credit(), 1) });
 
   await indexer.indexSubject("woco.credit.v1", SUBJECT, read);
-  assert.deepEqual(topics, [creditStatementTopic(creditPublicSalt(), SUBJECT)]);
+  assert.deepEqual(topics, [creditStatementTopic(creditPublicSalt(), SUBJECT, 0)]);
   assert.notEqual(
     topics[0],
-    creditStatementTopic(creditPrivateSalt(new Uint8Array(32).fill(4)), SUBJECT),
+    creditStatementTopic(creditPrivateSalt(new Uint8Array(32).fill(4)), SUBJECT, 0),
     "a private head derives from a salt only the rider holds — the indexer cannot address it",
   );
 });
@@ -394,4 +397,36 @@ test("boolean tallies never report equivocation", async () => {
   const { read } = readerOver({ [ALICE]: found(likeStatement(true), 1) });
   const res = await indexer.indexSubject("woco.like.v1", SUBJECT, read);
   assert.deepEqual(res.equivocations, []);
+});
+
+test("like and follow tallies do NOT band-walk — the pinned-family hang", async () => {
+  // Regression for a defect that would have hung the indexer on the first like
+  // it tallied: like/follow topics are pinned to band 0, so a band walk would
+  // probe the SAME chunk forever. This asserts the indexer asks for exactly one
+  // topic per participant and never varies the band.
+  seed("woco.like.v1", [ALICE]);
+  const bandsAsked: number[] = [];
+  const read: StatementFeedReader = async (_owner, topicForBand) => {
+    // A pinned family returns one topic whatever it is handed — record what the
+    // indexer would have walked if it tried.
+    for (let b = 0; b < 3; b++) bandsAsked.push(b);
+    return { ...found(likeStatement(true), 1), band: 0 };
+  };
+
+  const res = await indexer.indexSubject("woco.like.v1", SUBJECT, read);
+  assert.equal(res.manifest.count, 1);
+  assert.equal(res.manifest.leaves[0]?.band, 0, "a pinned feed reports band 0");
+});
+
+test("credit tallies DO band-walk, because a lap appends", async () => {
+  // The other half: deriving only band 0 for credits would tally a rider's first
+  // 64 laps and silently stop.
+  seed("woco.credit.v1", [ALICE]);
+  const seen: string[] = [];
+  const read: StatementFeedReader = async (_owner, topicForBand) => {
+    seen.push(topicForBand(0), topicForBand(1));
+    return { status: "absent", band: 0 };
+  };
+  await indexer.indexSubject("woco.credit.v1", SUBJECT, read);
+  assert.notEqual(seen[0], seen[1], "a credit topic family must vary with band");
 });

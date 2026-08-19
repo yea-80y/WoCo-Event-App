@@ -162,11 +162,18 @@ function parseLeaf(value: unknown): CarriedEvidenceLeaf | null {
   if (typeof l.version !== "number" || !Number.isSafeInteger(l.version) || l.version < LEGACY_CONTENT_FEED_VERSION) {
     return null;
   }
+  // The BAND is REQUIRED, and a missing one refuses the manifest rather than
+  // defaulting to 0. Since versions restart per band, guessing 0 would address
+  // band 0's chunk for a statement written in band 2 — the spot-check would find
+  // nothing there and report the rider's entry MISSING. A false accusation
+  // manufactured by our own addressing is worse than declining to check.
+  if (typeof l.band !== "number" || !Number.isSafeInteger(l.band) || l.band < 0) return null;
   return {
     holder: l.holder,
     feedOwner: l.feedOwner as Hex0x,
     seq: l.seq,
     version: l.version,
+    band: l.band,
     digest: l.digest as Hex0x,
     total: l.total,
   };

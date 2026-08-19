@@ -14,7 +14,7 @@
  */
 
 import { auth } from "../auth/auth-store.svelte.js";
-import { readContentFeedResult } from "../swarm/content-feed.js";
+import { readContentFeedResult, readBandedContentFeed } from "../swarm/content-feed.js";
 import { writeContentFeedVerified, type VerifiedWriteResult } from "../swarm/verified-write.js";
 import {
   LIKE_STATEMENT_FORMAT,
@@ -34,6 +34,7 @@ import {
   type LikeSubjectIndexV1,
   type FollowSubjectIndexV1,
   type Hex0x,
+  LAST_VERSION_IN_BAND,
 } from "@woco/shared";
 
 export type SocialKind = "like" | "follow";
@@ -82,7 +83,13 @@ export async function readMyStatement(kind: SocialKind, subject: Hex0x): Promise
   const signer = await auth.getContentFeedSigner();
   if (!signer) return null;
 
-  const res = await readContentFeedResult<unknown>(signer.address, k.statementTopic(subject));
+  // `skipLegacy`: statement feeds were born versioned, so a pre-versioning chunk
+  // cannot exist — and here ABSENT is the ordinary case, since most subjects are
+  // ones the user has never liked. Probing for a legacy chunk anyway spent a
+  // guaranteed missing-chunk network search on every such read.
+  const res = await readContentFeedResult<unknown>(signer.address, k.statementTopic(subject), {
+    skipLegacy: true,
+  });
   if (res.status !== "found") return null;
   return k.validate(res.value) ? (res.value as LikeStatementV1 | FollowStatementV1).value : null;
 }
@@ -153,16 +160,26 @@ async function addToSubjectIndex(
   signer: { privKey: string; address: string },
 ): Promise<void> {
   const k = KINDS[kind];
-  const topic = k.indexTopic();
   try {
     for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
-      const res = await readContentFeedResult<unknown>(signer.address, topic);
+      // BANDED. This index grows one version per new subject and subjects are
+      // never removed, so unbanded it was the one structure here whose read cost
+      // tracked how much a user had ever liked. Social has no partition rule and
+      // so nothing read beforehand to carry a band hint — it is discovered by
+      // walking band openers, which the full-band invariant makes sound.
+      const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic);
 
       // Only `absent` may be treated as "no index yet". Writing a fresh one over
       // an index we merely FAILED to read would drop every subject it holds —
       // the lenient-read-on-a-write-path trap.
       let subjects: Hex0x[];
       if (res.status === "found") {
+        // A read-modify-write of a whole snapshot must refuse on an inconclusive
+        // resolution: the writer probes for a fresh address independently, and
+        // would land this stale list at the real latest — verified — erasing
+        // every subject added since. The statement is already written, so
+        // stopping here costs enumeration only.
+        if (!res.bandClean) return;
         if (!k.validateIndex(res.value)) return;
         subjects = (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
         if (subjects.includes(subject)) return;
@@ -173,10 +190,16 @@ async function addToSubjectIndex(
         return;
       }
 
+      // The index's own rollover, on the same rule the statement feeds use: a
+      // band opens only once its predecessor is full.
+      // `>=`: an overshoot must not disable rollover permanently.
+      const rollover = res.status === "found" && res.version >= LAST_VERSION_IN_BAND;
+      const targetBand = rollover ? res.band + 1 : res.band;
+
       const written = await writeContentFeedVerified({
         signerPrivKey: signer.privKey,
         ownerAddress: signer.address,
-        topic,
+        topic: k.indexTopic(targetBand),
         data: { format: k.indexFormat, subjects },
       });
       if (written.status !== "superseded") return;
@@ -191,7 +214,7 @@ export async function readMySubjects(kind: SocialKind): Promise<Hex0x[]> {
   const k = KINDS[kind];
   const signer = await auth.getContentFeedSigner();
   if (!signer) return [];
-  const res = await readContentFeedResult<unknown>(signer.address, k.indexTopic());
+  const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic);
   if (res.status !== "found" || !k.validateIndex(res.value)) return [];
   return (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
 }

@@ -28,7 +28,7 @@
 import { auth } from "../auth/auth-store.svelte.js";
 import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
-import { readContentFeedResult } from "../swarm/content-feed.js";
+import { readBandedContentFeed } from "../swarm/content-feed.js";
 import {
   writeContentFeedVerified,
   writeContentFeedSettling,
@@ -43,12 +43,13 @@ import {
   creditSubjectIndexTopic,
   signCreditStatement,
   verifyCreditStatement,
-  validateCreditSubjectIndexV1,
+  validateCreditSubjectIndexV2,
+  LAST_VERSION_IN_BAND,
   deriveEncryptionKeypairFromPodSeed,
   sealJson,
   openJson,
   type CreditStatementV1,
-  type CreditSubjectIndexV1,
+  type CreditSubjectIndexV2,
   type SealedBox,
   type Hex0x,
 } from "@woco/shared";
@@ -59,6 +60,10 @@ export type { CreditVisibility } from "./visibility.js";
 export interface CreditHead {
   statement: CreditStatementV1;
   visibility: CreditVisibility;
+  /** The BAND this head sits in. Carried for the same reason `version` is: a
+   *  warm write addresses `(band, version + 1)` directly, and a band alone is
+   *  not enough to place a lap once versions restart per band. */
+  band: number;
   /**
    * The SOC version this head sits at, so the next write can address
    * `version + 1` directly instead of probing for it. A probe past a feed's
@@ -150,20 +155,52 @@ function saltFor(keys: RiderKeys, visibility: CreditVisibility): Uint8Array {
 // ---------------------------------------------------------------------------
 
 type HeadRead =
-  | { status: "found"; statement: CreditStatementV1; version: number }
+  | { status: "found"; statement: CreditStatementV1; version: number; band: number }
   | { status: "absent" }
   | { status: "unavailable"; reason: string };
 
-async function readSubjectIndex(keys: RiderKeys, visibility: CreditVisibility): Promise<IndexRead> {
-  const topic = creditSubjectIndexTopic(saltFor(keys, visibility));
-  const res = await readContentFeedResult<unknown>(keys.feedAddress, topic);
-  if (res.status === "absent") return { status: "absent" };
-  if (res.status === "unavailable") return { status: "unavailable", reason: res.reason ?? "index unavailable" };
-  // Bytes exist here but are not our index — foreign or corrupt, never "empty".
-  if (!validateCreditSubjectIndexV1(res.value)) {
-    return { status: "unavailable", reason: "index payload failed validation" };
+/** The index feed is banded too — it grows one version per new subject. */
+function indexTopicForBand(keys: RiderKeys, visibility: CreditVisibility): (band: number) => string {
+  const salt = saltFor(keys, visibility);
+  return (band) => creditSubjectIndexTopic(salt, band);
+}
+
+/**
+ * Read a partition's subject index, resolving which band of the INDEX is open.
+ *
+ * Returns that band alongside the entries because a write-back has to land in
+ * the same band the read came from — writing band 0 while the live index is at
+ * band 2 would strand every subject the rider owns.
+ */
+interface SubjectIndexRead {
+  read: IndexRead;
+  /** Which band of the INDEX feed is open. */
+  indexBand: number;
+  /** Latest version inside that band, or null when the index does not exist. */
+  indexVersion: number | null;
+  /** Whether the band walk was conclusive — a writer must refuse if not. */
+  bandClean: boolean;
+}
+
+async function readSubjectIndex(
+  keys: RiderKeys,
+  visibility: CreditVisibility,
+): Promise<SubjectIndexRead> {
+  const res = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopicForBand(keys, visibility));
+  const at = {
+    indexBand: res.band,
+    indexVersion: res.status === "found" ? res.version : null,
+    bandClean: res.bandClean,
+  };
+  if (res.status === "absent") return { read: { status: "absent" }, ...at };
+  if (res.status === "unavailable") {
+    return { read: { status: "unavailable", reason: res.reason ?? "index unavailable" }, ...at };
   }
-  return { status: "ok", subjects: (res.value as CreditSubjectIndexV1).subjects };
+  // Bytes exist here but are not our index — foreign or corrupt, never "empty".
+  if (!validateCreditSubjectIndexV2(res.value)) {
+    return { read: { status: "unavailable", reason: "index payload failed validation" }, ...at };
+  }
+  return { read: { status: "ok", entries: (res.value as CreditSubjectIndexV2).entries }, ...at };
 }
 
 /**
@@ -189,16 +226,33 @@ async function liveVisibility(keys: RiderKeys, subject: Hex0x): Promise<Partitio
     readSubjectIndex(keys, "public"),
     readSubjectIndex(keys, "private"),
   ]);
-  return decideVisibility(pub, priv, subject);
+  return decideVisibility(pub.read, priv.read, subject);
+}
+
+/** A subject's head feed, as a family of banded topics. */
+function headTopicForBand(
+  keys: RiderKeys,
+  subject: Hex0x,
+  visibility: CreditVisibility,
+): (band: number) => string {
+  const salt = saltFor(keys, visibility);
+  return (band) => creditStatementTopic(salt, subject, band);
 }
 
 async function readHeadAt(
   keys: RiderKeys,
   subject: Hex0x,
   visibility: CreditVisibility,
+  hintBand = 0,
 ): Promise<HeadRead> {
-  const topic = creditStatementTopic(saltFor(keys, visibility), subject);
-  const res = await readContentFeedResult<unknown>(keys.feedAddress, topic);
+  // `hintBand` is the band the subject index recorded — a lower bound. A stale
+  // one costs a short walk over band openers; it can never point at a head that
+  // is not the live one, because bands are contiguous and only ever appended.
+  const res = await readBandedContentFeed<unknown>(
+    keys.feedAddress,
+    headTopicForBand(keys, subject, visibility),
+    { hintBand },
+  );
   if (res.status === "absent") return { status: "absent" };
   if (res.status === "unavailable") return { status: "unavailable", reason: res.reason ?? "head unavailable" };
 
@@ -220,7 +274,7 @@ async function readHeadAt(
   if (!verifyCreditStatement(payload)) {
     return { status: "unavailable", reason: "head failed statement verification" };
   }
-  return { status: "found", statement: payload, version: res.version };
+  return { status: "found", statement: payload, version: res.version, band: res.band };
 }
 
 /**
@@ -267,9 +321,9 @@ export async function readMyCredit(subject: Hex0x): Promise<CreditHead | null> {
     const keys = await riderKeys();
     const where = await liveVisibility(keys, subject);
     if (where.status !== "ok" || !where.visibility) return null;
-    const head = await readHeadAt(keys, subject, where.visibility);
+    const head = await readHeadAt(keys, subject, where.visibility, where.band);
     return head.status === "found"
-      ? { statement: head.statement, visibility: where.visibility, version: head.version }
+      ? { statement: head.statement, visibility: where.visibility, version: head.version, band: head.band }
       : null;
   } catch {
     return null;
@@ -288,6 +342,10 @@ export type RideResult =
       /** The SOC version this statement was written at — the caller's next warm
        *  head must carry it, or the following tap goes back to probing. */
       version: number;
+      /** The BAND it was written in, which DIFFERS from the head's band on a
+       *  rollover. A warm head carrying the version without the band cannot
+       *  address the feed it was just written to. */
+      band: number;
       /**
        * How the write ended up, resolving AFTER this result. The ride is
        * already recorded — the upload was accepted — so this is not a gate on
@@ -359,6 +417,37 @@ export async function recordRide(
  * One honest attempt. `warm` non-null means the caller supplied a clean head
  * and its partition; null means read everything.
  */
+/**
+ * WHY THIS PATH DOES NOT CHECK `bandClean`, AND THE INDEX WRITERS DO.
+ *
+ * The asymmetry looks like an oversight and is not, so it is written down here
+ * rather than re-argued at every review.
+ *
+ * A lap is an EXACT-ADDRESS write: `knownVersion` is always supplied when there
+ * is a previous head (`prevVersion + 1`, or 0 on a rollover), and the only
+ * probing lap writes are a first lap — which requires a CLEAN resolution
+ * showing band 0 unopened — and `publishSubject`, which starts a fresh public
+ * family at band 0. So a lap computed from ANY stale state (stale band, stale
+ * version, stale prev) targets an address that already exists. Bee dedupes, the
+ * bytes never land, the read-back at that exact version reports `superseded`,
+ * and `shouldRetryCold` redoes it once from a cold read. A mis-banded lap is
+ * therefore never a durably-written-but-invisible ride; it is a ride that was
+ * NOT written, and the not-writing is detected.
+ *
+ * An index write is a READ-MODIFY-WRITE of a whole snapshot. Its writer probes
+ * for a fresh address independently of the resolution we read from, so a stale
+ * snapshot lands at the real latest version and VERIFIES — erasing everything
+ * added since. Nothing detects it. That is why those writers refuse and this
+ * one proceeds.
+ *
+ * The rule, generally: exact-address writes whose staleness always collides may
+ * proceed on an inconclusive read, because the read-back is their guard.
+ * Read-modify-write snapshot writes must refuse.
+ *
+ * Refusing the tap instead would fail the product's core moment — an unrecorded
+ * lap is a lap that did not happen — to defend against a harm the write path
+ * already converts into detect-and-retry.
+ */
 async function attemptRide(
   keys: RiderKeys,
   subject: Hex0x,
@@ -374,12 +463,16 @@ async function attemptRide(
   /** The version the PREVIOUS head sits at, when we know it. `undefined` means
    *  the write must probe. */
   let prevVersion: number | undefined;
+  /** The band the previous head sits in — where the next lap is written unless
+   *  that band is full. Band 0 for a first lap, which is also where a fresh
+   *  feed resolves, so there is no first-lap special case. */
+  let band = 0;
   /**
    * Whether the subject is taken to be in its partition's index already.
    *
    * A warm head from `readMyCredit` proves it — that value only exists by way
    * of `liveVisibility`, which IS the index read. A warm head handed back from
-   * a previous write does not: a first lap's `addToSubjectIndex` failure is
+   * a previous write does not: a first lap's `upsertSubjectBand` failure is
    * deliberately swallowed, so the subject may be unindexed and this will not
    * retry it. The cost is the documented, self-healing one — enumeration on a
    * fresh device, never the count — and the next cold session repairs it.
@@ -390,6 +483,7 @@ async function attemptRide(
     visibility = warm.visibility;
     prev = warm.statement;
     prevVersion = warm.version;
+    band = warm.band;
     indexed = true;
   } else {
     const where = await liveVisibility(keys, subject);
@@ -402,50 +496,75 @@ async function attemptRide(
     // seq 0 / total = laps, at a HIGHER SOC version — their device would show
     // the reset while an indexer (highest seq) kept the real total, and the
     // two would disagree indefinitely.
-    const head = await readHeadAt(keys, subject, visibility);
+    const head = await readHeadAt(keys, subject, visibility, where.band);
     if (head.status === "unavailable") return { ok: false, error: CANNOT_READ };
     prev = head.status === "found" ? head.statement : null;
-    if (head.status === "found") prevVersion = head.version;
+    if (head.status === "found") {
+      prevVersion = head.version;
+      band = head.band;
+    }
   }
 
   const statement = signCreditStatement(
     nextCreditStatement({ prev, subject, holder: keys.holder, laps }),
     keys.holderPrivKey,
   );
-  // `prevVersion + 1` when we read the previous head — the last probe on the
-  // tap path. A first lap has no previous head and must probe, because version
-  // 0 may already exist from a partition we did not read.
-  const written = await writeStatement(
-    keys,
-    subject,
-    visibility,
-    statement,
-    prevVersion !== undefined ? prevVersion + 1 : undefined,
-  );
+  // Where the lap lands. `prevVersion + 1` when we read the previous head — the
+  // last probe on the tap path. A first lap has no previous head and must probe,
+  // because version 0 may already exist from a partition we did not read.
+  //
+  // THE ROLLOVER, and the full-band invariant's writer half: a band is opened
+  // only once its predecessor is FULL, so a head sitting at the last slot means
+  // the next lap starts band + 1 at version 0. Getting this backwards — opening
+  // early, or writing a 65th version into a full band — breaks the reader's
+  // right to stop walking, which is the whole basis of the bound.
+  // `>=`, not `===`. An overshoot (a dirty walk under-resolves the band and a
+  // write lands past the last slot) would otherwise make this false FOREVER —
+  // the feed silently stops rolling over and degrades back to unbanded growth.
+  const rollover = prevVersion !== undefined && prevVersion >= LAST_VERSION_IN_BAND;
+  const writeBand = rollover ? band + 1 : band;
+  const knownVersion = rollover ? 0 : prevVersion !== undefined ? prevVersion + 1 : undefined;
+  const written = await writeStatement(keys, subject, visibility, statement, writeBand, knownVersion);
 
   // ONLY when this subject is not already indexed. A non-null partition IS the
   // statement "that partition's index contains this subject" — it is the only
   // way `liveVisibility` can produce one, and a warm head carries the same
-  // fact. Calling `addToSubjectIndex` anyway re-reads a whole feed, including
+  // fact. Calling `upsertSubjectBand` anyway re-reads a whole feed, including
   // a probe past its latest version, to re-learn what this call already knows.
   //
   // Skipping is also SAFER than re-reading: in the race where another device
   // publishes this subject mid-tap, the re-read sees the freshly-swept private
   // index, does not find the subject, and writes it back — undoing the publish.
   // Doing nothing cannot undo anything.
+  // A rollover moves the head to a new band, so the index entry that names the
+  // band is now stale-low. Correcting it is what keeps the next cold read O(1).
+  // Failure is survivable BY DESIGN and must not fail a landed ride: a stale-low
+  // band only costs the reader a short forward walk over openers, which is
+  // exactly the case the full-band invariant makes safe.
+  if (indexed && rollover) {
+    try {
+      await upsertSubjectBand(keys, subject, visibility, writeBand);
+    } catch {
+      // Deliberately swallowed — a stale band is a cost, never a wrong answer.
+    }
+  }
+
   if (!indexed) {
     // The ride is recorded and valid from here on. An index failure costs
     // enumeration on a fresh device, not the count — so it must never turn a
     // landed ride into a reported failure, because the rider's retry would
     // read their own new statement as `prev` and add the laps a second time.
     try {
-      await addToSubjectIndex(keys, subject, visibility);
+      await upsertSubjectBand(keys, subject, visibility, writeBand);
     } catch {
       // Deliberately swallowed — see above.
     }
   }
 
-  return { ok: true, statement, visibility, version: written.version, settled: written.settled };
+  return {
+    ok: true, statement, visibility, version: written.version,
+    band: writeBand, settled: written.settled,
+  };
 }
 
 async function writeStatement(
@@ -453,6 +572,7 @@ async function writeStatement(
   subject: Hex0x,
   visibility: CreditVisibility,
   statement: CreditStatementV1,
+  band: number,
   /** The exact SOC version to write at, when the caller read the previous head
    *  and therefore knows it. Omitted means probe — see `knownVersion`. */
   knownVersion?: number,
@@ -469,7 +589,7 @@ async function writeStatement(
   const { version, settled } = await writeContentFeedSettling({
     signerPrivKey: keys.feedPrivKey,
     ownerAddress: keys.feedAddress,
-    topic: creditStatementTopic(saltFor(keys, visibility), subject),
+    topic: creditStatementTopic(saltFor(keys, visibility), subject, band),
     data: body,
     ...(knownVersion !== undefined ? { knownVersion } : {}),
   });
@@ -490,22 +610,57 @@ async function writeStatement(
  * stale data over the winner. An unreadable index REFUSES — writing a fresh
  * one would erase every other coaster the rider owns from this partition.
  */
-async function addToSubjectIndex(
+/**
+ * Add a subject to a partition's index, or RAISE the band already recorded for
+ * it. Both jobs, because they are the same read-modify-write.
+ *
+ * Bands merge by MAX, never by last-writer-wins, because the band is a
+ * monotonic lower bound and the higher value is the more informative one.
+ *
+ * Stated precisely, because an earlier version of this comment overstated it: a
+ * stale-low band does NOT produce a wrong head. Under the full-band invariant a
+ * band the writer has left reads as FULL, which forces the reader to continue —
+ * so the cost of taking the lower value is a longer walk, not a wrong answer.
+ * Max-merge is right for cost and for keeping the lower-bound semantics honest.
+ *
+ * The index feed is itself banded, so it rolls over on the same rule the
+ * statement feeds do.
+ */
+async function upsertSubjectBand(
   keys: RiderKeys,
   subject: Hex0x,
   visibility: CreditVisibility,
+  band: number,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
     const existing = await readSubjectIndex(keys, visibility);
-    if (existing.status === "unavailable") return false;
-    const subjects = existing.status === "ok" ? existing.subjects : [];
-    if (subjects.includes(subject)) return true;
+    if (existing.read.status === "unavailable") return false;
+    // A dirty band walk cannot bound the family: the band it failed to read may
+    // be open, and writing into the one below it lands an update where readers
+    // have stopped looking. Refuse, exactly as the version probe does.
+    if (!existing.bandClean) return false;
+    const entries = existing.read.status === "ok" ? existing.read.entries : [];
+
+    const current = entries.find((e) => e.subject === subject);
+    if (current && current.band >= band) return true; // already recorded, at least this high
+
+    const merged = current
+      ? entries.map((e) => (e.subject === subject ? { subject, band: Math.max(e.band, band) } : e))
+      : [...entries, { subject, band }];
+
+    // The index's own rollover: a full band means the next write opens the next
+    // one. No knownVersion — a fresh band's version 0 is probed, which is one
+    // probe, and getting it wrong would silently dedupe the write away.
+    // `>=` — see the statement path: `===` turns one overshoot into a permanent
+    // loss of rollover rather than a transient one.
+    const rollover = existing.indexVersion !== null && existing.indexVersion >= LAST_VERSION_IN_BAND;
+    const targetBand = rollover ? existing.indexBand + 1 : existing.indexBand;
 
     const written = await writeContentFeedVerified({
       signerPrivKey: keys.feedPrivKey,
       ownerAddress: keys.feedAddress,
-      topic: creditSubjectIndexTopic(saltFor(keys, visibility)),
-      data: { format: CREDIT_SUBJECT_INDEX_FORMAT, subjects: [...subjects, subject] },
+      topic: creditSubjectIndexTopic(saltFor(keys, visibility), targetBand),
+      data: { format: CREDIT_SUBJECT_INDEX_FORMAT, entries: merged },
     });
     if (written.status === "verified") return true;
     if (written.status === "unconfirmed") return false;
@@ -574,7 +729,9 @@ export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
       { ...unsigned, seq: prev.seq + 1, session: { ...prev.session } },
       keys.holderPrivKey,
     );
-    const written = await writeStatement(keys, subject, "public", statement);
+    // Band 0: opting in republishes at the public topic and versions restart
+    // there (closure 6). The private head's band belongs to a retired family.
+    const written = await writeStatement(keys, subject, "public", statement, 0);
 
     // PUBLISH WAITS FOR THE READ-BACK, unlike a lap. The tap returns at
     // upload-accept because a rider is standing in a queue and the interesting
@@ -601,7 +758,10 @@ export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
     // present. Removing first — or removing after an unconfirmed add — can
     // leave the subject in NEITHER partition, which reads as "never ridden"
     // while a public head exists, and republishing then refuses.
-    const added = await addToSubjectIndex(keys, subject, "public");
+    // Band 0: opting in republishes at the public topic and SOC versions
+    // restart there (closure 6). The private head's band does not carry over —
+    // it belongs to a topic family the rider has just retired.
+    const added = await upsertSubjectBand(keys, subject, "public", 0);
     if (!added) {
       return { ok: false, error: "Published, but we couldn't finish listing it — open this coaster again to retry." };
     }
@@ -623,15 +783,24 @@ async function removeFromSubjectIndex(
 ): Promise<boolean> {
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
     const existing = await readSubjectIndex(keys, visibility);
-    if (existing.status !== "ok" || !existing.subjects.includes(subject)) return false;
+    if (existing.read.status !== "ok") return false;
+    // Same refusal as `upsertSubjectBand`, and for a sharper reason: this writes
+    // a snapshot with a subject REMOVED. Off an inconclusive resolution it can
+    // land an older band's snapshot at the live band's next version — verified —
+    // erasing every subject added since. A wrong answer, not a slow one.
+    if (!existing.bandClean) return false;
+    if (!existing.read.entries.some((e) => e.subject === subject)) return false;
+
+    const rollover = existing.indexVersion !== null && existing.indexVersion >= LAST_VERSION_IN_BAND;
+    const targetBand = rollover ? existing.indexBand + 1 : existing.indexBand;
 
     const written = await writeContentFeedVerified({
       signerPrivKey: keys.feedPrivKey,
       ownerAddress: keys.feedAddress,
-      topic: creditSubjectIndexTopic(saltFor(keys, visibility)),
+      topic: creditSubjectIndexTopic(saltFor(keys, visibility), targetBand),
       data: {
         format: CREDIT_SUBJECT_INDEX_FORMAT,
-        subjects: existing.subjects.filter((s) => s !== subject),
+        entries: existing.read.entries.filter((e) => e.subject !== subject),
       },
     });
     if (written.status === "verified") return true;

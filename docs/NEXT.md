@@ -21,6 +21,56 @@ Last updated: 2026-08-04 (security workstream added — #139/#140 merged, recove
 
 ---
 
+## #172 BANDING — open items (2026-08-19, branch `feat/credit-head-lookup`)
+
+Two Fable sign-off rounds done. Round 2 verdict: merge after changes; those changes have
+landed. Green: shared 196, web 403, server 735; server typechecks. NOT merged, NOT pushed.
+
+**A claim in an earlier commit message was WRONG and is corrected here.** `b4a7faa` said the
+root cause of the rollover defect was "also closed" by surfacing `bandClean`. It was not:
+`bandClean` covered the BAND WALK only, while `readVersionedContentFeed` still dropped the
+in-band scan's `clean` on its found path. So a clean band walk plus a dirty version scan could
+still land a stale snapshot at the real latest version — VERIFIED, with every subject added
+since erased. Now genuinely closed: `scanClean` is threaded onto found reads and `bandClean`
+means the whole resolution.
+
+**Two more erasure paths found in round 2, both fixed:** `removeFromSubjectIndex` (credits)
+and `addToSubjectIndex` (social) were read-modify-writes with no dirty-resolution check — the
+same class the branch had just closed in `upsertSubjectBand`, left open in its siblings.
+
+**The `recordRide` question is RESOLVED as a non-defect** (option 4). A lap is an
+EXACT-ADDRESS write, so any staleness targets an address that already exists: Bee dedupes,
+the read-back reports `superseded`, and the retry rail handles it. A mis-banded lap is never
+written, and the not-writing is detected. Refusing the tap would fail the product's core
+moment to defend a harm that is already converted into detect-and-retry. The rule is recorded
+at `attemptRide`: **exact-address writes may proceed on an inconclusive read because the
+read-back guards them; read-modify-write snapshot writes must refuse.**
+
+| # | Item | Owner | State |
+|---|---|---|---|
+| 1 | ~~Finding 5 — scan-first resolution~~ **DONE, signed off** | — | Built with TWO measured deviations from the spec, both confirmed sound on review. (a) A last-slot probe on WALK-UP iterations only: the spec as written rescanned every full band on the climb, costing 542 probes against 256 on a cold six-band feed. (b) A `maxVersion` ceiling on banded scans — versions above the last slot cannot exist by construction, so probing them was two guaranteed missing-chunk searches per full-band scan. Result: warm reads probe ZERO openers; cold six-band is 80 probes / 2 misses vs walk-first's 13 / 2 — **misses equal**, extra cost is cheap hits paid once per device. Pressure valve if the browser re-run says the cold band-0 scan is material: apply the last-slot probe to the first band too when entry is provably cold (`hintBand === 0`, no stored hint). Recorded, not built. |
+| 2 | **`BANDED_FORMATS` fails OPEN against undercounts** | Opus | A new banded format added to `INDEXABLE_FORMATS` but forgotten in `BANDED_FORMATS` reads as pinned — a silent 64-write tally cap, no hang, no failing test. Needs an exhaustiveness assertion tying every indexable format to an explicit banded/pinned declaration. |
+| 3 | **`indexSubject`'s default reader is never exercised** | Opus | Every test injects `readFeed`. This is the same fixture-hides-the-real-reader shape that let the non-terminating walk ship. |
+| 4 | **Browser re-run of the measurement** | Owner | The cost table in COASTER_CREDITS_PLAN is a MODEL. Re-run with the three-state hint instrument. Fable: this should stay BLOCKING for launch even though it does not block this merge. |
+| 5 | Synchronous gateway whitelisting at write-accept | Opus | Whitelist-lag false-absents read as CLEAN, so they bypass every `clean`-based guard in this branch. `hintInvalidated` is the tripwire — confirm before tuning. **Two additions from the finding-5 review:** (a) the scan ceiling changes an overshoot from transient to PERMANENT — a version above the last slot is now invisible to every banded reader rather than merely unrolled-over. The creation paths are closed, but `writeContentFeed`'s internal resolve is still unbounded; completing this means threading the ceiling into banded probing WRITES as a refusal. (b) An absent banded feed now costs 2 misses where the walk cost 1, because the first window probes v0 and v1 together — this runs on every `liveVisibility` for the partition that does not exist, i.e. most riders pre-publish. One-line fix: probe v0 alone when starting from 0 with no validated hint. |
+| 6 | Declare banded-vs-pinned per format in `packages/shared` | Opus | A third-party indexer builds from shared and cannot see `BANDED_FORMATS`, which lives in `apps/server`. Non-blocking. |
+| 7 | Gate B (emblem rail) implementation | — | Designed in SWARM_SOCIAL_PLAN; nothing frozen is needed for it. Not started. |
+
+**Still open on the server:** `readBandedContentFeedJsonResult` got the scan CEILING but not
+scan-first — it still walks openers before scanning. Lower stakes than the client (the indexer
+is not on a rider's critical path) but the same win is available.
+
+**Process lessons from this branch, worth not repeating:** the test suites were green through a
+resolver that never terminated (the fixture replaced the real reader), through four type-level
+defects, and through two snapshot-erasure paths. `svelte-check` is slow here and was run late.
+A patch script using `replace()` without asserting the pattern matched silently no-opped and
+reported success. A commit message claimed a root cause was closed when it was two-thirds
+closed — the same "reported done, never happened" shape as the bugs themselves. And the hint
+instrument was regressed a SECOND time by the finding-5 rewrite, counting off `clean` so that a
+cold read and an invalidated hint both reported as healthy — the alarm could not fire on the
+very feeds it was installed to watch. An instrument that cannot see its own pathology fails
+silently, and probe counts cannot reveal it, because the counter is the broken part.
+
 ## Security workstream — passkey / accounts (added 2026-08-04)
 
 Runs alongside the table below; separate lane, separate worktree. **Do the top undone item.

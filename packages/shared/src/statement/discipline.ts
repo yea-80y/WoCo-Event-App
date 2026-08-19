@@ -127,6 +127,60 @@ export function isJsonSafeStatementValue(value: unknown): boolean {
 export const SUBJECT_INDEX_LABEL = "subject-index";
 
 /**
+ * SOC versions per BAND, frozen per type-version (2026-08-19).
+ *
+ * A statement feed is a sequence of bands rather than one unbounded topic.
+ * Head lookup used to walk one SOC version per write — measured at 7925ms and
+ * 25 probes on a NINE-lap account, and linear forever after. Banding bounds the
+ * in-band scan to this constant regardless of lifetime writes.
+ *
+ * Changing this reshuffles every address forever, so it is frozen alongside the
+ * topic scheme. 64 pins the trade-off: worst cold in-band scan is 32 window
+ * round-trips of CHEAP hits, and the subject index grows one version per 64
+ * writes rather than one per write.
+ */
+export const STATEMENT_BAND_SIZE = 64;
+
+/** uint64 BIG-ENDIAN (8 bytes) — the band's pinned encoding in an HMAC message. */
+function uint64BE(n: number): Uint8Array {
+  const b = new Uint8Array(8);
+  new DataView(b.buffer).setBigUint64(0, BigInt(n), false);
+  return b;
+}
+
+function assertBand(band: number): void {
+  if (!Number.isSafeInteger(band) || band < 0) {
+    throw new Error(`invalid band: ${band} (must be a non-negative safe integer)`);
+  }
+}
+
+/**
+ * THE FULL-BAND INVARIANT (frozen, load-bearing).
+ *
+ * Version 0 of band `b+1` MUST NOT be written unless version
+ * `STATEMENT_BAND_SIZE - 1` of band `b` exists. Three consequences, and every
+ * one of them is relied on somewhere:
+ *
+ * 1. Every band except the current one is exactly FULL, so band count is
+ *    `floor(writes / STATEMENT_BAND_SIZE)` and discloses nothing `seq` did not.
+ * 2. A reader whose in-band scan ends BELOW the last slot KNOWS it holds the
+ *    head, with no further probing.
+ * 3. Bands are contiguous from 0, so a band can be DISCOVERED by walking
+ *    openers with no carrier at all — which is how the social subject index
+ *    (no partition rule, nothing read first) finds its band.
+ *
+ * This is what makes a stale or absent band hint a COST problem rather than a
+ * correctness one.
+ *
+ * SCOPE, so a third party does not build to it wrongly: the invariant governs
+ * only feeds that BAND. A type may instead be PINNED to a constant band —
+ * likes and follows are, because latest-wins gives them no growth axis — and a
+ * pinned feed simply keeps appending inside its band. For those, "band count
+ * derives from write count" does not hold, and they must never be band-walked.
+ */
+export const LAST_VERSION_IN_BAND = STATEMENT_BAND_SIZE - 1;
+
+/**
  * The salt every PUBLIC statement type pins: `utf8("woco-{type}-public-v{n}")`.
  * A fixed public constant — anyone can derive public addresses, which is the
  * point: public statements must be enumerable by any indexer.
@@ -171,12 +225,22 @@ export function subjectToBytes(subject: Hex0x): Uint8Array {
 }
 
 /**
- * The statement head topic for one (holder, subject):
- * `"woco/{type}/v{n}/" + hex(HMAC-SHA256(salt, subjectBytes))`.
+ * The statement head topic for one (holder, subject, BAND):
+ * `"woco/{type}/v{n}/" + hex(HMAC-SHA256(salt, subjectBytes || uint64BE(band)))`.
  *
  * Pinned encodings (the freeze exists to kill this ambiguity class): the HMAC
- * message is the RAW 32 subject bytes, never hex text; the suffix is lowercase
- * hex, no 0x. The holder is implicit — topics resolve inside the feed OWNER's
+ * message is the RAW 32 subject bytes followed by the band as uint64 BIG-ENDIAN
+ * — never hex text, never a decimal string; the suffix is lowercase hex, no 0x.
+ *
+ * The band is INSIDE the HMAC rather than a plaintext path segment. It costs
+ * nothing (topics are hashed into identifiers anyway) and it means a disclosed
+ * private topic never yields its siblings. The band is always present, band 0
+ * included — a fixed 40-byte message with no special case, which also makes it
+ * disjoint by construction from the pre-banding 32-byte scheme, so no address
+ * can collide with one written before this change.
+ *
+ * See {@link STATEMENT_BAND_SIZE} and {@link LAST_VERSION_IN_BAND} for why
+ * bands exist and what a writer must uphold. The holder is implicit — topics resolve inside the feed OWNER's
  * address space (`chunk address = keccak256(identifier || owner)`), so the
  * same topic string names a different chunk per owner.
  *
@@ -186,16 +250,29 @@ export function subjectToBytes(subject: Hex0x): Uint8Array {
  * topic. Which head is live is recorded by which index partition holds the
  * subject — see {@link subjectIndexTopic}.
  */
-export function statementTopic(type: string, version: number, salt: Uint8Array, subject: Uint8Array): string {
+export function statementTopic(
+  type: string,
+  version: number,
+  salt: Uint8Array,
+  subject: Uint8Array,
+  band: number,
+): string {
   assertStatementType(type);
   assertVersion(version);
   assertSubjectBytes(subject);
-  return `woco/${type}/v${version}/${bytesToHex(hmac(sha256, salt, subject))}`;
+  assertBand(band);
+  const message = concatBytes(subject, uint64BE(band));
+  return `woco/${type}/v${version}/${bytesToHex(hmac(sha256, salt, message))}`;
 }
 
 /**
- * The per-holder subject index topic for a statement type:
- * `"woco/{type}/v{n}/index/" + hex(HMAC-SHA256(salt, utf8("subject-index")))`.
+ * The per-holder subject index topic for a statement type and BAND:
+ * `"woco/{type}/v{n}/index/" + hex(HMAC-SHA256(salt, utf8("subject-index") || uint64BE(band)))`.
+ *
+ * The index is banded on the same rule as statements, because it grows too: one
+ * version per new subject, and subjects are never removed. Social types have no
+ * partition rule and so nothing read first to carry a band hint — they discover
+ * it by walking openers under the full-band invariant, which needs no carrier.
  *
  * PARTITION RULE (frozen): a subject lives in exactly ONE of the two indexes —
  * the private-salt index before opt-in, the public-salt index after — and
@@ -204,10 +281,12 @@ export function statementTopic(type: string, version: number, salt: Uint8Array, 
  * enumerates a public rider's subjects without probing candidate topics
  * (an absent-chunk probe is the most expensive read on Swarm).
  */
-export function subjectIndexTopic(type: string, version: number, salt: Uint8Array): string {
+export function subjectIndexTopic(type: string, version: number, salt: Uint8Array, band: number): string {
   assertStatementType(type);
   assertVersion(version);
-  return `woco/${type}/v${version}/index/${bytesToHex(hmac(sha256, salt, utf8ToBytes(SUBJECT_INDEX_LABEL)))}`;
+  assertBand(band);
+  const message = concatBytes(utf8ToBytes(SUBJECT_INDEX_LABEL), uint64BE(band));
+  return `woco/${type}/v${version}/index/${bytesToHex(hmac(sha256, salt, message))}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +304,50 @@ export interface SubjectIndexV1<F extends string> {
   format: F;
   /** Every subject with a live head under THIS index's salt partition. */
   subjects: Hex0x[];
+}
+
+/**
+ * The V2 subject index payload: each entry carries the subject's CURRENT BAND.
+ *
+ * V1 was `{ format, subjects: Hex0x[] }` and its validator is CLOSED, so
+ * carrying a band is a true format bump rather than an edit. Types whose heads
+ * cannot leave band 0 (likes and follows are latest-wins, so their statement
+ * feeds hold one version per toggle) stay on V1 — only their index TOPIC moves.
+ *
+ * `band` is a MONOTONIC LOWER BOUND, exactly like a version hint: the highest
+ * band the last writer knew to be open. A stale value costs a short forward
+ * walk under the full-band invariant, never correctness. The merge rule after a
+ * lost write race is union-of-subjects, per-subject MAX band.
+ *
+ * Storage-key-signed only, same stakes argument as V1: a forged band can make a
+ * reader walk, never make it believe a wrong count.
+ */
+export interface SubjectIndexV2<F extends string> {
+  format: F;
+  entries: { subject: Hex0x; band: number }[];
+}
+
+/** Closed-schema validator for a {@link SubjectIndexV2} instantiation. */
+export function validateSubjectIndexV2<F extends string>(value: unknown, format: F): value is SubjectIndexV2<F> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const o = value as Record<string, unknown>;
+  const keys = Object.keys(o).sort();
+  if (keys.length !== 2 || keys[0] !== "entries" || keys[1] !== "format") return false;
+  if (o.format !== format) return false;
+  if (!Array.isArray(o.entries)) return false;
+  return o.entries.every((e) => {
+    if (e === null || typeof e !== "object" || Array.isArray(e)) return false;
+    const ek = Object.keys(e as Record<string, unknown>).sort();
+    if (ek.length !== 2 || ek[0] !== "band" || ek[1] !== "subject") return false;
+    const { subject, band } = e as { subject: unknown; band: unknown };
+    return (
+      typeof subject === "string" &&
+      /^0x[0-9a-f]{64}$/.test(subject) &&
+      typeof band === "number" &&
+      Number.isSafeInteger(band) &&
+      band >= 0
+    );
+  });
 }
 
 /** Closed-schema validator for a {@link SubjectIndexV1} instantiation. */

@@ -78,13 +78,19 @@ function statement(over: Partial<UnsignedCreditStatementV1> = {}, key = RIDER_KE
 }
 
 /** The leaf a counter would publish for a statement it read at `version`. */
-function leafFor(s: CreditStatementV1, version = 2, feedOwner: Hex0x = OWNER): CarriedEvidenceLeaf {
+function leafFor(
+  s: CreditStatementV1,
+  version = 2,
+  feedOwner: Hex0x = OWNER,
+  band = 0,
+): CarriedEvidenceLeaf {
   const { holderSig: _sig, ...unsigned } = s;
   return {
     holder: s.holder,
     feedOwner,
     seq: s.seq,
     version,
+    band,
     digest: `0x${bytesToHex(creditStatementDigest(unsigned))}` as Hex0x,
     total: s.total,
   };
@@ -287,4 +293,16 @@ test("an entry with no laps is never the one checked, and no entries means no ch
   const empty = leafFor(statement({ total: 0 }));
   assert.equal(leafToCheck([empty], null), null);
   assert.equal(leafToCheck([], null), null);
+});
+
+test("the BAND moves the address, exactly as the version does", () => {
+  // Versions restart at 0 in each band, so a leaf's version alone stopped
+  // naming a chunk when banding landed. A spot-checker reading band 0 for a
+  // statement written in band 2 would look at a different rider-day entirely
+  // and report it missing — an accusation drawn from an addressing mistake.
+  const s = statement();
+  const inBand0 = deriveEntryLocation(RITA_SUBJECT, leafFor(s, 5, OWNER, 0));
+  const inBand2 = deriveEntryLocation(RITA_SUBJECT, leafFor(s, 5, OWNER, 2));
+  assert.notEqual(inBand0.address, inBand2.address);
+  assert.match(inBand2.address, /^[0-9a-f]{64}$/);
 });

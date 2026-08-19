@@ -28,6 +28,8 @@ import {
   versionedSocIdentifier,
   versionedPageIdentifier,
   resolveLatestSocVersion,
+  resolveBandedHead,
+  assembleContentFeed,
   readVersionedContentFeed,
   LEGACY_CONTENT_FEED_VERSION,
   type ContentFeedManifest,
@@ -238,7 +240,14 @@ export async function writeContentFeed(args: {
 
 /** Tri-state result of a content-feed read. `absent` is the only cacheable negative. */
 export type ContentFeedResult<T> =
-  | { status: "found"; value: T; version: number }
+  | {
+      status: "found";
+      value: T;
+      version: number;
+      /** Whether the version scan that chose this version was conclusive. A
+       *  read-modify-write MUST refuse when false — see `VersionedFeedRead`. */
+      scanClean: boolean;
+    }
   | { status: "absent" }
   | { status: "unavailable"; reason?: string };
 
@@ -255,21 +264,31 @@ export type ContentFeedResult<T> =
 export async function readContentFeedResult<T>(
   ownerAddress: string,
   topic: string,
+  opts: { skipLegacy?: boolean } = {},
 ): Promise<ContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   const read: SocChunkProbe = (id) => probeSoc(owner, id);
-  // Counted, not assumed: a read that starts from 0 walks EVERY version the feed
-  // has, so its cost grows with a rider's lap count. That is the one scaling
-  // shape this must not have, and reading the resolver cannot tell you whether
-  // it is happening.
+  // Counted from what the RESOLVER did, not from what we handed it. A stored
+  // hint whose version does not resolve restarts the scan from 0, so counting
+  // the hint's existence would report the expensive case as the cheap one —
+  // which is exactly the bug this instrument had.
   const hint = readVersionHint(owner, topic);
-  countHint(hint > 0 ? "hintHit" : "hintMiss");
-  const res = await readVersionedContentFeed(read, topic, hint);
+  const res = await readVersionedContentFeed(read, topic, hint, {
+    skipLegacy: opts.skipLegacy,
+    onScan: (d) => {
+      countHint(!d.hintGiven ? "noHint" : d.hintValidated ? "hintUsed" : "hintInvalidated");
+    },
+  });
   if (res.status !== "found") return res;
   if (res.version >= 0) bumpVersionHint(owner, topic, res.version);
   try {
-    return { status: "found", value: JSON.parse(new TextDecoder().decode(res.bytes)) as T, version: res.version };
+    return {
+      status: "found",
+      value: JSON.parse(new TextDecoder().decode(res.bytes)) as T,
+      version: res.version,
+      scanClean: res.scanClean,
+    };
   } catch {
     // Bytes exist at this identifier but aren't our JSON — corrupt or foreign,
     // never "no feed here". Absent would be a lie a caller could cache.
@@ -282,7 +301,149 @@ export async function readContentFeedResult<T>(
  * BOTH "absent" and "could not read". Correct only for display paths that re-read
  * on the next visit (profiles, event detail, site pages).
  */
-export async function readContentFeed<T>(ownerAddress: string, topic: string): Promise<T | null> {
-  const res = await readContentFeedResult<T>(ownerAddress, topic);
+export async function readContentFeed<T>(
+  ownerAddress: string,
+  topic: string,
+  opts: { skipLegacy?: boolean } = {},
+): Promise<T | null> {
+  const res = await readContentFeedResult<T>(ownerAddress, topic, opts);
   return res.status === "found" ? res.value : null;
+}
+
+// ---------------------------------------------------------------------------
+// Banded feeds
+// ---------------------------------------------------------------------------
+
+const BAND_HINT_PREFIX = "woco:cfb:"; // content-feed band
+
+/** Band hints key off band 0's topic — the stable identity of the whole family. */
+function bandHintKey(owner: string, topicForBand: (band: number) => string): string {
+  const o = owner.startsWith("0x") || owner.startsWith("0X") ? owner.slice(2) : owner;
+  return `${BAND_HINT_PREFIX}${o.toLowerCase()}:${topicForBand(0)}`;
+}
+
+function readBandHint(owner: string, topicForBand: (band: number) => string): number {
+  try {
+    const v = globalThis.localStorage?.getItem(bandHintKey(owner, topicForBand));
+    const n = v ? parseInt(v, 10) : 0;
+    return Number.isSafeInteger(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Only ever RAISES — a lower value would send readers back through old bands. */
+function bumpBandHint(owner: string, topicForBand: (band: number) => string, band: number): void {
+  try {
+    if (band <= 0) return;
+    if (band > readBandHint(owner, topicForBand)) {
+      globalThis.localStorage?.setItem(bandHintKey(owner, topicForBand), String(band));
+    }
+  } catch {
+    /* ignore — hint is best-effort */
+  }
+}
+
+export type BandedContentFeedResult<T> = ContentFeedResult<T> & {
+  band: number;
+  /**
+   * Whether the WHOLE resolution — the band walk AND the in-band version scan —
+   * answered definitively. One flag rather than two, because no caller wants to
+   * act on half of it.
+   *
+   * Who must care, and who need not: a READ-MODIFY-WRITE of a snapshot must
+   * refuse when this is false, because its writer probes for a fresh address
+   * independently, finds the real latest, and lands the stale snapshot there —
+   * verified, with everything added since silently erased. An EXACT-ADDRESS
+   * write (a lap) may proceed: a stale target already exists, so the write
+   * dedupes, the read-back reports `superseded`, and the retry rail handles it.
+   *
+   * Kept apart from the read's own status on purpose: the head can be `found`
+   * and perfectly readable while the resolution that chose it was inconclusive.
+   */
+  bandClean: boolean;
+};
+
+/**
+ * Read the head of a BANDED feed, resolving which band is open first.
+ *
+ * A banded feed is one topic per {@link STATEMENT_BAND_SIZE} versions rather
+ * than one unbounded topic, so a read costs a bounded in-band scan instead of a
+ * probe per lifetime write. `hintBand` is a lower bound: pass the band recorded
+ * in a subject index (credits, where the partition rule makes that read
+ * mandatory anyway so the band rides free), or omit it and let the opener walk
+ * find it (social, which has no index read to carry one).
+ *
+ * `skipLegacy` is forced on: banded feeds are strictly newer than the
+ * pre-versioning scheme, so a legacy chunk cannot exist and probing for one
+ * would spend a guaranteed missing-chunk network search per absent read.
+ */
+export async function readBandedContentFeed<T>(
+  ownerAddress: string,
+  topicForBand: (band: number) => string,
+  opts: { hintBand?: number } = {},
+): Promise<BandedContentFeedResult<T>> {
+  const { probeSoc } = await import("./client-soc.js");
+  const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
+  const read: SocChunkProbe = (id) => probeSoc(owner, id);
+
+  // SCAN-FIRST. Resolving the band by walking openers first spent its whole
+  // probe window on every read, and a probe past the last opened band is a
+  // missing-chunk search. Scanning the hinted band first means a band that is
+  // not full proves — by the full-band invariant — that no higher band exists,
+  // so the warm path probes no openers at all.
+  const hintBand = Math.max(opts.hintBand ?? 0, readBandHint(owner, topicForBand));
+  const head = await resolveBandedHead(read, topicForBand, hintBand, (band) =>
+    readVersionHint(owner, topicForBand(band)));
+
+  if (head.latest === null) {
+    // Clean means the feed genuinely does not exist; otherwise nobody could
+    // answer, which a caller must never cache as absence.
+    return head.clean
+      ? { status: "absent", band: head.band, bandClean: true }
+      : { status: "unavailable", reason: "band resolution inconclusive", band: head.band, bandClean: false };
+  }
+
+  // Read at the EXACT version already resolved, rather than re-resolving through
+  // `readContentFeedResult` — the resolution above is the expensive part and
+  // doing it twice is what the reorder exists to stop.
+  const topic = topicForBand(head.band);
+  const base = contentFeedSocIdentifier(topic);
+  const asm = await assembleContentFeed(
+    read,
+    versionedSocIdentifier(base, head.latest),
+    (page) => versionedPageIdentifier(base, head.latest as number, page),
+  );
+  if (asm.status !== "found") {
+    // The resolution just confirmed this version PRESENT, so an absent re-read is
+    // a contradiction, never evidence the feed is empty.
+    return {
+      status: "unavailable",
+      reason: asm.status === "absent" ? `version ${head.latest} vanished between probe and read` : asm.reason,
+      band: head.band,
+      bandClean: false,
+    };
+  }
+
+  bumpBandHint(owner, topicForBand, head.band);
+  bumpVersionHint(owner, topic, head.latest);
+  // The THREE states, from what the resolution actually did — not from `clean`.
+  // Counting off `clean` was wrong in every case: a cold read looked like a used
+  // hint, and a genuinely invalidated hint looked like one too, because an absent
+  // probe IS clean. That made the whitelist-lag alarm unable to fire on exactly
+  // the feeds it was installed to watch.
+  countHint(!head.hintGiven ? "noHint" : head.hintInvalidated ? "hintInvalidated" : "hintUsed");
+
+  try {
+    return {
+      status: "found",
+      value: JSON.parse(new TextDecoder().decode(asm.bytes)) as T,
+      version: head.latest,
+      scanClean: head.clean,
+      band: head.band,
+      bandClean: head.clean,
+    };
+  } catch {
+    return { status: "unavailable", reason: "feed payload is not valid JSON", band: head.band, bandClean: false };
+  }
 }

@@ -20,6 +20,7 @@
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { RecoveryEnvelope } from "../recovery/types.js";
+import { LAST_VERSION_IN_BAND } from "../statement/discipline.js";
 
 /** Max SOC/CAC payload (bytes). */
 export const SOC_MAX_PAYLOAD_SIZE = 4096;
@@ -393,13 +394,46 @@ const VERSION_PROBE_WINDOW = 2;
 
 /** A resolved feed read: the bytes plus the version they came from. */
 export type VersionedFeedRead =
-  | { status: "found"; bytes: Uint8Array; /** Resolved version, or {@link LEGACY_CONTENT_FEED_VERSION}. */ version: number }
+  | {
+      status: "found";
+      bytes: Uint8Array;
+      /** Resolved version, or {@link LEGACY_CONTENT_FEED_VERSION}. */
+      version: number;
+      /**
+       * Whether the VERSION scan that chose this version answered definitively.
+       *
+       * A found payload can be perfectly readable while the scan that picked it
+       * was inconclusive — the scan may have stopped early on an unanswerable
+       * probe with higher versions still present. Harmless for display, and
+       * harmless for an exact-address write (a stale target already exists, so
+       * the write dedupes and the read-back reports `superseded`). NOT harmless
+       * for a read-modify-write of a whole snapshot: its writer probes for a
+       * fresh address independently, finds the real latest, and lands the stale
+       * snapshot there — verified, with everything added since erased.
+       */
+      scanClean: boolean;
+    }
   | { status: "absent" }
   | { status: "unavailable"; reason?: string };
 
 export interface SocVersionResolution {
   /** Highest version confirmed PRESENT, or null if none was found. */
   latest: number | null;
+  /**
+   * Whether a hint was supplied, and whether the scan ACTUALLY started there.
+   *
+   * These exist because the previous instrument could not tell them apart: it
+   * counted whether a hint EXISTED, while this function silently restarts from
+   * 0 when the hinted version does not resolve. A "hint hit" could therefore be
+   * a full scan from zero, which is the one cost this design must not have and
+   * the exact thing the measurement was meant to reveal. `hintGiven && !hintValidated`
+   * is the signal worth alarming on: it means a version this device believes it
+   * wrote read as absent — the whitelist-lag pathology, not a cold device.
+   */
+  hintGiven: boolean;
+  hintValidated: boolean;
+  /** The version the forward scan actually started from. */
+  scannedFrom: number;
   /**
    * True only when every probe answered definitively. When false, `latest` is a
    * lower bound and nothing may be concluded from the scan STOPPING where it did —
@@ -423,6 +457,16 @@ export async function resolveLatestSocVersion(
   read: SocChunkProbe,
   baseIdFor: (version: number) => Uint8Array,
   hint = 0,
+  /**
+   * Highest version that can exist. For a BANDED feed this is
+   * `LAST_VERSION_IN_BAND`: a version above it cannot exist by construction,
+   * because the writer opens the next band instead. Probing past it is a
+   * missing-chunk network search — the expensive unit — for an address the
+   * scheme guarantees is empty, and it fires on EVERY scan of a full band.
+   *
+   * Omitted for unbanded feeds (events, profiles, sites), which have no ceiling.
+   */
+  maxVersion = Number.MAX_SAFE_INTEGER,
 ): Promise<SocVersionResolution> {
   let clean = true;
   const exists = async (v: number): Promise<boolean> => {
@@ -431,22 +475,260 @@ export async function resolveLatestSocVersion(
     return outcome.status === "found";
   };
 
-  let start = hint > 0 ? hint : 0;
-  if (start > 0 && !(await exists(start))) start = 0; // hint unreliable → full scan
+  // Clamped: a hint above the ceiling names a version that cannot exist, so
+  // probing it would spend a missing-chunk search to learn what the ceiling
+  // already says.
+  const hintGiven = hint > 0;
+  let start = hintGiven ? Math.min(hint, maxVersion) : 0;
+  let hintValidated = false;
+  if (start > 0) {
+    hintValidated = await exists(start);
+    if (!hintValidated) start = 0; // hint unreliable → full scan
+  }
 
   let latest = -1;
-  for (let cursor = start; ; cursor += VERSION_PROBE_WINDOW) {
+  for (let cursor = start; cursor <= maxVersion; cursor += VERSION_PROBE_WINDOW) {
+    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - cursor + 1);
     const flags = await Promise.all(
-      Array.from({ length: VERSION_PROBE_WINDOW }, (_, i) => exists(cursor + i)),
+      Array.from({ length: width }, (_, i) => exists(cursor + i)),
     );
     let ended = false;
-    for (let i = 0; i < VERSION_PROBE_WINDOW; i++) {
+    for (let i = 0; i < width; i++) {
       if (flags[i]) latest = cursor + i;
       else { ended = true; break; }
     }
     if (ended) break;
   }
-  return { latest: latest >= 0 ? latest : null, clean };
+  return { latest: latest >= 0 ? latest : null, clean, hintGiven, hintValidated, scannedFrom: start };
+}
+
+/** Where a banded head lives: which band, and the latest version inside it. */
+export interface BandedHeadResolution {
+  /** The highest OPENED band. 0 when the feed does not exist yet. */
+  band: number;
+  /**
+   * Hint diagnostics, aggregated across every scan this resolution ran.
+   *
+   * Reported here because the caller cannot reconstruct them: a banded read may
+   * scan several bands, and the question the instrument exists to answer — did a
+   * hint actually SAVE work, or did it fail and force a rescan — is only
+   * answerable inside. `hintInvalidated` is the alarm: a version this device
+   * believes it wrote reading as absent is the whitelist-lag pathology, and it
+   * is invisible in `clean`, because an absent probe IS clean.
+   */
+  hintGiven: boolean;
+  hintInvalidated: boolean;
+  /** Highest version present in {@link band}, or null when nothing exists at all. */
+  latest: number | null;
+  /** False if any probe was inconclusive — a WRITER must refuse rather than guess. */
+  clean: boolean;
+}
+
+/**
+ * Resolve the head of a BANDED feed: `(band, latest version in band)`.
+ *
+ * Why this exists: an unbanded statement feed accumulates one SOC version per
+ * write, so finding its head cost a probe per write — measured at 25 probes and
+ * 7925ms on a NINE-lap account, growing forever. Banding caps the in-band scan
+ * at {@link STATEMENT_BAND_SIZE}; this resolves which band to scan.
+ *
+ * TWO PHASES, deliberately, because collapsing them is quadratic. Phase 1 walks
+ * only band OPENERS (version 0 of each band) to find the highest opened band —
+ * one probe per band, all cheap hits, windowed for parallelism. Phase 2 scans
+ * versions inside that one band. Cost is O(bands + band size), NOT
+ * O(bands × band size), which is what resolving each band in turn would cost.
+ *
+ * Phase 1 is sound ONLY because of the full-band invariant (see
+ * `statement/discipline.ts`): bands are contiguous from 0 and a band opens only
+ * once its predecessor is full, so the first absent opener ends the walk. This
+ * is also why a caller needs no carrier for the band — the social subject index
+ * has no partition rule and nothing read before it, and finds its band this way.
+ *
+ * `hintBand` is a lower bound, not a promise: if its opener is absent the walk
+ * restarts from 0, exactly as a stale version hint does. Pass the band recorded
+ * in a subject index (credits) or 0 (social, cold devices).
+ *
+ * An `unavailable` probe ends a walk like an absent one but clears `clean`, so a
+ * writer can refuse instead of writing at a version that may already exist —
+ * where Bee would silently dedupe and drop the edit.
+ */
+/**
+ * TRIPWIRE. A `topicForBand` that ignores its argument makes every opener probe
+ * address the SAME chunk, so if that chunk exists no walk can ever find an
+ * absent opener and it loops forever. Not hypothetical: the social indexer
+ * passed `() => likeStatementTopic(subject)` — correct for a type PINNED to band
+ * 0 — and hung on the first like it tried to tally.
+ *
+ * A pinned type must not be band-resolved at all; it reads its fixed topic.
+ */
+function assertBandFamilyVaries(topicForBand: (band: number) => string): void {
+  if (topicForBand(0) === topicForBand(1)) {
+    throw new Error(
+      "banded resolution requires a topic family that varies with band; " +
+        "a band-pinned feed must be read at its fixed topic instead",
+    );
+  }
+}
+
+export interface OpenBandResolution {
+  /** The highest OPENED band. */
+  band: number;
+  /** False when band 0 does not exist — the feed has never been written. */
+  exists: boolean;
+  /** False if any probe was inconclusive — a WRITER must refuse rather than guess. */
+  clean: boolean;
+}
+
+/**
+ * PHASE 1 alone: which band is open, walking only band OPENERS (version 0 of
+ * each band).
+ *
+ * Exported separately because the two callers want different things. A credits
+ * read already learns the band from the subject index — the partition rule
+ * forces that read anyway, so the band rides free — and needs no walk at all.
+ * The SOCIAL subject index has no partition rule and nothing read before it, so
+ * it discovers its band exactly here, which is the case the full-band invariant
+ * was frozen to make possible.
+ *
+ * Sound only under that invariant: bands are contiguous from 0 and one opens
+ * only once its predecessor is full, so the first absent opener ends the walk.
+ * `hintBand` is a lower bound, not a promise — an unopened hint restarts from 0.
+ */
+export async function resolveOpenBand(
+  read: SocChunkProbe,
+  topicForBand: (band: number) => string,
+  hintBand = 0,
+): Promise<OpenBandResolution> {
+  let clean = true;
+  const openerExists = async (band: number): Promise<boolean> => {
+    const base = contentFeedSocIdentifier(topicForBand(band));
+    const outcome = await read(versionedSocIdentifier(base, 0));
+    if (outcome.status === "unavailable") clean = false;
+    return outcome.status === "found";
+  };
+
+  assertBandFamilyVaries(topicForBand);
+
+  let band = Number.isSafeInteger(hintBand) && hintBand > 0 ? hintBand : 0;
+  if (band > 0 && !(await openerExists(band))) band = 0; // hint unreliable → full walk
+  if (band === 0 && !(await openerExists(0))) return { band: 0, exists: false, clean };
+
+  for (;;) {
+    const flags = await Promise.all(
+      Array.from({ length: VERSION_PROBE_WINDOW }, (_, i) => openerExists(band + 1 + i)),
+    );
+    let advanced = 0;
+    for (let i = 0; i < VERSION_PROBE_WINDOW; i++) {
+      if (!flags[i]) break;
+      advanced = i + 1;
+    }
+    band += advanced;
+    if (advanced < VERSION_PROBE_WINDOW) break; // hit an absent opener — bands are contiguous
+  }
+  return { band, exists: true, clean };
+}
+
+/**
+ * SCAN-FIRST band resolution — the cheap order.
+ *
+ * The obvious order (walk openers, then scan the band) pays its opener window on
+ * EVERY read, and a probe past the last opened band is a missing-chunk search:
+ * the multi-second unit. Scanning first inverts it. If the hinted band's latest
+ * lands BELOW the last slot, the full-band invariant proves no higher band was
+ * ever opened — so the head is right there and no opener is probed at all. That
+ * is the common case for every warm reader.
+ *
+ * Openers are probed only when the scan says the band is FULL (so a higher band
+ * may exist) or when the hint named a band that was never opened.
+ *
+ * Termination: `band` advances only when the NEXT band's opener is found, and
+ * bands are finite; the one restart (a hint above the open band) sets `band` to
+ * 0, after which it only increases. The tripwire below rules out the pinned
+ * family, where every opener is the same chunk and no walk could ever end.
+ */
+export async function resolveBandedHead(
+  read: SocChunkProbe,
+  topicForBand: (band: number) => string,
+  hintBand = 0,
+  /** Stored version hint for a band, so a warm read does not rescan from 0. */
+  versionHintFor: (band: number) => number = () => 0,
+): Promise<BandedHeadResolution> {
+  assertBandFamilyVaries(topicForBand);
+
+  let clean = true;
+  let hintGiven = Number.isSafeInteger(hintBand) && hintBand > 0;
+  let hintInvalidated = false;
+  const openerFound = async (band: number): Promise<boolean> => {
+    const id = versionedSocIdentifier(contentFeedSocIdentifier(topicForBand(band)), 0);
+    const outcome = await read(id);
+    if (outcome.status === "unavailable") clean = false;
+    return outcome.status === "found";
+  };
+
+  let band = Number.isSafeInteger(hintBand) && hintBand > 0 ? hintBand : 0;
+  let restarted = false;
+  let walkedUp = false;
+
+  for (;;) {
+    const base = contentFeedSocIdentifier(topicForBand(band));
+
+    // WALK-UP ONLY: ask whether this band is full before scanning it.
+    //
+    // Measured, because scanning first here is what a naive reading of
+    // "scan-first" would do and it costs 542 probes where walking cost 256 on a
+    // cold six-band feed: every full band on the way up gets scanned end to end
+    // for a latest we already know is the last slot. One probe at the last slot
+    // answers the same question, and it is a HIT on a full band.
+    //
+    // Deliberately NOT done on the first band, which is the warm path: there the
+    // band is usually partial, so this probe would be a MISS — the expensive
+    // unit — and reintroduce exactly the cost scanning first exists to avoid.
+    if (walkedUp) {
+      const lastSlot = await read(versionedSocIdentifier(base, LAST_VERSION_IN_BAND));
+      if (lastSlot.status === "unavailable") clean = false;
+      if (lastSlot.status === "found") {
+        if (!(await openerFound(band + 1))) return { band, latest: LAST_VERSION_IN_BAND, clean, hintGiven, hintInvalidated };
+        band += 1;
+        continue;
+      }
+      if (lastSlot.status === "unavailable") return { band, latest: null, clean, hintGiven, hintInvalidated };
+    }
+
+    const scan = await resolveLatestSocVersion(
+      read, (v) => versionedSocIdentifier(base, v), versionHintFor(band), LAST_VERSION_IN_BAND,
+    );
+    clean = clean && scan.clean;
+    hintGiven = hintGiven || scan.hintGiven;
+    // A hint whose version did not resolve forced a rescan from 0 — the alarm.
+    hintInvalidated = hintInvalidated || (scan.hintGiven && !scan.hintValidated);
+
+    if (scan.latest === null) {
+      // Nothing in this band. At band 0 that is a feed which does not exist; above
+      // it, the hint named a band nobody opened, so start again from the bottom.
+      if (!scan.clean || band === 0 || restarted) {
+        return { band: 0, latest: null, clean, hintGiven, hintInvalidated };
+      }
+      // A stored BAND hint that named a band nobody opened is the same alarm
+      // class as an invalidated version hint: it forced a restart from zero.
+      hintInvalidated = true;
+      band = 0;
+      restarted = true;
+      walkedUp = false;
+      continue;
+    }
+
+    // Below the last slot: the band is not full, so by the full-band invariant no
+    // higher band was ever opened. Head found, zero opener probes.
+    if (scan.latest < LAST_VERSION_IN_BAND) return { band, latest: scan.latest, clean, hintGiven, hintInvalidated };
+
+    // Full. A dirty scan cannot be trusted to have found the real last slot, so
+    // stop rather than opening a band off an unverified premise.
+    if (!scan.clean) return { band, latest: scan.latest, clean, hintGiven, hintInvalidated };
+
+    if (!(await openerFound(band + 1))) return { band, latest: scan.latest, clean, hintGiven, hintInvalidated };
+    band += 1;
+    walkedUp = true;
+  }
 }
 
 /**
@@ -526,22 +808,41 @@ export async function assembleContentFeed(
  * genuinely this feed's, just possibly not its newest. Callers for which staleness
  * is unsafe must verify out-of-band; the recovery paths verify on-chain.
  */
+export interface VersionedReadOptions {
+  /**
+   * Skip the pre-versioning legacy fallback. Set for feeds that were BORN
+   * versioned — statement rails, which postdate versioning entirely — where a
+   * legacy chunk cannot exist and probing for one burns a guaranteed
+   * missing-chunk network search on every clean-absent read, forever, for
+   * nothing.
+   */
+  skipLegacy?: boolean;
+  /** Ceiling for the version scan — `LAST_VERSION_IN_BAND` for a banded topic.
+   *  See {@link resolveLatestSocVersion}. Omit for unbanded feeds. */
+  maxVersion?: number;
+  /** Receives the scan diagnostics, so a caller can count what actually happened. */
+  onScan?: (d: Pick<SocVersionResolution, "hintGiven" | "hintValidated" | "scannedFrom">) => void;
+}
+
 export async function readVersionedContentFeed(
   read: SocChunkProbe,
   topic: string,
   hint = 0,
+  opts: VersionedReadOptions = {},
 ): Promise<VersionedFeedRead> {
   const base = contentFeedSocIdentifier(topic);
   const baseIdFor = (v: number): Uint8Array => versionedSocIdentifier(base, v);
 
-  const { latest, clean } = await resolveLatestSocVersion(read, baseIdFor, hint);
+  const { latest, clean, hintGiven, hintValidated, scannedFrom } =
+    await resolveLatestSocVersion(read, baseIdFor, hint, opts.maxVersion);
+  opts.onScan?.({ hintGiven, hintValidated, scannedFrom });
   if (latest !== null) {
     const asm = await assembleContentFeed(
       read,
       baseIdFor(latest),
       (page) => versionedPageIdentifier(base, latest, page),
     );
-    if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest };
+    if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest, scanClean: clean };
     // The probe just confirmed this version PRESENT, so an absent re-read is a
     // contradiction (a vanished chunk / a reader disagreeing with itself), never
     // evidence that the feed does not exist.
@@ -555,6 +856,8 @@ export async function readVersionedContentFeed(
   // would answer for the wrong identifier anyway).
   if (!clean) return { status: "unavailable", reason: "version probe inconclusive" };
 
+  if (opts.skipLegacy) return { status: "absent" };
+
   // Legacy fallback: the pre-versioning fixed identifier + its topic-string pages.
   const legacy = await assembleContentFeed(
     read,
@@ -562,6 +865,6 @@ export async function readVersionedContentFeed(
     (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
   );
   return legacy.status === "found"
-    ? { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION }
+    ? { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean }
     : legacy;
 }

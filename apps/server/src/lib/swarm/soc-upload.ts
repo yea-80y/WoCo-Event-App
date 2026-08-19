@@ -35,6 +35,8 @@ import {
   type VersionedFeedRead,
   assembleContentFeed,
   contentFeedSocIdentifier,
+  resolveOpenBand,
+  LAST_VERSION_IN_BAND,
   contentFeedPageTopic,
   versionedSocIdentifier,
   versionedPageIdentifier,
@@ -434,10 +436,50 @@ export async function readContentFeedJson(
  * `readVersionedContentFeed` already distinguishes them; this only stops throwing
  * the distinction away.
  */
+/**
+ * Banded variant: resolve which band of a feed family is open, then read its
+ * head. This is the indexer's half of the banding scheme — an independent
+ * indexer has to derive band topics the same way a rider does, or it addresses
+ * the wrong chunks.
+ *
+ * No band cache of its own. Band openers are cheap HITS (a band opens only when
+ * its predecessor is full, so every opener below the head exists), and the
+ * per-band version cache below still applies once the band is known. If a rider
+ * ever accumulates enough bands for the walk to matter, cache the band the same
+ * way `cfvCache` caches the version.
+ */
+export async function readBandedContentFeedJsonResult(
+  ownerHex: string,
+  topicForBand: (band: number) => string,
+): Promise<VersionedFeedRead & { band: number }> {
+  const read: SocChunkProbe = async (id) => {
+    const bytes = await readSocPayload(ownerHex, bytesToHex(id));
+    return bytes ? { status: "found", bytes } : { status: "absent" };
+  };
+  const open = await resolveOpenBand(read, topicForBand);
+  if (!open.exists) return { status: "absent", band: open.band };
+  // Statement feeds postdate versioning, so a legacy chunk cannot exist. The
+  // indexer walks every participant, and an absent participant would otherwise
+  // cost one guaranteed missing-chunk search EACH.
+  // The ceiling matters more here than on a client: the indexer reads EVERY
+  // participant's feed on every pass, so probing v64/v65 of each full band cost
+  // two missing-chunk searches per participant per pass — on the shared node.
+  // Versions above the last slot cannot exist in a banded feed by construction.
+  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band), 0, {
+    skipLegacy: true,
+    maxVersion: LAST_VERSION_IN_BAND,
+  });
+  return { ...res, band: open.band };
+}
+
 export async function readContentFeedJsonResult(
   ownerHex: string,
   baseTopic: string,
   versionHint = 0,
+  /** Statement rails only — see {@link readBandedContentFeedJsonResult}. Events,
+   *  profiles and sites predate versioning and DO have legacy chunks, so this
+   *  must stay opt-in rather than becoming the default. */
+  opts: { skipLegacy?: boolean; maxVersion?: number } = {},
 ): Promise<VersionedFeedRead> {
   // `readSocPayload` THROWS every fault except a bee not-found, so a transient
   // fault propagates out of this function rather than being cached as "no such
@@ -467,7 +509,13 @@ export async function readContentFeedJsonResult(
               contentFeedSocIdentifier(contentFeedPageTopic(baseTopic, p)))
           : await assembleContentFeed(read, versionedSocIdentifier(base, cached.version), (p) =>
               versionedPageIdentifier(base, cached.version as number, p));
-      if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: cached.version };
+      // `scanClean: true` is honest here ONLY because a dirty scan is never
+      // cached (see below). No scan ran on this path — the version is read
+      // exactly — so the flag reports the resolution that produced the cached
+      // version, not a fresh verdict.
+      if (asm.status === "found") {
+        return { status: "found", bytes: asm.bytes, version: cached.version, scanClean: true };
+      }
       // Cached version unexpectedly unreadable — drop it and re-probe below.
       cfvCache.delete(key);
     }
@@ -475,10 +523,18 @@ export async function readContentFeedJsonResult(
 
   // Probe forward from the best lower bound we have (caller hint vs cached).
   const hint = Math.max(versionHint, cached?.version ?? 0);
-  const res = await readVersionedContentFeed(read, baseTopic, hint);
+  const res = await readVersionedContentFeed(read, baseTopic, hint, {
+    skipLegacy: opts.skipLegacy,
+    maxVersion: opts.maxVersion,
+  });
   // Only a definitive answer may be cached. Caching an `unavailable` as absent
   // would serve "this feed does not exist" for the whole TTL off one bad read.
-  if (res.status === "found") cfvCache.set(key, { version: res.version, at: Date.now() });
+  //
+  // And only a CLEAN scan's version, for the same reason one step further in: a
+  // dirty scan's latest is a lower BOUND, not the latest. Caching it would serve
+  // a stale version for the whole TTL and — worse — the exact-version path above
+  // would hand it back flagged clean, laundering "could not ask" into a verdict.
+  if (res.status === "found" && res.scanClean) cfvCache.set(key, { version: res.version, at: Date.now() });
   else if (res.status === "absent") cfvCache.set(key, { version: null, at: Date.now() });
   return res;
 }

@@ -70,20 +70,52 @@ export interface FollowStatementV1 {
 // that nobody can count is not a feature; there is no private tier here.
 // ---------------------------------------------------------------------------
 
+/**
+ * Social STATEMENT feeds are PINNED to band 0 — they share the banded topic
+ * derivation at a constant, but they are not banded feeds.
+ *
+ * Why that is sound: a like is latest-wins (commitment 3), so its feed gains a
+ * version per TOGGLE, not per action, and has no growth axis to bound.
+ *
+ * What it does NOT mean, stated because the obvious reading is wrong: band 0
+ * here is not capped at {@link STATEMENT_BAND_SIZE} versions. A writer never
+ * opens band 1, so a user who toggles one subject 64+ times simply keeps
+ * appending inside band 0. Shipped readers are unaffected — no scan has a
+ * ceiling — but a third party building to the full-band invariant would be
+ * misled, so: THE FULL-BAND INVARIANT GOVERNS ONLY FEEDS THAT BAND. For a
+ * pinned type, "band count derives from write count" does not hold.
+ *
+ * A pinned family must never be handed to `resolveOpenBand`: every opener probe
+ * would address the same chunk and the walk could not terminate.
+ */
+const SOCIAL_STATEMENT_BAND = 0;
+
 export function likeStatementTopic(subject: Hex0x): string {
-  return statementTopic(LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION), subjectToBytes(subject));
+  return statementTopic(
+    LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION),
+    subjectToBytes(subject), SOCIAL_STATEMENT_BAND,
+  );
 }
 
-export function likeSubjectIndexTopic(): string {
-  return subjectIndexTopic(LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION));
+/**
+ * The social index DOES grow — one version per new subject, and subjects are
+ * never removed — so unlike the statement feeds it is genuinely banded. With no
+ * partition rule there is nothing read first to carry the band, so callers
+ * discover it by walking openers under the full-band invariant.
+ */
+export function likeSubjectIndexTopic(band: number): string {
+  return subjectIndexTopic(LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION), band);
 }
 
 export function followStatementTopic(subject: Hex0x): string {
-  return statementTopic(FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION), subjectToBytes(subject));
+  return statementTopic(
+    FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION),
+    subjectToBytes(subject), SOCIAL_STATEMENT_BAND,
+  );
 }
 
-export function followSubjectIndexTopic(): string {
-  return subjectIndexTopic(FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION));
+export function followSubjectIndexTopic(band: number): string {
+  return subjectIndexTopic(FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION), band);
 }
 
 export type LikeSubjectIndexV1 = SubjectIndexV1<typeof LIKE_SUBJECT_INDEX_FORMAT>;
