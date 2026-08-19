@@ -35,6 +35,7 @@ import {
   type VersionedFeedRead,
   assembleContentFeed,
   contentFeedSocIdentifier,
+  resolveOpenBand,
   contentFeedPageTopic,
   versionedSocIdentifier,
   versionedPageIdentifier,
@@ -434,6 +435,32 @@ export async function readContentFeedJson(
  * `readVersionedContentFeed` already distinguishes them; this only stops throwing
  * the distinction away.
  */
+/**
+ * Banded variant: resolve which band of a feed family is open, then read its
+ * head. This is the indexer's half of the banding scheme — an independent
+ * indexer has to derive band topics the same way a rider does, or it addresses
+ * the wrong chunks.
+ *
+ * No band cache of its own. Band openers are cheap HITS (a band opens only when
+ * its predecessor is full, so every opener below the head exists), and the
+ * per-band version cache below still applies once the band is known. If a rider
+ * ever accumulates enough bands for the walk to matter, cache the band the same
+ * way `cfvCache` caches the version.
+ */
+export async function readBandedContentFeedJsonResult(
+  ownerHex: string,
+  topicForBand: (band: number) => string,
+): Promise<VersionedFeedRead & { band: number }> {
+  const read: SocChunkProbe = async (id) => {
+    const bytes = await readSocPayload(ownerHex, bytesToHex(id));
+    return bytes ? { status: "found", bytes } : { status: "absent" };
+  };
+  const open = await resolveOpenBand(read, topicForBand);
+  if (!open.exists) return { status: "absent", band: open.band };
+  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band));
+  return { ...res, band: open.band };
+}
+
 export async function readContentFeedJsonResult(
   ownerHex: string,
   baseTopic: string,

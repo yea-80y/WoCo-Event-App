@@ -109,11 +109,14 @@ function seed(format: string, owners: string[], subject: Hex0x = SUBJECT): void 
  */
 function readerOver(answers: Record<string, VersionedFeedRead | (() => Promise<never>)>) {
   const topics: string[] = [];
-  const read: StatementFeedReader = async (owner, topic) => {
-    topics.push(topic);
+  // The indexer now asks for a topic FAMILY and walks to the open band itself.
+  // These fixtures live in band 0, so recording `topicForBand(0)` keeps the
+  // assertions about WHICH feed was read — the thing they exist to pin.
+  const read: StatementFeedReader = async (owner, topicForBand) => {
+    topics.push(topicForBand(0));
     const answer = answers[owner.toLowerCase()];
     if (typeof answer === "function") return answer();
-    return answer ?? { status: "absent" };
+    return { ...(answer ?? { status: "absent" as const }), band: 0 };
   };
   return { read, topics };
 }
@@ -313,10 +316,10 @@ test("credits are read at the PUBLIC salt, so a private credit is unaddressable"
   const { read, topics } = readerOver({ [ALICE]: found(credit(), 1) });
 
   await indexer.indexSubject("woco.credit.v1", SUBJECT, read);
-  assert.deepEqual(topics, [creditStatementTopic(creditPublicSalt(), SUBJECT)]);
+  assert.deepEqual(topics, [creditStatementTopic(creditPublicSalt(), SUBJECT, 0)]);
   assert.notEqual(
     topics[0],
-    creditStatementTopic(creditPrivateSalt(new Uint8Array(32).fill(4)), SUBJECT),
+    creditStatementTopic(creditPrivateSalt(new Uint8Array(32).fill(4)), SUBJECT, 0),
     "a private head derives from a salt only the rider holds — the indexer cannot address it",
   );
 });

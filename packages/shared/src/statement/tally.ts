@@ -39,6 +39,9 @@ export interface ObservedStatement<T> {
   feedOwner: Hex0x;
   /** SOC version it was read at. Contiguous and immutable, so it orders. */
   version: number;
+  /** The BAND that version sits in — versions restart at 0 in each band, so
+   *  the pair is what names a chunk. */
+  band: number;
   /** Canonical digest of the statement, lowercase 0x-prefixed bytes32. */
   digest: Hex0x;
   statement: T;
@@ -52,6 +55,17 @@ export interface ObservedStatement<T> {
 export interface BooleanEvidenceLeaf {
   feedOwner: Hex0x;
   version: number;
+  /**
+   * BAND the statement was read at. Required alongside `version` for the same
+   * reason `version` was required alongside `seq`: since banding, a version
+   * number restarts at 0 in each band, so a version ALONE no longer names a
+   * chunk. A leaf carrying only the version would point a spot-checker at band
+   * 0's chunk of the same index — a different statement, or nothing.
+   *
+   * Legal to add for the same reason `version` was: the manifest form is
+   * deliberately unfrozen (P0 item 7, view plane).
+   */
+  band: number;
   digest: Hex0x;
   value: boolean;
 }
@@ -102,6 +116,7 @@ export function tallyBooleanStatements<T extends { value: boolean }>(
     .map((o) => ({
       feedOwner: o.feedOwner.toLowerCase() as Hex0x,
       version: o.version,
+      band: o.band,
       digest: o.digest,
       value: o.statement.value,
     }))
@@ -146,6 +161,9 @@ export interface CarriedEvidenceLeaf {
    * view plane) — unlike the statement schema, which is closed forever.
    */
   version: number;
+  /** BAND that version sits in — see {@link BooleanEvidenceLeaf.band}. Without
+   *  it a spot-checker cannot address the chunk this leaf claims to be about. */
+  band: number;
   digest: Hex0x;
   /**
    * The value this leaf contributed. Commitment 4's "count = list length"
@@ -216,6 +234,7 @@ export function tallyCarriedTotals<T extends CarriedTotalStatement>(
       feedOwner: o.feedOwner.toLowerCase() as Hex0x,
       seq: o.statement.seq,
       version: o.version,
+      band: o.band,
       digest: o.digest,
       total: o.statement.total,
     }))

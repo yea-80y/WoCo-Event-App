@@ -25,19 +25,39 @@
 import type { Hex0x } from "@woco/shared";
 import type { CreditVisibility } from "./visibility.js";
 
+/**
+ * One index entry: a subject, and the BAND its head currently lives in.
+ *
+ * The band is why the index read pays for itself twice. The partition rule
+ * already forces every read to consult the index before touching a head, so
+ * carrying the band here costs nothing extra and removes the walk that made
+ * head lookup grow with a rider's lap count.
+ *
+ * It is a MONOTONIC LOWER BOUND, not a promise: a stale value costs a short
+ * forward walk over band openers, never a wrong answer.
+ */
+export interface SubjectBand {
+  subject: Hex0x;
+  band: number;
+}
+
 export type IndexRead =
-  | { status: "ok"; subjects: Hex0x[] }
+  | { status: "ok"; entries: SubjectBand[] }
   | { status: "absent" }
   | { status: "unavailable"; reason: string };
 
 export type PartitionRead =
-  | { status: "ok"; visibility: CreditVisibility | null }
+  | { status: "ok"; visibility: CreditVisibility | null; band: number }
   | { status: "unavailable"; reason: string };
 
 /**
  * Public wins when both list the subject. Publication is one-way
  * (`publishSubject`), so resolving to private would write the next lap to a
  * topic the rider has already retired.
+ *
+ * Returns the winning partition's recorded band. A subject in neither index has
+ * never been ridden, so its head will start at band 0 — the same value a fresh
+ * feed resolves to, which keeps the caller from special-casing first laps.
  */
 export function decideVisibility(
   pub: IndexRead,
@@ -46,9 +66,11 @@ export function decideVisibility(
 ): PartitionRead {
   if (pub.status === "unavailable") return pub;
   if (priv.status === "unavailable") return priv;
-  if (pub.status === "ok" && pub.subjects.includes(subject)) return { status: "ok", visibility: "public" };
-  if (priv.status === "ok" && priv.subjects.includes(subject)) return { status: "ok", visibility: "private" };
-  return { status: "ok", visibility: null };
+  const inPub = pub.status === "ok" ? pub.entries.find((e) => e.subject === subject) : undefined;
+  if (inPub) return { status: "ok", visibility: "public", band: inPub.band };
+  const inPriv = priv.status === "ok" ? priv.entries.find((e) => e.subject === subject) : undefined;
+  if (inPriv) return { status: "ok", visibility: "private", band: inPriv.band };
+  return { status: "ok", visibility: null, band: 0 };
 }
 
 /**

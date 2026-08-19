@@ -401,6 +401,21 @@ export interface SocVersionResolution {
   /** Highest version confirmed PRESENT, or null if none was found. */
   latest: number | null;
   /**
+   * Whether a hint was supplied, and whether the scan ACTUALLY started there.
+   *
+   * These exist because the previous instrument could not tell them apart: it
+   * counted whether a hint EXISTED, while this function silently restarts from
+   * 0 when the hinted version does not resolve. A "hint hit" could therefore be
+   * a full scan from zero, which is the one cost this design must not have and
+   * the exact thing the measurement was meant to reveal. `hintGiven && !hintValidated`
+   * is the signal worth alarming on: it means a version this device believes it
+   * wrote read as absent — the whitelist-lag pathology, not a cold device.
+   */
+  hintGiven: boolean;
+  hintValidated: boolean;
+  /** The version the forward scan actually started from. */
+  scannedFrom: number;
+  /**
    * True only when every probe answered definitively. When false, `latest` is a
    * lower bound and nothing may be concluded from the scan STOPPING where it did —
    * in particular a write MUST NOT target `latest + 1`, because the version it
@@ -431,8 +446,13 @@ export async function resolveLatestSocVersion(
     return outcome.status === "found";
   };
 
-  let start = hint > 0 ? hint : 0;
-  if (start > 0 && !(await exists(start))) start = 0; // hint unreliable → full scan
+  const hintGiven = hint > 0;
+  let start = hintGiven ? hint : 0;
+  let hintValidated = false;
+  if (start > 0) {
+    hintValidated = await exists(start);
+    if (!hintValidated) start = 0; // hint unreliable → full scan
+  }
 
   let latest = -1;
   for (let cursor = start; ; cursor += VERSION_PROBE_WINDOW) {
@@ -446,7 +466,7 @@ export async function resolveLatestSocVersion(
     }
     if (ended) break;
   }
-  return { latest: latest >= 0 ? latest : null, clean };
+  return { latest: latest >= 0 ? latest : null, clean, hintGiven, hintValidated, scannedFrom: start };
 }
 
 /** Where a banded head lives: which band, and the latest version inside it. */
@@ -487,11 +507,35 @@ export interface BandedHeadResolution {
  * writer can refuse instead of writing at a version that may already exist —
  * where Bee would silently dedupe and drop the edit.
  */
-export async function resolveBandedHead(
+export interface OpenBandResolution {
+  /** The highest OPENED band. */
+  band: number;
+  /** False when band 0 does not exist — the feed has never been written. */
+  exists: boolean;
+  /** False if any probe was inconclusive — a WRITER must refuse rather than guess. */
+  clean: boolean;
+}
+
+/**
+ * PHASE 1 alone: which band is open, walking only band OPENERS (version 0 of
+ * each band).
+ *
+ * Exported separately because the two callers want different things. A credits
+ * read already learns the band from the subject index — the partition rule
+ * forces that read anyway, so the band rides free — and needs no walk at all.
+ * The SOCIAL subject index has no partition rule and nothing read before it, so
+ * it discovers its band exactly here, which is the case the full-band invariant
+ * was frozen to make possible.
+ *
+ * Sound only under that invariant: bands are contiguous from 0 and one opens
+ * only once its predecessor is full, so the first absent opener ends the walk.
+ * `hintBand` is a lower bound, not a promise — an unopened hint restarts from 0.
+ */
+export async function resolveOpenBand(
   read: SocChunkProbe,
   topicForBand: (band: number) => string,
   hintBand = 0,
-): Promise<BandedHeadResolution> {
+): Promise<OpenBandResolution> {
   let clean = true;
   const openerExists = async (band: number): Promise<boolean> => {
     const base = contentFeedSocIdentifier(topicForBand(band));
@@ -500,10 +544,9 @@ export async function resolveBandedHead(
     return outcome.status === "found";
   };
 
-  // Phase 1 — highest opened band, openers only.
   let band = Number.isSafeInteger(hintBand) && hintBand > 0 ? hintBand : 0;
   if (band > 0 && !(await openerExists(band))) band = 0; // hint unreliable → full walk
-  if (band === 0 && !(await openerExists(0))) return { band: 0, latest: null, clean };
+  if (band === 0 && !(await openerExists(0))) return { band: 0, exists: false, clean };
 
   for (;;) {
     const flags = await Promise.all(
@@ -517,12 +560,21 @@ export async function resolveBandedHead(
     band += advanced;
     if (advanced < VERSION_PROBE_WINDOW) break; // hit an absent opener — bands are contiguous
   }
+  return { band, exists: true, clean };
+}
 
-  // Phase 2 — latest version inside that band. The opener is known present, so
-  // start the scan there rather than re-probing from 0.
-  const base = contentFeedSocIdentifier(topicForBand(band));
+export async function resolveBandedHead(
+  read: SocChunkProbe,
+  topicForBand: (band: number) => string,
+  hintBand = 0,
+): Promise<BandedHeadResolution> {
+  const open = await resolveOpenBand(read, topicForBand, hintBand);
+  if (!open.exists) return { band: 0, latest: null, clean: open.clean };
+
+  // Phase 2 — latest version inside that one band.
+  const base = contentFeedSocIdentifier(topicForBand(open.band));
   const inBand = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), 0);
-  return { band, latest: inBand.latest, clean: clean && inBand.clean };
+  return { band: open.band, latest: inBand.latest, clean: open.clean && inBand.clean };
 }
 
 /**
@@ -602,15 +654,31 @@ export async function assembleContentFeed(
  * genuinely this feed's, just possibly not its newest. Callers for which staleness
  * is unsafe must verify out-of-band; the recovery paths verify on-chain.
  */
+export interface VersionedReadOptions {
+  /**
+   * Skip the pre-versioning legacy fallback. Set for feeds that were BORN
+   * versioned — statement rails, which postdate versioning entirely — where a
+   * legacy chunk cannot exist and probing for one burns a guaranteed
+   * missing-chunk network search on every clean-absent read, forever, for
+   * nothing.
+   */
+  skipLegacy?: boolean;
+  /** Receives the scan diagnostics, so a caller can count what actually happened. */
+  onScan?: (d: Pick<SocVersionResolution, "hintGiven" | "hintValidated" | "scannedFrom">) => void;
+}
+
 export async function readVersionedContentFeed(
   read: SocChunkProbe,
   topic: string,
   hint = 0,
+  opts: VersionedReadOptions = {},
 ): Promise<VersionedFeedRead> {
   const base = contentFeedSocIdentifier(topic);
   const baseIdFor = (v: number): Uint8Array => versionedSocIdentifier(base, v);
 
-  const { latest, clean } = await resolveLatestSocVersion(read, baseIdFor, hint);
+  const { latest, clean, hintGiven, hintValidated, scannedFrom } =
+    await resolveLatestSocVersion(read, baseIdFor, hint);
+  opts.onScan?.({ hintGiven, hintValidated, scannedFrom });
   if (latest !== null) {
     const asm = await assembleContentFeed(
       read,
@@ -630,6 +698,8 @@ export async function readVersionedContentFeed(
   // exists" is not a conclusion that can be drawn (and the legacy probe below
   // would answer for the wrong identifier anyway).
   if (!clean) return { status: "unavailable", reason: "version probe inconclusive" };
+
+  if (opts.skipLegacy) return { status: "absent" };
 
   // Legacy fallback: the pre-versioning fixed identifier + its topic-string pages.
   const legacy = await assembleContentFeed(
