@@ -60,6 +60,10 @@ export type { CreditVisibility } from "./visibility.js";
 export interface CreditHead {
   statement: CreditStatementV1;
   visibility: CreditVisibility;
+  /** The BAND this head sits in. Carried for the same reason `version` is: a
+   *  warm write addresses `(band, version + 1)` directly, and a band alone is
+   *  not enough to place a lap once versions restart per band. */
+  band: number;
   /**
    * The SOC version this head sits at, so the next write can address
    * `version + 1` directly instead of probing for it. A probe past a feed's
@@ -311,9 +315,9 @@ export async function readMyCredit(subject: Hex0x): Promise<CreditHead | null> {
     const keys = await riderKeys();
     const where = await liveVisibility(keys, subject);
     if (where.status !== "ok" || !where.visibility) return null;
-    const head = await readHeadAt(keys, subject, where.visibility);
+    const head = await readHeadAt(keys, subject, where.visibility, where.band);
     return head.status === "found"
-      ? { statement: head.statement, visibility: where.visibility, version: head.version }
+      ? { statement: head.statement, visibility: where.visibility, version: head.version, band: head.band }
       : null;
   } catch {
     return null;
@@ -673,7 +677,9 @@ export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
       { ...unsigned, seq: prev.seq + 1, session: { ...prev.session } },
       keys.holderPrivKey,
     );
-    const written = await writeStatement(keys, subject, "public", statement);
+    // Band 0: opting in republishes at the public topic and versions restart
+    // there (closure 6). The private head's band belongs to a retired family.
+    const written = await writeStatement(keys, subject, "public", statement, 0);
 
     // PUBLISH WAITS FOR THE READ-BACK, unlike a lap. The tap returns at
     // upload-accept because a rider is standing in a queue and the interesting
