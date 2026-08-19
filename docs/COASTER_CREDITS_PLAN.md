@@ -857,6 +857,13 @@ as the hint-killer before any further tuning.
 independent of laps; warm-read misses ≤3; warm tap 0 probes; band-opening tap ≤ ~4 probes;
 `hintInvalidated = 0` on gateway-healthy runs.
 
+✅ **BUILT 2026-08-19** (`829b0e4`, `91325b9`) — shared discipline, client read/write with
+rollover, social index, server indexer, evidence leaves. Unit-level cost is asserted rather
+than argued (`test/swarm/soc-bands.test.ts` pins O(bands + band size) against the quadratic
+shape, and misses staying O(1) as bands grow). The three-state hint instrument shipped with
+it, so the BROWSER measurement above can now be re-run and trusted — that re-run is the
+outstanding acceptance step, and until it exists the table above is a model, not a result.
+
 ⚠️ **OPEN — PODs as chapter markers (2026-08-19).** The owner's proposal: a milestone POD
 could START a new feed — hit 100, and the badge begins the next chapter. The instinct is
 right and the design already contains it, but **the dependency direction must be inverted**,
