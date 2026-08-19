@@ -28,7 +28,7 @@
 import { auth } from "../auth/auth-store.svelte.js";
 import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
-import { readContentFeedResult, readBandedContentFeed } from "../swarm/content-feed.js";
+import { readBandedContentFeed } from "../swarm/content-feed.js";
 import {
   writeContentFeedVerified,
   writeContentFeedSettling,
