@@ -117,15 +117,25 @@ function isAboutSubject(statement: { subject: string }, subject: Hex0x): boolean
 }
 
 /**
- * Which formats actually BAND, and so must be band-walked.
+ * Whether each format BANDS or is PINNED to band 0.
  *
- * Credits do: a lap appends, so a reader that only ever derived band 0 would
- * tally a rider's first 64 laps and silently stop. Likes and follows do NOT:
+ * Credits band: a lap appends, so a reader that only ever derived band 0 would
+ * tally a rider's first 64 laps and silently stop. Likes and follows do not:
  * they are latest-wins, so a feed gains a version per toggle and stays at band
- * 0 forever. Walking a band-pinned family is not merely wasteful — every opener
- * probe would address the same chunk, so the walk could never terminate.
+ * 0 forever. Walking a pinned family is not merely wasteful — every opener probe
+ * would address the same chunk, so the walk could never terminate.
+ *
+ * A `Record` over the union, NOT a Set of the banded ones. The difference is the
+ * whole point: a Set fails OPEN. Adding a new banded format to
+ * {@link IndexableFormat} and forgetting the Set gives a silent 64-write tally
+ * cap — no hang, no tripwire, no failing test, just a count that stops. With a
+ * Record the compiler refuses to build until the new format states which it is.
  */
-const BANDED_FORMATS: ReadonlySet<IndexableFormat> = new Set(["woco.credit.v1"]);
+export const FORMAT_BANDING: Record<IndexableFormat, "banded" | "pinned"> = {
+  "woco.credit.v1": "banded",
+  "woco.like.v1": "pinned",
+  "woco.follow.v1": "pinned",
+};
 
 /**
  * Read a feed pinned to band 0, without walking. `skipLegacy` because statement
@@ -141,7 +151,7 @@ const readPinnedBandFeed: StatementFeedReader = async (ownerHex, topicForBand) =
  * A subject's topic FAMILY, one topic per band.
  *
  * For band-pinned formats the function ignores its argument — which is exactly
- * why {@link BANDED_FORMATS} decides whether it may be walked.
+ * why {@link FORMAT_BANDING} decides whether it may be walked.
  */
 function topicForBand(format: IndexableFormat, subject: Hex0x): (band: number) => string {
   switch (format) {
@@ -220,7 +230,7 @@ export async function indexSubject(
   readFeed?: StatementFeedReader,
 ): Promise<IndexResult> {
   const read = readFeed
-    ?? (BANDED_FORMATS.has(format) ? readBandedContentFeedJsonResult : readPinnedBandFeed);
+    ?? (FORMAT_BANDING[format] === "banded" ? readBandedContentFeedJsonResult : readPinnedBandFeed);
   const participants = participantsFor(format, subject);
   const topics = topicForBand(format, subject);
   const unreadable: string[] = [];
