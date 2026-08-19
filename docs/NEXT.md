@@ -21,6 +21,27 @@ Last updated: 2026-08-04 (security workstream added — #139/#140 merged, recove
 
 ---
 
+## #172 BANDING — open items (2026-08-19, branch `feat/credit-head-lookup`)
+
+Seven commits, `630d41a..7d0a73d`. Green: shared 196, web 403, server 735; server
+typechecks; `svelte-check` 3225 files / 0 errors. NOT merged, NOT pushed.
+
+| # | Item | Owner | Why it is not done |
+|---|---|---|---|
+| 1 | **Fable sign-off on the final two commits** (`b4a7faa`, `7d0a73d`) | Fable | The review verdict "merge after changes" was given BEFORE these landed. Fable has not seen the tripwire, the `>=` rollover fix, `bandClean`, or the `RideResult` fix. **Blocks merge.** |
+| 2 | **Open question found while fixing review finding 4** | Fable | `upsertSubjectBand` refuses on a dirty band walk, but `readHeadAt`/`recordRide` do NOT check `bandClean` — so a lap can still be written into a band chosen by an inconclusive walk. Same defect class as finding 4. Refusing a lap is user-visible, so the treatment may differ from the index path. Ask before fixing. |
+| 3 | **Review finding 5 — scan-first resolution** | Opus build, Fable spec | The opener walk spends 2 guaranteed missing-chunk searches per read even on an exact hint (~3× the design target on the hot path). Fix: resolve in-band at the hinted band FIRST; if latest < `LAST_VERSION_IN_BAND` the invariant proves it is the head, so no opener probes at all. Non-blocking, resolver restructure. |
+| 4 | **Browser re-run of the measurement** | Owner | The cost table in COASTER_CREDITS_PLAN is a MODEL. Unit tests pin the shape; the 7925ms/25-probe figure came from a browser. Re-run with the fixed three-state hint instrument. Acceptance criteria are in the plan. |
+| 5 | Synchronous gateway whitelisting at write-accept (`soc-upload.ts`) | Opus | The `api 0/8` finding: an existing-but-unwhitelisted chunk reads as absent, which can invalidate a good hint. Confirm with `hintInvalidated` before tuning further. |
+| 6 | Gate B (emblem rail) implementation | Fable design done | Designed in SWARM_SOCIAL_PLAN; nothing frozen is needed for it. Not started. |
+
+**Two process lessons from this branch, worth not repeating:** the test suites were green
+through a resolver that never terminated (the fixture replaced the real reader) and through
+four type-level defects. `svelte-check` is slow here and was run late both times. And a patch
+script using `replace()` without asserting the pattern matched silently no-opped and reported
+success — the same "reported done, never happened" shape as the bug itself.
+
+
 ## Security workstream — passkey / accounts (added 2026-08-04)
 
 Runs alongside the table below; separate lane, separate worktree. **Do the top undone item.
