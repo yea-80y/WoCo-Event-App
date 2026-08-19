@@ -18,19 +18,28 @@ const SUBJECT = "0x3da9abaddbeee72a4bcb9de6930b557c1310b2d6d8d64e704309274d1af34
 test("frozen topic vectors — like and follow partition under their own public salts", () => {
   assert.equal(
     likeStatementTopic(SUBJECT),
-    "woco/like/v1/993477793bcabbc4b062ea24094f8cc273a6d582aed4f91ebcec95eb31e6af20",
+    "woco/like/v1/5a276b97da373fea6b78e2a95a93016457dafdfbc3b19418522de95635c3c8e6",
   );
   assert.equal(
-    likeSubjectIndexTopic(),
-    "woco/like/v1/index/aaadaa52832027b78a0d636926b1c5c8c1dc1c2b3e1485915da6a53527aff8f3",
+    likeSubjectIndexTopic(0),
+    "woco/like/v1/index/0320164dfe125ecd7c4897cc2e5128e0a458d20a3b2207ed4c58a2179226fc1b",
   );
   assert.equal(
     followStatementTopic(SUBJECT),
-    "woco/follow/v1/11a79c38acb1b8718aeb22dd8012b577a13c555c3fc776801464e93ec32529f8",
+    "woco/follow/v1/5b00ad8a9da0d1be84fde5a0b42a734492b76877a45b5fb16a5e1c0ebaea78dd",
   );
   // Same subject, different type → different address. The type segment AND the
   // salt both partition; a like can never land on a follow topic.
   assert.notEqual(likeStatementTopic(SUBJECT), followStatementTopic(SUBJECT));
+
+  // The INDEX is banded because it grows — one version per new subject, and
+  // subjects are never removed. The statement feeds are not: a like is
+  // latest-wins, so they gain a version per toggle and never leave band 0.
+  assert.equal(
+    likeSubjectIndexTopic(1),
+    "woco/like/v1/index/823318ce084a30f0666b5fbd2fbf34201970c4f1bb556cb9d63a0a13efa60194",
+  );
+  assert.notEqual(likeSubjectIndexTopic(0), likeSubjectIndexTopic(1));
 });
 
 test("closed schema: exactly {format, subject, value}", () => {

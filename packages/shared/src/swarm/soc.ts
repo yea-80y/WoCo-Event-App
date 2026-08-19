@@ -449,6 +449,82 @@ export async function resolveLatestSocVersion(
   return { latest: latest >= 0 ? latest : null, clean };
 }
 
+/** Where a banded head lives: which band, and the latest version inside it. */
+export interface BandedHeadResolution {
+  /** The highest OPENED band. 0 when the feed does not exist yet. */
+  band: number;
+  /** Highest version present in {@link band}, or null when nothing exists at all. */
+  latest: number | null;
+  /** False if any probe was inconclusive — a WRITER must refuse rather than guess. */
+  clean: boolean;
+}
+
+/**
+ * Resolve the head of a BANDED feed: `(band, latest version in band)`.
+ *
+ * Why this exists: an unbanded statement feed accumulates one SOC version per
+ * write, so finding its head cost a probe per write — measured at 25 probes and
+ * 7925ms on a NINE-lap account, growing forever. Banding caps the in-band scan
+ * at {@link STATEMENT_BAND_SIZE}; this resolves which band to scan.
+ *
+ * TWO PHASES, deliberately, because collapsing them is quadratic. Phase 1 walks
+ * only band OPENERS (version 0 of each band) to find the highest opened band —
+ * one probe per band, all cheap hits, windowed for parallelism. Phase 2 scans
+ * versions inside that one band. Cost is O(bands + band size), NOT
+ * O(bands × band size), which is what resolving each band in turn would cost.
+ *
+ * Phase 1 is sound ONLY because of the full-band invariant (see
+ * `statement/discipline.ts`): bands are contiguous from 0 and a band opens only
+ * once its predecessor is full, so the first absent opener ends the walk. This
+ * is also why a caller needs no carrier for the band — the social subject index
+ * has no partition rule and nothing read before it, and finds its band this way.
+ *
+ * `hintBand` is a lower bound, not a promise: if its opener is absent the walk
+ * restarts from 0, exactly as a stale version hint does. Pass the band recorded
+ * in a subject index (credits) or 0 (social, cold devices).
+ *
+ * An `unavailable` probe ends a walk like an absent one but clears `clean`, so a
+ * writer can refuse instead of writing at a version that may already exist —
+ * where Bee would silently dedupe and drop the edit.
+ */
+export async function resolveBandedHead(
+  read: SocChunkProbe,
+  topicForBand: (band: number) => string,
+  hintBand = 0,
+): Promise<BandedHeadResolution> {
+  let clean = true;
+  const openerExists = async (band: number): Promise<boolean> => {
+    const base = contentFeedSocIdentifier(topicForBand(band));
+    const outcome = await read(versionedSocIdentifier(base, 0));
+    if (outcome.status === "unavailable") clean = false;
+    return outcome.status === "found";
+  };
+
+  // Phase 1 — highest opened band, openers only.
+  let band = Number.isSafeInteger(hintBand) && hintBand > 0 ? hintBand : 0;
+  if (band > 0 && !(await openerExists(band))) band = 0; // hint unreliable → full walk
+  if (band === 0 && !(await openerExists(0))) return { band: 0, latest: null, clean };
+
+  for (;;) {
+    const flags = await Promise.all(
+      Array.from({ length: VERSION_PROBE_WINDOW }, (_, i) => openerExists(band + 1 + i)),
+    );
+    let advanced = 0;
+    for (let i = 0; i < VERSION_PROBE_WINDOW; i++) {
+      if (!flags[i]) break;
+      advanced = i + 1;
+    }
+    band += advanced;
+    if (advanced < VERSION_PROBE_WINDOW) break; // hit an absent opener — bands are contiguous
+  }
+
+  // Phase 2 — latest version inside that band. The opener is known present, so
+  // start the scan there rather than re-probing from 0.
+  const base = contentFeedSocIdentifier(topicForBand(band));
+  const inBand = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), 0);
+  return { band, latest: inBand.latest, clean: clean && inBand.clean };
+}
+
 /**
  * Read + reassemble ONE version's payload: a single-chunk feed is the base SOC's
  * raw bytes; a multi-chunk feed is a {@link ContentFeedManifest} in the base SOC

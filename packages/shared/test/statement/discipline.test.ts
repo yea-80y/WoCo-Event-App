@@ -40,17 +40,58 @@ test("frozen topic vectors", () => {
     "dfc1bf2985670003ff15c5fc72c4b9ef98201b9326b41e7a2f8511726db53def",
   );
   assert.equal(
-    statementTopic("credit", 1, publicTopicSalt("credit", 1), subjectToBytes(SUBJECT)),
-    "woco/credit/v1/79449ed07f4336c65c19fb6ef2aeab1e0f3d638cbc2e2eb36821b4a80d76748d",
+    statementTopic("credit", 1, publicTopicSalt("credit", 1), subjectToBytes(SUBJECT), 0),
+    "woco/credit/v1/66676f11af1c0953737f4cd1cd3b1a8a8e4d607fa57ed89ee83f2de4f23dc6d3",
   );
   assert.equal(
-    statementTopic("credit", 1, privateTopicSalt(ENC_KEY, "credit", 1), subjectToBytes(SUBJECT)),
-    "woco/credit/v1/59172ddd922843dae0efa079c2e3767db0fdbf767acfcb9c2df8122d3e2f3579",
+    statementTopic("credit", 1, privateTopicSalt(ENC_KEY, "credit", 1), subjectToBytes(SUBJECT), 0),
+    "woco/credit/v1/6c839fc1a31f13e3e50eff5e75773708f294f0ae57c4deb4bc47bc2baac86702",
   );
   assert.equal(
-    subjectIndexTopic("credit", 1, publicTopicSalt("credit", 1)),
-    "woco/credit/v1/index/510ba40edd51770b997c532ed8dbbfe54ebd7e801d65619159efaf616fc3ec51",
+    subjectIndexTopic("credit", 1, publicTopicSalt("credit", 1), 0),
+    "woco/credit/v1/index/89952d0108f729f726a4c327b475b8fdec3c3d37de1128c22d11c24017ea1566",
   );
+});
+
+test("the band changes the address, and band 0 is not the pre-banding topic", () => {
+  const salt = publicTopicSalt("credit", 1);
+  const b0 = statementTopic("credit", 1, salt, subjectToBytes(SUBJECT), 0);
+  const b1 = statementTopic("credit", 1, salt, subjectToBytes(SUBJECT), 1);
+  assert.equal(b1, "woco/credit/v1/e0764efcab3a027c4ca119611d399fad5011cb8dccd2ec4ac8ba84fce54bc2c9");
+  assert.notEqual(b0, b1);
+
+  // The pre-banding scheme hashed the bare 32 subject bytes. The banded message
+  // is 40 bytes, so no banded address can collide with one written before this
+  // change — the disjointness the freeze record claims, asserted rather than argued.
+  assert.notEqual(b0, "woco/credit/v1/79449ed07f4336c65c19fb6ef2aeab1e0f3d638cbc2e2eb36821b4a80d76748d");
+
+  // Same for the index.
+  assert.notEqual(
+    subjectIndexTopic("credit", 1, salt, 0),
+    subjectIndexTopic("credit", 1, salt, 1),
+  );
+  assert.equal(
+    subjectIndexTopic("credit", 1, salt, 1),
+    "woco/credit/v1/index/94ffa69fea2136c60fd9bf785fdd3f122eb9a760f56c9c9dd46d83a55e7e2d87",
+  );
+});
+
+test("band must be a non-negative safe integer", () => {
+  const salt = publicTopicSalt("credit", 1);
+  const subj = subjectToBytes(SUBJECT);
+  for (const bad of [-1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 2]) {
+    assert.throws(() => statementTopic("credit", 1, salt, subj, bad), /invalid band/);
+    assert.throws(() => subjectIndexTopic("credit", 1, salt, bad), /invalid band/);
+  }
+});
+
+test("the topic functions stay TYPE-GENERIC (Gate B depends on this)", () => {
+  // The emblem rail rides these same functions with type "emblem". If either
+  // ever hard-codes a type or version, that rail has to be rebuilt rather than
+  // reused — see SWARM_SOCIAL_PLAN.md "Gate B is the EMBLEM rail".
+  const salt = publicTopicSalt("emblem", 1);
+  assert.match(statementTopic("emblem", 1, salt, subjectToBytes(SUBJECT), 0), /^woco\/emblem\/v1\/[0-9a-f]{64}$/);
+  assert.match(subjectIndexTopic("emblem", 2, salt, 3), /^woco\/emblem\/v2\/index\/[0-9a-f]{64}$/);
 });
 
 test("subjectToBytes rejects non-canonical subjects", () => {

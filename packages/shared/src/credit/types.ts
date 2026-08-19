@@ -24,8 +24,8 @@ import {
   statementTopic,
   subjectIndexTopic,
   subjectToBytes,
-  validateSubjectIndexV1,
-  type SubjectIndexV1,
+  validateSubjectIndexV2,
+  type SubjectIndexV2,
 } from "../statement/discipline.js";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,13 @@ import {
 // ---------------------------------------------------------------------------
 
 export const CREDIT_STATEMENT_FORMAT = "woco.credit.v1" as const;
-export const CREDIT_SUBJECT_INDEX_FORMAT = "woco.credit-index.v1" as const;
+/**
+ * BUMPED from `woco.credit-index.v1` (2026-08-19). V1 was `{ format, subjects[] }`
+ * with a CLOSED validator, so carrying the per-subject band is a true format bump,
+ * not an edit. The band is what makes head lookup O(1): the partition rule already
+ * forces every read to fetch this index first, so the band rides along free.
+ */
+export const CREDIT_SUBJECT_INDEX_FORMAT = "woco.credit-index.v2" as const;
 
 /** Registry prefix for the holderSig digest — `"woco-credit-v1\n"`. */
 export const CREDIT_SIGNING_PREFIX: string = STATEMENT_SIGNING_PREFIXES[CREDIT_STATEMENT_FORMAT];
@@ -120,20 +126,26 @@ export function creditPrivateSalt(encryptionPrivKey: Uint8Array): Uint8Array {
   return privateTopicSalt(encryptionPrivKey, CREDIT_TYPE, CREDIT_VERSION);
 }
 
-/** Head topic for one (holder, subject) under the given salt partition. */
-export function creditStatementTopic(salt: Uint8Array, subject: Hex0x): string {
-  return statementTopic(CREDIT_TYPE, CREDIT_VERSION, salt, subjectToBytes(subject));
+/**
+ * Head topic for one (holder, subject, band) under the given salt partition.
+ *
+ * The band is REQUIRED and never defaulted: a wrong band reads the wrong chapter
+ * of a rider's logbook, and on the write path it targets a version that already
+ * exists — which Bee dedupes silently. Make every caller state it.
+ */
+export function creditStatementTopic(salt: Uint8Array, subject: Hex0x, band: number): string {
+  return statementTopic(CREDIT_TYPE, CREDIT_VERSION, salt, subjectToBytes(subject), band);
 }
 
-/** Per-holder subject index topic under the given salt partition. */
-export function creditSubjectIndexTopic(salt: Uint8Array): string {
-  return subjectIndexTopic(CREDIT_TYPE, CREDIT_VERSION, salt);
+/** Per-holder subject index topic for one band, under the given salt partition. */
+export function creditSubjectIndexTopic(salt: Uint8Array, band: number): string {
+  return subjectIndexTopic(CREDIT_TYPE, CREDIT_VERSION, salt, band);
 }
 
-export type CreditSubjectIndexV1 = SubjectIndexV1<typeof CREDIT_SUBJECT_INDEX_FORMAT>;
+export type CreditSubjectIndexV2 = SubjectIndexV2<typeof CREDIT_SUBJECT_INDEX_FORMAT>;
 
-export function validateCreditSubjectIndexV1(value: unknown): value is CreditSubjectIndexV1 {
-  return validateSubjectIndexV1(value, CREDIT_SUBJECT_INDEX_FORMAT);
+export function validateCreditSubjectIndexV2(value: unknown): value is CreditSubjectIndexV2 {
+  return validateSubjectIndexV2(value, CREDIT_SUBJECT_INDEX_FORMAT);
 }
 
 // ---------------------------------------------------------------------------

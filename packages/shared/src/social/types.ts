@@ -70,20 +70,42 @@ export interface FollowStatementV1 {
 // that nobody can count is not a feature; there is no private tier here.
 // ---------------------------------------------------------------------------
 
+/**
+ * Social STATEMENT feeds never leave band 0, and that is a property of the data
+ * rather than a shortcut: a like is latest-wins (commitment 3), so its feed
+ * gains a version per TOGGLE, not per action. A writer therefore never opens
+ * band 1. If a feed somehow did fill band 0, a band-aware reader pays exactly
+ * one extra terminal probe on the band-1 opener, finds it absent, and correctly
+ * stays — cost, never correctness.
+ */
+const SOCIAL_STATEMENT_BAND = 0;
+
 export function likeStatementTopic(subject: Hex0x): string {
-  return statementTopic(LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION), subjectToBytes(subject));
+  return statementTopic(
+    LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION),
+    subjectToBytes(subject), SOCIAL_STATEMENT_BAND,
+  );
 }
 
-export function likeSubjectIndexTopic(): string {
-  return subjectIndexTopic(LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION));
+/**
+ * The social index DOES grow — one version per new subject, and subjects are
+ * never removed — so unlike the statement feeds it is genuinely banded. With no
+ * partition rule there is nothing read first to carry the band, so callers
+ * discover it by walking openers under the full-band invariant.
+ */
+export function likeSubjectIndexTopic(band: number): string {
+  return subjectIndexTopic(LIKE_TYPE, SOCIAL_VERSION, publicTopicSalt(LIKE_TYPE, SOCIAL_VERSION), band);
 }
 
 export function followStatementTopic(subject: Hex0x): string {
-  return statementTopic(FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION), subjectToBytes(subject));
+  return statementTopic(
+    FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION),
+    subjectToBytes(subject), SOCIAL_STATEMENT_BAND,
+  );
 }
 
-export function followSubjectIndexTopic(): string {
-  return subjectIndexTopic(FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION));
+export function followSubjectIndexTopic(band: number): string {
+  return subjectIndexTopic(FOLLOW_TYPE, SOCIAL_VERSION, publicTopicSalt(FOLLOW_TYPE, SOCIAL_VERSION), band);
 }
 
 export type LikeSubjectIndexV1 = SubjectIndexV1<typeof LIKE_SUBJECT_INDEX_FORMAT>;
