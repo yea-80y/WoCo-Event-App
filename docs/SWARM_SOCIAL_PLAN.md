@@ -8,7 +8,8 @@ and UI notes only.
 2026-08-19: the CHAIN BOUNDARY RULE is settled — social carries no chain dependency, and the
 three-test rule below governs what ever may. The subject index is banded (topic derivation only,
 no format bump). "Ticket purchase unlocks liking" is Gate A — relay admission policy, not data
-plane. Gate B (POD-granted access to exclusive content) is OPEN and needs its own design pass.
+plane. Gate B (POD-granted access to exclusive content) is DESIGNED — the emblem rail, zero chain
+footprint, nothing to freeze this week.
 
 2026-08-14: the statement discipline + `woco.like.v1`/`woco.follow.v1` payloads are FROZEN —
 `packages/shared/src/{statement,social}/`, design record in `docs/COASTER_CREDITS_PLAN.md`
@@ -141,11 +142,151 @@ that works is an issuer-signed emblem minted after the issuer reads the VERIFIED
 `ACT` is available for SOCs and is a candidate for many-grantee club content, but it encrypts
 the payload and not the address, so presence stays observable.
 
-⚠️ **OPEN:** Gate B is not designed. The owner's direction — a user imports a POD, signs to
-bind it to themselves, and that grants access, with no server in the long run — needs a design
-pass of its own covering possession challenges, revocation (a club withdrawing an emblem needs
-live negation, which is test 2 territory), and how a browser verifies entitlement offline.
-Do not build Gate B by extending Gate A.
+✅ **DESIGNED — Gate B is the EMBLEM rail (2026-08-19, Fable design pass).** Nothing here
+replaces PODs. The badge stays a POD — its manifest, artwork, `PodKind: "badge"`, its place in
+the POD directory. What changes is only **how HOLDING is recorded**: today that is a chain
+slot, and the emblem makes it an issuer-signed statement that names the holder.
+
+**What forced this, discovered in source rather than assumed.** Standalone badge issuance is
+ALREADY on-chain and cannot be done otherwise: `issuePodType` sponsor-registers every badge
+type via `registerEventOnChain`, and `apps/server/src/lib/pod/issuance.ts:66-70` refuses to
+mint where `WoCoEventV2` is absent — because holdings are only readable from chain slots.
+`pod/types.ts:24-26` says why in as many words: "No `claimedBy` field: ownership is recorded
+on chain (`slotOwner[eventId][slot]`), not in the POD." So Gate B was never "add a gate" — the
+gate already exists and `evaluatePodGate` is already pure, no chain, no I/O. The job is to
+give that gate a HOLDING SOURCE that is not a chain read.
+
+**The record / entitlement split (owner, 2026-08-19) — the load-bearing idea.** An emblem
+carries two separable things:
+
+- **The RECORD** — "this issuer signed, on this date, that this holder did X." A signed claim.
+  It fails all three boundary tests: not exclusive (1), a valid signature never needs a
+  present-tense negative (2), issuance is per-holder (3). **Chain-free permanently**, exactly
+  like credits, differing only in WHO signs. It survives the issuer's death, because a
+  signature validly made can never be un-signed.
+- **The ENTITLEMENT** — "this opens the members' door." Not an object at all: a policy applied
+  to records by whoever guards a resource, at their own door, at access time. It ends when the
+  issuer ends it or ceases to exist, and that is the definition working, not a failure.
+
+This CORRECTS an earlier read that revocation was chain-shaped. Test 2 asks whether a verifier
+needs a live negative WITHOUT a live source of truth — and a door IS a live source of truth. A
+dead issuer has no door with anything behind it to guard.
+
+Three sharpenings, without which the split is too neat:
+
+1. **Soulbound-ness is what keeps the emblem on the record side.** Transferable-with-value
+   means two honest parties can dispute who holds it NOW — test 1 — and it becomes the deferred
+   `authenticity` / ERC-721 object, not this design. The wall is structural: **the emblem names
+   its holder's key in the signed body**, so a copy is worthless to anyone who cannot answer a
+   challenge with that key. `PodKind: "badge"` is already declared soulbound, so this fits the
+   existing type system rather than bending it.
+2. **"Stopped supporting" and "says you never earned it" are distinguishable in CONTENT, not in
+   TIMING.** An issuer can never un-sign; a disowning issuer produces a SECOND signed statement
+   and third parties see both (the equivocation-flagging ethos already frozen for credits). What
+   nobody can verify is WHEN either was signed — nothing timestamps a write. That residue is
+   exactly what the optional anchor category is for: per-epoch notarisation of the issuer's log,
+   on nobody's hot path, functional without it.
+3. **Retroactive revocation of already-decrypted content is impossible for everyone**, not just
+   us. Revocation there is exclusion from the next grant epoch, which needs no negation at all.
+
+**The object.** `woco.emblem.v1` — an issuer-signed statement riding the STATEMENT DISCIPLINE,
+referencing the POD display layer, using none of the Merkle-batch / chain-slot machinery:
+
+```
+unsigned = {
+  format:   "woco.emblem.v1",
+  badge:    Bytes32Hex,   // the badge TYPE's manifestRef — joins the POD directory,
+                          // artwork, PodKind:"badge", swarmManifestRef for display
+  holder:   Hex32,        // recipient's ed25519 POD key — same identity that owns their tickets
+  issuedAt: "YYYY-MM-DD", // UTC, self-declared; timing hardened only by the optional anchor
+  evidence?: string[]     // optional digest refs to what the issuer read (audit trail)
+}
+issuerSig = ed25519(keccak256(utf8("woco-emblem-v1\n") || dagCbor(unsigned)), issuerKey)
+```
+
+The issuer key is the badge type's `ManifestV1Body.issuerPubkey` — the same ed25519 key that
+signs manifests — so display identity and signing identity join with nothing new built. It
+claims `"woco-emblem-v1\n"` in the prefix registry per the frozen rule; closed schema,
+JSON-safe, dispatch-before-validation, all inherited. Canonical publication is the ISSUER's own
+feed (matching witness batches) at `statementTopic("emblem", 1, PUBLIC_SALT, badgeManifestRef)`
+— which arrives already count-banded with an enumerable subject index, because the banding pass
+is type-generic. The holder imports a copy into their passport for availability; the issuer's
+log is the supply-auditable source.
+
+**This COMPLETES the "credits must never satisfy a POD gate" rule rather than bending it.** The
+emblem is the bridge object that rule anticipated: the issuer reads the VERIFIED count, the
+issuer signs, and only the issuer-signed object feeds the gate. A `PodHolding` may therefore
+derive from exactly two sources — chain slots (as documented today) or verified emblems (issuer
+signature + possession proof), per-gate opt-in — and never from the spoofable collection feed
+or a self-signed tier-1 statement.
+
+**Binding — inverted.** The emblem is BORN BOUND: the issuer signs the holder's key into it, so
+binding is not a ceremony a copied object could race. Copying the bytes is possible and
+pointless, because every use ends in a challenge only the named key can answer:
+
+```
+challenge = { format: "woco.emblem-challenge.v1", badge, holder,
+              audience,           // verifier identity/origin — no cross-door replay
+              nonce, expiresAt }
+holderSig = ed25519(keccak256(utf8("woco-emblem-challenge-v1\n") || dagCbor(challenge)), holderKey)
+```
+
+Structured bytes under its own registry prefix, per the frozen rule that the holder key never
+signs an externally supplied digest. The genuinely unbound case — an emblem earned before a key
+existed — is resolved by **re-issuance, not self-service binding**: only issuer signatures ever
+create holdings.
+
+**Offline verification.** A verifier holds the badge type's manifest (or `manifestRef` +
+`issuerPubkey`), the emblem, and the challenge. The check is pure: issuer signature against the
+manifest key; challenge signature against `emblem.holder`; local policy. First sight needs at
+most two content-addressed fetches — self-verifying, zero trust in the source — and **fails
+closed**. Previously verified emblems cache with the manifest, so offline RE-ENTRY works
+indefinitely. The one thing an offline door cannot see is a recent policy change: inherent,
+bounded by the guard's cache TTL, the OCSP-stapling trade-off stated rather than hidden.
+
+**Chain footprint: ZERO.** Two chain-shaped residues stay deferred and are already catalogued:
+issuer-key compromise / authority-over-time is the deferred ISSUER REGISTRY (passes all three
+tests, per-handover, build at the second issuer); timing fabrication is the ANCHOR category.
+Today's slot-model badges sit inside the rights rail, which is legitimate for chain-gated
+commerce but is not Gate B — the two rails coexist behind the same pure evaluator via the
+holding-source opt-in.
+
+**Encryption is OUT OF SCOPE for v1.** Access is an application-layer check at a live door.
+When door-less exclusive content becomes real, the credits ACT verdict does NOT transfer — that
+was a grantee-list-of-one with a privacy goal; this is many-grantee club content where address
+observability is acceptable. ACT is then a live candidate against per-drop HPKE (seal the
+content key to each current holder's X25519 key at publish, which gives forward revocation for
+free). One cheap enabler to consider when `woco.emblem.v1` is actually written: an optional
+`encPubKey`, so publishers can seal to holders enumerated from the issuer's log.
+
+**FREEZE IMPACT THIS WEEK: NONE.** Signing prefixes are late-claimable by design; the emblem's
+topics and index arrive free because the banding edit is type-generic; the badge-`manifestRef`
+subject convention sits in the deliberately-unfrozen per-type derivation slot;
+`PodGateRule`/`PodHolding` are mutable config, not frozen surface. Freezing emblem-specific
+fields now would be speculative surface. Two actions only: when landing the banding pass,
+verify `statementTopic`/`subjectIndexTopic` keep their `type`/`version` parameters GENERIC; and
+record the sentence below.
+
+**Rail note, so this is not later built on the wrong rail out of momentum: the STATEMENT
+DISCIPLINE — not the Merkle-batch / chain-slot rail — is the intended home for future
+issuer-signed grant types.**
+
+**On libp2p** (the framing this work started in): not relevant as a mechanism. Verification
+here has no transport of its own — the challenge is answered at whatever door is being knocked
+on, and every other input is a signature or a content-addressed fetch. Where a serverless
+handshake transport is ever wanted, PSS / Waku are the recorded candidates. The instinct it
+encodes — no privileged server anywhere in verification — is satisfied structurally, which is
+the correct way to honour it.
+
+**Where this is INVENTION, and what to prove before Gate B ships.** The components are known: a
+verifiable-credential shape (issuer-signed claim + holder possession proof) built from this
+repo's own primitives instead of a DID stack, and grant-at-publish is standard forward-secrecy
+shape. The genuine inventions are the join — statement-discipline crypto under POD-layer
+display identity — and emblem-derived holdings as a peer of chain slots in one evaluator.
+Before launch, prove two things: a two-browser end-to-end with the server BLOCKED (issue in one,
+verify + challenge in the other, network log empty except content-addressed gateway reads); and
+the possession-challenge UX on real key custody — what a challenge signature actually costs a
+user in passkey prompts.
 
 **Gate C — eligibility to make a statement at all.** Not a separate mechanism: on a
 permissionless substrate anyone may write to their own feed, so this reduces to Gate A at the

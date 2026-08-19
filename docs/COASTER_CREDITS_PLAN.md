@@ -1062,6 +1062,13 @@ credentials carry an identity signature.
   `value: false` is the overwrite that "unlike/unfollow = overwrite" (SWARM_SOCIAL_PLAN
   commitment 3) requires, since absence cannot be distinguished from never-liked.
 
+**Rail note (2026-08-19):** the STATEMENT DISCIPLINE — not the Merkle-batch / chain-slot rail —
+is the intended home for future ISSUER-SIGNED grant types (emblems, and anything else that
+grants rather than reports). Recorded so Gate B is not later built on the wrong rail out of
+momentum; the design is in `SWARM_SOCIAL_PLAN.md` under "Gate B is the EMBLEM rail". When
+landing the banding pass, keep `statementTopic` / `subjectIndexTopic` `type`/`version`
+parameters GENERIC — that is the only thing Gate B needs from this freeze.
+
 **Deliberately NOT frozen, with reasons:** the key-binding statement (see Identity layering —
 two rules fixed, contents open, design before P1); the exit-token format inside the strings
 (P3, independently versioned); the evidence-manifest type (view plane); witness batches (P4);
