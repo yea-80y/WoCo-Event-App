@@ -457,7 +457,10 @@ export async function readBandedContentFeedJsonResult(
   };
   const open = await resolveOpenBand(read, topicForBand);
   if (!open.exists) return { status: "absent", band: open.band };
-  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band));
+  // Statement feeds postdate versioning, so a legacy chunk cannot exist. The
+  // indexer walks every participant, and an absent participant would otherwise
+  // cost one guaranteed missing-chunk search EACH.
+  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band), 0, { skipLegacy: true });
   return { ...res, band: open.band };
 }
 
@@ -465,6 +468,10 @@ export async function readContentFeedJsonResult(
   ownerHex: string,
   baseTopic: string,
   versionHint = 0,
+  /** Statement rails only — see {@link readBandedContentFeedJsonResult}. Events,
+   *  profiles and sites predate versioning and DO have legacy chunks, so this
+   *  must stay opt-in rather than becoming the default. */
+  opts: { skipLegacy?: boolean } = {},
 ): Promise<VersionedFeedRead> {
   // `readSocPayload` THROWS every fault except a bee not-found, so a transient
   // fault propagates out of this function rather than being cached as "no such
@@ -502,7 +509,7 @@ export async function readContentFeedJsonResult(
 
   // Probe forward from the best lower bound we have (caller hint vs cached).
   const hint = Math.max(versionHint, cached?.version ?? 0);
-  const res = await readVersionedContentFeed(read, baseTopic, hint);
+  const res = await readVersionedContentFeed(read, baseTopic, hint, { skipLegacy: opts.skipLegacy });
   // Only a definitive answer may be cached. Caching an `unavailable` as absent
   // would serve "this feed does not exist" for the whole TTL off one bad read.
   if (res.status === "found") cfvCache.set(key, { version: res.version, at: Date.now() });

@@ -83,7 +83,13 @@ export async function readMyStatement(kind: SocialKind, subject: Hex0x): Promise
   const signer = await auth.getContentFeedSigner();
   if (!signer) return null;
 
-  const res = await readContentFeedResult<unknown>(signer.address, k.statementTopic(subject));
+  // `skipLegacy`: statement feeds were born versioned, so a pre-versioning chunk
+  // cannot exist — and here ABSENT is the ordinary case, since most subjects are
+  // ones the user has never liked. Probing for a legacy chunk anyway spent a
+  // guaranteed missing-chunk network search on every such read.
+  const res = await readContentFeedResult<unknown>(signer.address, k.statementTopic(subject), {
+    skipLegacy: true,
+  });
   if (res.status !== "found") return null;
   return k.validate(res.value) ? (res.value as LikeStatementV1 | FollowStatementV1).value : null;
 }
