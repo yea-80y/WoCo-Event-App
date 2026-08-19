@@ -26,9 +26,14 @@
  */
 
 import { auth } from "../auth/auth-store.svelte.js";
-import { getPodKeypair, restorePodSeed } from "../auth/pod-identity.js";
+import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
+import type { CreditVisibility } from "./visibility.js";
 import { readContentFeedResult } from "../swarm/content-feed.js";
-import { writeContentFeedVerified } from "../swarm/verified-write.js";
+import {
+  writeContentFeedVerified,
+  writeContentFeedSettling,
+  type VerifiedWriteResult,
+} from "../swarm/verified-write.js";
 import { nextCreditStatement } from "./next-statement.js";
 import {
   CREDIT_SUBJECT_INDEX_FORMAT,
@@ -48,11 +53,26 @@ import {
   type Hex0x,
 } from "@woco/shared";
 
-export type CreditVisibility = "private" | "public";
+
+export type { CreditVisibility } from "./visibility.js";
 
 export interface CreditHead {
   statement: CreditStatementV1;
   visibility: CreditVisibility;
+  /**
+   * The SOC version this head sits at, so the next write can address
+   * `version + 1` directly instead of probing for it. A probe past a feed's
+   * latest version is a bee network search for a chunk that does not exist —
+   * the most expensive read on Swarm — and it was the last one left on the tap
+   * path (#323).
+   *
+   * `writeContentFeed` documents `knownVersion` as only safe when the caller
+   * can PROVE nothing was written there, because a SOC write to an existing
+   * address is silently deduped. Here the loss is not silent: the write is
+   * verified at that exact version and reports `superseded`, which the caller
+   * corrects. That is what makes an unprovable claim safe to act on.
+   */
+  version: number;
 }
 
 /** Re-reads after losing an index write race, before giving up. */
@@ -72,6 +92,12 @@ interface RiderKeys {
   feedAddress: string;
 }
 
+/** `0x`-prefixed or not, in; bare hex out. Tolerant of both because the two
+ *  sides of this boundary disagree and only one of them is frozen. */
+function stripHexPrefix(hex: string): string {
+  return hex.startsWith("0x") ? hex.slice(2) : hex;
+}
+
 async function riderKeys(): Promise<RiderKeys> {
   const parent = auth.parent?.toLowerCase();
   if (!parent) throw new Error("Sign in to collect a credit.");
@@ -80,9 +106,17 @@ async function riderKeys(): Promise<RiderKeys> {
   // allowed to sign for. Idempotent after the first time on a device.
   await auth.ensurePodIdentity();
 
+  // Through the BOUND accessors, never `getPodKeypair(parent)`. The POD seed is
+  // stored under the POD address — the PRF-EOA for passkey, the Web3Auth EOA
+  // for web3auth — and `auth.parent` is the KERNEL address for both. Looking it
+  // up by parent reads a slot that is never written, so `ensurePodIdentity()`
+  // above would succeed (storing under the right address, having just made the
+  // rider approve a ceremony) and this would still come back empty: every
+  // passkey and web3auth rider taps, signs, and gets "could not unlock".
+  // The accessors resolve the address themselves so no caller can pick wrong.
   const [pod, seed, feed] = await Promise.all([
-    getPodKeypair(parent),
-    restorePodSeed(parent),
+    auth.getPodKeypair(),
+    auth.getPodSeed(),
     auth.getContentFeedSigner(),
   ]);
   if (!pod || !seed) throw new Error("Could not unlock your collection identity.");
@@ -91,7 +125,15 @@ async function riderKeys(): Promise<RiderKeys> {
   const enc = deriveEncryptionKeypairFromPodSeed(seed);
   return {
     holderPrivKey: pod.privateKey,
-    holder: pod.publicKeyHex,
+    // STRIPPED, and the schema is why. `deriveKeypair` returns an 0x-prefixed
+    // hex string (pod/keys.ts), the POD ticket rail is happy with that, and
+    // `woco.credit.v1` is not: `holder` is validated against /^[0-9a-f]{64}$/
+    // and the format is CLOSED (plan, P0 item 4), so the caller conforms rather
+    // than the schema loosening. Passing the prefix through made every signing
+    // attempt throw "invalid woco.credit.v1 unsigned statement" — invisible
+    // until the rail was reachable at all. The indexer agrees with the schema:
+    // evidence leaves carry bare 64-hex holders (verify-report `HOLDER_RE`).
+    holder: stripHexPrefix(pod.publicKeyHex),
     encPrivKey: enc.privateKey,
     encPubKeyHex: enc.publicKeyHex,
     feedPrivKey: feed.privKey,
@@ -107,13 +149,8 @@ function saltFor(keys: RiderKeys, visibility: CreditVisibility): Uint8Array {
 // Reading — tri-state throughout, collapsed to null only for display
 // ---------------------------------------------------------------------------
 
-type IndexRead =
-  | { status: "ok"; subjects: Hex0x[] }
-  | { status: "absent" }
-  | { status: "unavailable"; reason: string };
-
 type HeadRead =
-  | { status: "found"; statement: CreditStatementV1 }
+  | { status: "found"; statement: CreditStatementV1; version: number }
   | { status: "absent" }
   | { status: "unavailable"; reason: string };
 
@@ -128,10 +165,6 @@ async function readSubjectIndex(keys: RiderKeys, visibility: CreditVisibility): 
   }
   return { status: "ok", subjects: (res.value as CreditSubjectIndexV1).subjects };
 }
-
-type PartitionRead =
-  | { status: "ok"; visibility: CreditVisibility | null }
-  | { status: "unavailable"; reason: string };
 
 /**
  * Which partition holds this subject's live head, `null` for never ridden.
@@ -156,11 +189,7 @@ async function liveVisibility(keys: RiderKeys, subject: Hex0x): Promise<Partitio
     readSubjectIndex(keys, "public"),
     readSubjectIndex(keys, "private"),
   ]);
-  if (pub.status === "unavailable") return pub;
-  if (priv.status === "unavailable") return priv;
-  if (pub.status === "ok" && pub.subjects.includes(subject)) return { status: "ok", visibility: "public" };
-  if (priv.status === "ok" && priv.subjects.includes(subject)) return { status: "ok", visibility: "private" };
-  return { status: "ok", visibility: null };
+  return decideVisibility(pub, priv, subject);
 }
 
 async function readHeadAt(
@@ -191,7 +220,41 @@ async function readHeadAt(
   if (!verifyCreditStatement(payload)) {
     return { status: "unavailable", reason: "head failed statement verification" };
   }
-  return { status: "found", statement: payload };
+  return { status: "found", statement: payload, version: res.version };
+}
+
+/**
+ * Whether this rider's keys are ALREADY to hand, established without asking
+ * them for anything.
+ *
+ * The read path needs the same keys the write path does — the private topics
+ * are salted by the rider's own key, so there is no reading a private logbook
+ * without unlocking it — but {@link riderKeys} ESTABLISHES what it cannot find,
+ * and establishing prompts. A screen that read on mount would therefore pop a
+ * signing prompt at a rider who had done nothing but open a page, which is
+ * both alarming and, on a rail whose whole promise is that nothing happens
+ * without a deliberate tap, untrue to the product.
+ *
+ * So this asks only what is already stored, by exactly the route `riderKeys`
+ * would take: `restorePodSeed` reads a device blob, and the feed-signer ADDRESS
+ * getter is documented prompt-free and returns null rather than deriving for
+ * the kinds that would need a ceremony. True here means a read costs nothing;
+ * false means the screen shows its signed-out face and lets the tap unlock.
+ */
+export async function creditsUnlocked(): Promise<boolean> {
+  if (!auth.parent) return false;
+  try {
+    // Both bound, both prompt-free: the seed getter reads a device blob under
+    // the POD address, and the feed-signer ADDRESS getter is documented to
+    // return null rather than derive for the kinds that would need a ceremony.
+    const [seed, feedAddress] = await Promise.all([
+      auth.getPodSeed(),
+      auth.getContentFeedSignerAddress(),
+    ]);
+    return seed !== null && feedAddress !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -205,7 +268,9 @@ export async function readMyCredit(subject: Hex0x): Promise<CreditHead | null> {
     const where = await liveVisibility(keys, subject);
     if (where.status !== "ok" || !where.visibility) return null;
     const head = await readHeadAt(keys, subject, where.visibility);
-    return head.status === "found" ? { statement: head.statement, visibility: where.visibility } : null;
+    return head.status === "found"
+      ? { statement: head.statement, visibility: where.visibility, version: head.version }
+      : null;
   } catch {
     return null;
   }
@@ -216,7 +281,22 @@ export async function readMyCredit(subject: Hex0x): Promise<CreditHead | null> {
 // ---------------------------------------------------------------------------
 
 export type RideResult =
-  | { ok: true; statement: CreditStatementV1; visibility: CreditVisibility; confirmed: boolean }
+  | {
+      ok: true;
+      statement: CreditStatementV1;
+      visibility: CreditVisibility;
+      /** The SOC version this statement was written at — the caller's next warm
+       *  head must carry it, or the following tap goes back to probing. */
+      version: number;
+      /**
+       * How the write ended up, resolving AFTER this result. The ride is
+       * already recorded — the upload was accepted — so this is not a gate on
+       * showing the count. It is the rider's only chance to learn the write was
+       * SUPERSEDED, which is the one outcome meaning the entry did not land.
+       * Never rejects.
+       */
+      settled: Promise<VerifiedWriteResult>;
+    }
   | { ok: false; error: string };
 
 /** What a rider is told when a read the write depends on could not be made.
@@ -232,14 +312,90 @@ const CANNOT_READ = "Couldn't reach your collection just now — try again in a 
  * silently changes a rider's visibility. Only {@link publishSubject} does that,
  * and only in one direction.
  */
-export async function recordRide(subject: Hex0x, laps = 1): Promise<RideResult> {
+export async function recordRide(
+  subject: Hex0x,
+  laps = 1,
+  /**
+   * A head the CALLER already read cleanly, moments ago, in this session — the
+   * page's own mount read. Reusing it skips three feed reads per tap (both
+   * subject-index partitions and the head itself), each of which probes past
+   * its feed's latest version, and each such probe is a bee network search for
+   * a chunk that does not exist (#323).
+   *
+   * Only a CLEAN FOUND may be passed. `readMyCredit` collapses every failure to
+   * null, so a null caller-side head is indistinguishable from "unreadable" and
+   * must NOT be treated as "no previous laps" — that is the exact mistake that
+   * restarts a rider's lifetime count at zero. Null here therefore takes the
+   * full tri-state path rather than assuming anything.
+   *
+   * Staleness is backstopped, not hoped away: if another device wrote between
+   * the page's read and this tap, our write lands on a version that already
+   * holds someone else's bytes and comes back `superseded` — at which point we
+   * discard the warm head and redo the whole read honestly, once.
+   */
+  warm?: CreditHead | null,
+): Promise<RideResult> {
   if (!Number.isSafeInteger(laps) || laps < 1) return { ok: false, error: "laps must be a positive whole number" };
   try {
     const keys = await riderKeys();
 
+    // No synchronous retry here any more: the write returns at upload-accept, so
+    // `superseded` — the only failure a retry could fix — is not known until the
+    // read-back settles. The caller reconciles from `settled`; see the card's
+    // `settle()`.
+    // `return await`, NOT `return`. A bare return hands the promise back before
+    // the catch below can see it, so every async failure on the write path —
+    // an upload rejection, and `writeContentFeed`'s probe-inconclusive throw,
+    // which is live on every first lap — escaped as an unhandled rejection.
+    // The card's `collect()` has no catch, so the rider got no message at all:
+    // the button simply stopped saying "Saving…".
+    return await attemptRide(keys, subject, laps, warm ?? null);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not save that ride." };
+  }
+}
+
+/**
+ * One honest attempt. `warm` non-null means the caller supplied a clean head
+ * and its partition; null means read everything.
+ */
+async function attemptRide(
+  keys: RiderKeys,
+  subject: Hex0x,
+  laps: number,
+  warm: CreditHead | null,
+): Promise<RideResult> {
+  // `superseded` cannot be known before returning — the read-back that detects
+  // it runs after the upload is accepted — so this no longer advertises a
+  // synchronous failure channel for it. The caller reconciles through
+  // `settled`; see the card's `settle()`.
+  let visibility: CreditVisibility;
+  let prev: CreditStatementV1 | null;
+  /** The version the PREVIOUS head sits at, when we know it. `undefined` means
+   *  the write must probe. */
+  let prevVersion: number | undefined;
+  /**
+   * Whether the subject is taken to be in its partition's index already.
+   *
+   * A warm head from `readMyCredit` proves it — that value only exists by way
+   * of `liveVisibility`, which IS the index read. A warm head handed back from
+   * a previous write does not: a first lap's `addToSubjectIndex` failure is
+   * deliberately swallowed, so the subject may be unindexed and this will not
+   * retry it. The cost is the documented, self-healing one — enumeration on a
+   * fresh device, never the count — and the next cold session repairs it.
+   */
+  let indexed: boolean;
+
+  if (warm) {
+    visibility = warm.visibility;
+    prev = warm.statement;
+    prevVersion = warm.version;
+    indexed = true;
+  } else {
     const where = await liveVisibility(keys, subject);
     if (where.status !== "ok") return { ok: false, error: CANNOT_READ };
-    const visibility = where.visibility ?? "private";
+    visibility = where.visibility ?? "private";
+    indexed = where.visibility !== null;
 
     // Only a CLEAN absent may start a new count. An unreadable head that
     // actually holds a lifetime total would otherwise restart the rider at
@@ -248,15 +404,36 @@ export async function recordRide(subject: Hex0x, laps = 1): Promise<RideResult> 
     // two would disagree indefinitely.
     const head = await readHeadAt(keys, subject, visibility);
     if (head.status === "unavailable") return { ok: false, error: CANNOT_READ };
-    const prev = head.status === "found" ? head.statement : null;
+    prev = head.status === "found" ? head.statement : null;
+    if (head.status === "found") prevVersion = head.version;
+  }
 
-    const statement = signCreditStatement(
-      nextCreditStatement({ prev, subject, holder: keys.holder, laps }),
-      keys.holderPrivKey,
-    );
-    const written = await writeStatement(keys, subject, visibility, statement);
-    if (!written.ok) return written;
+  const statement = signCreditStatement(
+    nextCreditStatement({ prev, subject, holder: keys.holder, laps }),
+    keys.holderPrivKey,
+  );
+  // `prevVersion + 1` when we read the previous head — the last probe on the
+  // tap path. A first lap has no previous head and must probe, because version
+  // 0 may already exist from a partition we did not read.
+  const written = await writeStatement(
+    keys,
+    subject,
+    visibility,
+    statement,
+    prevVersion !== undefined ? prevVersion + 1 : undefined,
+  );
 
+  // ONLY when this subject is not already indexed. A non-null partition IS the
+  // statement "that partition's index contains this subject" — it is the only
+  // way `liveVisibility` can produce one, and a warm head carries the same
+  // fact. Calling `addToSubjectIndex` anyway re-reads a whole feed, including
+  // a probe past its latest version, to re-learn what this call already knows.
+  //
+  // Skipping is also SAFER than re-reading: in the race where another device
+  // publishes this subject mid-tap, the re-read sees the freshly-swept private
+  // index, does not find the subject, and writes it back — undoing the publish.
+  // Doing nothing cannot undo anything.
+  if (!indexed) {
     // The ride is recorded and valid from here on. An index failure costs
     // enumeration on a fresh device, not the count — so it must never turn a
     // landed ride into a reported failure, because the rider's retry would
@@ -266,11 +443,9 @@ export async function recordRide(subject: Hex0x, laps = 1): Promise<RideResult> 
     } catch {
       // Deliberately swallowed — see above.
     }
-
-    return { ok: true, statement, visibility, confirmed: written.confirmed };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Could not save that ride." };
   }
+
+  return { ok: true, statement, visibility, version: written.version, settled: written.settled };
 }
 
 async function writeStatement(
@@ -278,25 +453,31 @@ async function writeStatement(
   subject: Hex0x,
   visibility: CreditVisibility,
   statement: CreditStatementV1,
-): Promise<{ ok: true; confirmed: boolean } | { ok: false; error: string }> {
+  /** The exact SOC version to write at, when the caller read the previous head
+   *  and therefore knows it. Omitted means probe — see `knownVersion`. */
+  knownVersion?: number,
+): Promise<{ version: number; settled: Promise<VerifiedWriteResult> }> {
   const body = visibility === "private"
     ? await sealJson(keys.encPubKeyHex, statement)
     : statement;
 
-  const res = await writeContentFeedVerified({
+  // Returns at UPLOAD-ACCEPT, with the read-back still running. From that
+  // moment the rider's signed entry durably exists; the verification only
+  // catches the same-version dedupe, whose usual answer is "yes" and whose
+  // interesting answer is equally actionable a second later. The rider is
+  // standing in a queue, so they get the moment the entry became real.
+  const { version, settled } = await writeContentFeedSettling({
     signerPrivKey: keys.feedPrivKey,
     ownerAddress: keys.feedAddress,
     topic: creditStatementTopic(saltFor(keys, visibility), subject),
     data: body,
+    ...(knownVersion !== undefined ? { knownVersion } : {}),
   });
 
-  // `superseded` is the one outcome that means the ride was NOT recorded: our
-  // version carries another writer's bytes, so the total we computed is stale.
-  // Retrying blindly would write a WRONG number, not a duplicate one.
-  if (res.status === "superseded") {
-    return { ok: false, error: "Another device recorded a ride at the same moment. Open again to see your count." };
-  }
-  return { ok: true, confirmed: res.status === "verified" };
+  // No `ok` flag: this function either returns the write or throws. The only
+  // failure a caller could once branch on here — `superseded` — is not knowable
+  // until the read-back settles, and lives on `settled`.
+  return { version, settled };
 }
 
 /**
@@ -394,7 +575,27 @@ export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
       keys.holderPrivKey,
     );
     const written = await writeStatement(keys, subject, "public", statement);
-    if (!written.ok) return written;
+
+    // PUBLISH WAITS FOR THE READ-BACK, unlike a lap. The tap returns at
+    // upload-accept because a rider is standing in a queue and the interesting
+    // settlement is equally actionable a second later. Publish is the opposite:
+    // a deliberate, confirm-dialogued, ONE-WAY act with no latency case at all,
+    // and what follows it is destructive — the private index entry is swept.
+    // Proceeding on an unverified public head could leave the subject in
+    // NEITHER partition, which reads as "never ridden" while a public head
+    // exists, and republishing then refuses.
+    //
+    // `superseded` is the one settlement meaning the statement did not land.
+    // `unconfirmed` is explicitly NOT a failure — the upload was accepted and
+    // the chunk is merely not readable back yet — so it proceeds, which is the
+    // same judgement the index writes below already make.
+    const settlement = await written.settled;
+    if (settlement.status === "superseded") {
+      return {
+        ok: false,
+        error: "Another device changed this count while publishing. Open this coaster again and retry.",
+      };
+    }
 
     // The private entry is removed ONLY once the public one is confirmed
     // present. Removing first — or removing after an unconfirmed add — can

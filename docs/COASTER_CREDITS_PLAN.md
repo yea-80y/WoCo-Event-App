@@ -144,6 +144,70 @@ unbounded and free.
 **Nothing is minted when a credit is collected.** No transaction, no supply consumed, no
 per-rider cost. The rider signs a statement. That is the whole operation.
 
+### Who issues it — WoCo at launch, and the transfer problem (2026-08-18)
+
+**Two different claims, and conflating them is what stalled this.**
+
+| claim | who may sign it |
+|---|---|
+| "This is genuinely Rita, at Alton Towers, with this artwork" | **WoCo.** We already ship that catalogue, and the verification page says so in as many words: "the coaster names come from a list this counter ships, and the counter is ours." |
+| "This rider rode it 109 times" | **Never WoCo.** Self-declared at tier 1; attested by the issuer's exit device at tier 2/3. |
+
+"Dan is the issuer, not WoCo" in the pilot section is about the SECOND row only. It
+was read as covering the first, which produced the false conclusion that the POD had
+to wait for an issuer we do not have. It does not. **WoCo issues the coaster POD type
+at launch**, because at launch we will be lucky to have one park signing anything, and
+a rider who collects nothing is a product that has not started.
+
+🔴 **THE ISSUER IS BOUND AT MINT AND IS NOT TRANSFERABLE.** This contradicts a
+recollection that transfer was built for, so it is written down: `SignedManifestV1`
+carries `issuerPubkey`, and `verifySignedManifest` checks the ed25519 signature over a
+digest that INCLUDES it. Change the issuer and the digest changes, which breaks the
+signature and the Merkle root already registered on-chain. There is no re-issue path;
+the only transferable POD kind is `authenticity` (ERC-721), and `issuance.ts` calls
+that "a deliberately unbuilt stage."
+
+So handing Rita to Alton Towers later is not a setting — it is a NEW POD type, and
+riders holding the old one hold a different object. Three ways out, none chosen:
+
+1. **Get it right at mint.** The park signs even if we operate the UI for them; the
+   manifest is signed CLIENT-side and the server never holds the key, so this is
+   already possible today for any park willing to hold an account.
+2. **Accept WoCo-issued v1** and treat a park handover as a new type plus a migration
+   riders opt into. Cheapest now, most expensive later, and it asks fans to re-collect.
+3. **Build supersession** — a later issuer co-signs or supersedes an existing type.
+   This is what "Later — issuer registry" would need anyway, and it is the only option
+   that does not make the first cohort second-class.
+
+Making a specific person the issuer is easy in the direction that matters: whoever is
+signed in when the type is created IS the issuer. Dan could issue one from his own
+account today. But a coaster POD asserts what the RIDE is, which is the park's fact
+rather than a rider's — so the natural split is the one the owner drew: WoCo (or the
+park) issues the coaster credit; Dan issues a **Rita 100 fan badge**, which is his
+challenge, his supply, his to hand out.
+
+### Supply — unbounded for a credit, fixed for a badge
+
+`buildPodTree` enforces `edition === index + 1`: every edition is a pre-signed leaf in
+a Merkle tree, committed by a root registered on-chain, and `supply must be an integer
+1..10_000`. **A leaf cannot be added to a committed root**, so the on-chain path cannot
+express "unlimited" — not as policy, as construction.
+
+That is the tell that it is the wrong mechanism for a credit. A coaster credit has no
+natural ceiling on how many riders may hold it, and the plan already says where
+unbounded things live: "counts belong in the statement layer, which is unbounded and
+free." The chain-free POD of the previous section has no supply because it has no
+ledger to allocate from — issue per holder, name their holder key, done.
+
+A **fan badge** is the opposite and the fixed supply is a feature: limited, countable,
+a thing worth having because not everyone has one. Both mechanisms ship; they are for
+different objects. Do not use the ticket ledger for the achievement.
+
+**Still open:** whether the coaster POD registers on-chain at all (the rail's headline
+is that nothing touches a chain, and the pilot anchor was already rejected on those
+grounds), and what the holding record is when it does not. Neither blocks deciding the
+issuer, which is why the issuer is decided here and these are not.
+
 ## Rider-signed base, issuer-witnessed upgrade
 
 The rider is the author. This is the load-bearing decision and it is deliberate:
@@ -639,6 +703,63 @@ unsalted it would have leaked exactly what the sealed statements hide. **Partiti
 subject lives in exactly ONE of the two indexes — the private index (private salt) before
 opt-in, the public index (public salt) after — and opt-in moves it. The index is therefore not
 just discovery hygiene: it is how a fresh device learns which head is live for each subject.
+
+⚠️ **OPEN, AND THE CHEAPEST IT WILL EVER BE — head lookup is O(number of laps)
+(2026-08-19).** Measured, not inferred. One statement topic accumulates one SOC
+version per lap, and `resolveLatestSocVersion` walks FORWARD to find the newest,
+so reading a rider's own count costs a probe per version. Instrumented on a
+9-lap account (`probe-stats.ts`, dev-only):
+
+```
+record a lap:     555ms ·  0 probes                       ← the write path is fine
+read own count:  7925ms · 25 probes (16 miss) · gw 9/8 · api 0/8
+```
+
+Nine gateway HITS is the scan walking nine existing versions. At 109 laps it
+walks 109. The version hint exists to stop this and is not doing so; a probable
+mechanism is below, unconfirmed.
+
+**Batching laps was considered and REJECTED as the fix.** Writing every N laps
+divides the constant and leaves the shape — still linear, still degrading over a
+season — while costing the things that make the rail worth having: a lap is not
+recorded until the batch flushes (on the honesty product an unrecorded lap is a
+lap that did not happen), a phone closed in a queue loses it, and the instant
+tap-to-real moment IS the product.
+
+**The candidate is EPOCHED TOPICS, and this design already does it once.** Opt-in
+is precisely this move: a republish at a new topic where "versions at the new
+topic restart at 0" while `seq` continues. Generalising it bounds the scan. Two
+variants, with a real trade-off:
+
+| | count-banded (every N laps) | time-banded (month/year) |
+|---|---|---|
+| finding the epoch | must be discovered — scan or index | COMPUTABLE from the clock |
+| quiet rider | epochs always exist | walks BACK through empty bands, and misses are the expensive probe |
+| enumeration | epoch count ≈ lap count, already public | with the FIXED `PUBLIC_SALT`, anyone can enumerate months of a published subject and read off a rider's activity calendar |
+
+That last cell is the sharp one: on a children's service, "which months this
+child visited a park" is a materially different disclosure from "this child has
+109 laps", and only the latest `session.date` is exposed today.
+
+**Likely synthesis, to be pressure-tested rather than assumed:** band by time,
+but carry the last-written band in the SUBJECT INDEX, which is already read first
+and is salt-protected. That gives O(1) cold or warm, no walk-back, index growth
+once per band instead of once per lap, and it closes the enumeration leak by
+keeping the band behind the salt rather than in a guessable topic.
+
+**Cost of deciding late.** This changes topic derivation, which is frozen at P0.
+Pre-launch that is a registry edit and a re-test; post-launch it is a migration
+of every rider's logbook. It also has to be taught to the indexer.
+
+**Carry into that design pass:**
+- `api 0/8` — the server fallback resolved NOTHING across eight misses, so every
+  miss pays two round trips for one verdict. Whatever the scheme, this doubles
+  its cost. `client-soc.ts` documents why gateway-first is the sounder verdict
+  order, so this is not a reorder.
+- A chunk that exists but is not gateway-whitelisted reads as ABSENT (403 → server
+  404). That would invalidate a good version hint and force the full scan seen
+  above. Coherent, and a THEORY — the hint counter reports whether a hint existed,
+  not whether the resolver used it, so fix that instrument before trusting it.
 
 ### 2. `holderSig` digest — written down
 
@@ -1259,6 +1380,91 @@ crafted link would otherwise borrow this page's authority for an invented coaste
 is no `?indexer=`/`?api=` override — the honest form of "run your own" is a fork on your own
 domain, not a query string on a page that exists to be screenshotted.
 
+**SPLIT INTO TWO SURFACES — 2026-08-18.** The page above was rejected on sight:
+"far too many words", "we can't realistically send him that". The cause was not
+carelessness, it was the fix pattern — a review found nine overclaims and every
+repair ADDED a qualifying sentence, so a page whose job is to be screenshotted by
+coaster fans read as a legal disclaimer. None of that honesty was deleted. It
+moved one click away.
+
+The COUNTER is a kicker, the number, the coaster, ONE line and one link. The
+line, settled: "Every lap here is signed by the rider it belongs to. Nothing is
+taken on our word." ("Added up on your device" was rejected — it explains our
+plumbing, not what it means.) The kicker is the CHALLENGE (`CHALLENGE_LABELS` in
+`verify-report.ts`), never a person: "Dan's lap count" would be possessive over a
+figure that sums every rider. THE WORKING, behind "See the working →", carries
+the entries, the limits panel and check-it-yourself — verbatim where they were
+already right.
+
+ONE COMPONENT ON ONE REPORT, not a second Vite entry, and the reason is the same
+one that keeps `/count` unfetched: two fetches would let the working recount a
+DIFFERENT report across the 30s cache boundary — explaining a number the reader
+is no longer looking at, or manufacturing a mismatch from a lap that landed in
+between. An in-place `<details>` expander was also rejected: a challenged fan
+cannot link an expander, and the wall of words still ships inside the shareable
+artefact one tap from resurrecting the rejected page.
+
+FAILURE SURVIVES THE DIET. A contradicted recount or a contradicted entry
+REPLACES the claim on the counter — the page must never assert "nothing is taken
+on our word" beside a check that just failed — and reddens the figure on the
+working. Everything the spot-check can report that is not an accusation renders
+nothing there: silence never accuses, and on that surface silence never renders.
+
+✅ **THE COUNTER LINE — settled 2026-08-18, and worth not relitigating.** The
+first draft read "signed by the rider **who rode it**". A Fable review refused
+it: tier 1 cannot claim anyone rode, and this codebase had ALREADY struck
+"ridden it at least once" from the riders line for that exact reason (the
+comment above the riders paragraph in `VerifyApp.svelte` records it). The
+counter's only sentence would therefore have implied what the working denies one
+click away — a gotcha screenshot handed to an audience that films these things.
+"it belongs to" keeps the cadence and the second sentence, names the same
+relationship, and claims only what a signature actually proves: whose entry it
+is. Anything that reintroduces a riding verb here is a regression, not a
+tightening.
+
+⚠️ **The counter is now SCOPE-SILENT under a challenge kicker.** The old kicker
+said whose laps these were ("One rider's laps" / "Everyone's laps"); that moved
+to the working's scope line. Today the figure sums every rider on the coaster
+while the surface reads "Rita 100" — and the newly mounted collecting page
+invites the public to add to it. The label claims nothing arithmetically and the
+disambiguation is one click away, but the failure mode is concrete and on camera.
+Cheapest mitigations if wanted: show the kicker only when `scope === "rider"`, or
+carry the scope into the unit line. Not decided.
+
+### The collecting screen — MOUNTED 2026-08-18
+
+`CoasterCredit.svelte` had ZERO references outside its own file, so nobody could
+log a lap from any surface and the counter could only ever read 0. It now mounts
+at `#/coaster/:subject` via `CoasterPage.svelte`. The mounting was not mechanical:
+
+- A signed-out rider hit a dead-end red error — `riderKeys()` throws "Sign in to
+  collect a credit" and nothing on the card offered a way in. The TAP is now the
+  sign-in prompt, with NO `context`: the attendee subtitle tells riders accounts
+  are for organisers, which is the wrong thing to say to the rider you just asked
+  to sign in.
+- Opening the page could pop a signing dialog at a rider who had tapped nothing,
+  because the mount read derives keys. Gated on `creditsUnlocked()`, which asks
+  only for already-stored material.
+- The card rendered a WORKING COLLECT BUTTON for a subject nothing defines, so a
+  crafted link could have riders signing against an invented coaster. The
+  catalogue gate is a requirement of mounting, not polish — the same refusal the
+  verification page makes, for the same reason.
+- 🔴 The POD seed was looked up by `auth.parent`, which is the KERNEL address for
+  passkey and web3auth, while the seed is stored under the POD address (PRF-EOA /
+  Web3Auth EOA — invariant #1). So the rail was DEAD for its entire target
+  audience, and silently: `ensurePodIdentity()` succeeded, having just made the
+  rider approve a ceremony, and the next line failed with "could not unlock your
+  collection identity". Fixed by routing through the bound accessors
+  (`auth.getPodKeypair()` / `auth.getPodSeed()`), and pinned by a source ratchet,
+  `apps/web/test/credits-key-binding.test.ts`.
+
+A DEMO COASTER ships in `WOCO_SUBJECT_DEFINITIONS` so a demo never needs a false
+tap on Rita — signing a lap nobody rode, on the honesty product, on a permanent
+log. It labels itself in the era name and park, the two fields every surface that
+resolves the catalogue renders, so the label travels into its own screenshot with
+no flag for anyone to forget. That is what makes it safe for an entry that is
+necessarily publicly linkable.
+
 ⚠️ **OPEN, OWNER DECISION — the headline is community-scoped, not Dan's.** `manifest.count`
 SUMS every rider's total for the subject, so the moment a second rider publishes a Rita
 count, a page headlining it stops meaning "one rider's laps" while looking identical.
@@ -1349,6 +1555,19 @@ registry, self-report import, NFC.
 - **P3** — exit device app: rotating tokens, offline-capable, published key allowlist. Tier 2.
 - **P4** — issuer witness batches (tier 3), NFC tags, optional anchoring, self-report import.
 - **Later** — issuer registry, once a second issuer exists.
+
+⚠️ **THE POD HAD NO PHASE — corrected 2026-08-18.** "What a user holds" was settled
+("one POD per coaster, with a count attached") and then never scheduled, so the list
+above ran P0→P4 without once naming the thing a rider is supposed to collect. That is
+the same gap that left `CoasterCredit.svelte` unmounted for weeks: settled in prose,
+absent from the plan of work. It is now **P1.5**, below.
+
+- **P1.5** — (this doc's phase list; not to be confused with `SWARM_SOCIAL_PLAN` P1.5,
+  which is the published-evidence work) the coaster POD: a rider holds one per coaster,
+  from their first lap.
+  Issued by WoCo at launch (owner's decision, 2026-08-18). No technical dependency on
+  P3/P4 — an earlier claim that it was blocked on issuer-witness machinery was WRONG
+  and is corrected below.
 
 ## Open questions
 

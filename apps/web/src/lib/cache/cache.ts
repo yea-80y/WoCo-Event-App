@@ -197,4 +197,8 @@ export const USER_SCOPED_PREFIXES = [
   "collection:",
   "claim-status:",
   "claimed:",
+  // A rider's own lap counts. Same reasoning as the collection above, with the
+  // sharper edge that the credits rail is a children's service: a shared park
+  // or family device must not show the next person what the last one rode.
+  "credit:",
 ];

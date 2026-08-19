@@ -1,12 +1,30 @@
 <script lang="ts">
   /**
-   * The public lap count, and the working behind it.
+   * The public lap count — and, one click away, the working behind it.
    *
-   * Built to be disbelieved productively. The number at the top is the one THIS
-   * browser added up from the published working, and when the working does not
-   * support the number published alongside it the page goes red and says so.
-   * That failure state is the asset: a check that can visibly fail is the only
-   * kind whose passing means anything.
+   * Built to be disbelieved productively. The number is the one THIS browser
+   * added up from the published working, and when the working does not support
+   * the number published alongside it the page goes red and says so. That
+   * failure state is the asset: a check that can visibly fail is the only kind
+   * whose passing means anything.
+   *
+   * TWO SURFACES, ONE FETCH, and the split is the whole point of this file's
+   * shape. The page previously said everything at once, and a review had found
+   * nine places it overclaimed — each fixed by ADDING a qualifying sentence.
+   * Every sentence was defensible; together they read as a legal disclaimer to
+   * a coaster fan, which is the exact outsider signal the plan warns against.
+   * So none of the honesty was deleted, it was moved one click away: the
+   * COUNTER is a kicker, a number, a coaster, one line and one link; THE
+   * WORKING carries the entries, the limits and the check-it-yourself steps.
+   *
+   * They are one component on one report deliberately. Two entries with two
+   * fetches would reintroduce, at the page level, the very failure the single
+   * request exists to avoid (see verify-report.ts, "ONE REQUEST"): a reader
+   * screenshots the number, clicks through, and the working recounts a
+   * DIFFERENT report across a cache boundary — explaining a number nobody is
+   * looking at any more, or manufacturing a disagreement out of a lap that
+   * landed in between. Here the working always explains the very report the
+   * counter just showed, because it is the same object.
    *
    * VOCABULARY IS LOAD-BEARING, not styling. A CREDIT is a coaster ridden once,
    * ever; repeat rides are LAPS. "109 credits" marks us as outsiders on day one
@@ -27,10 +45,15 @@
    */
   import { onMount } from "svelte";
   import { RITA_SUBJECT } from "@woco/shared";
-  import { fetchVerifyReport, resolveCoaster, type VerifyReport } from "./lib/credits/verify-report.js";
+  import {
+    fetchVerifyReport,
+    resolveCoaster,
+    challengeLabel,
+    type VerifyReport,
+  } from "./lib/credits/verify-report.js";
   import { leafToCheck, spotCheckLeaf, type SpotCheck } from "./lib/credits/spot-check.js";
 
-  /** How often the page re-asks, and how often the "checked N ago" line moves. */
+  /** How often the page re-asks, and how often the "counted N ago" line moves. */
   const RECHECK_MS = 60_000;
   const TICK_MS = 15_000;
 
@@ -43,6 +66,9 @@
    */
   const raw = new URLSearchParams(window.location.search).get("subject") ?? RITA_SUBJECT;
   const coaster = resolveCoaster(raw);
+  /** The challenge people came to watch, or null. A label, never a claim: it
+   *  says nothing about WHOSE laps the number is, which is what `scope` says. */
+  const challenge = coaster ? challengeLabel(coaster.subject) : null;
 
   /**
    * The entry check, plus the two states it can be in that are not results:
@@ -55,7 +81,7 @@
   let report = $state<VerifyReport | null>(null);
   let error = $state<string | null>(null);
   let checking = $state(false);
-  /** Last SUCCESSFUL check — what "checked N ago" reports. */
+  /** Last SUCCESSFUL check — what "counted N ago" reports. */
   let checkedAt = $state(0);
   /** Last ATTEMPT — what paces re-asking. Kept apart from the above so that a
    *  counter which is down is retried on the same 60s cadence rather than on
@@ -64,11 +90,49 @@
   let now = $state(Date.now());
   let entry = $state<EntryState>({ state: "pending" });
 
+  /**
+   * Which surface is showing. The hash, not a variable, so that the working has
+   * a URL a reader can link to when challenged — the single reason an in-place
+   * expander was rejected. `?subject=` survives a fragment-only href, so both
+   * views stay pinned to the same coaster.
+   */
+  let view = $state<"counter" | "working">(
+    window.location.hash === "#working" ? "working" : "counter",
+  );
+
   const laps = $derived(report?.laps ?? 0);
   /** Above zero, every number on the page is a floor rather than a total. */
   const partial = $derived((report?.read.unreadable ?? 0) > 0);
   const contradicted = $derived(report !== null && !report.reconciliation.holds);
   const silent = $derived(report !== null && report.read.declared === 0);
+
+  /**
+   * How old the ANSWER is, not how long since we asked. The counter's own reply
+   * can be up to its cache window old, so "checked just now" would overstate
+   * freshness by up to half a minute — visible against laps happening on
+   * camera. Folding the cache age in here lets the sparse surface say "counted
+   * N ago" without printing a second clause to correct the first.
+   */
+  const answerAgeMs = $derived(report === null ? 0 : now - checkedAt + report.ageMs);
+
+  /**
+   * The one failure the COUNTER surfaces, in precedence order. A page whose
+   * whole argument is that a check can visibly fail must not keep its strongest
+   * failure state on the surface nobody clicks through to. Everything else the
+   * spot-check can report — confirmed, missing, unchecked — renders nothing
+   * here: silence never accuses, and on this surface silence never renders.
+   */
+  const counterFailure = $derived(
+    report === null
+      ? null
+      : contradicted
+        ? "recount"
+        : report.leaves.length === 0
+          ? null
+          : entry.state === "contradicted"
+            ? "entry"
+            : null,
+  );
 
   async function check() {
     if (!coaster || checking) return;
@@ -83,7 +147,8 @@
       // title — a shared screenshot reading "127 laps" from a page that said
       // "at least 127" would have dropped the word that made it true.
       const floor = next.read.unreadable > 0 ? "at least " : "";
-      document.title = `${floor}${next.laps.toLocaleString()} laps on ${next.coaster.name}`;
+      const unit = plural(next.laps, "lap", "laps");
+      document.title = `${floor}${next.laps.toLocaleString()} ${unit} on ${next.coaster.name}`;
 
       // Then go and read one of the entries it named. Deliberately after the
       // count is on screen and never blocking it: this is a second, stronger
@@ -107,7 +172,7 @@
   onMount(() => {
     void check();
 
-    // One timer does both jobs: it moves the "checked N ago" line, and when the
+    // One timer does both jobs: it moves the "counted N ago" line, and when the
     // page has been VISIBLE long enough it re-asks. Hidden tabs never re-ask —
     // a link left open in a background tab for a week should cost one check.
     const due = () => document.visibilityState === "visible" && Date.now() - attemptedAt >= RECHECK_MS;
@@ -121,9 +186,19 @@
     };
     document.addEventListener("visibilitychange", onVisible);
 
+    // Scrolled explicitly because neither fragment names an element: a reader
+    // sent from the foot of the working back to the counter would otherwise
+    // land on a screen of whitespace below a one-screen page.
+    const onHash = () => {
+      view = window.location.hash === "#working" ? "working" : "counter";
+      window.scrollTo(0, 0);
+    };
+    window.addEventListener("hashchange", onHash);
+
     return () => {
       clearInterval(tick);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("hashchange", onHash);
     };
   });
 
@@ -143,7 +218,7 @@
   const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 </script>
 
-<main>
+<main class:main--counter={view === "counter"}>
   {#if !coaster}
     <section class="card pad">
       <p class="kicker kicker--plain">Not a coaster we know</p>
@@ -157,21 +232,30 @@
   {:else if report === null && error !== null}
     <section class="card pad">
       <p class="kicker kicker--plain">No answer</p>
-      <h2>Could not reach the evidence just now.</h2>
+      <!-- "the count", not "the evidence": on the counter's own failure the
+           reader is here for a number, and evidence is the working's register. -->
+      <h2>Could not reach the count.</h2>
       <p class="muted">{error}</p>
       <p class="muted small">
-        Nothing is being shown as counted until the working can be fetched and added up here.
+        Nothing is shown as counted until the working can be fetched and added up here.
       </p>
       <button class="btn btn--ghost" onclick={check} disabled={checking}>Try again</button>
     </section>
   {:else if report === null}
     <section class="card pad"><p class="muted">Reading the logbooks…</p></section>
-  {:else}
-    <!-- ── The number ─────────────────────────────────────────────────── -->
+
+  <!-- ══ THE COUNTER ═══════════════════════════════════════════════════ -->
+  <!-- Kicker, number, coaster, one line, one link. Anything added here has to
+       earn its place against a screenshot, because a screenshot is what this
+       surface is for. -->
+  {:else if view === "counter"}
     <header class="hero">
-      <p class="kicker kicker--hi">
-        {report.scope === "rider" ? "One rider's laps" : "Everyone's laps"}
-      </p>
+      {#if challenge}
+        <!-- The challenge, never a person. "Dan's lap count" would make the
+             headline possessive over a figure that SUMS every rider on the
+             coaster; the challenge owns the framing instead. -->
+        <p class="kicker kicker--hi">{challenge}</p>
+      {/if}
 
       <div class="count" aria-live="polite">
         {#if partial}<span class="floor">at least</span>{/if}
@@ -181,30 +265,129 @@
 
       <h1>{report.coaster.name}</h1>
       <p class="park">{report.coaster.park}</p>
+    </header>
+
+    {#if counterFailure !== null}
+      <!-- REPLACES the claim rather than sitting above it. The page must never
+           assert "nothing is taken on our word" alongside a check that just
+           failed — that pairing is the screenshot this design exists to make
+           impossible. The full explanation is one click away, and the link
+           below is now the call to action for the failure. -->
+      <p class="claim claim--bad">
+        {#if counterFailure === "recount"}
+          {#if report.scope === "rider"}
+            The published working behind this number does not add up. Treat it with suspicion until that is
+            explained.
+          {:else}
+            The published working does not add up to the total it came with. The number above is only what the
+            entries themselves support.
+          {/if}
+        {:else}
+          One of the entries behind this number does not match its published copy.
+        {/if}
+      </p>
+    {:else}
+      <!-- "it belongs to", NOT "who rode it". The whole page rests on this one
+           sentence, and a riding verb here would claim the single thing tier 1
+           cannot: that anyone actually rode. This file has struck that claim
+           once already — see the comment above the riders paragraph on the
+           working — so the counter asserting it would have been the working
+           denying, one click away, what the shareable surface implied. What a
+           signature proves is whose entry it is; that is what this says. -->
+      <p class="claim">
+        Every lap here is signed by the rider it belongs to. Nothing is taken on our word.
+      </p>
+    {/if}
+
+    <p class="more"><a href="#working">See the working →</a></p>
+
+    <footer class="foot foot--counter">
+      {#if report.sources.via === "published"}
+        <!-- The disclosure has to live on THIS surface, sparse or not: the
+             fallback copy is signed evidence and perfectly checkable, but it is
+             not the counter speaking now, and letting it look like the counter
+             answering would overstate how fresh the number is. "Could not be
+             asked" rather than "could not be reached" — the fallback also runs
+             when the counter answered with something unusable, and naming the
+             wrong failure sends people to the wrong place. -->
+        <p class="muted small">
+          The counter could not be asked just now. This is the last count it published, {ago(report.ageMs)}.
+        </p>
+        <button class="btn btn--ghost" onclick={check} disabled={checking}>
+          {checking ? "Checking…" : "Try again"}
+        </button>
+      {:else if error}
+        <p class="muted small">Counted {ago(answerAgeMs)} — the last try to re-check failed.</p>
+        <button class="btn btn--ghost" onclick={check} disabled={checking}>
+          {checking ? "Checking…" : "Try again"}
+        </button>
+      {:else}
+        <!-- "Counted", not "checked": the verb names when the figure was
+             computed, which is what folds the counter's cache age into the
+             sentence instead of into a correction after it. -->
+        <p class="muted small">Counted {ago(answerAgeMs)}.</p>
+      {/if}
+    </footer>
+
+  <!-- ══ THE WORKING ═══════════════════════════════════════════════════ -->
+  <!-- Everything the counter used to carry, with room to say it properly. -->
+  {:else}
+    <header class="wh">
+      <p class="kicker kicker--plain">{challenge ? `${challenge} · The working` : "The working"}</p>
+
+      <!-- A compact count, not a decoration: a reader who lands here from a
+           shared link must see the figure WITH its qualifiers before reading
+           anything about it. The floor chip and the red state come along. -->
+      <div class="count count--sm" class:count--bad={counterFailure !== null}>
+        {#if partial}<span class="floor">at least</span>{/if}
+        <span class="figure mono">{laps.toLocaleString()}</span>
+        <span class="unit">{plural(laps, "lap", "laps")}</span>
+      </div>
+      <p class="wh-sub">{report.coaster.name}, {report.coaster.park}</p>
       {#if report.coaster.formerNames.length > 0}
         <p class="muted small">Ridden by some when it was {report.coaster.formerNames.join(", ")}.</p>
       {/if}
 
-      {#if report.riders > 0}
-        <!-- "ridden it at least once" asserted as fact what the honesty panel
-             three sections down explicitly disclaims. What is known is what was
-             signed. -->
-        <p class="riders">
-          {report.riders.toLocaleString()}
-          {plural(report.riders, "rider has", "riders have")} signed at least one lap on
-          {report.coaster.name}{#if report.scope === "rider"}, {report.communityLaps.toLocaleString()} laps between
-          them{/if} — which is what having the credit means here.
-        </p>
-      {/if}
+      <p class="more"><a href="#count">← Back to the count</a></p>
     </header>
 
+    <!-- ── Whose laps is this? ────────────────────────────────────────── -->
+    <!-- The counter is scope-silent by construction, so the disclosure lands
+         here. The two scopes are different numbers over the same evidence. -->
+    <p class="scope">
+      {#if report.scope === "rider"}
+        <!-- "the signing identity published for this challenge", never "signed
+             by <name>": the key-to-person link is an ANNOUNCEMENT, not
+             mathematics. The signature proves an identity signed; that the
+             identity is a given rider is something their team said. -->
+        This is the lifetime total in one rider's own logbook — the signing identity published for this challenge.
+        {#if report.riders > 0}
+          {report.riders.toLocaleString()}
+          {plural(report.riders, "rider has", "riders have")} signed at least one lap on {report.coaster.name},
+          {report.communityLaps.toLocaleString()} laps between them.
+        {/if}
+      {:else}
+        This is every rider's laps on {report.coaster.name} added together.
+        {#if report.riders > 0}
+          <!-- "ridden it at least once" asserted as fact what the honesty panel
+               below explicitly disclaims. What is known is what was signed. -->
+          {report.riders.toLocaleString()}
+          {plural(report.riders, "rider has", "riders have")} signed at least one lap here — which is what having
+          the credit means.
+        {/if}
+      {/if}
+    </p>
+
     <!-- ── Did the working add up, here, in this browser? ──────────────── -->
+    <!-- `|| contradicted` so a manifest declaring a total over NO entries still
+         gets explained. It recounts to nought and fails its own arithmetic, and
+         without this the counter would redden with nothing here to say why. -->
     <!-- Scope-aware, because it has to be BEFORE a rider is ever featured: with
          a featured rider the headline is their entry's total, not the recount,
          and "which is the figure above" would quietly become false while
          looking exactly the same. The registry that switches this lives in
          another file, so the copy cannot depend on someone remembering. -->
-    {#if report.leaves.length > 0}
+    {#if report.leaves.length > 0 || contradicted}
       <section class="verdict" class:verdict--bad={contradicted}>
         {#if contradicted}
           <p class="verdict-line">
@@ -325,7 +508,9 @@
 
       <div class="claims">
         <p>
-          <strong>What your browser just did.</strong>
+          <!-- Was "What your browser just did", which read as plumbing rather
+               than as an answer to the question a sceptic is actually asking. -->
+          <strong>Where the number comes from.</strong>
           Every lap here comes from a signed entry — a logbook only its author can write in. This page downloaded the
           full evidence list and did the adding up itself, on your device. The headline is your machine's arithmetic,
           not a number we typed in.
@@ -378,10 +563,12 @@
       </div>
     </section>
 
-    <!-- ── The working ────────────────────────────────────────────────── -->
+    <!-- ── The entries ────────────────────────────────────────────────── -->
+    <!-- Named "The entries", not "The working": this whole surface is the
+         working now, and a section inside it by the same name is noise. -->
     {#if report.leaves.length > 0}
-      <section class="working">
-        <h2>The working</h2>
+      <section class="entries">
+        <h2>The entries</h2>
         <p class="muted small">
           One line per rider: the signing identity on their logbook, where it was read from, and the lifetime laps
           that entry carries. These are the numbers that were added up.
@@ -455,10 +642,7 @@
       </p>
     </section>
 
-    <footer>
-      <!-- The counter's own answer can be up to its cache window old, so
-           "checked just now" alone would overstate freshness by up to half a
-           minute — visible against laps happening on camera. -->
+    <footer class="foot">
       <p class="muted small">
         <!-- "Counted by X" alone would credit X with answering, which on the
              published path it did not do — the page read a copy X left behind.
@@ -491,6 +675,9 @@
     flex-direction: column;
     gap: 2rem;
   }
+  /* The counter is five elements; a 2rem rhythm designed for a dozen sections
+     scatters them down the page instead of composing them. */
+  .main--counter { gap: 1.25rem; }
 
   .pad { padding: 1.5rem; }
   .pad > * + * { margin-top: 0.75rem; }
@@ -542,10 +729,65 @@
     letter-spacing: 0.12em;
     color: var(--text-muted);
   }
-  .riders {
-    margin: 1rem 0 0;
-    color: var(--text-secondary);
+
+  /* ── The claim, and the way out of the page ───────────────────────── */
+
+  /* Full-strength body text, not small print and not bold. Muting it or
+     flagging it is what turns a claim into a disclaimer; one visual voice is
+     what keeps two sentences a statement. */
+  .claim {
+    margin: 0.5rem 0 0;
+    max-width: 32rem;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .claim--bad {
+    border-left: 2px solid var(--error);
+    background: var(--error-subtle);
+    padding: 0.875rem 1.125rem;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+  }
+
+  /* Attached to the claim it substantiates — here is the claim, here is how you
+     check it — and a link rather than a button, because a link promises reading
+     and a button promises an action. */
+  .more { margin: 0; }
+  .more a {
+    font-size: 0.9375rem;
+    color: var(--accent-text);
+    border-bottom: 1px solid var(--accent);
+    text-decoration: none;
+    padding-bottom: 0.0625rem;
+  }
+  .more a:hover { color: var(--accent); }
+
+  /* ── The working's own header ─────────────────────────────────────── */
+
+  .wh { padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .wh .count { margin: 0.25rem 0 0; gap: 0.5rem; }
+  .count--sm .figure { font-size: clamp(2rem, 8vw, 2.75rem); line-height: 1; }
+  .count--sm .unit { font-size: 1rem; }
+  .count--sm .floor { font-size: 0.6875rem; }
+  /* A direct arrival must see that the figure is disputed before reading a word
+     about it; the verdict below does the explaining. */
+  .count--bad .figure { color: var(--error); }
+  .wh-sub {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-muted);
+  }
+  .wh .muted.small { margin: 0; }
+
+  .scope {
+    margin: 0;
     max-width: 34rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
   }
 
   /* ── Verdict ──────────────────────────────────────────────────────── */
@@ -631,7 +873,7 @@
   }
   .claims strong { display: block; color: var(--text); margin-bottom: 0.25rem; }
 
-  /* ── Working ──────────────────────────────────────────────────────── */
+  /* ── The entries ──────────────────────────────────────────────────── */
 
   .scroller { overflow-x: auto; margin-top: 1rem; }
   table {
@@ -690,7 +932,7 @@
 
   /* ── Footer ───────────────────────────────────────────────────────── */
 
-  footer {
+  .foot {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -699,7 +941,15 @@
     border-top: 1px solid var(--border);
     padding-top: 1.5rem;
   }
-  footer p { margin: 0; }
+  /* No rule above it and barely there: on the counter this is a caption on the
+     number, not the end of a document. */
+  .foot--counter {
+    border-top: none;
+    padding-top: 0.5rem;
+    gap: 0.75rem;
+    justify-content: flex-start;
+  }
+  .foot p { margin: 0; }
   .stale { color: var(--warning); }
 
   button:disabled { opacity: 0.5; cursor: default; }

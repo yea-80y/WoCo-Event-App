@@ -85,6 +85,34 @@ const DIGEST_RE = /^0x[0-9a-f]{64}$/;
  */
 export const FEATURED_HOLDERS: Readonly<Record<string, string>> = {};
 
+/**
+ * The challenge a subject's counter is FOR, by subject hash — the kicker above
+ * the number, and nothing else.
+ *
+ * A label, not a claim. It names the event people came to watch; it asserts
+ * nothing about whose laps the number is, which is what {@link FEATURED_HOLDERS}
+ * decides and what `scope` reports. Kept apart from the subject catalogue in
+ * `packages/shared` deliberately: a coaster is permanent and a challenge is not,
+ * and the catalogue's ids are hash inputs that may never be edited once written
+ * against.
+ *
+ * A subject with no entry renders with NO kicker rather than a generic one —
+ * there is no honest generic, and "Lap count" over a number is noise.
+ */
+export const CHALLENGE_LABELS: Readonly<Record<string, string>> = {
+  // The Rita 100 pilot. Reads as the challenge, never as a person: the plan's
+  // never-possessive rule is why this is not "Dan's laps".
+  "0xf1b7f5115cfaf052619cad0d34ae3a26425e8a6d84647120174bf33f261b201b": "Rita 100",
+};
+
+/** The challenge label for a subject, or null when it has none. */
+export function challengeLabel(
+  subject: string,
+  labels: Readonly<Record<string, string>> = CHALLENGE_LABELS,
+): string | null {
+  return labels[subject.trim().toLowerCase()] ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // What an indexer serves
 // ---------------------------------------------------------------------------

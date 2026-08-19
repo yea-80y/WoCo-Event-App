@@ -30,6 +30,7 @@ import {
   resolveCoaster,
   FEATURED_HOLDERS,
   type Evidence,
+  challengeLabel,
 } from "../src/lib/credits/verify-report.js";
 
 const OTHER_SUBJECT = `0x${"cc".repeat(32)}` as Hex0x;
@@ -264,4 +265,31 @@ test("qualifiers absent from an older answer read as nothing to report", () => {
 test("a qualifier list that is not a list of identities is refused", () => {
   assert.equal(parseEvidence(served({ unreadable: ["nope"] }), RITA_SUBJECT), null);
   assert.equal(parseEvidence(served({ equivocations: [42] }), RITA_SUBJECT), null);
+});
+
+// ---------------------------------------------------------------------------
+// Challenge labels — the counter's kicker
+// ---------------------------------------------------------------------------
+
+test("challengeLabel names the pilot challenge for the Rita subject", () => {
+  assert.equal(challengeLabel(RITA_SUBJECT), "Rita 100");
+});
+
+test("challengeLabel is case- and whitespace-insensitive", () => {
+  // A hash pasted out of a log is neither.
+  assert.equal(challengeLabel(`  ${RITA_SUBJECT.toUpperCase()}  `), "Rita 100");
+});
+
+test("challengeLabel returns null rather than inventing a generic kicker", () => {
+  // A subject with no challenge renders with NO kicker: there is no honest
+  // generic, and a made-up one sitting over a real number is the same borrowed
+  // authority the catalogue gate exists to refuse.
+  assert.equal(challengeLabel(`0x${"ab".repeat(32)}`), null);
+});
+
+test("challengeLabel does not dress the demo coaster up as a challenge", () => {
+  assert.equal(
+    challengeLabel("0xadd9035a868daff172c831004fe5e8b1b1dd7d5240a907c0830922e8abe6c7e2"),
+    null,
+  );
 });

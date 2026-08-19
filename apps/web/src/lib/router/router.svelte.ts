@@ -16,6 +16,7 @@
  *     /profile, /profile/:addr     profile
  *     /shops/:id/tap               shop-tap (tap-to-pay activation)
  *     /shop/:shopId/order/:code    shop-order (Stripe return — success/cancel)
+ *     /coaster/:subject            coaster (log a lap — reached by QR/link, not nav)
  *
  *   CREATOR surface
  *     /creator                          creator-home  (studio dashboard)
@@ -115,6 +116,16 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
   const soonMatch = path.match(/^\/soon\/(.+)$/);
   if (soonMatch) return { route: "soon", params: { feature: soonMatch[1] }, surface: "attendee" };
+
+  // Reached from a QR code or a shared link, never from nav: a one-coaster
+  // pilot inside an events app does not spend permanent nav real estate.
+  // Parameterised rather than hard-coded to the pilot coaster so a second
+  // subject needs no redeploy; the page itself refuses any subject the shipped
+  // catalogue does not name.
+  const coasterMatch = path.match(/^\/coaster\/(0x[0-9a-fA-F]{64})$/);
+  if (coasterMatch) {
+    return { route: "coaster", params: { subject: coasterMatch[1].toLowerCase() }, surface: "attendee" };
+  }
 
   const shopTapMatch = path.match(/^\/shops\/([^/]+)\/tap$/);
   if (shopTapMatch) return { route: "shop-tap", params: { shopId: shopTapMatch[1] }, surface: "attendee" };

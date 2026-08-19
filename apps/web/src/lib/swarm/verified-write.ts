@@ -109,7 +109,22 @@ async function writeAndVerify(args: {
     data: args.data,
     ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
   });
+  return verifyLanded(args, version);
+}
 
+/**
+ * Read back the bytes at the version we just wrote.
+ *
+ * NEVER THROWS. Every path returns a `VerifiedWriteResult`, because callers
+ * that let this settle in the background (see {@link writeContentFeedSettling})
+ * would otherwise produce an unhandled rejection for a condition that is
+ * routine — a gateway having a bad minute.
+ */
+async function verifyLanded(
+  args: { ownerAddress: string; topic: string; data: unknown },
+  version: number,
+): Promise<VerifiedWriteResult> {
+ try {
   // Compare against the bytes we asked for, not the object: the feed stores
   // `JSON.stringify(data)`, and re-stringifying the parsed read-back reproduces
   // that text exactly (JSON.parse preserves the encoded key order).
@@ -148,4 +163,88 @@ async function writeAndVerify(args: {
   }
 
   return { status: "unconfirmed", version, reason: lastReason };
+ } catch (e) {
+  // An unconfirmed write is not a failed one: the upload was accepted before
+  // this ran. Reporting it as such keeps a background settlement from turning a
+  // landed entry into a reported failure.
+  return { status: "unconfirmed", version, reason: e instanceof Error ? e.message : "read-back threw" };
+ }
+}
+
+/**
+ * Write, and hand the caller back the moment the UPLOAD is accepted — with the
+ * read-back still running.
+ *
+ * WHY THIS EXISTS. Verification protects against exactly one thing: the silent
+ * same-version dedupe where Bee returns 201 and keeps another writer's bytes.
+ * Its outcomes are "no change", "still settling", or a retraction — and a
+ * retraction is equally actionable two seconds later. Meanwhile the rider is
+ * standing in a queue watching a button. Once the upload is accepted the signed
+ * entry durably exists; making them wait for a check whose usual answer is "yes"
+ * buys nothing.
+ *
+ * THE TOPIC STAYS SERIALISED. The chain waits for SETTLEMENT, not upload, so a
+ * second write on the same topic still cannot race the first one's read-back —
+ * which is the whole point of `serialise` and must not be traded away for
+ * latency.
+ *
+ * `settled` never rejects. Callers may ignore it, but a caller that ignores it
+ * gives up its only chance to learn the write was superseded.
+ */
+export interface SettlingWrite {
+  /** The version the upload was accepted at. */
+  version: number;
+  /** Resolves when the read-back finishes. Never rejects. */
+  settled: Promise<VerifiedWriteResult>;
+}
+
+export function writeContentFeedSettling(args: {
+  signerPrivKey: string;
+  ownerAddress: string;
+  topic: string;
+  data: unknown;
+  gatewayUrl?: string;
+  /**
+   * FORWARDED to `writeContentFeed` — see its doc for when this is safe. It is
+   * safe through THIS entry point in a way it is not through a bare write: the
+   * read-back verifies at exactly this version, so a wrong guess comes back
+   * `superseded` instead of silently losing the write.
+   *
+   * Declared explicitly because it was once omitted here while callers passed
+   * it: a spread does not trip excess-property checking, so the value was
+   * dropped silently and every write went on probing.
+   */
+  knownVersion?: number;
+}): Promise<SettlingWrite> {
+  let accept!: (w: SettlingWrite) => void;
+  let refuse!: (e: unknown) => void;
+  const uploaded = new Promise<SettlingWrite>((res, rej) => { accept = res; refuse = rej; });
+
+  const job = serialise(args.ownerAddress, args.topic, async () => {
+    let version: number;
+    try {
+      version = await writeContentFeed({
+        signerPrivKey: args.signerPrivKey,
+        topic: args.topic,
+        data: args.data,
+        ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
+        ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
+      });
+    } catch (e) {
+      // The upload itself failed — there is nothing to settle, and the caller
+      // must hear about it rather than paint a count for an entry that does
+      // not exist.
+      refuse(e);
+      throw e;
+    }
+    const settled = verifyLanded(args, version);
+    accept({ version, settled });
+    // Returned so the per-topic chain waits for the read-back, not the upload.
+    return settled;
+  });
+  // Failures reach the caller through `uploaded`; this only stops the chain's
+  // own rejection from surfacing as unhandled.
+  void job.catch(() => undefined);
+
+  return uploaded;
 }

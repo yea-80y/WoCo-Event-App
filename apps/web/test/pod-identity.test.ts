@@ -150,3 +150,82 @@ test("escrow-restore reproduces the original identity and never re-signs", async
   const divergent = await deriveKeypair(seedFromSig(SIG_B));
   assert.notEqual(divergent.publicKeyHex, keyOrig, "a fresh signature after rotation must NOT match");
 });
+
+// ---------------------------------------------------------------------------
+// The address a seed is keyed by — the credits-rail dead path (#172)
+// ---------------------------------------------------------------------------
+//
+// This is the mechanism behind a bug that killed the coaster-credits rail for
+// every passkey and web3auth rider, and killed it SILENTLY. `credits.ts` looked
+// the seed up by `auth.parent`, which for both kinds is the KERNEL address,
+// while the seed is stored under the POD address (the PRF-EOA / Web3Auth EOA —
+// auth-store `_getPodAddress`, invariant #1). The read hit a slot that is never
+// written, so `ensurePodIdentity()` succeeded — having just made the rider
+// approve a ceremony — and the next line threw "could not unlock".
+//
+// The reason it needs pinning HERE, against the real storage code, is that the
+// symptom is a null rather than a throw: nothing about a wrong-address lookup
+// announces itself, and upstream it rendered as an ordinary signed-out card.
+// These run without WebAuthn because the bug never involved WebAuthn.
+
+// The two addresses a passkey account actually has. They are unrelated: the
+// Kernel is the parent identity, the PRF-EOA is what POD material is keyed by.
+const PRF_EOA = "0x2222222222222222222222222222222222222222";
+const KERNEL_PARENT = "0x3333333333333333333333333333333333333333";
+
+/** Both slots AND the legacy one. `clearPodIdentity()` with no argument drops
+ *  only the legacy global slot, so a per-account seed written by one test is
+ *  still there for the next — which is exactly how a wrong-address lookup can
+ *  appear to succeed. Naming both addresses is what makes these tests mean
+ *  what they say. */
+async function clearBoth() {
+  await clearPodIdentity(PRF_EOA);
+  await clearPodIdentity(KERNEL_PARENT);
+}
+
+test("a seed stored under the POD address is INVISIBLE under the Kernel parent", async () => {
+  await clearBoth();
+  const prfEoa = PRF_EOA;
+  const kernelParent = KERNEL_PARENT;
+
+  await storePodSeed(prfEoa, "44".repeat(32));
+
+  assert.ok(await getPodKeypair(prfEoa), "the POD address must resolve the identity");
+  assert.equal(
+    await getPodKeypair(kernelParent),
+    null,
+    "looking up by the Kernel parent must find NOTHING — this returning null, " +
+      "rather than throwing, is why the dead rail looked like a rider who had " +
+      "simply not collected yet",
+  );
+});
+
+test("storing under the Kernel parent does not rescue a POD-address lookup either", async () => {
+  // The mirror image, which is what makes it a binding rather than a fallback:
+  // there is no address that satisfies both, so a caller MUST resolve the right
+  // one rather than picking whichever it has to hand.
+  await clearBoth();
+
+  await storePodSeed(KERNEL_PARENT, "55".repeat(32));
+  assert.equal(await getPodKeypair(PRF_EOA), null);
+});
+
+test("the SEED decides the identity, not the address it was filed under", async () => {
+  // Worth stating explicitly, because it is what makes a wrong-address lookup
+  // SILENT rather than wrong-looking: the identity is a function of the seed,
+  // and the address only decides which seed you find. So a bad address yields
+  // nothing at all — never a second, divergent identity — and the rail failed
+  // loudly instead of quietly signing laps under a stranger.
+  await clearBoth();
+  const seed = "66".repeat(32);
+  await storePodSeed(PRF_EOA, seed);
+  await storePodSeed(KERNEL_PARENT, seed);
+
+  const a = await getPodKeypair(PRF_EOA);
+  const b = await getPodKeypair(KERNEL_PARENT);
+  assert.ok(a && b);
+  // Same seed ⇒ same identity. The identity is a function of the SEED; the
+  // address only decides which seed you find. That is precisely why a
+  // wrong-address read is silent instead of wrong-looking.
+  assert.equal(a.publicKeyHex, b.publicKeyHex);
+});

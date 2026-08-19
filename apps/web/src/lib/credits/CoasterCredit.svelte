@@ -11,8 +11,13 @@
    */
   import { onMount } from "svelte";
   import { lookupSubject, currentEra, formerNames, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
-  import { readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
+  import { creditsUnlocked, readMyCredit, recordRide, publishSubject, type CreditHead } from "./credits.js";
+  import { shouldRetryCold } from "./partition.js";
   import { utcSessionDate } from "./next-statement.js";
+  import { requireAccountForAction } from "../auth/ensure-action.js";
+  import { cacheGet, cacheSet, TTL } from "../cache/cache.js";
+  import type { VerifiedWriteResult } from "../swarm/verified-write.js";
+  import { measured } from "../swarm/probe-stats.js";
 
   interface Props {
     subject: Hex0x;
@@ -22,6 +27,34 @@
 
   let head = $state<CreditHead | null>(null);
   let loaded = $state(false);
+  /**
+   * Whether the rider's collection has been unlocked on this device. False
+   * covers both "no account" and "signed in but keys not yet established", and
+   * the card shows the same face for both: the honest thing to say to either is
+   * "ride it once to add the credit", because neither has a count we can read.
+   * "Not collected yet" would be a claim, and for a returning rider on a fresh
+   * device it would be a false one.
+   */
+  let unlocked = $state(false);
+  /**
+   * How many writes have a read-back still outstanding. While ANY is, the next
+   * tap goes cold — it re-reads instead of reusing `head` — because a head from
+   * a write that turns out `superseded` never landed, and building the next
+   * total on it would write a wrong number.
+   *
+   * A COUNTER, not a flag. Two settlements can overlap: a `superseded` one
+   * fires the cold retry, and a rider may tap again while that retry is in
+   * flight. With a boolean, whichever read-back finished first cleared it while
+   * the other was still outstanding — and the next tap then warm-reused an
+   * unverified head, which is the double-count this is here to prevent.
+   *
+   * Rare in practice — Rita's two-minute cadence guard blocks a repeat tap —
+   * but the demo coaster ships `cadenceMinutes: 0` precisely so rapid taps are
+   * a supported flow.
+   */
+  let settlingCount = $state(0);
+  /** Any write whose read-back is still outstanding. */
+  const settling = $derived(settlingCount > 0);
   let inFlight = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -37,7 +70,26 @@
    *  credit) but a rider who rode it under the old name wants that on the
    *  record — so the previous name is shown, not overwritten. */
   const previously = $derived(definition ? formerNames(definition) : []);
+  /** The remembered count's storage key, and the count itself. Declared here
+   *  because `shownLaps` below reads it. */
+  const cacheK = $derived(`credit:laps:${subject}`);
+  let cachedLaps = $state<number | null>(null);
+
+  /** Confirmed from a live read or a landed write. Gates ACTIONS — the badge,
+   *  "Make public", the publish confirmation — because each of those asserts
+   *  something about state we have actually seen. */
   const laps = $derived(head?.statement.total ?? 0);
+  /**
+   * What the card SHOWS, which falls back to the remembered count.
+   *
+   * The two must not disagree, and they did: a reload painted the remembered
+   * card — the count, "Credit collected" — while the button underneath still
+   * read "I rode it", the first-collection wording, because `laps` was 0 until
+   * the live read landed. The card said the credit was held and the only
+   * control on it said it was not. A remembered card has to be internally
+   * consistent or it is worse than a spinner.
+   */
+  const shownLaps = $derived(head?.statement.total ?? cachedLaps ?? 0);
   /**
    * The session block is TODAY'S only when its date is today. It rolls over at
    * WRITE time, not at midnight, so a rider who logged three laps on Saturday
@@ -49,12 +101,54 @@
   );
   const isPublic = $derived(head?.visibility === "public");
 
+  /**
+   * The last count this device SAW, for instant paint on load.
+   *
+   * DISPLAY ONLY, and the boundary is the whole safety argument. `readMyCredit`
+   * is already the lenient path — it collapses every failure to null — whereas
+   * `head` feeds the next write, where a stale value restarts a rider's
+   * lifetime count at zero. So the cache is never allowed to become `head`: it
+   * paints a number and nothing else, and the live read replaces it.
+   *
+   * The `credit:` prefix is registered in `USER_SCOPED_PREFIXES` so sign-out
+   * clears it. That is not hygiene here: this is a children's service, and a
+   * shared park or family device must not show the next person what the last
+   * one rode.
+   */
+
   async function refresh() {
-    head = await readMyCredit(subject);
+    head = await measured("read own count", () => readMyCredit(subject));
     loaded = true;
+    // Only a real read updates the remembered number. A failed read leaves the
+    // previous one in place rather than writing a zero nobody rode.
+    if (head) {
+      cachedLaps = head.statement.total;
+      cacheSet(cacheK, head.statement.total, TTL.COLLECTION);
+    }
   }
 
-  onMount(refresh);
+  /**
+   * Reading a private logbook needs the rider's own keys, and establishing
+   * those keys prompts — so the mount read is GATED on them already existing.
+   * Without the gate, merely opening this page pops a signing dialog at a rider
+   * who has not tapped anything, which is both alarming in a queue and false to
+   * a rail that promises nothing is written without a deliberate tap. The tap
+   * itself does the unlocking, where the rider has asked for it.
+   */
+  onMount(async () => {
+    unlocked = await creditsUnlocked();
+    if (unlocked) {
+      // Paint the remembered count FIRST. The live read walks the rider's feeds
+      // — several round trips, each of which may probe past a feed's end, which
+      // is the most expensive read on Swarm — and a rider opening their own
+      // card should not watch a spinner to be told a number their device
+      // already knew. The live read then replaces it.
+      cachedLaps = cacheGet<number>(cacheK);
+      await refresh();
+    } else {
+      loaded = true;
+    }
+  });
 
   async function collect() {
     if (inFlight) return;
@@ -73,24 +167,94 @@
     error = null;
     notice = null;
     try {
-      const res = await recordRide(subject);
+      // The tap IS the sign-in prompt. `recordRide` would otherwise throw "Sign
+      // in to collect a credit" into the error slot — a dead end, since nothing
+      // on this card offers a way in. Cancelling is not a failure and gets no
+      // error: the rider changed their mind, and the card is unchanged.
+      // No `context` deliberately: the attendee subtitle in the login modal
+      // tells riders that accounts are for organisers, which is exactly the
+      // wrong thing to say to the rider we just asked to sign in.
+      if (!(await requireAccountForAction())) return;
+      // No pre-read: `recordRide` does its own — it reads the live head to carry
+      // the lifetime total forward — so one here would be a round trip that
+      // changes no outcome.
+      // The head this page already read on mount, handed back so the tap does
+      // not re-read the rider's own index and head seconds later. `head` is
+      // only ever set from a CLEAN read, and null falls back to the full
+      // tri-state path — see `recordRide`.
+      const res = await measured("record a lap", () =>
+        recordRide(subject, 1, settling ? null : head),
+      );
       if (res.ok) {
         lastTapAt = Date.now();
-        head = { statement: res.statement, visibility: res.visibility };
+        head = { statement: res.statement, visibility: res.visibility, version: res.version };
         loaded = true;
-        // An unconfirmed write is not a failed one — the chunk is uploaded and
-        // the gateway simply hasn't finished whitelisting it. Saying "saved,
-        // still settling" is the honest version of a spinner that never ends.
-        if (!res.confirmed) notice = "Saved — still settling on the network.";
+        // Only NOW is the collection provably unlocked. Setting this before the
+        // write would make a declined key ceremony show the unlocked face —
+        // "Not collected yet" — which is a claim, and for a rider who has laps
+        // on another device a false one.
+        unlocked = true;
+
+        // The count is on screen the moment the UPLOAD was accepted, which is
+        // when the rider's signed entry durably exists. The read-back finishes
+        // on its own; it protects against one thing — another device's bytes
+        // landing at our version — and the rider gains nothing by watching it.
+        settlingCount += 1;
+        void res.settled.then((r) => settle(r, true));
       } else {
         error = res.error;
-        // The count we hold may be stale if another device won the write, so
-        // re-read rather than leaving a number on screen that lost a race.
-        await refresh();
+        // Re-derive rather than assume. This branch is right for a lost write
+        // race — the keys are fine and the count on screen may be stale — but
+        // the write can also have failed BECAUSE the rider declined the key
+        // ceremony, and a bare re-read then walks straight back into
+        // `ensurePodIdentity` and re-opens the prompt they just dismissed.
+        // Asking first costs one device read and never prompts.
+        unlocked = await creditsUnlocked();
+        if (unlocked) await refresh();
       }
     } finally {
       inFlight = false;
     }
+  }
+
+  /**
+   * What a finished write means for the card.
+   *
+   * `superseded` is the ONE outcome meaning the entry did not land — another
+   * device's bytes are at our version. The rider tapped and their lap is not
+   * recorded through no fault of theirs, so the honest response is to record it,
+   * not to report a failure they cannot act on. `retry` is allowed exactly once
+   * and reads everything fresh; a second loss is a live race with another device
+   * and they are told.
+   *
+   * Never a silent decrement: if it does end in failure the count is repainted
+   * from a real read, so the number on screen is always one somebody wrote.
+   */
+  async function settle(r: VerifiedWriteResult, retry: boolean) {
+    settlingCount -= 1;
+    if (r.status === "unconfirmed") {
+      // Uploaded but not read back — freshly relayed chunks are whitelisted
+      // asynchronously, so this is routine and NOT a failure.
+      notice = "Saved — still settling on the network.";
+      return;
+    }
+    if (!shouldRetryCold(r.status, retry)) {
+      if (r.status !== "superseded") return;
+      error = "Another device recorded a ride at the same moment.";
+      await refresh();
+      return;
+    }
+    // Cold: everything re-read, nothing reused from the attempt that lost.
+    settlingCount += 1;
+    const again = await recordRide(subject, 1, null);
+    if (!again.ok) {
+      settlingCount -= 1;
+      error = again.error;
+      await refresh();
+      return;
+    }
+    head = { statement: again.statement, visibility: again.visibility, version: again.version };
+    void again.settled.then((r2) => settle(r2, false));
   }
 
   async function confirmPublish() {
@@ -121,15 +285,35 @@
         <p class="formerly">Ridden as {previously.join(", ")}</p>
       {/if}
     </div>
-    {#if loaded && laps > 0}
+    {#if loaded && unlocked && laps > 0}
       <span class="badge" class:pub={isPublic}>
         {isPublic ? "Public" : "Private"}
       </span>
     {/if}
   </header>
 
-  {#if !loaded}
+  {#if !loaded && cachedLaps !== null}
+    <!-- The WHOLE held state, not just the figure. Painting the number alone
+         left the card visibly assembling itself: the count appeared at once and
+         "Credit collected" arrived seconds later when the live read landed,
+         which reads as broken rather than fast. A remembered card is either
+         shown or it is not.
+
+         Deliberately not labelled provisional: it is the number this rider last
+         saw, the live read almost always agrees, and a caveat on a correct
+         figure teaches them to distrust it. -->
+    <div class="tally">
+      <div class="figure">
+        <span class="num">{shownLaps}</span>
+        <span class="unit">{shownLaps === 1 ? "lap" : "laps"}</span>
+      </div>
+    </div>
+    <p class="credit">Credit collected — only you can see it</p>
+    <p class="syncing">Checking your logbook…</p>
+  {:else if !loaded}
     <p class="state">Loading your collection…</p>
+  {:else if !unlocked}
+    <p class="state">Ride it once to add the credit.</p>
   {:else if laps === 0}
     <p class="state">Not collected yet. Ride it once to add the credit.</p>
   {:else}
@@ -143,16 +327,27 @@
       {/if}
     </div>
     <!-- The credit itself: held once, forever, from the first ride. The count
-         is a property of it, which is why it reads as a separate line. -->
-    <p class="credit">Credit collected</p>
+         is a property of it, which is why it reads as a separate line.
+         The private clause rides along rather than taking a slot of its own: a
+         child does not decode a "PRIVATE" badge as reassurance, and this is the
+         whole private-by-default statement said in words, always true, at the
+         one moment a rider is looking at what they just made. -->
+    <p class="credit">{isPublic ? "Credit collected" : "Credit collected — only you can see it"}</p>
   {/if}
 
   <div class="actions">
-    <button class="collect" onclick={collect} disabled={inFlight || !loaded}>
-      {#if inFlight}Saving…{:else if laps === 0}I rode it{:else}Add a lap{/if}
+    <!-- NOT gated on `loaded`. That flag means "the live read finished", and
+         the whole point of painting a remembered card is that a rider does not
+         wait for it. Tapping before it lands is SAFE: `head` is still null, so
+         `recordRide` takes the full tri-state path — the same reads the mount
+         was doing, just triggered by someone who actually wanted something. -->
+    <button class="collect" onclick={collect} disabled={inFlight}>
+      <!-- `shownLaps`, not `laps`: the label must agree with the card above it,
+           including while a remembered card waits for the live read. -->
+      {#if inFlight}Saving…{:else if shownLaps === 0}I rode it{:else}Add a lap{/if}
     </button>
 
-    {#if loaded && laps > 0 && !isPublic && !confirmingPublish}
+    {#if loaded && unlocked && laps > 0 && !isPublic && !confirmingPublish}
       <button class="link" onclick={() => (confirmingPublish = true)} disabled={inFlight}>
         Make public
       </button>
@@ -278,6 +473,15 @@
     font-family: var(--font-mono);
     font-size: 0.6875rem;
     letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+
+  /* A quiet note, not a blocker: the card is usable while this is on screen. */
+  .syncing {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.06em;
     color: var(--text-dim);
   }
 
