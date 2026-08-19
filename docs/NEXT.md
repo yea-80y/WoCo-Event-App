@@ -48,20 +48,28 @@ read-back guards them; read-modify-write snapshot writes must refuse.**
 
 | # | Item | Owner | State |
 |---|---|---|---|
-| 1 | **Finding 5 — scan-first resolution** | Opus build | Fable has given a mechanical spec (in its round-2 review): resolve in-band at the hinted band FIRST; terminal when `latest < LAST_VERSION_IN_BAND` and the scan was clean, with ZERO opener probes; walk only on a full band or a bad hint. Cuts a warm read from ~2 hits + 4 misses to 1 hit + 2 misses. The tripwire must move to the new entry point. **Next build item.** |
+| 1 | ~~Finding 5 — scan-first resolution~~ **DONE, signed off** | — | Built with TWO measured deviations from the spec, both confirmed sound on review. (a) A last-slot probe on WALK-UP iterations only: the spec as written rescanned every full band on the climb, costing 542 probes against 256 on a cold six-band feed. (b) A `maxVersion` ceiling on banded scans — versions above the last slot cannot exist by construction, so probing them was two guaranteed missing-chunk searches per full-band scan. Result: warm reads probe ZERO openers; cold six-band is 80 probes / 2 misses vs walk-first's 13 / 2 — **misses equal**, extra cost is cheap hits paid once per device. Pressure valve if the browser re-run says the cold band-0 scan is material: apply the last-slot probe to the first band too when entry is provably cold (`hintBand === 0`, no stored hint). Recorded, not built. |
 | 2 | **`BANDED_FORMATS` fails OPEN against undercounts** | Opus | A new banded format added to `INDEXABLE_FORMATS` but forgotten in `BANDED_FORMATS` reads as pinned — a silent 64-write tally cap, no hang, no failing test. Needs an exhaustiveness assertion tying every indexable format to an explicit banded/pinned declaration. |
 | 3 | **`indexSubject`'s default reader is never exercised** | Opus | Every test injects `readFeed`. This is the same fixture-hides-the-real-reader shape that let the non-terminating walk ship. |
 | 4 | **Browser re-run of the measurement** | Owner | The cost table in COASTER_CREDITS_PLAN is a MODEL. Re-run with the three-state hint instrument. Fable: this should stay BLOCKING for launch even though it does not block this merge. |
-| 5 | Synchronous gateway whitelisting at write-accept | Opus | Whitelist-lag false-absents read as CLEAN, so they bypass every `clean`-based guard in this branch. `hintInvalidated` is the tripwire — confirm before tuning. |
+| 5 | Synchronous gateway whitelisting at write-accept | Opus | Whitelist-lag false-absents read as CLEAN, so they bypass every `clean`-based guard in this branch. `hintInvalidated` is the tripwire — confirm before tuning. **Two additions from the finding-5 review:** (a) the scan ceiling changes an overshoot from transient to PERMANENT — a version above the last slot is now invisible to every banded reader rather than merely unrolled-over. The creation paths are closed, but `writeContentFeed`'s internal resolve is still unbounded; completing this means threading the ceiling into banded probing WRITES as a refusal. (b) An absent banded feed now costs 2 misses where the walk cost 1, because the first window probes v0 and v1 together — this runs on every `liveVisibility` for the partition that does not exist, i.e. most riders pre-publish. One-line fix: probe v0 alone when starting from 0 with no validated hint. |
 | 6 | Declare banded-vs-pinned per format in `packages/shared` | Opus | A third-party indexer builds from shared and cannot see `BANDED_FORMATS`, which lives in `apps/server`. Non-blocking. |
 | 7 | Gate B (emblem rail) implementation | — | Designed in SWARM_SOCIAL_PLAN; nothing frozen is needed for it. Not started. |
+
+**Still open on the server:** `readBandedContentFeedJsonResult` got the scan CEILING but not
+scan-first — it still walks openers before scanning. Lower stakes than the client (the indexer
+is not on a rider's critical path) but the same win is available.
 
 **Process lessons from this branch, worth not repeating:** the test suites were green through a
 resolver that never terminated (the fixture replaced the real reader), through four type-level
 defects, and through two snapshot-erasure paths. `svelte-check` is slow here and was run late.
 A patch script using `replace()` without asserting the pattern matched silently no-opped and
-reported success. And a commit message claimed a root cause was closed when it was two-thirds
-closed — the same "reported done, never happened" shape as the bugs themselves.
+reported success. A commit message claimed a root cause was closed when it was two-thirds
+closed — the same "reported done, never happened" shape as the bugs themselves. And the hint
+instrument was regressed a SECOND time by the finding-5 rewrite, counting off `clean` so that a
+cold read and an invalidated hint both reported as healthy — the alarm could not fire on the
+very feeds it was installed to watch. An instrument that cannot see its own pathology fails
+silently, and probe counts cannot reveal it, because the counter is the broken part.
 
 ## Security workstream — passkey / accounts (added 2026-08-04)
 

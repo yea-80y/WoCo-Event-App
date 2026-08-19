@@ -28,7 +28,8 @@ import {
   versionedSocIdentifier,
   versionedPageIdentifier,
   resolveLatestSocVersion,
-  resolveOpenBand,
+  resolveBandedHead,
+  assembleContentFeed,
   readVersionedContentFeed,
   LEGACY_CONTENT_FEED_VERSION,
   type ContentFeedManifest,
@@ -386,18 +387,63 @@ export async function readBandedContentFeed<T>(
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   const read: SocChunkProbe = (id) => probeSoc(owner, id);
 
+  // SCAN-FIRST. Resolving the band by walking openers first spent its whole
+  // probe window on every read, and a probe past the last opened band is a
+  // missing-chunk search. Scanning the hinted band first means a band that is
+  // not full proves — by the full-band invariant — that no higher band exists,
+  // so the warm path probes no openers at all.
   const hintBand = Math.max(opts.hintBand ?? 0, readBandHint(owner, topicForBand));
-  const open = await resolveOpenBand(read, topicForBand, hintBand);
-  if (!open.exists) {
-    // Band 0 never opened. Clean means the feed genuinely does not exist;
-    // otherwise nobody could answer, which a caller must not cache as absence.
-    return open.clean
-      ? { status: "absent", band: 0, bandClean: true }
-      : { status: "unavailable", reason: "band probe inconclusive", band: 0, bandClean: false };
-  }
-  bumpBandHint(owner, topicForBand, open.band);
+  const head = await resolveBandedHead(read, topicForBand, hintBand, (band) =>
+    readVersionHint(owner, topicForBand(band)));
 
-  const res = await readContentFeedResult<T>(owner, topicForBand(open.band), { skipLegacy: true });
-  const scanClean = res.status === "found" ? res.scanClean : true;
-  return { ...res, band: open.band, bandClean: open.clean && scanClean };
+  if (head.latest === null) {
+    // Clean means the feed genuinely does not exist; otherwise nobody could
+    // answer, which a caller must never cache as absence.
+    return head.clean
+      ? { status: "absent", band: head.band, bandClean: true }
+      : { status: "unavailable", reason: "band resolution inconclusive", band: head.band, bandClean: false };
+  }
+
+  // Read at the EXACT version already resolved, rather than re-resolving through
+  // `readContentFeedResult` — the resolution above is the expensive part and
+  // doing it twice is what the reorder exists to stop.
+  const topic = topicForBand(head.band);
+  const base = contentFeedSocIdentifier(topic);
+  const asm = await assembleContentFeed(
+    read,
+    versionedSocIdentifier(base, head.latest),
+    (page) => versionedPageIdentifier(base, head.latest as number, page),
+  );
+  if (asm.status !== "found") {
+    // The resolution just confirmed this version PRESENT, so an absent re-read is
+    // a contradiction, never evidence the feed is empty.
+    return {
+      status: "unavailable",
+      reason: asm.status === "absent" ? `version ${head.latest} vanished between probe and read` : asm.reason,
+      band: head.band,
+      bandClean: false,
+    };
+  }
+
+  bumpBandHint(owner, topicForBand, head.band);
+  bumpVersionHint(owner, topic, head.latest);
+  // The THREE states, from what the resolution actually did — not from `clean`.
+  // Counting off `clean` was wrong in every case: a cold read looked like a used
+  // hint, and a genuinely invalidated hint looked like one too, because an absent
+  // probe IS clean. That made the whitelist-lag alarm unable to fire on exactly
+  // the feeds it was installed to watch.
+  countHint(!head.hintGiven ? "noHint" : head.hintInvalidated ? "hintInvalidated" : "hintUsed");
+
+  try {
+    return {
+      status: "found",
+      value: JSON.parse(new TextDecoder().decode(asm.bytes)) as T,
+      version: head.latest,
+      scanClean: head.clean,
+      band: head.band,
+      bandClean: head.clean,
+    };
+  } catch {
+    return { status: "unavailable", reason: "feed payload is not valid JSON", band: head.band, bandClean: false };
+  }
 }
