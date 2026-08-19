@@ -20,6 +20,7 @@
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { RecoveryEnvelope } from "../recovery/types.js";
+import { LAST_VERSION_IN_BAND } from "../statement/discipline.js";
 
 /** Max SOC/CAC payload (bytes). */
 export const SOC_MAX_PAYLOAD_SIZE = 4096;
@@ -456,6 +457,16 @@ export async function resolveLatestSocVersion(
   read: SocChunkProbe,
   baseIdFor: (version: number) => Uint8Array,
   hint = 0,
+  /**
+   * Highest version that can exist. For a BANDED feed this is
+   * `LAST_VERSION_IN_BAND`: a version above it cannot exist by construction,
+   * because the writer opens the next band instead. Probing past it is a
+   * missing-chunk network search — the expensive unit — for an address the
+   * scheme guarantees is empty, and it fires on EVERY scan of a full band.
+   *
+   * Omitted for unbanded feeds (events, profiles, sites), which have no ceiling.
+   */
+  maxVersion = Number.MAX_SAFE_INTEGER,
 ): Promise<SocVersionResolution> {
   let clean = true;
   const exists = async (v: number): Promise<boolean> => {
@@ -464,8 +475,11 @@ export async function resolveLatestSocVersion(
     return outcome.status === "found";
   };
 
+  // Clamped: a hint above the ceiling names a version that cannot exist, so
+  // probing it would spend a missing-chunk search to learn what the ceiling
+  // already says.
   const hintGiven = hint > 0;
-  let start = hintGiven ? hint : 0;
+  let start = hintGiven ? Math.min(hint, maxVersion) : 0;
   let hintValidated = false;
   if (start > 0) {
     hintValidated = await exists(start);
@@ -473,12 +487,13 @@ export async function resolveLatestSocVersion(
   }
 
   let latest = -1;
-  for (let cursor = start; ; cursor += VERSION_PROBE_WINDOW) {
+  for (let cursor = start; cursor <= maxVersion; cursor += VERSION_PROBE_WINDOW) {
+    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - cursor + 1);
     const flags = await Promise.all(
-      Array.from({ length: VERSION_PROBE_WINDOW }, (_, i) => exists(cursor + i)),
+      Array.from({ length: width }, (_, i) => exists(cursor + i)),
     );
     let ended = false;
-    for (let i = 0; i < VERSION_PROBE_WINDOW; i++) {
+    for (let i = 0; i < width; i++) {
       if (flags[i]) latest = cursor + i;
       else { ended = true; break; }
     }
@@ -491,6 +506,18 @@ export async function resolveLatestSocVersion(
 export interface BandedHeadResolution {
   /** The highest OPENED band. 0 when the feed does not exist yet. */
   band: number;
+  /**
+   * Hint diagnostics, aggregated across every scan this resolution ran.
+   *
+   * Reported here because the caller cannot reconstruct them: a banded read may
+   * scan several bands, and the question the instrument exists to answer — did a
+   * hint actually SAVE work, or did it fail and force a rescan — is only
+   * answerable inside. `hintInvalidated` is the alarm: a version this device
+   * believes it wrote reading as absent is the whitelist-lag pathology, and it
+   * is invisible in `clean`, because an absent probe IS clean.
+   */
+  hintGiven: boolean;
+  hintInvalidated: boolean;
   /** Highest version present in {@link band}, or null when nothing exists at all. */
   latest: number | null;
   /** False if any probe was inconclusive — a WRITER must refuse rather than guess. */
@@ -525,6 +552,24 @@ export interface BandedHeadResolution {
  * writer can refuse instead of writing at a version that may already exist —
  * where Bee would silently dedupe and drop the edit.
  */
+/**
+ * TRIPWIRE. A `topicForBand` that ignores its argument makes every opener probe
+ * address the SAME chunk, so if that chunk exists no walk can ever find an
+ * absent opener and it loops forever. Not hypothetical: the social indexer
+ * passed `() => likeStatementTopic(subject)` — correct for a type PINNED to band
+ * 0 — and hung on the first like it tried to tally.
+ *
+ * A pinned type must not be band-resolved at all; it reads its fixed topic.
+ */
+function assertBandFamilyVaries(topicForBand: (band: number) => string): void {
+  if (topicForBand(0) === topicForBand(1)) {
+    throw new Error(
+      "banded resolution requires a topic family that varies with band; " +
+        "a band-pinned feed must be read at its fixed topic instead",
+    );
+  }
+}
+
 export interface OpenBandResolution {
   /** The highest OPENED band. */
   band: number;
@@ -562,19 +607,7 @@ export async function resolveOpenBand(
     return outcome.status === "found";
   };
 
-  // TRIPWIRE. A `topicForBand` that ignores its argument makes every opener
-  // probe address the SAME chunk, so if that chunk exists the walk below can
-  // never find an absent opener and loops forever. This is not hypothetical: the
-  // social indexer passed `() => likeStatementTopic(subject)` — correct for a
-  // type pinned to band 0 — and hung on the first like it tried to tally.
-  // A type pinned to a constant band must not be band-walked at all; it should
-  // read its fixed topic directly.
-  if (topicForBand(0) === topicForBand(1)) {
-    throw new Error(
-      "resolveOpenBand requires a topic family that varies with band; " +
-        "a band-pinned feed must be read at its fixed topic instead",
-    );
-  }
+  assertBandFamilyVaries(topicForBand);
 
   let band = Number.isSafeInteger(hintBand) && hintBand > 0 ? hintBand : 0;
   if (band > 0 && !(await openerExists(band))) band = 0; // hint unreliable → full walk
@@ -595,18 +628,107 @@ export async function resolveOpenBand(
   return { band, exists: true, clean };
 }
 
+/**
+ * SCAN-FIRST band resolution — the cheap order.
+ *
+ * The obvious order (walk openers, then scan the band) pays its opener window on
+ * EVERY read, and a probe past the last opened band is a missing-chunk search:
+ * the multi-second unit. Scanning first inverts it. If the hinted band's latest
+ * lands BELOW the last slot, the full-band invariant proves no higher band was
+ * ever opened — so the head is right there and no opener is probed at all. That
+ * is the common case for every warm reader.
+ *
+ * Openers are probed only when the scan says the band is FULL (so a higher band
+ * may exist) or when the hint named a band that was never opened.
+ *
+ * Termination: `band` advances only when the NEXT band's opener is found, and
+ * bands are finite; the one restart (a hint above the open band) sets `band` to
+ * 0, after which it only increases. The tripwire below rules out the pinned
+ * family, where every opener is the same chunk and no walk could ever end.
+ */
 export async function resolveBandedHead(
   read: SocChunkProbe,
   topicForBand: (band: number) => string,
   hintBand = 0,
+  /** Stored version hint for a band, so a warm read does not rescan from 0. */
+  versionHintFor: (band: number) => number = () => 0,
 ): Promise<BandedHeadResolution> {
-  const open = await resolveOpenBand(read, topicForBand, hintBand);
-  if (!open.exists) return { band: 0, latest: null, clean: open.clean };
+  assertBandFamilyVaries(topicForBand);
 
-  // Phase 2 — latest version inside that one band.
-  const base = contentFeedSocIdentifier(topicForBand(open.band));
-  const inBand = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), 0);
-  return { band: open.band, latest: inBand.latest, clean: open.clean && inBand.clean };
+  let clean = true;
+  let hintGiven = Number.isSafeInteger(hintBand) && hintBand > 0;
+  let hintInvalidated = false;
+  const openerFound = async (band: number): Promise<boolean> => {
+    const id = versionedSocIdentifier(contentFeedSocIdentifier(topicForBand(band)), 0);
+    const outcome = await read(id);
+    if (outcome.status === "unavailable") clean = false;
+    return outcome.status === "found";
+  };
+
+  let band = Number.isSafeInteger(hintBand) && hintBand > 0 ? hintBand : 0;
+  let restarted = false;
+  let walkedUp = false;
+
+  for (;;) {
+    const base = contentFeedSocIdentifier(topicForBand(band));
+
+    // WALK-UP ONLY: ask whether this band is full before scanning it.
+    //
+    // Measured, because scanning first here is what a naive reading of
+    // "scan-first" would do and it costs 542 probes where walking cost 256 on a
+    // cold six-band feed: every full band on the way up gets scanned end to end
+    // for a latest we already know is the last slot. One probe at the last slot
+    // answers the same question, and it is a HIT on a full band.
+    //
+    // Deliberately NOT done on the first band, which is the warm path: there the
+    // band is usually partial, so this probe would be a MISS — the expensive
+    // unit — and reintroduce exactly the cost scanning first exists to avoid.
+    if (walkedUp) {
+      const lastSlot = await read(versionedSocIdentifier(base, LAST_VERSION_IN_BAND));
+      if (lastSlot.status === "unavailable") clean = false;
+      if (lastSlot.status === "found") {
+        if (!(await openerFound(band + 1))) return { band, latest: LAST_VERSION_IN_BAND, clean, hintGiven, hintInvalidated };
+        band += 1;
+        continue;
+      }
+      if (lastSlot.status === "unavailable") return { band, latest: null, clean, hintGiven, hintInvalidated };
+    }
+
+    const scan = await resolveLatestSocVersion(
+      read, (v) => versionedSocIdentifier(base, v), versionHintFor(band), LAST_VERSION_IN_BAND,
+    );
+    clean = clean && scan.clean;
+    hintGiven = hintGiven || scan.hintGiven;
+    // A hint whose version did not resolve forced a rescan from 0 — the alarm.
+    hintInvalidated = hintInvalidated || (scan.hintGiven && !scan.hintValidated);
+
+    if (scan.latest === null) {
+      // Nothing in this band. At band 0 that is a feed which does not exist; above
+      // it, the hint named a band nobody opened, so start again from the bottom.
+      if (!scan.clean || band === 0 || restarted) {
+        return { band: 0, latest: null, clean, hintGiven, hintInvalidated };
+      }
+      // A stored BAND hint that named a band nobody opened is the same alarm
+      // class as an invalidated version hint: it forced a restart from zero.
+      hintInvalidated = true;
+      band = 0;
+      restarted = true;
+      walkedUp = false;
+      continue;
+    }
+
+    // Below the last slot: the band is not full, so by the full-band invariant no
+    // higher band was ever opened. Head found, zero opener probes.
+    if (scan.latest < LAST_VERSION_IN_BAND) return { band, latest: scan.latest, clean, hintGiven, hintInvalidated };
+
+    // Full. A dirty scan cannot be trusted to have found the real last slot, so
+    // stop rather than opening a band off an unverified premise.
+    if (!scan.clean) return { band, latest: scan.latest, clean, hintGiven, hintInvalidated };
+
+    if (!(await openerFound(band + 1))) return { band, latest: scan.latest, clean, hintGiven, hintInvalidated };
+    band += 1;
+    walkedUp = true;
+  }
 }
 
 /**
@@ -695,6 +817,9 @@ export interface VersionedReadOptions {
    * nothing.
    */
   skipLegacy?: boolean;
+  /** Ceiling for the version scan — `LAST_VERSION_IN_BAND` for a banded topic.
+   *  See {@link resolveLatestSocVersion}. Omit for unbanded feeds. */
+  maxVersion?: number;
   /** Receives the scan diagnostics, so a caller can count what actually happened. */
   onScan?: (d: Pick<SocVersionResolution, "hintGiven" | "hintValidated" | "scannedFrom">) => void;
 }
@@ -709,7 +834,7 @@ export async function readVersionedContentFeed(
   const baseIdFor = (v: number): Uint8Array => versionedSocIdentifier(base, v);
 
   const { latest, clean, hintGiven, hintValidated, scannedFrom } =
-    await resolveLatestSocVersion(read, baseIdFor, hint);
+    await resolveLatestSocVersion(read, baseIdFor, hint, opts.maxVersion);
   opts.onScan?.({ hintGiven, hintValidated, scannedFrom });
   if (latest !== null) {
     const asm = await assembleContentFeed(

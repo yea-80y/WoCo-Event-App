@@ -36,6 +36,7 @@ import {
   assembleContentFeed,
   contentFeedSocIdentifier,
   resolveOpenBand,
+  LAST_VERSION_IN_BAND,
   contentFeedPageTopic,
   versionedSocIdentifier,
   versionedPageIdentifier,
@@ -460,7 +461,14 @@ export async function readBandedContentFeedJsonResult(
   // Statement feeds postdate versioning, so a legacy chunk cannot exist. The
   // indexer walks every participant, and an absent participant would otherwise
   // cost one guaranteed missing-chunk search EACH.
-  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band), 0, { skipLegacy: true });
+  // The ceiling matters more here than on a client: the indexer reads EVERY
+  // participant's feed on every pass, so probing v64/v65 of each full band cost
+  // two missing-chunk searches per participant per pass — on the shared node.
+  // Versions above the last slot cannot exist in a banded feed by construction.
+  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band), 0, {
+    skipLegacy: true,
+    maxVersion: LAST_VERSION_IN_BAND,
+  });
   return { ...res, band: open.band };
 }
 
@@ -471,7 +479,7 @@ export async function readContentFeedJsonResult(
   /** Statement rails only — see {@link readBandedContentFeedJsonResult}. Events,
    *  profiles and sites predate versioning and DO have legacy chunks, so this
    *  must stay opt-in rather than becoming the default. */
-  opts: { skipLegacy?: boolean } = {},
+  opts: { skipLegacy?: boolean; maxVersion?: number } = {},
 ): Promise<VersionedFeedRead> {
   // `readSocPayload` THROWS every fault except a bee not-found, so a transient
   // fault propagates out of this function rather than being cached as "no such
@@ -515,7 +523,10 @@ export async function readContentFeedJsonResult(
 
   // Probe forward from the best lower bound we have (caller hint vs cached).
   const hint = Math.max(versionHint, cached?.version ?? 0);
-  const res = await readVersionedContentFeed(read, baseTopic, hint, { skipLegacy: opts.skipLegacy });
+  const res = await readVersionedContentFeed(read, baseTopic, hint, {
+    skipLegacy: opts.skipLegacy,
+    maxVersion: opts.maxVersion,
+  });
   // Only a definitive answer may be cached. Caching an `unavailable` as absent
   // would serve "this feed does not exist" for the whole TTL off one bad read.
   //
