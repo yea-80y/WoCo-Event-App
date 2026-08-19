@@ -47,6 +47,7 @@ function leaf(total = 109): CarriedEvidenceLeaf {
     feedOwner: OWNER,
     seq: 4,
     version: 0,
+    band: 0,
     digest: `0x${"dd".repeat(32)}` as Hex0x,
     total,
   };
