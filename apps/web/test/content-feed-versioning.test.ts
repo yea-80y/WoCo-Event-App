@@ -18,6 +18,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+
   contentFeedSocIdentifier,
   contentFeedPageTopic,
   versionedSocIdentifier,
@@ -30,6 +31,14 @@ import {
   SOC_MAX_PAYLOAD_SIZE,
   type SocChunkProbe,
 } from "@woco/shared";
+
+/** The two fields these tests are about. `resolveLatestSocVersion` also reports
+ *  hint diagnostics — asserted in their own test — and pinning the whole shape
+ *  here would make every unrelated test fail whenever an instrument is added. */
+function outcome(r: { latest: number | null; clean: boolean }): { latest: number | null; clean: boolean } {
+  return { latest: r.latest, clean: r.clean };
+}
+
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -173,11 +182,11 @@ test("resolveLatestSocVersion walks past the parallel probe window", async () =>
   // 20 contiguous versions (> the internal window of 8) then a gap.
   for (let v = 0; v <= 20; v++) store.putImmutable(versionedSocIdentifier(base, v), enc(String(v)));
   const idFor = (v: number) => versionedSocIdentifier(base, v);
-  assert.deepEqual(await resolveLatestSocVersion(store.read, idFor), { latest: 20, clean: true });
+  assert.deepEqual(outcome(await resolveLatestSocVersion(store.read, idFor)), { latest: 20, clean: true });
 
   // A valid hint skips ahead; a stale-high hint (past the end) falls back to a scan.
-  assert.deepEqual(await resolveLatestSocVersion(store.read, idFor, 15), { latest: 20, clean: true });
-  assert.deepEqual(await resolveLatestSocVersion(store.read, idFor, 999), { latest: 20, clean: true });
+  assert.deepEqual(outcome(await resolveLatestSocVersion(store.read, idFor, 15)), { latest: 20, clean: true });
+  assert.deepEqual(outcome(await resolveLatestSocVersion(store.read, idFor, 999)), { latest: 20, clean: true });
 });
 
 test("empty feed resolves to absent (→ the one negative a caller may cache)", async () => {
@@ -185,8 +194,8 @@ test("empty feed resolves to absent (→ the one negative a caller may cache)", 
   const topic = "woco/event/none";
   assert.deepEqual(await readVersionedContentFeed(store.read, topic), { status: "absent" });
   assert.deepEqual(
-    await resolveLatestSocVersion(store.read, (v) =>
-      versionedSocIdentifier(contentFeedSocIdentifier(topic), v)),
+    outcome(await resolveLatestSocVersion(store.read, (v) =>
+      versionedSocIdentifier(contentFeedSocIdentifier(topic), v))),
     { latest: null, clean: true },
   );
 });
@@ -248,7 +257,7 @@ test("a retry that dedupes against a failed attempt's pages is caught by `len`",
   // Attempt 2. The probe of version 0 finds its base genuinely absent — a CLEAN
   // answer — so #154's refusal does not fire and cannot help here.
   const probe = await resolveLatestSocVersion(store.read, (v) => versionedSocIdentifier(base, v));
-  assert.deepEqual(probe, { latest: null, clean: true }, "the torn version reads as a clean absence");
+  assert.deepEqual(outcome(probe), { latest: null, clean: true }, "the torn version reads as a clean absence");
 
   // It targets version 0 again. Its page uploads DEDUPE against attempt 1's chunks
   // (immutable: old bytes kept), while the fresh manifest describes the new payload.
@@ -292,4 +301,32 @@ test("a torn multi-chunk feed is unavailable, not absent", async () => {
 
   const res = await readVersionedContentFeed(store.read, topic);
   assert.equal(res.status, "unavailable");
+});
+
+test("the hint instrument reports what the RESOLVER did, not what it was handed", async () => {
+  // The bug this replaces: the old counter recorded whether a hint EXISTED,
+  // while the resolver silently restarts from 0 when the hinted version does
+  // not resolve. A full scan was therefore indistinguishable from a warm read —
+  // the one measurement the whole banding effort depended on.
+  const store = makeStore();
+  const base = contentFeedSocIdentifier("woco/event/hints");
+  for (let v = 0; v <= 5; v++) store.putImmutable(versionedSocIdentifier(base, v), enc(String(v)));
+  const idFor = (v: number) => versionedSocIdentifier(base, v);
+
+  const cold = await resolveLatestSocVersion(store.read, idFor);
+  assert.deepEqual({ ...cold, latest: cold.latest }, { latest: 5, clean: true, hintGiven: false, hintValidated: false, scannedFrom: 0 });
+
+  const warm = await resolveLatestSocVersion(store.read, idFor, 3);
+  assert.equal(warm.hintGiven, true);
+  assert.equal(warm.hintValidated, true, "a hint that resolves is used");
+  assert.equal(warm.scannedFrom, 3, "and the scan really did start there");
+
+  // The alarm case: a hint whose version does NOT resolve. Same cost as a cold
+  // read, completely different cause — a version this device believes it wrote
+  // reading as absent.
+  const stale = await resolveLatestSocVersion(store.read, idFor, 99);
+  assert.equal(stale.hintGiven, true);
+  assert.equal(stale.hintValidated, false, "an unresolvable hint is INVALIDATED, not used");
+  assert.equal(stale.scannedFrom, 0, "and the scan restarted from zero");
+  assert.equal(stale.latest, 5);
 });

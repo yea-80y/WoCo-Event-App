@@ -51,7 +51,7 @@ import {
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { VersionedFeedRead } from "@woco/shared";
-import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { readBandedContentFeedJsonResult } from "../swarm/soc-upload.js";
 import { participantsFor } from "./participants.js";
 
 export type IndexableFormat = "woco.like.v1" | "woco.follow.v1" | "woco.credit.v1";
@@ -69,7 +69,10 @@ export const INDEXABLE_FORMATS: readonly IndexableFormat[] = ["woco.like.v1", "w
  * read cannot be made to fail on demand. Defaults to the real reader, so no
  * call site changes.
  */
-export type StatementFeedReader = (ownerHex: string, baseTopic: string) => Promise<VersionedFeedRead>;
+export type StatementFeedReader = (
+  ownerHex: string,
+  topicForBand: (band: number) => string,
+) => Promise<VersionedFeedRead & { band: number }>;
 
 export interface IndexResult {
   manifest: EvidenceManifestV1<BooleanEvidenceLeaf> | EvidenceManifestV1<CarriedEvidenceLeaf>;
@@ -113,17 +116,25 @@ function isAboutSubject(statement: { subject: string }, subject: Hex0x): boolean
   return statement.subject.toLowerCase() === subject.toLowerCase();
 }
 
-function topicFor(format: IndexableFormat, subject: Hex0x): string {
+/**
+ * A subject's topic FAMILY, one topic per band.
+ *
+ * Like and follow feeds never leave band 0 — they are latest-wins, so a feed
+ * gains a version per toggle, not per action — and their topic helpers bake
+ * that in. Credits genuinely band, so an indexer has to walk to the open one;
+ * deriving only band 0 would tally a rider's first 64 laps and silently stop.
+ */
+function topicForBand(format: IndexableFormat, subject: Hex0x): (band: number) => string {
   switch (format) {
     case "woco.like.v1":
-      return likeStatementTopic(subject);
+      return () => likeStatementTopic(subject);
     case "woco.follow.v1":
-      return followStatementTopic(subject);
+      return () => followStatementTopic(subject);
     case "woco.credit.v1":
       // PUBLIC salt only. A private credit lives at a topic derived from a key
       // only the rider holds, so it is not merely skipped here — it is
       // unaddressable, which is the property the salted topic was for.
-      return creditStatementTopic(creditPublicSalt(), subject);
+      return (band) => creditStatementTopic(creditPublicSalt(), subject, band);
   }
 }
 
@@ -187,16 +198,16 @@ function bytesDigest(bytes: Uint8Array): Hex0x {
 export async function indexSubject(
   format: IndexableFormat,
   subject: Hex0x,
-  readFeed: StatementFeedReader = readContentFeedJsonResult,
+  readFeed: StatementFeedReader = readBandedContentFeedJsonResult,
 ): Promise<IndexResult> {
   const participants = participantsFor(format, subject);
-  const topic = topicFor(format, subject);
+  const topics = topicForBand(format, subject);
   const unreadable: string[] = [];
 
   const reads = await mapLimit(participants, READ_CONCURRENCY, async (owner) => {
     try {
-      const res = await readFeed(owner, topic);
-      if (res.status === "found") return { owner, bytes: res.bytes, version: res.version };
+      const res = await readFeed(owner, topics);
+      if (res.status === "found") return { owner, bytes: res.bytes, version: res.version, band: res.band };
       // `absent` means read successfully and empty — the participant is
       // declared but contributed nothing. Only `unavailable` is a gap.
       if (res.status === "unavailable") unreadable.push(owner);
@@ -229,6 +240,7 @@ export async function indexSubject(
       observed.push({
         feedOwner: r.owner as Hex0x,
         version: r.version,
+        band: r.band,
         // The FROZEN digest, not a digest of the bytes: closure 5's tie-break
         // is defined over this exact value, so using anything else would make
         // our tie-breaks disagree with an honest second indexer's.
@@ -257,6 +269,7 @@ export async function indexSubject(
     observed.push({
       feedOwner: r.owner as Hex0x,
       version: r.version,
+      band: r.band,
       digest: bytesDigest(r.bytes),
       statement: parsed,
     });

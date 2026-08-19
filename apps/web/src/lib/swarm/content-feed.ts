@@ -28,6 +28,7 @@ import {
   versionedSocIdentifier,
   versionedPageIdentifier,
   resolveLatestSocVersion,
+  resolveOpenBand,
   readVersionedContentFeed,
   LEGACY_CONTENT_FEED_VERSION,
   type ContentFeedManifest,
@@ -255,17 +256,22 @@ export type ContentFeedResult<T> =
 export async function readContentFeedResult<T>(
   ownerAddress: string,
   topic: string,
+  opts: { skipLegacy?: boolean } = {},
 ): Promise<ContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   const read: SocChunkProbe = (id) => probeSoc(owner, id);
-  // Counted, not assumed: a read that starts from 0 walks EVERY version the feed
-  // has, so its cost grows with a rider's lap count. That is the one scaling
-  // shape this must not have, and reading the resolver cannot tell you whether
-  // it is happening.
+  // Counted from what the RESOLVER did, not from what we handed it. A stored
+  // hint whose version does not resolve restarts the scan from 0, so counting
+  // the hint's existence would report the expensive case as the cheap one —
+  // which is exactly the bug this instrument had.
   const hint = readVersionHint(owner, topic);
-  countHint(hint > 0 ? "hintHit" : "hintMiss");
-  const res = await readVersionedContentFeed(read, topic, hint);
+  const res = await readVersionedContentFeed(read, topic, hint, {
+    skipLegacy: opts.skipLegacy,
+    onScan: (d) => {
+      countHint(!d.hintGiven ? "noHint" : d.hintValidated ? "hintUsed" : "hintInvalidated");
+    },
+  });
   if (res.status !== "found") return res;
   if (res.version >= 0) bumpVersionHint(owner, topic, res.version);
   try {
@@ -282,7 +288,85 @@ export async function readContentFeedResult<T>(
  * BOTH "absent" and "could not read". Correct only for display paths that re-read
  * on the next visit (profiles, event detail, site pages).
  */
-export async function readContentFeed<T>(ownerAddress: string, topic: string): Promise<T | null> {
-  const res = await readContentFeedResult<T>(ownerAddress, topic);
+export async function readContentFeed<T>(
+  ownerAddress: string,
+  topic: string,
+  opts: { skipLegacy?: boolean } = {},
+): Promise<T | null> {
+  const res = await readContentFeedResult<T>(ownerAddress, topic, opts);
   return res.status === "found" ? res.value : null;
+}
+
+// ---------------------------------------------------------------------------
+// Banded feeds
+// ---------------------------------------------------------------------------
+
+const BAND_HINT_PREFIX = "woco:cfb:"; // content-feed band
+
+/** Band hints key off band 0's topic — the stable identity of the whole family. */
+function bandHintKey(owner: string, topicForBand: (band: number) => string): string {
+  const o = owner.startsWith("0x") || owner.startsWith("0X") ? owner.slice(2) : owner;
+  return `${BAND_HINT_PREFIX}${o.toLowerCase()}:${topicForBand(0)}`;
+}
+
+function readBandHint(owner: string, topicForBand: (band: number) => string): number {
+  try {
+    const v = globalThis.localStorage?.getItem(bandHintKey(owner, topicForBand));
+    const n = v ? parseInt(v, 10) : 0;
+    return Number.isSafeInteger(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Only ever RAISES — a lower value would send readers back through old bands. */
+function bumpBandHint(owner: string, topicForBand: (band: number) => string, band: number): void {
+  try {
+    if (band <= 0) return;
+    if (band > readBandHint(owner, topicForBand)) {
+      globalThis.localStorage?.setItem(bandHintKey(owner, topicForBand), String(band));
+    }
+  } catch {
+    /* ignore — hint is best-effort */
+  }
+}
+
+export type BandedContentFeedResult<T> = ContentFeedResult<T> & { band: number };
+
+/**
+ * Read the head of a BANDED feed, resolving which band is open first.
+ *
+ * A banded feed is one topic per {@link STATEMENT_BAND_SIZE} versions rather
+ * than one unbounded topic, so a read costs a bounded in-band scan instead of a
+ * probe per lifetime write. `hintBand` is a lower bound: pass the band recorded
+ * in a subject index (credits, where the partition rule makes that read
+ * mandatory anyway so the band rides free), or omit it and let the opener walk
+ * find it (social, which has no index read to carry one).
+ *
+ * `skipLegacy` is forced on: banded feeds are strictly newer than the
+ * pre-versioning scheme, so a legacy chunk cannot exist and probing for one
+ * would spend a guaranteed missing-chunk network search per absent read.
+ */
+export async function readBandedContentFeed<T>(
+  ownerAddress: string,
+  topicForBand: (band: number) => string,
+  opts: { hintBand?: number } = {},
+): Promise<BandedContentFeedResult<T>> {
+  const { probeSoc } = await import("./client-soc.js");
+  const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
+  const read: SocChunkProbe = (id) => probeSoc(owner, id);
+
+  const hintBand = Math.max(opts.hintBand ?? 0, readBandHint(owner, topicForBand));
+  const open = await resolveOpenBand(read, topicForBand, hintBand);
+  if (!open.exists) {
+    // Band 0 never opened. Clean means the feed genuinely does not exist;
+    // otherwise nobody could answer, which a caller must not cache as absence.
+    return open.clean
+      ? { status: "absent", band: 0 }
+      : { status: "unavailable", reason: "band probe inconclusive", band: 0 };
+  }
+  bumpBandHint(owner, topicForBand, open.band);
+
+  const res = await readContentFeedResult<T>(owner, topicForBand(open.band), { skipLegacy: true });
+  return { ...res, band: open.band };
 }

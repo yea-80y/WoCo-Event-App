@@ -69,7 +69,10 @@ export function deriveEntryLocation(
   subject: Hex0x,
   leaf: CarriedEvidenceLeaf,
 ): { identifier: Uint8Array; address: string } {
-  const topic = creditStatementTopic(creditPublicSalt(), subject);
+  // The leaf's BAND, not just its version: versions restart at 0 in each band,
+  // so addressing from the version alone would point at band 0's chunk of the
+  // same index — a different statement, or nothing at all.
+  const topic = creditStatementTopic(creditPublicSalt(), subject, leaf.band);
   const base = contentFeedSocIdentifier(topic);
   // The pre-versioning sentinel means a fixed-identifier chunk: no version is
   // folded in, because there was none when it was written.
