@@ -342,6 +342,10 @@ export type RideResult =
       /** The SOC version this statement was written at — the caller's next warm
        *  head must carry it, or the following tap goes back to probing. */
       version: number;
+      /** The BAND it was written in, which DIFFERS from the head's band on a
+       *  rollover. A warm head carrying the version without the band cannot
+       *  address the feed it was just written to. */
+      band: number;
       /**
        * How the write ended up, resolving AFTER this result. The ride is
        * already recorded — the upload was accepted — so this is not a gate on
