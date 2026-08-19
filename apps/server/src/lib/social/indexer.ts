@@ -51,7 +51,7 @@ import {
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { VersionedFeedRead } from "@woco/shared";
-import { readBandedContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { readBandedContentFeedJsonResult, readContentFeedJsonResult } from "../swarm/soc-upload.js";
 import { participantsFor } from "./participants.js";
 
 export type IndexableFormat = "woco.like.v1" | "woco.follow.v1" | "woco.credit.v1";
@@ -117,12 +117,31 @@ function isAboutSubject(statement: { subject: string }, subject: Hex0x): boolean
 }
 
 /**
+ * Which formats actually BAND, and so must be band-walked.
+ *
+ * Credits do: a lap appends, so a reader that only ever derived band 0 would
+ * tally a rider's first 64 laps and silently stop. Likes and follows do NOT:
+ * they are latest-wins, so a feed gains a version per toggle and stays at band
+ * 0 forever. Walking a band-pinned family is not merely wasteful — every opener
+ * probe would address the same chunk, so the walk could never terminate.
+ */
+const BANDED_FORMATS: ReadonlySet<IndexableFormat> = new Set(["woco.credit.v1"]);
+
+/**
+ * Read a feed pinned to band 0, without walking. `skipLegacy` because statement
+ * feeds postdate versioning, and an absent participant would otherwise cost one
+ * guaranteed missing-chunk search each, on every pass.
+ */
+const readPinnedBandFeed: StatementFeedReader = async (ownerHex, topicForBand) => {
+  const res = await readContentFeedJsonResult(ownerHex, topicForBand(0), 0, { skipLegacy: true });
+  return { ...res, band: 0 };
+};
+
+/**
  * A subject's topic FAMILY, one topic per band.
  *
- * Like and follow feeds never leave band 0 — they are latest-wins, so a feed
- * gains a version per toggle, not per action — and their topic helpers bake
- * that in. Credits genuinely band, so an indexer has to walk to the open one;
- * deriving only band 0 would tally a rider's first 64 laps and silently stop.
+ * For band-pinned formats the function ignores its argument — which is exactly
+ * why {@link BANDED_FORMATS} decides whether it may be walked.
  */
 function topicForBand(format: IndexableFormat, subject: Hex0x): (band: number) => string {
   switch (format) {
@@ -198,15 +217,17 @@ function bytesDigest(bytes: Uint8Array): Hex0x {
 export async function indexSubject(
   format: IndexableFormat,
   subject: Hex0x,
-  readFeed: StatementFeedReader = readBandedContentFeedJsonResult,
+  readFeed?: StatementFeedReader,
 ): Promise<IndexResult> {
+  const read = readFeed
+    ?? (BANDED_FORMATS.has(format) ? readBandedContentFeedJsonResult : readPinnedBandFeed);
   const participants = participantsFor(format, subject);
   const topics = topicForBand(format, subject);
   const unreadable: string[] = [];
 
   const reads = await mapLimit(participants, READ_CONCURRENCY, async (owner) => {
     try {
-      const res = await readFeed(owner, topics);
+      const res = await read(owner, topics);
       if (res.status === "found") return { owner, bytes: res.bytes, version: res.version, band: res.band };
       // `absent` means read successfully and empty — the participant is
       // declared but contributed nothing. Only `unavailable` is a gap.

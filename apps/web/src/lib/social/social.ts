@@ -186,7 +186,8 @@ async function addToSubjectIndex(
 
       // The index's own rollover, on the same rule the statement feeds use: a
       // band opens only once its predecessor is full.
-      const rollover = res.status === "found" && res.version === LAST_VERSION_IN_BAND;
+      // `>=`: an overshoot must not disable rollover permanently.
+      const rollover = res.status === "found" && res.version >= LAST_VERSION_IN_BAND;
       const targetBand = rollover ? res.band + 1 : res.band;
 
       const written = await writeContentFeedVerified({

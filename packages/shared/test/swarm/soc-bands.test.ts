@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   resolveBandedHead,
+  resolveOpenBand,
   contentFeedSocIdentifier,
   versionedSocIdentifier,
   type SocChunkProbe,
@@ -111,4 +112,24 @@ test("an inconclusive probe clears `clean` so a writer can refuse", async () => 
   const f = fakeFeed([10], { unavailableAt: bytesToHex(versionedSocIdentifier(base, 10)) });
   const r = await resolveBandedHead(f.read, topicForBand);
   assert.equal(r.clean, false);
+});
+
+test("a topic family that ignores its band is REFUSED, not walked forever", async () => {
+  // The bug this guards shipped for one review cycle and would have hung the
+  // production social indexer on the first like it tried to tally. A pinned
+  // family returns the same topic for every band, so every opener probe hits the
+  // SAME chunk; if it exists, no opener is ever absent and the walk cannot end.
+  // Proven at the time with a bounded probe: 201 probes and still advancing.
+  const f = fakeFeed([1]);
+  await assert.rejects(
+    () => resolveOpenBand(f.read, () => "woco/like/v1/pinned"),
+    /varies with band/,
+    "a constant family must fail loudly rather than loop",
+  );
+});
+
+test("a family that varies is accepted, so the tripwire cannot block real use", async () => {
+  const f = fakeFeed([FULL, 2]);
+  const r = await resolveOpenBand(f.read, topicForBand);
+  assert.deepEqual({ band: r.band, exists: r.exists }, { band: 1, exists: true });
 });

@@ -178,6 +178,8 @@ interface SubjectIndexRead {
   indexBand: number;
   /** Latest version inside that band, or null when the index does not exist. */
   indexVersion: number | null;
+  /** Whether the band walk was conclusive — a writer must refuse if not. */
+  bandClean: boolean;
 }
 
 async function readSubjectIndex(
@@ -185,7 +187,11 @@ async function readSubjectIndex(
   visibility: CreditVisibility,
 ): Promise<SubjectIndexRead> {
   const res = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopicForBand(keys, visibility));
-  const at = { indexBand: res.band, indexVersion: res.status === "found" ? res.version : null };
+  const at = {
+    indexBand: res.band,
+    indexVersion: res.status === "found" ? res.version : null,
+    bandClean: res.bandClean,
+  };
   if (res.status === "absent") return { read: { status: "absent" }, ...at };
   if (res.status === "unavailable") {
     return { read: { status: "unavailable", reason: res.reason ?? "index unavailable" }, ...at };
@@ -477,7 +483,10 @@ async function attemptRide(
   // the next lap starts band + 1 at version 0. Getting this backwards — opening
   // early, or writing a 65th version into a full band — breaks the reader's
   // right to stop walking, which is the whole basis of the bound.
-  const rollover = prevVersion === LAST_VERSION_IN_BAND;
+  // `>=`, not `===`. An overshoot (a dirty walk under-resolves the band and a
+  // write lands past the last slot) would otherwise make this false FOREVER —
+  // the feed silently stops rolling over and degrades back to unbanded growth.
+  const rollover = prevVersion !== undefined && prevVersion >= LAST_VERSION_IN_BAND;
   const writeBand = rollover ? band + 1 : band;
   const knownVersion = rollover ? 0 : prevVersion !== undefined ? prevVersion + 1 : undefined;
   const written = await writeStatement(keys, subject, visibility, statement, writeBand, knownVersion);
@@ -570,12 +579,14 @@ async function writeStatement(
  * Add a subject to a partition's index, or RAISE the band already recorded for
  * it. Both jobs, because they are the same read-modify-write.
  *
- * Bands merge by MAX, never by last-writer-wins. A band is a monotonic lower
- * bound on where a head lives, so the higher of two values is always the more
- * correct one — and taking the lower would send readers back through a band the
- * writer has already left, which the full-band invariant would then read as the
- * head. Losing the race and overwriting with a stale-low band is the one way
- * this could produce a wrong answer rather than a slow one.
+ * Bands merge by MAX, never by last-writer-wins, because the band is a
+ * monotonic lower bound and the higher value is the more informative one.
+ *
+ * Stated precisely, because an earlier version of this comment overstated it: a
+ * stale-low band does NOT produce a wrong head. Under the full-band invariant a
+ * band the writer has left reads as FULL, which forces the reader to continue —
+ * so the cost of taking the lower value is a longer walk, not a wrong answer.
+ * Max-merge is right for cost and for keeping the lower-bound semantics honest.
  *
  * The index feed is itself banded, so it rolls over on the same rule the
  * statement feeds do.
@@ -589,6 +600,10 @@ async function upsertSubjectBand(
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
     const existing = await readSubjectIndex(keys, visibility);
     if (existing.read.status === "unavailable") return false;
+    // A dirty band walk cannot bound the family: the band it failed to read may
+    // be open, and writing into the one below it lands an update where readers
+    // have stopped looking. Refuse, exactly as the version probe does.
+    if (!existing.bandClean) return false;
     const entries = existing.read.status === "ok" ? existing.read.entries : [];
 
     const current = entries.find((e) => e.subject === subject);
@@ -601,7 +616,9 @@ async function upsertSubjectBand(
     // The index's own rollover: a full band means the next write opens the next
     // one. No knownVersion — a fresh band's version 0 is probed, which is one
     // probe, and getting it wrong would silently dedupe the write away.
-    const rollover = existing.indexVersion === LAST_VERSION_IN_BAND;
+    // `>=` — see the statement path: `===` turns one overshoot into a permanent
+    // loss of rollover rather than a transient one.
+    const rollover = existing.indexVersion !== null && existing.indexVersion >= LAST_VERSION_IN_BAND;
     const targetBand = rollover ? existing.indexBand + 1 : existing.indexBand;
 
     const written = await writeContentFeedVerified({
@@ -734,7 +751,7 @@ async function removeFromSubjectIndex(
     if (existing.read.status !== "ok") return false;
     if (!existing.read.entries.some((e) => e.subject === subject)) return false;
 
-    const rollover = existing.indexVersion === LAST_VERSION_IN_BAND;
+    const rollover = existing.indexVersion !== null && existing.indexVersion >= LAST_VERSION_IN_BAND;
     const targetBand = rollover ? existing.indexBand + 1 : existing.indexBand;
 
     const written = await writeContentFeedVerified({

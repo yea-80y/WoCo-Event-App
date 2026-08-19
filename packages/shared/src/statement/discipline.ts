@@ -171,6 +171,12 @@ function assertBand(band: number): void {
  *
  * This is what makes a stale or absent band hint a COST problem rather than a
  * correctness one.
+ *
+ * SCOPE, so a third party does not build to it wrongly: the invariant governs
+ * only feeds that BAND. A type may instead be PINNED to a constant band —
+ * likes and follows are, because latest-wins gives them no growth axis — and a
+ * pinned feed simply keeps appending inside its band. For those, "band count
+ * derives from write count" does not hold, and they must never be band-walked.
  */
 export const LAST_VERSION_IN_BAND = STATEMENT_BAND_SIZE - 1;
 
