@@ -69,9 +69,14 @@ function report(): unknown {
 test("the topic is fixed — frozen vector", () => {
   // Freeze on first publication: a report already written lives at this address
   // and nowhere else. Fix the code, never the vector.
+  //
+  // MOVED ONCE, 2026-08-19, pre-launch: banding folded a uint64BE band into every
+  // statement-topic HMAC message, band 0 included, so this address changed with
+  // the scheme rather than through an edit to it. Reports written before that are
+  // orphaned by design — there were no real ones. This is the last such move.
   assert.equal(
     evidenceReportTopic("woco.like.v1", SUBJECT),
-    "woco/evidence-report/v1/fbc8d1e742567d626e770136d04fd7c5aae0a0f3e6deb9701bace043297208a6",
+    "woco/evidence-report/v1/f9106f3143e331894b1cc2f2f5aa2ab2d850adaf6b6514483a595142de0a402f",
   );
 });
 
