@@ -185,8 +185,20 @@ interface SubjectIndexRead {
 async function readSubjectIndex(
   keys: RiderKeys,
   visibility: CreditVisibility,
+  /**
+   * Set by callers whose result feeds a READ-MODIFY-WRITE of this index. Those
+   * reads must never trust the gateway's whitelist gate: a false absent there
+   * writes a fresh snapshot over a real one and erases every subject added
+   * since, with nothing to detect it. `liveVisibility` reads for DISPLAY and
+   * leaves this off, so the common cold read stays cheap.
+   */
+  opts: { thorough?: boolean } = {},
 ): Promise<SubjectIndexRead> {
-  const res = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopicForBand(keys, visibility));
+  const res = await readBandedContentFeed<unknown>(
+    keys.feedAddress,
+    indexTopicForBand(keys, visibility),
+    { thorough: opts.thorough },
+  );
   const at = {
     indexBand: res.band,
     indexVersion: res.status === "found" ? res.version : null,
@@ -633,7 +645,7 @@ async function upsertSubjectBand(
   band: number,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
-    const existing = await readSubjectIndex(keys, visibility);
+    const existing = await readSubjectIndex(keys, visibility, { thorough: true });
     if (existing.read.status === "unavailable") return false;
     // A dirty band walk cannot bound the family: the band it failed to read may
     // be open, and writing into the one below it lands an update where readers
@@ -782,7 +794,7 @@ async function removeFromSubjectIndex(
   visibility: CreditVisibility,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
-    const existing = await readSubjectIndex(keys, visibility);
+    const existing = await readSubjectIndex(keys, visibility, { thorough: true });
     if (existing.read.status !== "ok") return false;
     // Same refusal as `upsertSubjectBand`, and for a sharper reason: this writes
     // a snapshot with a subject REMOVED. Off an inconclusive resolution it can

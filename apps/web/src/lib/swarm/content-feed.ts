@@ -387,11 +387,25 @@ export type BandedContentFeedResult<T> = ContentFeedResult<T> & {
 export async function readBandedContentFeed<T>(
   ownerAddress: string,
   topicForBand: (band: number) => string,
-  opts: { hintBand?: number } = {},
+  opts: { hintBand?: number; thorough?: boolean } = {},
 ): Promise<BandedContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
-  const read: SocChunkProbe = (id) => probeSoc(owner, id);
+  // `thorough` is REQUIRED of any caller whose result feeds a read-modify-write
+  // of a whole snapshot. Such a writer probes for a fresh address independently
+  // of the resolution we hand it, so a false ABSENT here does not collide and
+  // get caught — it lands a fresh snapshot at the real latest version, VERIFIES,
+  // and erases every entry added since. Nothing detects it.
+  //
+  // This became load-bearing when the reader started trusting a tagged 403 as
+  // absent (client-soc.ts): the gate is authoritative only while its whitelist
+  // is complete, and a lost entry would otherwise read as a CLEAN absent —
+  // clean being exactly what the `bandClean`/`scanClean` guards check. Thorough
+  // reads keep consulting the server, so they cannot be fooled by the gate.
+  //
+  // Display and head reads do NOT need it: a lap is an exact-address write, so
+  // staleness collides, Bee dedupes, and the read-back reports `superseded`.
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
 
   // SCAN-FIRST. Resolving the band by walking openers first spent its whole
   // probe window on every read, and a probe past the last opened band is a

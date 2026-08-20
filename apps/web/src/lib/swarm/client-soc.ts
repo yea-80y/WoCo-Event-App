@@ -14,6 +14,7 @@
  */
 
 import { countProbe, countGatewayMissStatus } from "./probe-stats.js";
+import { isOurGateDenial } from "./gate-denial.js";
 import { Bee, PrivateKey, Bytes, Span, Identifier, Reference } from "@ethersphere/bee-js";
 import { calculateCacAddress, encodeSpan, SOC_MAX_PAYLOAD_SIZE, type SocReadOutcome } from "@woco/shared";
 import { authPost, get } from "../api/client.js";
@@ -151,6 +152,18 @@ export async function probeSoc(
     // (landmine 2, ETHERNA_USER_CONTENT_HANDOVER.md). Writes are rare, so the
     // extra server round-trip is confined to where it is correctness-critical.
     if (status === 404 && !opts.thorough) return { status: "absent" };
+    // A TAGGED 403 is our own gate saying it has never been told about this
+    // address — and since every write whitelists before uploading, that is a
+    // verdict, not a failure to ask. Trusting it removes a ~2-3s server round
+    // trip from every absent probe, which on the version-scan hot path was the
+    // single largest cost in a cold read (measured 2026-08-20).
+    //
+    // NOT on `thorough` reads. Those resolve the address a WRITE will target,
+    // where a false absent re-writes an existing immutable SOC and the edit is
+    // silently lost — so they keep asking the server no matter who refused.
+    // Callers whose result feeds a read-modify-write pass `thorough` for the
+    // same reason (see `readBandedContentFeed`).
+    if (status === 403 && !opts.thorough && isOurGateDenial(err)) return { status: "absent" };
     gatewayReason = `gateway HTTP ${status ?? "?"}`;
   }
 
