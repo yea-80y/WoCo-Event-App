@@ -333,6 +333,14 @@ SECURITY / AUTH:
   parse/re-stringify, and the client must hash the exact bytes it sends
 - SESSION_DOMAIN has NO chainId — ALLOWED_HOSTS is the host security guard
 
+GATEWAY WHITELIST IS NOW DATA-PLANE STATE, not a cache. The bee-proxy serves only addresses
+in its whitelist and tags its refusal (`X-Chunk-Gate: not-whitelisted`); the client treats that
+tagged 403 as "this chunk does not exist" — which is what took a cold credit read from 15.2s to
+~1.4s (#329). So a LOST whitelist entry makes real data read as absent, and an absent read is
+`clean`, which is exactly what the `scanClean`/`bandClean` erasure guards check for. Reads that
+feed a read-modify-write pass `thorough` and never trust the gate for this reason. Back up
+`whitelist.json`; never deploy an empty one over it.
+
 `.data/broadcast-chunks/` is the OPPOSITE case — it must NOT survive. Broadcast recipients
 are encrypted under a key held only in the running process, so a restart makes them
 permanently unreadable and the boot sweep deletes them. A deploy therefore kills in-flight
