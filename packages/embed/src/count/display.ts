@@ -58,12 +58,20 @@ export type CountState =
   | { kind: "known"; data: CountData; consecutiveFailures: number };
 
 /**
- * The verbatim line. Not a template and not paraphrasable: the overlay, the
- * widget and the counter page are one artifact at three sizes, and a second
- * surface inventing its own wording is how that stops being true.
+ * The verbatim line, matching the counter page (`VerifyApp.svelte`) exactly.
+ * Not a template and not paraphrasable: the overlay, the widget and the counter
+ * page are one artifact at three sizes, and a second surface inventing its own
+ * wording is how that stops being true.
+ *
+ * "THE RIDER IT BELONGS TO", never "the rider who rode it". The second phrasing
+ * asserts that somebody rode, which is precisely what this rail must never
+ * claim — a tier-1 statement is self-signed and nobody vouches for the ride.
+ * The signature establishes whose logbook the entry is in, not that the lap
+ * happened. An earlier draft of this file carried the "who rode it" wording;
+ * the test below is what stops it coming back.
  */
 export const SIGNED_LINE =
-  "Every lap here is signed by the rider who rode it. Nothing is taken on our word.";
+  "Every lap here is signed by the rider it belongs to. Nothing is taken on our word.";
 
 /** Shown instead of {@link SIGNED_LINE} when there is nothing to have signed. */
 export const NO_LAPS_LINE = "No laps logged yet.";

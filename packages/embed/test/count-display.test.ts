@@ -101,6 +101,22 @@ test("sustained failure marks the figure without removing it", () => {
 
 test("the supporting line is the agreed line, verbatim", () => {
   assert.equal(describeCount(known()).line, SIGNED_LINE);
+  assert.equal(
+    SIGNED_LINE,
+    "Every lap here is signed by the rider it belongs to. Nothing is taken on our word.",
+    "must match VerifyApp.svelte character for character — one artifact, three sizes",
+  );
+});
+
+test("no copy claims that anybody actually rode", () => {
+  // The distinction the whole rail rests on: a signature says whose logbook an
+  // entry is in, not that the lap happened. Nobody vouches for the ride at
+  // tier 1. "who rode it" shipped in an early draft of the line and reads as a
+  // vouch, so it is pinned out rather than left to memory.
+  const everything = [SIGNED_LINE, NO_LAPS_LINE, FLOOR_NOTE, ...Object.values(COPY)].join(" ").toLowerCase();
+  for (const claim of ["who rode it", "rode it", "proves", "confirmed they"]) {
+    assert.ok(!everything.includes(claim), `"${claim}" vouches for a ride this rail never witnesses`);
+  }
 });
 
 test("with no laps the line does not assert that anything was signed", () => {
