@@ -305,6 +305,57 @@ verify + challenge in the other, network log empty except content-addressed gate
 the possession-challenge UX on real key custody — what a challenge signature actually costs a
 user in passkey prompts.
 
+### BUILD RECORD — slice 1, the crypto core (2026-08-20, `feat/pod-cert-rail`)
+
+`packages/shared/src/pod-cert/` — `woco.pod-cert.v1`, `woco.pod-cert-challenge.v1`, the
+issuer's banded log topics, and the door. Pure, no I/O, no chain, nothing written to an
+address yet. 35 tests, frozen digest/signature/topic vectors included; shared suite 242 green.
+
+Five things were decided here that the design above did not settle. They are recorded because
+four of them are frozen and the fifth is the rule the whole rail exists to keep.
+
+1. **`encPubKey` is IN, optional** (owner decision). The plan parked it as a "cheap enabler to
+   consider". It is not redundant and could not have been added later for free: the holder's
+   X25519 key is HKDF'd from the POD SEED (`crypto/keys.ts`), not convertible from the ed25519
+   `holder`, and no WoCo feed publishes it — `UserProfile` has no key field. Without it, a
+   per-drop HPKE publisher enumerating an issuer's log has no key to seal to. Omitted-not-null,
+   so a certificate without it hashes exactly as it would have.
+2. **No `issuer` field.** Computable: `badge` IS `keccak256(dagCbor(manifestBody))`, so
+   `resolvePodCertIssuer` recomputes the digest and returns the manifest's `issuerPubkey` with
+   the binding already proved. Same rule that killed the credit statement's `prevSession`.
+   Skipping the digest recomputation is the substituted-manifest attack — an attacker's manifest
+   naming their own `issuerPubkey`, against which their forgeries verify perfectly. Tested.
+3. **PRESENCE, NOT QUANTITY.** A certificate holding is `count: 0 | 1` with `slots: []`. Two
+   consequences, both deliberate and both fail-closed: a `maxSlotExclusive` first-N gate is
+   UNSATISFIABLE from certificates (there is no allocation order on this rail, and inventing an
+   index would let a gate be passed by a number nothing allocated), and `minCount > 1` cannot
+   pass (re-issuance after a key rotation must never add up to "holds 2"). Rejecting such a
+   gate at its WRITE boundary, where it can be explained to the organiser instead of silently
+   never opening, is slice 2 work.
+4. **`issuedAt` is validated syntactically only** — `2026-02-30` is accepted, exactly as the
+   frozen credit validator accepts it. A stricter rule would make two honest implementations
+   disagree about garbage on a self-declared field nothing verifies.
+5. **The hard rule is structural, and now executable.** The only route from bytes to a
+   `PodHolding` on this rail is `podCertHolding`, which takes issuer-verified certificates and
+   nothing else. A `woco.credit.v1` object fails format dispatch — asserted in
+   `test/pod-cert/cert.test.ts`, including against its own signer.
+
+Two prefixes, not one: `woco-pod-cert-v1\n` and `woco-pod-cert-challenge-v1\n`. Sharing one
+would let a certificate's bytes be replayed as a challenge answer, or the reverse.
+
+FOOTGUN, flagged where it lives: the index format id is `woco.pod-cert-index.v1` but its SHAPE
+is `SubjectIndexV2` (band-carrying), because certificate feeds append one SOC version per
+issuance and so cross bands. The `V1`/`V2` in the discipline's interface names version the
+SHAPE; the `.v1` here versions this type's payload, which has never had another version.
+Validate only through `validatePodCertSubjectIndex`.
+
+STILL TO BUILD: the issuer's write path (sign + publish to the banded log, subject index
+upsert) and the `PodGate` holding-source opt-in — `holdingSource?: "chain" | "pod-cert"` plus
+the chain-free write-boundary validation that replaces `verifyPodGateBinding` for certificate
+gates; then the holder's passport import and challenge-signing UX; then the two proofs demanded
+above (two-browser end-to-end with the server BLOCKED, and what a challenge signature actually
+costs in passkey prompts).
+
 **Gate C — eligibility to make a statement at all.** Not a separate mechanism: on a
 permissionless substrate anyone may write to their own feed, so this reduces to Gate A at the
 relay plus what indexers choose to count. Recorded so it is not designed twice.

@@ -30,6 +30,7 @@ export * from "./shop/loyalty.js";
 export * from "./likes/index.js";
 export * from "./statement/index.js";
 export * from "./credit/index.js";
+export * from "./pod-cert/index.js";
 export * from "./social/index.js";
 export * from "./campaign/index.js";
 export * from "./marketing/index.js";

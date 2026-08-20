@@ -64,6 +64,12 @@ export function statementSigningPrefix(type: string, version: number): string {
  */
 export const STATEMENT_SIGNING_PREFIXES = Object.freeze({
   "woco.credit.v1": statementSigningPrefix("credit", 1),
+  // Gate B, the POD certificate rail. TWO prefixes because two different keys
+  // sign two different objects: the badge issuer signs the certificate, and the
+  // holder signs the possession challenge that answers for it. One prefix would
+  // let a certificate's bytes be replayed as a challenge answer, or the reverse.
+  "woco.pod-cert.v1": statementSigningPrefix("pod-cert", 1),
+  "woco.pod-cert-challenge.v1": statementSigningPrefix("pod-cert-challenge", 1),
 } as const);
 
 // ---------------------------------------------------------------------------
