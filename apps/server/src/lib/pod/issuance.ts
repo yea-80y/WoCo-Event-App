@@ -38,6 +38,21 @@ const NEVER_EXPIRES_TS = Math.floor(Date.now() / 1000) + 100 * 365 * 24 * 3600;
 export type IssuablePodKind = "badge" | "collectible";
 
 export interface IssuePodOpts {
+  /**
+   * How holdings of this badge will be RECORDED, which decides whether it needs
+   * a chain at all (docs/SWARM_SOCIAL_PLAN.md, Gate B).
+   *
+   * `chain` (default) is today's rail: sponsor-register the manifest so slot
+   * ownership becomes readable, and pre-sign one pod body per edition.
+   * `pod-cert` records holding as an issuer-signed certificate naming the
+   * holder's key, so there are no slots to allocate, no editions to claim, and
+   * nothing for a chain registration to hold. This is the branch that makes the
+   * plan's "chain footprint: ZERO" true rather than aspirational.
+   */
+  holdingSource?: "chain" | "pod-cert";
+  /** For `pod-cert` badges: the issuer's content-feed owner address, without
+   *  which nobody can find the certificate log. See `PodDirectoryEntry`. */
+  certLogOwner?: Hex0x;
   /** Verified parentAddress (owner) — stamped by the route, never from the body. */
   creatorAddress: Hex0x;
   kind: IssuablePodKind;
@@ -62,18 +77,39 @@ export interface IssuePodOpts {
  */
 export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntry> {
   const { creatorAddress, kind, name, description, categoryId, supply, signedManifest, podBodies, image } = opts;
+  const certSourced = opts.holdingSource === "pod-cert";
 
-  // ── Holdings/gating is a WoCoEventV2 feature — refuse to mint a POD on a
-  //    chain where it could never be read on-chain. ─────────────────────────
+  // ── Holdings/gating on the CHAIN rail is a WoCoEventV2 feature — refuse to
+  //    mint a POD on a chain where it could never be read on-chain. A
+  //    certificate badge reads its holdings from issuer signatures and never
+  //    touches a chain, so this requirement does not apply to it. ───────────
   const chainId = getActiveChainId();
-  if (getEventContractVersion(chainId) !== "v2") {
+  if (!certSourced && getEventContractVersion(chainId) !== "v2") {
     throw new Error(`POD issuance requires WoCoEventV2; active chain ${chainId} is not V2`);
+  }
+  if (certSourced && !opts.certLogOwner) {
+    throw new Error("a certificate badge needs certLogOwner, or its log can never be found");
   }
 
   // ── Validate the client-signed manifest against the pod bodies (same checks
-  //    createEventV2 runs before touching Swarm). ────────────────────────────
-  if (podBodies.length !== supply) {
-    throw new Error(`Expected ${supply} pod bodies, got ${podBodies.length}`);
+  //    createEventV2 runs before touching Swarm).
+  //
+  //    The two rails count bodies differently, and deliberately. On the chain
+  //    rail a body is an EDITION — one per claimable slot. A certificate names
+  //    its holder instead, so no edition is ever claimed and pre-signing one per
+  //    unit of supply would cost N signatures and N uploads to commit to bytes
+  //    no reader reads. The certificate rail commits to exactly ONE real
+  //    template body carrying the badge's display metadata: a genuine leaf of a
+  //    genuine (degenerate) tree under the locked scheme, so `metadataRoot` is
+  //    an honest commitment to bytes that exist and are fetchable, and
+  //    `verifySignedManifest` needs no special case. ─────────────────────────
+  const expectedBodies = certSourced ? 1 : supply;
+  if (podBodies.length !== expectedBodies) {
+    throw new Error(
+      certSourced
+        ? `A certificate badge commits to exactly 1 template pod body, got ${podBodies.length}`
+        : `Expected ${supply} pod bodies, got ${podBodies.length}`,
+    );
   }
   if (!verifySignedManifest(signedManifest)) {
     throw new Error("Manifest signature invalid");
@@ -107,15 +143,29 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
   const blob: SeriesManifestBlob = { v: 2, signedManifest, podRefs, manifestDigestHex: manifestRef };
   const swarmManifestRef = await uploadToBytes(JSON.stringify(blob));
 
-  // ── Sponsor-register on-chain. Price 0 (escrow dormant), open FIFO gate,
-  //    creator is the (irrelevant, price-0) payout recipient. ────────────────
-  const { onChainEventId, txHash } = await registerEventOnChain(supply, manifestRef, {
-    priceBaseUnits: 0n,
-    payoutRecipient: creatorAddress,
-    dropGate: ZERO_ADDRESS,
-    eventEndTs: NEVER_EXPIRES_TS,
-  });
-  console.log(`[pod] minted ${kind} "${name}" supply=${supply} eventId=${onChainEventId} tx=${txHash}`);
+  // ── Sponsor-register on-chain — CHAIN RAIL ONLY. Price 0 (escrow dormant),
+  //    open FIFO gate, creator is the (irrelevant, price-0) payout recipient.
+  //
+  //    A certificate badge skips this entirely. `totalSupply` on its manifest is
+  //    the issuer's DECLARED CAP, and nothing at any door enforces it: the
+  //    writing client refuses to issue past it, and over-issuance is provable
+  //    from the issuer's own signed log, since the excess certificates carry the
+  //    issuer's signature. Audit-enforced, not gate-enforced — the honest
+  //    ceiling for a rail whose trust root is one issuer's signature, and a door
+  //    verifying offline must not pretend otherwise. ─────────────────────────
+  let onChainEventId: string | undefined;
+  if (certSourced) {
+    console.log(`[pod] minted certificate ${kind} "${name}" cap=${supply} manifest=${manifestRef.slice(0, 10)} (no chain)`);
+  } else {
+    const registered = await registerEventOnChain(supply, manifestRef, {
+      priceBaseUnits: 0n,
+      payoutRecipient: creatorAddress,
+      dropGate: ZERO_ADDRESS,
+      eventEndTs: NEVER_EXPIRES_TS,
+    });
+    onChainEventId = registered.onChainEventId;
+    console.log(`[pod] minted ${kind} "${name}" supply=${supply} eventId=${onChainEventId} tx=${registered.txHash}`);
+  }
 
   // ── Directory upsert (awaited — this is the primary durable write). ───────
   const now = new Date().toISOString();
@@ -129,8 +179,11 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
     supply,
     issuedCount: 0,
     issuer: signedManifest.body.issuerPubkey,
-    eventId: onChainEventId,
-    chainId,
+    // A certificate badge has no chain registration, so it carries neither
+    // coordinate. `PodDirectoryEntry` already documents both as present only
+    // once on-chain registration confirms — this is the case that optionality
+    // was waiting for, so no schema change is needed.
+    ...(certSourced ? { certLogOwner: opts.certLogOwner } : { eventId: onChainEventId!, chainId }),
     swarmManifestRef,
     createdAt: now,
     updatedAt: now,

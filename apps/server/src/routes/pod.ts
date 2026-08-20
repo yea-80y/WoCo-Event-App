@@ -64,6 +64,8 @@ podRouter.post("/", requireAuth, async (c) => {
     signedManifest?: unknown;
     podBodies?: unknown;
     image?: unknown;
+    holdingSource?: unknown;
+    certLogOwner?: unknown;
   };
 
   if (b.kind !== "badge" && b.kind !== "collectible") {
@@ -90,6 +92,22 @@ podRouter.post("/", requireAuth, async (c) => {
   if (b.image !== undefined && typeof b.image !== "string") {
     return c.json({ ok: false, error: "image must be a Swarm ref string" }, 400);
   }
+  if (b.holdingSource !== undefined && b.holdingSource !== "chain" && b.holdingSource !== "pod-cert") {
+    return c.json({ ok: false, error: "holdingSource must be 'chain' or 'pod-cert'" }, 400);
+  }
+  const certSourced = b.holdingSource === "pod-cert";
+  // Without this the badge is mintable and its certificate log unfindable —
+  // the identifier is derivable from the manifest by anyone, but the owner
+  // half of a chunk address appears in no public artifact.
+  if (certSourced && (typeof b.certLogOwner !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(b.certLogOwner))) {
+    return c.json(
+      { ok: false, error: "a certificate badge needs certLogOwner (the issuer's content-feed address)" },
+      400,
+    );
+  }
+  if (certSourced && b.kind !== "badge") {
+    return c.json({ ok: false, error: "only a badge can record holdings as certificates" }, 400);
+  }
 
   try {
     const entry = await issuePodType({
@@ -101,6 +119,9 @@ podRouter.post("/", requireAuth, async (c) => {
         : {}),
       ...(typeof b.categoryId === "string" && b.categoryId ? { categoryId: b.categoryId } : {}),
       supply: b.supply,
+      ...(certSourced
+        ? { holdingSource: "pod-cert" as const, certLogOwner: (b.certLogOwner as string).toLowerCase() as Hex0x }
+        : {}),
       signedManifest: b.signedManifest as SignedManifestV1,
       podBodies: b.podBodies as PodV2Body[],
       ...(b.image ? { image: b.image as Hex64 } : {}),
