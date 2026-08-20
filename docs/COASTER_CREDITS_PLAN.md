@@ -930,6 +930,47 @@ round trip, so **the residual is entirely #329**. Fix is deployed but not yet co
 `bee-slam` is a local-only repo and the VM carried 32 lines the dev machine lacked, so the
 same surgical patch was applied to both rather than rsyncing over them.
 
+✅ **#329 FIXED 2026-08-20 — cold read 15.2s → 3.4s.** Two changes, both live.
+
+1. **The gateway's 403 was slow AND untrusted.** `isHashAllowed` ran a full bee lookup
+   (`detectFeedManifest`) before refusing, so a never-seen address cost ~2.76s at the gateway
+   alone — on the version-scan hot path, which asks about novel addresses constantly. `/chunks`
+   now opts out of manifest detection (a SOC address can never be a manifest; known manifests
+   still resolve via the registry fast path). Novel 403: **2.76s → 0.19s**.
+2. **A tagged 403 is now an answer.** The proxy emits `X-Chunk-Gate: not-whitelisted` plus a
+   machine-readable `code: NOT_WHITELISTED`, CORS-exposed; the client trusts ONLY that tag and
+   leaves every other 403 as `unavailable → ask the server`, so "couldn't ask" never becomes
+   "absent" (#138/#156).
+
+| cold read, 154 laps | probes | misses | api | wall |
+|---|---|---|---|---|
+| start of day | 52 | 16 | 0/8 | 15188ms |
+| after (1) | 48 | 14 | 0/8 | 13165ms |
+| after (2) | 44 | **8** | **0/0** | **3428ms** |
+
+Tap on a loaded card unchanged: 710ms, 0 probes.
+
+**WHERE THE TRUST STOPS, and why it is not optional.** Reads feeding a READ-MODIFY-WRITE pass
+`thorough` and keep consulting the server — `upsertSubjectBand`, `removeFromSubjectIndex`,
+social's `addToSubjectIndex`. Those writers probe for a fresh address independently of the
+resolution handed to them, so a false ABSENT does not collide and get caught: it lands a fresh
+snapshot at the real latest version, VERIFIES, and erases everything since. The gate is
+authoritative only while its whitelist is COMPLETE, and #332 proved entries can go missing.
+Display and head reads may trust it, because a lap is an exact-address write — staleness
+collides, Bee dedupes, the read-back reports `superseded`.
+
+**A LESSON, recorded because it nearly shipped as a success.** The first version of (2) was
+green and did nothing: typecheck clean, six tests passing, trust never firing once. bee-js's
+`BeeResponseError` carries no headers and no `response` object, and its `responseBody` is an
+ArrayBuffer that the detector was `JSON.stringify`-ing into `"{}"`. The tests passed because
+their fixtures were strings. Only the browser measurement caught it — `api 0/7`, still calling
+the server. **A fixture that does not match the real shape is the same failure as a fixture
+that replaces the real reader**, which is the process lesson this branch already recorded once.
+
+**REMAINING at 3.4s:** ~36 cheap gateway hits walking the current band (O(band size), by
+design — up to 64), and 8 tagged-403 misses now costing ~0.19s each. Any further work is
+lever 3 (checkpointing position inside a band), which is a real tunable but no longer urgent.
+
 METHOD NOTE for anyone repeating this: the gateway negative-caches absent addresses (novel
 403 = 2.76s, repeat = 0.15s, still cached 40 min later). **Wall-clock times are contaminated
 by cache state; miss COUNTS are not**, since a cached 403 still counts as a `gatewayMiss`.
