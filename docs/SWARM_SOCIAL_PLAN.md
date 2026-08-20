@@ -428,6 +428,31 @@ atomically with the claim commit. `cert.holder` must equal the claimer's verifie
 where the route has one — otherwise a cooperative holder can sign challenges for strangers, which
 is the certificate-rail twin of the wallet-must-be-the-claimer rule.
 
+SIGNED OFF 2026-08-20 (Fable, verdict MERGE AFTER CHANGES → changes applied). The review
+walked all six gate call sites against the parent revision and confirmed the chain arm is
+byte-identical: same dedupe, same `getOnChainHolding` arguments, same try/catch, same rejection
+strings, and Stripe still refuses before any session is created. One MUST-FIX, now closed, and
+worth recording because it was quiet: the server's manifest cache is keyed by `manifestRef`, so
+a warm entry answered `loadVerifiedBadgeManifest` WITHOUT ever dereferencing the gate's own
+`swarmManifestRef` — meaning the write boundary would accept a gate whose ref pointed at nothing
+whenever some earlier gate had already cached that badge, and that gate would then fail closed
+forever from the next restart onward. Trust was never affected (the digest binding is re-proved
+on every use), which is exactly what made it quiet. The write boundary now bypasses the cache.
+
+Three smaller findings applied with it: a certificate gate now says "you have not presented one
+yet" only when the WINDOW is actually open, so a closed window does not ask for proof that cannot
+help; an unrecognised holding source is a permanent refusal rather than a "try again" from the
+generic catch; and `GateEvidence` now REQUIRES the claimer's verified POD identity, enforced in
+`getCertHolding` rather than left to each route — a certificate must name the identity actually
+claiming, or a cooperative holder can answer challenges for strangers. That last one was
+out-of-slice by the brief and pulled in anyway, because this was the moment the seam could be
+made impossible to forget.
+
+Not closed, filed instead: **#342** — `checkPodGate`, `getCertHolding` and
+`loadVerifiedBadgeManifest` have no test seam, so the chain arm's identity across this refactor
+is established by reading rather than by test, and the must-fix above shipped WITHOUT a
+regression test. Sibling of #314.
+
 **NOT in this slice, deliberately:** the editor must not offer the certificate source until
 certificates can actually be issued, or organisers will configure gates nobody on earth can pass
 (`PodGateEditor.svelte`'s `gateable` filter is the seam, and it must become source-aware). And

@@ -18,7 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  PodGate, PodGateGroup, Hex0x, GateEvalContext, GatePhase, PodHolding,
+  PodGate, PodGateGroup, Hex0x, Hex32, GateEvalContext, GatePhase, PodHolding,
   PodCertPresentation, PodCertChallengeExpectation,
 } from "@woco/shared";
 import {
@@ -42,6 +42,14 @@ import { getOnChainEvent } from "../chain/event-contract.js";
 export interface GateEvidence {
   presentations: PodCertPresentation[];
   expect: PodCertChallengeExpectation;
+  /**
+   * The claimer's VERIFIED POD identity — the ed25519 key the route already
+   * authenticated, never one from the body. Required, not optional, so a route
+   * wiring evidence cannot forget it: a certificate must name the identity
+   * actually claiming, or a cooperative holder can answer challenges for
+   * strangers. The certificate-rail twin of the wallet-must-be-the-claimer rule.
+   */
+  expectedHolder: Hex32;
 }
 
 export interface GateDecision {
@@ -123,7 +131,7 @@ export async function validatePodGate(
       // conformant issuer key. This is organiser UX — catching a dead ref where
       // it can still be explained — NOT the trust check, which is re-proved on
       // every use. A transient Swarm failure here is a refusal worth retrying.
-      if (!(await loadVerifiedBadgeManifest(g))) {
+      if (!(await loadVerifiedBadgeManifest(g, { bypassCache: true }))) {
         return { ok: false, error: "could not read this POD's manifest to confirm who issues it — try again" };
       }
       continue;
@@ -172,6 +180,16 @@ export async function checkPodGate(
         ? `any of: ${nameList.join(", ")}`
         : `all of: ${nameList.join(", ")}`;
 
+  // A source this build cannot evaluate is a PERMANENT refusal, so say so here
+  // rather than letting the throw below land in the generic catch, whose
+  // message promises a retry that can never succeed.
+  if (group.gates.some((g) => !isKnownHoldingSource(g))) {
+    return {
+      ok: false,
+      reason: "This requires a kind of proof this platform cannot check — the organiser needs to reconfigure it.",
+    };
+  }
+
   try {
     // Read every distinct gate's holding in parallel, per source (fail-closed
     // on error — a throw here is caught below and rejects the whole check,
@@ -191,7 +209,10 @@ export async function checkPodGate(
     // Say the useful thing when the claimer simply has not been asked for a
     // certificate yet — "you hold none" would be a lie about evidence nobody
     // requested.
-    const awaitingProof = group.gates.some((g) => isCertPodGate(g)) && !evidence;
+    const awaitingProof =
+      computeGatePhase(group.window, ctx) === "holders-only" &&
+      group.gates.some((g) => isCertPodGate(g)) &&
+      !evidence;
     if (awaitingProof) {
       return {
         ok: false,
@@ -231,7 +252,7 @@ async function resolveHolding(
     // No presentation supplied = nothing proved. Zero, not an error: the
     // claimer may simply not have been through the challenge handshake.
     if (!evidence) return { manifestRef: gate.manifestRef, count: 0, slots: [] };
-    return getCertHolding(gate, evidence.presentations, evidence.expect);
+    return getCertHolding(gate, evidence.presentations, evidence.expect, evidence.expectedHolder);
   }
   return getOnChainHolding({
     holder: holderLc,

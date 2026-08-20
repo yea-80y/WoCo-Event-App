@@ -1,7 +1,7 @@
 /**
  * The gate write boundary's refusals that must fire BEFORE any network read.
  *
- * These three run with no chain RPC and no Swarm fetch, and that is the point
+ * These four run with no chain RPC and no Swarm fetch, and that is the point
  * being tested as much as the refusal itself: a gate config that can never open
  * — or that this build cannot evaluate — must be rejected without depending on
  * anything that can be down. `validatePodGate` guards the money path
