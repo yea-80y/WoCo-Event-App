@@ -20,16 +20,20 @@ import {
   LAST_VERSION_IN_BAND,
   POD_CERT_LOG_FORMAT,
   POD_CERT_SUBJECT_INDEX_FORMAT,
+  firstCertLogCursor,
   holdersFromLogPages,
+  nextCertLogCursor,
   packPodCertLogPages,
   planCertIssuance,
   podCertLogTopic,
   podCertPublicSalt,
   podCertSubjectIndexTopic,
   signPodCert,
+  validatePodCertLogPageV1,
   validatePodCertSubjectIndex,
   verifyPodCertLogPage,
   type Bytes32Hex,
+  type CertLogCursor,
   type Hex0x,
   type Hex32,
   type PodCertLogPageV1,
@@ -103,14 +107,37 @@ export async function readCertLog(
         version,
         { thorough: true },
       );
-      if (page.status === "unavailable") {
-        // Refuse the whole run rather than plan against a partial holder list:
-        // a holder missing from it is re-issued, and one missing near a cap is
-        // an over-issue nothing downstream can catch.
-        return { ok: false, error: `Could not read the log at band ${band} version ${version} — try again.` };
+      // EVERY VERSION BELOW A CLEAN HEAD EXISTS, by construction: pages are
+      // written sequentially, each verified before the cursor advances, and a
+      // band opens only on observed fullness. So `absent` here is not "nothing
+      // was written", it is a CONTRADICTION — and a reachable one, because even
+      // a thorough probe's absent ultimately rests on a not-found, and
+      // `readSocPayload` maps a bee 500 to exactly that.
+      //
+      // Skipping it would plan against a partial holder list: every holder on
+      // the unseen page is re-issued as a duplicate, and near the cap it admits
+      // holders past `totalSupply` — a log full at 100 with one hidden 7-holder
+      // page reads as 93, so a 5-holder request passes the plan and lands 105.
+      // Nothing downstream can catch that; the audit later reads the page fine
+      // and simply shows the over-issue. Refuse, like its `unavailable` sibling.
+      if (page.status !== "found") {
+        return {
+          ok: false,
+          error: `Could not read the log at band ${band} version ${version} — try again.`,
+        };
       }
-      if (page.status === "absent") continue;
+      // Same contradiction class: a page in our own log below our own head that
+      // does not even parse as a page. Folding it to "no certificates here"
+      // under-counts exactly as silently.
+      if (!validatePodCertLogPageV1(page.value)) {
+        return {
+          ok: false,
+          error: `The log page at band ${band} version ${version} is not readable — refusing to issue against a partial list.`,
+        };
+      }
       pagesRead++;
+      // Per-CERTIFICATE signature failures are still dropped individually: one
+      // bad certificate must not hide the holders alongside it.
       pages.push(verifyPodCertLogPage(page.value, issuerPubkey));
     }
   }
@@ -143,8 +170,14 @@ export async function issueCertificates(args: {
   badge: Bytes32Hex;
   keys: CertIssuerKeys;
   holders: readonly Hex32[];
-  /** The manifest's `totalSupply`. Omit only when genuinely unknown. */
-  cap?: number;
+  /**
+   * The badge manifest's `totalSupply`. REQUIRED, not optional: every
+   * certificate badge declares one, and this run is the only place in the
+   * system that enforces it — the server never sees an issuance. An optional
+   * cap is a caller that can forget it and get no error, no warning, and an
+   * uncapped run.
+   */
+  cap: number;
   /** UTC `YYYY-MM-DD`; defaults to today. Self-declared and unverifiable. */
   issuedAt?: string;
   /** Optional per-holder extras, keyed by holder. */
@@ -160,7 +193,7 @@ export async function issueCertificates(args: {
   const plan = planCertIssuance({
     requested: args.holders,
     existingHolders: log.holders,
-    ...(args.cap != null ? { cap: args.cap } : {}),
+    cap: args.cap,
   });
   if (!plan.ok) return { ok: false, ...empty, error: plan.error };
   if (plan.toIssue.length === 0) {
@@ -196,23 +229,20 @@ export async function issueCertificates(args: {
 
   // Where the first page goes. An absent log starts at band 0 version 0, which
   // is the ONLY probing write on this path and is safe precisely because the
-  // resolution above came back clean-absent.
-  let band = log.head?.band ?? 0;
-  let version = log.head ? log.head.version + 1 : 0;
-  if (log.head && log.head.version >= LAST_VERSION_IN_BAND) {
-    // The full-band invariant: a band may only be opened having OBSERVED the one
-    // below it full. A clean head sitting at the last slot is that observation.
-    band += 1;
-    version = 0;
-  }
+  // resolution above came back clean-absent. The arithmetic itself is pure and
+  // tested in shared — it is the highest-stakes arithmetic on this path, and a
+  // mid-run rollover needs ~450 holders to occur naturally, so it would
+  // otherwise go unexercised for months.
+  let cursor: CertLogCursor = firstCertLogCursor(log.head);
+  let lastWritten: CertLogCursor | null = null;
 
   for (const page of pages) {
     const written = await writeContentFeedVerified({
       signerPrivKey: keys.feedPrivKey,
       ownerAddress: keys.feedAddress,
-      topic: topic(band),
+      topic: topic(cursor.band),
       data: page,
-      knownVersion: version,
+      knownVersion: cursor.version,
     });
 
     if (written.status !== "verified") {
@@ -229,22 +259,23 @@ export async function issueCertificates(args: {
     }
 
     pagesWritten++;
+    lastWritten = cursor;
     for (const c of page.certs) landed.push(c.holder);
     args.onProgress?.(landed.length, certs.length);
 
     // Chain the next address from THIS verified write, never from a guess.
-    if (version >= LAST_VERSION_IN_BAND) {
-      band += 1;
-      version = 0;
-    } else {
-      version += 1;
-    }
+    cursor = nextCertLogCursor(cursor);
   }
 
   // The issuer's own index of badges they have certified. Best-effort by design:
   // it must never fail a certificate that has already landed, and no third party
   // needs it — a reader derives the log topic from the badge itself.
-  await upsertCertifiedBadge(keys, badge, band).catch(() => {});
+  // The band of the last page WRITTEN, never the cursor — a run whose final page
+  // lands at the last slot leaves the cursor pointing at a band with no opener,
+  // and recording that would make every future reader restart from 0 AND tick
+  // `hintInvalidated`, which is the whitelist-lag alarm. A code path that
+  // manufactures false positives on a monitored alarm is worth two lines.
+  if (lastWritten) await upsertCertifiedBadge(keys, badge, lastWritten.band).catch(() => {});
 
   return { ok: true, landed, alreadyHeld: plan.alreadyHeld, pagesWritten };
 }
@@ -268,6 +299,11 @@ async function upsertCertifiedBadge(
   const existing = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopic, { thorough: true });
   if (existing.status === "unavailable" || !existing.bandClean) return false;
 
+  // The lenient-read-on-a-write-path trap, refused the way `social.ts` refuses
+  // it: falling through to an empty list would write a fresh index containing
+  // only this badge and ERASE every prior entry. Reachable via a future format
+  // bump read by an older client.
+  if (existing.status === "found" && !validatePodCertSubjectIndex(existing.value)) return false;
   const current =
     existing.status === "found" && validatePodCertSubjectIndex(existing.value)
       ? existing.value.entries

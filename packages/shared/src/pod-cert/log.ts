@@ -26,14 +26,18 @@
  * NOTHING HERE CHANGES `woco.pod-cert.v1`. Certificates nest byte-identical.
  */
 
+import { LAST_VERSION_IN_BAND } from "../statement/discipline.js";
+import { SOC_MAX_PAYLOAD_SIZE } from "../swarm/soc.js";
 import type { Hex32 } from "../pod/types.js";
 import { jsonByteLength, validatePodCertV1, verifyPodCert, type PodCertV1 } from "./types.js";
 
 export const POD_CERT_LOG_FORMAT = "woco.pod-cert-log.v1" as const;
 
 /**
- * A single SOC payload is capped at 4096 bytes; above that a content feed PAGES
- * across `{topic}/p1 … /pN` behind a `_woco_mc` manifest.
+ * A single SOC payload is capped at {@link SOC_MAX_PAYLOAD_SIZE}; above that a
+ * content feed PAGES across `{topic}/p1 … /pN` behind a `_woco_mc` manifest.
+ * Taken from the SOC layer rather than restated, so the two can never drift
+ * into a packer that believes it fits when it does not.
  *
  * A log page MUST NEVER reach that path, and this is load-bearing rather than
  * tidy. A paged log version is a torn-write hazard — issue #315 is open on
@@ -43,7 +47,7 @@ export const POD_CERT_LOG_FORMAT = "woco.pod-cert-log.v1" as const;
  * import slice exists, a certificate lives NOWHERE but this log, so a write that
  * cannot be verified is a certificate that may simply not exist.
  */
-export const POD_CERT_LOG_PAGE_MAX_BYTES = 4096;
+export const POD_CERT_LOG_PAGE_MAX_BYTES: number = SOC_MAX_PAYLOAD_SIZE;
 
 /**
  * One SOC version of the log. Closed schema: exactly `format` and `certs`,
@@ -131,4 +135,43 @@ export function holdersFromLogPages(pages: readonly PodCertV1[][]): Hex32[] {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Log addressing — pure, because it is the highest-stakes arithmetic here
+// ---------------------------------------------------------------------------
+
+/** Where a page goes: a band, and a version inside it. */
+export interface CertLogCursor {
+  band: number;
+  version: number;
+}
+
+/**
+ * Where the NEXT page goes after `head`, or `{0,0}` for a log never written.
+ *
+ * The rollover case is the one worth stating: a head sitting at the last slot
+ * of its band means the band is full, and a full band is an immutable fact — so
+ * opening the next one is licensed by OBSERVATION, which is what the full-band
+ * invariant requires. `>=` rather than `===` deliberately: an overshoot would
+ * otherwise turn a transient loss of rollover into a permanent one.
+ *
+ * A `{0,0}` start is only safe when the caller RESOLVED the log absent cleanly —
+ * this function cannot know that, and its caller must.
+ */
+export function firstCertLogCursor(head: CertLogCursor | null): CertLogCursor {
+  if (!head) return { band: 0, version: 0 };
+  if (head.version >= LAST_VERSION_IN_BAND) return { band: head.band + 1, version: 0 };
+  return { band: head.band, version: head.version + 1 };
+}
+
+/**
+ * Where the page after `written` goes, given `written` has been VERIFIED to
+ * have landed. That verification is the observation the invariant needs when
+ * this crosses a band boundary — which is why this takes the cursor just
+ * written rather than a count.
+ */
+export function nextCertLogCursor(written: CertLogCursor): CertLogCursor {
+  if (written.version >= LAST_VERSION_IN_BAND) return { band: written.band + 1, version: 0 };
+  return { band: written.band, version: written.version + 1 };
 }

@@ -11,8 +11,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { LAST_VERSION_IN_BAND } from "../../src/statement/discipline.js";
 import {
   MAX_POD_CERT_BYTES,
+  firstCertLogCursor,
+  nextCertLogCursor,
   POD_CERT_LOG_FORMAT,
   POD_CERT_LOG_PAGE_MAX_BYTES,
   holdersFromLogPages,
@@ -174,4 +177,53 @@ test("holders dedupe across pages — presence, not certificate count", () => {
 
   const holders = holdersFromLogPages([[a, b], [aAgain]]);
   assert.deepEqual(holders, [a.holder, b.holder]);
+});
+
+// ---------------------------------------------------------------------------
+// Log addressing
+// ---------------------------------------------------------------------------
+
+test("a log never written starts at band 0 version 0", () => {
+  assert.deepEqual(firstCertLogCursor(null), { band: 0, version: 0 });
+});
+
+test("a head mid-band continues in that band", () => {
+  assert.deepEqual(firstCertLogCursor({ band: 0, version: 0 }), { band: 0, version: 1 });
+  assert.deepEqual(firstCertLogCursor({ band: 3, version: 17 }), { band: 3, version: 18 });
+});
+
+test("a head at the last slot opens the next band — observed fullness", () => {
+  // The full-band invariant's licence: a band full is an immutable fact, so a
+  // clean head found at the last slot IS the observation that permits opening.
+  assert.deepEqual(firstCertLogCursor({ band: 0, version: LAST_VERSION_IN_BAND }), { band: 1, version: 0 });
+  assert.deepEqual(firstCertLogCursor({ band: 4, version: LAST_VERSION_IN_BAND }), { band: 5, version: 0 });
+});
+
+test("an overshot head still rolls over, rather than sticking forever", () => {
+  // `>=` not `===`: treating only exact equality as full would turn a transient
+  // overshoot into a permanent loss of rollover.
+  assert.deepEqual(firstCertLogCursor({ band: 2, version: LAST_VERSION_IN_BAND + 3 }), { band: 3, version: 0 });
+});
+
+test("stepping crosses a band boundary exactly once", () => {
+  let cursor = { band: 0, version: LAST_VERSION_IN_BAND - 1 };
+  cursor = nextCertLogCursor(cursor);
+  assert.deepEqual(cursor, { band: 0, version: LAST_VERSION_IN_BAND }, "last slot of band 0");
+  cursor = nextCertLogCursor(cursor);
+  assert.deepEqual(cursor, { band: 1, version: 0 }, "then opens band 1");
+  cursor = nextCertLogCursor(cursor);
+  assert.deepEqual(cursor, { band: 1, version: 1 });
+});
+
+test("a full band is exactly STATEMENT_BAND_SIZE pages", () => {
+  let cursor = firstCertLogCursor(null);
+  const visited: string[] = [];
+  for (let i = 0; i < LAST_VERSION_IN_BAND + 1; i++) {
+    visited.push(`${cursor.band}:${cursor.version}`);
+    cursor = nextCertLogCursor(cursor);
+  }
+  assert.equal(new Set(visited).size, LAST_VERSION_IN_BAND + 1, "no address visited twice");
+  assert.equal(visited[0], "0:0");
+  assert.equal(visited[visited.length - 1]!, `0:${LAST_VERSION_IN_BAND}`);
+  assert.deepEqual(cursor, { band: 1, version: 0 }, "the next page opens band 1");
 });
