@@ -92,6 +92,17 @@ export async function writeContentFeedVerified(args: {
   topic: string;
   data: unknown;
   gatewayUrl?: string;
+  /**
+   * FORWARDED to `writeContentFeed` — see its doc for when this is safe. As on
+   * {@link writeContentFeedSettling}, it is safer through this entry point than
+   * through a bare write: the read-back verifies at exactly this version, so a
+   * wrong guess returns `superseded` instead of silently losing the write.
+   *
+   * Declared EXPLICITLY, like its twin, because a spread does not trip
+   * excess-property checking — omit it here and a caller passing it gets no
+   * error, no warning, and a write that quietly goes on probing.
+   */
+  knownVersion?: number;
 }): Promise<VerifiedWriteResult> {
   return serialise(args.ownerAddress, args.topic, () => writeAndVerify(args));
 }
@@ -102,12 +113,14 @@ async function writeAndVerify(args: {
   topic: string;
   data: unknown;
   gatewayUrl?: string;
+  knownVersion?: number;
 }): Promise<VerifiedWriteResult> {
   const version = await writeContentFeed({
     signerPrivKey: args.signerPrivKey,
     topic: args.topic,
     data: args.data,
     ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
+    ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
   });
   return verifyLanded(args, version);
 }

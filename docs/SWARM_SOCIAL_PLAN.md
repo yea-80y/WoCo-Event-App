@@ -468,6 +468,148 @@ round trip as specified, and the challenge-signing UX; then the two proofs deman
 (two-browser end-to-end with the server BLOCKED, and what a challenge signature actually
 costs in passkey prompts).
 
+### BUILD RECORD — slice 3, the issuer write path (2026-08-20, `feat/pod-cert-issue`)
+
+Fable design pass before building. It opened by correcting a premise this plan and I had both
+been working from, and the correction reorders everything else.
+
+**A LOST LOG WRITE IS A LOST CERTIFICATE, not an audit gap.** Holder import does not exist, so a
+certificate lives NOWHERE except the issuer's log — and even once import ships, scanning that
+log is how a holder FINDS a certificate naming them. There is no other delivery channel. So
+writes are verified and awaited rather than left to settle, a run stops at the first unverified
+write instead of pressing on, and silent SOC dedupe must never be able to eat a certificate
+undetected.
+
+**The log batches, because it contends and credits never did.** One topic per badge holds every
+holder's certificate, so a bulk issuance is a sequence of writes to one feed — unlike credits,
+where each (holder, subject) has its own topic. `woco.pod-cert-log.v1` puts many certificates in
+one SOC version: a 500-holder issuance becomes ~32 writes instead of 500 (more if certificates carry evidence), every future
+enumeration pass pays ~8× fewer round trips forever, and a band holds ~500 certificates instead
+of 64. The one advantage of one-certificate-per-version is illusory — counting supply by version
+arithmetic looks free, but a holding is presence not quantity, so re-issuance means a sound audit
+must read payloads and dedupe by holder in EITHER model. Per-(badge, holder) topics were rejected
+permanently: they make enumeration circular, since you could only probe a holder's topic if you
+already had the holder list, which is what you came to learn.
+
+The envelope is TRANSPORT TIER — no identity signature, no signing prefix, same stakes argument
+as the subject index. A forged envelope can only carry certificates that fail issuer
+verification, or omit certificates, and the SOC signature already binds who wrote the feed.
+`woco.pod-cert.v1` is untouched and nests byte-identical.
+
+**A page must never reach 4096 bytes**, above which a content feed pages across `_woco_mc` — a
+torn-write hazard (#315) that would also destroy the atomicity making read-back verification
+meaningful. That exposed a hole in the ALREADY-FROZEN certificate schema: `evidence` is
+regex-validated per entry but bounded in neither entry length nor count, so one certificate can
+exceed a chunk by itself. `signPodCert` now refuses above 2048 bytes. Verification deliberately
+does not apply the bound — a producer-side guard, and tightening what verifies would
+retroactively invalidate bytes an issuer already signed.
+
+**The client signs both, and neither key could have been server-side.** The certificate is signed
+by the creator's ed25519 POD key (`issuance.ts` says the server never holds it) and the SOC by
+their secp256k1 content-feed signer. Handing the server the write would mean either moving the
+log out of the issuer's address space — breaking third-party enumeration into platform-key
+dependence — or the server holding the issuer's feed key, which is worse. The server stamps and
+uploads chunks it verifiably could not have authored, exactly as for credits.
+
+**Write classification**, following the rule recorded at `attemptRide`, with one tightening:
+
+| write | kind | on an inconclusive read |
+|---|---|---|
+| page append, chained from own verified write | exact-address | needs no read |
+| first write on a badge log (band 0 v0) | probing | REFUSE unless clean |
+| resume scan deciding who is already certified | read feeding a write | THOROUGH, refuse |
+| subject-index upsert | read-modify-write snapshot | REFUSE on dirty |
+
+The tightening: credits may PROCEED on an inconclusive read for exact-address writes, because
+refusing a tap fails the product's core moment. Issuance has no such moment — an organiser at a
+dashboard can be told to try again — so it refuses. The rule's permission is not an obligation.
+
+**Bands open only on OBSERVED fullness** — our own just-verified write at the last slot, or a
+clean head found there. Two writers racing to open the same band cannot break the invariant:
+both observed the band below full (an immutable fact), both target (b+1, 0), SOC immutability
+keeps the first, and the loser's exact-version read-back says `superseded`.
+
+**A certificate badge's manifest is a real single-leaf tree.** Nothing on this rail claims an
+edition, so pre-signing one body per unit of supply would cost N signatures and N uploads for
+bytes no reader reads — but `ManifestV1Body` is frozen and `manifestRef` is the digest of the
+whole body, so `metadataRoot` and `totalSupply` cannot be omitted. One real template body under
+the locked scheme keeps the commitment honest and needs no special case anywhere.
+`totalSupply` is the issuer's DECLARED CAP: the writing client refuses to exceed it, and
+over-issuance is provable from the issuer's own signed log, because the excess certificates carry
+the issuer's signature. **Audit-enforced, not gate-enforced** — the honest ceiling for a rail
+whose trust root is one issuer's signature, and a door verifying offline must not pretend
+otherwise.
+
+**`PodDirectoryEntry.certLogOwner` is the discovery binding, and without it the badge is
+mintable and its log unfindable.** Chunk addresses are `keccak256(identifier ‖ owner)`: the
+identifier is derivable from `manifestRef` by anyone, but the owner is the issuer's secp256k1
+content-feed address, which appears in NO public artifact. Display layer, not a trust root —
+everything found there is verified against the manifest anyway. The CANONICAL binding ("my one
+true log, not one of two I show different auditors") needs an issuer-signed statement and belongs
+to the deferred issuer registry; forgery is already impossible, and only split-view equivocation
+remains, which this design flags rather than prevents everywhere.
+
+**Residues, recorded rather than fixed:**
+- **The `encPubKey` pipeline is empty and will silently stay empty** — no feed publishes holder
+  X25519 keys, so issuances will omit it, which quietly guts the future per-drop encryption path
+  the field exists for. The holder slice must give holders a way to supply it. Filed as #343.
+- **The platform postage batch now stamps certificate logs.** Add them to the batch blast-radius
+  inventory: a lapsed batch here is lost certificates, not lost cache.
+- **Certificate-log SOC addresses ride the same gateway-whitelist discipline as everything
+  else.** A lost whitelist entry makes issued certificates read as absent to the very holders
+  trying to import them.
+- `issuedCount` on the directory entry should be updated best-effort at end of run — the only
+  place the manager UI can show progress without walking the log.
+
+SIGNED OFF 2026-08-20 (Fable, verdict MERGE AFTER CHANGES → changes applied). It walked the
+write loop address by address across an absent log, a head mid-band, a head at the last slot, a
+run crossing a band boundary, and a re-run after partial failure, and confirmed the chain mint
+path is byte-identical for a chain badge — including that the directory-entry spread reproduces
+`eventId, chainId` in the same key positions, so the serialized feed bytes are unchanged.
+
+**The MUST-FIX was the one silent path in the slice, and it was mine.** The refusal discipline
+was implemented for `unavailable` but not for `absent` — and below a clean head an absent page is
+a CONTRADICTION, since every version below the head exists by construction. It is reachable:
+even a thorough probe's absent rests on a not-found, and `readSocPayload` maps a bee 500 to
+exactly that. Skipping it plans against a partial holder list, so every holder on the unseen page
+is re-issued, and near the cap it admits holders past `totalSupply` — a log full at 100 with one
+hidden 7-holder page reads as 93, so a 5-holder request passes and lands 105. Nothing downstream
+catches it; the audit later reads the page fine and simply shows the over-issue. Both halves now
+refuse: absent-below-head, and a page that does not parse as a page.
+
+Three more applied: the subject index records the band of the last page WRITTEN rather than the
+post-rollover cursor (which would name a band with no opener, making every future reader restart
+from 0 and tick `hintInvalidated` — the whitelist-lag alarm, which no code path should
+manufacture false positives on); `upsertCertifiedBadge` refuses a found-but-invalid snapshot
+instead of falling through to an empty list and erasing every prior entry (the
+lenient-read-on-a-write-path trap, refused the way `social.ts` refuses it); and `cap` is now
+REQUIRED on `issueCertificates`, because a certificate badge always declares `totalSupply` and
+this run is the only enforcement point in the system — the server never sees an issuance.
+
+The log's address arithmetic moved into pure, tested helpers (`firstCertLogCursor`,
+`nextCertLogCursor`). A mid-run rollover needs ~450 holders to occur naturally, so it would
+otherwise have gone unexercised for months on the highest-stakes arithmetic here.
+
+**BEFORE ANY REAL HOLDERS — the supervised sequence, on a throwaway badge.** The write path has
+never touched a gateway and the addresses are permanent, so this is not optional caution:
+(a) a 2–3 holder issuance, then verify the log reads back whole from a COLD device with
+localStorage cleared; (b) an immediate identical re-run, expecting `alreadyHeld` = all and
+`pagesWritten` = 0; (c) a kill mid-run followed by a re-run, to prove the verified-prefix resume;
+(d) the band rollover synthetically — ~65 one-holder issuances fill band 0 and force the 65th to
+open band 1 version 0. Watch for: any `superseded` on a SINGLE-device run, which means the
+address arithmetic wrote to an occupied version — stop, and do not re-run; `unconfirmed`
+outcomes, which should not happen given whitelist-before-upload; and `hintInvalidated` climbing
+in probe stats.
+
+Known gaps left open, neither blocking: there is no happy-path certificate-mint test, so the
+entry-shape spread in `issuePodType` is uncovered (the #314 / #342 no-test-seam pattern again);
+and `readCertLog` re-reads the head page it already holds.
+
+**NOT BUILT IN THIS SLICE, and the write path is therefore UNEXERCISED against a real gateway:**
+the creator's issuance surface (pick badge, pick holders, run with progress), and with it the
+first real issuance. Holder passport import, the challenge round trip, the per-drop HPKE
+publisher and the issuer registry stay deferred as before.
+
 **Gate C — eligibility to make a statement at all.** Not a separate mechanism: on a
 permissionless substrate anyone may write to their own feed, so this reduces to Gate A at the
 relay plus what indexers choose to count. Recorded so it is not designed twice.

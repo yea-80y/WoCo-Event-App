@@ -33,7 +33,7 @@
  */
 
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { Hex0x } from "../types.js";
 import type { Bytes32Hex, Hex32 } from "../pod/types.js";
 import {
@@ -158,6 +158,31 @@ export interface PodCertV1 {
 }
 
 export type UnsignedPodCertV1 = Omit<PodCertV1, "issuerSig">;
+
+/**
+ * Ceiling on ONE serialized certificate, enforced at SIGNING.
+ *
+ * `evidence` is regex-validated per entry but bounded in neither entry length
+ * nor count, so a certificate can exceed a whole 4096-byte SOC payload by
+ * itself. That matters more than it looks: an oversized certificate pushes its
+ * log page onto the multi-chunk paging path, which is a torn-write hazard
+ * (issue #315) and destroys the atomicity that makes a write's read-back
+ * verification mean anything. Until the holder-import slice exists a
+ * certificate lives NOWHERE but that log, so an unverifiable write is a
+ * certificate that may not exist.
+ *
+ * Generous — a conforming certificate with no evidence is ~250 bytes.
+ *
+ * VERIFICATION DOES NOT APPLY THIS BOUND, deliberately: it is a producer-side
+ * guard, and tightening what verifies would retroactively invalidate bytes an
+ * issuer has already signed.
+ */
+export const MAX_POD_CERT_BYTES = 2048;
+
+/** Serialized byte length of a value as it will be written to a feed. */
+export function jsonByteLength(value: unknown): number {
+  return utf8ToBytes(JSON.stringify(value)).length;
+}
 
 // ---------------------------------------------------------------------------
 // The possession challenge
@@ -405,7 +430,17 @@ export function signPodCert(
   if (pub !== expectedIssuerPubkey) {
     throw new Error("issuer key mismatch: this private key is not the badge manifest's issuerPubkey");
   }
-  return { ...canonicalUnsignedCert(unsigned), issuerSig: bytesToHex(ed25519.sign(digest, issuerPrivKey)) };
+  const cert: PodCertV1 = {
+    ...canonicalUnsignedCert(unsigned),
+    issuerSig: bytesToHex(ed25519.sign(digest, issuerPrivKey)),
+  };
+  const size = jsonByteLength(cert);
+  if (size > MAX_POD_CERT_BYTES) {
+    throw new Error(
+      `certificate is ${size} bytes, over the ${MAX_POD_CERT_BYTES}-byte limit — trim \`evidence\``,
+    );
+  }
+  return cert;
 }
 
 /**

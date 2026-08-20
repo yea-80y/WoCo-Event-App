@@ -204,6 +204,27 @@ export interface PodDirectoryEntry {
   /** Chain the POD was registered on — the holdings reader / gate config needs
    *  it to read slot ownership. Set alongside `eventId` at on-chain confirm. */
   chainId?: number;
+  /**
+   * The issuer's CONTENT-FEED owner address, for badges whose holdings are POD
+   * certificates — without which the certificate log cannot be found at all.
+   *
+   * A log's chunk addresses are `keccak256(identifier ‖ owner)`, and while the
+   * identifier is derivable from `manifestRef` by anyone, the owner is the
+   * issuer's secp256k1 content-feed address, which appears in NO public
+   * artifact: the manifest carries only the ed25519 `issuerPubkey`, and no feed
+   * publishes the mapping. A supply auditor, a third-party enumerator, and the
+   * holder-import path all need (owner, topic).
+   *
+   * Display layer, mutable, platform-signed — NOT a trust root. It says where to
+   * look, and everything found there is verified against the badge's manifest
+   * anyway. The CANONICAL binding ("this is my one true log, not one of two I
+   * show different auditors") needs an issuer-ed25519-signed statement and
+   * belongs to the deferred issuer registry: forgery is already impossible here,
+   * since a fake log can only mirror real certificates or carry ones that fail
+   * verification. Only split-view equivocation remains, and equivocation is
+   * flagged rather than prevented everywhere in this design.
+   */
+  certLogOwner?: Hex0x;
   /** Swarm ref to the `SeriesManifestBlob` (signed manifest + pod-body refs).
    *  Immutable/content-addressed — NOT display layer. Present for PODs minted
    *  through standalone issuance (badge/collectible); the issuance-to-holder /
