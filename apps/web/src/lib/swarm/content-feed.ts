@@ -309,6 +309,54 @@ export async function readContentFeedResult<T>(
 }
 
 /**
+ * Read ONE known version of a content feed, with no version resolution at all.
+ *
+ * For walking a feed whose versions are a SEQUENCE the caller already knows the
+ * bounds of — an append-only log being scanned end to end, where every address
+ * is known to exist by construction. Every read is an exact-address hit, so the
+ * walk costs no missing-chunk searches, which are the expensive read on Swarm.
+ *
+ * `scanClean` is true on a hit because no scan chose this version — the caller
+ * did. That is not a claim that the caller's bounds were right; a walk driven by
+ * a stale head simply stops early, and a walk feeding a write decision must have
+ * resolved that head with `thorough` for its own reasons.
+ */
+export async function readContentFeedAtVersion<T>(
+  ownerAddress: string,
+  topic: string,
+  version: number,
+  opts: { thorough?: boolean } = {},
+): Promise<ContentFeedResult<T>> {
+  if (!Number.isInteger(version) || version < 0) {
+    return { status: "unavailable", reason: `invalid version ${version}` };
+  }
+  const { probeSoc } = await import("./client-soc.js");
+  const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
+  const base = contentFeedSocIdentifier(topic);
+
+  const asm = await assembleContentFeed(
+    read,
+    versionedSocIdentifier(base, version),
+    (page) => versionedPageIdentifier(base, version, page),
+  );
+  if (asm.status === "absent") return { status: "absent" };
+  if (asm.status !== "found") {
+    return { status: "unavailable", reason: `version ${version} did not resolve` };
+  }
+  try {
+    return {
+      status: "found",
+      value: JSON.parse(new TextDecoder().decode(asm.bytes)) as T,
+      version,
+      scanClean: true,
+    };
+  } catch {
+    return { status: "unavailable", reason: "feed payload is not valid JSON" };
+  }
+}
+
+/**
  * Lenient wrapper over {@link readContentFeedResult}: the decoded feed, or null for
  * BOTH "absent" and "could not read". Correct only for display paths that re-read
  * on the next visit (profiles, event detail, site pages).
