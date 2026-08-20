@@ -1776,6 +1776,47 @@ key. Filling it needs his team to publish that key — and the key→person link
 announcement, not mathematics, so the copy must say "the identity Dan's team published",
 never "signed by Dan".
 
+### The overlay and the widget — BUILT 2026-08-18
+
+`packages/embed/src/count/` → `<woco-lap-count>`, shipped as a SECOND IIFE
+(`woco-count.js`, 41KB) rather than added to `woco-embed.js` (113KB), which carries
+wallet, WebAuthn and checkout that a counter never executes. Both artifacts are produced
+by `npm run build:embed`, so the Docker image and CI pick the new one up unchanged.
+
+Two variants of ONE element, because the overlay, the widget and the counter page are one
+artifact at three sizes and two elements would be two places for the wording to drift:
+
+- `variant="overlay"` — `dist/overlay.html`, the bundle inlined, for an OBS Browser Source
+  in **Local File** mode. One file, so a stream day depends on neither our web tier nor the
+  4h CDN cache. OBS's local-file mode has NO query string, so configuration is a commented
+  markup block at the top of the file, generated pre-pointed at `RITA_SUBJECT`.
+- `variant="card"` — for rita100.com. Handed over to self-host rather than served from a
+  new route in `apps/server/src/index.ts`, for the same independence reason.
+
+It reads `/api/social/count` — the figure, not the evidence. That is the opposite case from
+the verification page above, and the reason the two endpoints are not interchangeable.
+
+WHAT IT IS ALLOWED TO CLAIM. All of it in `src/count/display.ts`, DOM-free so CI can check
+it (`test/count-display.test.ts`, wired into `.github/workflows/ci.yml`):
+
+- Nothing renders before the first successful read. Zero is a real answer; a dead counter is
+  not, and today every count IS zero, which is exactly when the two are easiest to conflate.
+- `unreadable > 0` makes the figure a floor and it renders as `109+`.
+- `contributors > 1` surfaces the rider count, so the community scope self-labels instead of
+  silently shifting under a challenge kicker.
+- Sustained failure keeps the last figure and MARKS it. Driven by consecutive failed polls,
+  never by the response's `ageMs` — that is bounded by the cache TTL by construction and
+  reports the freshness contract, not a fault.
+- No count-up animation, ever: replayed ticking manufactures the appearance of laps.
+- The coaster's name comes from the shared registry, never from a host attribute. A
+  `challenge` kicker is host-supplied and renders ALONGSIDE the registry name, so it cannot
+  rename anything; an unknown subject self-labels as `Unknown coaster (0x…)`.
+
+Plain fetch semantics, 20s poll, paused while the tab is hidden — `no-store` was rejected
+because the widget is a page-view multiplier on a partner's site during the busiest traffic
+this rail will see, and it would defeat every cache between a viewer and one VM.
+
+
 ## Scale
 
 Cost per credit is one signed statement. Worked example — 1,000 fans averaging 5 rides:
