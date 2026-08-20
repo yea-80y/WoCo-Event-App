@@ -349,8 +349,22 @@ issuance and so cross bands. The `V1`/`V2` in the discipline's interface names v
 SHAPE; the `.v1` here versions this type's payload, which has never had another version.
 Validate only through `validatePodCertSubjectIndex`.
 
-STILL TO BUILD: the issuer's write path (sign + publish to the banded log, subject index
-upsert) and the `PodGate` holding-source opt-in — `holdingSource?: "chain" | "pod-cert"` plus
+SIGNED OFF 2026-08-20 (Fable, verdict MERGE). The review recomputed every frozen vector from
+raw dag-cbor/keccak/HMAC primitives rather than trusting the tests, and confirmed the
+canonicaliser and validator field sets are congruent for both schemas — so signature bytes
+always equal checked bytes. Three would-improve findings, none must-fix; two are applied in
+this slice (a conformance check on the resolved issuer key, so a nonconforming manifest fails
+where it can name its cause; and the holder-client relay rule written down at
+`signPodCertChallenge`). The third is carried below.
+
+STILL TO BUILD: **carried finding —** `checkPodCertPresentation` / `podCertHolding` /
+`verifyPodCert` take a bare `issuerPubkey: Hex32`, and "MUST come from `resolvePodCertIssuer`"
+is enforced by comment only. `PodDirectoryEntry.issuer?: Hex32` is an unverified display mirror
+in the same package that type-checks perfectly as that parameter, so the substituted-key misuse
+is one plausible import away. Close it when slice 2 writes the first real caller — either brand
+the resolve function's return type, or have the door take the `SignedManifestV1` and resolve
+internally. Not frozen surface, so it costs nothing to defer. Then: the issuer's write path
+(sign + publish to the banded log, subject index upsert) and the `PodGate` holding-source opt-in — `holdingSource?: "chain" | "pod-cert"` plus
 the chain-free write-boundary validation that replaces `verifyPodGateBinding` for certificate
 gates; then the holder's passport import and challenge-signing UX; then the two proofs demanded
 above (two-browser end-to-end with the server BLOCKED, and what a challenge signature actually

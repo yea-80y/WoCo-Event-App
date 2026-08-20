@@ -81,7 +81,14 @@ export function resolvePodCertIssuer(
     if (typeof badge !== "string" || !/^0x[0-9a-f]{64}$/.test(badge)) return null;
     if (bytesToHex0x(manifestDigest(manifest.body)).toLowerCase() !== badge) return null;
     if (!verifySignedManifest(manifest)) return null;
-    return manifest.body.issuerPubkey;
+    // A manifest can self-verify with a 0x-prefixed or uppercase `issuerPubkey`
+    // — `verifySignedManifest` strips and case-folds before checking. Returning
+    // that string would resolve into a dead end: `verifyPodCert`'s regex refuses
+    // it forever, so the door would fail closed but say nothing about why.
+    // Refuse it here, where the failure can still name its cause.
+    const issuerPubkey = manifest.body.issuerPubkey;
+    if (typeof issuerPubkey !== "string" || !/^[0-9a-f]{64}$/.test(issuerPubkey)) return null;
+    return issuerPubkey;
   } catch {
     return null;
   }

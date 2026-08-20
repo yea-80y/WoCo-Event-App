@@ -411,6 +411,13 @@ export function signPodCert(
 /**
  * Sign a challenge as the holder. `holderPrivKey` is the 32-byte ed25519 POD
  * key; the challenge's `holder` MUST be its public key.
+ *
+ * CALLER'S RULE, and it cannot be enforced here: this signs whatever `audience`
+ * it is handed. `audience` is what stops one door's answer being replayed at
+ * another, so a holder client must sign only a challenge whose audience is the
+ * door it is actually standing at — otherwise a relay puts its own door's
+ * challenge in front of a holder who thinks they are entering somewhere else,
+ * and gets a valid answer for it.
  */
 export function signPodCertChallenge(
   unsigned: UnsignedPodCertChallengeV1,

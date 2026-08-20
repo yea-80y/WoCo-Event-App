@@ -19,7 +19,7 @@ import {
   type UnsignedPodCertChallengeV1,
 } from "../../src/pod-cert/index.js";
 import { evaluatePodGate } from "../../src/pod/gate.js";
-import { signManifest } from "../../src/pod/merkle.js";
+import { signManifest, verifySignedManifest } from "../../src/pod/merkle.js";
 import { bytesToHex0x, manifestDigest } from "../../src/pod/canonical.js";
 import type { ManifestV1Body } from "../../src/pod/types.js";
 
@@ -109,6 +109,17 @@ test("the substituted-manifest attack gets no key at all", () => {
 
   const attackerBadge = bytesToHex0x(manifestDigest(attackerManifest.body));
   assert.notEqual(attackerBadge, BADGE, "a different issuer is a different badge, by construction");
+});
+
+test("a manifest with a nonconforming issuer key resolves nothing, not a dead end", () => {
+  // `verifySignedManifest` strips and case-folds, so a 0x-prefixed issuerPubkey
+  // self-verifies happily. Returning it would resolve into a key `verifyPodCert`
+  // refuses forever — fail-closed, but silent about the cause.
+  const body = badgeManifest(`0x${ISSUER}`);
+  const badge = bytesToHex0x(manifestDigest(body));
+  const signed = signManifest(body, ISSUER_PRIV);
+  assert.ok(verifySignedManifest(signed), "it self-verifies — that is the trap");
+  assert.equal(resolvePodCertIssuer(signed, badge), null);
 });
 
 test("malformed input resolves nothing rather than throwing", () => {
