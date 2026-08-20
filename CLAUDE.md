@@ -38,7 +38,7 @@ STACK & STRUCTURE
 apps/web/              # Vite + Svelte main platform UI
 apps/server/           # Hono API server (Swarm relay + auth)
 packages/shared/       # Shared types, POD schema, constants (single source of truth)
-packages/embed/        # <woco-tickets> Web Component (IIFE ~71KB)
+packages/embed/        # <woco-tickets> (IIFE 113KB) + <woco-lap-count> (41KB, separate bundle)
 contracts/             # WoCoEscrow.sol + deploy scripts
 
 ============================================================================
@@ -62,7 +62,7 @@ DEV COMMANDS:
   npm run dev:server     # opens SSH tunnel to Hetzner bee, then tsx watch :3001
   npm run build:web      # production frontend build
   npm run build:server   # tsc typecheck + build
-  npm run build:embed    # IIFE bundle → packages/embed/dist/woco-embed.js
+  npm run build:embed    # BOTH bundles → dist/woco-embed.js, dist/woco-count.js + dist/overlay.html
   npm run build:site     # generated-site build → apps/web/dist-site/
   npm run build:multisite # deployed-site runtime → apps/web/dist-multisite/
 

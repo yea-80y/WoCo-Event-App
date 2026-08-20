@@ -65,5 +65,15 @@ jobs:
       - name: Build web
         run: npm run build:web
 
+      # The lap-count surfaces (#172) state a number to a broadcast audience, and
+      # every rule about what that number is allowed to CLAIM — a floor is marked
+      # as a floor, a dead counter is never painted as zero, a stale figure is
+      # marked rather than blanked — lives in one DOM-free module so it can be
+      # checked here. `build:embed` cannot catch any of it: esbuild strips types
+      # without checking them and never runs a line. See #322 for the typecheck
+      # gap this package still has.
+      - name: Test embed (lap-count honesty rules)
+        run: npm test -w @woco/embed
+
       - name: Build embed
         run: npm run build:embed
