@@ -1042,7 +1042,7 @@ grants access to exclusive content, forums, club spaces — is an ENTITLEMENT ga
 anchor, and it has its own constraints. See "Three gates, not one" in `SWARM_SOCIAL_PLAN.md`,
 and note the existing rule above: **credits must never satisfy a `PodGateRule`.** A
 self-signed statement passing a gate that today requires trustless truth is the failure mode;
-an ISSUER-signed emblem minted after the issuer reads the verified count is the shape that
+an ISSUER-signed POD certificate minted after the issuer reads the verified count is the shape that
 works. `ACT` is available for SOCs and encrypts the payload but not the address, so presence
 stays observable — it is a candidate for many-grantee club content, and remains the wrong tool
 for a grantee list of one.
@@ -1223,9 +1223,9 @@ credentials carry an identity signature.
   commitment 3) requires, since absence cannot be distinguished from never-liked.
 
 **Rail note (2026-08-19):** the STATEMENT DISCIPLINE — not the Merkle-batch / chain-slot rail —
-is the intended home for future ISSUER-SIGNED grant types (emblems, and anything else that
+is the intended home for future ISSUER-SIGNED grant types (POD certificates, and anything else that
 grants rather than reports). Recorded so Gate B is not later built on the wrong rail out of
-momentum; the design is in `SWARM_SOCIAL_PLAN.md` under "Gate B is the EMBLEM rail". When
+momentum; the design is in `SWARM_SOCIAL_PLAN.md` under "Gate B is the POD-CERTIFICATE rail". When
 landing the banding pass, keep `statementTopic` / `subjectIndexTopic` `type`/`version`
 parameters GENERIC — that is the only thing Gate B needs from this freeze.
 
