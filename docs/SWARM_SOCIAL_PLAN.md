@@ -357,17 +357,115 @@ this slice (a conformance check on the resolved issuer key, so a nonconforming m
 where it can name its cause; and the holder-client relay rule written down at
 `signPodCertChallenge`). The third is carried below.
 
-STILL TO BUILD: **carried finding —** `checkPodCertPresentation` / `podCertHolding` /
-`verifyPodCert` take a bare `issuerPubkey: Hex32`, and "MUST come from `resolvePodCertIssuer`"
-is enforced by comment only. `PodDirectoryEntry.issuer?: Hex32` is an unverified display mirror
-in the same package that type-checks perfectly as that parameter, so the substituted-key misuse
-is one plausible import away. Close it when slice 2 writes the first real caller — either brand
-the resolve function's return type, or have the door take the `SignedManifestV1` and resolve
-internally. Not frozen surface, so it costs nothing to defer. Then: the issuer's write path
-(sign + publish to the banded log, subject index upsert) and the `PodGate` holding-source opt-in — `holdingSource?: "chain" | "pod-cert"` plus
-the chain-free write-boundary validation that replaces `verifyPodGateBinding` for certificate
-gates; then the holder's passport import and challenge-signing UX; then the two proofs demanded
-above (two-browser end-to-end with the server BLOCKED, and what a challenge signature actually
+The carried finding — the bare `issuerPubkey: Hex32` parameter — is CLOSED in slice 2 below.
+The `holdingSource?: "chain" | "pod-cert"` shape sketched here was a placeholder and was
+OVERRIDDEN by slice 2's design pass; read that section, not this sentence.
+
+### BUILD RECORD — slice 2, the holding-source opt-in (2026-08-20, `feat/pod-cert-gate`)
+
+Makes the rail REACHABLE: a stored gate can now declare which source proves it, and the write
+boundary validates per source. Fable design pass before building; its answers below are the
+design, and two of them overrode what this plan previously said.
+
+**`PodGate` is a DISCRIMINATED UNION, not an optional-field bag** (override). `ChainPodGate |
+CertPodGate`, discriminated on `holdingSource`. The ~113 references are mostly pass-through and
+cost nothing; the sites that actually dereference a read-coordinate are few, on money-moving
+routes, and the compiler now names every one. A third source later breaks compilation at each
+dispatch instead of adding an optional nobody narrows. The gate type follows the same
+dispatch-before-validation discipline as the statement formats.
+
+**Absent `holdingSource` means CHAIN**, and `holdingSource` is optional on the chain variant
+*and nowhere else* — that asymmetry is what makes the default hold in TypeScript as well as at
+runtime. Safe on two independent grounds: historically true (every pre-field gate passed
+`validatePodGate`, which required the chain binding, so no other kind exists), and safe by
+direction (chain is the strictest proof, so misreading can only make a gate harder to pass,
+never let a certificate satisfy chain-configured trust). Present-but-unrecognised REFUSES, so a
+gate written by a newer client fails closed on an older server rather than falling into the
+chain arm.
+
+**The certificate gate stores `swarmManifestRef`, NEVER `issuerPubkey`** (override of the
+obvious symmetry with `onChainEventId`). A stored issuer key cannot go stale — the key is baked
+into the manifest, so a different key is a different `manifestRef` and therefore a different
+badge — but it can be BORN WRONG: a buggy or future-untrusted client writes a gate pairing badge
+X's ref with attacker Y's key, every forged certificate then verifies perfectly, and the UI shows
+X's artwork throughout. Storing one would manufacture exactly the object slice 1's carried
+finding warns about. The ref is a location hint checked against the digest, so a wrong ref fails
+closed instead of shifting trust.
+
+**The two arms are load-bearing at DIFFERENT TIMES, and this is recorded because it reads like
+an inconsistency.** The chain arm proves its binding ONCE at the write boundary and is sound only
+because the gate is then stored in a platform-signed feed. The certificate arm re-proves its
+trust root on EVERY use, which is why it stays sound even if gates move to untrusted client
+storage — the property Gate B's serverless endgame needs. The cert arm's write-boundary check is
+therefore organiser UX (catch a dead ref where it can be explained), not the trust check.
+
+**A latent defect the design pass found, now closed:** duplicate `manifestRef` within one
+`PodGateGroup` was harmless with one source and is a live bug with two. Enforcement reads ONE
+holding per `manifestRef` and `evaluatePodGateGroup` matches holdings by `manifestRef` alone, so
+a group pairing a chain gate and a certificate gate for the SAME badge would evaluate the second
+against the first's holding — under `mode: "all"`, counting a single proof twice. Refused at the
+write boundary.
+
+**Slice 1's carried finding is closed** by `podCertHoldingFromManifest`, which resolves the
+issuer internally and so cannot be handed a key at all. It is the only entry point the server
+uses.
+
+Write boundary now refuses, all before any network read except the last: duplicate badges,
+unrecognised sources, `minCount > 1`, `maxSlotExclusive`, and a `swarmManifestRef` that does not
+resolve to a manifest whose digest is `manifestRef`.
+
+**SPECIFIED NOW, BUILT WITH THE HOLDER SLICE — the challenge round trip.** Recorded so slice 2's
+types do not paint it into a corner: claim bodies grow `gateEvidence?: { presentations }`; the
+nonce is minted on pre-steps that already exist (Stripe session create; the agent rail's x402
+descriptor `extra`) plus a small `POST /api/claims/gate-challenge` for the direct path; the
+record lives in an in-memory TTL map that must NOT survive restarts (losing it voids outstanding
+challenges and the claimer redoes the handshake — fail-closed, same reasoning as the broadcast
+keys), bounded per IP so minting is not a memory DoS; audience is a deterministic server identity
+with claim context folded in (`events-api.woco-net.com/gate/{eventId}/{seriesId}`), so a nonce
+minted for one series cannot be spent on another; the expectation is rebuilt from the stored
+record, never from the request; and the nonce is consumed inside the per-series claim queue,
+atomically with the claim commit. `cert.holder` must equal the claimer's verified POD identity
+where the route has one — otherwise a cooperative holder can sign challenges for strangers, which
+is the certificate-rail twin of the wallet-must-be-the-claimer rule.
+
+SIGNED OFF 2026-08-20 (Fable, verdict MERGE AFTER CHANGES → changes applied). The review
+walked all six gate call sites against the parent revision and confirmed the chain arm is
+byte-identical: same dedupe, same `getOnChainHolding` arguments, same try/catch, same rejection
+strings, and Stripe still refuses before any session is created. One MUST-FIX, now closed, and
+worth recording because it was quiet: the server's manifest cache is keyed by `manifestRef`, so
+a warm entry answered `loadVerifiedBadgeManifest` WITHOUT ever dereferencing the gate's own
+`swarmManifestRef` — meaning the write boundary would accept a gate whose ref pointed at nothing
+whenever some earlier gate had already cached that badge, and that gate would then fail closed
+forever from the next restart onward. Trust was never affected (the digest binding is re-proved
+on every use), which is exactly what made it quiet. The write boundary now bypasses the cache.
+
+Three smaller findings applied with it: a certificate gate now says "you have not presented one
+yet" only when the WINDOW is actually open, so a closed window does not ask for proof that cannot
+help; an unrecognised holding source is a permanent refusal rather than a "try again" from the
+generic catch; and `GateEvidence` now REQUIRES the claimer's verified POD identity, enforced in
+`getCertHolding` rather than left to each route — a certificate must name the identity actually
+claiming, or a cooperative holder can answer challenges for strangers. That last one was
+out-of-slice by the brief and pulled in anyway, because this was the moment the seam could be
+made impossible to forget.
+
+Not closed, filed instead: **#342** — `checkPodGate`, `getCertHolding` and
+`loadVerifiedBadgeManifest` have no test seam, so the chain arm's identity across this refactor
+is established by reading rather than by test, and the must-fix above shipped WITHOUT a
+regression test. Sibling of #314.
+
+**NOT in this slice, deliberately:** the editor must not offer the certificate source until
+certificates can actually be issued, or organisers will configure gates nobody on earth can pass
+(`PodGateEditor.svelte`'s `gateable` filter is the seam, and it must become source-aware). And
+`issuePodType`'s `WoCoEventV2` requirement should be dropped for certificate-only badges — right,
+but it belongs with the issuer write path, because "chain footprint: ZERO" stays false until that
+lands and must not slip past it. Note that ticket PODs keep `swarmManifestRef` on `SeriesSummary`
+rather than the directory entry, so certificate-gating a ticket POD either resolves it from there
+or is refused for now.
+
+STILL TO BUILD: the issuer's write path (sign + publish to the banded log, subject index
+upsert) and the issuance decoupling above; then the holder's passport import, the challenge
+round trip as specified, and the challenge-signing UX; then the two proofs demanded above
+(two-browser end-to-end with the server BLOCKED, and what a challenge signature actually
 costs in passkey prompts).
 
 **Gate C — eligibility to make a statement at all.** Not a separate mechanism: on a
