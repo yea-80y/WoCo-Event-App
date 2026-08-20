@@ -270,11 +270,17 @@ export type ContentFeedResult<T> =
 export async function readContentFeedResult<T>(
   ownerAddress: string,
   topic: string,
-  opts: { skipLegacy?: boolean } = {},
+  opts: { skipLegacy?: boolean; thorough?: boolean } = {},
 ): Promise<ContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
-  const read: SocChunkProbe = (id) => probeSoc(owner, id);
+  // `thorough` — REQUIRED by the contract in this function's own docstring:
+  // "use this wherever `absent` gets acted on: a durable write, a cached
+  // negative, or a security decision." Since the reader may now treat a tagged
+  // gateway 403 as absent (client-soc.ts), those three cases can no longer take
+  // the gate's word for it, and a caller that acts on absence must say so.
+  // Ordinary display reads leave it off and keep the cheap path.
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
   // Counted from what the RESOLVER did, not from what we handed it. A stored
   // hint whose version does not resolve restarts the scan from 0, so counting
   // the hint's existence would report the expensive case as the cheap one —

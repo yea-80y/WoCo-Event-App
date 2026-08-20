@@ -208,6 +208,13 @@ export async function updateProfile(updates: UpdateProfileRequest): Promise<User
   const existingRead = await readContentFeedResult<UserProfile>(
     signer.address,
     profileDataContentTopic(addr),
+    // THOROUGH: this read is the base of a whole-object rewrite. A false absent
+    // here does not fail — it succeeds, having blanked bio, website, socials and
+    // the verified sub-ENS label the user cannot simply retype. That is #171
+    // again, reached through the gateway gate rather than through a lenient
+    // read, and the `unavailable` guard below cannot catch it because a gate
+    // refusal reads as ABSENT, not as unavailable.
+    { thorough: true },
   ).catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
   if (existingRead.status === "unavailable") {
     throw new Error(

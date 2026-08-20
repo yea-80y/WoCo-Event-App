@@ -115,6 +115,33 @@ export interface SocUploadDestination {
  * gate runs before any postage is spent either way.
  * Throws `Error` with a `status` field for client-side (400) validation faults.
  */
+/**
+ * Whitelist a SOC address on the read proxy, and REFUSE THE WRITE if we cannot.
+ *
+ * Retries because the proxy shares a compose stack with bee and a transient
+ * blip should not fail a rider's lap. Gives up loudly rather than quietly: a
+ * write we cannot make readable is a write we should not claim succeeded.
+ */
+async function whitelistBeforeUpload(socAddress: string): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await whitelistHashes([socAddress]);
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  const err = new Error(
+    `Could not whitelist ${socAddress} for public reads — refusing the write, because an ` +
+    `unwhitelisted chunk reads as ABSENT to clients and an absent read is indistinguishable ` +
+    `from an empty feed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+  ) as Error & { status?: number };
+  err.status = 503;
+  throw err;
+}
+
 export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDestination): Promise<SocReference> {
   let owner: Uint8Array, identifier: Uint8Array, signature: Uint8Array, span: Uint8Array, payload: Uint8Array;
   try {
@@ -161,6 +188,31 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
     err.status = 400;
     throw err;
   }
+
+  const socAddress = bytesToHex(calculateSocAddress(identifier, owner));
+
+  // WHITELIST BEFORE UPLOAD, AND FATALLY. Both halves are load-bearing.
+  //
+  // BEFORE, because the client may now treat a whitelist refusal as "this chunk
+  // does not exist" (the proxy tags its denial; see gate-denial.ts). If the
+  // chunk lands first and the whitelist call then fails, we have published a
+  // chunk that every non-thorough reader will read as ABSENT — and an absent
+  // read is `clean`, so it sails past every `scanClean`/`bandClean` guard and a
+  // read-modify-write erases the snapshot it could not see. Whitelisting first
+  // inverts the failure: the leftover is a whitelisted address with no chunk,
+  // which reaches bee and yields a genuine, already-trusted 404.
+  //
+  // FATALLY, because it used to be a `console.warn` justified by "the server
+  // read endpoint covers a whitelist lag" — the exact fallback the client no
+  // longer takes. On 2026-08-20 that swallow hid 50 rate-limited failures in
+  // six hours, and those chunks were readable only because a server-fallback
+  // read repaired each one on the way past. That repair path is now rare.
+  //
+  // NOT after the upload with a throw, which was the tempting shape: that mints
+  // an ORPHAN (chunk exists, client told "failed"), the client retries, its
+  // thorough probe finds the orphan as latest, and the rider gets two laps for
+  // one ride.
+  await whitelistBeforeUpload(socAddress);
 
   // Body = span || payload (the CAC bytes); signature rides in the ?sig= query.
   const body = new Uint8Array(span.length + payload.length);
@@ -222,17 +274,9 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
         if (!(resp.status === 429 || resp.status >= 500)) e.status = 502;
         throw e;
       }
-      const socAddress = bytesToHex(calculateSocAddress(identifier, owner));
-      // Whitelist the SOC address on the read proxy so ANY device can read it
-      // directly from the gateway (GET /chunks/{addr}) — the client reads
-      // gateway-first, server-fallback. Non-fatal: the chunk is uploaded
-      // regardless, and the server read endpoint covers a whitelist lag.
-      try {
-        await whitelistHashes([socAddress]);
-        whitelistedSocs.add(socAddress);
-      } catch (e) {
-        console.warn("[swarm] SOC whitelist failed (non-fatal, server-read fallback covers it):", e);
-      }
+      // Already whitelisted above, before the upload. Only the local bookkeeping
+      // set is updated here, so `readSocPayload`'s self-heal does not re-ask.
+      whitelistedSocs.add(socAddress);
       if (etherna) {
         // Etherna gates anonymous reads behind an OFFER (else 402). Register one for
         // the SOC's chunk address so any device can read it from Etherna's own

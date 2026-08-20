@@ -95,6 +95,20 @@ if (!process.env.ALLOWED_HOSTS) {
   );
 }
 
+// A configured proxy with no UPLOAD_SECRET cannot whitelist anything, and an
+// unwhitelisted chunk is not an error to a client — it reads as ABSENT, because
+// the proxy tags its refusal and the client trusts that tag (#329). So this
+// misconfiguration does not surface as failures; it surfaces as a platform whose
+// newly written data appears not to exist. Refuse to boot instead.
+if (process.env.PROXY_URL && !process.env.UPLOAD_SECRET) {
+  console.error(
+    "\n[startup] FATAL: PROXY_URL is set but UPLOAD_SECRET is not.\n" +
+    "  Without it the gateway whitelist call is impossible, and every chunk written\n" +
+    "  from here would read as ABSENT to clients rather than as an error.\n",
+  );
+  process.exit(1);
+}
+
 // EMAIL_HASH_SECRET is the HMAC key for hashing claimer emails before they
 // land on publicly-readable Swarm feeds. Without it, hashes are unsalted
 // SHA-256 and trivially reversible via rainbow tables. Refuse to boot without

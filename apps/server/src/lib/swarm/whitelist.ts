@@ -11,7 +11,20 @@ import { PROXY_URL, UPLOAD_SECRET } from "../../config/swarm.js";
  */
 export async function whitelistHashes(hashes: string[]): Promise<void> {
   const list = hashes.filter(Boolean);
-  if (list.length === 0 || !PROXY_URL || !UPLOAD_SECRET) return;
+  if (list.length === 0) return;
+  // THROW rather than no-op when the proxy is configured but the secret is not.
+  // This used to return silently, which in production means every write is
+  // published unwhitelisted — and since a client may now read a whitelist
+  // refusal as "this chunk does not exist", one misconfigured deploy would make
+  // all new data read as ABSENT platform-wide, silently. A missing PROXY_URL is
+  // still a no-op: that is local dev with no proxy at all.
+  if (!PROXY_URL) return;
+  if (!UPLOAD_SECRET) {
+    throw new Error(
+      "UPLOAD_SECRET is not set but PROXY_URL is — refusing to skip whitelisting. " +
+      "Unwhitelisted chunks read as ABSENT to clients, not as errors.",
+    );
+  }
   const resp = await fetch(`${PROXY_URL}/admin/whitelist`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-upload-secret": UPLOAD_SECRET },

@@ -188,6 +188,13 @@ export async function readPortabilityEnvelope(args: {
   const read = await (args.readFeed ?? readContentFeedResult)<PortabilityEnvelope>(
     keys.socOwnerAddress,
     PORTABILITY_SOC_IDENTIFIER_INPUT,
+    // THOROUGH: `absent` here is the CACHEABLE answer for a never-recovered
+    // account, and the cache is durable. A recovered account whose envelope
+    // reads falsely absent gets pinned to a fresh counterfactual Kernel for the
+    // LIFE OF THE DEVICE — the #138 class exactly, which is why `probeSoc`'s
+    // own docstring names "a cached negative" as a case that must not take a
+    // gateway refusal at face value.
+    { thorough: true },
   );
   if (read.status === "absent") return { status: "absent" };
   if (read.status === "unavailable") {
@@ -284,7 +291,14 @@ export async function portabilityEnvelopeExists(args: {
 
   const base = contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT);
   try {
-    const probe = await probeSoc(keys.socOwnerAddress, versionedSocIdentifier(base, 0));
+    // THOROUGH: this is the #245 self-healer, and it exists to CORRECT a wrong
+    // absent. Probing non-thorough would make it inherit the very false absent
+    // it is there to catch — a gateway gate refusal would read as "no envelope",
+    // the healer would agree, and the account would stay pinned to the wrong
+    // Kernel with the repair path silently confirming the damage.
+    const probe = await probeSoc(keys.socOwnerAddress, versionedSocIdentifier(base, 0), {
+      thorough: true,
+    });
     if (probe.status === "found") return { status: "present" };
     if (probe.status === "absent") return { status: "absent" };
     return { status: "unreadable", reason: probe.reason ?? "envelope probe unavailable" };
