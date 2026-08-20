@@ -59,8 +59,16 @@ export type ManifestReadResult =
 export async function readUserManifestResult(args: {
   signer: ManifestSigner;
   parentAddress: string;
+  /**
+   * Set by `manifestBaseForWrite`. Every manifest mutator rewrites the WHOLE
+   * object, so a false absent does not fail — it succeeds, having erased the
+   * backup list and the `feeds` keep-list. The `unavailable` guard there cannot
+   * catch it, because a gateway gate refusal reads as ABSENT.
+   */
+  thorough?: boolean;
 }): Promise<ManifestReadResult> {
-  const read = await readContentFeedResult<unknown>(args.signer.address, USER_MANIFEST_TOPIC)
+  const read = await readContentFeedResult<unknown>(args.signer.address, USER_MANIFEST_TOPIC,
+    { thorough: args.thorough })
     .catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
   if (read.status === "unavailable") return read;
   if (read.status === "absent") return { status: "absent" };
@@ -83,19 +91,6 @@ export async function readUserManifestResult(args: {
 }
 
 /**
- * Lenient read for DISPLAY paths: the manifest, or null for both "none" and
- * "couldn't read". A read-modify-write must not use this — see
- * {@link readUserManifestResult}.
- */
-export async function readUserManifest(args: {
-  signer: ManifestSigner;
-  parentAddress: string;
-}): Promise<UserManifest | null> {
-  const read = await readUserManifestResult(args);
-  return read.status === "found" ? read.manifest : null;
-}
-
-/**
  * Load the manifest for a read-modify-write, or throw when we could not read it.
  * Every mutator below rewrites the WHOLE manifest, so merging against a null base
  * that only meant "couldn't read" silently drops every entry the user already had
@@ -106,7 +101,7 @@ async function manifestBaseForWrite(args: {
   signer: ManifestSigner;
   parentAddress: string;
 }): Promise<UserManifest | null> {
-  const read = await readUserManifestResult(args);
+  const read = await readUserManifestResult({ ...args, thorough: true });
   if (read.status === "unavailable") {
     throw new Error(`manifest unreadable — refusing to rewrite it (${read.reason ?? "unknown"})`);
   }
@@ -224,13 +219,4 @@ export async function restoreFeedEntryOnManifest(args: {
   const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
   const manifest = restoreFeedEntry(existing, args.kind, args.topic);
   await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
-}
-
-/** Convenience read: the active feed log (empty if no manifest yet). */
-export async function readFeedLog(args: {
-  signer: ManifestSigner;
-  parentAddress: string;
-}): Promise<ManifestFeedEntry[]> {
-  const manifest = await readUserManifest(args);
-  return manifest?.feeds ?? [];
 }

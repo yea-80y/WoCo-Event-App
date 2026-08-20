@@ -864,6 +864,159 @@ shape, and misses staying O(1) as bands grow). The three-state hint instrument s
 it, so the BROWSER measurement above can now be re-run and trusted — that re-run is the
 outstanding acceptance step, and until it exists the table above is a model, not a result.
 
+❌ **BROWSER RE-RUN DONE 2026-08-20 — ACCEPTANCE FAILS. The COST table above is REFUTED as a
+prediction; it stays only as the model that was wrong.** Real Chrome, real passkey rider,
+`dev:web` against the production gateway and API, Demo Coaster, fixture grown by UI taps to
+147 laps (118 taps, zero failures, no lost laps).
+
+| | 3 laps (1 band) | 109 laps (2) | 147 laps (3) | required |
+|---|---|---|---|---|
+| cold-read misses | 14 | 26 | 36 | ≤6, **independent of laps** |
+| warm-read misses | 14 | 17 | — | ≤3 |
+| warm tap | 0 probes | 0 probes (735ms @110) | — | 0 probes ✅ |
+
+Misses GROW where the model said flat, and the floor is ~14 even at 3 laps. **The write path
+is not the problem** — a tap on a loaded card is `735ms · 0 probes`. All of it is the read.
+
+**Root causes, measured — and the second one only became visible once the miss counter was
+split by HTTP status (`ef2c1dd`), which is why no earlier round found it:**
+
+1. The gateway returns **403, not 404**, for an address with no chunk (verified with a random
+   address), so `client-soc.ts`'s `404 && !thorough → absent` short-circuit NEVER fires and
+   every absent probe pays a ~2-3s server call that structurally cannot succeed. → **#329**
+2. **Whitelisting FAILS under concurrent writes and the failure is swallowed**
+   (`soc-upload.ts:233`). Cold read of the fresh fixture: `gwmiss 403:25 404:0 5xx:0`, of
+   which the server resolved **18** — existing chunks the gateway refused. Repeat the read
+   and it drops to `403:7 · api 0/7`, because a server read fire-and-forget whitelists what it
+   resolves (`soc-upload.ts:305-310`). **Reads silently repair it, which is why it has been
+   invisible.** One isolated write whitelists correctly (`api 0/8`). → **#332**
+
+Corrects **THE `api 0/8` FINDING** above: it is not that the fallback resolves nothing. It is
+that the fallback is asked about two different things — genuinely-absent addresses (always
+404, always wasted) and existing-but-unwhitelisted ones (resolved, and repaired on the way).
+
+Also corrected: whitelisting is NOT asynchronous — `soc-upload.ts:231` awaits it before
+write-accept. The recommendation above to "make whitelisting synchronous" is therefore already
+satisfied; the real defect is that it is UNGUARANTEED, not late.
+
+`hintInvalidated` read 0 throughout, but the counter was blind on the banded-absent path and
+on every write-path resolve until `ef2c1dd` — so that 0 was never evidence. Re-measure it now
+the counter is sighted before treating this criterion as met (#330).
+
+NOT DONE: the 1,000-lap leg. Stopped at 147 — the growth is established over three points and
+1,000 projected to ~2.4h of sustained production writes. A 16-band point would refine the
+RATE, not the conclusion.
+
+✅ **#332 ROOT-CAUSED AND FIXED, live 2026-08-20.** Not lag and not overload — a broken IP
+check. The bee-slam proxy listens dual-stack, so Docker traffic arrives as
+`::ffff:172.18.0.3`; `isLocalRequest()` spelled out `::ffff:127.0.0.1` for localhost but used
+a bare `startsWith('172.')` for the private range, so EVERY in-cluster call read as remote and
+fell under the rate limiters. The server's whitelist calls then hit the 50-per-15-min admin
+cap — 50 × `whitelist responded 429` in six hours, each swallowed. Proven by `RateLimit-*`
+headers appearing on an in-cluster probe (they are emitted only when the limiter does NOT
+skip), and by 55 in-cluster admin calls now returning `{"200": 55}` past the old cap.
+
+Effect, cold read on freshly-written data:
+
+| | before | after |
+|---|---|---|
+| gateway misses (all 403) | 25 | 8 |
+| server rescues (existing chunks refused) | **18** | **0** |
+| total misses | 32 | **16** |
+
+**Half of all misses on a fresh fixture were this bug.** Wall clock is ~15s either way: the
+remaining 8 misses are genuinely-absent addresses (`api 0/8`) still paying the dead server
+round trip, so **the residual is entirely #329**. Fix is deployed but not yet committed —
+`bee-slam` is a local-only repo and the VM carried 32 lines the dev machine lacked, so the
+same surgical patch was applied to both rather than rsyncing over them.
+
+✅ **#329 FIXED 2026-08-20 — cold read 15.2s → 3.4s.** Two changes, both live.
+
+1. **The gateway's 403 was slow AND untrusted.** `isHashAllowed` ran a full bee lookup
+   (`detectFeedManifest`) before refusing, so a never-seen address cost ~2.76s at the gateway
+   alone — on the version-scan hot path, which asks about novel addresses constantly. `/chunks`
+   now opts out of manifest detection (a SOC address can never be a manifest; known manifests
+   still resolve via the registry fast path). Novel 403: **2.76s → 0.19s**.
+2. **A tagged 403 is now an answer.** The proxy emits `X-Chunk-Gate: not-whitelisted` plus a
+   machine-readable `code: NOT_WHITELISTED`, CORS-exposed; the client trusts ONLY that tag and
+   leaves every other 403 as `unavailable → ask the server`, so "couldn't ask" never becomes
+   "absent" (#138/#156).
+
+| cold read, 154 laps | probes | misses | api | wall |
+|---|---|---|---|---|
+| start of day | 52 | 16 | 0/8 | 15188ms |
+| after (1) | 48 | 14 | 0/8 | 13165ms |
+| after (2) | 44 | **8** | **0/0** | **3428ms** |
+
+Tap on a loaded card unchanged: 710ms, 0 probes.
+
+**WHERE THE TRUST STOPS, and why it is not optional.** Reads feeding a READ-MODIFY-WRITE pass
+`thorough` and keep consulting the server — `upsertSubjectBand`, `removeFromSubjectIndex`,
+social's `addToSubjectIndex`. Those writers probe for a fresh address independently of the
+resolution handed to them, so a false ABSENT does not collide and get caught: it lands a fresh
+snapshot at the real latest version, VERIFIES, and erases everything since. The gate is
+authoritative only while its whitelist is COMPLETE, and #332 proved entries can go missing.
+Display and head reads may trust it, because a lap is an exact-address write — staleness
+collides, Bee dedupes, the read-back reports `superseded`.
+
+**A LESSON, recorded because it nearly shipped as a success.** The first version of (2) was
+green and did nothing: typecheck clean, six tests passing, trust never firing once. bee-js's
+`BeeResponseError` carries no headers and no `response` object, and its `responseBody` is an
+ArrayBuffer that the detector was `JSON.stringify`-ing into `"{}"`. The tests passed because
+their fixtures were strings. Only the browser measurement caught it — `api 0/7`, still calling
+the server. **A fixture that does not match the real shape is the same failure as a fixture
+that replaces the real reader**, which is the process lesson this branch already recorded once.
+
+**REMAINING at 3.4s:** ~36 cheap gateway hits walking the current band (O(band size), by
+design — up to 64), and 8 tagged-403 misses now costing ~0.19s each. Any further work is
+lever 3 (checkpointing position inside a band), which is a real tunable but no longer urgent.
+
+📊 **FULL CYCLE MEASURED 2026-08-20, after both fixes.** The remaining cost is a function of
+POSITION INSIDE THE CURRENT BAND and nothing else — misses are now flat, so lap count no longer
+moves the number. Fixture taken to 190 laps (62 of band 2's 64 slots) and then over the
+rollover to 194.
+
+| read | probes | misses | api | wall |
+|---|---|---|---|---|
+| warm | 17 | 7 | 0/0 | **856ms** |
+| cold, 2/64 into a band | 22 | 9 | 0/0 | **1376ms** |
+| cold, 26/64 | 44 | 8 | 0/0 | 3428ms |
+| cold, 62/64 (worst) | 80 | 8 | 0/0 | **7341ms** |
+
+| tap | | |
+|---|---|---|
+| ordinary, loaded card | 0 probes | 281–579ms |
+| **band-opening** (lap 193) | 11 probes (4 miss) | **10699ms** |
+
+**ACCEPTANCE, restated honestly.** By the letter it still fails — cold misses are 8–9 against
+≤6, warm 7 against ≤3, band-opening 11 probes against ~4. But those thresholds were chosen when
+a miss cost ~5 SECONDS. A miss now costs ~0.19s, so the criterion is counting a unit that no
+longer means what it meant. **It should be restated in wall-clock**, or in "misses that reach
+the network twice", before anyone treats the numbers as pass/fail again. What the criterion was
+really protecting — reads that do not grow with a rider's history — is now TRUE and measured:
+misses are flat at 8–9 across 3, 109, 147, 154, 190 and 194 laps.
+
+**The band-opening tap (10.7s, once per 64 laps) is now the worst single moment in the rail.**
+Two ~3s API calls inside it (`api 0/2`) are the `thorough` index reads, which deliberately do
+NOT trust the gate because that read feeds a read-modify-write. That is a correctness trade,
+not a regression (comparable taps measured 9.5s before any of today's work), and it must not be
+"optimised" by making those reads trusting.
+
+**LEVER 3 (checkpoint position inside a band, not just the band) is now a quantified option
+rather than a guess:** it would flatten 1.4s → 7.3s to roughly a constant 1.4s, worth ~6s at
+the worst point. NOT recommended for the Rita pilot — riders there stay inside band 0, so they
+never roll over and their worst case is the same 7.3s ceiling. Revisit only if that ceiling
+proves to matter. The per-lap head pointer stays rejected for the reason already recorded
+(it moves one write per lap onto the index feed, whose own resolution then becomes the O(laps)
+scan); a COARSER checkpoint is the non-circular form and the one to price if this is reopened.
+
+METHOD NOTE for anyone repeating this: the gateway negative-caches absent addresses (novel
+403 = 2.76s, repeat = 0.15s, still cached 40 min later). **Wall-clock times are contaminated
+by cache state; miss COUNTS are not**, since a cached 403 still counts as a `gatewayMiss`.
+Judge against miss counts — which is how the acceptance criteria are already written. And
+machine-speed tapping is not a rider (Rita's `cadenceMinutes` is 2); it is a fair proxy for
+many riders tapping at once, and nothing more.
+
 ⚠️ **OPEN — PODs as chapter markers (2026-08-19).** The owner's proposal: a milestone POD
 could START a new feed — hit 100, and the badge begins the next chapter. The instinct is
 right and the design already contains it, but **the dependency direction must be inverted**,

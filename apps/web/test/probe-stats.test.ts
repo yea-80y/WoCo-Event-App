@@ -16,6 +16,8 @@ import {
   resetProbeCounts,
   probeTotals,
   measured,
+  countGatewayMissStatus,
+  gatewayMissStatuses,
 } from "../src/lib/swarm/probe-stats.js";
 
 test("counts each outcome separately, because a miss is not a hit", () => {
@@ -60,4 +62,37 @@ test("measured propagates a throw rather than swallowing it", async () => {
     () => measured("test", async () => { throw new Error("boom"); }),
     /boom/,
   );
+});
+
+test("a gateway miss is bucketed by the status that caused it", () => {
+  // `gatewayMiss` alone bundles three causes that call for OPPOSITE fixes: a
+  // whitelist 403, a genuine 404, and a bee 5xx under load. The 2026-08-20
+  // browser re-run could not choose a fix without this split — and once split,
+  // the answer was unambiguous (403:25 404:0 5xx:0).
+  resetProbeCounts();
+  countGatewayMissStatus(403);
+  countGatewayMissStatus(403);
+  countGatewayMissStatus(404);
+  countGatewayMissStatus(500);
+  countGatewayMissStatus(503);
+  assert.deepEqual(gatewayMissStatuses(), { s403: 2, s404: 1, s5xx: 2, other: 0 });
+});
+
+test("a miss carrying no status is `other`, never guessed into a bucket", () => {
+  // A client-side network exception has no HTTP status. Filing it under 403
+  // would manufacture evidence for the very hypothesis the split exists to
+  // test, which is worse than counting nothing.
+  resetProbeCounts();
+  countGatewayMissStatus(undefined);
+  countGatewayMissStatus(302);
+  assert.deepEqual(gatewayMissStatuses(), { s403: 0, s404: 0, s5xx: 0, other: 2 });
+});
+
+test("resetProbeCounts clears the status split too", () => {
+  // It did not, at first. A counter that survives a reset reports the previous
+  // action's misses as this one's — which is the same class of silent
+  // miscounting this whole file exists to prevent.
+  countGatewayMissStatus(403);
+  resetProbeCounts();
+  assert.deepEqual(gatewayMissStatuses(), { s403: 0, s404: 0, s5xx: 0, other: 0 });
 });

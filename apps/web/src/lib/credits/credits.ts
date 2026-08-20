@@ -185,8 +185,20 @@ interface SubjectIndexRead {
 async function readSubjectIndex(
   keys: RiderKeys,
   visibility: CreditVisibility,
+  /**
+   * Set by callers whose result feeds a READ-MODIFY-WRITE of this index. Those
+   * reads must never trust the gateway's whitelist gate: a false absent there
+   * writes a fresh snapshot over a real one and erases every subject added
+   * since, with nothing to detect it. `liveVisibility` reads for DISPLAY and
+   * leaves this off, so the common cold read stays cheap.
+   */
+  opts: { thorough?: boolean } = {},
 ): Promise<SubjectIndexRead> {
-  const res = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopicForBand(keys, visibility));
+  const res = await readBandedContentFeed<unknown>(
+    keys.feedAddress,
+    indexTopicForBand(keys, visibility),
+    { thorough: opts.thorough },
+  );
   const at = {
     indexBand: res.band,
     indexVersion: res.status === "found" ? res.version : null,
@@ -221,10 +233,14 @@ async function readSubjectIndex(
  * rides invisible to every count. That is precisely the fork the one-live-head
  * rule exists to prevent.
  */
-async function liveVisibility(keys: RiderKeys, subject: Hex0x): Promise<PartitionRead> {
+async function liveVisibility(
+  keys: RiderKeys,
+  subject: Hex0x,
+  opts: { thorough?: boolean } = {},
+): Promise<PartitionRead> {
   const [pub, priv] = await Promise.all([
-    readSubjectIndex(keys, "public"),
-    readSubjectIndex(keys, "private"),
+    readSubjectIndex(keys, "public", opts),
+    readSubjectIndex(keys, "private", opts),
   ]);
   return decideVisibility(pub.read, priv.read, subject);
 }
@@ -244,6 +260,13 @@ async function readHeadAt(
   subject: Hex0x,
   visibility: CreditVisibility,
   hintBand = 0,
+  /**
+   * Set on the WRITE path. A head read that feeds a new statement must not
+   * trust the gateway's whitelist gate, because the failure is not symmetric:
+   * a false ABSENT here is CLEAN, so it passes the `unavailable` guard below
+   * and starts a fresh count — see the comment at the `attemptRide` call site.
+   */
+  opts: { thorough?: boolean } = {},
 ): Promise<HeadRead> {
   // `hintBand` is the band the subject index recorded — a lower bound. A stale
   // one costs a short walk over band openers; it can never point at a head that
@@ -251,7 +274,7 @@ async function readHeadAt(
   const res = await readBandedContentFeed<unknown>(
     keys.feedAddress,
     headTopicForBand(keys, subject, visibility),
-    { hintBand },
+    { hintBand, thorough: opts.thorough },
   );
   if (res.status === "absent") return { status: "absent" };
   if (res.status === "unavailable") return { status: "unavailable", reason: res.reason ?? "head unavailable" };
@@ -486,7 +509,21 @@ async function attemptRide(
     band = warm.band;
     indexed = true;
   } else {
-    const where = await liveVisibility(keys, subject);
+    // THOROUGH, both of them. These reads decide whether this rider has a
+    // history, and the guard below only catches `unavailable` — a false ABSENT
+    // is CLEAN and walks straight through it.
+    //
+    // The exact-address argument that lets DISPLAY reads trust the gateway gate
+    // does not hold here, and the asymmetry is easy to miss. A stale FOUND head
+    // is safe: `knownVersion` is supplied, the write targets an address that
+    // already exists, Bee dedupes, and the read-back reports `superseded`. A
+    // false ABSENT is the opposite: `prev` is null, so no `knownVersion` is
+    // supplied, so `writeContentFeed` PROBES, finds the real latest N, and
+    // writes the total=1 statement at N+1 — a FRESH address. Nothing collides,
+    // nothing dedupes, the read-back verifies our own bytes and reports
+    // success. The rider's lifetime count silently restarts, which is precisely
+    // what the comment below exists to prevent.
+    const where = await liveVisibility(keys, subject, { thorough: true });
     if (where.status !== "ok") return { ok: false, error: CANNOT_READ };
     visibility = where.visibility ?? "private";
     indexed = where.visibility !== null;
@@ -496,7 +533,7 @@ async function attemptRide(
     // seq 0 / total = laps, at a HIGHER SOC version — their device would show
     // the reset while an indexer (highest seq) kept the real total, and the
     // two would disagree indefinitely.
-    const head = await readHeadAt(keys, subject, visibility, where.band);
+    const head = await readHeadAt(keys, subject, visibility, where.band, { thorough: true });
     if (head.status === "unavailable") return { ok: false, error: CANNOT_READ };
     prev = head.status === "found" ? head.statement : null;
     if (head.status === "found") {
@@ -633,7 +670,7 @@ async function upsertSubjectBand(
   band: number,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
-    const existing = await readSubjectIndex(keys, visibility);
+    const existing = await readSubjectIndex(keys, visibility, { thorough: true });
     if (existing.read.status === "unavailable") return false;
     // A dirty band walk cannot bound the family: the band it failed to read may
     // be open, and writing into the one below it lands an update where readers
@@ -705,7 +742,24 @@ export type PublishResult =
 export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
   try {
     const keys = await riderKeys();
-    const where = await liveVisibility(keys, subject);
+    // THOROUGH throughout this function, and the reason is different from every
+    // other write path in this file.
+    //
+    // Elsewhere a stale read is survivable because the write it feeds targets an
+    // address that already exists: Bee dedupes, the read-back reports
+    // `superseded`, and the retry rail redoes it. Publish is the ONE write that
+    // starts a FRESH topic family — `writeStatement(..., "public", ..., 0)` goes
+    // to public band 0 version 0, where nothing can ever collide. So the
+    // detect-and-retry machinery that guards laps does not exist here.
+    //
+    // That makes a false STALE-FOUND head, not just a false absent, into
+    // permanent loss: a missing whitelist entry at version N stops the resolver
+    // at N-1, found and CLEAN, and publish re-signs that stale total, lands it
+    // verified at public v0, and sweeps the private index entry. The rider's
+    // newest laps are then absent from the public count with the private family
+    // retired, and nothing reports a failure. Publish is a rare, confirmed
+    // action, so consulting the server costs nothing worth having.
+    const where = await liveVisibility(keys, subject, { thorough: true });
     if (where.status !== "ok") return { ok: false, error: CANNOT_READ };
 
     if (where.visibility === "public") {
@@ -716,7 +770,7 @@ export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
     }
     if (!where.visibility) return { ok: false, error: "Ride it once before publishing it." };
 
-    const head = await readHeadAt(keys, subject, "private");
+    const head = await readHeadAt(keys, subject, "private", 0, { thorough: true });
     if (head.status !== "found") return { ok: false, error: CANNOT_READ };
     const prev = head.statement;
 
@@ -782,7 +836,7 @@ async function removeFromSubjectIndex(
   visibility: CreditVisibility,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
-    const existing = await readSubjectIndex(keys, visibility);
+    const existing = await readSubjectIndex(keys, visibility, { thorough: true });
     if (existing.read.status !== "ok") return false;
     // Same refusal as `upsertSubjectBand`, and for a sharper reason: this writes
     // a snapshot with a subject REMOVED. Off an inconclusive resolution it can

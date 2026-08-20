@@ -167,7 +167,12 @@ async function addToSubjectIndex(
       // tracked how much a user had ever liked. Social has no partition rule and
       // so nothing read beforehand to carry a band hint — it is discovered by
       // walking band openers, which the full-band invariant makes sound.
-      const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic);
+      // `thorough` — this read feeds the read-modify-write below, so it must not
+      // trust the gateway's whitelist gate. A tagged 403 is treated as `absent`
+      // on ordinary reads (client-soc.ts), and a lost whitelist entry would
+      // therefore arrive here as a CLEAN absent — the one shape the guard below
+      // cannot catch, because it checks for INCONCLUSIVE, not for wrong.
+      const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic, { thorough: true });
 
       // Only `absent` may be treated as "no index yet". Writing a fresh one over
       // an index we merely FAILED to read would drop every subject it holds —

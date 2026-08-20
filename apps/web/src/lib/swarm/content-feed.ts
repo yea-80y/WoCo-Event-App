@@ -182,7 +182,13 @@ export async function writeContentFeed(args: {
     // existing immutable SOC and silently loses the edit (see probeSoc).
     const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true });
     const hint = args.versionHint ?? readVersionHint(owner, args.topic);
-    const { latest, clean } = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
+    const { latest, clean, hintGiven, hintValidated } =
+      await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
+    // The write path resolves with a hint exactly as the read path does, and was
+    // never counted — so a first lap that missed 24 times reported
+    // `hints 0 used / 0 cold / 0 INVALIDATED`. The instrument was blind on the
+    // most expensive path in the rail.
+    countHint(!hintGiven ? "noHint" : hintValidated ? "hintUsed" : "hintInvalidated");
     // A dirty scan cannot bound the sequence: the version it failed to read may
     // exist, and writing there is a NO-OP that returns 201 and keeps the old
     // payload — the edit is lost, silently, with success reported. Refusing is the
@@ -264,11 +270,17 @@ export type ContentFeedResult<T> =
 export async function readContentFeedResult<T>(
   ownerAddress: string,
   topic: string,
-  opts: { skipLegacy?: boolean } = {},
+  opts: { skipLegacy?: boolean; thorough?: boolean } = {},
 ): Promise<ContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
-  const read: SocChunkProbe = (id) => probeSoc(owner, id);
+  // `thorough` — REQUIRED by the contract in this function's own docstring:
+  // "use this wherever `absent` gets acted on: a durable write, a cached
+  // negative, or a security decision." Since the reader may now treat a tagged
+  // gateway 403 as absent (client-soc.ts), those three cases can no longer take
+  // the gate's word for it, and a caller that acts on absence must say so.
+  // Ordinary display reads leave it off and keep the cheap path.
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
   // Counted from what the RESOLVER did, not from what we handed it. A stored
   // hint whose version does not resolve restarts the scan from 0, so counting
   // the hint's existence would report the expensive case as the cheap one —
@@ -381,11 +393,25 @@ export type BandedContentFeedResult<T> = ContentFeedResult<T> & {
 export async function readBandedContentFeed<T>(
   ownerAddress: string,
   topicForBand: (band: number) => string,
-  opts: { hintBand?: number } = {},
+  opts: { hintBand?: number; thorough?: boolean } = {},
 ): Promise<BandedContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
-  const read: SocChunkProbe = (id) => probeSoc(owner, id);
+  // `thorough` is REQUIRED of any caller whose result feeds a read-modify-write
+  // of a whole snapshot. Such a writer probes for a fresh address independently
+  // of the resolution we hand it, so a false ABSENT here does not collide and
+  // get caught — it lands a fresh snapshot at the real latest version, VERIFIES,
+  // and erases every entry added since. Nothing detects it.
+  //
+  // This became load-bearing when the reader started trusting a tagged 403 as
+  // absent (client-soc.ts): the gate is authoritative only while its whitelist
+  // is complete, and a lost entry would otherwise read as a CLEAN absent —
+  // clean being exactly what the `bandClean`/`scanClean` guards check. Thorough
+  // reads keep consulting the server, so they cannot be fooled by the gate.
+  //
+  // Display and head reads do NOT need it: a lap is an exact-address write, so
+  // staleness collides, Bee dedupes, and the read-back reports `superseded`.
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
 
   // SCAN-FIRST. Resolving the band by walking openers first spent its whole
   // probe window on every read, and a probe past the last opened band is a
@@ -395,6 +421,14 @@ export async function readBandedContentFeed<T>(
   const hintBand = Math.max(opts.hintBand ?? 0, readBandHint(owner, topicForBand));
   const head = await resolveBandedHead(read, topicForBand, hintBand, (band) =>
     readVersionHint(owner, topicForBand(band)));
+
+  // Counted HERE, from what the resolution did, and not on the found path below.
+  // It used to sit after the `found` return, so a read that resolved ABSENT
+  // contributed no hint state at all — and "a stored hint whose version reads as
+  // absent" is one of the exact shapes `hintInvalidated` exists to catch. The
+  // alarm could not fire for it. Same placement principle as
+  // `readContentFeedResult`, which counts from inside the resolver via `onScan`.
+  countHint(!head.hintGiven ? "noHint" : head.hintInvalidated ? "hintInvalidated" : "hintUsed");
 
   if (head.latest === null) {
     // Clean means the feed genuinely does not exist; otherwise nobody could
@@ -427,12 +461,6 @@ export async function readBandedContentFeed<T>(
 
   bumpBandHint(owner, topicForBand, head.band);
   bumpVersionHint(owner, topic, head.latest);
-  // The THREE states, from what the resolution actually did — not from `clean`.
-  // Counting off `clean` was wrong in every case: a cold read looked like a used
-  // hint, and a genuinely invalidated hint looked like one too, because an absent
-  // probe IS clean. That made the whitelist-lag alarm unable to fire on exactly
-  // the feeds it was installed to watch.
-  countHint(!head.hintGiven ? "noHint" : head.hintInvalidated ? "hintInvalidated" : "hintUsed");
 
   try {
     return {

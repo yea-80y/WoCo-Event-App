@@ -60,11 +60,41 @@ export interface ProbeCounts {
   serverMiss: number;
 }
 
+/**
+ * WHY a gateway probe missed, split by HTTP status — because "missed" bundles
+ * together causes that call for opposite fixes.
+ *
+ * The 2026-08-20 browser re-run measured cold reads where the gateway missed 29
+ * chunks and the server then resolved 22 of them. Three different mechanisms
+ * produce that same shape:
+ *
+ * - `s403` — the proxy's whitelist gate refused. If these dominate, the win is
+ *   making a 403 trustworthy as absent, which removes a ~2-3s server round trip
+ *   from every absent probe.
+ * - `s404` — bee ran a network search and found nothing. Already the trusted
+ *   verdict on the non-thorough path.
+ * - `s5xx` — bee or the proxy failed to answer, typically under load. If THESE
+ *   dominate, trusting 403 buys almost nothing and the lever is elsewhere
+ *   entirely.
+ * - `other` — anything else, including a status the error never carried.
+ *
+ * `countProbe("gatewayMiss")` cannot distinguish them, so a fix chosen on the
+ * old counter alone is chosen blind. That is the whole reason this exists.
+ */
+export interface GatewayMissStatuses {
+  s403: number;
+  s404: number;
+  s5xx: number;
+  other: number;
+}
+
 const zero = (): ProbeCounts => ({ gatewayHit: 0, gatewayMiss: 0, serverHit: 0, serverMiss: 0 });
 const zeroHints = (): HintCounts => ({ noHint: 0, hintUsed: 0, hintInvalidated: 0 });
+const zeroStatuses = (): GatewayMissStatuses => ({ s403: 0, s404: 0, s5xx: 0, other: 0 });
 
 let counts = zero();
 let hints = zeroHints();
+let missStatuses = zeroStatuses();
 
 export function countHint(kind: keyof HintCounts): void {
   hints[kind] += 1;
@@ -78,6 +108,20 @@ export function countProbe(kind: keyof ProbeCounts): void {
   counts[kind] += 1;
 }
 
+/** Bucket a gateway miss by the status that caused it. `undefined` — an error
+ *  that carried no status at all, e.g. a network exception — is `other`, not a
+ *  guess: mislabelling it would defeat the point of splitting them. */
+export function countGatewayMissStatus(status: number | undefined): void {
+  if (status === 403) missStatuses.s403 += 1;
+  else if (status === 404) missStatuses.s404 += 1;
+  else if (typeof status === "number" && status >= 500 && status < 600) missStatuses.s5xx += 1;
+  else missStatuses.other += 1;
+}
+
+export function gatewayMissStatuses(): GatewayMissStatuses {
+  return { ...missStatuses };
+}
+
 /** A copy of the running totals. */
 export function probeCounts(): ProbeCounts {
   return { ...counts };
@@ -86,6 +130,7 @@ export function probeCounts(): ProbeCounts {
 export function resetProbeCounts(): void {
   counts = zero();
   hints = zeroHints();
+  missStatuses = zeroStatuses();
 }
 
 /** Total probes, and the subset that cost a network search. */
@@ -108,6 +153,7 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
 
   const before = probeCounts();
   const hintsBefore = hintCounts();
+  const statusBefore = gatewayMissStatuses();
   const started = performance.now();
   try {
     return await action();
@@ -125,10 +171,16 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
     const cold = hintAfter.noHint - hintsBefore.noHint;
     const bad = hintAfter.hintInvalidated - hintsBefore.hintInvalidated;
     const ms = Math.round(performance.now() - started);
+    const sAfter = gatewayMissStatuses();
+    const s403 = sAfter.s403 - statusBefore.s403;
+    const s404 = sAfter.s404 - statusBefore.s404;
+    const s5xx = sAfter.s5xx - statusBefore.s5xx;
+    const sOther = sAfter.other - statusBefore.other;
     // One line, deliberately: this is read against a stopwatch, not parsed.
     console.info(
       `[probes] ${label}: ${ms}ms · ${probes} probes (${misses} miss) ` +
         `· gw ${delta.gatewayHit}/${delta.gatewayMiss} · api ${delta.serverHit}/${delta.serverMiss} ` +
+        `· gwmiss 403:${s403} 404:${s404} 5xx:${s5xx} ?:${sOther} ` +
         `· hints ${used} used / ${cold} cold / ${bad} INVALIDATED`,
     );
   }

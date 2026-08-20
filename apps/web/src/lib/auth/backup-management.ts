@@ -177,6 +177,15 @@ export async function removeAllAccountBackups(args: {
       const res = await readUserManifestResult({
         signer: { privKey: args.feedSigner.privKey, address: args.feedSigner.address },
         parentAddress: args.kernelAddress,
+        // THOROUGH, for the same reason the tri-state read is used above. A
+        // false absent hands this an EMPTY history, so it clears no auto-find
+        // hints — and sets `guardianHistoryKnown = true`, suppressing the
+        // "history unreadable" warning below. The user asked to remove all
+        // backups and would be told it worked while every stale hint survived.
+        // The chain still governs the revoke itself, so this is a privacy leak
+        // rather than a lost revocation — but it is silent, and this path runs
+        // once, on a deliberate user action, where a slow read costs nothing.
+        thorough: true,
       });
       if (res.status !== "unavailable") {
         guardianHistoryKnown = true;
