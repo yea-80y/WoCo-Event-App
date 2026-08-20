@@ -182,7 +182,13 @@ export async function writeContentFeed(args: {
     // existing immutable SOC and silently loses the edit (see probeSoc).
     const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true });
     const hint = args.versionHint ?? readVersionHint(owner, args.topic);
-    const { latest, clean } = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
+    const { latest, clean, hintGiven, hintValidated } =
+      await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
+    // The write path resolves with a hint exactly as the read path does, and was
+    // never counted — so a first lap that missed 24 times reported
+    // `hints 0 used / 0 cold / 0 INVALIDATED`. The instrument was blind on the
+    // most expensive path in the rail.
+    countHint(!hintGiven ? "noHint" : hintValidated ? "hintUsed" : "hintInvalidated");
     // A dirty scan cannot bound the sequence: the version it failed to read may
     // exist, and writing there is a NO-OP that returns 201 and keeps the old
     // payload — the edit is lost, silently, with success reported. Refusing is the
@@ -396,6 +402,14 @@ export async function readBandedContentFeed<T>(
   const head = await resolveBandedHead(read, topicForBand, hintBand, (band) =>
     readVersionHint(owner, topicForBand(band)));
 
+  // Counted HERE, from what the resolution did, and not on the found path below.
+  // It used to sit after the `found` return, so a read that resolved ABSENT
+  // contributed no hint state at all — and "a stored hint whose version reads as
+  // absent" is one of the exact shapes `hintInvalidated` exists to catch. The
+  // alarm could not fire for it. Same placement principle as
+  // `readContentFeedResult`, which counts from inside the resolver via `onScan`.
+  countHint(!head.hintGiven ? "noHint" : head.hintInvalidated ? "hintInvalidated" : "hintUsed");
+
   if (head.latest === null) {
     // Clean means the feed genuinely does not exist; otherwise nobody could
     // answer, which a caller must never cache as absence.
@@ -427,12 +441,6 @@ export async function readBandedContentFeed<T>(
 
   bumpBandHint(owner, topicForBand, head.band);
   bumpVersionHint(owner, topic, head.latest);
-  // The THREE states, from what the resolution actually did — not from `clean`.
-  // Counting off `clean` was wrong in every case: a cold read looked like a used
-  // hint, and a genuinely invalidated hint looked like one too, because an absent
-  // probe IS clean. That made the whitelist-lag alarm unable to fire on exactly
-  // the feeds it was installed to watch.
-  countHint(!head.hintGiven ? "noHint" : head.hintInvalidated ? "hintInvalidated" : "hintUsed");
 
   try {
     return {

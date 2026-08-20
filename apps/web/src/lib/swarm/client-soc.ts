@@ -13,7 +13,7 @@
  * envelope resolves on Etherna's Beehive fork too.
  */
 
-import { countProbe } from "./probe-stats.js";
+import { countProbe, countGatewayMissStatus } from "./probe-stats.js";
 import { Bee, PrivateKey, Bytes, Span, Identifier, Reference } from "@ethersphere/bee-js";
 import { calculateCacAddress, encodeSpan, SOC_MAX_PAYLOAD_SIZE, type SocReadOutcome } from "@woco/shared";
 import { authPost, get } from "../api/client.js";
@@ -131,7 +131,13 @@ export async function probeSoc(
     countProbe("gatewayHit");
     return { status: "found", bytes: soc.payload.toUint8Array() };
   } catch (err) {
+    // Status FIRST, so the miss can be bucketed by cause. `gatewayMiss` alone
+    // bundles a whitelist 403, a genuine 404 and a bee 5xx into one number, and
+    // those three call for opposite fixes — see `GatewayMissStatuses`.
+    const status = (err as { status?: number; response?: { status?: number } })?.status
+      ?? (err as { response?: { status?: number } })?.response?.status;
     countProbe("gatewayMiss");
+    countGatewayMissStatus(status);
     // A gateway 404 means the bee node already ran a full network search and
     // found nothing — asking the server would repeat that exact search against
     // the SAME node (version probes make this the hot path). Only fall through
@@ -144,8 +150,6 @@ export async function probeSoc(
     // EXISTING immutable SOC — Bee dedupes silently and the edit is LOST
     // (landmine 2, ETHERNA_USER_CONTENT_HANDOVER.md). Writes are rare, so the
     // extra server round-trip is confined to where it is correctness-critical.
-    const status = (err as { status?: number; response?: { status?: number } })?.status
-      ?? (err as { response?: { status?: number } })?.response?.status;
     if (status === 404 && !opts.thorough) return { status: "absent" };
     gatewayReason = `gateway HTTP ${status ?? "?"}`;
   }
