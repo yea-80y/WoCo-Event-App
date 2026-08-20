@@ -971,6 +971,45 @@ that replaces the real reader**, which is the process lesson this branch already
 design — up to 64), and 8 tagged-403 misses now costing ~0.19s each. Any further work is
 lever 3 (checkpointing position inside a band), which is a real tunable but no longer urgent.
 
+📊 **FULL CYCLE MEASURED 2026-08-20, after both fixes.** The remaining cost is a function of
+POSITION INSIDE THE CURRENT BAND and nothing else — misses are now flat, so lap count no longer
+moves the number. Fixture taken to 190 laps (62 of band 2's 64 slots) and then over the
+rollover to 194.
+
+| read | probes | misses | api | wall |
+|---|---|---|---|---|
+| warm | 17 | 7 | 0/0 | **856ms** |
+| cold, 2/64 into a band | 22 | 9 | 0/0 | **1376ms** |
+| cold, 26/64 | 44 | 8 | 0/0 | 3428ms |
+| cold, 62/64 (worst) | 80 | 8 | 0/0 | **7341ms** |
+
+| tap | | |
+|---|---|---|
+| ordinary, loaded card | 0 probes | 281–579ms |
+| **band-opening** (lap 193) | 11 probes (4 miss) | **10699ms** |
+
+**ACCEPTANCE, restated honestly.** By the letter it still fails — cold misses are 8–9 against
+≤6, warm 7 against ≤3, band-opening 11 probes against ~4. But those thresholds were chosen when
+a miss cost ~5 SECONDS. A miss now costs ~0.19s, so the criterion is counting a unit that no
+longer means what it meant. **It should be restated in wall-clock**, or in "misses that reach
+the network twice", before anyone treats the numbers as pass/fail again. What the criterion was
+really protecting — reads that do not grow with a rider's history — is now TRUE and measured:
+misses are flat at 8–9 across 3, 109, 147, 154, 190 and 194 laps.
+
+**The band-opening tap (10.7s, once per 64 laps) is now the worst single moment in the rail.**
+Two ~3s API calls inside it (`api 0/2`) are the `thorough` index reads, which deliberately do
+NOT trust the gate because that read feeds a read-modify-write. That is a correctness trade,
+not a regression (comparable taps measured 9.5s before any of today's work), and it must not be
+"optimised" by making those reads trusting.
+
+**LEVER 3 (checkpoint position inside a band, not just the band) is now a quantified option
+rather than a guess:** it would flatten 1.4s → 7.3s to roughly a constant 1.4s, worth ~6s at
+the worst point. NOT recommended for the Rita pilot — riders there stay inside band 0, so they
+never roll over and their worst case is the same 7.3s ceiling. Revisit only if that ceiling
+proves to matter. The per-lap head pointer stays rejected for the reason already recorded
+(it moves one write per lap onto the index feed, whose own resolution then becomes the O(laps)
+scan); a COARSER checkpoint is the non-circular form and the one to price if this is reopened.
+
 METHOD NOTE for anyone repeating this: the gateway negative-caches absent addresses (novel
 403 = 2.76s, repeat = 0.15s, still cached 40 min later). **Wall-clock times are contaminated
 by cache state; miss COUNTS are not**, since a cached 403 still counts as a `gatewayMiss`.
