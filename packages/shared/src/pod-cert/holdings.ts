@@ -20,6 +20,10 @@
  *
  * EVERY PATH FAILS CLOSED. No branch here returns a pass on a read it could not
  * complete or a field it could not parse.
+ *
+ * START AT `podCertHoldingFromManifest` (bottom of this file). It is the only
+ * entry point that cannot be handed the wrong issuer key, because it does not
+ * take one.
  */
 
 import type { PodHolding, SignedManifestV1, Bytes32Hex, Hex32 } from "../pod/types.js";
@@ -180,4 +184,32 @@ export function podCertHolding(
     (p) => checkPodCertPresentation(p, badge, issuerPubkey, expect).ok,
   );
   return { manifestRef: badge, count: held ? 1 : 0, slots: [] };
+}
+
+/**
+ * THE ENTRY POINT — derive a holding from presentations and the badge's own
+ * manifest, resolving the issuer key internally.
+ *
+ * Prefer this to {@link podCertHolding} everywhere. The difference is not
+ * convenience: the bare form takes an `issuerPubkey: Hex32`, and
+ * `PodDirectoryEntry.issuer` is an unverified display mirror sitting in this
+ * same package that type-checks perfectly as that parameter. Passing it would
+ * check every signature against a key bound to the badge by nothing — the
+ * misuse the bare form's doc comment can only warn about, and that this
+ * signature makes unreachable by never asking for a key at all.
+ *
+ * Fails closed on an unresolvable manifest (wrong ref, tampered body, signature
+ * that is not the issuer's): count 0, never a throw. A door handed a bad
+ * manifest is a door that cannot verify, which is the same answer as "does not
+ * hold".
+ */
+export function podCertHoldingFromManifest(
+  badge: Bytes32Hex,
+  manifest: SignedManifestV1,
+  presentations: readonly PodCertPresentation[],
+  expect: PodCertChallengeExpectation,
+): PodHolding {
+  const issuerPubkey = resolvePodCertIssuer(manifest, badge);
+  if (!issuerPubkey) return { manifestRef: badge, count: 0, slots: [] };
+  return podCertHolding(badge, presentations, issuerPubkey, expect);
 }

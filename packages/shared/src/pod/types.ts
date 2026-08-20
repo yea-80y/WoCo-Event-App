@@ -270,34 +270,100 @@ export interface PodGateRule {
 }
 
 /**
- * A STORED, resolved POD gate attached to a ticket series or product. It is a
- * `PodGateRule` (all those fields) PLUS the two read-coordinates the server
- * needs to perform the trustless holdings read (`getOnChainHolding`):
- * `onChainEventId` + `chainId`. There is no global `manifestRef → eventId`
- * index, so the creator snapshots them from the chosen POD's directory entry at
- * config time. Because it is a structural superset of `PodGateRule`, a `PodGate`
- * passes directly to `evaluatePodGate` (the extra fields are ignored).
+ * A STORED, resolved POD gate attached to a ticket series or product — a
+ * DISCRIMINATED UNION over where the holding it checks comes from.
+ *
+ * Two sources exist (docs/SWARM_SOCIAL_PLAN.md, Gate B): on-chain slot
+ * ownership, and issuer-signed POD certificates. Both variants are structural
+ * supersets of `PodGateRule`, so either passes directly to `evaluatePodGate` —
+ * the evaluator stays source-agnostic and never learned about any of this.
+ *
+ * WHY A UNION rather than one interface with optional coordinates: the fields
+ * that differ are the read-coordinates the enforcement path dereferences on a
+ * money-moving route. Under a union the compiler names every site that must
+ * branch, and adding a THIRD source later breaks compilation at each dispatch
+ * instead of silently adding an optional nobody narrows. The gate type follows
+ * the same dispatch-before-validation discipline as the statement formats.
+ *
+ * READING AN OLD RECORD (the rule, and it is load-bearing): a stored gate with
+ * NO `holdingSource` is a CHAIN gate. True historically — every gate written
+ * before the field existed passed through `validatePodGate`, which required the
+ * chain binding, so no other kind can exist — and safe by direction: chain is
+ * the strictest proof, so misreading could only make a gate harder to pass,
+ * never let a certificate satisfy chain-configured trust. Present-but-
+ * unrecognised must REFUSE, so a future source written by newer code fails
+ * closed on an older server rather than falling into the chain arm.
  *
  * `podName` is a display snapshot for the config UI and the gate-failure message
  * — never authoritative (the cryptographic identity is `manifestRef`).
  */
-export interface PodGate {
+interface PodGateBase {
   manifestRef: Bytes32Hex;
-  /** On-chain eventId committing `manifestRef` — needed to read slot ownership. */
-  onChainEventId: Bytes32Hex;
-  /** Chain the gating POD lives on (holdings read target). */
-  chainId: number;
   /** Display name of the gating POD at config time (UI + error text only). */
   podName?: string;
-  /** Minimum holdings to pass. Default 1. */
-  minCount?: number;
-  /** "First-N" gate: only slots with index < this count. Omit = any slot. */
-  maxSlotExclusive?: number;
   /** Unix ms — gate closed before this. */
   notBefore?: number;
   /** Unix ms — gate closed after this. */
   notAfter?: number;
 }
+
+/**
+ * Chain-sourced gate: holdings read from `WoCoEventV2` slot ownership.
+ *
+ * `holdingSource` is optional HERE AND NOWHERE ELSE — that asymmetry is what
+ * makes an absent discriminant narrow to this variant in TypeScript as well as
+ * at runtime. New gates should still write it explicitly, so records are
+ * self-describing to a third-party reader.
+ *
+ * There is no global `manifestRef → eventId` index, so the creator snapshots
+ * both coordinates from the chosen POD's directory entry at config time, and
+ * `validatePodGate` proves on-chain that the event really does commit
+ * `manifestRef` before the gate is stored.
+ */
+export interface ChainPodGate extends PodGateBase {
+  holdingSource?: "chain";
+  /** On-chain eventId committing `manifestRef` — needed to read slot ownership. */
+  onChainEventId: Bytes32Hex;
+  /** Chain the gating POD lives on (holdings read target). */
+  chainId: number;
+  /** Minimum holdings to pass. Default 1. */
+  minCount?: number;
+  /** "First-N" gate: only slots with index < this count. Omit = any slot. */
+  maxSlotExclusive?: number;
+}
+
+/**
+ * Certificate-sourced gate: holdings derived from an issuer-signed
+ * `woco.pod-cert.v1` plus a possession challenge the holder answers. No chain
+ * coordinates, because there is no chain read.
+ *
+ * NOTE WHAT IS ABSENT: there is no `issuerPubkey`. Storing one would create
+ * exactly the object the rail is built to avoid — an issuer key bound to the
+ * badge by nothing, against which a forged certificate verifies perfectly while
+ * the UI shows the real badge's artwork. The key is re-derived from the manifest
+ * at every enforcement instead, which costs one cacheable content-addressed
+ * fetch and cannot be wrong, because the cache is keyed by the digest that binds
+ * it. Nor can the key go stale: it is baked into the manifest, so a different
+ * key is a different `manifestRef` and therefore a different badge.
+ *
+ * `maxSlotExclusive` is absent because slots are the chain model's; `minCount`
+ * admits only 1 because a certificate holding is presence, not quantity.
+ */
+export interface CertPodGate extends PodGateBase {
+  holdingSource: "pod-cert";
+  /**
+   * Swarm ref (no 0x) of the `SeriesManifestBlob` carrying this badge's signed
+   * manifest. A LOCATION HINT, not a trust root: enforcement recomputes
+   * `keccak256(dagCbor(body))` and requires it to equal `manifestRef`, so a
+   * wrong ref fails closed rather than shifting trust to whoever wrote it.
+   * The safer analogue of the chain variant's snapshotted `onChainEventId`.
+   */
+  swarmManifestRef: Hex64;
+  /** Presence, not quantity — 1 is the only minimum this source can express. */
+  minCount?: 1;
+}
+
+export type PodGate = ChainPodGate | CertPodGate;
 
 /**
  * Time / slot window for a `PodGateGroup`. Phase 1 ships `always` + `time`;

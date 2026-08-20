@@ -7,7 +7,9 @@
 // claim/order time). See docs/WOCO_SHOP_PLAN.md §4.3.
 // ---------------------------------------------------------------------------
 
-import type { PodHolding, PodGateRule, PodGate, PodGateGroup, GateWindow } from "./types.js";
+import type {
+  PodHolding, PodGateRule, PodGate, ChainPodGate, CertPodGate, PodGateGroup, GateWindow,
+} from "./types.js";
 
 /**
  * Does `holding` satisfy `rule` at time `now` (Unix ms)?
@@ -151,9 +153,97 @@ export function evaluatePodGateGroup(
 }
 
 /**
- * Pure write-boundary validation for a stored `PodGate`: shape + the
+ * Which holding source does this gate draw from? Absent discriminant = chain,
+ * per the rule recorded on `PodGate`: every gate written before the field
+ * existed passed a chain binding check, and chain is the stricter reading.
+ */
+export function isCertPodGate(gate: PodGate): gate is CertPodGate {
+  return (gate as CertPodGate)?.holdingSource === "pod-cert";
+}
+
+/**
+ * Is this a holding source this build knows how to enforce? A gate carrying an
+ * unrecognised `holdingSource` — written by a newer client than the server
+ * reading it — must REFUSE rather than fall into the chain arm, which would
+ * enforce the wrong proof against a config that asked for something else.
+ */
+export function isKnownHoldingSource(gate: PodGate): boolean {
+  const src = (gate as { holdingSource?: unknown })?.holdingSource;
+  return src === undefined || src === "chain" || src === "pod-cert";
+}
+
+/**
+ * Pure write-boundary validation of a CERTIFICATE gate's shape.
+ *
+ * Two of these refusals exist because the configuration would otherwise be
+ * storable, silent, and permanently unpassable — a gate no attendee on earth
+ * can open, failing closed with nothing to say. TypeScript already makes both
+ * nearly inexpressible (`minCount?: 1`, no `maxSlotExclusive` field), but
+ * stored JSON and casts do not read TypeScript, so the runtime check is the
+ * authoritative one.
+ *
+ * The manifest binding — that `swarmManifestRef` resolves to a manifest whose
+ * digest IS `manifestRef` — is environment-specific (it needs a Swarm read) and
+ * so lives with the caller, exactly as the chain arm's read does.
+ */
+export function verifyCertPodGateShape(gate: CertPodGate): { ok: boolean; error?: string } {
+  if (!gate?.manifestRef || !/^0x[0-9a-f]{64}$/.test(gate.manifestRef)) {
+    return { ok: false, error: "gate manifestRef must be 0x-prefixed lowercase bytes32" };
+  }
+  if (typeof gate.swarmManifestRef !== "string" || !/^[0-9a-f]{64}$/.test(gate.swarmManifestRef)) {
+    return { ok: false, error: "certificate gate needs a swarmManifestRef to resolve its issuer from" };
+  }
+  if (gate.minCount != null && gate.minCount !== 1) {
+    return {
+      ok: false,
+      error: "a certificate proves you hold this badge, not how many — a minimum above 1 can never pass",
+    };
+  }
+  if ((gate as { maxSlotExclusive?: unknown }).maxSlotExclusive != null) {
+    return {
+      ok: false,
+      error: "first-N ordering only exists on the chain rail — certificates carry no allocation order",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * The first `manifestRef` appearing twice in a group, or null.
+ *
+ * Duplicates were harmless while one source existed — the same holding checked
+ * twice is idempotent. With two sources they are a live defect: enforcement
+ * reads ONE holding per `manifestRef` and `evaluatePodGateGroup` matches
+ * holdings by `manifestRef` alone, so a group pairing a chain gate and a
+ * certificate gate for the SAME badge would evaluate the second against the
+ * first's holding — under `mode: "all"`, counting one proof twice. Cheapest
+ * structural fix is to refuse the duplicate where it is written.
+ */
+export function findDuplicateGateManifestRef(group: PodGateGroup): string | null {
+  const seen = new Set<string>();
+  for (const g of group.gates) {
+    const ref = g.manifestRef?.toLowerCase();
+    if (!ref) continue;
+    if (seen.has(ref)) return ref;
+    seen.add(ref);
+  }
+  return null;
+}
+
+/**
+ * Pure write-boundary validation for a stored CHAIN gate: shape + the
  * security-critical binding that `onChainEventId` actually commits the gate's
  * `manifestRef` on-chain.
+ *
+ * SCOPE: the chain arm only. The certificate arm's equivalent is
+ * {@link verifyCertPodGateShape} plus a manifest-digest check, and the two are
+ * not merely different mechanisms — they are load-bearing at different times.
+ * This check is the ONLY place the wrong-POD substitution is ever caught,
+ * because `getOnChainHolding` does not re-check the binding at enforcement;
+ * checking once is sufficient only because the gate is then stored in a
+ * platform-signed feed. The certificate arm re-proves its trust root on EVERY
+ * use, which is why it stays sound even if gates move to untrusted client
+ * storage — the property Gate B's serverless endgame needs.
  *
  * The CHAIN READ is environment-specific (server chain lib today; the client's
  * own reader when feed signing moves client-side per [[signing_role_architecture]]),
@@ -163,7 +253,7 @@ export function evaluatePodGateGroup(
  * gate stays verifiable by anyone, with no server secret.
  */
 export function verifyPodGateBinding(
-  gate: { manifestRef: string; onChainEventId?: string; chainId?: number; minCount?: number },
+  gate: Partial<ChainPodGate> & { manifestRef: string },
   onChainManifestRef: string | null,
 ): { ok: boolean; error?: string } {
   if (!gate?.manifestRef || !gate.onChainEventId || !Number.isFinite(gate.chainId as number)) {
