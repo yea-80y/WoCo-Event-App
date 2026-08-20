@@ -907,6 +907,29 @@ NOT DONE: the 1,000-lap leg. Stopped at 147 — the growth is established over t
 1,000 projected to ~2.4h of sustained production writes. A 16-band point would refine the
 RATE, not the conclusion.
 
+✅ **#332 ROOT-CAUSED AND FIXED, live 2026-08-20.** Not lag and not overload — a broken IP
+check. The bee-slam proxy listens dual-stack, so Docker traffic arrives as
+`::ffff:172.18.0.3`; `isLocalRequest()` spelled out `::ffff:127.0.0.1` for localhost but used
+a bare `startsWith('172.')` for the private range, so EVERY in-cluster call read as remote and
+fell under the rate limiters. The server's whitelist calls then hit the 50-per-15-min admin
+cap — 50 × `whitelist responded 429` in six hours, each swallowed. Proven by `RateLimit-*`
+headers appearing on an in-cluster probe (they are emitted only when the limiter does NOT
+skip), and by 55 in-cluster admin calls now returning `{"200": 55}` past the old cap.
+
+Effect, cold read on freshly-written data:
+
+| | before | after |
+|---|---|---|
+| gateway misses (all 403) | 25 | 8 |
+| server rescues (existing chunks refused) | **18** | **0** |
+| total misses | 32 | **16** |
+
+**Half of all misses on a fresh fixture were this bug.** Wall clock is ~15s either way: the
+remaining 8 misses are genuinely-absent addresses (`api 0/8`) still paying the dead server
+round trip, so **the residual is entirely #329**. Fix is deployed but not yet committed —
+`bee-slam` is a local-only repo and the VM carried 32 lines the dev machine lacked, so the
+same surgical patch was applied to both rather than rsyncing over them.
+
 METHOD NOTE for anyone repeating this: the gateway negative-caches absent addresses (novel
 403 = 2.76s, repeat = 0.15s, still cached 40 min later). **Wall-clock times are contaminated
 by cache state; miss COUNTS are not**, since a cached 403 still counts as a `gatewayMiss`.
