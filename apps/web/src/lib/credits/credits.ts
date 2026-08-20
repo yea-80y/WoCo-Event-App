@@ -742,7 +742,24 @@ export type PublishResult =
 export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
   try {
     const keys = await riderKeys();
-    const where = await liveVisibility(keys, subject);
+    // THOROUGH throughout this function, and the reason is different from every
+    // other write path in this file.
+    //
+    // Elsewhere a stale read is survivable because the write it feeds targets an
+    // address that already exists: Bee dedupes, the read-back reports
+    // `superseded`, and the retry rail redoes it. Publish is the ONE write that
+    // starts a FRESH topic family — `writeStatement(..., "public", ..., 0)` goes
+    // to public band 0 version 0, where nothing can ever collide. So the
+    // detect-and-retry machinery that guards laps does not exist here.
+    //
+    // That makes a false STALE-FOUND head, not just a false absent, into
+    // permanent loss: a missing whitelist entry at version N stops the resolver
+    // at N-1, found and CLEAN, and publish re-signs that stale total, lands it
+    // verified at public v0, and sweeps the private index entry. The rider's
+    // newest laps are then absent from the public count with the private family
+    // retired, and nothing reports a failure. Publish is a rare, confirmed
+    // action, so consulting the server costs nothing worth having.
+    const where = await liveVisibility(keys, subject, { thorough: true });
     if (where.status !== "ok") return { ok: false, error: CANNOT_READ };
 
     if (where.visibility === "public") {
@@ -753,7 +770,7 @@ export async function publishSubject(subject: Hex0x): Promise<PublishResult> {
     }
     if (!where.visibility) return { ok: false, error: "Ride it once before publishing it." };
 
-    const head = await readHeadAt(keys, subject, "private");
+    const head = await readHeadAt(keys, subject, "private", 0, { thorough: true });
     if (head.status !== "found") return { ok: false, error: CANNOT_READ };
     const prev = head.statement;
 
