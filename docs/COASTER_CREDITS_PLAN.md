@@ -864,6 +864,56 @@ shape, and misses staying O(1) as bands grow). The three-state hint instrument s
 it, so the BROWSER measurement above can now be re-run and trusted — that re-run is the
 outstanding acceptance step, and until it exists the table above is a model, not a result.
 
+❌ **BROWSER RE-RUN DONE 2026-08-20 — ACCEPTANCE FAILS. The COST table above is REFUTED as a
+prediction; it stays only as the model that was wrong.** Real Chrome, real passkey rider,
+`dev:web` against the production gateway and API, Demo Coaster, fixture grown by UI taps to
+147 laps (118 taps, zero failures, no lost laps).
+
+| | 3 laps (1 band) | 109 laps (2) | 147 laps (3) | required |
+|---|---|---|---|---|
+| cold-read misses | 14 | 26 | 36 | ≤6, **independent of laps** |
+| warm-read misses | 14 | 17 | — | ≤3 |
+| warm tap | 0 probes | 0 probes (735ms @110) | — | 0 probes ✅ |
+
+Misses GROW where the model said flat, and the floor is ~14 even at 3 laps. **The write path
+is not the problem** — a tap on a loaded card is `735ms · 0 probes`. All of it is the read.
+
+**Root causes, measured — and the second one only became visible once the miss counter was
+split by HTTP status (`ef2c1dd`), which is why no earlier round found it:**
+
+1. The gateway returns **403, not 404**, for an address with no chunk (verified with a random
+   address), so `client-soc.ts`'s `404 && !thorough → absent` short-circuit NEVER fires and
+   every absent probe pays a ~2-3s server call that structurally cannot succeed. → **#329**
+2. **Whitelisting FAILS under concurrent writes and the failure is swallowed**
+   (`soc-upload.ts:233`). Cold read of the fresh fixture: `gwmiss 403:25 404:0 5xx:0`, of
+   which the server resolved **18** — existing chunks the gateway refused. Repeat the read
+   and it drops to `403:7 · api 0/7`, because a server read fire-and-forget whitelists what it
+   resolves (`soc-upload.ts:305-310`). **Reads silently repair it, which is why it has been
+   invisible.** One isolated write whitelists correctly (`api 0/8`). → **#332**
+
+Corrects **THE `api 0/8` FINDING** above: it is not that the fallback resolves nothing. It is
+that the fallback is asked about two different things — genuinely-absent addresses (always
+404, always wasted) and existing-but-unwhitelisted ones (resolved, and repaired on the way).
+
+Also corrected: whitelisting is NOT asynchronous — `soc-upload.ts:231` awaits it before
+write-accept. The recommendation above to "make whitelisting synchronous" is therefore already
+satisfied; the real defect is that it is UNGUARANTEED, not late.
+
+`hintInvalidated` read 0 throughout, but the counter was blind on the banded-absent path and
+on every write-path resolve until `ef2c1dd` — so that 0 was never evidence. Re-measure it now
+the counter is sighted before treating this criterion as met (#330).
+
+NOT DONE: the 1,000-lap leg. Stopped at 147 — the growth is established over three points and
+1,000 projected to ~2.4h of sustained production writes. A 16-band point would refine the
+RATE, not the conclusion.
+
+METHOD NOTE for anyone repeating this: the gateway negative-caches absent addresses (novel
+403 = 2.76s, repeat = 0.15s, still cached 40 min later). **Wall-clock times are contaminated
+by cache state; miss COUNTS are not**, since a cached 403 still counts as a `gatewayMiss`.
+Judge against miss counts — which is how the acceptance criteria are already written. And
+machine-speed tapping is not a rider (Rita's `cadenceMinutes` is 2); it is a fair proxy for
+many riders tapping at once, and nothing more.
+
 ⚠️ **OPEN — PODs as chapter markers (2026-08-19).** The owner's proposal: a milestone POD
 could START a new feed — hit 100, and the badge begins the next chapter. The instinct is
 right and the design already contains it, but **the dependency direction must be inverted**,
