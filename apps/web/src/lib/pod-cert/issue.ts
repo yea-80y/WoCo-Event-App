@@ -418,13 +418,40 @@ export async function issueCertificates(args: {
   let lastWritten: CertLogCursor | null = null;
 
   for (const page of pages) {
-    const written = await writeContentFeedVerified({
-      signerPrivKey: keys.feedPrivKey,
-      ownerAddress: keys.feedAddress,
-      topic: topic(cursor.band),
-      data: page,
-      knownVersion: cursor.version,
-    });
+    // THE UPLOAD HALF CAN THROW, and `writeContentFeedVerified` does not catch
+    // it: only its read-back (`verifyLanded`) is documented never to throw, and
+    // `writeContentFeed` sits OUTSIDE that try. `signAndUploadSoc` throws by
+    // contract when the relay refuses.
+    //
+    // Left uncaught, the rejection escapes this function entirely — past every
+    // `stop` the caller knows how to render — and a surface awaiting it is
+    // stranded mid-run with everything already landed unreported. So it is
+    // mapped to `unconfirmed`, which is exactly what it is: we do not know
+    // whether those bytes reached Swarm, and the only safe next step is a READ,
+    // never another write. Conservative in the right direction — if nothing
+    // landed, the re-read simply shows nothing and the run continues.
+    let written: Awaited<ReturnType<typeof writeContentFeedVerified>>;
+    try {
+      written = await writeContentFeedVerified({
+        signerPrivKey: keys.feedPrivKey,
+        ownerAddress: keys.feedAddress,
+        topic: topic(cursor.band),
+        data: page,
+        knownVersion: cursor.version,
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        landed,
+        alreadyHeld: plan.alreadyHeld,
+        pagesWritten,
+        stop: "unconfirmed",
+        stoppedAt: cursor,
+        error:
+          `A certificate page at band ${cursor.band}, version ${cursor.version} could not be sent` +
+          `${e instanceof Error && e.message ? ` (${e.message})` : ""}.`,
+      };
+    }
 
     if (written.status !== "verified") {
       // NEITHER message advises a retry, and that is deliberate.
@@ -554,7 +581,22 @@ export async function loadBadgeManifest(
   let blob: SeriesManifestBlob;
   try {
     const res = await fetch(`${gatewayUrl}/bytes/${swarmManifestRef}`);
-    if (!res.ok) return { ok: false, error: "Could not read this badge's manifest — try again." };
+    if (!res.ok) {
+      // A TAGGED 403 IS NOT A BAD MINUTE. The chunk gate refuses precisely the
+      // addresses it was never told about, so "try again" would be advice that
+      // can never come good — the organiser would retry forever on a badge
+      // whose manifest is simply not published for reading. Minting whitelists
+      // it (`issuance.ts`), so this should only be reachable for a badge minted
+      // before that, or after a lost whitelist — both of which need an operator,
+      // not a retry.
+      if (res.status === 403 && res.headers.get("X-Chunk-Gate") === "not-whitelisted") {
+        return {
+          ok: false,
+          error: "This badge's manifest is not published for reading, so its issuer cannot be confirmed. It needs re-publishing before the badge can be awarded.",
+        };
+      }
+      return { ok: false, error: "Could not read this badge's manifest — try again." };
+    }
     blob = (await res.json()) as SeriesManifestBlob;
   } catch {
     return { ok: false, error: "Could not read this badge's manifest — try again." };

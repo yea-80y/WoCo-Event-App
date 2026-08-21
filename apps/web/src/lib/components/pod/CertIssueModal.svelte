@@ -183,6 +183,12 @@
       return;
     }
 
+    // `issueCertificates` maps a throwing write to a `stop`, so this catch is
+    // belt-and-braces for anything unforeseen. It matters more than a normal
+    // catch would: `close()` refuses while `phase === "running"`, so an escaping
+    // rejection would strand the organiser in a dialog they cannot dismiss,
+    // with no idea whether certificates landed.
+    try {
     result = await issueCertificates({
       badge: pod.manifestRef,
       manifest,
@@ -197,6 +203,16 @@
       holders: toIssue,
       onProgress: (done, total) => { progress = { done, total }; },
     });
+    } catch (e) {
+      result = {
+        ok: false,
+        landed: [],
+        alreadyHeld: [],
+        pagesWritten: 0,
+        stop: "unconfirmed",
+        error: e instanceof Error ? e.message : "The run stopped unexpectedly.",
+      };
+    }
 
     // The supervised sequence watches these, so they are shown rather than
     // logged: `hintInvalidated` climbing is the whitelist-lag alarm.
@@ -457,7 +473,10 @@
     inset: 0;
     background: rgba(0, 0, 0, 0.55);
     border: none;
-    z-index: 90;
+    /* ABOVE PodEditDrawer (200/201), which is where this opens from. At the
+       modal default of 90 it rendered behind the drawer that launched it —
+       invisible, while still capturing the run. */
+    z-index: 210;
   }
   .modal {
     position: fixed;
@@ -471,7 +490,7 @@
     background: var(--bg-elevated, var(--bg-surface));
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    z-index: 91;
+    z-index: 211;
   }
   .modal-head {
     display: flex;

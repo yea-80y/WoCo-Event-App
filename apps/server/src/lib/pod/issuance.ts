@@ -143,6 +143,34 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
   const blob: SeriesManifestBlob = { v: 2, signedManifest, podRefs, manifestDigestHex: manifestRef };
   const swarmManifestRef = await uploadToBytes(JSON.stringify(blob));
 
+  // ── The manifest blob must be gateway-whitelisted, or a CLIENT cannot read
+  //    it at all. The bee-proxy serves only whitelisted addresses and tags its
+  //    refusal as a 403; the certificate rail is the first thing to read this
+  //    blob from a browser (the gate write-boundary reads it server-side, which
+  //    goes direct to the in-cluster bee and bypasses the gate entirely), so
+  //    the gap was invisible until now.
+  //
+  //    AWAITED AND FATAL for a certificate badge, unlike the artwork above.
+  //    Artwork failing to whitelist costs a broken image; this failing costs a
+  //    badge that can never be awarded, because the issuance surface resolves
+  //    its issuer key and cap from this blob. A certificate badge has no chain
+  //    registration to orphan, so refusing here leaves nothing half-created —
+  //    the same reasoning that makes `certLogOwner` a precondition rather than
+  //    a warning. ────────────────────────────────────────────────────────────
+  if (certSourced) {
+    try {
+      await whitelistHashes([swarmManifestRef]);
+    } catch (err) {
+      throw new Error(
+        `could not publish this badge's manifest for reading (${(err as Error).message}) — refusing to mint a badge that could never be awarded`,
+      );
+    }
+  } else {
+    void whitelistHashes([swarmManifestRef]).catch((err) =>
+      console.warn("[pod] manifest whitelist failed (non-critical on the chain rail):", err),
+    );
+  }
+
   // ── Sponsor-register on-chain — CHAIN RAIL ONLY. Price 0 (escrow dormant),
   //    open FIFO gate, creator is the (irrelevant, price-0) payout recipient.
   //
