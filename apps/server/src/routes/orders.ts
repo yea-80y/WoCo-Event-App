@@ -3,8 +3,7 @@ import type { OrderEntry, SealedBox } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
-import { getBindingsForEvent } from "../lib/gate/store.js";
-import { toAttendeeKeyRows } from "../lib/gate/attendee-keys.js";
+import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
 

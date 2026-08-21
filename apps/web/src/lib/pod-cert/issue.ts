@@ -39,12 +39,14 @@ import {
   type Hex32,
   type PodCertLogPageV1,
   type PodCertV1,
+  type SeriesManifestBlob,
   type SignedManifestV1,
 } from "@woco/shared";
 import {
   readBandedContentFeed,
   readContentFeedAtVersion,
 } from "../swarm/content-feed";
+import { WOCO_GATEWAY_URL } from "../swarm/gateways";
 import { writeContentFeedVerified } from "../swarm/verified-write";
 import { contentFeedSignerFromPrivKey } from "../swarm/content-feed";
 
@@ -525,6 +527,52 @@ async function upsertCertifiedBadge(
     data: { format: POD_CERT_SUBJECT_INDEX_FORMAT, entries: merged },
   });
   return written.status === "verified";
+}
+
+
+// ---------------------------------------------------------------------------
+// Fetching the badge's manifest — the trust root every read and write here uses
+// ---------------------------------------------------------------------------
+
+export type BadgeManifestResult =
+  | { ok: true; manifest: SignedManifestV1 }
+  | { ok: false; error: string };
+
+/**
+ * Load and verify the manifest for `badge` from `swarmManifestRef`.
+ *
+ * Returns a REASON rather than null, because the caller is a surface an
+ * organiser is looking at and "could not read it" and "that is not this badge's
+ * manifest" call for different actions — one is a retry, the other never will
+ * be.
+ */
+export async function loadBadgeManifest(
+  swarmManifestRef: string,
+  badge: Bytes32Hex,
+  gatewayUrl: string = WOCO_GATEWAY_URL,
+): Promise<BadgeManifestResult> {
+  let blob: SeriesManifestBlob;
+  try {
+    const res = await fetch(`${gatewayUrl}/bytes/${swarmManifestRef}`);
+    if (!res.ok) return { ok: false, error: "Could not read this badge's manifest — try again." };
+    blob = (await res.json()) as SeriesManifestBlob;
+  } catch {
+    return { ok: false, error: "Could not read this badge's manifest — try again." };
+  }
+
+  const manifest = blob?.signedManifest;
+  if (!manifest) {
+    return { ok: false, error: "Could not read this badge's manifest — try again." };
+  }
+  // The binding, re-proved: digest must equal the badge, and the signature must
+  // be the issuer's. Permanent failure, not a retry.
+  if (!resolvePodCertIssuer(manifest, badge)) {
+    return {
+      ok: false,
+      error: "The stored manifest does not match this badge — it cannot be used to award it.",
+    };
+  }
+  return { ok: true, manifest };
 }
 
 /** Re-exported so callers do not reach past this module for the log format. */

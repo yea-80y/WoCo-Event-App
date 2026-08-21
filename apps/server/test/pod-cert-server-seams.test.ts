@@ -14,9 +14,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Hex0x } from "@woco/shared";
-import { validateIssuedCount } from "../src/lib/pod/issued-count.js";
-import { toAttendeeKeyRows } from "../src/lib/gate/attendee-keys.js";
-import type { GateBinding } from "../src/lib/gate/store.js";
+import { validateIssuedCount } from "../src/lib/pod/issuance.js";
+import { toAttendeeKeyRows, type GateBinding } from "../src/lib/gate/store.js";
 
 const LOG_OWNER = "0x2222222222222222222222222222222222222222" as Hex0x;
 const certBadge = { certLogOwner: LOG_OWNER, supply: 100 };

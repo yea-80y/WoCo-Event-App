@@ -10,8 +10,7 @@ import {
   upsertCreatorPod,
 } from "../lib/pod/directory.js";
 import { getOnChainHolding } from "../lib/pod/holdings.js";
-import { issuePodType, type IssuablePodKind } from "../lib/pod/issuance.js";
-import { validateIssuedCount } from "../lib/pod/issued-count.js";
+import { issuePodType, validateIssuedCount, type IssuablePodKind } from "../lib/pod/issuance.js";
 
 /** Upper bound on directly-minted POD supply — one on-chain registration covers
  *  the whole batch, but each pod body is a Swarm upload, so cap the burst. */
