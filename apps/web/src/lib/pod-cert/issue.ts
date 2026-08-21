@@ -28,6 +28,7 @@ import {
   podCertLogTopic,
   podCertPublicSalt,
   podCertSubjectIndexTopic,
+  resolvePodCertIssuer,
   signPodCert,
   validatePodCertLogPageV1,
   validatePodCertSubjectIndex,
@@ -38,18 +39,28 @@ import {
   type Hex32,
   type PodCertLogPageV1,
   type PodCertV1,
+  type SignedManifestV1,
 } from "@woco/shared";
 import {
   readBandedContentFeed,
   readContentFeedAtVersion,
 } from "../swarm/content-feed";
 import { writeContentFeedVerified } from "../swarm/verified-write";
+import { contentFeedSignerFromPrivKey } from "../swarm/content-feed";
 
-/** The issuer's two keys. Neither is ever sent anywhere. */
+/**
+ * The issuer's two keys. Neither is ever sent anywhere.
+ *
+ * NOTE WHAT IS ABSENT: there is no `issuerPubkey`. The badge's issuer key is
+ * resolved from its MANIFEST, which binds it to the badge by digest — so this
+ * call cannot be handed the wrong one, because it does not take one. Same move
+ * as `podCertHoldingFromManifest`, and for the same reason: an issuer key that
+ * merely type-checks is exactly what `PodDirectoryEntry.issuer` is, and that
+ * field is an unverified display mirror sitting one import away.
+ */
 export interface CertIssuerKeys {
-  /** ed25519 POD private key whose public half is the badge manifest's `issuerPubkey`. */
+  /** ed25519 POD private key. Its public half MUST be the manifest's `issuerPubkey`. */
   podPrivKey: Uint8Array;
-  issuerPubkey: Hex32;
   /** secp256k1 content-feed signer (sign-to-derive), and its address. */
   feedPrivKey: string;
   feedAddress: string;
@@ -71,6 +82,28 @@ const salt = podCertPublicSalt();
 const topicFor = (badge: Bytes32Hex) => (band: number) => podCertLogTopic(salt, badge, band);
 
 /**
+ * Per-holder extras, looked up CASE-INSENSITIVELY.
+ *
+ * A plain `extras[holder]` is a dropped-parameter waiting to happen: holder keys
+ * are lowercase hex by schema, but an extras map assembled from a paste, a CSV
+ * or a different normalisation would miss silently, and the certificate that
+ * loses its `encPubKey` is written permanently. The orphan check in
+ * `issueCertificates` and this lookup MUST agree on the comparison, which is
+ * why both live here rather than being spelled out twice.
+ */
+function extrasFor(
+  extras: Record<string, { encPubKey?: Hex32; evidence?: string[] }> | undefined,
+  holder: Hex32,
+): { encPubKey?: Hex32; evidence?: string[] } {
+  if (!extras) return {};
+  const direct = extras[holder];
+  if (direct) return direct;
+  const wanted = holder.toLowerCase();
+  for (const [k, v] of Object.entries(extras)) if (k.toLowerCase() === wanted) return v;
+  return {};
+}
+
+/**
  * Read a badge's whole certificate log.
  *
  * THOROUGH THROUGHOUT, and not as caution: this read decides who is skipped as
@@ -86,8 +119,25 @@ const topicFor = (badge: Bytes32Hex) => (band: number) => podCertLogTopic(salt, 
 export async function readCertLog(
   ownerAddress: string,
   badge: Bytes32Hex,
-  issuerPubkey: Hex32,
+  /**
+   * The badge's signed manifest — NOT an issuer key. `resolvePodCertIssuer`
+   * recomputes `keccak256(dagCbor(body))` and returns the issuer key only if it
+   * equals `badge`, so the key used to verify this log is bound to the badge by
+   * a digest rather than by whoever passed it.
+   *
+   * A wrong key here is not a read error, it is a SILENT one: every certificate
+   * on the log fails verification, the log reads as holding nobody, and the
+   * caller then plans to re-issue every holder it already has.
+   */
+  manifest: SignedManifestV1,
 ): Promise<CertLogReadResult> {
+  const issuerPubkey = resolvePodCertIssuer(manifest, badge);
+  if (!issuerPubkey) {
+    return {
+      ok: false,
+      error: "This manifest is not this badge's — refusing to read its log against an unbound issuer key.",
+    };
+  }
   const topic = topicFor(badge);
   const head = await readBandedContentFeed<PodCertLogPageV1>(ownerAddress, topic, { thorough: true });
 
@@ -145,6 +195,27 @@ export async function readCertLog(
   return { ok: true, holders: holdersFromLogPages(pages), head: { band: head.band, version: head.version }, pagesRead };
 }
 
+/**
+ * WHY a run stopped, machine-readable.
+ *
+ * The three cases need three different responses from an operator and MUST NOT
+ * be told apart by matching on `error` prose — a surface that string-matches is
+ * one copy-edit away from silently treating the forbidden case as the benign
+ * one, and the forbidden case here writes to permanent addresses.
+ *
+ * - `refused`  — nothing was written and nothing will be until the input
+ *                changes. Safe to correct and re-run.
+ * - `superseded` — a version this run targeted already held different bytes.
+ *                On a single-device run that means the address arithmetic
+ *                pointed at an occupied version: STOP, investigate, do not
+ *                re-run. This code cannot tell that case from a genuine second
+ *                device, so it never advises retrying.
+ * - `unconfirmed` — the write was accepted but could not be confirmed. Not a
+ *                failure; not a success either. The only safe next step is a
+ *                READ, never another write.
+ */
+export type IssueRunStop = "refused" | "superseded" | "unconfirmed";
+
 export interface IssueRunResult {
   ok: boolean;
   /** Holders certified by THIS run, in the order their pages landed. */
@@ -154,6 +225,85 @@ export interface IssueRunResult {
   pagesWritten: number;
   /** Set when the run stopped early. Everything in `landed` is still real. */
   error?: string;
+  /** Set with `error`. Branch on THIS, never on the message. */
+  stop?: IssueRunStop;
+  /** Where the failing write was aimed — the diagnostic a `superseded` needs. */
+  stoppedAt?: CertLogCursor;
+}
+
+/** Inputs `precheckIssuance` needs — the subset of an issuance run that can be
+ *  judged with no I/O beyond deriving an address from a private key. */
+export interface IssuancePrecheckArgs {
+  badge: Bytes32Hex;
+  keys: CertIssuerKeys;
+  holders: readonly Hex32[];
+  manifest: SignedManifestV1;
+  expectedLogOwner: Hex0x;
+  extras?: Record<string, { encPubKey?: Hex32; evidence?: string[] }>;
+}
+
+export type IssuancePrecheck =
+  | { ok: true; issuerPubkey: Hex32 }
+  | { ok: false; error: string };
+
+/**
+ * Everything that can be refused BEFORE a byte is read or written.
+ *
+ * Split out for the same reason `planCertIssuance` is: the decisions here are
+ * the part most worth testing, and the orchestration around them needs a
+ * browser and a gateway. Every failure below is otherwise SILENT — not an
+ * exception, not a bad status, but a run that looks like it worked while
+ * writing permanent bytes to the wrong address or under the wrong key.
+ *
+ * Returns the resolved issuer key on success, so the caller cannot go on to use
+ * a different one than the one just proved.
+ */
+export async function precheckIssuance(args: IssuancePrecheckArgs): Promise<IssuancePrecheck> {
+  // The issuer key comes from the MANIFEST, bound to the badge by digest. This
+  // catches the nastiest case on this path: a POD keypair that agrees with
+  // ITSELF but is not this badge's issuer. `signPodCert` would happily sign —
+  // its own check only compares the private key against the public half it was
+  // handed — the log read would drop every existing certificate as
+  // unverifiable, the plan would re-issue every holder already certified, and
+  // the duplicates would land permanently against the cap, signed by a key that
+  // verifies against nothing at any door.
+  const issuerPubkey = resolvePodCertIssuer(args.manifest, args.badge);
+  if (!issuerPubkey) {
+    return { ok: false, error: "This manifest is not this badge's — refusing to issue against an unbound issuer key." };
+  }
+
+  // The log lives at `keccak256(identifier ‖ owner)`. A wrong owner is not an
+  // error anywhere: it is a clean, empty, PARALLEL log at an address no reader
+  // will ever look at — indistinguishable from a first issuance, and permanent.
+  if (args.keys.feedAddress.toLowerCase() !== args.expectedLogOwner.toLowerCase()) {
+    return {
+      ok: false,
+      error:
+        "This device's feed signer is not the address this badge's certificate log was published under — refusing to write a second log nobody will read.",
+    };
+  }
+
+  // ...and `feedAddress` must actually BE `feedPrivKey`'s address, or the
+  // read-back verifies a feed we did not write. That surfaces as `unconfirmed`:
+  // late, and mislabelled as a gateway problem.
+  const derived = await contentFeedSignerFromPrivKey(args.keys.feedPrivKey).catch(() => null);
+  if (!derived || derived.address.toLowerCase() !== args.keys.feedAddress.toLowerCase()) {
+    return { ok: false, error: "The feed signing key and its address disagree — refusing to write." };
+  }
+
+  // An extras entry keyed to nobody in this run is a DROPPED PARAMETER: the
+  // `encPubKey` or `evidence` it carried never reaches a certificate, and the
+  // certificate is permanent. Refuse rather than silently omit. Matched the
+  // same way `extrasFor` matches, or a key could pass here and still be lost.
+  if (args.extras) {
+    const requested = new Set(args.holders.map((h) => h.toLowerCase()));
+    const orphan = Object.keys(args.extras).find((k) => !requested.has(k.toLowerCase()));
+    if (orphan) {
+      return { ok: false, error: `Extra data was supplied for ${orphan.slice(0, 12)}…, who is not in this run.` };
+    }
+  }
+
+  return { ok: true, issuerPubkey };
 }
 
 /**
@@ -171,13 +321,28 @@ export async function issueCertificates(args: {
   keys: CertIssuerKeys;
   holders: readonly Hex32[];
   /**
-   * The badge manifest's `totalSupply`. REQUIRED, not optional: every
-   * certificate badge declares one, and this run is the only place in the
-   * system that enforces it — the server never sees an issuance. An optional
-   * cap is a caller that can forget it and get no error, no warning, and an
-   * uncapped run.
+   * The badge's signed manifest. REQUIRED, and it carries THREE things this
+   * call refuses to be told separately:
+   *
+   * 1. the ISSUER KEY, resolved by digest so it is bound to `badge`;
+   * 2. the CAP — `body.totalSupply`, which is why there is no `cap` parameter
+   *    any more. Slice 3 made a cap required so it could not be forgotten;
+   *    taking it from the manifest means it also cannot be WRONG. The obvious
+   *    thing a caller would otherwise pass is `PodDirectoryEntry.supply`, which
+   *    is mutable display state;
+   * 3. proof that 1 and 2 belong to the same badge as everything else here.
    */
-  cap: number;
+  manifest: SignedManifestV1;
+  /**
+   * Where the directory says this badge's log lives — `PodDirectoryEntry.certLogOwner`.
+   *
+   * REQUIRED because the failure it catches is otherwise perfectly silent: a
+   * run whose `keys.feedAddress` is not the recorded owner reads a DIFFERENT
+   * (empty) address space, resolves clean-absent, re-issues every holder, and
+   * writes a parallel log at an address no reader will ever look at. Split-view
+   * by accident, permanent, and indistinguishable from a first issuance.
+   */
+  expectedLogOwner: Hex0x;
   /** UTC `YYYY-MM-DD`; defaults to today. Self-declared and unverifiable. */
   issuedAt?: string;
   /** Optional per-holder extras, keyed by holder. */
@@ -186,16 +351,22 @@ export async function issueCertificates(args: {
 }): Promise<IssueRunResult> {
   const { badge, keys } = args;
   const empty = { landed: [] as Hex32[], alreadyHeld: [] as Hex32[], pagesWritten: 0 };
+  const refuse = (error: string): IssueRunResult => ({ ok: false, ...empty, error, stop: "refused" });
 
-  const log = await readCertLog(keys.feedAddress, badge, keys.issuerPubkey);
-  if (!log.ok) return { ok: false, ...empty, error: log.error };
+  const pre = await precheckIssuance(args);
+  if (!pre.ok) return refuse(pre.error);
+  const { issuerPubkey } = pre;
+
+  const log = await readCertLog(keys.feedAddress, badge, args.manifest);
+  if (!log.ok) return { ok: false, ...empty, error: log.error, stop: "refused" };
 
   const plan = planCertIssuance({
     requested: args.holders,
     existingHolders: log.holders,
-    cap: args.cap,
+    // The CAP, from the signed manifest — never from mutable display state.
+    cap: args.manifest.body.totalSupply,
   });
-  if (!plan.ok) return { ok: false, ...empty, error: plan.error };
+  if (!plan.ok) return refuse(plan.error);
   if (plan.toIssue.length === 0) {
     return { ok: true, landed: [], alreadyHeld: plan.alreadyHeld, pagesWritten: 0 };
   }
@@ -204,7 +375,9 @@ export async function issueCertificates(args: {
   let certs: PodCertV1[];
   try {
     certs = plan.toIssue.map((holder) => {
-      const extra = args.extras?.[holder] ?? {};
+      // Matched the same way the orphan check above matched, or a
+      // case-mismatched key would pass validation and still be dropped here.
+      const extra = extrasFor(args.extras, holder);
       return signPodCert(
         {
           format: "woco.pod-cert.v1",
@@ -215,11 +388,17 @@ export async function issueCertificates(args: {
           ...(extra.evidence?.length ? { evidence: extra.evidence } : {}),
         },
         keys.podPrivKey,
-        keys.issuerPubkey,
+        issuerPubkey,
       );
     });
   } catch (e) {
-    return { ok: false, ...empty, alreadyHeld: plan.alreadyHeld, error: e instanceof Error ? e.message : "Could not sign." };
+    return {
+      ok: false,
+      ...empty,
+      alreadyHeld: plan.alreadyHeld,
+      error: e instanceof Error ? e.message : "Could not sign.",
+      stop: "refused",
+    };
   }
 
   const pages = packPodCertLogPages(certs);
@@ -246,15 +425,30 @@ export async function issueCertificates(args: {
     });
 
     if (written.status !== "verified") {
+      // NEITHER message advises a retry, and that is deliberate.
+      //
+      // `superseded` means this exact version already held DIFFERENT bytes. On a
+      // single-device run that can only mean the address arithmetic aimed at an
+      // occupied version — and re-running would compound it at permanent
+      // addresses. Nothing here can distinguish that from a genuine second
+      // device, so the honest answer is to stop and say both, and to leave the
+      // guidance to a surface that knows what the operator is doing. The
+      // recovery for a real concurrent device is to start the flow again from
+      // the badge, which re-reads the whole log thoroughly — not a "continue".
+      //
+      // `unconfirmed` is not a failure and not a success: the safe next step is
+      // a READ, never another write.
       return {
         ok: false,
         landed,
         alreadyHeld: plan.alreadyHeld,
         pagesWritten,
+        stop: written.status === "superseded" ? "superseded" : "unconfirmed",
+        stoppedAt: cursor,
         error:
           written.status === "superseded"
-            ? "Another device is issuing certificates for this badge right now — re-run to continue."
-            : "A certificate page could not be confirmed. Re-run to continue where this left off.",
+            ? `This version of the log (band ${cursor.band}, version ${cursor.version}) already holds different bytes.`
+            : `A certificate page at band ${cursor.band}, version ${cursor.version} could not be confirmed.`,
       };
     }
 
