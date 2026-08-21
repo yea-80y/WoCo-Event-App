@@ -704,6 +704,29 @@ nothing backfills a key onto an existing binding, so "recorded" and "gone" are d
 Slice total: 194 lines of new logic across four modules, no new dependencies. Three files that
 had not earned their own module were folded back into `issue.ts`, `issuance.ts` and `store.ts`.
 
+**REVIEW — CUT SHORT, THREE FINDINGS RECOVERED AND FIXED.** The pre-merge Fable pass died on a
+session limit before writing a verdict, so slice 4 is NOT signed off; its in-flight reasoning was
+recovered from the transcript rather than re-run. Three findings had formed, each verified
+independently and fixed in `8664b0f`, and all three share this rail's signature shape — the
+surface looks fine while the truth is elsewhere:
+
+1. **A thrown upload escaped the run.** `writeContentFeedVerified` does not catch its upload
+   half — only the read-back is documented never to throw, and `writeContentFeed` sits outside
+   that try while `signAndUploadSoc` throws by contract. The rejection escaped past every `stop`
+   the caller can render, and since `close()` refuses mid-run the organiser was stranded in an
+   undismissable dialog with landed certificates unreported. Mapped to `unconfirmed`.
+2. **The award modal rendered BEHIND the drawer that opens it** (90/91 against the drawer's
+   200/201) — invisible while still capturing the run. Now 210/211, pinned by stacking arithmetic.
+3. **The manifest blob was never gateway-whitelisted.** The certificate rail is the first thing
+   to read it from a browser; the gate write-boundary reads it server-side straight to the
+   in-cluster bee, bypassing the chunk gate, which is exactly what kept the gap invisible.
+   Whitelisted at mint — awaited and FATAL for a certificate badge, since a badge whose manifest
+   cannot be read can never be awarded — and the client now tells the gate's tagged 403 apart
+   from a bad minute.
+
+STILL OWED: a completed sign-off. The review was mid-investigation when it stopped, so the list
+above is not known to be exhaustive.
+
 **STILL NOT DONE, and the write path is STILL UNEXERCISED against a real gateway:** the
 supervised sequence itself. Nothing in this slice has met a gateway. Before any real holder:
 (a) a 2–3 holder issuance then a COLD-device read-back; (b) an immediate identical re-run
