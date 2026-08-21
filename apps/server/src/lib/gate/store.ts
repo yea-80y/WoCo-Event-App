@@ -92,6 +92,27 @@ export function getBindingsForParent(parentAddress: string): GateBinding[] {
 }
 
 /**
+ * Every binding recorded for one event.
+ *
+ * A linear scan, deliberately: bindings are indexed by ticket and by parent
+ * because those are the lookups the gate itself makes, and adding a third index
+ * to serve one organiser-facing read would be three maps to keep consistent for
+ * no measurable gain at this scale.
+ *
+ * WHAT THIS DOES NOT ESTABLISH. A binding proves the platform saw a verified
+ * possession proof for (seriesId, edition) and bound it to `parentAddress`. It
+ * does NOT prove that `podPubKey` is that account's POD identity: the field is
+ * self-declared by the claiming client at bind time and is never checked
+ * against the session's actual POD key (issue #345). Any caller turning these
+ * into durable artifacts — a certificate especially, which is permanent and has
+ * no v1 revocation — must carry that provenance through to whoever decides.
+ */
+export function getBindingsForEvent(eventId: string): GateBinding[] {
+  load();
+  return cache!.bindings.filter((b) => b.eventId === eventId);
+}
+
+/**
  * Atomically consume the ticket nullifier and record the binding.
  * Returns false if the edition was already consumed (no partial state).
  * Single-threaded node: check-and-set needs no lock.
