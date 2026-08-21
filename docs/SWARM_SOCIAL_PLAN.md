@@ -610,6 +610,114 @@ the creator's issuance surface (pick badge, pick holders, run with progress), an
 first real issuance. Holder passport import, the challenge round trip, the per-drop HPKE
 publisher and the issuer registry stay deferred as before.
 
+### BUILD RECORD — slice 4, the creator issuance surface (2026-08-21, `feat/pod-cert-issuance-ui`)
+
+Mint an award badge, name its holders, run with progress. Fable design pass before building;
+it corrected three things in the brief, and two corrections came from checking the repo rather
+than from the design.
+
+**THE HANDOVER'S HOLDER SOURCE DOES NOT EXIST.** The brief said holder keys come from
+`ClaimedTicket.owner`, "optional, sometimes unstamped". Nothing produces a `ClaimedTicket` at
+all — the v1 rail stamped them and was deleted in #207, the on-chain rail deliberately does
+not, and `signOwnerBinding` has zero callers. That is open issue **#268**. So `GateBinding.podPubKey`
+is the ONLY live capture of an attendee ed25519 key anywhere in the platform, it exists only
+for attendees who redeemed the email CTA or checked out signed in, and **it is client-asserted**:
+neither write path proves it belongs to the account it is stored against. Filed as **#345**.
+"Attendees with no badge key" is therefore not an edge case in the picker. It is the default.
+
+**The picker reads ORDERS, joined against bindings — never bindings alone.** Bindings exist for
+the first edition of a group buy only (`stripe.ts` binds `slotsForBurners[0]`), so enumerating
+them would silently omit most attendees. `GET /api/events/:id/attendee-keys` returns
+`(seriesId, edition, podPubKey?, route)` and nothing else — the caller already renders identity
+from `/orders` and joins on the pair, so returning `parentAddress` or `emailHash` would hand
+over a second copy of who-is-who for no new capability. EVERY binding is returned including
+keyless ones; a list of only the certifiable cannot be told from a list that came back short.
+`route` rides along so provenance survives to the organiser, who is about to make it permanent.
+
+**Privacy is not a step change; the DISCLOSURE EVENT is issuance itself.** The organiser already
+holds the attendee's email and wallet from the sealed order, both stronger cross-context
+identifiers than the POD pseudonym. What is new is that the certificate log publishes chosen
+holders' keys at public addresses forever — so the surface says awards are public and permanent
+where the decision is made, not in a doc.
+
+**One seal-and-sign core, two body builders** (owner asked whether the rails could share). They
+already shared the crypto primitives, the types and the whole server `issuePodType` path; the
+only genuine disagreement is how many bodies the root covers. `pod/seal.ts` now holds the
+common step and takes `bodies` and `totalSupply` as two REQUIRED arguments, so the divergence
+must be stated at each call site. An optional `bodyCount` was refused as "an optional nobody
+narrows": a ticket-rail caller who passed it would commit a root covering one body while the
+contract sold N — correct-looking, failing only at claim time, on the money path. The ticket
+rail's signed bytes are pinned as a golden vector captured BEFORE the refactor and are
+unchanged by it; `mintedAt` became injectable on both builders purely to make that provable.
+
+**Single-leaf Merkle trees are new here, and were checked rather than assumed.** A one-leaf OZ
+`SimpleMerkleTree` root IS the leaf, the shape that invites leaf/internal-node confusion. It
+does not apply: `podLeafHash` prefixes a LEAF_DOMAIN byte and the edition before hashing while
+internal nodes are a bare `keccak256(sort(L,R))`, so a leaf hash is unreachable by the node
+construction. Tested, along with the consequence that matters — a fabricated edition 2 fails
+against a badge declaring supply 100, because declared supply is a CAP, not a set of provable
+editions. `edition: 1` turns out to be REQUIRED, not stylistic: `buildPodTree` enforces
+`edition === index + 1`.
+
+**`issueCertificates` can no longer be handed a wrong key, log or cap.** `CertIssuerKeys.issuerPubkey`
+is GONE rather than checked — the issuer key is resolved from the manifest, bound by digest, so
+the call cannot be given one, mirroring `podCertHoldingFromManifest`. The case that closes is
+nastier than a typo and `signPodCert`'s own check misses it: a POD keypair that agrees with
+ITSELF but is not this badge's issuer. Signing succeeds, the log read drops every existing
+certificate as unverifiable, the plan re-issues every holder already certified, and the
+duplicates land permanently against the cap under a key no door accepts. `expectedLogOwner` is
+required because a wrong feed signer is not an error anywhere — it is a clean, empty, parallel
+log at an address nobody reads. `cap` is no longer a parameter: it comes from
+`manifest.body.totalSupply`, which is signed, so it cannot be moved without breaking the
+signature and `PodDirectoryEntry.supply` is unpassable. Preconditions are extracted as
+`precheckIssuance` and unit-tested.
+
+**`IssueRunResult` gained a `stop` discriminant, and the surface never advises a retry on
+`superseded`.** The old message said "re-run to continue" — the one string in the codebase whose
+advice was exactly the action the supervised sequence exists to catch. Branching on prose is
+one copy-edit away from turning the forbidden case into the benign one, so the discriminant is
+machine-readable and the guidance belongs to the surface. `superseded` gets a terminal panel
+naming both causes and offering neither; `unconfirmed` offers a re-READ, never another write.
+
+**The gate picker's blocking condition was restated at its real boundary.** Slice 2 said "not
+until certificates can be issued". Issuing is what this slice ships, and it is still wrong to
+offer them: `GateEvidence` is defined and threaded through `checkPodGate` but NOTHING constructs
+one, so `resolveHolding` returns 0 for every certificate gate and a cert gate with an `always`
+window on a ticket series is a one-click live purchase outage. The condition is the missing
+PRESENTATION path, not zero issuance. Certificate badges are shown DISABLED — the old filter
+made them vanish, and an organiser who just minted one reads invisibility as a bug. Logic moved
+to `gate-build.ts` because the editor is mounted on the live sales path: the chain arm is pinned
+field-for-field (including that `holdingSource` stays ABSENT, since absence IS the discriminant),
+and a `CertPodGate` has no path out of `buildChainGates` even if its ref is smuggled in.
+
+**`issuedCount` is accepted for certificate badges only**, clamped then trusted, and deliberately
+NOT a ratchet — monotonicity would freeze an over-report forever, and an honest run recomputing
+from a thoroughly-read log must be able to correct downward. Chain badges and ticket PODs are
+refused by construction (the rule is "has a certLogOwner"), because their count is derivable
+from `nextSlot` and a client-written one could contradict the chain.
+
+**/redeem now validates the key's SHAPE**, where it previously stored any string. A malformed key
+does not fail the unlock — that is what the attendee came for and what the one-shot nullifier is
+spent on — but it is not dropped silently either: the response carries `podKeyRecorded`, because
+nothing backfills a key onto an existing binding, so "recorded" and "gone" are different futures.
+
+Slice total: 194 lines of new logic across four modules, no new dependencies. Three files that
+had not earned their own module were folded back into `issue.ts`, `issuance.ts` and `store.ts`.
+
+**STILL NOT DONE, and the write path is STILL UNEXERCISED against a real gateway:** the
+supervised sequence itself. Nothing in this slice has met a gateway. Before any real holder:
+(a) a 2–3 holder issuance then a COLD-device read-back; (b) an immediate identical re-run
+expecting `alreadyHeld` = all and `pagesWritten` = 0; (c) a kill mid-run then a re-run, proving
+the verified-prefix resume; (d) ~65 one-holder runs to force the band-0 rollover. Any
+`superseded` on a single-device run means the address arithmetic wrote to an occupied version —
+stop, do not re-run. The surface now prints every number those checks need, and offers no button
+that would make a wrong one worse.
+
+Deferred as before: holder passport import, the challenge round trip, per-drop HPKE, the issuer
+registry. Open: **#343** (nothing publishes holder X25519 keys, so `encPubKey` stays empty),
+**#342** (no test seam for gate enforcement), **#345** (podPubKey unverified), **#268**
+(ClaimedTicket dead code — the reason the picker is mostly keyless), **#340**.
+
 **Gate C — eligibility to make a statement at all.** Not a separate mechanism: on a
 permissionless substrate anyone may write to their own feed, so this reduces to Gate A at the
 relay plus what indexers choose to count. Recorded so it is not designed twice.
