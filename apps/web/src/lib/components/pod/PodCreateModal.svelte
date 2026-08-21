@@ -189,7 +189,12 @@
       const entry = await createPod({
         // A certificate badge IS a badge to everything downstream; the rail is
         // carried by `holdingSource`, not by a fourth `PodKind`.
-        kind: isCert ? "badge" : kind,
+        //
+        // Compared against the literal rather than the `isCert` derived, because
+        // only the literal NARROWS: `isCert` is a boolean, so in its false branch
+        // `kind` is still the full `UiKind` including "cert-badge", and the
+        // server request type accepts only "badge" | "collectible".
+        kind: kind === "cert-badge" ? "badge" : kind,
         name: name.trim(),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(categoryId ? { categoryId } : {}),

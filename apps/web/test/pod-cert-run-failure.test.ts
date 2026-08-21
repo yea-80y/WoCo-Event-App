@@ -100,3 +100,60 @@ test("a whitelist refusal is a permanent condition, not a retry", () => {
     "the gated branch must not advise a retry",
   );
 });
+
+// ---------------------------------------------------------------------------
+// #4 — the key ceremonies must not strand the organiser either
+// ---------------------------------------------------------------------------
+
+test("the signing ceremonies are INSIDE the try, not one line above it", () => {
+  // `getContentFeedSigner` is documented fail-loud, and the likeliest trigger is
+  // the most ordinary user action there is: rejecting the wallet prompt on a
+  // first award. Outside the try, that throw escapes `run()` with `phase` stuck
+  // at "running" — and `close()` refuses mid-run, so the X is disabled and
+  // Escape is refused. Reload is the only way out. This is the same
+  // undismissable-dialog defect the write-throw fix targeted.
+  const runAt = MODAL.indexOf("async function run(");
+  const tryAt = MODAL.indexOf("try {", runAt);
+  const keypairAt = MODAL.indexOf("getPodKeypair()", runAt);
+  const signerAt = MODAL.indexOf("getContentFeedSigner()", runAt);
+  assert.ok(tryAt > 0 && keypairAt > 0 && signerAt > 0);
+  assert.ok(tryAt < keypairAt, "getPodKeypair must be inside the try");
+  assert.ok(tryAt < signerAt, "getContentFeedSigner must be inside the try");
+});
+
+test("a ceremony that throws is `refused`, never `unconfirmed`", () => {
+  // Nothing was sent, so telling the operator to go and re-read a log that
+  // cannot have changed would be wrong — and would make a rejected signature
+  // look like a possible lost write.
+  const catchAt = MODAL.lastIndexOf("} catch (e) {");
+  const after = MODAL.slice(catchAt, catchAt + 500);
+  assert.match(after, /stop:\s*"refused"/);
+  assert.doesNotMatch(after, /stop:\s*"unconfirmed"/);
+});
+
+// ---------------------------------------------------------------------------
+// #5 — the picker must not claim a completeness it does not have
+// ---------------------------------------------------------------------------
+
+test("the picker reads ORDERS as well as bindings", () => {
+  // Bindings alone exist only for attendees who signed in at checkout (first
+  // edition of a group buy) or redeemed the email link. Using them as the
+  // denominator let a 100-ticket event read as "6 of 10 attendees" at the
+  // moment a PERMANENT run is confirmed.
+  assert.match(MODAL, /getEventOrders\(/, "the true denominator comes from /orders");
+  assert.match(MODAL, /getAttendeeKeys\(/, "joined against the sparse key set");
+  assert.match(MODAL, /totalClaims/, "and the count shown is claims, not bindings");
+});
+
+test("the false-completeness copy is gone", () => {
+  assert.doesNotMatch(MODAL_RAW, /whole picture/i, "it was not the whole picture");
+  assert.doesNotMatch(
+    MODAL_RAW,
+    /of\s*\n?\s*\{attendeeSplit\.certifiable\.length \+ attendeeSplit\.withoutKey\.length\}/,
+    "the denominator must not be rebuilt from the bindings split",
+  );
+});
+
+test("a run in flight still cannot be dismissed — the guard that makes the above matter", () => {
+  assert.match(MODAL, /function close\(\)[\s\S]{0,200}phase === "running"/, "close() refuses mid-run");
+});

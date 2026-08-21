@@ -627,7 +627,10 @@ neither write path proves it belongs to the account it is stored against. Filed 
 
 **The picker reads ORDERS, joined against bindings — never bindings alone.** Bindings exist for
 the first edition of a group buy only (`stripe.ts` binds `slotsForBurners[0]`), so enumerating
-them would silently omit most attendees. `GET /api/events/:id/attendee-keys` returns
+them would silently omit most attendees. (SHIPPED BINDINGS-ONLY AT FIRST, and the review caught
+it — see the review note below. Now genuinely joined: `/orders` supplies the denominator,
+`/attendee-keys` the sparse key column, and a ticket with no binding is a first-class
+un-certifiable row rather than an absence.) `GET /api/events/:id/attendee-keys` returns
 `(seriesId, edition, podPubKey?, route)` and nothing else — the caller already renders identity
 from `/orders` and joins on the pair, so returning `parentAddress` or `emailHash` would hand
 over a second copy of who-is-who for no new capability. EVERY binding is returned including
@@ -724,8 +727,38 @@ surface looks fine while the truth is elsewhere:
    cannot be read can never be awarded — and the client now tells the gate's tagged 403 apart
    from a bad minute.
 
-STILL OWED: a completed sign-off. The review was mid-investigation when it stopped, so the list
-above is not known to be exhaustive.
+**SIGNED OFF 2026-08-21 (Fable, verdict MERGE AFTER CHANGES → changes applied).** The re-run
+confirmed nothing in this slice writes wrong bytes to permanent addresses: the digest binding and
+write-once SOC held everywhere it attacked them, the surface and the run cannot disagree about a
+plan (a concurrent write between the modal's read and the run's read is absorbed by the fresh
+re-read and REPORTED in the done panel's own numbers, and a false absent ends in `superseded`
+rather than duplicates), and the `$effect`/state machine cannot re-fire mid-run or double-count.
+
+Two must-fixes, both surface-honesty defects in the usual class:
+
+1. **The signing ceremonies sat one line ABOVE the try that fix 1 had just added.**
+   `getContentFeedSigner` is documented fail-loud, and its likeliest trigger is the most ordinary
+   action there is — rejecting the wallet prompt on a first award. The throw escaped `run()` with
+   `phase` stuck at "running", and `close()` refuses mid-run, so the organiser was trapped with a
+   disabled X and a refused Escape. Now inside the try and reported as `refused`, not
+   `unconfirmed`: nothing was sent, so re-running is safe and re-reading would be pointless advice.
+2. **The picker enumerated bindings alone while its copy claimed completeness** — and this record
+   claimed a join that did not exist. A 100-ticket event with 10 bindings read as "6 of 10
+   attendees", at the confirm moment of a permanent run. Now joined as recorded, with tickets sold
+   as the denominator and two distinct un-certifiable reasons (`not-linked` vs `no-key`).
+
+Three would-improves applied with them: a generation token in `open()` (closing during load and
+opening another badge could interleave two uncancelled loads and paint badge A's cap under badge
+B's title — refused by the digest binding, so never a wrong write, but a wrong number and a
+cryptic refusal); the `unconfirmed` panel no longer says "the page was accepted", which
+contradicted its own error line for a pre-send throw; and the compose screen now prints the log
+HEAD (band/version) and pages read, so the supervised sequence's band rollover is directly
+visible rather than inferred from a rising count.
+
+**Supervised sequence, step (b) amended:** an identical re-run leaves `toIssue` at 0, so Award is
+disabled and a run reporting `pagesWritten = 0` is unreachable by design. The evidence is at
+compose level instead — "Will be awarded 0 / Already hold it N" — which is the same assertion one
+screen earlier. Steps (a), (c) and (d) run as written.
 
 **STILL NOT DONE, and the write path is STILL UNEXERCISED against a real gateway:** the
 supervised sequence itself. Nothing in this slice has met a gateway. Before any real holder:

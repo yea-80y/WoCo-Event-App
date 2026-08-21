@@ -74,7 +74,7 @@ export function holderRejectLabel(reason: HolderReject["reason"]): string {
   return reason === "duplicate" ? "already on this list" : "not a badge key";
 }
 
-/** One attendee as the picker shows them. */
+/** A binding row from `/attendee-keys` — an edition the platform has a record for. */
 export interface AttendeeCandidate {
   seriesId: string;
   edition: number;
@@ -82,45 +82,82 @@ export interface AttendeeCandidate {
   route: "email-link" | "claim";
 }
 
+/** One sold ticket, from `/orders` — the TRUE denominator. */
+export interface TicketClaim {
+  seriesId: string;
+  edition: number;
+}
+
+/** Why an attendee cannot be awarded a badge right now. */
+export type UncertifiableReason =
+  /** Bound to an account, but that account has no badge identity on file. */
+  | "no-key"
+  /** Never linked to an account at all — no binding exists for this ticket. */
+  | "not-linked";
+
+export interface UncertifiableAttendee {
+  seriesId: string;
+  edition: number;
+  reason: UncertifiableReason;
+}
+
 export interface AttendeeSplit {
   /** Distinct holders, first-seen order — the unit of issuance is the PERSON. */
   certifiable: Hex32[];
-  /**
-   * Attendees with no badge key on file. Counted and shown, never dropped.
-   * There is no path today that turns one of these into a certifiable
-   * attendee — the gate binding's nullifier is already spent and nothing
-   * backfills a key onto an existing binding — so a surface must not imply one.
-   */
-  withoutKey: AttendeeCandidate[];
-  /**
-   * Editions collapsed into an existing holder — a multi-ticket buyer. Reported
-   * so "N of M" arithmetic is explicable rather than mysterious.
-   */
+  /** Everyone who cannot be awarded, and why. Counted and shown, never dropped. */
+  withoutKey: UncertifiableAttendee[];
+  /** Editions collapsed into a holder already counted — a multi-ticket buyer. */
   duplicateEditions: number;
+  /** Every ticket claim considered. `certifiable + withoutKey + duplicates`. */
+  totalClaims: number;
 }
 
 /**
- * Split attendee rows into who can be certified and who cannot.
+ * Split an event's ticket claims into who can be awarded a badge and who cannot.
  *
- * THE UNIT IS THE PERSON, not the edition. A buyer who bought three tickets is
- * one holder and gets one certificate — `planCertIssuance` would dedupe them
- * regardless, so collapsing here is what makes the number the organiser
- * confirms mean the same thing as the number that lands.
+ * THE DENOMINATOR IS `claims`, NOT BINDINGS, and that is the whole point of this
+ * signature. Bindings exist only for attendees who checked out signed in (first
+ * edition of a group buy only) or redeemed the email-CTA link — most attendees
+ * have none. Counting bindings would let the surface say "6 of 10 attendees"
+ * about an event with 100 tickets sold, at the moment an organiser confirms a
+ * PERMANENT run, and they would reasonably believe everyone had been covered.
  *
- * A malformed key is treated as ABSENT rather than passed through. The server
- * already filters these at serve time; doing it again costs one regex and means
- * this function is correct on its own terms rather than on a promise.
+ * So every claim is accounted for, and an attendee with no binding at all is a
+ * FIRST-CLASS un-certifiable row (`not-linked`) rather than an absence. That is
+ * a different situation from a bound account with no badge identity (`no-key`),
+ * and the two get different copy because they have different causes.
+ *
+ * THE UNIT IS THE PERSON, not the edition. A buyer with three tickets is one
+ * holder and one certificate — `planCertIssuance` would dedupe them anyway, so
+ * collapsing here is what makes the number the organiser confirms mean the same
+ * thing as the number that lands.
  */
-export function splitAttendees(rows: readonly AttendeeCandidate[]): AttendeeSplit {
+export function splitAttendees(args: {
+  claims: readonly TicketClaim[];
+  bindings: readonly AttendeeCandidate[];
+}): AttendeeSplit {
+  const byEdition = new Map<string, AttendeeCandidate>();
+  for (const b of args.bindings ?? []) byEdition.set(`${b.seriesId}\u0000${b.edition}`, b);
+
   const certifiable: Hex32[] = [];
-  const withoutKey: AttendeeCandidate[] = [];
+  const withoutKey: UncertifiableAttendee[] = [];
   const seen = new Set<string>();
   let duplicateEditions = 0;
 
-  for (const row of rows ?? []) {
-    const key = typeof row.podPubKey === "string" ? row.podPubKey.toLowerCase() : "";
+  const claims = args.claims ?? [];
+  for (const claim of claims) {
+    const binding = byEdition.get(`${claim.seriesId}\u0000${claim.edition}`);
+    const key = typeof binding?.podPubKey === "string" ? binding.podPubKey.toLowerCase() : "";
+
+    if (!binding) {
+      withoutKey.push({ seriesId: claim.seriesId, edition: claim.edition, reason: "not-linked" });
+      continue;
+    }
+    // A malformed key counts as absent. The server already filters these at
+    // serve time; repeating it costs one regex and makes this function correct
+    // on its own terms rather than on a promise.
     if (!ED25519_PUB_RE.test(key)) {
-      withoutKey.push(row);
+      withoutKey.push({ seriesId: claim.seriesId, edition: claim.edition, reason: "no-key" });
       continue;
     }
     if (seen.has(key)) {
@@ -131,5 +168,12 @@ export function splitAttendees(rows: readonly AttendeeCandidate[]): AttendeeSpli
     certifiable.push(key as Hex32);
   }
 
-  return { certifiable, withoutKey, duplicateEditions };
+  return { certifiable, withoutKey, duplicateEditions, totalClaims: claims.length };
+}
+
+/** Human copy for an un-certifiable attendee. */
+export function uncertifiableLabel(reason: UncertifiableReason): string {
+  return reason === "not-linked"
+    ? "ticket not linked to an account"
+    : "account has no badge identity";
 }

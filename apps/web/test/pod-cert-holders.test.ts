@@ -14,8 +14,12 @@ import {
   parseHolderKeys,
   splitAttendees,
   holderRejectLabel,
+  uncertifiableLabel,
   type AttendeeCandidate,
 } from "../src/lib/pod-cert/holders.js";
+
+/** Distinct 64-hex keys for fixtures. */
+const keyFor = (i: number) => (i + 1).toString(16).padStart(2, "0").repeat(32);
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -106,58 +110,105 @@ test("reject labels distinguish the two reasons", () => {
 });
 
 // ---------------------------------------------------------------------------
-// splitAttendees
+// splitAttendees — the denominator is CLAIMS, never bindings
 // ---------------------------------------------------------------------------
 
-function att(over: Partial<AttendeeCandidate> = {}): AttendeeCandidate {
+function bind(over: Partial<AttendeeCandidate> = {}): AttendeeCandidate {
   return { seriesId: "s1", edition: 1, route: "claim", ...over };
 }
+const claim = (edition: number, seriesId = "s1") => ({ seriesId, edition });
 
-test("attendees WITHOUT a key are kept and counted, never dropped", () => {
-  // The handover's explicit requirement, and the reason it exists: most
-  // attendees have no POD key on file at all, so a picker that dropped them
-  // would show an empty list indistinguishable from a broken one.
-  const s = splitAttendees([att({ podPubKey: A }), att({ edition: 2 })]);
-  assert.deepEqual(s.certifiable, [A]);
+test("THE DENOMINATOR IS TICKETS SOLD, not bindings", () => {
+  // The defect this replaced: counting bindings let a 100-ticket event with 10
+  // bindings read as "6 of 10 attendees", at the moment a PERMANENT run is
+  // confirmed. The organiser would reasonably believe everyone was covered.
+  const claims = Array.from({ length: 100 }, (_, i) => claim(i + 1));
+  const bindings = Array.from({ length: 10 }, (_, i) =>
+    bind({ edition: i + 1, ...(i < 6 ? { podPubKey: keyFor(i) } : {}) }),
+  );
+  const s = splitAttendees({ claims, bindings });
+  assert.equal(s.certifiable.length, 6);
+  assert.equal(s.totalClaims, 100, "the honest denominator is every ticket sold");
+  assert.equal(s.withoutKey.length, 94, "the other 94 must be visible, not absent");
+});
+
+test("a ticket with NO binding is a first-class row, not an absence", () => {
+  const s = splitAttendees({ claims: [claim(1), claim(2)], bindings: [bind({ edition: 1, podPubKey: A })] });
+  assert.equal(s.certifiable.length, 1);
   assert.equal(s.withoutKey.length, 1);
+  assert.equal(s.withoutKey[0]!.reason, "not-linked");
   assert.equal(s.withoutKey[0]!.edition, 2);
 });
 
+test("bound-but-keyless and never-linked are DIFFERENT reasons", () => {
+  // Different causes, so different copy — one is an account without a badge
+  // identity, the other is a ticket that never met an account at all.
+  const s = splitAttendees({
+    claims: [claim(1), claim(2)],
+    bindings: [bind({ edition: 1 })], // bound, no key
+  });
+  assert.deepEqual(s.withoutKey.map((w) => w.reason).sort(), ["no-key", "not-linked"]);
+  assert.notEqual(uncertifiableLabel("no-key"), uncertifiableLabel("not-linked"));
+});
+
 test("THE UNIT IS THE PERSON — a multi-ticket buyer is one holder", () => {
-  const s = splitAttendees([
-    att({ edition: 1, podPubKey: A }),
-    att({ edition: 2, podPubKey: A }),
-    att({ edition: 3, podPubKey: B }),
-  ]);
+  const s = splitAttendees({
+    claims: [claim(1), claim(2), claim(3)],
+    bindings: [bind({ edition: 1, podPubKey: A }), bind({ edition: 2, podPubKey: A }), bind({ edition: 3, podPubKey: B })],
+  });
   assert.deepEqual(s.certifiable, [A, B]);
-  assert.equal(s.duplicateEditions, 1, "reported, so the arithmetic is explicable");
+  assert.equal(s.duplicateEditions, 1);
 });
 
-test("a malformed key counts as WITHOUT a key, never passed through", () => {
-  const s = splitAttendees([att({ podPubKey: "nonsense" })]);
+test("a malformed key counts as keyless, never passed through", () => {
+  const s = splitAttendees({ claims: [claim(1)], bindings: [bind({ edition: 1, podPubKey: "nonsense" })] });
   assert.deepEqual(s.certifiable, []);
-  assert.equal(s.withoutKey.length, 1);
+  assert.equal(s.withoutKey[0]!.reason, "no-key");
 });
 
-test("keys are normalised, so case never splits one person into two", () => {
-  const s = splitAttendees([att({ podPubKey: A.toUpperCase() }), att({ edition: 2, podPubKey: A })]);
+test("case never splits one person into two", () => {
+  const s = splitAttendees({
+    claims: [claim(1), claim(2)],
+    bindings: [bind({ edition: 1, podPubKey: A.toUpperCase() }), bind({ edition: 2, podPubKey: A })],
+  });
   assert.deepEqual(s.certifiable, [A]);
   assert.equal(s.duplicateEditions, 1);
 });
 
-test("every row is accounted for", () => {
-  const rows = [att({ podPubKey: A }), att({ edition: 2, podPubKey: A }), att({ edition: 3 }), att({ edition: 4, podPubKey: C })];
-  const s = splitAttendees(rows);
+test("a binding for a series that sold nothing cannot inflate the count", () => {
+  // Bindings are joined ONTO claims, so a stray binding has nothing to attach
+  // to and is ignored rather than inventing an attendee.
+  const s = splitAttendees({ claims: [claim(1)], bindings: [bind({ edition: 1, podPubKey: A }), bind({ seriesId: "other", edition: 9, podPubKey: B })] });
+  assert.deepEqual(s.certifiable, [A]);
+  assert.equal(s.totalClaims, 1);
+});
+
+test("editions are matched per SERIES — same number, different series, different ticket", () => {
+  const s = splitAttendees({
+    claims: [claim(1, "s1"), claim(1, "s2")],
+    bindings: [bind({ seriesId: "s1", edition: 1, podPubKey: A })],
+  });
+  assert.deepEqual(s.certifiable, [A]);
+  assert.equal(s.withoutKey.length, 1);
+  assert.equal(s.withoutKey[0]!.seriesId, "s2");
+});
+
+test("EVERY claim is accounted for", () => {
+  const claims = [claim(1), claim(2), claim(3), claim(4)];
+  const s = splitAttendees({
+    claims,
+    bindings: [bind({ edition: 1, podPubKey: A }), bind({ edition: 2, podPubKey: A }), bind({ edition: 3 })],
+  });
   assert.equal(
     s.certifiable.length + s.withoutKey.length + s.duplicateEditions,
-    rows.length,
-    "certifiable + keyless + collapsed must equal what came in",
+    claims.length,
+    "certifiable + un-certifiable + collapsed must equal tickets sold",
   );
 });
 
-test("an empty attendee list splits cleanly", () => {
-  const s = splitAttendees([]);
+test("an event with no claims splits cleanly", () => {
+  const s = splitAttendees({ claims: [], bindings: [] });
   assert.deepEqual(s.certifiable, []);
   assert.deepEqual(s.withoutKey, []);
-  assert.equal(s.duplicateEditions, 0);
+  assert.equal(s.totalClaims, 0);
 });

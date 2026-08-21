@@ -80,10 +80,20 @@ test("the certificate rail is carried by holdingSource, not by a new PodKind", (
   // manager all key on the rail via `certLogOwner` / `holdingSource`. A fourth
   // PodKind would need a migration and a new case in every switch.
   assert.match(CODE, /holdingSource:\s*"pod-cert"/);
+  // Matched on the PROPERTY, not the spelling: whatever the condition, the
+  // request's `kind` must resolve to "badge" for a certificate badge. The
+  // earlier version pinned `isCert ? "badge"` literally and broke the moment
+  // that was changed to a narrowing comparison — a ratchet should fail when the
+  // guarantee goes, not when the syntax moves.
   assert.match(
     CODE,
-    /kind:\s*isCert\s*\?\s*"badge"/,
+    /kind:\s*[^,\n]*\?\s*"badge"\s*:/,
     "a certificate badge IS a badge to everything downstream",
+  );
+  assert.doesNotMatch(
+    CODE,
+    /kind:\s*"cert-badge"/,
+    "the rail must never travel as a fourth PodKind",
   );
 });
 

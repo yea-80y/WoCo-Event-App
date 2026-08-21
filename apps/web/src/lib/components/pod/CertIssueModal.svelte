@@ -26,7 +26,7 @@
   import type { PodDirectoryEntry, SignedManifestV1, Hex0x, Hex32 } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { getAttendeeKeys, updatePod, type AttendeeKeyRow } from "../../api/pod.js";
-  import { getEventsByCreator } from "../../api/events.js";
+  import { getEventsByCreator, getEventOrders } from "../../api/events.js";
   import {
     readCertLog,
     issueCertificates,
@@ -37,7 +37,9 @@
     parseHolderKeys,
     splitAttendees,
     holderRejectLabel,
+    uncertifiableLabel,
     type HolderReject,
+    type TicketClaim,
   } from "../../pod-cert/holders.js";
   import { hintCounts, probeCounts, probeTotals } from "../../swarm/probe-stats.js";
 
@@ -63,6 +65,10 @@
   let events = $state<Array<{ eventId: string; title: string }>>([]);
   let selectedEventId = $state("");
   let attendees = $state<AttendeeKeyRow[] | null>(null);
+  /** Every ticket claim for the event — the TRUE denominator. Bindings alone
+   *  would count only those who signed in or redeemed the link, which is a
+   *  minority, and the surface would claim completeness it does not have. */
+  let claims = $state<TicketClaim[] | null>(null);
   let attendeeError = $state("");
   let attendeesLoading = $state(false);
 
@@ -70,12 +76,28 @@
   let progress = $state({ done: 0, total: 0 });
   let result = $state<IssueRunResult | null>(null);
   let probeSummary = $state("");
+  /** Head coordinates of the log, shown so a band rollover is verifiable on
+   *  screen rather than only by inference from a changing count. */
+  let head = $state<{ band: number; version: number } | null>(null);
+  let pagesRead = $state(0);
+  /**
+   * Which `open()` is current. The dialog can be closed while still loading, so
+   * a second badge can be opened before the first `open()` finishes its awaits —
+   * two uncancelled runs, the older one landing last and painting badge A's
+   * manifest and holder list under badge B's title. `precheckIssuance` refuses
+   * the resulting run on its digest binding, so this was never a wrong write;
+   * it was a wrong CAP and a cryptic refusal, which on this rail is quite bad
+   * enough.
+   */
+  let generation = 0;
 
   const cap = $derived(manifest?.body.totalSupply ?? pod?.supply ?? 0);
   const remaining = $derived(Math.max(0, cap - existing.length));
 
   const pasted = $derived(parseHolderKeys(pasteText));
-  const attendeeSplit = $derived(splitAttendees(attendees ?? []));
+  const attendeeSplit = $derived(
+    splitAttendees({ claims: claims ?? [], bindings: attendees ?? [] }),
+  );
 
   /** The holders this run would certify, before the log is consulted. */
   const requested = $derived(source === "paste" ? pasted.keys : attendeeSplit.certifiable);
@@ -99,6 +121,8 @@
   });
 
   async function open(p: PodDirectoryEntry) {
+    const mine = ++generation;
+    const stale = () => mine !== generation;
     phase = "loading";
     blockedReason = "";
     manifest = null;
@@ -106,6 +130,8 @@
     result = null;
     progress = { done: 0, total: 0 };
     probeSummary = "";
+    head = null;
+    pagesRead = 0;
 
     // A badge minted without these cannot be awarded from here at all, and
     // saying so is better than a surface that half-works.
@@ -118,6 +144,7 @@
     }
 
     const m = await loadBadgeManifest(p.swarmManifestRef, p.manifestRef);
+    if (stale()) return;
     if (!m.ok) {
       blockedReason = m.error;
       phase = "blocked";
@@ -128,12 +155,15 @@
     // THOROUGH read — it decides who is skipped as already certified, so a
     // false absent re-issues duplicates against a permanent log.
     const log = await readCertLog(p.certLogOwner, p.manifestRef, m.manifest);
+    if (stale()) return;
     if (!log.ok) {
       blockedReason = log.error;
       phase = "blocked";
       return;
     }
     existing = log.holders;
+    head = log.head;
+    pagesRead = log.pagesRead;
     phase = "compose";
   }
 
@@ -152,10 +182,23 @@
     attendeesLoading = true;
     attendeeError = "";
     attendees = null;
+    claims = null;
     try {
-      attendees = await getAttendeeKeys(selectedEventId);
+      // BOTH, and neither is optional. `/orders` is every ticket claim — the
+      // denominator the organiser is really asking about. `/attendee-keys` is
+      // the sparse set of those claims the platform has a badge key for. Using
+      // only the second would make an event with 100 tickets and 10 bindings
+      // read as "6 of 10 attendees", at the moment a permanent run is confirmed.
+      const [orders, keys] = await Promise.all([
+        getEventOrders(selectedEventId),
+        getAttendeeKeys(selectedEventId),
+      ]);
+      claims = orders.orders.map((o) => ({ seriesId: o.seriesId, edition: o.edition }));
+      attendees = keys;
     } catch (e) {
       attendeeError = e instanceof Error ? e.message : "Could not load attendees.";
+      claims = null;
+      attendees = null;
     } finally {
       attendeesLoading = false;
     }
@@ -168,49 +211,59 @@
 
     const before = { probes: probeCounts(), hints: hintCounts() };
 
-    const keypair = await auth.getPodKeypair();
-    const signer = await auth.getContentFeedSigner();
-    if (!keypair || !signer) {
+    // EVERYTHING that can throw lives inside this try, and the key ceremonies
+    // are the reason. `getContentFeedSigner` is documented FAIL-LOUD — it
+    // throws rather than falling through, and the likeliest trigger is the most
+    // ordinary user action there is: rejecting the wallet signing prompt on a
+    // first award. Left outside, that throw escapes `run()` with `phase` stuck
+    // at "running", and because `close()` refuses mid-run the organiser is
+    // trapped in a dialog with a disabled X and a refused Escape, with only a
+    // reload to get out. Nothing has been written at that point, which is
+    // exactly why it must NOT be reported as `unconfirmed`: `refused` is the
+    // honest stop, and re-running is safe.
+    try {
+      const keypair = await auth.getPodKeypair();
+      const signer = await auth.getContentFeedSigner();
+      if (!keypair || !signer) {
+        result = {
+          ok: false,
+          landed: [],
+          alreadyHeld: [],
+          pagesWritten: 0,
+          stop: "refused",
+          error: "Could not unlock your signing keys.",
+        };
+        phase = "stopped";
+        return;
+      }
+
+      result = await issueCertificates({
+        badge: pod.manifestRef,
+        manifest,
+        // From the DIRECTORY, so a device writing under a different signer is
+        // refused rather than starting a parallel log nobody reads.
+        expectedLogOwner: pod.certLogOwner as Hex0x,
+        keys: {
+          podPrivKey: keypair.privateKey,
+          feedPrivKey: signer.privKey,
+          feedAddress: signer.address,
+        },
+        holders: toIssue,
+        onProgress: (done, total) => { progress = { done, total }; },
+      });
+    } catch (e) {
+      // `issueCertificates` maps a throwing WRITE to its own stop, so anything
+      // arriving here threw before or around the run — a rejected signature,
+      // most likely. Nothing was sent, so `refused` rather than `unconfirmed`:
+      // it tells the operator to try again rather than to go and re-read a log
+      // that cannot have changed.
       result = {
         ok: false,
         landed: [],
         alreadyHeld: [],
         pagesWritten: 0,
         stop: "refused",
-        error: "Could not unlock your signing keys.",
-      };
-      phase = "stopped";
-      return;
-    }
-
-    // `issueCertificates` maps a throwing write to a `stop`, so this catch is
-    // belt-and-braces for anything unforeseen. It matters more than a normal
-    // catch would: `close()` refuses while `phase === "running"`, so an escaping
-    // rejection would strand the organiser in a dialog they cannot dismiss,
-    // with no idea whether certificates landed.
-    try {
-    result = await issueCertificates({
-      badge: pod.manifestRef,
-      manifest,
-      // From the DIRECTORY, so a device writing under a different signer is
-      // refused rather than starting a parallel log nobody reads.
-      expectedLogOwner: pod.certLogOwner as Hex0x,
-      keys: {
-        podPrivKey: keypair.privateKey,
-        feedPrivKey: signer.privKey,
-        feedAddress: signer.address,
-      },
-      holders: toIssue,
-      onProgress: (done, total) => { progress = { done, total }; },
-    });
-    } catch (e) {
-      result = {
-        ok: false,
-        landed: [],
-        alreadyHeld: [],
-        pagesWritten: 0,
-        stop: "unconfirmed",
-        error: e instanceof Error ? e.message : "The run stopped unexpectedly.",
+        error: e instanceof Error ? e.message : "The run could not be started.",
       };
     }
 
@@ -327,9 +380,10 @@
             </p>
           {:else if result.stop === "unconfirmed"}
             <p class="fine">
-              The page was accepted but could not be confirmed. Reopen this
-              window to re-read the log: if the award is there, it landed and you
-              can carry on. Don't write again until you've checked.
+              This award may or may not have reached storage — from here the two
+              look identical, which is why nothing is written again on a guess.
+              Reopen this window to re-read the log: if the award is there it
+              landed and you can carry on, and if it isn't, nothing was lost.
             </p>
           {/if}
 
@@ -350,6 +404,12 @@
           <div><dt>Already awarded</dt><dd class="mono">{existing.length}</dd></div>
           <div><dt>Cap</dt><dd class="mono">{cap}</dd></div>
           <div><dt>Room left</dt><dd class="mono">{remaining}</dd></div>
+          {#if head}
+            <!-- Shown for the supervised sequence: a band rollover is otherwise
+                 only inferable from a count that keeps going up. -->
+            <div><dt>Log head</dt><dd class="mono">b{head.band} v{head.version}</dd></div>
+            <div><dt>Pages read</dt><dd class="mono">{pagesRead}</dd></div>
+          {/if}
         </dl>
 
         <div class="src-row" role="group" aria-label="Where holders come from">
@@ -377,11 +437,11 @@
             <p class="msg">Loading attendees…</p>
           {:else if attendeeError}
             <p class="msg msg--err">{attendeeError}</p>
-          {:else if attendees}
+          {:else if attendees && claims}
             <p class="fine">
               <strong>{attendeeSplit.certifiable.length}</strong> of
-              {attendeeSplit.certifiable.length + attendeeSplit.withoutKey.length}
-              attendees can receive this badge.
+              {attendeeSplit.totalClaims}
+              ticket{attendeeSplit.totalClaims === 1 ? "" : "s"} sold can receive this badge.
               {#if attendeeSplit.duplicateEditions > 0}
                 ({attendeeSplit.duplicateEditions} extra ticket{attendeeSplit.duplicateEditions === 1 ? "" : "s"}
                 belonged to someone already counted.)
@@ -394,16 +454,19 @@
                    spent and nothing backfills a key onto it. -->
               <div class="keyless">
                 <span class="keyless-head">
-                  No badge key on file — {attendeeSplit.withoutKey.length} attendee{attendeeSplit.withoutKey.length === 1 ? "" : "s"}
+                  Can't be awarded — {attendeeSplit.withoutKey.length} of {attendeeSplit.totalClaims}
                 </span>
                 <p class="fine">
-                  These tickets aren't linked to an account with a badge identity,
-                  so there's no key to name in an award. They're listed here so
-                  the count above is the whole picture.
+                  An award has to name a person's badge key, and these tickets
+                  have none. Most often that's simply a ticket that was never
+                  linked to a WoCo account — buying with a card alone doesn't
+                  create one. There is no way to award these from here today.
                 </p>
                 <div class="keyless-list">
-                  {#each attendeeSplit.withoutKey.slice(0, 12) as a (a.seriesId + a.edition)}
-                    <span class="keyless-row mono">#{a.edition}</span>
+                  {#each attendeeSplit.withoutKey.slice(0, 12) as a (a.seriesId + "-" + a.edition)}
+                    <span class="keyless-row mono" title={uncertifiableLabel(a.reason)}>
+                      #{a.edition} · {a.reason === "not-linked" ? "no account" : "no badge id"}
+                    </span>
                   {/each}
                   {#if attendeeSplit.withoutKey.length > 12}
                     <span class="keyless-row mono">+{attendeeSplit.withoutKey.length - 12} more</span>
