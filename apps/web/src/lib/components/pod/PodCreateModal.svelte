@@ -13,9 +13,10 @@
    * creating is a committing act, editing is incidental. Concrete & Acid; the
    * single lime affordance is "Mint POD".
    */
-  import type { PodCategory, PodDirectoryEntry, PodKind } from "@woco/shared";
+  import type { PodCategory, PodDirectoryEntry } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
+  import { buildCertBadgeManifest } from "../../pod/cert-builder.js";
   import { uploadSiteImage } from "../../api/sites.js";
   import { createPod } from "../../api/pod.js";
 
@@ -30,14 +31,29 @@
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
-  /** Kinds mintable here — `ticket` flows through events, `authenticity` is unbuilt. */
-  const KINDS: { value: Extract<PodKind, "badge" | "collectible">; label: string; blurb: string }[] = [
+  /**
+   * What the organiser is choosing between. `ticket` flows through events and
+   * `authenticity` is unbuilt, so neither appears.
+   *
+   * `cert-badge` is a UI kind, not a server kind: it mints `kind: "badge"` with
+   * `holdingSource: "pod-cert"`. It is a full third card rather than a toggle
+   * under BADGE because the choice is IRREVERSIBLE at mint — the two rails
+   * produce structurally different artifacts (one template body versus one per
+   * edition, chain registration versus none) — and this grid is already where
+   * the modal stages its one committing decision. A source toggle underneath
+   * would read as a display preference, and it is the quiet switch that gets
+   * missed.
+   */
+  type UiKind = "badge" | "collectible" | "cert-badge";
+  const KINDS: { value: UiKind; label: string; blurb: string }[] = [
     { value: "badge", label: "BADGE", blurb: "Loyalty / achievement — soulbound" },
     { value: "collectible", label: "DROP", blurb: "Limited drop or memento — soulbound" },
+    { value: "cert-badge", label: "AWARD", blurb: "You award it to named people — no chain" },
   ];
 
   // ── form state ──────────────────────────────────────────────────────────
-  let kind = $state<"badge" | "collectible">("badge");
+  let kind = $state<UiKind>("badge");
+  const isCert = $derived(kind === "cert-badge");
   let name = $state("");
   let description = $state("");
   let supply = $state(100);
@@ -124,30 +140,64 @@
         return;
       }
 
-      // ── Build + sign the manifest client-side (reuse the event builder; a
-      //    standalone POD is a single "series"). organiserNonce 0n matches the
-      //    event path — the predicted eventId is informational either way. ────
-      step = "Signing manifest…";
-      const seriesId = crypto.randomUUID();
-      const [manifest] = buildEventManifests({
-        organiserAddress: (auth.parent as string).toLowerCase(),
-        organiserNonce: 0n,
-        creatorPodPrivateKey: keypair.privateKey,
-        creatorPodPublicKeyHex: keypair.publicKeyHex,
-        eventMeta: image ? { imageHash: image } : {},
-        series: [{ seriesId, name: name.trim(), description: description.trim(), totalSupply: supply }],
-      });
+      // ── The certificate rail needs one more key than the chain rail, and
+      //    getting it WRONG is not an error anywhere. `certLogOwner` is the
+      //    owner half of every chunk address in this badge's log
+      //    (`keccak256(identifier ‖ owner)`), and it appears in no public
+      //    artifact — so a badge minted under the wrong one has a log that
+      //    nobody, including its own issuer on another device, can ever find.
+      //    It must be the address the issuing client will actually write under,
+      //    which is why it comes from the signer itself and is never typed,
+      //    guessed, or taken from `auth.parent`. ────────────────────────────
+      let certLogOwner: string | undefined;
+      if (isCert) {
+        step = "Unlocking your feed signer…";
+        const signer = await auth.getContentFeedSigner();
+        if (!signer) {
+          error = "Could not unlock your feed signer — a certificate badge needs it to publish its log.";
+          return;
+        }
+        certLogOwner = signer.address;
+      }
 
-      step = "Minting on-chain…";
+      // ── Build + sign the manifest client-side. Two rails, two builders: a
+      //    chain POD commits one body per claimable edition, a certificate
+      //    badge commits ONE template body while `totalSupply` declares a
+      //    holder cap. Both seal through the same core (`pod/seal.ts`). ──────
+      step = "Signing manifest…";
+      const organiserAddress = (auth.parent as string).toLowerCase();
+      const built = isCert
+        ? buildCertBadgeManifest({
+            organiserAddress,
+            creatorPodPrivateKey: keypair.privateKey,
+            creatorPodPublicKeyHex: keypair.publicKeyHex,
+            name: name.trim(),
+            description: description.trim(),
+            ...(image ? { imageHash: image } : {}),
+            cap: supply,
+          })
+        : buildEventManifests({
+            organiserAddress,
+            organiserNonce: 0n,
+            creatorPodPrivateKey: keypair.privateKey,
+            creatorPodPublicKeyHex: keypair.publicKeyHex,
+            eventMeta: image ? { imageHash: image } : {},
+            series: [{ seriesId: crypto.randomUUID(), name: name.trim(), description: description.trim(), totalSupply: supply }],
+          })[0]!;
+
+      step = isCert ? "Creating badge…" : "Minting on-chain…";
       const entry = await createPod({
-        kind,
+        // A certificate badge IS a badge to everything downstream; the rail is
+        // carried by `holdingSource`, not by a fourth `PodKind`.
+        kind: isCert ? "badge" : kind,
         name: name.trim(),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(categoryId ? { categoryId } : {}),
         supply,
-        signedManifest: manifest!.signedManifest,
-        podBodies: manifest!.podBodies,
+        signedManifest: built.signedManifest,
+        podBodies: built.podBodies,
         ...(image ? { image } : {}),
+        ...(isCert ? { holdingSource: "pod-cert" as const, certLogOwner: certLogOwner! } : {}),
       });
 
       oncreated(entry);
@@ -204,6 +254,17 @@
         {/each}
       </div>
 
+      {#if isCert}
+        <!-- Said at the moment of choosing, because the choice cannot be undone
+             and because two of these three facts surprise people. -->
+        <p class="rail-note">
+          You award this one — nobody claims or buys it. Each award is a record
+          you sign naming that person's badge key, published under your own
+          account, with no chain and no gas. Awards are <strong>public and
+          permanent</strong>, and this version cannot revoke one.
+        </p>
+      {/if}
+
       <label class="field-label" for="pod-name">Name</label>
       <input
         id="pod-name"
@@ -228,7 +289,7 @@
 
       <div class="row">
         <div class="col">
-          <label class="field-label" for="pod-supply">Supply</label>
+          <label class="field-label" for="pod-supply">{isCert ? "Holder cap" : "Supply"}</label>
           <input
             id="pod-supply"
             class="field-input"
@@ -238,7 +299,16 @@
             max={10000}
             disabled={working}
           />
-          <span class="field-hint">Editions this POD can ever issue (1–10,000). Immutable once minted.</span>
+          <span class="field-hint">
+            {#if isCert}
+              People this badge can ever name (1–10,000). Signed into the badge and
+              immutable — but nothing at a door enforces it, so over-issuing shows
+              up in your own log rather than being blocked. Your issuing device
+              refuses to go past it.
+            {:else}
+              Editions this POD can ever issue (1–10,000). Immutable once minted.
+            {/if}
+          </span>
         </div>
         <div class="col">
           <label class="field-label" for="pod-cat">Category</label>
@@ -373,6 +443,17 @@
   }
 
   /* kind selector */
+  .rail-note {
+    margin: 10px 0 0;
+    padding: 9px 11px;
+    border-left: 2px solid var(--accent);
+    background: var(--bg-surface);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+  }
+
   .kind-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

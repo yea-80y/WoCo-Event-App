@@ -33,10 +33,34 @@ export interface CreatePodRequest {
   supply: number;
   /** Client-built, ed25519-signed by the creator's POD key. */
   signedManifest: SignedManifestV1;
-  /** The `supply` pre-signed pod bodies committed to by the manifest. */
+  /**
+   * The pod bodies committed to by the manifest's Merkle root. `supply` of them
+   * on the chain rail, where each is a claimable edition; exactly ONE template
+   * body for a certificate badge, which has no editions to claim. The server
+   * enforces the count per rail.
+   */
   podBodies: PodV2Body[];
   /** Display artwork — Swarm ref (no 0x) from uploadSiteImage. */
   image?: string;
+  /**
+   * How holdings of this badge are recorded. Absent means `chain` — today's
+   * rail: sponsor-register the manifest so slot ownership is readable.
+   * `pod-cert` records holding as an issuer-signed certificate naming the
+   * holder's key, so there is no chain registration at all.
+   */
+  holdingSource?: "pod-cert";
+  /**
+   * REQUIRED with `holdingSource: "pod-cert"`, and the server refuses without
+   * it: the issuer's secp256k1 content-feed address. Chunk addresses are
+   * `keccak256(identifier ‖ owner)` and the owner half appears in no public
+   * artifact, so a certificate badge minted without this has a log nobody —
+   * including its own issuer, on a different device — can ever find.
+   *
+   * MUST come from `auth.getContentFeedSigner()`, never typed or derived
+   * elsewhere: it has to be the address the issuing client will actually write
+   * under.
+   */
+  certLogOwner?: string;
 }
 
 /**
@@ -61,6 +85,12 @@ export async function updatePod(
     description?: string;
     image?: string;
     categoryId?: string | null;
+    /**
+     * Distinct holders certified so far. CERTIFICATE BADGES ONLY — the server
+     * refuses it on anything chain-sourced, whose count it can derive itself.
+     * Display layer: the recomputable truth is the issuer's signed log.
+     */
+    issuedCount?: number;
   },
 ): Promise<PodDirectoryEntry> {
   const r = await authPut<PodDirectoryEntry>(
@@ -90,4 +120,36 @@ export async function getPodHolding(params: {
     chainId: String(params.chainId),
   });
   return get<PodHolding>(`/api/pod/holdings?${q.toString()}`, params.apiUrl);
+}
+
+/** One attendee edition and whether it has a badge key on file. */
+export interface AttendeeKeyRow {
+  seriesId: string;
+  edition: number;
+  /** Absent = this attendee cannot be certified yet. Shown, never dropped. */
+  podPubKey?: string;
+  /** How the binding was made. Provenance, not proof — see below. */
+  route: "email-link" | "claim";
+}
+
+/**
+ * Attendees of one of your events, and their badge keys where the platform has
+ * one. Organiser-only.
+ *
+ * READ THE PROVENANCE BEFORE USING THESE TO ISSUE. `podPubKey` is self-declared
+ * by the claiming client and was never checked against that account's actual
+ * POD identity (#345). A row proves the platform saw a verified possession
+ * proof for that edition; it does not prove whose badge key this is. A
+ * certificate is permanent and has no v1 revocation, so the surface must show
+ * that caveat where the organiser decides, not bury it here.
+ *
+ * Rows with NO key are returned deliberately — a list of only the certifiable
+ * ones cannot be told apart from a list that came back short.
+ */
+export async function getAttendeeKeys(eventId: string): Promise<AttendeeKeyRow[]> {
+  const r = await authGet<{ eventId: string; attendees: AttendeeKeyRow[] }>(
+    `/api/events/${encodeURIComponent(eventId)}/attendee-keys`,
+  );
+  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to load attendee keys");
+  return r.data.attendees;
 }
