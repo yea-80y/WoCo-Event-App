@@ -123,13 +123,37 @@ attendeeGate.post("/redeem", requireAuth, async (c) => {
   }
 
   const { eventId, seriesId, edition, emailHash } = verdict.payload;
+
+  // `podPubKey` arrives in an UNAUTHENTICATED body (possession of the emailed
+  // link is the proof here, not a session), and until now was stored verbatim —
+  // any string at all. It is validated for SHAPE before it is recorded, because
+  // the certificate rail turns this field into permanent, publicly-readable,
+  // issuer-signed statements with no v1 revocation (#172), and a certificate
+  // signed over garbage cannot be taken back.
+  //
+  // Shape only. It still is NOT proved to be this account's POD identity — that
+  // is #345, and it needs a possession challenge, not a regex.
+  //
+  // A malformed key does NOT fail the redeem. The unlock is what the attendee
+  // came for and what the one-shot nullifier is spent on; the key is an
+  // accessory that a broken client can get wrong. But it is not dropped
+  // silently either — `podKeyRecorded` says what happened, so a client can tell
+  // the difference between "recorded" and "gone", which matters because the
+  // nullifier is now spent and nothing backfills the key onto an existing
+  // binding.
+  const rawPodPubKey = typeof body.podPubKey === "string" ? body.podPubKey.toLowerCase() : undefined;
+  const podPubKey = rawPodPubKey && /^[0-9a-f]{64}$/.test(rawPodPubKey) ? rawPodPubKey : undefined;
+  if (rawPodPubKey && !podPubKey) {
+    console.warn(`[gate] redeem for ${seriesId}#${edition} sent a malformed podPubKey — binding without it`);
+  }
+
   const bound = bindTicket({
     seriesId,
     edition,
     eventId,
     parentAddress,
     emailHash,
-    podPubKey: typeof body.podPubKey === "string" ? body.podPubKey : undefined,
+    podPubKey,
     paid: await seriesIsPaid(eventId, seriesId),
     route: "email-link",
   });
@@ -138,5 +162,17 @@ attendeeGate.post("/redeem", requireAuth, async (c) => {
   }
 
   console.log(`[gate] bound ${seriesId}#${edition} → ${parentAddress} (email-link)`);
-  return c.json({ ok: true, data: { gated: true, via: "ticket", eventId, seriesId, edition } });
+  return c.json({
+    ok: true,
+    data: {
+      gated: true,
+      via: "ticket",
+      eventId,
+      seriesId,
+      edition,
+      // Absent-because-not-sent and absent-because-rejected are different, and
+      // only the client knows which it attempted.
+      podKeyRecorded: !!podPubKey,
+    },
+  });
 });

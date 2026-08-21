@@ -1,6 +1,6 @@
 import { keccak256, AbiCoder } from "ethers";
-import { buildPodTree, signManifest, manifestDigest, bytesToHex0x } from "@woco/shared";
-import type { PodV2Body, ManifestV1Body, SignedManifestV1 } from "@woco/shared";
+import type { PodV2Body, SignedManifestV1 } from "@woco/shared";
+import { sealManifest } from "./seal.js";
 
 export interface SeriesManifestData {
   seriesId: string;
@@ -38,6 +38,16 @@ export interface BuildEventManifestsOpts {
     description: string;
     totalSupply: number;
   }>;
+  /**
+   * Mint timestamp baked into every pod body. Defaults to now; injectable so
+   * this builder is DETERMINISTIC under test, which is what lets its output be
+   * pinned as a golden vector.
+   *
+   * Inert by construction — unlike a body-count knob, it changes no contract
+   * between the manifest and the chain. It is the only non-input-derived value
+   * in this function, so fixing it fixes the whole output.
+   */
+  mintedAt?: string;
 }
 
 const _abiCoder = AbiCoder.defaultAbiCoder();
@@ -73,7 +83,7 @@ export function buildEventManifests(opts: BuildEventManifestsOpts): SeriesManife
     ? creatorPodPublicKeyHex.slice(2)
     : creatorPodPublicKeyHex;
 
-  const mintedAt = new Date().toISOString();
+  const mintedAt = opts.mintedAt ?? new Date().toISOString();
 
   return series.map((s, i) => {
     const nonce = organiserNonce + BigInt(i);
@@ -97,21 +107,18 @@ export function buildEventManifests(opts: BuildEventManifestsOpts): SeriesManife
       issuer,
     }));
 
-    // Build Merkle tree
-    const { root } = buildPodTree(podBodies);
-
-    // Build and sign manifest
-    const manifestBody: ManifestV1Body = {
-      format: "woco.manifest.v1",
+    // Seal + sign through the shared core. `totalSupply` is passed as the body
+    // count here because on THIS rail every declared unit is a claimable
+    // edition the contract sells — the certificate rail passes a cap instead,
+    // and stating it explicitly at each call site is what keeps the two from
+    // being confused for one another.
+    const { signedManifest, manifestDigestHex } = sealManifest({
+      bodies: podBodies,
       eventId: predictedOnChainEventId,
       totalSupply: s.totalSupply,
-      issuerPubkey: issuer,
-      metadataRoot: root,
-      encoding: "cbor-v1",
-      treeScheme: "oz-simple-v1",
-    };
-    const signedManifest = signManifest(manifestBody, creatorPodPrivateKey);
-    const manifestDigestHex = bytesToHex0x(manifestDigest(manifestBody));
+      issuer,
+      podPrivateKey: creatorPodPrivateKey,
+    });
 
     return { seriesId: s.seriesId, podBodies, signedManifest, predictedOnChainEventId, manifestDigestHex };
   });

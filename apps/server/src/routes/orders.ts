@@ -3,6 +3,7 @@ import type { OrderEntry, SealedBox } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
+import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
 
@@ -128,6 +129,52 @@ orders.get("/:id/orders", requireAuth, async (c) => {
     console.error("[api] getOrders error:", err);
     const message = err instanceof Error ? err.message : "Failed to get orders";
     return c.json({ ok: false, error: message }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Attendee badge keys — the certificate rail's holder picker (#172)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/events/:id/attendee-keys — organiser-only.
+ *
+ * Which editions of this event have an ed25519 POD key on file, so the
+ * certificate issuance surface can offer real attendees instead of asking the
+ * organiser to paste keys by hand.
+ *
+ * DELIBERATELY MINIMAL. Rows carry only `(seriesId, edition, podPubKey?)` — no
+ * parentAddress, no emailHash. The caller already renders the attendee list
+ * from `/orders` and joins on (seriesId, edition), so returning identity here
+ * would hand over a second copy of who-is-who for no new capability.
+ *
+ * EVERY edition with a binding is returned, INCLUDING those with no key. A
+ * picker that received only the certifiable ones could not tell "nobody
+ * qualifies" from "the list came back short", and the surface is required to
+ * show un-certifiable attendees rather than silently dropping them.
+ *
+ * PROVENANCE, and it must not be lost on the way to a permanent certificate:
+ * `podPubKey` is self-declared by the claiming client and was never verified
+ * against that account's actual POD identity (#345). `route` is passed through
+ * so a caller can distinguish a key captured alongside a verified session
+ * ("claim") from one accepted in an unauthenticated redeem body ("email-link").
+ */
+orders.get("/:id/attendee-keys", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = c.get("parentAddress");
+
+  try {
+    const event = await getEventForOwner(eventId, parentAddress);
+    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+    if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
+      return c.json({ ok: false, error: "Only the event organizer can view attendee keys" }, 403);
+    }
+
+    const rows = toAttendeeKeyRows(getBindingsForEvent(eventId));
+    return c.json({ ok: true, data: { eventId, attendees: rows } });
+  } catch (err) {
+    console.error("[api] attendee-keys error:", err);
+    return c.json({ ok: false, error: "Failed to read attendee keys" }, 500);
   }
 });
 

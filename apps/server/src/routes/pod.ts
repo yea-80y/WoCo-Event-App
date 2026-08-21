@@ -10,7 +10,7 @@ import {
   upsertCreatorPod,
 } from "../lib/pod/directory.js";
 import { getOnChainHolding } from "../lib/pod/holdings.js";
-import { issuePodType, type IssuablePodKind } from "../lib/pod/issuance.js";
+import { issuePodType, validateIssuedCount, type IssuablePodKind } from "../lib/pod/issuance.js";
 
 /** Upper bound on directly-minted POD supply — one on-chain registration covers
  *  the whole batch, but each pod body is a Swarm upload, so cap the burst. */
@@ -190,6 +190,7 @@ podRouter.put("/:manifestRef", requireAuth, async (c) => {
     description?: string;
     image?: string;
     categoryId?: string | null;
+    issuedCount?: number;
   };
 
   let dir;
@@ -207,6 +208,13 @@ podRouter.put("/:manifestRef", requireAuth, async (c) => {
     return c.json({ ok: false, error: "POD not found in your directory" }, 404);
   }
 
+  // Certificate badges only, clamped, then trusted inside the bounds — the
+  // reasoning lives with the check in `validateIssuedCount`.
+  if (patch.issuedCount !== undefined) {
+    const verdict = validateIssuedCount(existing, patch.issuedCount);
+    if (!verdict.ok) return c.json({ ok: false, error: verdict.error }, 400);
+  }
+
   const updated: PodDirectoryEntry = {
     ...existing,
     ...(typeof patch.name === "string" && patch.name.trim()
@@ -219,6 +227,7 @@ podRouter.put("/:manifestRef", requireAuth, async (c) => {
     ...("categoryId" in patch
       ? { categoryId: patch.categoryId ?? undefined }
       : {}),
+    ...(patch.issuedCount !== undefined ? { issuedCount: patch.issuedCount } : {}),
     updatedAt: new Date().toISOString(),
   };
 

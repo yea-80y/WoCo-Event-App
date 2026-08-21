@@ -11,6 +11,7 @@
   import type { PodDirectoryEntry, PodGate, PodGateGroup } from "@woco/shared";
   import { getMyPods } from "../../api/pod.js";
   import PodCard from "./PodCard.svelte";
+  import { partitionGateable, buildChainGates, notGateableLabel, type GateablePartition } from "./gate-build.js";
 
   interface Props {
     gate: PodGate | PodGateGroup | undefined;
@@ -34,6 +35,9 @@
   type Phase = "idle" | "loading" | "ready" | "error";
   let phase = $state<Phase>("idle");
   let gateable = $state<PodDirectoryEntry[]>([]);
+  /** PODs the organiser owns that cannot gate right now — shown with a reason,
+   *  never filtered out. An owned POD that silently vanishes reads as a bug. */
+  let blocked = $state<GateablePartition["blocked"]>([]);
   let error = $state("");
 
   let enabled = $state(!!initGate);
@@ -64,8 +68,12 @@
     error = "";
     try {
       const dir = await getMyPods();
-      // Only on-chain-registered PODs are gateable (holdings read needs both).
-      gateable = dir.pods.filter((p) => p.eventId && p.chainId);
+      // Certificate badges are shown DISABLED rather than filtered — see
+      // `partitionGateable`. Nothing constructs `GateEvidence` yet, so a
+      // certificate gate would refuse every buyer.
+      const split = partitionGateable(dir.pods);
+      gateable = split.gateable;
+      blocked = split.blocked;
       phase = "ready";
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to load PODs";
@@ -91,16 +99,7 @@
       onChange(undefined);
       return;
     }
-    const gates: PodGate[] = selectedRefs.flatMap((ref) => {
-      const entry = gateable.find((p) => p.manifestRef === ref);
-      if (!entry?.eventId || !entry?.chainId) return [];
-      return [{
-        manifestRef: entry.manifestRef,
-        onChainEventId: entry.eventId,
-        chainId: entry.chainId,
-        podName: entry.name,
-      }];
-    });
+    const gates: PodGate[] = buildChainGates(selectedRefs, gateable);
     if (gates.length === 0) { onChange(undefined); return; }
     onChange({ mode, gates, window: buildWindow() });
   }
@@ -126,6 +125,20 @@
   });
 </script>
 
+{#snippet blockedList()}
+  {#if blocked.length > 0}
+    <div class="blocked">
+      <span class="blocked-head">Not available as a gate</span>
+      {#each blocked as b (b.pod.manifestRef)}
+        <div class="blocked-row">
+          <span class="blocked-name">{b.pod.name}</span>
+          <span class="blocked-why">{notGateableLabel(b.reason)}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
 <div class="gate">
   <label class="gate-toggle">
     <input type="checkbox" checked={enabled} onchange={toggleEnabled} />
@@ -139,11 +152,16 @@
         <p class="gate-msg">Loading your PODs…</p>
       {:else if phase === "error"}
         <p class="gate-msg gate-msg--err">{error} <button type="button" class="retry" onclick={load}>Retry</button></p>
+      {:else if gateable.length === 0 && blocked.length === 0}
+        <p class="gate-msg">
+          No PODs yet. Create a badge or collectible in the
+          <a href="/creator/pods">POD manager</a> first.
+        </p>
       {:else if gateable.length === 0}
         <p class="gate-msg">
-          No on-chain PODs yet. Create a badge or collectible in the
-          <a href="/creator/pods">POD manager</a> first — only on-chain PODs can gate.
+          None of your PODs can gate yet.
         </p>
+        {@render blockedList()}
       {:else}
         <div class="gate-grid">
           {#each gateable as pod (pod.manifestRef)}
@@ -155,6 +173,8 @@
             />
           {/each}
         </div>
+
+        {@render blockedList()}
 
         {#if selectedRefs.length > 1}
           <!-- any/all toggle only shown when 2+ PODs selected -->
@@ -248,6 +268,41 @@
 </div>
 
 <style>
+  .blocked {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 10px;
+    padding: 9px 11px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+  }
+  .blocked-head {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .blocked-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    opacity: 0.72;
+  }
+  .blocked-name {
+    font-size: 0.84rem;
+    color: var(--text-secondary);
+  }
+  .blocked-why {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    color: var(--text-dim);
+    text-align: right;
+  }
+
   .gate {
     display: flex;
     flex-direction: column;

@@ -10,6 +10,7 @@
   import type { PodDirectoryEntry, PodCategory } from "@woco/shared";
   import { updatePod } from "../../api/pod.js";
   import { uploadSiteImage } from "../../api/sites.js";
+  import CertIssueModal from "./CertIssueModal.svelte";
 
   interface Props {
     pod: PodDirectoryEntry | null;
@@ -32,6 +33,11 @@
   let saving = $state(false);
   let uploading = $state(false);
   let error = $state("");
+
+  /** A certificate badge is AWARDED, not claimed — the drawer gets the entry
+   *  point because that is where an organiser already goes to look at one. */
+  const isCert = $derived(!!pod?.certLogOwner);
+  let issuing = $state<PodDirectoryEntry | null>(null);
 
   // Local draft — reset when pod changes.
   let draftName = $state("");
@@ -110,6 +116,12 @@
   }
 </script>
 
+<CertIssueModal
+  pod={issuing}
+  onclose={() => (issuing = null)}
+  onissued={(updated) => { onsaved(updated); }}
+/>
+
 {#if pod}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="scrim" role="button" aria-label="Close" onclick={onclose} onkeydown={onScrimKey} tabindex="-1"></div>
@@ -136,7 +148,7 @@
             <dd class="mono" title={pod.manifestRef}>{trunc(pod.manifestRef)}</dd>
           </div>
           <div class="fact">
-            <dt>Supply</dt>
+            <dt>{isCert ? "Awarded" : "Supply"}</dt>
             <dd class="mono">{pod.issuedCount ?? 0} / {pod.supply}</dd>
           </div>
           {#if pod.eventId}
@@ -151,6 +163,16 @@
           </div>
         </dl>
       </section>
+
+      {#if isCert}
+        <div class="award-row">
+          <div class="award-copy">
+            <span class="award-head">Award this badge</span>
+            <p>Name the people who hold it. Awards are public and permanent.</p>
+          </div>
+          <button class="btn btn--primary btn--sm" onclick={() => (issuing = pod)}>Award</button>
+        </div>
+      {/if}
 
       <div class="divider"></div>
 
@@ -229,6 +251,28 @@
 {/if}
 
 <style>
+  .award-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 14px;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+  }
+  .award-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .award-head {
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .award-row p { margin: 0; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
+
   .scrim {
     position: fixed;
     inset: 0;
