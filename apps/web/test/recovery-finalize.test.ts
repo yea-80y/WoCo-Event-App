@@ -35,6 +35,10 @@ function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
       calls.push("ensureSession");
       return true;
     },
+    probeSession: async () => {
+      calls.push("probeSession");
+      return { ok: true };
+    },
     getPasskeyPrivKey: () => PRF_KEY,
     getPodAddress: () => PRF_EOA,
     recoveryKernelFor: async (pod) => (pod === PRF_EOA ? PRESERVED : undefined),
@@ -50,13 +54,14 @@ function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
   return { d, calls, backfillArgs };
 }
 
-test("passkey happy path: session first, then the envelope for the PRESERVED Kernel", async () => {
+test("passkey happy path: session first, then the server probe, then the envelope for the PRESERVED Kernel", async () => {
   const { d, calls, backfillArgs } = deps();
   const r = await finalizeRecovery(d);
   assert.deepEqual(r, { status: "portable", action: "wrote" });
   // Order is the property: the SOC upload is authenticated, so a backfill
-  // before the mint could only fail.
-  assert.deepEqual(calls, ["ensureSession", "backfill"]);
+  // before the mint could only fail; and the server must hear from the new key
+  // before any step that can fail for its own reasons (#200).
+  assert.deepEqual(calls, ["ensureSession", "probeSession", "backfill"]);
   // The envelope must carry the preserved address + escrow-restored secrets —
   // resolving from the credential instead is the #245 defect itself.
   assert.deepEqual(backfillArgs, [
@@ -172,6 +177,7 @@ test("passkey with a failed session mint fails BEFORE the envelope write", async
   assert.match((r as { reason: string }).reason, /session/);
   assert.equal((r as { stage: string }).stage, "session");
   assert.ok(!calls.includes("backfill"), "must not attempt an authenticated write with no session");
+  assert.ok(!calls.includes("probeSession"), "nothing to probe with — no session");
 });
 
 test("no recovery binding on this device fails — nothing to point the envelope at", async () => {
@@ -244,7 +250,7 @@ test("a web3auth owner is session-only: no envelope, and the write path is never
   const { d, calls } = deps({ kind: () => "web3auth" });
   const r = await finalizeRecovery(d);
   assert.deepEqual(r, { status: "session-only", sessionMinted: true });
-  assert.deepEqual(calls, ["ensureSession"]);
+  assert.deepEqual(calls, ["ensureSession", "probeSession"]);
 });
 
 test("a web3auth mint failure stays session-only but REPORTS the missing session", async () => {
@@ -336,5 +342,69 @@ test("#273: the WHOLE step re-runs on retry — session checked first each time"
   const r = await finalizeRecovery(d, { _sleep: async () => {} });
   assert.equal(r.status, "portable");
   assert.equal(writes, 2);
-  assert.deepEqual(calls, ["ensureSession", "ensureSession"], "mint re-verified on every attempt");
+  assert.deepEqual(
+    calls,
+    ["ensureSession", "probeSession", "ensureSession", "probeSession"],
+    "mint re-verified on every attempt",
+  );
+});
+
+// ── #200: the server must hear from the new key before the user acts ─────────
+//
+// The server retires the rotated-out key on the rotated-in key's FIRST contact
+// (a cached owner may confirm, never condemn — so the new key's rejection is
+// re-read live). Passkey finalize always made that contact through the envelope
+// upload; web3auth finalize did not, and a retired key coasted on the server's
+// cached owner for up to the TTL. The probe makes the contact explicit for both.
+
+test("#200: a web3auth owner probes the server — the one contact this kind makes before the user acts", async () => {
+  const { d, calls } = deps({ kind: () => "web3auth" });
+  const r = await finalizeRecovery(d);
+  assert.deepEqual(r, { status: "session-only", sessionMinted: true });
+  assert.ok(calls.includes("probeSession"), "no server contact — the retired key keeps coasting");
+});
+
+test("#200: a web3auth mint failure skips the probe — there is no session to probe with", async () => {
+  const { d, calls } = deps({ kind: () => "web3auth", ensureSession: async () => false });
+  const r = await finalizeRecovery(d);
+  assert.deepEqual(r, { status: "session-only", sessionMinted: false });
+  assert.ok(!calls.includes("probeSession"));
+});
+
+test("#200: a refused probe for web3auth reports no working session — 'You're back in' must not render unqualified", async () => {
+  const { d } = deps({
+    kind: () => "web3auth",
+    probeSession: async () => ({ ok: false, reason: "Session has been revoked" }),
+  });
+  const r = await finalizeRecovery(d);
+  assert.deepEqual(r, { status: "session-only", sessionMinted: false });
+});
+
+test("#200: a refused probe for passkey is a retryable session-stage failure, and no envelope is written", async () => {
+  // The usual cause is a lagging RPC replica the server now discards (#200
+  // server half); the next attempt heals it. Retryable, and the reason is kept.
+  const { d, calls } = deps({
+    probeSession: async () => ({ ok: false, reason: "Invalid signature" }),
+  });
+  const r = await finalizeRecovery(d, { attempts: 1 });
+  assert.equal(r.status, "failed");
+  assert.equal((r as { stage: string }).stage, "session");
+  assert.equal((r as { retryable: boolean }).retryable, true);
+  assert.match((r as { reason: string }).reason, /not accepted by the server: Invalid signature/);
+  assert.ok(!calls.includes("backfill"), "must not write the envelope when the server refuses the session");
+});
+
+test("#200: the probe runs on every retry — a refusal on the first attempt is healed by the second", async () => {
+  let probes = 0;
+  const { d, calls } = deps({
+    probeSession: async () => {
+      probes++;
+      calls.push("probeSession");
+      return probes === 1 ? { ok: false, reason: "Invalid signature" } : { ok: true };
+    },
+  });
+  const r = await finalizeRecovery(d, { _sleep: async () => {} });
+  assert.deepEqual(r, { status: "portable", action: "wrote" });
+  assert.equal(probes, 2);
+  assert.deepEqual(calls, ["ensureSession", "probeSession", "ensureSession", "probeSession", "backfill"]);
 });
