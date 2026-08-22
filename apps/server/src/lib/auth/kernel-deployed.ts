@@ -1,5 +1,5 @@
 /**
- * Durable record of which Kernels have been observed with an on-chain owner (#200).
+ * Durable record of what the server has read about each Kernel's owner (#200).
  *
  * WHY THIS EXISTS. `isKernelOwner` decides authority by reading the account's live
  * owner. When that read fails it falls back to a counterfactual address match —
@@ -15,6 +15,12 @@
  * it is precisely the read that just failed. This module remembers the answer from
  * when the read did work.
  *
+ * It also remembers WHICH owner was read and at WHICH block (v2). Reads arrive
+ * out of order from a load-balanced RPC, and a lagging replica still names the
+ * retired owner after a recovery; the block lets kernel-owner-ordering.ts tell a
+ * late answer from a new one. This is memory of chain facts, not authority over
+ * them: nothing here can grant access, only withhold it.
+ *
  * DURABILITY IS THE POINT. An in-memory record would be cleared by the restart
  * that a deploy performs, and the window would reopen every release — silently,
  * because nothing about a forgotten fact looks like an error. It is written
@@ -23,8 +29,9 @@
  * does.
  *
  * The record is append-only in practice: an account that has been deployed cannot
- * become undeployed. Losing an entry fails OPEN (the fallback resumes), which is
- * why it is persisted rather than derived on demand.
+ * become undeployed, and an owner change only ever moves the record forward to a
+ * later block. Losing an entry fails OPEN (the fallback resumes), which is why it
+ * is persisted rather than derived on demand.
  */
 
 import { readFileSync, renameSync } from "node:fs";
@@ -37,13 +44,30 @@ import { writeJsonAtomic } from "../marketing/persist.js";
 const DATA_DIR = join(process.cwd(), ".data");
 const DEPLOYED_FILE = join(DATA_DIR, "kernel-deployed.json");
 
+interface KernelRecord {
+  /** ISO timestamp of the first observation with an on-chain owner. */
+  firstSeen: string;
+  /** The owner (lowercase) last accepted as current, and the L2 block at which
+   *  it was FIRST seen — the last change-point observed. Absent on records
+   *  migrated from v1, which knew only that an owner existed. */
+  owner?: string;
+  block?: number;
+  ownerSeenAt?: string;
+}
+
 interface DeployedState {
+  version: 2;
+  /** kernel address (lowercase) → record. */
+  kernels: Record<string, KernelRecord>;
+}
+
+/** v1 (#208) stored only the first-observation timestamp per Kernel. */
+interface DeployedStateV1 {
   version: 1;
-  /** kernel address (lowercase) → ISO timestamp of the first observation. */
   kernels: Record<string, string>;
 }
 
-let state: DeployedState = { version: 1, kernels: {} };
+let state: DeployedState = { version: 2, kernels: {} };
 let loaded = false;
 let loadFailed = false;
 
@@ -51,9 +75,20 @@ function load(): void {
   if (loaded) return;
   loaded = true;
   try {
-    const parsed = JSON.parse(readFileSync(DEPLOYED_FILE, "utf-8")) as DeployedState;
+    const parsed = JSON.parse(readFileSync(DEPLOYED_FILE, "utf-8")) as DeployedState | DeployedStateV1;
     if (parsed?.kernels && typeof parsed.kernels === "object") {
-      state = { version: 1, kernels: parsed.kernels };
+      if (parsed.version === 1) {
+        // The set of known-deployed Kernels carries over as-is; the owner/block
+        // fields fill in on each account's next fresh read. Without this the v1
+        // file on a live VM would land in the CRITICAL branch below at deploy.
+        const kernels: Record<string, KernelRecord> = {};
+        for (const [kernel, firstSeen] of Object.entries(parsed.kernels)) {
+          if (typeof firstSeen === "string") kernels[kernel] = { firstSeen };
+        }
+        state = { version: 2, kernels };
+      } else {
+        state = { version: 2, kernels: parsed.kernels };
+      }
       console.log(`[kernel-deployed] loaded ${Object.keys(state.kernels).length} observed Kernels`);
       return;
     }
@@ -74,9 +109,9 @@ function load(): void {
     );
     loadFailed = true;
 
-    // Quarantine before anything can overwrite it. The next markKernelDeployed
-    // would otherwise persist the near-empty set straight over the damaged file,
-    // making the reset permanent and leaving nothing to diagnose.
+    // Quarantine before anything can overwrite it. The next write would otherwise
+    // persist the near-empty set straight over the damaged file, making the reset
+    // permanent and leaving nothing to diagnose.
     try {
       const quarantine = `${DEPLOYED_FILE}.corrupt.${Date.now()}`;
       renameSync(DEPLOYED_FILE, quarantine);
@@ -109,17 +144,27 @@ function persist(): void {
 }
 
 /**
- * Record that this Kernel was read with a real on-chain owner.
+ * Record that this Kernel was read with a real on-chain owner, at this block.
  *
- * Called only on a definitive read. A `null` owner (provably undeployed) and a
- * read error must NOT record anything — the first is the state this guard exists
- * to distinguish from, and the second knows nothing at all.
+ * Called only on a definitive, in-order read (kernel-owner-ordering.ts decides
+ * that). A `null` owner (provably undeployed), a read error, and a stale read
+ * must NOT record anything — the first is the state this guard exists to
+ * distinguish from, and the other two know nothing current.
+ *
+ * The first-observed timestamp is never rewritten; the owner/block advance to
+ * whatever the caller accepted as current.
  */
-export function markKernelDeployed(kernelAddress: string): void {
+export function recordKernelOwner(kernelAddress: string, owner: string, block: number): void {
   load();
   const key = kernelAddress.toLowerCase();
-  if (state.kernels[key]) return;
-  state.kernels[key] = new Date().toISOString();
+  const now = new Date().toISOString();
+  const existing = state.kernels[key];
+  state.kernels[key] = {
+    firstSeen: existing?.firstSeen ?? now,
+    owner: owner.toLowerCase(),
+    block,
+    ownerSeenAt: now,
+  };
   persist();
 }
 
@@ -133,9 +178,23 @@ export function isKernelKnownDeployed(kernelAddress: string): boolean {
   return Boolean(state.kernels[kernelAddress.toLowerCase()]);
 }
 
+/**
+ * The owner last accepted as current for this Kernel and the block it was first
+ * seen at — or undefined when nothing ordered is known (never observed, or a v1
+ * record that predates the block field).
+ */
+export function getKernelOwnerRecord(
+  kernelAddress: string,
+): { owner: string; block: number } | undefined {
+  load();
+  const rec = state.kernels[kernelAddress.toLowerCase()];
+  if (!rec || typeof rec.owner !== "string" || typeof rec.block !== "number") return undefined;
+  return { owner: rec.owner, block: rec.block };
+}
+
 /** Test seam — drops the in-memory set and forces a reload on next access. */
 export function _resetKernelDeployedForTests(): void {
-  state = { version: 1, kernels: {} };
+  state = { version: 2, kernels: {} };
   loaded = false;
   loadFailed = false;
 }

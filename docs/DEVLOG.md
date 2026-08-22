@@ -4,6 +4,30 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Kernel-owner reads are ordered by L2 block — a lagging replica cannot readmit a retired key (#200, 2026-08-22)
+
+`isKernelOwner` decides session authority from the account's live ECDSA owner, read at
+`latest` through a public, load-balanced RPC. #277's re-read-on-rejection meant every
+retired-key request asked the chain again — and a replica lagging behind the recovery
+answered with the retired owner, which was then cached as current for another TTL.
+Reads now fetch `(ArbSys.arbBlockNumber, owner)` in ONE `eth_call` via Multicall3
+(verified live; the EVM `block.number` on Arbitrum is the L1-ish value and cannot order
+reads), and `kernel-deployed.json` (v2) remembers `{owner, block}` per Kernel. A read
+naming a DIFFERENT owner from a block no later than the last observed change is
+discarded — not cached, refused for a known-deployed account. Same-owner reads are
+accepted at any block (steady-state jitter never 403s). A different owner at a later
+block is a rotation: logged, record advanced, so web3auth→passkey→web3auth re-admission
+works where a "retired set" would not. Pure judge in `lib/auth/kernel-owner-ordering.ts`.
+This is memory of chain facts, not authority — it can only withhold, never grant.
+
+**Not built, with reasons on the issue:** revoke-all at rotation. `issuedAt` is
+client-chosen within the ±5 min skew window, so a retired key simply re-mints past any
+stamp — the owner check is the enforcement — and no stamp is wart-free for the
+legitimate new owner's own first session. **Remaining:** the ≤TTL coast while the
+recovered client has not yet contacted the server (closed at finalize by the companion
+client PR), and the lost-store + RPC-failure case, whose mitigation is the file's
+durability.
+
 ## Claim feeds: page them, and stop lenient reads driving writes (2026-08-01)
 
 `encodeJsonFeed` pads a JSON document into ONE 4096-byte feed page and throws once
