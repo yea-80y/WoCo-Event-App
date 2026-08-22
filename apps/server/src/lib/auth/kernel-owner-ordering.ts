@@ -27,6 +27,19 @@
  * two rotations at increasing blocks, and the block order admits the second one
  * where a "retired set" would have refused it forever.
  *
+ * WHO GETS A RECORD (#210). A record is CREATED only by a CONFIRMED read — one
+ * where the owner the chain named is the key that presented the delegation. The
+ * read path runs before any authorization, so an unauthenticated caller can name
+ * any `message.parent`; every ZeroDev testnet Kernel returns a real owner, and
+ * recording each one let a caller enumerating chain logs fill the store with
+ * foreign accounts and force a fsynced rewrite per request. A caller cannot
+ * forge a signature from a Kernel's owner, so "confirmed" is exactly "this is
+ * one of ours, and its owner is here". An EXISTING record is updated by any
+ * fresh read (that is how a retired key's request retires itself), and nothing
+ * is ever created by an unconfirmed one. The guard this store feeds (#208,
+ * refuse on an unreadable chain) therefore arms the first time an account's
+ * owner contacts the server — which the recovery finalize now guarantees.
+ *
  * Pure: the decision takes the record and the read and returns a verdict, so the
  * table below is pinned in tests without an RPC. The I/O wrapper at the bottom
  * is the only part that touches the durable store.
@@ -86,10 +99,20 @@ export function judgeOwnerRead(
  * Reconcile a live read with the durable record for `kernelAddress`.
  *
  * Returns the owner to act on, or `"stale"` when the read must be discarded.
- * Persists on first observation of an owner and on rotation — never on a
+ *
+ * `presentedBy` is the EOA whose delegation triggered this read (lowercase), when
+ * there is one. It decides whether a record may be CREATED: only when the chain
+ * named that very key (see WHO GETS A RECORD above). It never affects whether an
+ * existing record is updated, and never affects the owner returned.
+ *
+ * Persists on confirmed first observation and on rotation — never on a
  * same-owner read, so steady-state traffic costs no disk writes.
  */
-export function observeOwnerRead(kernelAddress: string, read: OwnerRead): string | null | "stale" {
+export function observeOwnerRead(
+  kernelAddress: string,
+  read: OwnerRead,
+  presentedBy?: string,
+): string | null | "stale" {
   const kernel = kernelAddress.toLowerCase();
   const record = getKernelOwnerRecord(kernel);
   const judged = judgeOwnerRead(record, read);
@@ -103,16 +126,23 @@ export function observeOwnerRead(kernelAddress: string, read: OwnerRead): string
     return "stale";
   }
 
-  if (read.owner !== null && (judged.rotation || !record)) {
-    if (judged.rotation) {
-      // A security-relevant event worth one line: from here on the previous owner
-      // is refused, and any later read still naming it is discarded above.
-      console.log(
-        `[kernel-owner] rotation observed for ${kernel.slice(0, 10)}…: ` +
-          `${record!.owner.slice(0, 10)}… → ${read.owner.slice(0, 10)}… at block ${read.block}`,
-      );
+  if (read.owner !== null) {
+    if (record) {
+      if (judged.rotation) {
+        // A security-relevant event worth one line: from here on the previous
+        // owner is refused, and any later read still naming it is discarded above.
+        console.log(
+          `[kernel-owner] rotation observed for ${kernel.slice(0, 10)}…: ` +
+            `${record.owner.slice(0, 10)}… → ${read.owner.slice(0, 10)}… at block ${read.block}`,
+        );
+        recordKernelOwner(kernel, read.owner, read.block);
+      }
+    } else if (presentedBy !== undefined && presentedBy.toLowerCase() === read.owner) {
+      recordKernelOwner(kernel, read.owner, read.block);
     }
-    recordKernelOwner(kernel, read.owner, read.block);
+    // else: an unconfirmed read of an account we have no record for — acted on
+    // for this decision (the caller will be refused, since the owner is someone
+    // else), never remembered.
   }
 
   return read.owner;

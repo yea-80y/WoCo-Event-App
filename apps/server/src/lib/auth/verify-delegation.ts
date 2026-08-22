@@ -9,7 +9,7 @@ import {
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
-import { isKernelOwner, readKernelOwner } from "./kernel-owner.js";
+import { isKernelOwner, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
 import { isKernelKnownDeployed } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
 
@@ -23,8 +23,15 @@ import { decideSmartWalletPath } from "./smart-wallet-gate.js";
  */
 export interface DelegationVerifyDeps {
   isKernelKnownDeployed: (address: string) => boolean;
-  readKernelOwner: (address: string) => Promise<string | null | "error">;
+  readKernelOwner: (address: string, opts?: OwnerReadOptions) => Promise<string | null | "error">;
   verifySmartWalletTypedData: typeof verifySmartWalletTypedData;
+  /**
+   * Per-client budget for UNCACHED owner chain reads (#163, #210). Supplied by
+   * the auth middleware from the request's client address; consulted by the
+   * kernel-owner read path only at the moment a read would reach the chain.
+   * Absent = unrestricted. See owner-read-budget.ts.
+   */
+  chainReadAllowed?: () => boolean;
 }
 
 const DEFAULT_DEPS: DelegationVerifyDeps = {
@@ -60,8 +67,10 @@ export async function verifyDelegation(
   delegation: SessionDelegation,
   claimedSession: string,
   allowedHosts?: string[],
-  deps: DelegationVerifyDeps = DEFAULT_DEPS,
+  depsIn: Partial<DelegationVerifyDeps> = {},
 ): Promise<VerifyDelegationResult> {
+  const deps: DelegationVerifyDeps = { ...DEFAULT_DEPS, ...depsIn };
+  const readOpts: OwnerReadOptions = { chainReadAllowed: deps.chainReadAllowed };
   try {
     if (!delegation?.message || !delegation?.parentSig) {
       return { valid: false, error: "Missing delegation message or signature" };
@@ -134,7 +143,7 @@ export async function verifyDelegation(
       if (recovered) {
         validSig =
           recovered === message.parent.toLowerCase() ||
-          (await isKernelOwner(recovered, message.parent));
+          (await isKernelOwner(recovered, message.parent, readOpts));
       }
     }
     if (!validSig) {
@@ -156,7 +165,7 @@ export async function verifyDelegation(
       // only authority that applies, so this path is not offered at all (#209).
       const knownDeployed = deps.isKernelKnownDeployed(message.parent);
       // Short-circuit: the store's memory alone settles it, at no chain cost.
-      const liveOwner = knownDeployed ? null : await deps.readKernelOwner(message.parent);
+      const liveOwner = knownDeployed ? null : await deps.readKernelOwner(message.parent, readOpts);
       const gate = decideSmartWalletPath({ knownDeployed, liveOwner });
       if (!gate.attempt) {
         // The only trace a wedged pre-fix client would otherwise leave is an

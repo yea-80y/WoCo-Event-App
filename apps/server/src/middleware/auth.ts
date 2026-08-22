@@ -7,6 +7,8 @@ import {
   verifyDelegation,
   extractDelegation,
 } from "../lib/auth/verify-delegation.js";
+import { takeOwnerReadBudget } from "../lib/auth/owner-read-budget.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 /**
  * Hono middleware that verifies session delegation on protected routes.
@@ -208,9 +210,12 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
     );
   }
 
-  // Verify the delegation bundle (parent EIP-712 sig, sessionProof, expiry, host, revocation)
+  // Verify the delegation bundle (parent EIP-712 sig, sessionProof, expiry, host, revocation).
+  // The read budget is drawn only if verification has to reach the chain (#163/#210).
   const allowedHosts = getAllowedHosts();
-  const result = await verifyDelegation(delegation, sessionAddress, allowedHosts);
+  const result = await verifyDelegation(delegation, sessionAddress, allowedHosts, {
+    chainReadAllowed: () => takeOwnerReadBudget(clientIp(c)),
+  });
   if (!result.valid) {
     // verifyDelegation classifies the rejections a re-mint cannot fix (clock
     // skew); everything else is delegation-level and worth re-minting.
@@ -334,7 +339,9 @@ export async function tryVerifyAuth(
   }
 
   const allowedHosts = getAllowedHosts();
-  const result = await verifyDelegation(delegation, sessionAddress, allowedHosts);
+  const result = await verifyDelegation(delegation, sessionAddress, allowedHosts, {
+    chainReadAllowed: () => takeOwnerReadBudget(clientIp(c)),
+  });
   if (!result.valid) {
     return fail(result.error ?? "Invalid delegation", result.code ?? AuthErrorCode.SESSION_INVALID);
   }

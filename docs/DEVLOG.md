@@ -28,6 +28,21 @@ recovered client has not yet contacted the server (closed at finalize by the com
 client PR), and the lost-store + RPC-failure case, whose mitigation is the file's
 durability.
 
+**Bounded the same path (#163, #210), same day.** It runs before any authorization, so its
+keys are caller-chosen and every cache miss is an eth_call on the RPC the payment path
+shares. Now: both caches capped (oldest evicted); a failed read remembered 15s (outage ≠
+retry storm; a stale read is deliberately NOT negative-cached — a retired key could
+otherwise keep the legitimate owner's next read answering "error" on demand); concurrent
+requests for one Kernel share one read; a read happens only within the caller's per-client
+budget of UNCACHED reads (`owner-read-budget.ts`, 120/min, drawn only when verification
+reaches the chain — cache hits and EOA parents cost nothing; over budget = "error", which
+can only withhold); and a store record is CREATED only by a confirmed read (the chain named
+the presenting key), so foreign ZeroDev Kernels no longer fill `kernel-deployed.json` or
+force a fsync per request — an existing record is still updated by any fresh read.
+Rejected: the counterfactual short-circuit (#163's suggestion) — a retired key would never
+be read; and store eviction (#210's suggestion) — eviction fails open, bounding creation
+does not.
+
 ## Claim feeds: page them, and stop lenient reads driving writes (2026-08-01)
 
 `encodeJsonFeed` pads a JSON document into ONE 4096-byte feed page and throws once
