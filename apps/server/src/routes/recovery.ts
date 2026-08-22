@@ -10,7 +10,7 @@ import {
   getRecoveryByGuardianRaw,
   putRecoveryByGuardian,
 } from "../lib/recovery/service.js";
-import { MAX_CLEAR_GUARDIANS, mayTombstone, selectTombstoneTargets } from "../lib/recovery/tombstone.js";
+import { MAX_CLEAR_GUARDIANS, mayTombstone, planHintClear } from "../lib/recovery/tombstone.js";
 
 export const recovery = new Hono<AppEnv>();
 
@@ -80,7 +80,11 @@ recovery.post("/escrow", requireAuth, async (c) => {
 // could turn recovery off by itself would be a new attack surface.
 recovery.post("/escrow/clear", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = (c.get("body") ?? {}) as { guardianAddresses?: unknown };
+  const body = (c.get("body") ?? {}) as { guardianAddresses?: unknown; keepStatus?: unknown };
+  // `keepStatus: true` = the client revoked ONE guardian on-chain and the account
+  // still has working backups (#164): tombstone only the named entries and leave the
+  // presence hint standing. Anything but literal `true` is the remove-all shape.
+  const keepStatus = body.keepStatus === true;
 
   const requested = Array.isArray(body.guardianAddresses) ? body.guardianAddresses : [];
   // Bound BEFORE validating or de-duplicating: no request should get the server to
@@ -97,16 +101,19 @@ recovery.post("/escrow/clear", requireAuth, async (c) => {
     // The status doc names the most recent guardian; the client supplies the rest
     // from its own manifest, which is the only record of guardians replaced earlier.
     const existing = await getRecoveryStatus(parentAddress);
-    const targets = selectTombstoneTargets({
+    const { flipStatus, targets } = planHintClear({
       requested: requested as string[],
       statusGuardian: existing?.guardianAddress,
+      keepStatus,
     });
 
-    await putRecoveryStatus(parentAddress, {
-      v: RECOVERY_STATUS_VERSION,
-      configured: false,
-      updatedAt: Date.now(),
-    });
+    if (flipStatus) {
+      await putRecoveryStatus(parentAddress, {
+        v: RECOVERY_STATUS_VERSION,
+        configured: false,
+        updatedAt: Date.now(),
+      });
+    }
 
     // Best-effort, exactly like the register path — but REPORTED, not swallowed.
     //

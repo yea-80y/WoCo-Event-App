@@ -26,6 +26,7 @@
 
 import type { BuiltKernel } from "./kernel-account.js";
 import type { RecoveryRouteState } from "./kernel-account.js";
+import type { GuardianSetRead, RouteHookKind } from "./guardian-hook.js";
 
 /** Where a protection answer came from — the UI must not present a hint as chain truth. */
 export type ProtectionSource = "chain" | "hint" | "none";
@@ -36,6 +37,17 @@ export interface BackupProtection {
   source: ProtectionSource;
   /** Raw on-chain route state, for callers that want to distinguish the reasons. */
   routeState: RecoveryRouteState;
+  /**
+   * Which hook gates the route when `installed` (#164). `woco` = the set below is
+   * real and a per-guardian revoke exists; `legacy` = ZeroDev's append-only hook,
+   * no enumeration, no revoke, replaced by the next add; `other` = not ours.
+   */
+  hookKind?: RouteHookKind;
+  /**
+   * The on-chain guardian set, read from the WoCo hook — ONLY when `hookKind` is
+   * `woco`. Tri-state: `unknown` is an unreadable chain, never an empty list.
+   */
+  onChainGuardians?: GuardianSetRead;
 }
 
 /**
@@ -82,9 +94,16 @@ export function decideProtection(route: RecoveryRouteState, hint: HintOutcome): 
  * uncertainty; presenting it as "you have no backup" is the bug this guards.
  */
 export async function readBackupProtection(kernelAddress: string): Promise<BackupProtection> {
-  const { readRecoveryRoute } = await import("./kernel-account.js");
+  const { readRecoveryRoute, readGuardianSet } = await import("./kernel-account.js");
   const route = await readRecoveryRoute(kernelAddress);
-  if (route.state !== "unknown") return decideProtection(route.state, null);
+  if (route.state !== "unknown") {
+    const protection = decideProtection(route.state, null);
+    if (route.state !== "installed") return protection;
+    // The set is only meaningful behind the WoCo hook; for a legacy route there is
+    // nothing to enumerate and the manifest is the only (untrusted) list.
+    const onChainGuardians = route.hookKind === "woco" ? await readGuardianSet(kernelAddress) : undefined;
+    return { ...protection, hookKind: route.hookKind, ...(onChainGuardians ? { onChainGuardians } : {}) };
+  }
 
   let hint: HintOutcome = "unreadable";
   try {
@@ -259,4 +278,66 @@ export async function removeAllAccountBackups(args: {
     hintCleared,
     manifestCleared,
   };
+}
+
+export interface RevokeBackupOutcome {
+  /** Proven on-chain: this guardian is no longer in the account's set. Always true on return. */
+  revoked: true;
+  txHash: string;
+  /** Its reverse-index hint tombstoned (presence hint left standing — other backups still work). */
+  hintCleared: boolean;
+  /** Its manifest row marked retired (best-effort; an unreadable manifest reports false). */
+  manifestMarked: boolean;
+}
+
+/**
+ * Revoke ONE backup (#164) — the per-guardian removal the legacy hook could not
+ * offer. Same shape as `removeAllAccountBackups`: the on-chain revoke first and it
+ * THROWS unless the hook's set provably no longer contains the guardian; only then
+ * the two pieces of bookkeeping, best-effort and reported, never assumed.
+ *
+ * The presence hint is deliberately left standing (`keepStatus`): the account still
+ * has working backups, and flipping it would make the portal's chain-unreadable
+ * fallback tell a protected user "no backup found".
+ */
+export async function revokeAccountBackup(args: {
+  kernel: BuiltKernel;
+  kernelAddress: string;
+  guardianAddress: string;
+  feedSigner: { privKey: string; address: string } | null;
+}): Promise<RevokeBackupOutcome> {
+  const { revokeGuardianOnChain } = await import("./kernel-account.js");
+  const chain = await revokeGuardianOnChain(args.kernel, args.guardianAddress);
+
+  let hintCleared = false;
+  try {
+    const { clearRecoveryHint } = await import("../api/recovery.js");
+    const res = await clearRecoveryHint({ guardianAddresses: [args.guardianAddress], keepStatus: true });
+    hintCleared = res.ok && (res.data?.failedGuardians ?? 0) === 0;
+    if (!res.ok) console.warn("[recovery] tombstoning the revoked guardian's hint failed (non-fatal):", res.error);
+  } catch (err) {
+    console.warn("[recovery] tombstoning the revoked guardian's hint failed (non-fatal):", err);
+  }
+
+  // FALSE without a signer, for the reason `removeAllAccountBackups` spells out: a
+  // null signer is a swallowed failure, not "no manifest".
+  let manifestMarked = false;
+  if (args.feedSigner) {
+    try {
+      const { retireOneBackup } = await import("../manifest/inventory.js");
+      const result = await retireOneBackup({
+        signer: { privKey: args.feedSigner.privKey, address: args.feedSigner.address },
+        parentAddress: args.kernelAddress,
+        guardianAddress: args.guardianAddress,
+      });
+      manifestMarked = result !== "unavailable";
+      if (result === "unavailable") {
+        console.warn("[recovery] backup manifest unreadable — entry not retired (non-fatal)");
+      }
+    } catch (err) {
+      console.warn("[recovery] retiring the backup manifest entry failed (non-fatal):", err);
+    }
+  }
+
+  return { revoked: true, txHash: chain.txHash, hintCleared, manifestMarked };
 }

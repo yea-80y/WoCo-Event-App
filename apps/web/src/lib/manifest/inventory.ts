@@ -25,7 +25,7 @@ import {
 } from "@woco/shared";
 import { readContentFeedResult, writeContentFeed } from "../swarm/content-feed.js";
 import { openFromSelf, sealToSelf } from "./self-seal.js";
-import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry, retireBackupEntries } from "./ops.js";
+import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry, retireBackupEntries, retireOneBackupEntry } from "./ops.js";
 
 /** The feed-signer material the manifest is owned by + sealed to. */
 export interface ManifestSigner {
@@ -178,6 +178,33 @@ export async function retireBackupInventory(args: {
     signer: args.signer,
     parentAddress: args.parentAddress,
     manifest: retireBackupEntries(res.manifest),
+  });
+  return "retired";
+}
+
+/**
+ * Retire ONE backup entry after a per-guardian on-chain revoke (#164). Same
+ * contract as `retireBackupInventory`: call it only once the revoke is proven
+ * on-chain; an unreadable manifest is `"unavailable"`, never a silent success;
+ * a manifest that does not list the guardian (or already retired it) is left
+ * untouched rather than churned.
+ */
+export async function retireOneBackup(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+  guardianAddress: string;
+}): Promise<RetireBackupsResult> {
+  const res = await readUserManifestResult({ signer: args.signer, parentAddress: args.parentAddress });
+  if (res.status === "unavailable") return "unavailable";
+  if (res.status === "absent") return "nothing-to-retire";
+  const g = args.guardianAddress.toLowerCase();
+  if (!res.manifest.backups.some((b) => b.guardianAddress.toLowerCase() === g && !b.revoked)) {
+    return "nothing-to-retire";
+  }
+  await writeUserManifest({
+    signer: args.signer,
+    parentAddress: args.parentAddress,
+    manifest: retireOneBackupEntry(res.manifest, g),
   });
   return "retired";
 }
