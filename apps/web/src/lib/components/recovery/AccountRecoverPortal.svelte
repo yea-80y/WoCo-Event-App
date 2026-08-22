@@ -15,6 +15,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { guardianConfigForBackup } from "../../auth/guardian-config.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
   import { resolveSubEnsAddress } from "../../api/sub-ens.js";
 
@@ -113,11 +114,9 @@
   async function autoFind() {
     if (!backup) return;
     try {
-      const { deriveGuardianAddress } = await import("../../auth/kernel-account.js");
-      const guardian = await deriveGuardianAddress({
-        signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
-        threshold: 100,
-      });
+      // Same helper-built config as setup, derived purely (no RPC) — #161.
+      const { guardianAddressFor } = await import("../../auth/guardian-address.js");
+      const guardian = guardianAddressFor(guardianConfigForBackup(backup.address));
       const hit = await fetchRecoveryByGuardian(guardian);
       if (hit?.kernelAddress) {
         displayName = hit.label ? `${hit.label}.woco.eth` : null;
