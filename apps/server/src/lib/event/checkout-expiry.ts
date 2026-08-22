@@ -43,12 +43,24 @@ export const CHECKOUT_EXPIRES_SKEW_S = 120;
  *
  * Otherwise `clamp(end, now + 30min + skew, now + 24h)` — the session dies at
  * the event's end, but never below Stripe's floor.
+ *
+ * `chainEndMs` (#294) is the contract's immutable `eventEndTs`: when known it
+ * CAPS the feed end, so an endDate extended past the registered close cannot
+ * stretch the session's life into the every-mint-reverts window. Null/absent
+ * = unknown — the feed end stands alone, as before.
  */
 export function checkoutExpiresAt(
   event: { startDate?: string; endDate?: string },
   nowMs: number = Date.now(),
+  chainEndMs?: number | null,
 ): number | undefined {
-  const endMs = salesEndMs(event) + SALES_END_GRACE_MS;
+  const feedEndMs = salesEndMs(event) + SALES_END_GRACE_MS;
+  const endMs =
+    typeof chainEndMs === "number" && !Number.isNaN(feedEndMs)
+      ? Math.min(feedEndMs, chainEndMs)
+      : typeof chainEndMs === "number"
+        ? chainEndMs
+        : feedEndMs;
   if (Number.isNaN(endMs)) return undefined;
   const nowS = Math.floor(nowMs / 1000);
   // Ceil: a fractional-second end must round AWAY from cutting the sale short.
