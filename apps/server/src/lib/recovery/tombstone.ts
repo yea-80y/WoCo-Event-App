@@ -33,6 +33,33 @@ export function selectTombstoneTargets(args: {
 }
 
 /**
+ * What a clear request asks the server to do with the hints — decided in one
+ * place so the two shapes cannot be confused (#164):
+ *
+ *  - REMOVE ALL (`keepStatus` false): flip the presence hint to not-configured and
+ *    tombstone the status doc's guardian plus every guardian the client names.
+ *  - REVOKE ONE (`keepStatus` true): the account still HAS working backups, so the
+ *    presence hint must stay — flipping it would make the portal's chain-unreadable
+ *    fallback tell a protected user "no backup found". Tombstone ONLY the guardians
+ *    the client names; the status doc's guardian is left alone even if it is stale
+ *    (it is a hint the chain overrides, and the client did not ask for it).
+ */
+export function planHintClear(args: {
+  requested: string[];
+  statusGuardian?: string;
+  keepStatus: boolean;
+}): { flipStatus: boolean; targets: string[] } {
+  if (args.keepStatus) {
+    const targets = [...new Set(args.requested.map((g) => g.toLowerCase()))].slice(0, MAX_CLEAR_GUARDIANS);
+    return { flipStatus: false, targets };
+  }
+  return {
+    flipStatus: true,
+    targets: selectTombstoneTargets({ requested: args.requested, statusGuardian: args.statusGuardian }),
+  };
+}
+
+/**
  * May this caller tombstone this index entry?
  *
  * ONLY when the entry already points at the caller's own verified Kernel. Naming

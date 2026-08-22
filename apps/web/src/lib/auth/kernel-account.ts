@@ -32,7 +32,6 @@ import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js"
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import {
   KERNEL_SELECTOR_CONFIG_ABI,
-  RECOVERY_CALLER_HOOK,
   RECOVERY_EXECUTOR_FN,
   buildRegisterGuardianCallData,
   buildUninstallRecoveryCallData,
@@ -40,6 +39,17 @@ import {
 } from "./recovery-route.js";
 import type { GuardianConfig } from "./guardian-config.js";
 import { assertGuardianAddressAgrees } from "./guardian-address.js";
+import {
+  LEGACY_HOOK_ALLOWED_ABI,
+  LEGACY_ZERODEV_CALLER_HOOK,
+  WOCO_GUARDIAN_HOOK,
+  WOCO_GUARDIAN_HOOK_ABI,
+  buildAddGuardianCall,
+  buildRevokeGuardianCall,
+  classifyRouteHook,
+  type GuardianSetRead,
+  type RouteHookKind,
+} from "./guardian-hook.js";
 
 /** Arbitrum Sepolia — the buildathon chain. */
 export const KERNEL_CHAIN_ID = 421614;
@@ -1102,6 +1112,73 @@ export async function setupRecovery(
   return { userOpHash, txHash };
 }
 
+// --- Editing the guardian set on the WoCo hook (#164) ----------------------
+//
+// Both are ONE sudo-signed `execute` call from the account to the hook, which keys
+// everything by msg.sender — so only the account can edit its own set. Both are
+// proven by a pinned on-chain read-back, never by the receipt, for the same reason
+// `removeAllBackups` is: Kernel's `execute` does not make a successful userOp mean
+// the hook's storage says what we think (and `ModuleLib.uninstallModule` even
+// swallows hook reverts). An unconfirmable outcome is reported as such.
+
+/**
+ * "Add another backup" on an account whose route already points at the WoCo hook:
+ * APPEND `guardianAddress` to the current set. (A route install would REPLACE the
+ * set — `decideAddPath` picks between the two; never call this on a legacy route.)
+ */
+export async function addGuardianOnChain(
+  builtKernel: BuiltKernel,
+  guardianAddress: string,
+): Promise<{ userOpHash: string; txHash: string }> {
+  const d = await loadRecoveryDeps();
+  const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
+    calls: [buildAddGuardianCall(d.encodeFunctionData, guardianAddress as Address)],
+  });
+  const registered = await isGuardianRegistered(guardianAddress, builtKernel.address, blockNumber);
+  if (registered === false) {
+    throw new Error(
+      `The backup was not added on-chain (tx ${txHash}): the account's recovery route does ` +
+        "not list it. Nothing to undo — please try again.",
+    );
+  }
+  if (registered === null) {
+    throw new Error(
+      `Couldn't confirm the backup on-chain yet (tx ${txHash}). It may well have worked — ` +
+        "reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  return { userOpHash, txHash };
+}
+
+/**
+ * Revoke ONE guardian — the per-backup "Remove" that did not exist before #164.
+ * Success = the hook's set no longer contains it, read back at the revoke block.
+ * The route stays installed; every other guardian keeps working.
+ */
+export async function revokeGuardianOnChain(
+  builtKernel: BuiltKernel,
+  guardianAddress: string,
+): Promise<{ userOpHash: string; txHash: string }> {
+  const d = await loadRecoveryDeps();
+  const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
+    calls: [buildRevokeGuardianCall(d.encodeFunctionData, guardianAddress as Address)],
+  });
+  const still = await isGuardianRegistered(guardianAddress, builtKernel.address, blockNumber);
+  if (still === true) {
+    throw new Error(
+      `Removal did not take effect: that backup is still registered as of the revoke block ` +
+        `(tx ${txHash}). It has NOT been removed — please try again.`,
+    );
+  }
+  if (still === null) {
+    throw new Error(
+      `Couldn't confirm the removal on-chain yet (tx ${txHash}). It may well have worked — ` +
+        "reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  return { userOpHash, txHash };
+}
+
 // --- Removing recovery (#165) ----------------------------------------------
 //
 // There is NO per-guardian revoke. The ZeroDev caller hook's `onInstall` ORs each
@@ -1168,6 +1245,12 @@ export interface RecoveryRouteStatus {
   deployed?: boolean;
   /** Caller hook pinned in front of the route (only when `installed`). */
   hook?: string;
+  /**
+   * Which hook that is (only when `installed`) — WoCo's set-semantics hook, the
+   * legacy ZeroDev append-only one, or one this app did not install (#164). The
+   * product branches on it: reads, "add", and whether a per-guardian revoke exists.
+   */
+  hookKind?: RouteHookKind;
   /** Recovery action the route delegatecalls (only when `installed`). */
   target?: string;
 }
@@ -1222,6 +1305,7 @@ export async function readRecoveryRoute(
       state: "installed",
       deployed: true,
       hook: config.hook.toLowerCase(),
+      hookKind: classifyRouteHook(config.hook),
       target: config.target.toLowerCase(),
     };
   } catch (e) {
@@ -1381,43 +1465,34 @@ export async function recoverAccount(
 // real UI with a to-address confirmation and a gas buffer, not this.
 
 /**
- * Caller-hook guardian registry getter — `allowed(guardian, kernel) → bool`
- * (selector `0x5c658165`, confirmed against the deployed hook). This is the
- * ON-CHAIN truth about who can call `doRecovery` on an account; every other
- * "is this account protected / is this the guardian" signal in the product is
- * an untrusted server hint (#162).
- */
-const RECOVERY_HOOK_ALLOWED_ABI = [
-  {
-    type: "function",
-    name: "allowed",
-    stateMutability: "view",
-    inputs: [
-      { name: "guardian", type: "address" },
-      { name: "account", type: "address" },
-    ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-] as const;
-
-/**
- * Is `guardianAddress` actually registered on-chain as a permitted recovery
- * caller for `targetAddress`? Gasless `eth_call`, no writes.
+ * Is `guardianAddress` actually able to call `doRecovery` on `targetAddress`
+ * RIGHT NOW? Gasless `eth_call`s, no writes. This is the ON-CHAIN truth; every
+ * other "is this account protected / is this the guardian" signal in the product
+ * is an untrusted server hint (#162).
  *
- * Returns `true`/`false` when the chain answered, and `null` when the read
- * FAILED — callers must not treat an unreadable chain as "not registered"
- * (the same absent-vs-unknown distinction #138 is about).
+ * Route-aware (#164): the route's selectorConfig says WHICH hook gates it, and
+ * the two hooks answer differently —
+ *  - WoCo hook: `isGuardian(account, guardian)` over the CURRENT set, so `true`
+ *    means "in the set today" and a revoked guardian reads `false`;
+ *  - legacy ZeroDev hook: `allowed(guardian, account)` (reversed arguments), which
+ *    is append-only — `true` there says "was ever installed", not "is the only
+ *    guardian" (#148). Kept so accounts protected before the switch keep
+ *    recovering until they re-protect.
+ *  - no route, or a hook this app did not install: `false` — nothing this app
+ *    can vouch for gates the call.
  *
- * Note this reports the CURRENT registry, which is append-only in the deployed
- * ZeroDev hook: a guardian that was ever installed stays `true` forever, so a
- * `true` here does NOT mean "this is the only guardian" (#148).
+ * Returns `null` when the chain could not be read — callers must not treat an
+ * unreadable chain as "not registered" (the #138 absent-vs-unknown distinction).
+ * `atBlock` pins every read to a block (post-install/revoke read-back).
  */
 export async function isGuardianRegistered(
   guardianAddress: string,
   targetAddress: string,
-  /** Pin the read to a block (post-install read-back) — see `readRecoveryRoute`. */
   atBlock?: bigint,
 ): Promise<boolean | null> {
+  const route = await readRecoveryRoute(targetAddress, atBlock);
+  if (route.state === "unknown") return null;
+  if (route.state === "absent") return false;
   const [{ createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([
     import("viem"),
     import("viem/chains"),
@@ -1425,16 +1500,58 @@ export async function isGuardianRegistered(
   try {
     const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
     const at = atBlock === undefined ? {} : { blockNumber: atBlock };
-    return (await publicClient.readContract({
-      address: RECOVERY_CALLER_HOOK as Address,
-      abi: RECOVERY_HOOK_ALLOWED_ABI,
-      functionName: "allowed",
-      args: [guardianAddress as Address, targetAddress as Address],
-      ...at,
-    })) as boolean;
+    switch (route.hookKind) {
+      case "woco":
+        return (await publicClient.readContract({
+          address: WOCO_GUARDIAN_HOOK,
+          abi: WOCO_GUARDIAN_HOOK_ABI,
+          functionName: "isGuardian",
+          args: [targetAddress as Address, guardianAddress as Address],
+          ...at,
+        })) as boolean;
+      case "legacy":
+        return (await publicClient.readContract({
+          address: LEGACY_ZERODEV_CALLER_HOOK,
+          abi: LEGACY_HOOK_ALLOWED_ABI,
+          functionName: "allowed",
+          args: [guardianAddress as Address, targetAddress as Address],
+          ...at,
+        })) as boolean;
+      default:
+        return false;
+    }
   } catch (e) {
     console.warn("[kernel] isGuardianRegistered read failed:", e);
     return null;
+  }
+}
+
+/**
+ * The account's guardian SET as the WoCo hook holds it (#164) — the list the UI
+ * shows and the value "add another backup" composes against. Tri-state: an
+ * unreadable chain is `unknown`, never an empty list. Meaningful only for a route
+ * whose `hookKind` is `woco`; the legacy hook has no enumeration.
+ */
+export async function readGuardianSet(kernelAddress: string, atBlock?: bigint): Promise<GuardianSetRead> {
+  const [{ createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([
+    import("viem"),
+    import("viem/chains"),
+  ]);
+  try {
+    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    if (!(await isConfiguredChain(publicClient))) return { state: "unknown" };
+    const at = atBlock === undefined ? {} : { blockNumber: atBlock };
+    const guardians = (await publicClient.readContract({
+      address: WOCO_GUARDIAN_HOOK,
+      abi: WOCO_GUARDIAN_HOOK_ABI,
+      functionName: "guardiansOf",
+      args: [kernelAddress as Address],
+      ...at,
+    })) as readonly Address[];
+    return { state: "read", guardians: guardians.map((g) => g.toLowerCase()) };
+  } catch (e) {
+    console.warn("[kernel] readGuardianSet failed:", e);
+    return { state: "unknown" };
   }
 }
 

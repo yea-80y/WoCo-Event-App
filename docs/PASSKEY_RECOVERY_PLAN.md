@@ -756,6 +756,21 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
   stands (rejects a backup == account's own key, or a wallet already registered as THIS account's
   guardian via the by-guardian reverse hint — fail-safe: a missing hint just falls through).
 
+  **#164 SHIPPED (2026-08-22): the WoCo guardian hook.** Every route is now installed against
+  `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db` (Arb Sepolia, CREATE2 singleton,
+  verified; source + 21 Foundry tests in the nested `contracts/` repo, `src/recovery/`). `onInstall`
+  SETS the account's guardian set (replace, not OR), `addGuardian` / `revokeGuardian` /
+  `clearGuardians` edit it from the account's own sudo `execute`, `guardiansOf` / `isGuardian` are the
+  on-chain truth the UI lists. So: **per-backup "Remove" exists**, "add another" APPENDS, and
+  re-installing REPLACES — the resurrection hazard above is over (proven live on a real Kernel route
+  by `apps/web/scripts/recovery-hook-harness.ts`: revoke refuses, re-install does not resurrect).
+  Routes installed before the switch still point at the ZeroDev hook: recognised on read
+  (`hookKind: "legacy"`), still recover through it, no per-guardian revoke, and the next "add"
+  REPLACES the route (the confirm step says so). Client: `guardian-hook.ts` (ABI, calldata,
+  `decideAddPath` — an unreadable route REFUSES rather than guessing install-vs-append);
+  #161's single config source + pure/SDK cross-checked derivation live in `guardian-config.ts` /
+  `guardian-address.ts`.
+
 ### 12.3 Primary-method-aware prompting (the "don't suggest the same account" rule)
 - **Reliable signal = the app's own known login method** (passkey / email-wallet / web3 / local),
   not WebAuthn probing. Drive the offered-guardian list off it.

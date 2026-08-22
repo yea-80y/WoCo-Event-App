@@ -449,12 +449,13 @@ async function getBackupInventory(): Promise<BackupInventoryRead> {
 }
 
 /**
- * Backups retired by "Remove all backups" (#165). NOT dead history: uninstalling
- * the recovery route leaves the caller hook's guardian mapping intact, so adding
- * any new backup makes every one of these work again. The setup screen warns off
- * this list, which is why the entries are marked rather than deleted — and why an
- * `unavailable` here must surface as "couldn't check", never as "nothing to warn
- * about".
+ * Backups retired by "Remove all backups" (#165) or a per-backup revoke (#164).
+ * History the panel may show, and the durable list of guardians whose server-side
+ * hints may still need tombstoning — which is why the entries are marked rather
+ * than deleted. (Until #164 this list was ALSO a live hazard: re-adding on the
+ * legacy ZeroDev hook resurrected every entry. Every route installed since points
+ * at the WoCo hook, whose set-semantics ended that.) `unavailable` must still
+ * surface as "couldn't check", never as "nothing here".
  */
 async function getRetiredBackups(): Promise<BackupInventoryRead> {
   const read = await _getBackupHistory();
@@ -2227,9 +2228,40 @@ async function setupAccountRecovery(backup: {
     );
   }
 
+  // Decide the on-chain write BEFORE persisting anything, so a refusal leaves no
+  // trace at all (the escrow SOC below is guardian-owned and idempotent, but there
+  // is no reason to write it for an add that will not happen).
+  const { deriveGuardianAddress, setupRecovery, addGuardianOnChain, readRecoveryRoute, readGuardianSet } =
+    await import("./kernel-account.js");
+  const { decideAddPath } = await import("./guardian-hook.js");
+  // ONE definition of the guardian set (#161): every other path derives the
+  // guardian address from the same helper, so setup and recovery cannot drift.
+  // `deriveGuardianAddress` is the committing derivation — it cross-checks the
+  // SDK-built account against the pure CREATE2 replay and refuses on mismatch,
+  // BEFORE anything is sent, so a dependency drift can never pin an unreproducible
+  // guardian. Both writes below read the registration back from the hook.
+  const guardianConfig = guardianConfigForBackup(backup.address);
+  const guardianAddress = await deriveGuardianAddress(guardianConfig);
+
+  // WHICH write (#164). A route install pins the WoCo hook's set to EXACTLY this
+  // guardian (replace); `addGuardian` appends to an existing WoCo-hook set. The
+  // choice comes from a fresh chain read, and an unreadable route REFUSES rather
+  // than guesses — guessing "install" against a WoCo-routed account would silently
+  // drop every other backup. A legacy (ZeroDev-hook) route is replaced on purpose:
+  // that is the upgrade, and the UI has warned that its old guardians stop working.
+  const route = await readRecoveryRoute(kernelAddress);
+  const set = route.state === "installed" && route.hookKind === "woco" ? await readGuardianSet(kernelAddress) : null;
+  const plan = decideAddPath({
+    routeState: route.state,
+    hookKind: route.hookKind ?? "none",
+    set,
+    guardian: guardianAddress,
+  });
+  if (plan.path === "refuse") throw new Error(plan.reason);
+
   // Persist the escrow as a GUARDIAN-owned SOC (§13) — client-signed, the platform
   // only stamps postage, so it can no longer forge or withhold it. FATAL: this IS
-  // the escrow. Do it BEFORE the irreversible on-chain install so a failed write
+  // the escrow. Do it BEFORE the irreversible on-chain write so a failed write
   // aborts with nothing committed (an installed recovery route with no escrow blob
   // would leave POD unrecoverable).
   const { uploadRecoveryEnvelopeSoc } = await import("../swarm/recovery-feed.js");
@@ -2239,17 +2271,28 @@ async function setupAccountRecovery(backup: {
     envelope,
   });
 
-  // Escrow persisted + proven recoverable → now do the irreversible on-chain install.
-  const { deriveGuardianAddress, setupRecovery } = await import("./kernel-account.js");
-  // ONE definition of the guardian set (#161): every other path derives the
-  // guardian address from the same helper, so setup and recovery cannot drift.
-  // `deriveGuardianAddress` is the committing derivation — it cross-checks the
-  // SDK-built account against the pure CREATE2 replay and refuses on mismatch,
-  // BEFORE the install, so a dependency drift can never pin an unreproducible
-  // guardian. `setupRecovery` then reads the registration back from the hook.
-  const guardianConfig = guardianConfigForBackup(backup.address);
-  const guardianAddress = await deriveGuardianAddress(guardianConfig);
-  const { txHash } = await setupRecovery(_kernel, guardianAddress);
+  // Escrow persisted + proven recoverable → now the irreversible on-chain write.
+  let txHash: string;
+  if (plan.path === "append") {
+    ({ txHash } = await addGuardianOnChain(_kernel, guardianAddress));
+  } else {
+    ({ txHash } = await setupRecovery(_kernel, guardianAddress));
+    if (plan.replacesLegacy && feedSigner) {
+      // The ZeroDev hook's guardians are unreachable from now on (the route no
+      // longer consults it). Retire their manifest rows so the panel stops listing
+      // backups that can no longer restore this account; the new one is upserted
+      // (un-retired) below. Best-effort bookkeeping — the chain already moved.
+      try {
+        const { retireBackupInventory } = await import("../manifest/inventory.js");
+        await retireBackupInventory({
+          signer: { privKey: feedSigner.privKey, address: feedSigner.address },
+          parentAddress: kernelAddress,
+        });
+      } catch (err) {
+        console.warn("[recovery] retiring legacy-hook backup rows failed (non-fatal):", err);
+      }
+    }
+  }
 
   // Best-effort: record the user's sub-ENS label so recovery can show a
   // human-readable name ("nabil.woco.eth") instead of a hex address. Non-fatal —
@@ -2336,6 +2379,34 @@ async function removeAccountBackups(
     expectInstalled: opts.expectInstalled,
   });
   _backupInvMemo = null; // the panel must not keep listing revoked backups
+  return outcome;
+}
+
+/**
+ * Revoke ONE backup (#164) — thin delegation to `backup-management.ts`, handing
+ * over the built Kernel (signs the sudo userOp) and the feed signer (owns the
+ * manifest). Exists only for accounts whose route points at the WoCo hook; the
+ * chain layer throws unless the revoke is proven by read-back.
+ */
+async function revokeAccountBackup(
+  guardianAddress: string,
+): Promise<import("./backup-management.js").RevokeBackupOutcome> {
+  if (_kind !== "passkey" && _kind !== "web3auth") {
+    throw new Error("Account recovery is only available for passkey or email/social accounts");
+  }
+  await _ensureKernelForKind();
+  if (!_kernel) throw new Error("Account unavailable — please sign in again");
+  // Best-effort, same reasoning as removeAccountBackups: never let a manifest
+  // signer failure block the on-chain revoke.
+  const feedSigner = await _getContentFeedSigner().catch(() => null);
+  const { revokeAccountBackup: revoke } = await import("./backup-management.js");
+  const outcome = await revoke({
+    kernel: _kernel,
+    kernelAddress: _kernel.address,
+    guardianAddress,
+    feedSigner,
+  });
+  _backupInvMemo = null; // the panel must not keep listing the revoked backup as live
   return outcome;
 }
 
@@ -2985,7 +3056,10 @@ export const auth = {
   // Configured recovery backups from the encrypted-to-self manifest — prompt-free
   // read for the "Protect your account" panel (Increment 3a).
   getBackupInventory: () => getBackupInventory(),
-  // Backups retired by "Remove all backups" — a live hazard, not history: adding
-  // any new backup makes them all work again (#148/#165).
+  // Backups retired by "Remove all backups" or a per-backup revoke — history the
+  // panel can show. (Until #164 they were ALSO a live hazard: re-adding resurrected
+  // them on the legacy hook. The WoCo hook's set-semantics ended that.)
   getRetiredBackups: () => getRetiredBackups(),
+  // Revoke ONE backup on-chain (#164) — proven by read-back, then bookkeeping.
+  revokeAccountBackup: (guardianAddress: string) => revokeAccountBackup(guardianAddress),
 };

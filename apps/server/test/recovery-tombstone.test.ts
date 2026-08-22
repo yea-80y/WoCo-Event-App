@@ -16,6 +16,7 @@ import type { RecoveryGuardianIndex } from "@woco/shared";
 import {
   MAX_CLEAR_GUARDIANS,
   mayTombstone,
+  planHintClear,
   selectTombstoneTargets,
 } from "../src/lib/recovery/tombstone.js";
 
@@ -78,4 +79,39 @@ test("the result is bounded even if the caller ignores the request cap", () => {
   const requested = Array.from({ length: 500 }, (_, i) => guardian(i + 1));
   const targets = selectTombstoneTargets({ requested, statusGuardian: guardian(0xbeef) });
   assert.equal(targets.length, MAX_CLEAR_GUARDIANS + 1);
+});
+
+// ── REMOVE-ALL vs REVOKE-ONE (#164) ────────────────────────────────────────
+//
+// The two shapes differ in what the PRESENCE hint must say afterwards. After a
+// single revoke the account still has working backups, so flipping the hint to
+// not-configured would make the portal's chain-unreadable fallback tell a
+// protected user "no backup found".
+
+test("remove-all flips the presence hint and includes the status-doc guardian", () => {
+  const plan = planHintClear({ requested: [guardian(1)], statusGuardian: guardian(9), keepStatus: false });
+  assert.equal(plan.flipStatus, true);
+  assert.deepEqual(plan.targets, [guardian(9), guardian(1)]);
+});
+
+test("revoke-one keeps the presence hint and tombstones ONLY what the client named", () => {
+  const plan = planHintClear({ requested: [guardian(1)], statusGuardian: guardian(9), keepStatus: true });
+  assert.equal(plan.flipStatus, false);
+  assert.deepEqual(plan.targets, [guardian(1)]);
+});
+
+test("revoke-one still de-duplicates, lowercases and bounds the client list", () => {
+  const g = guardian(7);
+  assert.deepEqual(
+    planHintClear({ requested: [g.toUpperCase(), g], keepStatus: true }).targets,
+    [g.toLowerCase()],
+  );
+  const many = Array.from({ length: 500 }, (_, i) => guardian(i + 1));
+  assert.equal(planHintClear({ requested: many, keepStatus: true }).targets.length, MAX_CLEAR_GUARDIANS);
+});
+
+test("anything but literal keepStatus=true is the remove-all shape", () => {
+  // The route coerces `body.keepStatus === true`; the planner is given a boolean,
+  // so this pins the planner's default, not the coercion — and both say remove-all.
+  assert.equal(planHintClear({ requested: [], keepStatus: false }).flipStatus, true);
 });

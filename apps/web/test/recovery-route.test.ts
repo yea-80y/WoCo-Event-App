@@ -28,6 +28,7 @@ import {
 } from "viem";
 import {
   KERNEL_SELECTOR_CONFIG_ABI,
+  LEGACY_ZERODEV_CALLER_HOOK,
   RECOVERY_ACTION_ADDRESS,
   RECOVERY_CALLER_HOOK,
   UNINSTALL_MODULE_FN,
@@ -35,6 +36,7 @@ import {
   buildUninstallRecoveryCallData,
   recoveryRouteSelector,
 } from "../src/lib/auth/recovery-route.js";
+import { WOCO_GUARDIAN_HOOK, classifyRouteHook } from "../src/lib/auth/guardian-hook.js";
 
 const d = {
   concat,
@@ -80,11 +82,15 @@ test("uninstall calldata does NOT smuggle the caller hook or an 0xff flag", () =
   assert.equal((callData.length - 2) / 2, 164);
 });
 
-test("install calldata still pins the caller hook and the guardian", () => {
+test("install calldata pins the WoCo hook and the guardian — never the legacy hook (#164)", () => {
   const guardian = "0x1111111111111111111111111111111111111111" as const;
   const callData = buildRegisterGuardianCallData(d, guardian).toLowerCase();
 
-  assert.ok(callData.includes(RECOVERY_CALLER_HOOK.slice(2).toLowerCase()));
+  assert.equal(RECOVERY_CALLER_HOOK, WOCO_GUARDIAN_HOOK);
+  assert.ok(callData.includes(WOCO_GUARDIAN_HOOK.slice(2).toLowerCase()));
+  // Installing against the ZeroDev hook again would resurrect every past guardian
+  // of a re-protected account (#148) — its address must not appear anywhere.
+  assert.ok(!callData.includes(LEGACY_ZERODEV_CALLER_HOOK.slice(2).toLowerCase()));
   assert.ok(callData.includes(RECOVERY_ACTION_ADDRESS.slice(2).toLowerCase()));
   assert.ok(callData.includes(guardian.slice(2)));
   // Install and uninstall must not converge on the same bytes.
@@ -93,8 +99,10 @@ test("install calldata still pins the caller hook and the guardian", () => {
 
 test("selectorConfig decodes a LIVE installed route to (hook, target, callType)", () => {
   // Verbatim eth_call result for selectorConfig(0xac39fd0f) on Kernel
-  // 0x41f1b4ff66152677586dabeda6780fc85ddb8a8e (Arb Sepolia). A static struct, so
-  // the three words arrive inline with no head offset — the ABI must match that.
+  // 0x41f1b4ff66152677586dabeda6780fc85ddb8a8e (Arb Sepolia) — an account protected
+  // BEFORE #164, so its hook is the legacy ZeroDev one, which must still classify
+  // as exactly that. A static struct, so the three words arrive inline with no
+  // head offset — the ABI must match that.
   const live =
     "0x000000000000000000000000990a9fc8189d96d59e3ce98bd87f42135a24a30e" +
     "000000000000000000000000e884c2868cc82c16177ec73a93f7d9e6f3a5dc6e" +
@@ -106,7 +114,8 @@ test("selectorConfig decodes a LIVE installed route to (hook, target, callType)"
     data: live as `0x${string}`,
   }) as { hook: string; target: string; callType: string };
 
-  assert.equal(config.hook.toLowerCase(), RECOVERY_CALLER_HOOK.toLowerCase());
+  assert.equal(config.hook.toLowerCase(), LEGACY_ZERODEV_CALLER_HOOK.toLowerCase());
+  assert.equal(classifyRouteHook(config.hook), "legacy");
   assert.equal(config.target.toLowerCase(), RECOVERY_ACTION_ADDRESS.toLowerCase());
   assert.equal(config.callType, "0xff"); // CALLTYPE_DELEGATECALL
 });

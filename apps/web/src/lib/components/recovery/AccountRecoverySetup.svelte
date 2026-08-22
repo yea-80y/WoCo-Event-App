@@ -8,14 +8,18 @@
    *   intro → confirm-remove → removing → removed
    *   any phase → error → (retry → choosing)
    *
-   * HONESTY RULES THIS SCREEN IS BOUND BY (#148):
+   * HONESTY RULES THIS SCREEN IS BOUND BY (#148, #164):
    *  - "protected" is read from the CHAIN, not the server's presence hint, and an
    *    unreadable chain says so rather than claiming the account is unprotected.
-   *  - adding a backup ADDS one. There is no replace: the deployed caller hook has
-   *    no per-guardian revoke, so a screen offering "Replace backup" was telling
-   *    users their old backup was retired when it kept full takeover power.
-   *  - removal is all-or-nothing, and re-adding later resurrects every past
-   *    guardian — so "remove then re-add" is never offered as a way to retire one.
+   *  - the backup LIST is the WoCo hook's on-chain guardian set, never the
+   *    manifest (which only labels rows); an unreadable set renders as "couldn't
+   *    load", never as an empty list.
+   *  - a per-backup "Remove" exists ONLY behind the WoCo hook and reports success
+   *    only off a verified on-chain revoke. On a legacy (ZeroDev-hook) route there
+   *    is no per-guardian revoke, and the next "add" REPLACES the route — the user
+   *    is told so at the confirm step, before anything is sent.
+   *  - removed backups stay removed: every route installed since #164 points at
+   *    the WoCo hook, so re-adding no longer resurrects old guardians.
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -50,13 +54,23 @@
   // Whether the hint/manifest cleanup after a removal also succeeded — cosmetic,
   // reported so the panel never silently disagrees with itself.
   let removeBookkeepingOk = $state(true);
-  // Backups this account retired earlier. A LIVE hazard, not history: the caller
-  // hook's guardian mapping survived the uninstall, so adding any new backup makes
-  // all of these work again. The user must be told before, not after — which is
-  // why `retiredKnown` exists (#166 item 4): when the history read can't answer,
-  // the warning must degrade to "we couldn't check", never silently vanish.
-  let retiredCount = $state(0);
-  let retiredKnown = $state(true);
+  // Which hook gates this account's route (#164). `woco` = the on-chain list below
+  // is real and each entry can be removed on its own; `legacy` = the ZeroDev
+  // append-only hook — no list, no per-backup remove, and the next add REPLACES the
+  // route (the user is told before confirming); `other` = a hook this app did not
+  // install — only "remove all" is offered.
+  let hookKind = $state<"woco" | "legacy" | "none" | "other" | null>(null);
+  // The guardian set as the WoCo hook holds it — chain truth, NOT the manifest.
+  // `null` = not read (legacy/other/none route); `"unknown"` = the chain could not
+  // be read, which renders as "couldn't load", never as an empty list (#138).
+  let onChainGuardians = $state<string[] | "unknown" | null>(null);
+  // Manifest memory-jogs (method/provider/date) keyed by lowercased guardian address
+  // — labels only; the row exists because the CHAIN lists it.
+  let backupLabels = $state<Record<string, { method: string; providerLabel?: string; addedAt: number }>>({});
+  // Per-row remove state (inline; the screen stays on the protected intro).
+  let revokingGuardian = $state<string | null>(null);
+  let revokeError = $state("");
+  let revokeBookkeepingNote = $state("");
 
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const addrDisplay = (a: string) => `${a.slice(0, 10)}…${a.slice(-8)}`;
@@ -124,20 +138,47 @@
       try {
         // Chain first — the server's presence hint is forgeable and goes stale the
         // moment a user removes a backup, so it is only a fallback here.
-        const p = await readBackupProtection(kernel);
-        isProtected = p.isProtected;
-        protectionSource = p.source;
+        await refreshProtection(kernel);
       } catch { /* hiccup — stays null, i.e. "couldn't tell" */ } finally {
         checking = false;
         checkDone = true;
       }
-      // Separate + non-blocking: the resurrect warning is owed even when the
-      // protection read failed, and a manifest hiccup must not stall the panel.
-      auth.getRetiredBackups()
-        .then((r) => { retiredKnown = r.status === "known"; retiredCount = r.status === "known" ? r.backups.length : 0; })
-        .catch(() => { retiredKnown = false; });
+      // Separate + non-blocking: labels are a memory-jog from the manifest; a
+      // manifest hiccup must not stall the panel or hide the on-chain list.
+      loadBackupLabels();
     })();
   });
+
+  async function refreshProtection(kernel: string) {
+    const p = await readBackupProtection(kernel);
+    isProtected = p.isProtected;
+    protectionSource = p.source;
+    hookKind = p.routeState === "installed" ? (p.hookKind ?? "other") : p.routeState === "absent" ? "none" : null;
+    onChainGuardians =
+      p.onChainGuardians === undefined ? null
+      : p.onChainGuardians.state === "read" ? p.onChainGuardians.guardians
+      : "unknown";
+  }
+
+  function loadBackupLabels() {
+    auth.getBackupInventory()
+      .then((r) => {
+        if (r.status !== "known") return;
+        const next: typeof backupLabels = {};
+        for (const b of r.backups) {
+          next[b.guardianAddress.toLowerCase()] = { method: b.method, providerLabel: b.providerLabel, addedAt: b.addedAt };
+        }
+        backupLabels = next;
+      })
+      .catch(() => { /* labels only */ });
+  }
+
+  function backupLabel(guardian: string): string {
+    const l = backupLabels[guardian.toLowerCase()];
+    if (!l) return "Backup";
+    const method = l.method === "passkey" ? "Passkey" : l.method === "wallet" ? "Wallet" : "Email / social";
+    return l.providerLabel && l.providerLabel !== l.method ? `${method} · ${l.providerLabel}` : method;
+  }
 
   function signIn() {
     loginRequest.request({ context: "attendee" });
@@ -224,9 +265,10 @@
   }
 
   /**
-   * Uninstall the recovery route — the ONLY revoke that exists. `removeAccountBackups`
-   * throws unless the chain proves the route is gone, so reaching "removed" is never
-   * an assumption: an unverifiable removal surfaces as an error, not a green tick.
+   * Uninstall the recovery route — the all-at-once revoke (per-backup removal is
+   * `revokeOne`, WoCo-hook routes only). `removeAccountBackups` throws unless the
+   * chain proves the route is gone, so reaching "removed" is never an assumption: an
+   * unverifiable removal surfaces as an error, not a green tick.
    */
   async function confirmRemove() {
     phase = "removing";
@@ -239,15 +281,42 @@
       removeBookkeepingOk = outcome.hintCleared && outcome.manifestCleared;
       isProtected = false;
       protectionSource = "chain";
+      hookKind = "none";
+      onChainGuardians = null;
       backupAddress = null;
       phase = "removed";
-      // These are now the resurrect hazard the add flow must warn about.
-      auth.getRetiredBackups()
-        .then((r) => { retiredKnown = r.status === "known"; retiredCount = r.status === "known" ? r.backups.length : 0; })
-        .catch(() => { retiredKnown = false; });
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Couldn't remove your backups — please try again";
       phase = "error";
+    }
+  }
+
+  /**
+   * Remove ONE backup (#164) — only offered when the route points at the WoCo hook.
+   * `revokeAccountBackup` throws unless the chain proves the guardian is out of the
+   * set, so the row disappears only off a verified revoke; the list is then RE-READ
+   * from the chain rather than edited locally.
+   */
+  async function revokeOne(guardian: string) {
+    if (revokingGuardian) return;
+    revokingGuardian = guardian;
+    revokeError = "";
+    revokeBookkeepingNote = "";
+    try {
+      const outcome = await auth.revokeAccountBackup(guardian);
+      if (!outcome.hintCleared || !outcome.manifestMarked) {
+        revokeBookkeepingNote =
+          "Removed on-chain. We couldn't update every record of it — your backup list may briefly still show it.";
+      }
+      const kernel = auth.parent;
+      if (kernel) {
+        try { await refreshProtection(kernel); } catch { /* the verified revoke stands; list re-reads next open */ }
+      }
+      loadBackupLabels();
+    } catch (e) {
+      revokeError = e instanceof Error ? e.message : "Couldn't remove that backup — please try again";
+    } finally {
+      revokingGuardian = null;
     }
   }
 </script>
@@ -306,12 +375,11 @@
       </p>
       <p class="security-note" role="note">
         If you lose this login now, there is <strong>no way back in</strong>. Add a backup
-        again when you can — but read this first.
+        again when you can.
       </p>
-      <p class="security-note" role="note">
-        Adding any new backup makes <strong>every backup you've ever used work again</strong>.
-        Removing switches recovery off; it can't un-trust a wallet. That's a limit of the
-        recovery contract, not a setting we can change.
+      <p class="footnote">
+        Backups you removed stay removed. A backup you add later is the only one that can
+        restore this account — none of the old ones come back with it.
       </p>
       {#if !removeBookkeepingOk}
         <p class="footnote">
@@ -329,14 +397,14 @@
         this account.
       </p>
       <ul class="reasons">
-        <li><span class="tick tick--warn">!</span> It's all or nothing — backups can't be removed one at a time</li>
+        <li><span class="tick tick--warn">!</span> Every backup on this account stops working at once</li>
         <li><span class="tick tick--warn">!</span> If you lose this login afterwards, nothing can get you back in</li>
-        <li>
-          <span class="tick tick--warn">!</span>
-          This can't un-trust a wallet. If you ever add a backup again, <strong>every backup
-          you've ever used starts working again</strong> — so removing won't shake off a
-          backup you no longer trust
-        </li>
+        {#if hookKind === "woco"}
+          <li>
+            <span class="tick">✓</span>
+            To drop just one backup, use <strong>Remove</strong> next to it instead — the others keep working
+          </li>
+        {/if}
         <li>
           <span class="tick tick--warn">!</span>
           A backup you've already added keeps the keys it was given: it can still read your
@@ -372,27 +440,65 @@
           records rather than from the account itself.
         </p>
       {/if}
-      {#if retiredCount > 0}
-        <p class="security-note" role="note">
-          Because recovery is switched on again, the
-          <strong>{retiredCount === 1 ? "backup you removed earlier is" : `${retiredCount} backups you removed earlier are`}
-          active too</strong> — the recovery contract can't un-trust a wallet, so they came
-          back with it.
+      {#if hookKind === "woco"}
+        <!-- The list is CHAIN truth (the hook's guardian set); the manifest only labels it. -->
+        {#if onChainGuardians === "unknown"}
+          <p class="soft-warn" role="note">
+            Couldn't load this account's backups from the network just now — reopen this screen
+            in a moment. Nothing has changed.
+          </p>
+        {:else if Array.isArray(onChainGuardians)}
+          <ul class="backup-list" aria-label="Backups on this account">
+            {#each onChainGuardians as g (g)}
+              <li class="backup-row">
+                <span class="backup-row-main">
+                  <span class="backup-row-title">{backupLabel(g)}</span>
+                  <code class="backup-row-addr">{short(g)}</code>
+                </span>
+                <button
+                  class="linkish danger-link backup-row-remove"
+                  disabled={revokingGuardian !== null}
+                  onclick={() => revokeOne(g)}
+                >
+                  {revokingGuardian === g ? "Removing…" : "Remove"}
+                </button>
+              </li>
+            {/each}
+          </ul>
+          {#if onChainGuardians.length === 0}
+            <p class="soft-warn" role="note">
+              The recovery route is on but lists no backup — nothing can restore this account
+              right now. Add one below.
+            </p>
+          {/if}
+        {/if}
+        {#if revokeError}
+          <p class="error" role="alert">{revokeError}</p>
+        {/if}
+        {#if revokeBookkeepingNote}
+          <p class="footnote">{revokeBookkeepingNote}</p>
+        {/if}
+        <p class="footnote">
+          Each backup can restore your account on its own. Removing one takes effect on-chain
+          and the others keep working.
         </p>
-      {:else if !retiredKnown}
+      {:else if hookKind === "legacy"}
         <p class="security-note" role="note">
-          We couldn't check whether this account removed backups in the past. If it did,
-          <strong>those are active again too</strong> — the recovery contract can't un-trust
-          a wallet, so they came back with it.
+          This account's recovery still runs on the previous contract, which can't remove a
+          single backup. <strong>Adding a backup moves it to the new one</strong> — only the
+          backup you add then will be able to restore this account; add the others again
+          afterwards if you still want them.
+        </p>
+      {:else if hookKind === "other"}
+        <p class="security-note" role="note">
+          This account's recovery route uses a contract this app doesn't know. You can remove
+          all backups and set up again; nothing else will be changed from here.
         </p>
       {/if}
-      <p class="soft-warn" role="note">
-        Adding another backup <strong>adds</strong> to what's already set up — it doesn't
-        replace anything, and every backup will be able to restore your account. There's no
-        way to retire just one yet.
-      </p>
       <p class="footnote">The only way to be fully sure is to run a recovery on another device.</p>
-      <button class="btn btn--ghost cta" onclick={startChoosing}>Add another backup</button>
+      {#if hookKind !== "other"}
+        <button class="btn btn--ghost cta" onclick={startChoosing}>Add another backup</button>
+      {/if}
       <button class="linkish cta-link danger-link" onclick={startRemove}>Remove all backups</button>
 
     {:else if phase === "intro"}
@@ -406,21 +512,6 @@
         <li><span class="tick">✓</span> Your events and history come with you</li>
         <li><span class="tick">✓</span> Only a backup you choose — never WoCo, never anyone else</li>
       </ul>
-      {#if retiredCount > 0}
-        <p class="security-note" role="note">
-          You removed {retiredCount === 1 ? "a backup" : `${retiredCount} backups`} from this
-          account earlier. Adding a new one now <strong>makes {retiredCount === 1 ? "that one" : "those"}
-          work again</strong> — the recovery contract can't un-trust a wallet. Only continue if
-          you still trust {retiredCount === 1 ? "it" : "them"}.
-        </p>
-      {:else if !retiredKnown}
-        <p class="security-note" role="note">
-          We couldn't check whether you removed backups from this account in the past. If you
-          did, adding a new one now <strong>makes those work again</strong> — the recovery
-          contract can't un-trust a wallet. Only continue if you'd still trust every backup
-          this account has ever had.
-        </p>
-      {/if}
       {#if isProtected === null && checkDone}
         <p class="soft-warn" role="note">
           We couldn't check whether this account already has a backup. Adding one is safe
@@ -523,23 +614,18 @@
           <p class="soft-warn" role="note">{bindWarning}</p>
         {/if}
 
-        {#if isProtected === true}
+        {#if isProtected === true && hookKind === "legacy"}
+          <!-- The install REPLACES a legacy route (decideAddPath): the old hook's guardians
+               become unreachable. This is the consent point — the store does not ask again. -->
+          <p class="security-note" role="note">
+            This account's recovery still runs on the previous contract. Setting this backup
+            <strong>moves recovery to the new contract, and the backups you added before will
+            stop working</strong>. Add them again afterwards if you still want them.
+          </p>
+        {:else if isProtected === true}
           <p class="soft-warn" role="note">
-            You already have a backup. This <strong>adds</strong> another — the existing one
-            keeps working. Retiring a single backup isn't possible yet, and removing them all
-            and re-adding brings the old ones back.
-          </p>
-        {:else if retiredCount > 0}
-          <p class="security-note" role="note">
-            This also <strong>reactivates the {retiredCount === 1 ? "backup" : `${retiredCount} backups`}
-            you removed earlier</strong> — adding any backup switches the recovery route back on
-            for every wallet this account has ever trusted.
-          </p>
-        {:else if !retiredKnown}
-          <p class="security-note" role="note">
-            We couldn't check for backups this account removed in the past. If there are any,
-            this <strong>reactivates them</strong> — adding any backup switches the recovery
-            route back on for every wallet this account has ever trusted.
+            You already have a backup. This <strong>adds</strong> another — the existing ones
+            keep working, and each can be removed on its own later.
           </p>
         {/if}
 
@@ -810,6 +896,31 @@
   .linkish:hover { color: var(--text-secondary); }
 
   .footnote { font-size: 0.8rem; color: var(--text-muted); margin: 0.75rem 0 0; }
+  /* On-chain backup list (#164) — one row per guardian in the hook's set. */
+  .backup-list {
+    list-style: none;
+    margin: 0.9rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    text-align: left;
+  }
+  .backup-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-input);
+  }
+  .backup-row-main { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+  .backup-row-title { font-size: 0.9rem; font-weight: 600; color: var(--text); }
+  .backup-row-addr { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); }
+  .backup-row-remove { flex: none; font-size: 0.85rem; }
+  .backup-row-remove:disabled { opacity: 0.55; cursor: default; }
   .error {
     color: var(--error); background: var(--error-subtle);
     border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);

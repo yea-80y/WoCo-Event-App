@@ -4,6 +4,31 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Recovery: a WoCo-owned guardian hook with set-semantics and a real revoke; one guardian config, two derivations that must agree (#164, #161, 2026-08-22)
+
+The ZeroDev caller hook pinned guardians in an append-only `allowed[guardian][kernel]`
+mapping with no revoke, and Kernel v3.1's selector uninstall never reached its
+`onUninstall` — so a replaced backup kept takeover power and "remove all, add one"
+resurrected every past guardian (#148). Kernel overwrites a route's hook unconditionally,
+so a different hook is the supported per-guardian revoke. **`WoCoGuardianHook`**
+(`contracts/src/recovery/`, 21 Foundry tests incl. fuzz) is live on Arb Sepolia at
+`0xF43524473EBC651969BeCc748462ED27ed39d4Db` (CREATE2 singleton, verified): `onInstall`
+SETS the set, `addGuardian`/`revokeGuardian`/`clearGuardians` edit it from the account's
+own sudo `execute`, `guardiansOf`/`isGuardian` are chain truth. Every route is now installed
+against it; routes still on the ZeroDev hook are recognised (`hookKind: "legacy"`), keep
+recovering, and are REPLACED by the next add (the confirm step says so). The setup screen
+lists the on-chain set with a per-backup **Remove** (proven by pinned read-back), "add
+another" APPENDS, and the resurrection warnings are gone because the hazard is. Proven
+live on a real Kernel route by `apps/web/scripts/recovery-hook-harness.ts` (19/19: refusal,
+recovery, revoke, append, re-install does not resurrect). Server: `keepStatus` on the
+clear-hint route so a single revoke does not flip the presence hint.
+
+#161: `guardian-config.ts` is the ONE definition of the guardian set (was hand-written in
+four places); `guardian-address.ts` replays the CREATE2 derivation SDK-free and is pinned by
+test to EntryPoint-observed addresses plus the SDK's shipped constants and enable-data bytes —
+a `@zerodev/*` drift is a red build, offline. `deriveGuardianAddress` (setup) and
+`recoverAccount` assert SDK-built == pure before sending; installs read the registration back.
+
 ## Kernel-owner reads are ordered by L2 block — a lagging replica cannot readmit a retired key (#200, 2026-08-22)
 
 `isKernelOwner` decides session authority from the account's live ECDSA owner, read at

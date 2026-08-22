@@ -14,18 +14,20 @@
  */
 
 import type { Address, Hex } from "viem";
+import { LEGACY_ZERODEV_CALLER_HOOK, WOCO_GUARDIAN_HOOK } from "./guardian-hook.js";
 
 /** ZeroDev recovery ACTION singleton (Arb Sepolia) — delegatecalled by the route. */
 export const RECOVERY_ACTION_ADDRESS = "0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E" as const;
 
 /**
- * ZeroDev CALLER HOOK singleton (Arb Sepolia) — pins which guardian accounts may
- * call `doRecovery`. Its `allowed[guardian][kernel]` mapping is APPEND-ONLY:
- * `onInstall` ORs guardians in, `onUninstall` clears only an init flag, and there
- * is no revoke entrypoint (#148). Uninstalling the route is the only revoke, and
- * re-installing against this same address resurrects every past guardian.
+ * The CALLER HOOK every new route is installed with — WoCo's own, with
+ * set-semantics and a real revoke (#164; see ./guardian-hook.js for the ABI and
+ * the history). Routes installed before the switch still point at ZeroDev's
+ * append-only hook (`LEGACY_ZERODEV_CALLER_HOOK`); they are recognised on read
+ * and replaced on the next "add a backup", never re-installed.
  */
-export const RECOVERY_CALLER_HOOK = "0x990a9FC8189D96d59E3cE98bd87F42135a24a30E" as const;
+export const RECOVERY_CALLER_HOOK = WOCO_GUARDIAN_HOOK;
+export { LEGACY_ZERODEV_CALLER_HOOK };
 
 /** ERC-7579 fallback module — the recovery action is a selector-routed fallback. */
 export const RECOVERY_FALLBACK_MODULE_TYPE = 3n;

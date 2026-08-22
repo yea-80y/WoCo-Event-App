@@ -40,10 +40,16 @@ export async function registerRecoveryHint(opts: {
  */
 export async function clearRecoveryHint(opts: {
   guardianAddresses?: string[];
+  /**
+   * ONE guardian was revoked on-chain and the account still has working backups
+   * (#164): tombstone only the named entries and leave the presence hint standing.
+   * Omit (remove-all) to flip the presence hint as well.
+   */
+  keepStatus?: boolean;
 }): Promise<ApiResponse<{ kernelAddress: string; clearedGuardians: number; failedGuardians: number }>> {
   return authPost<{ kernelAddress: string; clearedGuardians: number; failedGuardians: number }>(
     "/api/recovery/escrow/clear",
-    { guardianAddresses: opts.guardianAddresses ?? [] },
+    { guardianAddresses: opts.guardianAddresses ?? [], ...(opts.keepStatus ? { keepStatus: true } : {}) },
   );
 }
 
