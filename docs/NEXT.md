@@ -90,6 +90,14 @@ issue — `gh issue view <n>`. No detail here, or the two sources drift and neit
 
 ---
 
+## ⬅️ THE ORDERED LIST — start here (2026-08-22) — lives in issue #353
+
+The 2026-08-09 list below is SUPERSEDED. The current launch plan — every open issue
+reviewed, grouped into chats in order, with the model per chat and the owner-held
+gates (batch top-ups, #81 config, #8 e2e smoke) — is **GitHub issue #353**, and it is
+ticked off there as chats complete. Do not reorder work from this file; read #353.
+Chat 0 (#163 + #210) is done; chat 1 is #164 + #161 (Fable, own session).
+
 ## ⬅️ THE ORDERED LIST — start here (2026-08-09)
 
 The security work spawned 29 open issues. This is the order, and the reason. **Do the top
