@@ -29,6 +29,26 @@
  * that, a late answer rolled the cache back to the retired key — reachable from
  * every retired-key request, because the #273 re-read below is exactly when a
  * lagging replica gets asked.
+ *
+ * READS ARE BOUNDED (#163, #210). This module runs before any authorization, so
+ * everything it keys on — the parent, the recovered EOA — is caller-chosen, and
+ * every cache miss is an eth_call on the RPC the payment path shares. So: both
+ * caches are capped (oldest entry evicted); concurrent requests for one Kernel
+ * share one read; and a read happens only if the caller's per-client budget
+ * allows it (owner-read-budget.ts, supplied by the auth middleware). Over budget,
+ * the read reports `"error"` and the rules below decide — refuse for a
+ * known-deployed account, counterfactual for an unknown one — never a grant the
+ * chain did not give.
+ *
+ * Two bounds were considered and REJECTED, and are pinned by tests so they are not
+ * re-added. A counterfactual short-circuit that skips the chain for a
+ * never-observed account would let a retired key, whose counterfactual still
+ * matches, never be read at all. A server-side negative cache for FAILED reads
+ * would bound an outage's retries — but the client already throttles itself after
+ * a double failure (client.ts), and any server window, however short, defeats its
+ * one IMMEDIATE retry on a sub-second RPC blip, turning a blip into the "session
+ * ended" banner. Upstream load during an outage is bounded by the budget and the
+ * shared in-flight read instead.
  */
 
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
@@ -36,7 +56,7 @@ import { getKernelAddressFromECDSA, getValidatorAddress } from "@zerodev/ecdsa-v
 import { createPublicClient, http, zeroAddress, type Address, type PublicClient } from "viem";
 import { arbitrumSepolia } from "viem/chains";
 import { getChainRpcUrl } from "../chain/event-contract.js";
-import { isKernelKnownDeployed } from "./kernel-deployed.js";
+import { isKernelKnownDeployed, getKernelOwnerRecord, recordKernelOwner } from "./kernel-deployed.js";
 import { observeOwnerRead, type OwnerRead } from "./kernel-owner-ordering.js";
 
 /** Kernel deployments live on Arbitrum Sepolia (KERNEL_CHAIN_ID client-side). */
@@ -56,11 +76,35 @@ function client(): PublicClient {
   return _client;
 }
 
-/** owner EOA (lower) → counterfactual Kernel (lower). Pure CREATE2 — immutable,
- *  cache forever. */
+/** Options a caller may pass down to the read path. */
+export interface OwnerReadOptions {
+  /** Consulted only at the moment a chain read would happen. False = do not read;
+   *  the result is reported as `"error"`. Absent = unrestricted (internal
+   *  callers and tests). */
+  chainReadAllowed?: () => boolean;
+}
+
+/** Hard caps. Both maps are keyed by caller-chosen input on a pre-auth path, so
+ *  without a cap a caller varying the key grows them without bound (#163). Oldest
+ *  entry is evicted first — insertion order is what a Map gives us, and bounding
+ *  memory is the requirement; recency would only refine which entry goes. */
+const OWNER_CACHE_MAX = 5_000;
+const KERNEL_OF_CACHE_MAX = 5_000;
+
+function capMap<K, V>(map: Map<K, V>, max: number): void {
+  while (map.size > max) {
+    const oldest = map.keys().next().value as K;
+    map.delete(oldest);
+  }
+}
+
+/** owner EOA (lower) → counterfactual Kernel (lower). Pure CREATE2 — immutable;
+ *  cached, capped. */
 const _kernelOfCache = new Map<string, string>();
 
-/** kernel (lower) → { owner (lower) | null (undeployed/unset), fetchedAt }.
+/** kernel (lower) → { owner (lower) | null (undeployed/unset), block, fetchedAt }.
+ *  `block` is the L2 block the entry was read at, kept so a cache-hit
+ *  confirmation can record the account (see isKernelOwner).
  *  Owners rotate (recovery), so reads expire; a rotated-away key stops
  *  authenticating within TTL. Undeployed (null) results are cached too so
  *  fresh counterfactual accounts don't eth_call on every request.
@@ -73,9 +117,12 @@ const _kernelOfCache = new Map<string, string>();
  *  full TTL ("Invalid signature" on every fresh delegation). isKernelOwner
  *  therefore re-reads the chain before any rejection that a cached value
  *  decided. Steady-state traffic (owner matches) never pays the extra call;
- *  a wrong-key attempt pays one eth_call, behind the auth rate limits. */
-const _ownerCache = new Map<string, { owner: string | null; fetchedAt: number }>();
+ *  a wrong-key attempt pays one eth_call, within the caller's read budget. */
+const _ownerCache = new Map<string, { owner: string | null; block: number; fetchedAt: number }>();
 const OWNER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** kernel (lower) → the raw chain read in flight, shared by concurrent callers. */
+const _inFlightReads = new Map<string, Promise<OwnerRead>>();
 
 /** Test seam — replaces the on-chain owner fetch (RPC-free tests); null restores.
  *  The override returns what the chain would: the owner AND the block it was read
@@ -88,6 +135,10 @@ export function _setOwnerFetchForTests(
 }
 export function _resetOwnerCacheForTests(): void {
   _ownerCache.clear();
+  _inFlightReads.clear();
+}
+export function _cacheSizesForTests(): { owner: number; kernelOf: number } {
+  return { owner: _ownerCache.size, kernelOf: _kernelOfCache.size };
 }
 
 /**
@@ -136,6 +187,7 @@ export async function kernelAddressOfOwner(eoaAddress: string): Promise<string |
       })
     ).toLowerCase();
     _kernelOfCache.set(key, kernel);
+    capMap(_kernelOfCache, KERNEL_OF_CACHE_MAX);
     return kernel;
   } catch {
     return null;
@@ -145,52 +197,77 @@ export async function kernelAddressOfOwner(eoaAddress: string): Promise<string |
 /** Live on-chain ECDSA sudo owner of a Kernel: lowercased address, `null` when
  *  the Kernel is not deployed / owner unset, `"error"` when the read failed
  *  (RPC outage) — callers must distinguish "provably no owner" from "unknown". */
-export async function readKernelOwner(kernelAddress: string): Promise<string | null | "error"> {
+export async function readKernelOwner(
+  kernelAddress: string,
+  opts: OwnerReadOptions = {},
+): Promise<string | null | "error"> {
   const key = kernelAddress.toLowerCase();
   const cached = _ownerCache.get(key);
   if (cached && Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS) return cached.owner;
-  return _fetchAndCacheOwner(key);
+  return _fetchAndCacheOwner(key, undefined, opts);
 }
 
-/** One atomic read: the owner and the L2 block it was read at, from a single
- *  `eth_call` through Multicall3 so both come from one replica at one state. */
-async function _readOwnerAtBlock(key: string): Promise<OwnerRead> {
-  if (_ownerFetchOverride) {
-    const read = await _ownerFetchOverride(key);
-    if (read === "error") throw new Error("owner fetch override: error");
-    return read;
+/** The raw chain call, one per Kernel at a time: concurrent callers share it. */
+function _readOwnerAtBlock(key: string): Promise<OwnerRead> {
+  const inFlight = _inFlightReads.get(key);
+  if (inFlight) return inFlight;
+  const p = (async (): Promise<OwnerRead> => {
+    if (_ownerFetchOverride) {
+      const read = await _ownerFetchOverride(key);
+      if (read === "error") throw new Error("owner fetch override: error");
+      return read;
+    }
+    const validatorAddress = getValidatorAddress(entryPoint, kernelVersion);
+    // One atomic read: the owner and the L2 block it was read at, from a single
+    // `eth_call` through Multicall3 so both come from one replica at one state.
+    const [l2Block, owner] = await client().multicall({
+      contracts: [
+        { address: ARBSYS_ADDRESS, abi: ARBSYS_ABI, functionName: "arbBlockNumber" },
+        {
+          address: validatorAddress as Address,
+          abi: ECDSA_VALIDATOR_STORAGE_ABI,
+          functionName: "ecdsaValidatorStorage",
+          args: [key as Address],
+        },
+      ],
+      allowFailure: false,
+    });
+    const lower = !owner || owner.toLowerCase() === zeroAddress ? null : owner.toLowerCase();
+    return { owner: lower, block: Number(l2Block) };
+  })();
+  _inFlightReads.set(key, p);
+  p.finally(() => _inFlightReads.delete(key)).catch(() => {});
+  return p;
+}
+
+/** The live read itself: caches definitive, in-order answers; never caches a
+ *  read that ordering judged stale — a stale answer is reported as "error" so
+ *  the caller treats it as "knows nothing current", which for a known-deployed
+ *  account means refuse. A FAILED read is not cached either (see the header).
+ *
+ *  `presentedBy` is the EOA whose delegation triggered the read, when there is
+ *  one — it decides whether a store record may be CREATED (ordering.ts, #210). */
+async function _fetchAndCacheOwner(
+  key: string,
+  presentedBy: string | undefined,
+  opts: OwnerReadOptions,
+): Promise<string | null | "error"> {
+  // Joining a read already in flight costs nothing, so it needs no budget.
+  // A read this caller would START does.
+  if (!_inFlightReads.has(key) && opts.chainReadAllowed && !opts.chainReadAllowed()) {
+    console.warn(`[kernel-owner] owner read for ${key.slice(0, 10)}… refused: read budget exhausted`);
+    return "error";
   }
-  const validatorAddress = getValidatorAddress(entryPoint, kernelVersion);
-  const [l2Block, owner] = await client().multicall({
-    contracts: [
-      { address: ARBSYS_ADDRESS, abi: ARBSYS_ABI, functionName: "arbBlockNumber" },
-      {
-        address: validatorAddress as Address,
-        abi: ECDSA_VALIDATOR_STORAGE_ABI,
-        functionName: "ecdsaValidatorStorage",
-        args: [key as Address],
-      },
-    ],
-    allowFailure: false,
-  });
-  const lower = !owner || owner.toLowerCase() === zeroAddress ? null : owner.toLowerCase();
-  return { owner: lower, block: Number(l2Block) };
-}
-
-/** The live read itself: caches definitive, in-order answers; never caches
- *  "error", and never caches a read that ordering judged stale — a stale answer
- *  is reported as "error" so the caller treats it as "knows nothing current",
- *  which for a known-deployed account means refuse. */
-async function _fetchAndCacheOwner(key: string): Promise<string | null | "error"> {
   try {
     const read = await _readOwnerAtBlock(key);
-    // Reconcile with what we already know, durably: a real owner marks the
+    // Reconcile with what we already know, durably: a confirmed owner marks the
     // account deployed (so a LATER failed read refuses instead of falling back
     // to the counterfactual — #200, kernel-deployed.ts), and a rotation advances
     // the record so no lagging replica can roll it back.
-    const owner = observeOwnerRead(key, read);
+    const owner = observeOwnerRead(key, read, presentedBy);
     if (owner === "stale") return "error";
-    _ownerCache.set(key, { owner, fetchedAt: Date.now() });
+    _ownerCache.set(key, { owner, block: read.block, fetchedAt: Date.now() });
+    capMap(_ownerCache, OWNER_CACHE_MAX);
     return owner;
   } catch {
     return "error";
@@ -271,21 +348,34 @@ export function decideKernelOwnership(args: {
   return counterfactualMatches;
 }
 
-export async function isKernelOwner(eoaAddress: string, parentAddress: string): Promise<boolean> {
+export async function isKernelOwner(
+  eoaAddress: string,
+  parentAddress: string,
+  opts: OwnerReadOptions = {},
+): Promise<boolean> {
   const eoa = eoaAddress.toLowerCase();
   const parent = parentAddress.toLowerCase();
 
   const cached = _ownerCache.get(parent);
   const cacheFresh = cached !== undefined && Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS;
-  const ownerRead = cacheFresh ? cached.owner : await _fetchAndCacheOwner(parent);
+  const ownerRead = cacheFresh ? cached.owner : await _fetchAndCacheOwner(parent, eoa, opts);
   const allowed = await _decideFromRead(ownerRead, eoa, parent);
+  if (allowed && cacheFresh && cached.owner === eoa && !getKernelOwnerRecord(parent)) {
+    // A confirmation from cache is as much a confirmed read as the one that
+    // filled the cache — and that one may have been UNCONFIRMED (someone else
+    // presenting the wrong key), which creates no record (#210). Without this,
+    // an account could be confirmed for a whole TTL with no record, and an
+    // unreadable chain after expiry would fall back to the counterfactual for a
+    // Kernel we have in fact seen with an owner.
+    recordKernelOwner(parent, cached.owner, cached.block);
+  }
   if (allowed || !cacheFresh) return allowed;
 
   // A cached answer may confirm ownership, never deny it (#273): re-read the
   // chain before rejecting. The refresh also retires a rotated-OUT key on its
   // very next request instead of at TTL expiry — the #200 grace window shrinks
   // to first contact by the new owner.
-  return _decideFromRead(await _fetchAndCacheOwner(parent), eoa, parent);
+  return _decideFromRead(await _fetchAndCacheOwner(parent, eoa, opts), eoa, parent);
 }
 
 async function _decideFromRead(

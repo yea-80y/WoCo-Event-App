@@ -152,13 +152,15 @@ function persist(): void {
  * distinguish from, and the other two know nothing current.
  *
  * The first-observed timestamp is never rewritten; the owner/block advance to
- * whatever the caller accepted as current.
+ * whatever the caller accepted as current. Recording what is already recorded is
+ * a no-op — no fsync for a fact the file already holds.
  */
 export function recordKernelOwner(kernelAddress: string, owner: string, block: number): void {
   load();
   const key = kernelAddress.toLowerCase();
   const now = new Date().toISOString();
   const existing = state.kernels[key];
+  if (existing && existing.owner === owner.toLowerCase() && existing.block === block) return;
   state.kernels[key] = {
     firstSeen: existing?.firstSeen ?? now,
     owner: owner.toLowerCase(),
