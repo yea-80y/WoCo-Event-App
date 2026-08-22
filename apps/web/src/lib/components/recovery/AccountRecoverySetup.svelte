@@ -23,6 +23,7 @@
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
   import { fetchRecoveryByGuardian } from "../../api/recovery.js";
+  import { guardianConfigForBackup } from "../../auth/guardian-config.js";
 
   type Phase =
     | "intro" | "choosing" | "connecting" | "confirming" | "working" | "done"
@@ -174,11 +175,9 @@
       // Look up by the DERIVED guardian address (what setupAccountRecovery writes to the index).
       // Independence rule (plan §12.3): "already your backup" = info; cross-account = soft warn.
       try {
-        const { deriveGuardianAddress } = await import("../../auth/kernel-account.js");
-        const guardianAddr = await deriveGuardianAddress({
-          signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
-          threshold: 100,
-        });
+        // Pure derivation (no RPC) of the same helper-built config setup will pin (#161).
+        const { guardianAddressFor } = await import("../../auth/guardian-address.js");
+        const guardianAddr = guardianAddressFor(guardianConfigForBackup(backup.address));
         const existing = await fetchRecoveryByGuardian(guardianAddr).catch(() => null);
         if (existing && auth.parent) {
           if (existing.kernelAddress.toLowerCase() === auth.parent.toLowerCase()) {

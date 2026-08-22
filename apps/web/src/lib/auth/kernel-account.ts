@@ -38,6 +38,8 @@ import {
   buildUninstallRecoveryCallData,
   recoveryRouteSelector,
 } from "./recovery-route.js";
+import type { GuardianConfig } from "./guardian-config.js";
+import { assertGuardianAddressAgrees } from "./guardian-address.js";
 
 /** Arbitrum Sepolia — the buildathon chain. */
 export const KERNEL_CHAIN_ID = 421614;
@@ -942,15 +944,11 @@ export async function registerSubEnsViaPermit(
 // Addresses, ABIs and calldata for the route live in ./recovery-route.js (imported
 // at the top of this file) — pure, no I/O, unit-tested against live-chain bytes.
 
-/**
- * Guardian set for the weighted-ECDSA guardian ACCOUNT. v1 = a single backup EOA
- * (one signer, weight 100, threshold 100). Social recovery = more signers + an
- * M-of-N threshold — SAME shape, no rewrite.
- */
-export interface GuardianConfig {
-  signers: { address: Address; weight: number }[];
-  threshold: number;
-}
+// The guardian set's SHAPE lives in ./guardian-config.js (one definition, four
+// callers — #161) and its ADDRESS arithmetic in ./guardian-address.js (pure,
+// SDK-free, pinned by test to chain-observed values). This file only adds the
+// SDK half and cross-checks the two where it commits.
+export type { GuardianConfig } from "./guardian-config.js";
 
 /** ZeroDev/viem runtime for the recovery path (lazy-loaded, off the hot path). */
 async function loadRecoveryDeps() {
@@ -1019,14 +1017,24 @@ async function buildGuardianAccount(
 
 /**
  * Deterministic address of the guardian account for a given config — the value
- * registered in the caller hook. Computed with placeholder (empty-account)
- * signers; signing capability is irrelevant to the CREATE2 address.
+ * registered in the caller hook — derived TWICE and compared (#161):
+ *  - `guardianAddressFor` replays the CREATE2 arithmetic locally from pinned
+ *    constants (no SDK, no RPC; `test/guardian-address.test.ts` locks it to
+ *    chain-observed values);
+ *  - the SDK builds the account with placeholder (empty-account) signers and
+ *    asks the EntryPoint for the sender address — the path `recoverAccount`
+ *    will use later to actually sign.
+ * A disagreement means a dependency drifted under us; this throws before the
+ * caller installs anything, instead of pinning an address recovery can never
+ * reproduce. This is the COMMITTING derivation: use it where an address is
+ * about to be written on-chain. Hint lookups that only need the number should
+ * call `guardianAddressFor` directly and skip the round trip.
  */
 export async function deriveGuardianAddress(config: GuardianConfig): Promise<string> {
   const d = await loadRecoveryDeps();
   const signers = config.signers.map((s) => d.addressToEmptyAccount(s.address));
   const account = await buildGuardianAccount(d, config, signers);
-  return account.address.toLowerCase();
+  return assertGuardianAddressAgrees(config, account.address);
 }
 
 /** Send a sudo-signed userOp through the built Kernel, with the same stub-verificationGas retry as sendSessionUserOp. */
@@ -1071,7 +1079,27 @@ export async function setupRecovery(
 ): Promise<{ userOpHash: string; txHash: string }> {
   const d = await loadRecoveryDeps();
   const callData = buildRegisterGuardianCallData(d, guardianAddress as Address);
-  return sendSudoUserOp(builtKernel.kernelClient, { callData });
+  const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, { callData });
+
+  // READ BACK that the guardian is registered, pinned to the block the install
+  // landed in — the same discipline as `removeAllBackups` (#161: "never
+  // cross-checked against the installed guardian"). A green receipt proves the
+  // userOp ran; only the hook's own storage proves the pin took. `null` is an
+  // unreadable chain, reported as such and never as success.
+  const registered = await isGuardianRegistered(guardianAddress, builtKernel.address, blockNumber);
+  if (registered === false) {
+    throw new Error(
+      `The backup was not registered on-chain (tx ${txHash}): the account's recovery route ` +
+        "does not list it. Nothing to undo — please try adding the backup again.",
+    );
+  }
+  if (registered === null) {
+    throw new Error(
+      `Couldn't confirm the backup on-chain yet (tx ${txHash}). It may well have worked — ` +
+        "reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  return { userOpHash, txHash };
 }
 
 // --- Removing recovery (#165) ----------------------------------------------
@@ -1315,6 +1343,12 @@ export async function recoverAccount(
 ): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const guardianAccount = await buildGuardianAccount(d, args.guardianConfig, args.guardianSigners);
+  // The SDK-built guardian must sit where the pure derivation says — which is
+  // where setup pinned it and where the pre-flight read found it registered. A
+  // drift here (#161) would otherwise surface as the hook's bare "not allowed"
+  // revert, AFTER the user has minted a replacement credential. Nothing has been
+  // sent yet, so refusing is free.
+  assertGuardianAddressAgrees(args.guardianConfig, guardianAccount.address);
   const guardianClient = d.createKernelAccountClient({
     account: guardianAccount,
     chain: d.arbitrumSepolia,
@@ -1381,6 +1415,8 @@ const RECOVERY_HOOK_ALLOWED_ABI = [
 export async function isGuardianRegistered(
   guardianAddress: string,
   targetAddress: string,
+  /** Pin the read to a block (post-install read-back) — see `readRecoveryRoute`. */
+  atBlock?: bigint,
 ): Promise<boolean | null> {
   const [{ createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([
     import("viem"),
@@ -1388,11 +1424,13 @@ export async function isGuardianRegistered(
   ]);
   try {
     const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const at = atBlock === undefined ? {} : { blockNumber: atBlock };
     return (await publicClient.readContract({
       address: RECOVERY_CALLER_HOOK as Address,
       abi: RECOVERY_HOOK_ALLOWED_ABI,
       functionName: "allowed",
       args: [guardianAddress as Address, targetAddress as Address],
+      ...at,
     })) as boolean;
   } catch (e) {
     console.warn("[kernel] isGuardianRegistered read failed:", e);

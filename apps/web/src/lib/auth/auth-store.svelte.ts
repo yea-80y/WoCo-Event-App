@@ -17,6 +17,7 @@ import {
   postOrphanedCredentialNotice,
 } from "./orphaned-credential.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
+import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
   restoreSession,
@@ -2240,9 +2241,13 @@ async function setupAccountRecovery(backup: {
 
   // Escrow persisted + proven recoverable → now do the irreversible on-chain install.
   const { deriveGuardianAddress, setupRecovery } = await import("./kernel-account.js");
-  // v1 = single backup (1-of-1): one signer at full weight. Social M-of-N reuses
-  // this shape with more signers + a higher threshold (no rewrite).
-  const guardianConfig = { signers: [{ address: backup.address as `0x${string}`, weight: 100 }], threshold: 100 };
+  // ONE definition of the guardian set (#161): every other path derives the
+  // guardian address from the same helper, so setup and recovery cannot drift.
+  // `deriveGuardianAddress` is the committing derivation — it cross-checks the
+  // SDK-built account against the pure CREATE2 replay and refuses on mismatch,
+  // BEFORE the install, so a dependency drift can never pin an unreproducible
+  // guardian. `setupRecovery` then reads the registration back from the hook.
+  const guardianConfig = guardianConfigForBackup(backup.address);
   const guardianAddress = await deriveGuardianAddress(guardianConfig);
   const { txHash } = await setupRecovery(_kernel, guardianAddress);
 
@@ -2470,12 +2475,13 @@ async function recoverAndRekey(args: {
     // Unreadable chain is NOT a failure here: null means "could not tell", and
     // blocking a locked-out user's only way back in on an RPC blip is worse than
     // letting them proceed to the rotation, which now fails closed on its own.
-    const guardianConfigForCheck = {
-      signers: [{ address: backup.address as `0x${string}`, weight: 100 }],
-      threshold: 100,
-    };
-    const { deriveGuardianAddress, isGuardianRegistered } = await import("./kernel-account.js");
-    const expectedGuardian = await deriveGuardianAddress(guardianConfigForCheck);
+    // The SAME helper setup derived the pinned address from (#161); the pure
+    // derivation needs no RPC, and `recoverAccount` re-asserts that the SDK-built
+    // guardian lands on this exact address before it sends anything.
+    const guardianConfigForCheck = guardianConfigForBackup(backup.address);
+    const { guardianAddressFor } = await import("./guardian-address.js");
+    const { isGuardianRegistered } = await import("./kernel-account.js");
+    const expectedGuardian = guardianAddressFor(guardianConfigForCheck);
     const registered = await isGuardianRegistered(expectedGuardian, target);
     if (registered === false) {
       throw new Error(
