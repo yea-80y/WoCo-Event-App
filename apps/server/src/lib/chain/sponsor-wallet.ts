@@ -63,6 +63,15 @@ function getSponsorWallet(): Wallet {
  */
 export type SponsorTxSent = (tx: { txHash: string; nonce: number; chainId: number }) => void;
 
+/**
+ * Called with the reserved nonce BEFORE the tx is handed to the node (#318).
+ * This is the caller's chance to journal the intent durably — and a THROW here
+ * ABORTS the broadcast, which is the point: an unjournalled registerEvent is
+ * one a crash can silently duplicate. Runs inside the nonce queue's send
+ * closure, so a nonce re-sync retry re-invokes it with the corrected nonce.
+ */
+export type SponsorTxReserved = (r: { nonce: number; chainId: number }) => void;
+
 /** Fate of a previously-broadcast registerEvent tx. */
 export type RegisterTxOutcome =
   /** Mined and the Registered log is in the receipt — the registration HAPPENED. */
@@ -354,6 +363,7 @@ export async function registerEventOnChain(
   manifestRef: string,
   v2Params?: RegisterV2Params,
   onTxSent?: SponsorTxSent,
+  onTxReserved?: SponsorTxReserved,
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const chainId = getActiveChainId();
   const address = getWoCoEventAddress(chainId);
@@ -376,6 +386,7 @@ export async function registerEventOnChain(
       pk,
       chainId,
       onTxSent,
+      onTxReserved,
     );
   }
 
@@ -388,7 +399,11 @@ export async function registerEventOnChain(
 
   const tx = await sendSponsorTx(
     { chainId, address: wallet.address, provider: wallet.provider!, label: "v1.registerEvent" },
-    (o) => contract.registerEvent(supply, manifestRef, o),
+    (o) => {
+      // Journal the intent BEFORE the node sees the tx — a throw aborts the send (#318).
+      onTxReserved?.({ nonce: o.nonce, chainId });
+      return contract.registerEvent(supply, manifestRef, o);
+    },
   );
   onTxSent?.({ txHash: tx.hash, nonce: tx.nonce, chainId });
   const receipt = await tx.wait(1);

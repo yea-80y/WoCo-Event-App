@@ -248,6 +248,7 @@ export async function registerEventV2(
   sponsorPk: string,
   chainId: number,
   onTxSent?: (tx: { txHash: string; nonce: number; chainId: number }) => void,
+  onTxReserved?: (r: { nonce: number; chainId: number }) => void,
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const wallet   = new Wallet(sponsorPk, getProvider(chainId));
   const contract = new Contract(contractAddress, V2_REGISTER_ABI, wallet);
@@ -260,9 +261,15 @@ export async function registerEventV2(
 
   const tx = await sendSponsorTx(
     { chainId, address: wallet.address, provider: wallet.provider!, label: "registerEvent" },
-    (o) => contract.registerEvent(
-      supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs, o,
-    ),
+    (o) => {
+      // Journal the intent BEFORE the node sees the tx — a throw aborts the
+      // send (#318). Inside the closure so a nonce re-sync retry re-journals
+      // the corrected nonce.
+      onTxReserved?.({ nonce: o.nonce, chainId });
+      return contract.registerEvent(
+        supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs, o,
+      );
+    },
   );
   // Durably mark the tx as broadcast BEFORE awaiting it: everything from here to
   // the caller's confirmation write is a window in which a crash or a client retry
