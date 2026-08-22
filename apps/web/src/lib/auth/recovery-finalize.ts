@@ -17,6 +17,7 @@
 
 import type { AuthKind } from "@woco/shared";
 import type { PortabilityBackfill, PortabilityBackfillArgs } from "./recovery-portability.js";
+import type { SessionProbeResult } from "./session-probe.js";
 
 /** The accessors the gather step needs — a subset of the finalize deps, shared
  *  with auth-store's mint-time backfill so both callers feed the SAME preamble. */
@@ -33,6 +34,11 @@ export interface BackfillGatherDeps {
 export interface RecoveryFinalizeDeps extends BackfillGatherDeps {
   kind: () => AuthKind;
   ensureSession: () => Promise<boolean>;
+  /** One authenticated round-trip with the fresh session, made BEFORE anything
+   *  else, so the server re-reads the Kernel's owner now and retires the
+   *  rotated-out key (#200 — see session-probe.ts). Test seam — defaults to the
+   *  real probe, which reaches the network. */
+  probeSession?: () => Promise<SessionProbeResult>;
   /** Test seam — defaults to the real backfillPortabilityEnvelope, which
    *  reaches the network (the repo's node --test runner has no module mocks). */
   backfill?: (args: PortabilityBackfillArgs) => Promise<PortabilityBackfill>;
@@ -69,9 +75,10 @@ export type RecoveryFinalizeResult =
   /**
    * Web3auth owner: no PRF channel, no envelope by design — re-opening on a new
    * device re-runs the portal. `sessionMinted` is false when the best-effort mint
-   * failed; the recovery still stands, but the caller must not promise a working
-   * session it did not get. Telling this user "You're back in" unqualified is the
-   * same misimpression the whole step exists to prevent.
+   * failed OR the server did not accept the session on the probe (#200); the
+   * recovery still stands, but the caller must not promise a working session it
+   * did not get. Telling this user "You're back in" unqualified is the same
+   * misimpression the whole step exists to prevent.
    */
   | { status: "session-only"; sessionMinted: boolean }
   /**
@@ -211,6 +218,11 @@ export async function finalizeRecovery(
   return result;
 }
 
+async function probe(deps: RecoveryFinalizeDeps): Promise<SessionProbeResult> {
+  const fn = deps.probeSession ?? (await import("./session-probe.js")).probeSessionWithServer;
+  return fn();
+}
+
 async function finalizeOnce(
   deps: RecoveryFinalizeDeps,
   opts: RecoveryFinalizeOptions,
@@ -236,7 +248,14 @@ async function finalizeOnce(
     // the first authenticated action re-prompts — the pre-recovery norm.
     const ok = await deps.ensureSession();
     if (!ok) console.warn("[recovery-finalize] session mint failed (non-passkey) — first action will re-mint");
-    return { status: "session-only", sessionMinted: ok };
+    // The probe is the one server contact this owner kind makes before the user
+    // acts, and it is what retires the rotated-out key server-side (#200). Until
+    // it existed, a web3auth recovery left that key coasting on the server's
+    // cached owner for up to the TTL. A refused or unreachable probe means the
+    // session is not KNOWN to work, which is what `sessionMinted` reports.
+    const probed = ok ? await probe(deps) : { ok: false as const, reason: "no session to probe" };
+    if (ok && !probed.ok) console.warn(`[recovery-finalize] session probe failed (non-passkey): ${probed.reason}`);
+    return { status: "session-only", sessionMinted: ok && probed.ok };
   }
 
   // The envelope upload is an authenticated SOC stamp (authPost /api/swarm/soc),
@@ -244,6 +263,22 @@ async function finalizeOnce(
   // still in memory from the ceremony, no biometric prompt.
   const ok = await deps.ensureSession();
   if (!ok) return { status: "failed", reason: "session mint failed", retryable: true, stage: "session" };
+
+  // Contact the server with the new key BEFORE the envelope work (#200): the
+  // envelope write is authenticated too, but it can fail for reasons of its own
+  // (no binding, seed unreadable) and the server must hear from the new owner
+  // regardless. A refusal here is a session-stage failure — the next action
+  // would be refused the same way — and it is retryable: the usual cause is a
+  // lagging RPC replica the server discards, healed by the next attempt.
+  const probed = await probe(deps);
+  if (!probed.ok) {
+    return {
+      status: "failed",
+      reason: `session not accepted by the server: ${probed.reason}`,
+      retryable: true,
+      stage: "session",
+    };
+  }
 
   const gathered = await gatherBackfillArgs(deps);
   if (gathered.status !== "ready") {
