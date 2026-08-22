@@ -349,8 +349,10 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
 
 `.data/` FILES THAT MUST SURVIVE RESTARTS (loaded on startup — don't delete):
   consumed-tx-hashes.json · revoked-sessions.json · consumed-stripe-sessions.json
-  kernel-deployed.json (which Kernels have been seen with an on-chain owner — losing
-    it reopens the #200 window, silently, on the next deploy)
+  kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
+    owner, and at which L2 block — losing it reopens the #200 windows, silently, on
+    the next deploy: the counterfactual fallback returns and a lagging RPC replica
+    can roll the owner back to a retired key)
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
