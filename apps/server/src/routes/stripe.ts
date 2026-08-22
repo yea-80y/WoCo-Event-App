@@ -27,6 +27,7 @@ import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
+import { chainEventEndMs } from "../lib/event/end-date-guard.js";
 import { hashEmail, type ClaimIdentifier } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
 import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
@@ -599,6 +600,27 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: seriesSaleMessage(seriesWindow.reason) }, 409);
   }
 
+  // Chain-end backstop (#294). The feed gates above read `endDate`, which is
+  // editable; the contract's eventEndTs is not, and past it EVERY mint reverts
+  // SalesClosed — charge-then-auto-refund on 100% of sales. The chain end is
+  // immutable, so after the first read this is a memo hit (zero RPC). Fails
+  // OPEN on a transport error: the #241 feed gate still applies and the
+  // contract itself is the final refusal, exactly like the availability read.
+  let chainEndMs: number | null = null;
+  try {
+    chainEndMs = await chainEventEndMs(series.onChainEventId);
+  } catch (err) {
+    console.warn("[stripe/create-checkout] chain-end read failed (continuing):", err);
+  }
+  if (chainEndMs !== null && Date.now() >= chainEndMs) {
+    console.warn(
+      `[stripe/create-checkout] BLOCKED — on-chain sales end passed; refusing to charge ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+      `chainEnd=${new Date(chainEndMs).toISOString()} feedEnd=${event.endDate || event.startDate || "<none>"})`,
+    );
+    return c.json({ ok: false, error: salesClosedMessage("ended") }, 409);
+  }
+
   // One contract read serves the sold-out pre-check and the firstN tier count.
   // The pre-check fails OPEN on a transport error (the contract re-checks
   // supply at mint and the webhook auto-refund is the backstop); the tier
@@ -710,7 +732,7 @@ stripe.post("/create-checkout", async (c) => {
 
   // #300: the session must not outlive the event it sells for. Undefined keeps
   // Stripe's 24 h default (event end is 24 h+ away, so the default is tighter).
-  const expiresAt = checkoutExpiresAt(event);
+  const expiresAt = checkoutExpiresAt(event, Date.now(), chainEndMs);
 
   try {
     const s = getStripe();
@@ -1278,6 +1300,25 @@ async function handleSuccessfulPayment(
         `(eventId=${eventId.slice(0, 8)} end=${eventEndDate || eventDate})`,
       );
       stoppedReason = "Event ended before payment completed — sales closed";
+    }
+  }
+  // #294: the CHAIN's own end, checked independently of the feed — an endDate
+  // extended past the registered eventEndTs (the exact divergence #294 names)
+  // keeps the feed check above green while every mint reverts. Memo hit in the
+  // common case (create-checkout warmed it); fail-OPEN on a transport error —
+  // the contract remains the authority and refuses the mint itself.
+  if (isV2 && !stoppedReason) {
+    try {
+      const chainEndMs = await chainEventEndMs(v2OnChainEventId);
+      if (chainEndMs !== null && Date.now() >= chainEndMs) {
+        console.warn(
+          `[stripe-webhook] on-chain sales end passed before payment completed — refunding without ` +
+          `broadcasting (eventId=${eventId.slice(0, 8)} chainEnd=${new Date(chainEndMs).toISOString()})`,
+        );
+        stoppedReason = "Event ended before payment completed — sales closed";
+      }
+    } catch (err) {
+      console.warn("[stripe-webhook] chain-end read failed (continuing to mint):", err);
     }
   }
 

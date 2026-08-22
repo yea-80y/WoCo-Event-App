@@ -513,6 +513,18 @@ export async function updateEventMetadata(opts: {
   if (isNaN(start) || isNaN(end)) throw new Error("Invalid event dates");
   if (end < start) throw new Error("endDate is before startDate");
 
+  // #294: the contract's eventEndTs has no setter, so an endDate EXTENDED past
+  // it sells tickets every mint refuses. Only an extension consults the chain —
+  // shortening tightens the feed gate under the chain end and needs no read.
+  if (updates.endDate !== undefined && updated.endDate !== feed.endDate) {
+    const prevEnd = new Date(feed.endDate).getTime();
+    if (!(end <= prevEnd)) {
+      const { checkEndDateExtension } = await import("./end-date-guard.js");
+      const verdict = await checkEndDateExtension({ series: updated.series, newEndMs: end });
+      if (!verdict.ok) throw new Error(verdict.error);
+    }
+  }
+
   // Legacy platform feed: server rewrites it — but ONLY when the basis came from
   // the platform feed itself (see the trust-boundary note above). Phase B: the
   // server has no key for the client-owned SOC; the route returns `updated` for

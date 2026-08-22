@@ -118,18 +118,29 @@ export function getAllResolutionEntries(): Array<{ onChainEventId: string; wocoE
 // ---------------------------------------------------------------------------
 
 /**
- * A registerEvent tx that has been BROADCAST but not yet recorded as confirmed.
- * Written the instant the tx hits the mempool (before `tx.wait`), so a crash,
- * timeout or organiser retry in the confirmation window can RESOLVE the existing
- * tx instead of broadcasting a second one. `nonce` is what makes "this tx can
- * never mine" decidable: if the sponsor's confirmed nonce has passed it and no
- * receipt exists, some other tx took that slot.
+ * A registerEvent tx in its broadcast window, journalled in TWO phases (#318):
+ *
+ *  1. INTENT — written with the reserved nonce BEFORE the tx is handed to the
+ *     node (`txHash` absent). This write is load-bearing: if it cannot reach
+ *     disk the broadcast is REFUSED, because a disk that fails writes is
+ *     exactly the disk that loses the marker when the process dies with it —
+ *     and an unjournalled broadcast is what lets a restart mint a second
+ *     on-chain event for the same series.
+ *  2. UPGRADE — the same entry gains `txHash` the moment the tx is broadcast
+ *     (before `tx.wait`), so a crash, timeout or organiser retry in the
+ *     confirmation window can RESOLVE that tx instead of sending another.
+ *
+ * `nonce` is what makes both shapes decidable after a crash: a hash-carrying
+ * marker resolves by receipt; a hash-less one resolves by whether the nonce
+ * slot was consumed and whether the manifest ever registered
+ * (lib/event/registration-intent.ts).
  */
 export interface PendingRegistration {
-  txHash: string;
+  /** Absent while only the INTENT is journalled — nonce reserved, broadcast unproven. */
+  txHash?: string;
   nonce: number;
   chainId: number;
-  /** ISO timestamp of broadcast — diagnostics only. */
+  /** ISO timestamp of the journal write — diagnostics only. */
   at: string;
 }
 
@@ -153,19 +164,52 @@ function ensurePendingLoaded(): void {
   }
 }
 
-function persistPending(): void {
-  writeJsonAtomic(PENDING_FILE, Object.fromEntries(pending), "onchain-pending");
+function persistPending(): boolean {
+  return writeJsonAtomic(PENDING_FILE, Object.fromEntries(pending), "onchain-pending");
 }
 
-/** Mark a registerEvent tx as broadcast. MUST be called before the tx can mine. */
+/**
+ * Journal the INTENT to broadcast at `nonce` — phase 1 of the #318 contract.
+ * THROWS when the journal cannot be written, and the caller MUST treat that as
+ * "do not broadcast": the write is the only thing standing between a crash and
+ * an untraceable in-flight registerEvent. `writeJsonAtomic` is atomic, so a
+ * failed write leaves the file without the entry — the in-memory copy is
+ * removed to match before throwing.
+ */
+export function recordRegistrationIntent(
+  eventId: string,
+  seriesId: string,
+  intent: { nonce: number; chainId: number },
+): void {
+  ensurePendingLoaded();
+  const k = key(eventId, seriesId);
+  pending.set(k, { ...intent, at: new Date().toISOString() });
+  if (!persistPending()) {
+    pending.delete(k);
+    throw new Error("registration journal unwritable — refusing to broadcast registerEvent");
+  }
+}
+
+/**
+ * Upgrade the marker with the broadcast tx's hash — phase 2. MUST be called
+ * before the tx can mine. A persist failure here is loud but NOT fatal: the tx
+ * is already out, the in-memory marker serves this process, and the durable
+ * intent from phase 1 still covers a crash (the hash-less marker resolves via
+ * registration-intent.ts).
+ */
 export function recordPendingRegistration(
   eventId: string,
   seriesId: string,
-  tx: Omit<PendingRegistration, "at">,
+  tx: { txHash: string; nonce: number; chainId: number },
 ): void {
   ensurePendingLoaded();
   pending.set(key(eventId, seriesId), { ...tx, at: new Date().toISOString() });
-  persistPending();
+  if (!persistPending()) {
+    console.error(
+      `[onchain-cache] pending-registration upgrade for ${eventId}/${seriesId} not journalled — ` +
+        "in-memory only; a crash now leaves the intent marker, which the intent resolver handles",
+    );
+  }
 }
 
 export function lookupPendingRegistration(eventId: string, seriesId: string): PendingRegistration | null {
@@ -177,7 +221,11 @@ export function lookupPendingRegistration(eventId: string, seriesId: string): Pe
 export function clearPendingRegistration(eventId: string, seriesId: string): void {
   ensurePendingLoaded();
   if (!pending.delete(key(eventId, seriesId))) return;
-  persistPending();
+  if (!persistPending()) {
+    // Non-fatal: a stale marker on disk resolves harmlessly on the next boot
+    // (step 2 of register-once finds the recorded id first).
+    console.warn(`[onchain-cache] could not persist marker clear for ${eventId}/${seriesId}`);
+  }
 }
 
 /** Deterministic eventId for the sponsor's nth registration — mirrors the contract. */
@@ -186,34 +234,47 @@ function deriveEventId(sponsor: string, nonce: number): string {
 }
 
 /**
- * Rebuild `byManifestRef` from the chain by walking the sponsor's registrations.
- * Bounded by `organiserNonce` (exact count), batched, throttled. The fallback tier —
- * the hot path + .data cache mean this rarely runs (cold/uncached series only).
+ * Walk EVERY sponsor registration on chain into `byManifestRef`. Bounded by
+ * `organiserNonce` (exact count), batched. THROWS on any failure — a caller
+ * that needs a definitive answer (the #318 intent resolver) must be able to
+ * tell "walked and absent" from "could not walk"; only the lenient reconcile
+ * wrapper below is allowed to swallow.
+ */
+async function walkChainRegistrations(): Promise<void> {
+  const chainId = getActiveChainId();
+  const deployed = getDeployedContract(chainId);
+  if (!deployed || deployed.version !== "v2") return; // resolver only applies to V2
+  const sponsor = getSponsorAddress();
+  const { getOrganiserNonce } = await import("../chain/event-contract.js");
+  const count = Number(await getOrganiserNonce(sponsor, chainId));
+  const BATCH = 25;
+  for (let start = 0; start < count; start += BATCH) {
+    const ids = Array.from(
+      { length: Math.min(BATCH, count - start) },
+      (_, i) => deriveEventId(sponsor, start + i),
+    );
+    // No per-id catch: a dropped read here must fail the WALK, not read as an
+    // absent registration (the intent resolver re-broadcasts on "absent").
+    const events = await Promise.all(ids.map((id) => getOnChainEvent(id, chainId)));
+    for (let i = 0; i < ids.length; i++) {
+      const ev = events[i];
+      if (ev?.manifestRef) byManifestRef.set(ev.manifestRef.toLowerCase(), ids[i]);
+    }
+  }
+  console.log(`[onchain-cache] reconciled ${byManifestRef.size} on-chain events from chain`);
+}
+
+/**
+ * Rebuild `byManifestRef` from the chain — throttled and best-effort. The
+ * fallback tier for feed healing: the hot path + .data cache mean this rarely
+ * runs (cold/uncached series only).
  */
 async function reconcileFromChain(): Promise<void> {
   if (reconcileInFlight) return reconcileInFlight;
   if (Date.now() - lastReconcileAt < RECONCILE_THROTTLE_MS) return;
   reconcileInFlight = (async () => {
     try {
-      const chainId = getActiveChainId();
-      const deployed = getDeployedContract(chainId);
-      if (!deployed || deployed.version !== "v2") return; // resolver only applies to V2
-      const sponsor = getSponsorAddress();
-      const { getOrganiserNonce } = await import("../chain/event-contract.js");
-      const count = Number(await getOrganiserNonce(sponsor, chainId));
-      const BATCH = 25;
-      for (let start = 0; start < count; start += BATCH) {
-        const ids = Array.from(
-          { length: Math.min(BATCH, count - start) },
-          (_, i) => deriveEventId(sponsor, start + i),
-        );
-        const events = await Promise.all(ids.map((id) => getOnChainEvent(id, chainId).catch(() => null)));
-        for (let i = 0; i < ids.length; i++) {
-          const ev = events[i];
-          if (ev?.manifestRef) byManifestRef.set(ev.manifestRef.toLowerCase(), ids[i]);
-        }
-      }
-      console.log(`[onchain-cache] reconciled ${byManifestRef.size} on-chain events from chain`);
+      await walkChainRegistrations();
     } catch (err) {
       console.error("[onchain-cache] reconcile failed:", err);
     } finally {
@@ -222,6 +283,21 @@ async function reconcileFromChain(): Promise<void> {
     }
   })();
   return reconcileInFlight;
+}
+
+/**
+ * Definitive "did a registration for this manifest ever land?" — the positive
+ * arm of the #318 intent resolver. A cache hit answers immediately; otherwise
+ * the FULL chain walk runs (no throttle, no swallowing) so that `null` means
+ * "walked the sponsor's every registration and it is not there", never "the
+ * walk didn't happen". Throws when the chain cannot be walked.
+ */
+export async function findOnChainEventIdByManifestRef(manifestRef: string): Promise<string | null> {
+  const lc = manifestRef.toLowerCase();
+  const hit = byManifestRef.get(lc);
+  if (hit) return hit;
+  await walkChainRegistrations();
+  return byManifestRef.get(lc) ?? null;
 }
 
 /**

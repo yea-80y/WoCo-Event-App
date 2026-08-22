@@ -37,12 +37,20 @@ function harness(over: Partial<RegisterDeps> = {}) {
     lookupOnChainEventId: (e, s) => registry.get(`${e}|${s}`) ?? null,
     lookupPending: (e, s) => pending.get(`${e}|${s}`) ?? null,
     recordPending: (e, s, tx) => void pending.set(`${e}|${s}`, { ...tx, at: "now" }),
+    recordIntent: (e, s, r) => void pending.set(`${e}|${s}`, { ...r, at: "now" }),
     clearPending: (e, s) => void pending.delete(`${e}|${s}`),
     resolveRegisterTx: async () => {
       calls.resolves++;
       return { status: "pending" as const, txHash: "0xtx" } as never;
     },
-    registerEventOnChain: (async (_supply, _ref, _v2, onTxSent) => {
+    resolveIntent: async () => {
+      calls.resolves++;
+      return { status: "pending" as const };
+    },
+    // Mirrors production ordering (#318): the intent journal runs INSIDE the
+    // send path, before the broadcast — its throw must prevent the send.
+    registerEventOnChain: (async (_supply, _ref, _v2, onTxSent, onTxReserved) => {
+      onTxReserved?.({ nonce: 7, chainId: 421614 });
       calls.broadcasts++;
       onTxSent?.({ txHash: "0xtx1", nonce: 7, chainId: 421614 });
       return { onChainEventId: "0xonchain1", txHash: "0xtx1" };

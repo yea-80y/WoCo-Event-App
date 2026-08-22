@@ -138,6 +138,24 @@ export async function getSlotData(
   };
 }
 
+/**
+ * The chain's registered sales end for a series (epoch seconds), or null when
+ * there is no on-chain record of it. V1 predates `eventEndTs` entirely, so a
+ * V1 deployment reads as "no on-chain end" rather than a fabricated one.
+ * Transport failures throw — a caller treating them as "no constraint" would
+ * re-open the #294 hole under an RPC blip.
+ */
+export async function getOnChainEventEnd(
+  onChainEventId: string,
+  chainId: number,
+): Promise<number | null> {
+  const c = getDeployedContract(chainId);
+  if (!c) throw new Error(`No WoCoEvent contract deployed on chain ${chainId}`);
+  if (c.version !== "v2") return null;
+  const { getOnChainEventEndV2 } = await import("./event-contract-v2.js");
+  return getOnChainEventEndV2(onChainEventId, c.address, chainId);
+}
+
 export async function getOnChainEvent(
   onChainEventId: string,
   chainId: number,

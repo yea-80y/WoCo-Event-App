@@ -15,6 +15,7 @@ import type { OnChainEvent, SlotData } from "./event-contract.js";
 const V2_READ_ABI = [
   "function organiserNonce(address) view returns (uint256)",
   "function getEvent(bytes32) view returns (uint64 totalSupply, uint64 nextSlot, uint128 priceBaseUnits, address organiser, address payoutRecipient, uint16 platformFeeBps, address dropGate, bytes32 manifestRef)",
+  "function getEventStatus(bytes32) view returns (uint64 eventEndTs, uint32 releaseDelay, bool cancelled, bool withdrawn, bool frozen, uint256 escrow)",
   "function getSlotData(bytes32 eventId, uint256 slot) view returns (address owner, address claimer, bytes32 orderRef, bool escrowed, bool refunded)",
   "function authorisedSponsors(address) view returns (bool)",
   // Declared so ethers decodes the revert — getOnChainEventV2 keys on its name.
@@ -102,6 +103,32 @@ export async function getOnChainEventV2(
       organiser:   (r[3] as string).toLowerCase(), // organiser
       manifestRef: r[7] as string,                 // manifestRef
     };
+  } catch (err) {
+    const e = err as { revert?: { name?: string } | null; data?: unknown };
+    if (e?.revert?.name === "EventNotFound") return null;
+    if (typeof e?.data === "string" && e.data.toLowerCase() === EVENT_NOT_FOUND_SELECTOR) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * The contract's registered sales end (`eventEndTs`, epoch seconds) — set once
+ * at `registerEvent` and IMMUTABLE (WoCoEventV2 has no setter), which is why
+ * #294 exists: the feed's `endDate` can be edited, this cannot. Same contract
+ * as {@link getOnChainEventV2}: null means exactly `EventNotFound()`; every
+ * other failure throws.
+ */
+export async function getOnChainEventEndV2(
+  onChainEventId: string,
+  contractAddress: string,
+  chainId: number,
+): Promise<number | null> {
+  try {
+    const fn = readContract(contractAddress, chainId).getFunction("getEventStatus");
+    const r = await fn.staticCall(onChainEventId);
+    return Number(r[0]); // eventEndTs
   } catch (err) {
     const e = err as { revert?: { name?: string } | null; data?: unknown };
     if (e?.revert?.name === "EventNotFound") return null;
@@ -248,6 +275,7 @@ export async function registerEventV2(
   sponsorPk: string,
   chainId: number,
   onTxSent?: (tx: { txHash: string; nonce: number; chainId: number }) => void,
+  onTxReserved?: (r: { nonce: number; chainId: number }) => void,
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const wallet   = new Wallet(sponsorPk, getProvider(chainId));
   const contract = new Contract(contractAddress, V2_REGISTER_ABI, wallet);
@@ -260,9 +288,15 @@ export async function registerEventV2(
 
   const tx = await sendSponsorTx(
     { chainId, address: wallet.address, provider: wallet.provider!, label: "registerEvent" },
-    (o) => contract.registerEvent(
-      supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs, o,
-    ),
+    (o) => {
+      // Journal the intent BEFORE the node sees the tx — a throw aborts the
+      // send (#318). Inside the closure so a nonce re-sync retry re-journals
+      // the corrected nonce.
+      onTxReserved?.({ nonce: o.nonce, chainId });
+      return contract.registerEvent(
+        supply, priceBaseUnits, payoutRecipient, dropGate, manifestRef, eventEndTs, o,
+      );
+    },
   );
   // Durably mark the tx as broadcast BEFORE awaiting it: everything from here to
   // the caller's confirmation write is a window in which a crash or a client retry
