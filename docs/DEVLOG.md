@@ -30,18 +30,18 @@ durability.
 
 **Bounded the same path (#163, #210), same day.** It runs before any authorization, so its
 keys are caller-chosen and every cache miss is an eth_call on the RPC the payment path
-shares. Now: both caches capped (oldest evicted); a failed read remembered 15s (outage ≠
-retry storm; a stale read is deliberately NOT negative-cached — a retired key could
-otherwise keep the legitimate owner's next read answering "error" on demand); concurrent
+shares. Now: both caches capped (oldest evicted); concurrent
 requests for one Kernel share one read; a read happens only within the caller's per-client
 budget of UNCACHED reads (`owner-read-budget.ts`, 120/min, drawn only when verification
 reaches the chain — cache hits and EOA parents cost nothing; over budget = "error", which
 can only withhold); and a store record is CREATED only by a confirmed read (the chain named
 the presenting key), so foreign ZeroDev Kernels no longer fill `kernel-deployed.json` or
-force a fsync per request — an existing record is still updated by any fresh read.
-Rejected: the counterfactual short-circuit (#163's suggestion) — a retired key would never
-be read; and store eviction (#210's suggestion) — eviction fails open, bounding creation
-does not.
+force a fsync per request — an existing record is still updated by any fresh read, and a
+cache-hit confirmation records the account when the store has none. Rejected, test-pinned:
+the counterfactual short-circuit (#163's suggestion) — a retired key would never be read;
+store eviction (#210's suggestion) — eviction fails open, bounding creation does not; and a
+server-side negative cache for failed reads — client.ts already throttles after a double
+failure, and any server window defeats its one immediate retry on a blip → banner.
 
 ## Claim feeds: page them, and stop lenient reads driving writes (2026-08-01)
 

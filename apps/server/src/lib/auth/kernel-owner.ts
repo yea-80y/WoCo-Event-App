@@ -33,16 +33,22 @@
  * READS ARE BOUNDED (#163, #210). This module runs before any authorization, so
  * everything it keys on — the parent, the recovered EOA — is caller-chosen, and
  * every cache miss is an eth_call on the RPC the payment path shares. So: both
- * caches are capped (oldest entry evicted); a failed read is remembered briefly
- * so an outage does not become a retry storm at the moment the upstream is least
- * able to serve it; concurrent requests for one Kernel share one read; and a read
- * happens only if the caller's per-client budget allows it (owner-read-budget.ts,
- * supplied by the auth middleware). Over budget or negatively cached, the read
- * reports `"error"` and the rules below decide — refuse for a known-deployed
- * account, counterfactual for an unknown one — never a grant the chain did not
- * give. A counterfactual short-circuit that skips the chain entirely was
- * considered and rejected: it would let a retired key, whose counterfactual still
- * matches, never be read at all.
+ * caches are capped (oldest entry evicted); concurrent requests for one Kernel
+ * share one read; and a read happens only if the caller's per-client budget
+ * allows it (owner-read-budget.ts, supplied by the auth middleware). Over budget,
+ * the read reports `"error"` and the rules below decide — refuse for a
+ * known-deployed account, counterfactual for an unknown one — never a grant the
+ * chain did not give.
+ *
+ * Two bounds were considered and REJECTED, and are pinned by tests so they are not
+ * re-added. A counterfactual short-circuit that skips the chain for a
+ * never-observed account would let a retired key, whose counterfactual still
+ * matches, never be read at all. A server-side negative cache for FAILED reads
+ * would bound an outage's retries — but the client already throttles itself after
+ * a double failure (client.ts), and any server window, however short, defeats its
+ * one IMMEDIATE retry on a sub-second RPC blip, turning a blip into the "session
+ * ended" banner. Upstream load during an outage is bounded by the budget and the
+ * shared in-flight read instead.
  */
 
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
@@ -50,7 +56,7 @@ import { getKernelAddressFromECDSA, getValidatorAddress } from "@zerodev/ecdsa-v
 import { createPublicClient, http, zeroAddress, type Address, type PublicClient } from "viem";
 import { arbitrumSepolia } from "viem/chains";
 import { getChainRpcUrl } from "../chain/event-contract.js";
-import { isKernelKnownDeployed } from "./kernel-deployed.js";
+import { isKernelKnownDeployed, getKernelOwnerRecord, recordKernelOwner } from "./kernel-deployed.js";
 import { observeOwnerRead, type OwnerRead } from "./kernel-owner-ordering.js";
 
 /** Kernel deployments live on Arbitrum Sepolia (KERNEL_CHAIN_ID client-side). */
@@ -84,13 +90,6 @@ export interface OwnerReadOptions {
  *  memory is the requirement; recency would only refine which entry goes. */
 const OWNER_CACHE_MAX = 5_000;
 const KERNEL_OF_CACHE_MAX = 5_000;
-const ERROR_CACHE_MAX = 5_000;
-/** How long a FAILED read is remembered before the chain is asked again. Short:
- *  it exists to collapse a burst of retries during an outage, not to outlive the
- *  outage. A stale read (ordering) is NOT cached this way — a retired key's
- *  request could otherwise keep the legitimate owner's next cache-miss read
- *  answering "error" for this long, on demand. */
-const ERROR_CACHE_MS = 15_000;
 
 function capMap<K, V>(map: Map<K, V>, max: number): void {
   while (map.size > max) {
@@ -103,7 +102,9 @@ function capMap<K, V>(map: Map<K, V>, max: number): void {
  *  cached, capped. */
 const _kernelOfCache = new Map<string, string>();
 
-/** kernel (lower) → { owner (lower) | null (undeployed/unset), fetchedAt }.
+/** kernel (lower) → { owner (lower) | null (undeployed/unset), block, fetchedAt }.
+ *  `block` is the L2 block the entry was read at, kept so a cache-hit
+ *  confirmation can record the account (see isKernelOwner).
  *  Owners rotate (recovery), so reads expire; a rotated-away key stops
  *  authenticating within TTL. Undeployed (null) results are cached too so
  *  fresh counterfactual accounts don't eth_call on every request.
@@ -117,11 +118,8 @@ const _kernelOfCache = new Map<string, string>();
  *  therefore re-reads the chain before any rejection that a cached value
  *  decided. Steady-state traffic (owner matches) never pays the extra call;
  *  a wrong-key attempt pays one eth_call, within the caller's read budget. */
-const _ownerCache = new Map<string, { owner: string | null; fetchedAt: number }>();
+const _ownerCache = new Map<string, { owner: string | null; block: number; fetchedAt: number }>();
 const OWNER_CACHE_TTL_MS = 5 * 60 * 1000;
-
-/** kernel (lower) → epoch ms until which a failed read is not retried. */
-const _errorUntil = new Map<string, number>();
 
 /** kernel (lower) → the raw chain read in flight, shared by concurrent callers. */
 const _inFlightReads = new Map<string, Promise<OwnerRead>>();
@@ -137,11 +135,10 @@ export function _setOwnerFetchForTests(
 }
 export function _resetOwnerCacheForTests(): void {
   _ownerCache.clear();
-  _errorUntil.clear();
   _inFlightReads.clear();
 }
-export function _cacheSizesForTests(): { owner: number; kernelOf: number; error: number } {
-  return { owner: _ownerCache.size, kernelOf: _kernelOfCache.size, error: _errorUntil.size };
+export function _cacheSizesForTests(): { owner: number; kernelOf: number } {
+  return { owner: _ownerCache.size, kernelOf: _kernelOfCache.size };
 }
 
 /**
@@ -246,7 +243,7 @@ function _readOwnerAtBlock(key: string): Promise<OwnerRead> {
 /** The live read itself: caches definitive, in-order answers; never caches a
  *  read that ordering judged stale — a stale answer is reported as "error" so
  *  the caller treats it as "knows nothing current", which for a known-deployed
- *  account means refuse. A FAILED read is remembered for ERROR_CACHE_MS.
+ *  account means refuse. A FAILED read is not cached either (see the header).
  *
  *  `presentedBy` is the EOA whose delegation triggered the read, when there is
  *  one — it decides whether a store record may be CREATED (ordering.ts, #210). */
@@ -255,12 +252,6 @@ async function _fetchAndCacheOwner(
   presentedBy: string | undefined,
   opts: OwnerReadOptions,
 ): Promise<string | null | "error"> {
-  const now = Date.now();
-  const errorUntil = _errorUntil.get(key);
-  if (errorUntil !== undefined) {
-    if (errorUntil > now) return "error";
-    _errorUntil.delete(key);
-  }
   // Joining a read already in flight costs nothing, so it needs no budget.
   // A read this caller would START does.
   if (!_inFlightReads.has(key) && opts.chainReadAllowed && !opts.chainReadAllowed()) {
@@ -275,12 +266,10 @@ async function _fetchAndCacheOwner(
     // the record so no lagging replica can roll it back.
     const owner = observeOwnerRead(key, read, presentedBy);
     if (owner === "stale") return "error";
-    _ownerCache.set(key, { owner, fetchedAt: Date.now() });
+    _ownerCache.set(key, { owner, block: read.block, fetchedAt: Date.now() });
     capMap(_ownerCache, OWNER_CACHE_MAX);
     return owner;
   } catch {
-    _errorUntil.set(key, Date.now() + ERROR_CACHE_MS);
-    capMap(_errorUntil, ERROR_CACHE_MAX);
     return "error";
   }
 }
@@ -371,6 +360,15 @@ export async function isKernelOwner(
   const cacheFresh = cached !== undefined && Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS;
   const ownerRead = cacheFresh ? cached.owner : await _fetchAndCacheOwner(parent, eoa, opts);
   const allowed = await _decideFromRead(ownerRead, eoa, parent);
+  if (allowed && cacheFresh && cached.owner === eoa && !getKernelOwnerRecord(parent)) {
+    // A confirmation from cache is as much a confirmed read as the one that
+    // filled the cache — and that one may have been UNCONFIRMED (someone else
+    // presenting the wrong key), which creates no record (#210). Without this,
+    // an account could be confirmed for a whole TTL with no record, and an
+    // unreadable chain after expiry would fall back to the counterfactual for a
+    // Kernel we have in fact seen with an owner.
+    recordKernelOwner(parent, cached.owner, cached.block);
+  }
   if (allowed || !cacheFresh) return allowed;
 
   // A cached answer may confirm ownership, never deny it (#273): re-read the

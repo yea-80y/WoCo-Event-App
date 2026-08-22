@@ -11,7 +11,7 @@
  *   - an existing record is still UPDATED by any fresh read (a retired key's own
  *     request retires it);
  *   - both in-memory caches are capped;
- *   - a failed read is remembered briefly, so an outage is not a retry storm;
+ *   - a failed read is NOT remembered server-side (rejected design, pinned);
  *   - concurrent requests for one Kernel share one chain read;
  *   - a read happens only if the caller's per-client budget allows it, and over
  *     budget can only WITHHOLD (refuse for known-deployed, counterfactual for
@@ -148,25 +148,51 @@ test("#163: the owner cache is capped — varying the parent cannot grow it with
   }
 });
 
-test("#163: a failed read is remembered briefly — an outage does not retry per request", async () => {
+test("#163: a failed read is NOT remembered server-side — the very next request asks the chain again", async () => {
+  // Rejected design, pinned so it is not re-added: client.ts already throttles a
+  // client after a double failure, and any server-side negative window would
+  // defeat its single IMMEDIATE retry on a sub-second RPC blip — turning a blip
+  // into the #256 "session ended" banner. Upstream load during an outage is
+  // bounded by the per-client budget and the shared in-flight read instead.
   const { owner, store } = await mods();
   const K = "0x1515151515151515151515151515151515151515";
   store.recordKernelOwner(K, OWNER, 100); // known-deployed, so "error" → refuse
   let fetches = 0;
+  let chain: { owner: string; block: number } | "error" = "error";
   owner._setOwnerFetchForTests(async () => {
     fetches++;
-    return "error";
+    return chain;
   });
   try {
     assert.equal(await owner.isKernelOwner(OWNER, K), false);
-    assert.equal(await owner.isKernelOwner(OWNER, K), false);
-    assert.equal(await owner.isKernelOwner(OWNER, K), false);
-    assert.equal(fetches, 1, "every request re-hit the failing upstream");
-    // The negative entry is not a grant: once the cache is cleared the chain is
-    // asked again and a good answer restores access.
-    owner._resetOwnerCacheForTests();
-    owner._setOwnerFetchForTests(async () => ({ owner: OWNER, block: 101 }));
-    assert.equal(await owner.isKernelOwner(OWNER, K), true);
+    assert.equal(fetches, 1);
+    // The blip clears; the client's immediate retry must succeed.
+    chain = { owner: OWNER, block: 101 };
+    assert.equal(await owner.isKernelOwner(OWNER, K), true, "a cleared blip was still refused");
+    assert.equal(fetches, 2);
+  } finally {
+    owner._setOwnerFetchForTests(null);
+  }
+});
+
+test("#210: a cache hit that confirms a presenter records the account when the store has none", async () => {
+  // Someone else's UNCONFIRMED read fills the cache (no record); the legitimate
+  // owner arrives inside the TTL and is confirmed from cache. They must still be
+  // recorded — otherwise an unreadable chain after the cache expires would fall
+  // back to the counterfactual for a Kernel we have in fact seen with an owner.
+  const { owner, store } = await mods();
+  const K = "0x1919191919191919191919191919191919191919";
+  let fetches = 0;
+  owner._setOwnerFetchForTests(async () => {
+    fetches++;
+    return { owner: OWNER, block: 100 };
+  });
+  try {
+    assert.equal(await owner.isKernelOwner(OTHER, K), false); // unconfirmed: cache filled, no record
+    assert.equal(store.isKernelKnownDeployed(K), false);
+    assert.equal(await owner.isKernelOwner(OWNER, K), true); // confirmed FROM CACHE
+    assert.equal(fetches, 1, "the confirmation should have come from cache");
+    assert.deepEqual(store.getKernelOwnerRecord(K), { owner: OWNER, block: 100 }, "cache-hit confirmation left no record");
   } finally {
     owner._setOwnerFetchForTests(null);
   }
@@ -228,11 +254,13 @@ test("budget: the tracked-client map is itself bounded, and sweeps expired windo
   try {
     for (let i = 0; i < 10_000; i++) assert.equal(b.takeOwnerReadBudget(`c${i}`), true);
     assert.equal(b.ownerReadBudgetTrackedClients(), 10_000);
-    // Saturated inside the window: a newcomer is refused (fails closed for one read).
-    assert.equal(b.takeOwnerReadBudget("newcomer"), false);
-    // Once the window passes, the sweep makes room.
-    t += 60_001;
+    // Saturated inside the window: a newcomer is still admitted — the oldest
+    // window is evicted for it — and the map does not grow past the cap.
     assert.equal(b.takeOwnerReadBudget("newcomer"), true);
+    assert.equal(b.ownerReadBudgetTrackedClients(), 10_000);
+    // Once the window passes, the sweep makes room without eviction.
+    t += 60_001;
+    assert.equal(b.takeOwnerReadBudget("newcomer2"), true);
     assert.ok(b.ownerReadBudgetTrackedClients() < 10_000);
   } finally {
     b._setOwnerReadBudgetClockForTests(null);

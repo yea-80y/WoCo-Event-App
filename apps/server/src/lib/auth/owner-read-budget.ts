@@ -20,9 +20,11 @@
  *
  * Sliding window over a bounded map: entries older than the window are dropped
  * on access, and the map itself is capped so the budget cannot become the thing
- * that grows. Residual stated plainly: a distributed caller (many source
- * addresses) still reaches the RPC at `cap × addresses` per window; the edge
- * (Cloudflare) is the layer for that, not this module.
+ * that grows — at the cap, the oldest window is evicted to admit a newcomer,
+ * because auth availability for a new legitimate client outranks exactness of a
+ * ten-thousand-address caller's accounting. Residual stated plainly: a
+ * distributed caller still reaches the RPC at `cap × addresses` per window; the
+ * edge (Cloudflare) is the layer for that, not this module.
  */
 
 const WINDOW_MS = 60_000;
@@ -67,10 +69,20 @@ export function takeOwnerReadBudget(clientKey: string): boolean {
     if (!w && _windows.size >= MAX_TRACKED_CLIENTS) {
       sweep(t);
       // Still full after the sweep: every tracked client is inside the window.
-      // Refusing the newcomer fails CLOSED for this one read (it reports as
-      // "error"), which is the right side to fail on when the structure meant
-      // to bound abuse is itself saturated.
-      if (_windows.size >= MAX_TRACKED_CLIENTS) return false;
+      // Evict the oldest-started one and admit the newcomer — the evicted client
+      // merely gets a fresh window early, which is a small inexactness in the
+      // accounting of whoever is saturating the map, not a grant of anything.
+      if (_windows.size >= MAX_TRACKED_CLIENTS) {
+        let oldestKey: string | undefined;
+        let oldestStart = Infinity;
+        for (const [k, ww] of _windows) {
+          if (ww.start < oldestStart) {
+            oldestStart = ww.start;
+            oldestKey = k;
+          }
+        }
+        if (oldestKey !== undefined) _windows.delete(oldestKey);
+      }
     }
     w = { start: t, count: 0 };
     _windows.set(clientKey, w);
