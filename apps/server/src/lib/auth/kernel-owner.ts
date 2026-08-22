@@ -19,6 +19,16 @@
  * (1271 needed a deployed account + owner==live-key + working RPC on every
  * request). 1271/6492 verify remains in verify-delegation.ts for smart wallets
  * (CSW) and delegations minted by pre-fix clients.
+ *
+ * READS ARE ORDERED (#200). The owner is read at `latest` through a public,
+ * load-balanced RPC, and a replica lagging behind a recovery still names the
+ * retired owner. Every read therefore fetches the L2 block it executed at in the
+ * SAME `eth_call` (Multicall3: ArbSys.arbBlockNumber + the validator getter), and
+ * kernel-owner-ordering.ts discards any answer that names a different owner from
+ * a block no later than the one where the owner was last seen to change. Without
+ * that, a late answer rolled the cache back to the retired key — reachable from
+ * every retired-key request, because the #273 re-read below is exactly when a
+ * lagging replica gets asked.
  */
 
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
@@ -26,7 +36,8 @@ import { getKernelAddressFromECDSA, getValidatorAddress } from "@zerodev/ecdsa-v
 import { createPublicClient, http, zeroAddress, type Address, type PublicClient } from "viem";
 import { arbitrumSepolia } from "viem/chains";
 import { getChainRpcUrl } from "../chain/event-contract.js";
-import { isKernelKnownDeployed, markKernelDeployed } from "./kernel-deployed.js";
+import { isKernelKnownDeployed } from "./kernel-deployed.js";
+import { observeOwnerRead, type OwnerRead } from "./kernel-owner-ordering.js";
 
 /** Kernel deployments live on Arbitrum Sepolia (KERNEL_CHAIN_ID client-side). */
 const KERNEL_CHAIN_ID = 421614;
@@ -66,10 +77,12 @@ const _kernelOfCache = new Map<string, string>();
 const _ownerCache = new Map<string, { owner: string | null; fetchedAt: number }>();
 const OWNER_CACHE_TTL_MS = 5 * 60 * 1000;
 
-/** Test seam — replaces the on-chain owner fetch (RPC-free tests); null restores. */
-let _ownerFetchOverride: ((kernel: string) => Promise<string | null | "error">) | null = null;
+/** Test seam — replaces the on-chain owner fetch (RPC-free tests); null restores.
+ *  The override returns what the chain would: the owner AND the block it was read
+ *  at, so tests can replay reads out of order. */
+let _ownerFetchOverride: ((kernel: string) => Promise<OwnerRead | "error">) | null = null;
 export function _setOwnerFetchForTests(
-  f: ((kernel: string) => Promise<string | null | "error">) | null,
+  f: ((kernel: string) => Promise<OwnerRead | "error">) | null,
 ): void {
   _ownerFetchOverride = f;
 }
@@ -88,6 +101,21 @@ const ECDSA_VALIDATOR_STORAGE_ABI = [
     stateMutability: "view",
     inputs: [{ name: "account", type: "address" }],
     outputs: [{ name: "owner", type: "address" }],
+  },
+] as const;
+
+/** ArbSys precompile — `arbBlockNumber()` is the L2 block a call executes at.
+ *  (The EVM's `block.number` on Arbitrum is the L1-ish number: coarse, and many
+ *  L2 blocks share one value, so it cannot order reads. Verified live 2026-08-22:
+ *  arbBlockNumber 300896544 vs Multicall3.getBlockNumber 11544676.) */
+const ARBSYS_ADDRESS = "0x0000000000000000000000000000000000000064" as const;
+const ARBSYS_ABI = [
+  {
+    type: "function",
+    name: "arbBlockNumber",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 
@@ -124,30 +152,46 @@ export async function readKernelOwner(kernelAddress: string): Promise<string | n
   return _fetchAndCacheOwner(key);
 }
 
-/** The live read itself: caches definitive answers, never caches "error". */
+/** One atomic read: the owner and the L2 block it was read at, from a single
+ *  `eth_call` through Multicall3 so both come from one replica at one state. */
+async function _readOwnerAtBlock(key: string): Promise<OwnerRead> {
+  if (_ownerFetchOverride) {
+    const read = await _ownerFetchOverride(key);
+    if (read === "error") throw new Error("owner fetch override: error");
+    return read;
+  }
+  const validatorAddress = getValidatorAddress(entryPoint, kernelVersion);
+  const [l2Block, owner] = await client().multicall({
+    contracts: [
+      { address: ARBSYS_ADDRESS, abi: ARBSYS_ABI, functionName: "arbBlockNumber" },
+      {
+        address: validatorAddress as Address,
+        abi: ECDSA_VALIDATOR_STORAGE_ABI,
+        functionName: "ecdsaValidatorStorage",
+        args: [key as Address],
+      },
+    ],
+    allowFailure: false,
+  });
+  const lower = !owner || owner.toLowerCase() === zeroAddress ? null : owner.toLowerCase();
+  return { owner: lower, block: Number(l2Block) };
+}
+
+/** The live read itself: caches definitive, in-order answers; never caches
+ *  "error", and never caches a read that ordering judged stale — a stale answer
+ *  is reported as "error" so the caller treats it as "knows nothing current",
+ *  which for a known-deployed account means refuse. */
 async function _fetchAndCacheOwner(key: string): Promise<string | null | "error"> {
   try {
-    if (_ownerFetchOverride) {
-      const owner = await _ownerFetchOverride(key);
-      if (owner === "error") return "error";
-      if (owner) markKernelDeployed(key);
-      _ownerCache.set(key, { owner, fetchedAt: Date.now() });
-      return owner;
-    }
-    const validatorAddress = getValidatorAddress(entryPoint, kernelVersion);
-    const owner = (await client().readContract({
-      address: validatorAddress as Address,
-      abi: ECDSA_VALIDATOR_STORAGE_ABI,
-      functionName: "ecdsaValidatorStorage",
-      args: [key as Address],
-    })) as Address;
-    const lower = !owner || owner.toLowerCase() === zeroAddress ? null : owner.toLowerCase();
-    // A real owner means this account is deployed and has one. Remember that
-    // durably: it is what tells a LATER failed read that the counterfactual
-    // fallback no longer applies here (#200, kernel-deployed.ts).
-    if (lower) markKernelDeployed(key);
-    _ownerCache.set(key, { owner: lower, fetchedAt: Date.now() });
-    return lower;
+    const read = await _readOwnerAtBlock(key);
+    // Reconcile with what we already know, durably: a real owner marks the
+    // account deployed (so a LATER failed read refuses instead of falling back
+    // to the counterfactual — #200, kernel-deployed.ts), and a rotation advances
+    // the record so no lagging replica can roll it back.
+    const owner = observeOwnerRead(key, read);
+    if (owner === "stale") return "error";
+    _ownerCache.set(key, { owner, fetchedAt: Date.now() });
+    return owner;
   } catch {
     return "error";
   }
