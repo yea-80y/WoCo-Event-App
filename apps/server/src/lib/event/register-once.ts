@@ -20,9 +20,13 @@
  *      restart because the registry is `.data`-backed.
  *   3. a pending-tx marker exists                         → resolve THAT tx: mined
  *      ⇒ adopt its id; reverted/replaced ⇒ safe to send again; still in flight
- *      ⇒ refuse and let the caller come back.
- *   4. otherwise                                          → broadcast, recording the
- *      tx hash before it can mine.
+ *      ⇒ refuse and let the caller come back. A marker WITHOUT a hash (#318 —
+ *      the intent journalled, the broadcast unproven) resolves through the
+ *      nonce/manifest ladder in registration-intent.ts instead.
+ *   4. otherwise                                          → broadcast, journalling
+ *      the INTENT (with the reserved nonce) before the node sees the tx — an
+ *      unwritable journal ABORTS the send (#318) — then upgrading the marker
+ *      with the hash before the tx can mine.
  *
  * Concurrent callers for the same series join one in-flight promise rather than
  * racing to step 4.
@@ -39,15 +43,18 @@ import {
   lookupOnChainEventId as realLookupOnChainEventId,
   lookupPendingRegistration as realLookupPending,
   recordPendingRegistration as realRecordPending,
+  recordRegistrationIntent as realRecordIntent,
   clearPendingRegistration as realClearPending,
 } from "./onchain-registry.js";
+import { resolveRegistrationIntent as realResolveIntent } from "./registration-intent.js";
 
 export type RegisterResult =
   | { status: "registered"; onChainEventId: string; txHash?: string; feed?: EventFeed }
   /** Already on chain before this call — no tx was sent. */
   | { status: "already"; onChainEventId: string; feed?: EventFeed }
-  /** A previous tx is still in the mempool. No tx sent; the caller should retry later. */
-  | { status: "pending"; txHash: string };
+  /** A previous tx may still mine. No tx sent; the caller should retry later.
+   *  `txHash` is absent when only the broadcast INTENT is on record (#318). */
+  | { status: "pending"; txHash?: string };
 
 export interface RegisterParams {
   eventId: string;
@@ -66,8 +73,12 @@ export interface RegisterDeps {
   lookupOnChainEventId: typeof realLookupOnChainEventId;
   lookupPending: typeof realLookupPending;
   recordPending: typeof realRecordPending;
+  /** Phase-1 intent journal — THROWS to abort the broadcast (#318). */
+  recordIntent: typeof realRecordIntent;
   clearPending: typeof realClearPending;
   resolveRegisterTx: typeof realResolveRegisterTx;
+  /** Hash-less marker resolution (#318). */
+  resolveIntent: typeof realResolveIntent;
   registerEventOnChain: typeof realRegisterEventOnChain;
   confirmSeriesOnChain: typeof realConfirmSeriesOnChain;
 }
@@ -76,8 +87,10 @@ const defaultDeps: RegisterDeps = {
   lookupOnChainEventId: realLookupOnChainEventId,
   lookupPending: realLookupPending,
   recordPending: realRecordPending,
+  recordIntent: realRecordIntent,
   clearPending: realClearPending,
   resolveRegisterTx: realResolveRegisterTx,
+  resolveIntent: realResolveIntent,
   registerEventOnChain: realRegisterEventOnChain,
   confirmSeriesOnChain: realConfirmSeriesOnChain,
 };
@@ -116,7 +129,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
   }
 
   const pending = deps.lookupPending(eventId, seriesId);
-  if (pending) {
+  if (pending && pending.txHash) {
     const outcome = await deps.resolveRegisterTx(pending.txHash, pending.nonce);
     if (outcome.status === "pending") {
       console.log(`[register-once] ${eventId}/${seriesId} tx ${pending.txHash} still in flight — not re-sending`);
@@ -131,6 +144,24 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     // reverted | replaced — that tx can never register anything, so a fresh send is safe.
     console.log(`[register-once] ${eventId}/${seriesId} previous tx ${pending.txHash} ${outcome.status} — re-sending`);
     deps.clearPending(eventId, seriesId);
+  } else if (pending) {
+    // Intent-only marker (#318): the journal says a broadcast was about to
+    // happen at `nonce` and nothing proves whether it did. Throws (a chain walk
+    // that couldn't run) propagate — refusing beats guessing on a path whose
+    // wrong guess mints a duplicate on-chain event.
+    const outcome = await deps.resolveIntent(pending, manifestRef);
+    if (outcome.status === "registered") {
+      const feed = await deps.confirmSeriesOnChain(eventId, seriesId, outcome.onChainEventId, signerHint);
+      deps.clearPending(eventId, seriesId);
+      console.log(`[register-once] ${eventId}/${seriesId} intent marker resolved to ${outcome.onChainEventId}`);
+      return { status: "registered", onChainEventId: outcome.onChainEventId, feed };
+    }
+    if (outcome.status === "pending") {
+      console.log(`[register-once] ${eventId}/${seriesId} intent nonce ${pending.nonce} may still be in flight — not re-sending`);
+      return { status: "pending" };
+    }
+    console.log(`[register-once] ${eventId}/${seriesId} intent at nonce ${pending.nonce} proven never-registered — re-sending`);
+    deps.clearPending(eventId, seriesId);
   }
 
   const { onChainEventId, txHash } = await deps.registerEventOnChain(
@@ -138,6 +169,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     manifestRef,
     v2Params,
     (tx) => deps.recordPending(eventId, seriesId, tx),
+    (r) => deps.recordIntent(eventId, seriesId, r),
   );
 
   // A throw here leaves the marker in place ON PURPOSE: the tx is already on chain,
