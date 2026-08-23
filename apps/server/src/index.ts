@@ -42,6 +42,7 @@ import { socialRoutes } from "./routes/social.js";
 import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
 import { swarmRoutes } from "./routes/swarm.js";
+import { socRelayHealth } from "./lib/swarm/soc-relay-limits.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
@@ -224,6 +225,11 @@ app.get("/api/health", (c) =>
     // bee behind on the postage contract stamps against a dead batch and the
     // uploads still look successful.
     evidencePublisher: evidencePublisherHealth(),
+    // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
+    // alarm: the per-process ceiling that legitimate traffic never reaches has
+    // refused writes with 503 — either an attack on the postage batch or a
+    // client stuck in a write loop. Per-bucket refusal counts are statistics.
+    swarmRelay: socRelayHealth(),
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
