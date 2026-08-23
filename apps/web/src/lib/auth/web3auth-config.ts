@@ -49,6 +49,9 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
     // Only the email/social key — never browser extensions (an injected provider
     // hooking the wallet-services embed crashes the popup handshake).
     multiInjectedProviderDiscovery: false,
+    // Keeps Segment's CDN loader out of the page entirely, which is what lets the
+    // CSP (vite-plugins/csp.ts) omit cdn.segment.com from script-src.
+    disableAnalytics: true,
     chains: [chain],
     defaultChainId: chain.chainId,
   };
