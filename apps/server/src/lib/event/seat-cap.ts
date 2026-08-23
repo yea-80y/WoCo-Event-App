@@ -10,17 +10,20 @@
  * WHY IT IS SIZED BY THE EVENT. A reservation holds a seat for ten minutes
  * BEFORE payment, so holding is free and the only cost of a lockout is patience.
  * A flat cap therefore means something different at every event: 30 seats is 60%
- * of a 50-seat room and 1.5% of an arena. It was simultaneously too loose to
- * protect a small event and too tight to admit a corporate block booking at a
- * large one.
+ * of a 50-seat room and 1.5% of an arena. The same number that barely
+ * inconveniences an arena lets one address sit on most of a small room.
+ *
+ * So the cap SHRINKS for small events and is never raised above the flat 30 it
+ * replaces. This change tightens; it loosens nothing.
  *
  * WHY DECLARED SUPPLY, NOT REMAINING. The denominator is what the organiser said
  * the event holds, summed across series, taken from the event record the route
  * has already loaded. It costs no I/O. Live remaining supply would cost one
- * uncached chain read per series on an unauthenticated endpoint, add a
- * partial-failure mode, and — being smaller late in a sale — would refuse
- * exactly the late group booking this issue exists to admit. An organiser who
- * inflates their own supply only loosens the cap on their own event.
+ * uncached chain read per series on an unauthenticated endpoint, and add a
+ * partial-failure mode to a path whose fail-closed behaviour is currently clean.
+ * It would also need awaits inside the cap-check-to-insert stretch, which is
+ * what keeps that stretch atomic. An organiser who inflates their own declared
+ * supply only loosens the cap on their own event.
  */
 
 import { RESERVATION_MAX_QTY } from "./reservation-store.js";
@@ -29,14 +32,23 @@ import { RESERVATION_MAX_QTY } from "./reservation-store.js";
 const SEAT_CAP_FRACTION = 0.1;
 
 /**
- * Absolute ceiling, whatever the event size.
+ * Absolute ceiling, whatever the event size. Deliberately the SAME 30 this
+ * replaced, so no event of any size is loosened by this change.
  *
- * Ten concurrent max-size unpaid orders behind one address — a plausible peak
- * for a campus or venue NAT at a big on-sale, and ~2% of an arena. Above this
- * the proportional cap stops buying protection and starts buying an attacker
- * room, since one bucket is already the wrong unit at that scale.
+ * An earlier draft raised it to 100 to admit the "40-person corporate block
+ * booking" #223 describes being refused. That was wrong, and the reason matters:
+ * a consumed hold stops counting the moment payment lands (`isActive` requires
+ * `!consumedAt`), so a 40-seat purchase already completes under a cap of 30 —
+ * or of 10 — by paying for each order before starting the next, which is simply
+ * how checkout works. The cap constrains seats held UNPAID AND SIMULTANEOUSLY;
+ * it never constrains how much a network buys in total.
+ *
+ * So nobody legitimate needs a large simultaneous hold, and the party that does
+ * is the one this cap exists to slow down. Incumbents agree by construction:
+ * their model is one cart holding at most the published ticket limit (4-8), with
+ * no concurrent holds to accumulate at all.
  */
-const SEAT_CAP_CEILING = 100;
+const SEAT_CAP_CEILING = 30;
 
 /**
  * The cap for an event of `declaredSupply` seats.

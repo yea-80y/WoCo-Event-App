@@ -76,7 +76,7 @@ test("the floor is the advertised order size, never less", () => {
 });
 
 test("no event is looser than the flat 30 it replaces", () => {
-  for (const supplySize of [10, 50, 100, 200, 300]) {
+  for (const supplySize of [10, 50, 100, 200, 300, 2_000, 100_000]) {
     assert.ok(
       cap.perIpSeatCapForEvent(supplySize) <= 30,
       `cap for ${supplySize} seats must not exceed the old flat 30`,
@@ -86,15 +86,14 @@ test("no event is looser than the flat 30 it replaces", () => {
   assert.equal(cap.perIpSeatCapForEvent(50), 10);
 });
 
-test("a large event admits a group booking the flat cap refused", () => {
-  // The 2,000-seat event turning away a 40-person block at seat 31.
-  assert.ok(cap.perIpSeatCapForEvent(2000) >= 40);
-});
-
-test("the ceiling holds however large the event", () => {
-  assert.equal(cap.perIpSeatCapForEvent(1_000), 100);
-  assert.equal(cap.perIpSeatCapForEvent(50_000), 100);
-  assert.equal(cap.perIpSeatCapForEvent(Number.MAX_SAFE_INTEGER), 100);
+test("no event of any size is loosened — the ceiling stays at the old flat 30", () => {
+  // An earlier draft raised this to 100 to admit a 40-seat "block booking".
+  // That was unnecessary: a consumed hold frees the allowance at once, so a
+  // 40-seat purchase completes by paying per order (see the PAID-hold test
+  // below). Nobody legitimate needs 100 seats held unpaid at the same time.
+  assert.equal(cap.perIpSeatCapForEvent(1_000), 30);
+  assert.equal(cap.perIpSeatCapForEvent(50_000), 30);
+  assert.equal(cap.perIpSeatCapForEvent(Number.MAX_SAFE_INTEGER), 30);
 });
 
 test("the cap never decreases as an event gets bigger", () => {
