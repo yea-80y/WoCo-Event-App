@@ -171,6 +171,12 @@ We will tell you the applicable schedule before you sell.
 **You are responsible for refunds.** If you cancel, reschedule or fail to deliver an event, you must
 refund your attendees.
 
+**If we cannot issue a ticket after a buyer has paid** — because of a failure on our side, not
+yours — we refund the buyer automatically for the tickets we could not issue, and we return our
+platform fee on the refunded amount to you at the same time. The payment provider may retain its
+card-processing fee on the original payment; that is the provider's policy, not ours, and we do
+not reimburse it. A refund that a buyer asks you for is your decision and is not covered by this.
+
 **You are responsible for chargebacks on your sales**, including the disputed amount and any fee.
 Chargebacks are taken from your payment account balance in the first instance.
 
