@@ -11,6 +11,9 @@ import {
   putRecoveryByGuardian,
 } from "../lib/recovery/service.js";
 import { MAX_CLEAR_GUARDIANS, mayTombstone, planHintClear } from "../lib/recovery/tombstone.js";
+import { clientIp } from "../lib/http/client-ip.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
+import { jsonBodyLimit } from "../lib/http/body-limit.js";
 
 export const recovery = new Hono<AppEnv>();
 
@@ -19,14 +22,51 @@ const ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
 // persist as the human-readable display hint.
 const LABEL_RE = /^[a-z0-9-]{1,63}$/;
 
+// ── Rate limits (#176) ────────────────────────────────────────────────────────
+// Both POST routes make an unconditional, non-deferred platform-batch feed write
+// per call (the presence doc; `/clear` also walks up to 33 index entries), and a
+// free passkey account can loop them. Authentication is not a cost here, so the
+// limiter is: per verified parent (the binding key — a protect ceremony is one
+// call, and a user adding a few backups in a sitting is a handful) AND per client
+// IP (a looser secondary bound, because a venue NAT is one IP).
+const RECOVERY_WRITE_PARENT = new SlidingWindowLimiter([
+  { limit: 6, windowMs: 60_000 },
+  { limit: 20, windowMs: 60 * 60_000 },
+]);
+const RECOVERY_WRITE_IP = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 120, windowMs: 60 * 60_000 },
+]);
+// The public reads cost a bee feed read each. Same order as the directory's read
+// limiter (events.ts), per IP.
+const RECOVERY_READ_IP = new SlidingWindowLimiter([{ limit: 120, windowMs: 60_000 }]);
+// Bodies here are an address, a label, or ≤32 addresses — a cap well above any of
+// them keeps a caller from making the auth middleware read and hash megabytes.
+const RECOVERY_MAX_BODY_BYTES = 8 * 1024;
+
+function writeLimited(c: { req: { header: (n: string) => string | undefined } }, parentAddress: string): boolean {
+  // Peek both, then record both: a request refused on the IP bucket is not
+  // charged to the parent bucket (and vice versa).
+  const pk = `p:${parentAddress}`;
+  const ik = `ip:${clientIp(c)}`;
+  if (!RECOVERY_WRITE_PARENT.peek(pk) || !RECOVERY_WRITE_IP.peek(ik)) return true;
+  RECOVERY_WRITE_PARENT.record(pk);
+  RECOVERY_WRITE_IP.record(ik);
+  return false;
+}
+function readLimited(c: { req: { header: (n: string) => string | undefined } }): boolean {
+  return !RECOVERY_READ_IP.allow(`ip:${clientIp(c)}`);
+}
+
 // POST /api/recovery/escrow — authenticated. §13: the sealed escrow itself is now a
 // GUARDIAN-owned SOC the client signs + uploads directly (`/api/swarm/soc`); this
 // endpoint no longer stores the envelope. It records only the untrusted PLATFORM
 // HINTS — a presence flag (kernel→guardian) and the guardian→kernel reverse index —
 // used to render the setup screen and auto-find an account at recovery time.
 // The kernelAddress is taken from the verified session parent, never the body.
-recovery.post("/escrow", requireAuth, async (c) => {
+recovery.post("/escrow", jsonBodyLimit(RECOVERY_MAX_BODY_BYTES), requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  if (writeLimited(c, parentAddress)) return c.json({ ok: false, error: "Rate limited" }, 429);
   const body = (c.get("body") ?? {}) as { guardianAddress?: unknown; label?: unknown };
 
   if (typeof body.guardianAddress !== "string" || !ADDR_RE.test(body.guardianAddress)) {
@@ -78,8 +118,9 @@ recovery.post("/escrow", requireAuth, async (c) => {
 //
 // It clears HINTS ONLY. The revoke itself is the client's sudo userOp; a server that
 // could turn recovery off by itself would be a new attack surface.
-recovery.post("/escrow/clear", requireAuth, async (c) => {
+recovery.post("/escrow/clear", jsonBodyLimit(RECOVERY_MAX_BODY_BYTES), requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  if (writeLimited(c, parentAddress)) return c.json({ ok: false, error: "Rate limited" }, 429);
   const body = (c.get("body") ?? {}) as { guardianAddresses?: unknown; keepStatus?: unknown };
   // `keepStatus: true` = the client revoked ONE guardian on-chain and the account
   // still has working backups (#164): tombstone only the named entries and leave the
@@ -156,6 +197,7 @@ recovery.get("/status/:kernelAddress", async (c) => {
   if (!ADDR_RE.test(kernelAddress)) {
     return c.json({ ok: false, error: "Invalid kernelAddress" }, 400);
   }
+  if (readLimited(c)) return c.json({ ok: false, error: "Rate limited" }, 429);
   try {
     let status = await getRecoveryStatus(kernelAddress);
     if (!status) {
@@ -177,6 +219,7 @@ recovery.get("/by-guardian/:guardianAddress", async (c) => {
   if (!ADDR_RE.test(guardianAddress)) {
     return c.json({ ok: false, error: "Invalid guardianAddress" }, 400);
   }
+  if (readLimited(c)) return c.json({ ok: false, error: "Rate limited" }, 429);
   try {
     const index = await getRecoveryByGuardian(guardianAddress);
     return c.json({ ok: true, data: index });
@@ -196,6 +239,7 @@ recovery.get("/escrow/:kernelAddress", async (c) => {
   if (!ADDR_RE.test(kernelAddress)) {
     return c.json({ ok: false, error: "Invalid kernelAddress" }, 400);
   }
+  if (readLimited(c)) return c.json({ ok: false, error: "Rate limited" }, 429);
   try {
     const envelope = await getRecoveryEnvelope(kernelAddress);
     return c.json({ ok: true, data: envelope });
