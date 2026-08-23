@@ -4,6 +4,7 @@ import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import type { BatchSelection } from "../etherna/batch-router.js";
 import { writeEthernaFeedPage } from "../etherna/upload.js";
+import { decideFeedWriteRetry } from "./feed-write-retry.js";
 
 // ---------------------------------------------------------------------------
 // Binary packing (128 slots x 32 bytes = 4096 bytes)
@@ -108,6 +109,21 @@ function toBytes(res: unknown): Uint8Array | null {
 // same feed (Swarm ID), this cache must be revisited per-signer.
 const feedNextIndex = new Map<string, bigint>();
 const feedTopicLock = new Map<string, Promise<unknown>>();
+
+let feedWriteBaseBackoffMs = 500;
+
+/** Tests only — collapse the retry backoff, and read/clear the index cache. */
+export const __feedWriteTestHooks = {
+  setBaseBackoffMs(ms: number): void {
+    feedWriteBaseBackoffMs = ms;
+  },
+  cachedNextIndex(topic: Topic): bigint | undefined {
+    return feedNextIndex.get(topicKey(topic));
+  },
+  clearCache(): void {
+    feedNextIndex.clear();
+  },
+};
 
 function topicKey(topic: Topic): string {
   return topic.toHex();
@@ -273,22 +289,13 @@ async function doWriteFeedPage(
   }
 
   const etherna = options.dest?.target === "etherna";
-  // The Etherna path posts a raw SOC and cannot delegate index discovery to
-  // bee-js — resolve explicitly (our own bee resolves the feed regardless of
-  // which batch stamped it). A failed read ABORTS the write: guessing 0 would
-  // land on an existing immutable SOC and silently keep the old payload.
   if (etherna && nextIndex === undefined) {
-    const prior = await readFeedPageStrict(topic); // primes feedNextIndex on ok
-    if (prior.status === "absent") nextIndex = 0n;
-    else if (prior.status === "ok") nextIndex = feedNextIndex.get(key);
-    else throw prior.error;
-    if (nextIndex === undefined) {
-      throw new Error(`feed ${key.slice(0, 16)}: cannot resolve next index for Etherna write`);
-    }
+    nextIndex = await resolveEthernaNextIndex(topic, key);
   }
 
-  let delay = 500;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  const MAX_ATTEMPTS = 5;
+  let delay = feedWriteBaseBackoffMs;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       if (etherna) {
         const release = await beeUploadSem.acquire();
@@ -333,39 +340,77 @@ async function doWriteFeedPage(
       } finally {
         release();
       }
-      // Record the next index to write — successor of what we just wrote.
-      const used = nextIndex ?? 0n; // if cache miss + fresh-feed, bee-js wrote at 0
-      feedNextIndex.set(key, used + 1n);
+      // Record the next index to write — successor of what we just wrote. Only
+      // when WE chose the index: on a cache miss bee-js discovered it and the
+      // upload result does not say which one it used. Caching `0 + 1` there
+      // (the old code, assuming miss ⇒ fresh feed) was wrong for every
+      // existing feed after a restart — the next write then 409'd (#120).
+      // Left unknown, the next write pays one lookup or a read primes it.
+      if (nextIndex !== undefined) feedNextIndex.set(key, nextIndex + 1n);
+      else feedNextIndex.delete(key);
       return;
     } catch (err: unknown) {
       const status = (err as any)?.status ?? (err as any)?.response?.status;
-      if (isTransientFeedError(err) && attempt < 4) {
-        const reason = (err as any)?.message ?? (err as any)?.code ?? status;
-        console.log(`[swarm] Feed write transient error (${reason}), retrying in ${delay}ms (attempt ${attempt + 1}/5)...`);
-        await new Promise((r) => setTimeout(r, delay));
-        delay = Math.min(delay * 2, 5000);
-        continue;
+      const decision = decideFeedWriteRetry({
+        status,
+        transient: isTransientFeedError(err),
+        attempt,
+        maxAttempts: MAX_ATTEMPTS,
+        etherna,
+        fresh: !!options.fresh,
+      });
+      switch (decision.action) {
+        case "retry-transient": {
+          const reason = (err as any)?.message ?? (err as any)?.code ?? status;
+          console.log(`[swarm] Feed write transient error (${reason}), retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_ATTEMPTS})...`);
+          await new Promise((r) => setTimeout(r, delay));
+          delay = Math.min(delay * 2, 5000);
+          continue;
+        }
+        case "reset-to-zero":
+          // 404 from the feed chunk lookup (rare) — drop the cache and retry at
+          // index 0. Stops a stale cached index from permanently breaking writes.
+          console.warn(`[swarm] Feed chunk missing (404), resetting feed at index 0...`);
+          feedNextIndex.delete(key);
+          nextIndex = 0n;
+          continue;
+        case "rediscover-index":
+          // 409 = a chunk already exists at this index = our cached index is
+          // stale (a read re-primed it backwards, or the first write since a
+          // restart guessed). The write was refused, nothing is corrupted; drop
+          // the cache and let the next attempt re-discover (#120). Etherna
+          // cannot delegate discovery, so re-read strictly — a failed read
+          // throws here rather than guessing.
+          console.warn(`[swarm] Feed write 409 conflict — re-discovering index for ${key.slice(0, 16)}...`);
+          feedNextIndex.delete(key);
+          nextIndex = etherna ? await resolveEthernaNextIndex(topic, key) : undefined;
+          await new Promise((r) => setTimeout(r, delay));
+          delay = Math.min(delay * 2, 5000);
+          continue;
+        case "throw":
+          if (status === 409) feedNextIndex.delete(key); // a `fresh` or final 409: still drop the stale value
+          throw err;
       }
-      // 404 from the feed chunk lookup (rare) — drop the cache and retry at
-      // index 0. Stops a stale cached index from permanently breaking writes.
-      // WoCo path only: an Etherna 404 is a gateway/batch error, and blindly
-      // rewriting at index 0 would dedupe against the existing SOC (lost write).
-      if (!etherna && status === 404 && attempt === 0) {
-        console.warn(`[swarm] Feed chunk missing (404), resetting feed at index 0...`);
-        feedNextIndex.delete(key);
-        nextIndex = 0n;
-        continue;
-      }
-      // Conflict (409 = chunk already exists at this index) — cache went
-      // stale (e.g. first write since restart used a wrong cached value).
-      // Clear cache so the next call re-discovers via findNextIndex.
-      if (status === 409) {
-        console.warn(`[swarm] Feed write 409 conflict — clearing cached index for ${key.slice(0, 16)}...`);
-        feedNextIndex.delete(key);
-      }
-      throw err;
     }
   }
+}
+
+/**
+ * The Etherna path posts a raw SOC and cannot delegate index discovery to
+ * bee-js — resolve explicitly (our own bee resolves the feed regardless of
+ * which batch stamped it). A failed read ABORTS the write: guessing 0 would
+ * land on an existing immutable SOC and silently keep the old payload.
+ */
+async function resolveEthernaNextIndex(topic: Topic, key: string): Promise<bigint> {
+  const prior = await readFeedPageStrict(topic); // primes feedNextIndex on ok
+  let nextIndex: bigint | undefined;
+  if (prior.status === "absent") nextIndex = 0n;
+  else if (prior.status === "ok") nextIndex = feedNextIndex.get(key);
+  else throw prior.error;
+  if (nextIndex === undefined) {
+    throw new Error(`feed ${key.slice(0, 16)}: cannot resolve next index for Etherna write`);
+  }
+  return nextIndex;
 }
 
 // ---------------------------------------------------------------------------

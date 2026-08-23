@@ -44,6 +44,11 @@ export function getBee(): Bee {
   return _bee;
 }
 
+/** Tests only — install a fake Bee (or `null` to go back to the real one). */
+export function __setBeeForTests(bee: Bee | null): void {
+  _bee = bee;
+}
+
 export function getPlatformSigner(): PrivateKey {
   if (!_signer) {
     if (!FEED_PRIVATE_KEY) {
