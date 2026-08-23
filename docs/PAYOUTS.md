@@ -68,6 +68,9 @@ own arithmetic: gross − Stripe processing − our `application_fee_amount`, th
 refund's own (negative) balance transaction. Whether a refund returns the processing fee
 varies by region, and whether it returns our application fee depends on
 `refund_application_fee` — so we read what Stripe actually did rather than predict it.
+The auto-refund in `lib/stripe/fulfilment.ts` (a sale WoCo itself could not fulfil) sets
+`refund_application_fee: true` (#121): our fee goes back to the organiser in full on a full
+refund, pro-rata on a partial. ORGANISER_TERMS §6 states it.
 
 The ledger's `netAmount` is a **reporting cache only** — the sweep re-resolves from
 Stripe on every run while an entry is held, because a refund can land between sweeps
