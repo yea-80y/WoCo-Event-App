@@ -4,6 +4,27 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## The SOC relay's fallback read is verified and source-listed: a 404 is a verdict, a 503 is "could not ask", and the client checks the signature (#156, 2026-08-23)
+
+`GET /api/swarm/soc/:owner/:identifier` returned a bare payload the client decoded and
+believed — the one read path with no signature check, so the API origin was a trust root for
+every client-owned feed (profile, event detail, editions, site config, backup manifest: forgery;
+sealed envelopes: rollback) — and its 404 came from a reader whose `null` meant "absent OR
+bee 500 OR Etherna unreachable OR bad token OR timeout", which the client caches as a verdict
+(#138). Now `lib/swarm/soc-read.ts` reads the raw STORED chunk from an ordered list of
+sources, each answering found / absent / unavailable with a declared negative authority,
+verifies it (identifier, span, signature recovers to owner — a source that answers with other
+bytes is treated as unreachable, not absent), and aggregates: any verified found → found; any
+source unreachable → 503 `unavailable`; every verdict source absent → 404. Our bee is the
+verdict source (the deployed node answers `404 chunk not found` after a full ~2 s search —
+verified 2026-08-23; its 500 "read chunk failed" is a retrieval fault, no longer not-found).
+Etherna is consulted only when the caller's `gatewayUrl` says the feed is Etherna-stamped —
+the write-path probe forwards it — so an Etherna outage makes an Etherna-stamped write
+refuse (honest) and never touches a WoCo-stamped one. The route returns the WHOLE SOC;
+`swarm/soc-verify.ts` re-runs the same checks in the browser before `probeSoc` reports
+`found`. Adding a gateway, a user's bee or a browser node is one entry in `sourcesFor`.
+Still open: the client's own source list (gateway, then server) is hard-coded — tracked
+separately for the browser-node work.
 ## Recovery API + relay hardening: auto-find moves to a guardian-owned SOC; the recovery routes and the SOC relay get rate limits and body caps (#157, #176, #301, 2026-08-23)
 
 **#157.** The guardian→account reverse index was a platform feed the server wrote from a
