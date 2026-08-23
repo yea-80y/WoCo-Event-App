@@ -907,12 +907,22 @@ function _retryWeb3AuthKeyInBackground(attempt = 0): void {
     if (_web3authPrivateKey || _kind !== "web3auth") return;
     try {
       const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
+      const { decideWeb3AuthKeyRetry } = await import("./web3auth-restore-guard.js");
       const r = await restoreWeb3AuthSession();
-      if (r.status === "restored") {
-        _web3authPrivateKey = r.privateKey;
+      // The same pairing check as boot (#183): the key that finally arrives must
+      // belong to the identity already adopted, or the mismatch the boot check
+      // refuses would be reintroduced here, asynchronously.
+      const d = decideWeb3AuthKeyRetry({ restore: r, adoptedPodAddr: _web3authPodAddress });
+      if (d.action === "adopt") {
+        _web3authPrivateKey = d.privateKey as `0x${string}`;
         return;
       }
-      if (r.status === "expired") return; // genuinely logged out — leave cache as-is
+      if (d.action === "stop") return; // genuinely logged out — leave cache as-is
+      if (d.action === "clear") {
+        console.warn("[auth] live Web3Auth session is not the stored identity — clearing (#183)");
+        await clearAllAuth();
+        return;
+      }
     } catch { /* keep trying */ }
     if (attempt < 4) _retryWeb3AuthKeyInBackground(attempt + 1);
   }, Math.min(2000 * 2 ** attempt, 16000));
@@ -1004,25 +1014,32 @@ async function init(): Promise<void> {
       }
     } else if (kind === "web3auth") {
       const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
+      const { decideWeb3AuthRestore } = await import("./web3auth-restore-guard.js");
       const restore = await restoreWeb3AuthSession();
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
       const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
+      // The live session's key is paired with the STORED identity only when the
+      // SDK's address is the EOA that identity names (#183). A half-completed
+      // sign-out on a shared device leaves A's PARENT/POD_ADDRESS behind; B's
+      // session must not be adopted as A — the eager feed-signer step below
+      // would otherwise derive A's signer from B's key and persist it under A.
+      const decision = decideWeb3AuthRestore({ restore, storedParent, storedPodAddr });
 
-      if (restore.status === "restored" && storedParent && storedPodAddr) {
+      if (decision.action === "adopt") {
         // Connected state only — the Kernel is rebuilt lazily on first use
         // (deferred-signing), so no eth_call here. storedParent = Kernel address;
         // storedPodAddr = Web3Auth EOA (loaded BEFORE _restoreCachedAuth so POD
         // restore uses the EOA AAD, never the Kernel address — invariant #1).
         _kind = "web3auth";
-        _parent = storedParent;
-        _web3authPrivateKey = restore.privateKey;
-        _web3authPodAddress = storedPodAddr;
+        _parent = storedParent!;
+        _web3authPrivateKey = decision.privateKey as `0x${string}`;
+        _web3authPodAddress = storedPodAddr!;
         await _restoreCachedAuth();
         // Re-establish the feed signer on cold-restore too (silent). A refresh
         // keeps the blob, but a device that only ever restored (never logged in on
         // this tab) still needs its signer resolvable for passive profile reads.
         await _establishFeedSignerEagerly();
-      } else if (restore.status === "unavailable" && storedParent && storedPodAddr) {
+      } else if (decision.action === "adopt-without-key") {
         // Web3Auth SDK couldn't init (dev dep-optimizer 504, or a network blip) —
         // a transient failure, NOT a logout. The WoCo session (session key,
         // delegation, POD seed, feed signer) is fully persisted and independent of
@@ -1030,19 +1047,23 @@ async function init(): Promise<void> {
         // background instead of nuking a valid session on every refresh. Actions
         // that genuinely need the key (Kernel build, session renewal) lazily
         // restore it — or prompt — if the retry hasn't landed yet. Mirrors the
-        // web3 "wallet not accessible" background-reconnect above.
+        // web3 "wallet not accessible" background-reconnect above. The retry
+        // re-applies the pairing check before adopting the key.
         _kind = "web3auth";
-        _parent = storedParent;
-        _web3authPodAddress = storedPodAddr;
+        _parent = storedParent!;
+        _web3authPodAddress = storedPodAddr!;
         await _restoreCachedAuth();
         await _establishFeedSignerEagerly().catch(() => {}); // best-effort w/o key
         _retryWeb3AuthKeyInBackground();
       } else {
-        // status === "expired" (SDK init OK, session genuinely gone) OR a
-        // pre-Kernel-upgrade session (missing POD_ADDRESS — parent was the raw
-        // EOA, not the Kernel). Force a clean re-login so the parent becomes the
-        // Kernel address rather than silently mixing identity layers (mirrors
-        // the passkey pre-Kernel migration guard).
+        // "expired" (SDK init OK, session genuinely gone), "no-identity" (a
+        // pre-Kernel-upgrade session — parent was the raw EOA, not the Kernel),
+        // or "identity-mismatch" (a different person's session). Force a clean
+        // re-login rather than silently mixing identity layers or people
+        // (mirrors the passkey pre-Kernel guard and the coinbase address check).
+        if (decision.reason === "identity-mismatch") {
+          console.warn("[auth] stored web3auth identity does not match the live Web3Auth session — clearing (#183)");
+        }
         await clearAllAuth();
       }
     } else if (kind === "coinbase") {
@@ -2939,31 +2960,49 @@ async function clearAllAuth(): Promise<void> {
   // needed to target this account's per-account POD-seed / feed-signer slots.
   const podAddr = _getPodAddress() ?? undefined;
   const parentAddr = _parent ?? undefined;
-  await clearSession();
-  await clearPodIdentity(podAddr);
+
+  // ORDER + ISOLATION ARE LOAD-BEARING (#183). The identity keys go FIRST and
+  // every step is individually guarded: this used to be a straight sequence of
+  // awaits with the identity keys last, so an IndexedDB error or a failed
+  // dynamic import anywhere above them left AUTH_KIND / PARENT_ADDRESS /
+  // POD_ADDRESS behind while the rest of the sign-out completed — and the next
+  // sign-in on a shared device then restored as the previous person (the
+  // precondition for the web3auth pairing bug, and plausibly for others). A
+  // step failing is logged and the sweep continues; the in-memory state is
+  // reset regardless. (NOTE: we intentionally do NOT clear the local account
+  // private key, so the user can re-login with it later; same for
+  // RECOVERED_KERNEL_BINDING — a recovered passkey MUST re-resolve its preserved
+  // Kernel address on next login, so the binding survives logout.)
+  const step = async (name: string, fn: () => Promise<unknown> | unknown): Promise<void> => {
+    try {
+      await fn();
+    } catch (e) {
+      console.warn(`[auth] sign-out step "${name}" failed (continuing):`, e);
+    }
+  };
+  await step("identity-keys", () =>
+    Promise.all([delKV(StorageKeys.AUTH_KIND), delKV(StorageKeys.PARENT_ADDRESS), delKV(StorageKeys.POD_ADDRESS)]),
+  );
+  await step("session", () => clearSession());
+  await step("pod-identity", () => clearPodIdentity(podAddr));
   // Drop the feed-signer secret on logout (parity with the POD seed). It is
   // restorable from escrow on next login; the on-device copy should not outlive
   // the session on a shared device.
-  const { clearContentFeedSigner } = await import("./feed-signer-store.js");
-  await clearContentFeedSigner(parentAddr);
+  await step("feed-signer", async () => {
+    const { clearContentFeedSigner } = await import("./feed-signer-store.js");
+    await clearContentFeedSigner(parentAddr);
+  });
   // Drop the legacy PERSISTED feed-signer address cache (pre-2026-07 builds wrote
   // it). It was unauthenticated and outlived logout, leaking the previous
   // account's signer into the next login's self-reads — the live resolver now
   // uses only the AAD-bound key blob + an in-memory memo.
-  await delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS);
-  // NOTE: we intentionally do NOT clear the local account private key.
-  // This lets the user re-login with the same local account later.
-  // The key stays in IndexedDB; only the session state is wiped.
-  // Same for RECOVERED_KERNEL_BINDING: a recovered passkey MUST re-resolve its
-  // preserved Kernel address on next login, so the binding survives logout too.
-  await delKV(StorageKeys.AUTH_KIND);
-  await delKV(StorageKeys.PARENT_ADDRESS);
-  await delKV(StorageKeys.POD_ADDRESS);
+  await step("legacy-feed-signer-address", () => delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS));
   // Drop both scoped ZeroDev session keys (sub-ENS + EAS). Re-login mints fresh.
-  await delKV(StorageKeys.WOCO_AA_SESSION);
-  await delKV(StorageKeys.WOCO_AA_EAS_SESSION);
+  await step("aa-sessions", () =>
+    Promise.all([delKV(StorageKeys.WOCO_AA_SESSION), delKV(StorageKeys.WOCO_AA_EAS_SESSION)]),
+  );
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
-  cacheClearByPrefix(USER_SCOPED_PREFIXES);
+  await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
   _kind = "none";
   _parent = null;
   _sessionAddress = null;
