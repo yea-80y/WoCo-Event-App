@@ -59,7 +59,12 @@ const SEAT_CAP_CEILING = 30;
  * any event under ~50 seats.
  */
 export function perIpSeatCapForEvent(declaredSupply: number): number {
-  const proportional = Math.ceil(Math.max(0, declaredSupply) * SEAT_CAP_FRACTION);
+  // A non-finite supply must collapse to the floor, not propagate. NaN compares
+  // false against everything, so it would survive both clamp arms and disable
+  // the cap silently — the one failure mode of this function that fails OPEN.
+  // `declaredSupplyOf` cannot produce one; this makes the function total anyway.
+  const supply = Number.isFinite(declaredSupply) ? Math.max(0, declaredSupply) : 0;
+  const proportional = Math.ceil(supply * SEAT_CAP_FRACTION);
   return Math.min(SEAT_CAP_CEILING, Math.max(RESERVATION_MAX_QTY, proportional));
 }
 

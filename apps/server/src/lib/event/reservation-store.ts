@@ -54,9 +54,17 @@ export const RESERVATION_MAX_QTY = 10;
  * The per-IP held-seat cap is no longer a constant — it is sized per event by
  * `perIpSeatCapForEvent()` in `seat-cap.ts` and passed into `reserve()`.
  *
- * It was 30 for every event, which #223 showed to be wrong in both directions:
- * 60% of a 50-seat room, and too tight to admit a 40-person block booking at a
- * 2,000-seat one. The justification given for 30 — "a small office or family LAN
+ * It was 30 for every event, which is 60% of a 50-seat room and 1.5% of an
+ * arena — so the same number that barely inconveniences a large event let one
+ * address sit on most of a small one. The cap now shrinks for small events and
+ * is never raised above 30, so this only ever tightens.
+ *
+ * #223 also argued 30 was too TIGHT for a 40-person block booking. That half was
+ * rejected: a consumed hold stops counting the moment payment lands, so such a
+ * purchase already completes by paying per order. The cap bounds seats held
+ * unpaid and simultaneously, never total sales.
+ *
+ * The justification once given for 30 — "a small office or family LAN
  * (~30 concurrent buyers × 1 ticket each)" — also pre-dated #218, which moved
  * IPv6 to /64 bucketing and made that office ONE bucket rather than thirty.
  *
@@ -170,7 +178,6 @@ export function heldFor(seriesId: string): number {
   return total;
 }
 
-/** Sum of qty across all active reservations from a given IP, all series. */
 /**
  * Seats currently held by one address AT ONE EVENT.
  *

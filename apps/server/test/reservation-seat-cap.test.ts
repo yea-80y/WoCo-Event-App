@@ -96,6 +96,15 @@ test("no event of any size is loosened — the ceiling stays at the old flat 30"
   assert.equal(cap.perIpSeatCapForEvent(Number.MAX_SAFE_INTEGER), 30);
 });
 
+test("a non-finite supply collapses to the floor rather than disabling the cap", () => {
+  // NaN compares false against everything, so an unguarded clamp would let it
+  // through both arms and silently remove the cap — the only fail-OPEN mode this
+  // function has. Unreachable via declaredSupplyOf; pinned so it stays that way.
+  assert.equal(cap.perIpSeatCapForEvent(Number.NaN), store.RESERVATION_MAX_QTY);
+  assert.equal(cap.perIpSeatCapForEvent(Number.POSITIVE_INFINITY), store.RESERVATION_MAX_QTY);
+  assert.equal(cap.perIpSeatCapForEvent(-1), store.RESERVATION_MAX_QTY);
+});
+
 test("the cap never decreases as an event gets bigger", () => {
   let prev = 0;
   for (let n = 0; n <= 3000; n += 7) {
