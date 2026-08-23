@@ -41,7 +41,7 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
     const totalSupply = onChainData ? Number(onChainData.totalSupply) : series.totalSupply;
     const claimed = onChainData ? Number(onChainData.nextSlot) : 0;
     const physicalAvailable = Math.max(0, totalSupply - claimed);
-    const held = heldFor(seriesId);
+    const held = heldFor(eventId, seriesId);
     return c.json({
       ok: true,
       data: {

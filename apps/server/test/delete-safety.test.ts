@@ -22,6 +22,9 @@ import {
   type DeleteSafetyDeps,
 } from "../src/lib/event/delete-safety.js";
 
+/** Any event id — these tests only care that it is threaded through (#377). */
+const EVENT_ID = "evt-delete-safety";
+
 const CHAIN_ID = 421614;
 const ONCHAIN_ID = `0x${"ab".repeat(32)}`;
 
@@ -67,7 +70,7 @@ function harness(over: Partial<DeleteSafetyDeps> = {}) {
 
 test("verified zero on-chain and no holds → delete allowed, ledger actually consulted", async () => {
   const { deps, reads } = harness();
-  await assertNoOrders([series()], deps);
+  await assertNoOrders(EVENT_ID, [series()], deps);
   // The gate must have asked the contract — an allow without a read is fail-open.
   assert.deepEqual(reads, [{ onChainEventId: ONCHAIN_ID, chainId: CHAIN_ID }]);
 });
@@ -76,7 +79,7 @@ test("null chain read (EventNotFound) is a verified zero → delete allowed", as
   // getOnChainEventV2 returns null for exactly one thing: the contract
   // reverted EventNotFound(), so nothing can ever have minted.
   const { deps } = harness({ getOnChainEvent: async () => null });
-  await assertNoOrders([series()], deps);
+  await assertNoOrders(EVENT_ID, [series()], deps);
 });
 
 // ---------------------------------------------------------------------------
@@ -89,7 +92,7 @@ test("a THROWING chain read refuses — an RPC outage is never read as zero clai
       throw new Error("ECONNREFUSED");
     },
   });
-  await assert.rejects(assertNoOrders([series()], deps), (err: unknown) => {
+  await assert.rejects(assertNoOrders(EVENT_ID, [series()], deps), (err: unknown) => {
     // NOT a DeleteBlockedError: the route maps that to a definitive 409,
     // while "Could not verify" maps to a retryable 503. Transport failure
     // means UNKNOWN, and unknown must refuse without pretending to know why.
@@ -103,7 +106,7 @@ test("a THROWING chain read refuses — an RPC outage is never read as zero clai
 test("series with no on-chain record → blocked; there is no ledger to consult", async () => {
   const { deps, reads } = harness();
   await assert.rejects(
-    assertNoOrders([series({ onChainEventId: undefined })], deps),
+    assertNoOrders(EVENT_ID, [series({ onChainEventId: undefined })], deps),
     (err: unknown) => {
       assert.ok(err instanceof DeleteBlockedError);
       assert.equal(err.blockers.length, 1);
@@ -116,7 +119,7 @@ test("series with no on-chain record → blocked; there is no ledger to consult"
 
 test("claimed tickets block, with the count surfaced", async () => {
   const { deps } = harness({ getOnChainEvent: async () => onChain(3n) });
-  await assert.rejects(assertNoOrders([series()], deps), (err: unknown) => {
+  await assert.rejects(assertNoOrders(EVENT_ID, [series()], deps), (err: unknown) => {
     assert.ok(err instanceof DeleteBlockedError);
     assert.deepEqual(err.blockers, [`"General": 3 ticket(s) issued`]);
     return true;
@@ -125,7 +128,7 @@ test("claimed tickets block, with the count surfaced", async () => {
 
 test("live buyer holds block even when on-chain claims are zero", async () => {
   const { deps } = harness({ heldFor: () => 2 });
-  await assert.rejects(assertNoOrders([series()], deps), (err: unknown) => {
+  await assert.rejects(assertNoOrders(EVENT_ID, [series()], deps), (err: unknown) => {
     assert.ok(err instanceof DeleteBlockedError);
     assert.deepEqual(err.blockers, [`"General": 2 seat(s) currently held by buyers`]);
     return true;
@@ -140,14 +143,19 @@ test("blockers accumulate across series — the 409 reports every reason", async
   const claimedId = `0x${"cd".repeat(32)}`;
   const { deps } = harness({
     getOnChainEvent: async (id) => onChain(id === claimedId ? 5n : 0n),
-    heldFor: (seriesId) => (seriesId === "ser-3" ? 1 : 0),
+    // Asserting the event id here is the point: without it a wrong constant
+    // threaded through assertNoOrders would pass unnoticed (#377).
+    heldFor: (eventId, seriesId) => {
+      assert.equal(eventId, EVENT_ID, "assertNoOrders must forward the event being deleted");
+      return seriesId === "ser-3" ? 1 : 0;
+    },
   });
   const all = [
     series({ seriesId: "ser-1", name: "Unregistered", onChainEventId: undefined }),
     series({ seriesId: "ser-2", name: "Sold", onChainEventId: claimedId }),
     series({ seriesId: "ser-3", name: "Held" }),
   ];
-  await assert.rejects(assertNoOrders(all, deps), (err: unknown) => {
+  await assert.rejects(assertNoOrders(EVENT_ID, all, deps), (err: unknown) => {
     assert.ok(err instanceof DeleteBlockedError);
     assert.equal(err.name, "DeleteBlockedError");
     assert.deepEqual(err.blockers, [
@@ -174,7 +182,7 @@ test("a transport failure aborts outright — never demoted to one blocker among
     series({ seriesId: "ser-1", name: "Unregistered", onChainEventId: undefined }),
     series({ seriesId: "ser-2", name: "Unknowable" }),
   ];
-  await assert.rejects(assertNoOrders(all, deps), (err: unknown) => {
+  await assert.rejects(assertNoOrders(EVENT_ID, all, deps), (err: unknown) => {
     assert.ok(!(err instanceof DeleteBlockedError));
     assert.ok(err instanceof Error);
     assert.equal(err.message, "Could not verify order status — try again");

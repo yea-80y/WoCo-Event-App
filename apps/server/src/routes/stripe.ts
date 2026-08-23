@@ -444,16 +444,25 @@ stripe.post("/create-checkout", async (c) => {
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
 
   // Validate reservation if one was supplied. The reservation is expected to
-  // match this series + quantity; mismatches mean a stale/wrong client state
-  // and we'd rather fail loudly than silently let the user pay against the
+  // match this event + series + quantity; mismatches mean a stale/wrong client
+  // state and we'd rather fail loudly than silently let the user pay against the
   // wrong hold.
+  //
+  // The EVENT is part of that match (#377). This compared the series alone,
+  // which is only sound while series ids are globally unique — a convention, not
+  // an enforced invariant. A hold taken at another event declaring the same id
+  // therefore passed as a seat lock here, and a valid reservation sets
+  // `skipAvailability` below, which skips the sold-out pre-check outright. It
+  // could not oversell (the contract re-checks supply at mint) but it turned a
+  // sold-out series into a charge-then-auto-refund cycle on demand, and let
+  // fulfilment consume a reservation belonging to a different event.
   let reservationId: string | undefined;
   if (typeof rawReservationId === "string" && rawReservationId) {
     const r = getReservation(rawReservationId);
     if (!r) {
       return c.json({ ok: false, error: "Reservation not found or expired" }, 410);
     }
-    if (r.seriesId !== seriesId) {
+    if (r.seriesId !== seriesId || r.eventId !== eventId) {
       return c.json({ ok: false, error: "Reservation series mismatch" }, 400);
     }
     if (r.quantity !== quantity) {

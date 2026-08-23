@@ -630,7 +630,7 @@ export async function deleteEventIfNoOrders(opts: {
   const { feed, source } = await resolveEventForOwner(eventId, addr, signerHint);
 
   if (!feed.deleted) {
-    await assertNoOrders(feed.series);
+    await assertNoOrders(eventId, feed.series);
   }
 
   // Directory removals FIRST (the publicly visible effect), tombstone last —

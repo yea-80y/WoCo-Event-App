@@ -213,12 +213,14 @@ reservations.post("/:eventId/series/:seriesId/reserve/release", async (c) => {
     return c.json({ ok: false, error: "reservationId required" }, 400);
   }
   const seriesId = c.req.param("seriesId");
+  const eventId = c.req.param("eventId");
 
-  // Soft check: only release if the reservation actually belongs to this
-  // series. Prevents a malicious client from trying to release someone
-  // else's hold by guessing IDs from another series.
+  // Soft check: only release if the reservation actually belongs to this series
+  // OF THIS EVENT. Prevents a malicious client from trying to release someone
+  // else's hold by guessing IDs from another series — and, since series ids are
+  // unique only by convention (#377), from another event declaring the same id.
   const r = getReservation(reservationId);
-  if (r && r.seriesId !== seriesId) {
+  if (r && (r.seriesId !== seriesId || r.eventId !== eventId)) {
     return c.json({ ok: false, error: "Reservation series mismatch" }, 400);
   }
 
@@ -235,7 +237,8 @@ reservations.post("/:eventId/series/:seriesId/reserve/release", async (c) => {
 
 reservations.get("/:eventId/series/:seriesId/held", async (c) => {
   const seriesId = c.req.param("seriesId");
-  return c.json({ ok: true, data: { held: heldFor(seriesId) } });
+  const eventId = c.req.param("eventId");
+  return c.json({ ok: true, data: { held: heldFor(eventId, seriesId) } });
 });
 
 export { reservations };

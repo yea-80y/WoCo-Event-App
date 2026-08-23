@@ -33,6 +33,7 @@ const defaultDeps: DeleteSafetyDeps = { getOnChainEvent, getActiveChainId, heldF
  * minted) is a verified zero and allows.
  */
 export async function assertNoOrders(
+  eventId: string,
   series: SeriesSummary[],
   deps: DeleteSafetyDeps = defaultDeps,
 ): Promise<void> {
@@ -60,7 +61,7 @@ export async function assertNoOrders(
     }
     if (claimed > 0) blockers.push(`"${s.name}": ${claimed} ticket(s) issued`);
 
-    const held = deps.heldFor(s.seriesId);
+    const held = deps.heldFor(eventId, s.seriesId);
     if (held > 0) blockers.push(`"${s.name}": ${held} seat(s) currently held by buyers`);
   }
   if (blockers.length > 0) throw new DeleteBlockedError(blockers);
