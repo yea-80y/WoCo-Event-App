@@ -1,6 +1,6 @@
-import type { RecoveryEnvelope, RecoveryGuardianIndex, RecoveryStatus } from "@woco/shared";
+import type { RecoveryEnvelope, RecoveryStatus } from "@woco/shared";
 import { readFeedPage, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
-import { topicRecovery, topicRecoveryStatus, topicRecoveryGuardian } from "../swarm/topics.js";
+import { topicRecovery, topicRecoveryStatus } from "../swarm/topics.js";
 
 /**
  * Recovery-escrow persistence (PASSKEY_RECOVERY_PLAN §11.6 / §13).
@@ -11,7 +11,10 @@ import { topicRecovery, topicRecoveryStatus, topicRecoveryGuardian } from "../sw
  * nor withhold a user's escrow. This module now handles only:
  *  - `getRecoveryEnvelope` — LEGACY read of the old platform-signed feed, kept as a
  *    recovery fallback for accounts protected before the migration.
- *  - the untrusted platform HINTS (presence `RecoveryStatus`, guardian reverse index).
+ *  - the untrusted platform presence hint (`RecoveryStatus`).
+ * The guardian→account reverse index that used to live here is now a SOC the
+ * GUARDIAN owns and the client reads directly (#157, `guardian-index.ts` in shared):
+ * the server neither writes nor serves it.
  */
 
 /** LEGACY read of the platform-signed envelope feed (pre-§13 recovery fallback). */
@@ -22,8 +25,8 @@ export async function getRecoveryEnvelope(kernelAddress: string): Promise<Recove
 }
 
 /**
- * Presence hint keyed by Kernel address (§13). Holds no escrow and no key — only a
- * "protected" flag plus display hints. Untrusted, like the guardian reverse index.
+ * Presence hint keyed by Kernel address (§13). Holds no escrow, no key, no guardian
+ * and no name — only a "protected" flag. Untrusted: presence only, never absence.
  */
 export async function getRecoveryStatus(kernelAddress: string): Promise<RecoveryStatus | null> {
   const page = await readFeedPage(topicRecoveryStatus(kernelAddress));
@@ -33,41 +36,4 @@ export async function getRecoveryStatus(kernelAddress: string): Promise<Recovery
 
 export async function putRecoveryStatus(kernelAddress: string, status: RecoveryStatus): Promise<void> {
   await writeFeedPage(topicRecoveryStatus(kernelAddress), encodeJsonFeed(status), { deferred: false });
-}
-
-/**
- * Guardian → account reverse-lookup hint (RecoveryGuardianIndex). Convenience
- * only: confidentiality and authorisation rest on the sealed envelope, not here.
- * Public read — the guardian↔account link is already on-chain.
- */
-export async function getRecoveryByGuardian(
-  guardianAddress: string,
-): Promise<RecoveryGuardianIndex | null> {
-  const page = await readFeedPage(topicRecoveryGuardian(guardianAddress));
-  if (!page) return null;
-  const index = decodeJsonFeed<RecoveryGuardianIndex>(page);
-  // A tombstoned entry is no entry: the account removed all its backups (#165),
-  // so this guardian protects nothing and must not auto-find it in the portal.
-  if (index?.revoked) return null;
-  return index;
-}
-
-/**
- * Raw read INCLUDING tombstones — only the clear path needs this, to check who a
- * guardian entry belongs to before overwriting it. Everything else must use
- * `getRecoveryByGuardian`, which hides revoked entries.
- */
-export async function getRecoveryByGuardianRaw(
-  guardianAddress: string,
-): Promise<RecoveryGuardianIndex | null> {
-  const page = await readFeedPage(topicRecoveryGuardian(guardianAddress));
-  if (!page) return null;
-  return decodeJsonFeed<RecoveryGuardianIndex>(page);
-}
-
-export async function putRecoveryByGuardian(
-  guardianAddress: string,
-  index: RecoveryGuardianIndex,
-): Promise<void> {
-  await writeFeedPage(topicRecoveryGuardian(guardianAddress), encodeJsonFeed(index), { deferred: false });
 }

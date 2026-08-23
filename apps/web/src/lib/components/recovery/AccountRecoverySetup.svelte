@@ -26,8 +26,6 @@
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
-  import { fetchRecoveryByGuardian } from "../../api/recovery.js";
-  import { guardianConfigForBackup } from "../../auth/guardian-config.js";
 
   type Phase =
     | "intro" | "choosing" | "connecting" | "confirming" | "working" | "done"
@@ -36,10 +34,6 @@
   let connectingMethod = $state<"email" | "wallet" | "passkey" | null>(null);
   let pendingBackup = $state<BackupWallet | null>(null);
   let backupAddress = $state<string | null>(null);
-  // Soft warn: this wallet already guards a DIFFERENT account (independence nudge).
-  let bindWarning = $state<string | null>(null);
-  // Info (not error): this wallet already guards THIS account — nothing to change.
-  let alreadyGuarding = $state(false);
   let errorMsg = $state("");
   // Which flow failed — the retry must go back to that flow, not drop a user who
   // tried to REMOVE their backups into the "choose a backup method" screen.
@@ -186,8 +180,6 @@
 
   function startChoosing() {
     pendingBackup = null;
-    bindWarning = null;
-    alreadyGuarding = false;
     errorMsg = "";
     errorFrom = "add";
     phase = "choosing";
@@ -197,8 +189,6 @@
     phase = "connecting";
     connectingMethod = method;
     errorMsg = "";
-    alreadyGuarding = false;
-    bindWarning = null;
     try {
       const backup = method === "email"
         ? await connectWeb3AuthBackup()
@@ -213,22 +203,10 @@
         throw new Error("Pick a different wallet — your backup can't be a key that already controls this account.");
       }
 
-      // Look up by the DERIVED guardian address (what setupAccountRecovery writes to the index).
-      // Independence rule (plan §12.3): "already your backup" = info; cross-account = soft warn.
-      try {
-        // Pure derivation (no RPC) of the same helper-built config setup will pin (#161).
-        const { guardianAddressFor } = await import("../../auth/guardian-address.js");
-        const guardianAddr = guardianAddressFor(guardianConfigForBackup(backup.address));
-        const existing = await fetchRecoveryByGuardian(guardianAddr).catch(() => null);
-        if (existing && auth.parent) {
-          if (existing.kernelAddress.toLowerCase() === auth.parent.toLowerCase()) {
-            alreadyGuarding = true;
-          } else {
-            bindWarning = "This wallet already guards another account. Using it here means one backup protects both — fine, but worth knowing.";
-          }
-        }
-      } catch { /* guardian-address lookup is a hint — non-fatal */ }
-
+      // "Already this account's backup" is refused by the store against the ON-CHAIN
+      // set (`decideAddPath`); the public by-guardian lookup that used to nudge here
+      // was the #157 linkage leak and is gone. The guardian's own index is readable
+      // only with the backup wallet's signature, which this step does not yet have.
       pendingBackup = backup;
       phase = "confirming";
     } catch (e) {
@@ -304,7 +282,7 @@
     revokeBookkeepingNote = "";
     try {
       const outcome = await auth.revokeAccountBackup(guardian);
-      if (!outcome.hintCleared || !outcome.manifestMarked) {
+      if (!outcome.manifestMarked) {
         revokeBookkeepingNote =
           "Removed on-chain. We couldn't update every record of it — your backup list may briefly still show it.";
       }
@@ -586,15 +564,6 @@
     {:else if phase === "confirming"}
       <p class="kicker">Account safety</p>
 
-      {#if alreadyGuarding}
-        <h1>Already your backup</h1>
-        <p class="lede">This wallet is already the backup for this account — nothing to change.</p>
-        <div class="backup-chip">
-          <span class="dot"></span>
-          Backup key&ensp;<code>{pendingBackup ? short(pendingBackup.address) : ""}</code>
-        </div>
-        <button class="btn btn--ghost cta" onclick={startChoosing}>Use a different backup</button>
-      {:else}
         <h1>Confirm your backup</h1>
         <p class="lede">This becomes your recovery key — make sure it's a wallet you control.</p>
 
@@ -608,10 +577,6 @@
             Make sure this passkey syncs to your other devices (iCloud Keychain or Google) —
             a device-only passkey can't restore your account if you lose this device.
           </p>
-        {/if}
-
-        {#if bindWarning}
-          <p class="soft-warn" role="note">{bindWarning}</p>
         {/if}
 
         {#if isProtected === true && hookKind === "legacy"}
@@ -640,7 +605,6 @@
         </button>
         <p class="footnote">You'll confirm on this device, then sign once in your backup.</p>
         <button class="linkish cta-link" onclick={startChoosing}>Try a different method</button>
-      {/if}
 
     {:else if phase === "working"}
       <p class="kicker">Account safety</p>

@@ -4,6 +4,37 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Recovery API + relay hardening: auto-find moves to a guardian-owned SOC; the recovery routes and the SOC relay get rate limits and body caps (#157, #176, #301, 2026-08-23)
+
+**#157.** The guardian→account reverse index was a platform feed the server wrote from a
+caller-supplied `guardianAddress` — world-writable (any authenticated account could claim any
+guardian, so a locked-out user connecting their backup was auto-found to the attacker's Kernel and
+told "no backup found") — and `GET /status/:kernel` handed out the guardian + sub-ENS label for any
+public Kernel address. Patching the server write was rejected: an on-chain-gated write still lets a
+sponsored userOp register the victim's guardian on the attacker's own Kernel, and the hook's first-
+install event (`GuardiansSet(account, address[])`) has the guardian unindexed, so a chain-derived
+reverse lookup is not a cheap log filter. Instead the index is now **`GuardianAccountIndex`, a SOC
+owned by the guardian's own signer** (the key derived from the backup wallet's signature that already
+owns the escrow): only the backup holder can write it, its address is not computable without that
+signature, and the server neither writes nor serves it. Setup upserts the account after the on-chain
+install; the portal derives the keys from the connected backup (the ceremony's first signature,
+moved earlier and reused — wallet backups still sign once), reads the index, and confirms every
+listed account against the chain (`isGuardianRegistered`) before "Protected account found". That
+chain check replaces the tombstones (a replaced backup's stale entry is filtered exactly). Server:
+`/by-guardian`, the index writes, `tombstone.ts` and `MAX_CLEAR_GUARDIANS` are gone; the presence
+doc is `{ v, configured, updatedAt }`; `/escrow` takes no body; `/escrow/clear` only flips the hint.
+
+**#176 / #301.** `lib/http/rate-limit.ts` is one sliding-window limiter (burst + sustained
+windows, peek/record, bounded key count with stale-first then LRU eviction) and `body-limit.ts` a
+JSON-shaped 413 mounted before `requireAuth`. Recovery POSTs: 6/min + 20/h per parent, 30/min +
+120/h per IP, 8 KB bodies; GETs 120/min per IP. The SOC relay (`/api/swarm/soc`): 60/min + 500/h
+per parent, a tighter 30/min + 300/h bucket for statement-shaped payloads (classified from the
+payload's own `format`), 300/min + 3000/h per IP, a 1500/min global ceiling that answers 503 and
+trips `/api/health` `swarmRelay.globalTrippedAt`; `/bytes` (no in-repo caller) tighter still.
+`/api/*` has a 16 MB body backstop.
+
+---
+
 ## Recovery: a WoCo-owned guardian hook with set-semantics and a real revoke; one guardian config, two derivations that must agree (#164, #161, 2026-08-22)
 
 The ZeroDev caller hook pinned guardians in an append-only `allowed[guardian][kernel]`

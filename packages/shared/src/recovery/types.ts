@@ -43,45 +43,6 @@ export interface RecoveryEnvelope {
   wrappedDeks: string[];
 }
 
-/**
- * Reverse lookup written at setup so a connected backup wallet can AUTO-FIND the
- * account it protects — sparing a locked-out user from recalling a hex address.
- *
- * Keyed on the guardian address, whose guardian↔account link is ALREADY public
- * on-chain (the Kernel's recovery config), so this index discloses nothing new.
- *
- * SECURITY: this is an untrusted CONVENIENCE HINT, never an authorisation. The
- * guardian address derives from a public backup address, so the index is
- * poisonable (anyone can claim a guardian maps to their own account). It cannot
- * cause harm: recovery decrypts the escrow envelope FIRST, and only the genuine
- * account's envelope is sealed to the real guardian's X25519 key (from an
- * unforgeable backup-wallet signature). A wrong/poisoned hit fails to decrypt and
- * aborts before any on-chain action. The manual name/address entry is the fallback.
- */
-export interface RecoveryGuardianIndex {
-  /** Lowercased Kernel address this guardian can recover. */
-  kernelAddress: string;
-  /** Optional sub-ENS label ({label}.woco.eth) for a human-readable confirmation. */
-  label?: string;
-  /**
-   * Tombstone written when the account removed all its backups (#165). Swarm
-   * feeds have no delete, so the entry is superseded rather than erased; readers
-   * MUST treat a revoked entry as no entry. Only the account the index points at
-   * can set it (the server checks the verified parent), so it is not a DoS vector.
-   */
-  revoked?: boolean;
-}
-
-/**
- * How many guardian addresses one `POST /api/recovery/escrow/clear` may name.
- *
- * Shared BECAUSE the two sides disagree destructively otherwise: the server
- * rejects an over-long list outright (so a caller learns instead of silently
- * losing tombstones), which means a client that sends more than this gets every
- * hint left in place. Both halves must read the same number.
- */
-export const MAX_CLEAR_GUARDIANS = 32;
-
 /** Current presence-hint format. */
 export const RECOVERY_STATUS_VERSION = 1 as const;
 
@@ -90,22 +51,21 @@ export const RECOVERY_STATUS_VERSION = 1 as const;
  * escrow envelope moved to a GUARDIAN-owned SOC — which cannot be read without the
  * backup-wallet signature — the UI can no longer probe "is this account protected?"
  * by fetching the envelope. This tiny doc fills that gap: it records only that a
- * protect happened, plus display hints. It NEVER holds the escrow or a key.
+ * protect happened. It NEVER holds the escrow, a key, the guardian or a name (#157:
+ * it used to carry the guardian address and sub-ENS label, which linked a public
+ * Kernel to its backup for anyone who asked the public endpoint).
  *
- * SECURITY: an untrusted convenience, exactly like {@link RecoveryGuardianIndex}.
- * The platform signs it, so it is forgeable/withholdable — but a wrong value only
- * mis-renders the setup screen ("on record" vs "add a backup"). It carries no
- * authority: real recoverability is proven ONLY by decrypting the guardian SOC.
+ * SECURITY: an untrusted convenience. The platform signs it, so it is forgeable/
+ * withholdable — but a wrong value only mis-renders the setup screen ("on record"
+ * vs "add a backup"), and it can attest presence only, never absence. It carries
+ * no authority: real recoverability is proven ONLY by decrypting the guardian SOC.
+ * Auto-find lives in the guardian-owned index (`guardian-index.ts`), not here.
  */
 export interface RecoveryStatus {
   /** Format version (see RECOVERY_STATUS_VERSION). */
   v: number;
   /** True once a protect ceremony completed (on-chain install + guardian SOC). */
   configured: boolean;
-  /** Guardian (weighted-ECDSA) address pinned on-chain — display hint only. */
-  guardianAddress?: string;
-  /** Optional sub-ENS label ({label}.woco.eth) for a human-readable confirmation. */
-  label?: string;
   /** ms-epoch of the last protect write (display only). */
   updatedAt?: number;
 }
