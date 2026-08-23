@@ -38,9 +38,12 @@
  *    silent wrong-identity end state, reached without this guard ever being consulted.
  *    Tracked separately; the fix is to clear the seed wherever the binding is cleared.
  *  - CROSS-DEVICE. Two recoveries onto the same credential on two devices. Neither
- *    device can see the other's, and no per-credential chain read can either, because
+ *    device can see the other's, and no per-credential POINT read can either, because
  *    a recovered account lives at a PRESERVED address that is not derivable from the
- *    credential. Closing it needs an authoritative owner→account record.
+ *    credential. CLOSED by #234: the validator's `OwnerRegistered` log, filtered on
+ *    the credential and re-read live, is the authoritative owner→account record
+ *    (`ownedAccountsScan` below, `owned-accounts-scan.ts`). What remains is the
+ *    same-moment race, made loud by the tail re-scan after the rotation.
  *
  * STOPGAP, deliberately. The real fix is to key the binding by (ownerKey, account)
  * and the seed by (podAddress, parentAddress), so one key CAN own several accounts
@@ -93,6 +96,19 @@ export interface OwnerCollisionEvidence {
    * accounts, which live at preserved addresses no per-credential read can reach.
    */
   counterfactualOwner: string | null | "error";
+  /**
+   * The chain-log scan (#234, `owned-accounts-scan.ts`): every account this
+   * credential was ever registered as owner of, re-read live. It is the ONLY
+   * evidence that can see a RECOVERED account on another device — a preserved
+   * address no per-credential point-read reaches. `undefined` = not run (the
+   * caller runs it only after the cheaper evidence allows, since a full scan is
+   * pages of `eth_getLogs`). `unknown` BLOCKS: the scan fails closed, with the
+   * passkey route as the escape hatch.
+   */
+  ownedAccountsScan?:
+    | { status: "clean" }
+    | { status: "collision"; kernels: string[] }
+    | { status: "unknown"; reason: string };
 }
 
 export type OwnerCollisionVerdict =
@@ -176,6 +192,24 @@ export function decideOwnerCollision(e: OwnerCollisionEvidence): OwnerCollisionV
         userMessage: MSG_TAKEN,
       };
     }
+  }
+
+  // (2b) The cross-device evidence (#234): any account whose CURRENT owner is this
+  //      credential, found from the validator's OwnerRegistered log. Structurally
+  //      the only signal that sees a recovered account on another device.
+  if (e.ownedAccountsScan?.status === "collision") {
+    return {
+      status: "block",
+      reason: `the credential currently owns other account(s) on-chain (${e.ownedAccountsScan.kernels.join(", ")})`,
+      userMessage: MSG_TAKEN,
+    };
+  }
+  if (e.ownedAccountsScan?.status === "unknown") {
+    return {
+      status: "block",
+      reason: `owned-accounts scan did not complete: ${e.ownedAccountsScan.reason}`,
+      userMessage: MSG_UNSURE,
+    };
   }
 
   // (3) Local traces of a previous life for this credential. A stored seed is the

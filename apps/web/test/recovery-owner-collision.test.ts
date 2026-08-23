@@ -164,3 +164,35 @@ test("a FAILED local seed read says 'couldn't confirm', not 'already taken'", ()
   assert.equal(v.status, "block");
   assert.match(v.userMessage, /couldn't confirm/i);
 });
+
+// ── #234: the cross-device scan as evidence ────────────────────────────────
+
+test("#234: a scan that finds another live-owned account blocks with the TAKEN message", () => {
+  const v = decideOwnerCollision(clean({ ownedAccountsScan: { status: "collision", kernels: [OTHER] } }));
+  assert.equal(v.status, "block");
+  if (v.status === "block") {
+    assert.match(v.reason, /currently owns other account/);
+    assert.match(v.userMessage, /already has its own WoCo account/);
+  }
+});
+
+test("#234: a scan that could not complete blocks with the UNSURE message (fail closed, passkey escape hatch)", () => {
+  const v = decideOwnerCollision(clean({ ownedAccountsScan: { status: "unknown", reason: "page 3 failed" } }));
+  assert.equal(v.status, "block");
+  if (v.status === "block") {
+    assert.match(v.reason, /did not complete/);
+    assert.match(v.userMessage, /couldn't confirm/);
+  }
+});
+
+test("#234: a clean scan changes nothing — the local rules still decide", () => {
+  assert.equal(decideOwnerCollision(clean({ ownedAccountsScan: { status: "clean" } })).status, "allow");
+  assert.equal(decideOwnerCollision(clean({ ownedAccountsScan: { status: "clean" }, podSeedPresent: true })).status, "block");
+});
+
+test("#234: the repair path and own-account path stay open even if the scan reports the target itself", () => {
+  // The caller excludes the target and the counterfactual before scanning; if a
+  // stale caller did not, rules (0)/(0b) still run first.
+  const v = decideOwnerCollision(clean({ existingBinding: TARGET, ownedAccountsScan: { status: "collision", kernels: [TARGET] } }));
+  assert.equal(v.status, "allow");
+});
