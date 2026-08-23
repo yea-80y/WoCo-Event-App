@@ -143,7 +143,12 @@ test("blockers accumulate across series — the 409 reports every reason", async
   const claimedId = `0x${"cd".repeat(32)}`;
   const { deps } = harness({
     getOnChainEvent: async (id) => onChain(id === claimedId ? 5n : 0n),
-    heldFor: (_eventId, seriesId) => (seriesId === "ser-3" ? 1 : 0),
+    // Asserting the event id here is the point: without it a wrong constant
+    // threaded through assertNoOrders would pass unnoticed (#377).
+    heldFor: (eventId, seriesId) => {
+      assert.equal(eventId, EVENT_ID, "assertNoOrders must forward the event being deleted");
+      return seriesId === "ser-3" ? 1 : 0;
+    },
   });
   const all = [
     series({ seriesId: "ser-1", name: "Unregistered", onChainEventId: undefined }),

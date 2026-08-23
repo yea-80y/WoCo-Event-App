@@ -9,10 +9,12 @@
  * Storage: in-memory Map backed by a JSON file so state survives restarts.
  * GC sweep removes expired + consumed entries every RESERVATION_GC_INTERVAL_MS.
  *
- * Atomicity: the public mutators (`reserve`, `consume`, `release`) are
- * serialised per-series via an in-memory mutex (mirrors the per-series
- * claim queue pattern in routes/claims.ts), so concurrent /reserve calls
- * for the same series can't both grab the last seat.
+ * Atomicity: `reserve()` is serialised per (event, series) via an in-memory
+ * mutex (mirrors the per-series claim queue pattern in routes/claims.ts), so
+ * concurrent /reserve calls for the same series can't both grab the last seat.
+ * `consume` and `release` do NOT take it — they are wholly synchronous, so
+ * run-to-completion already makes them atomic. This said all three were
+ * serialised, which was never true.
  *
  * Per-buyer cap: when a `clientKey` (UUID from the buyer's localStorage)
  * is supplied, `reserve()` releases all other active reservations on the
