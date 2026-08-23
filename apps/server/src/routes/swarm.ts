@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { uploadSignedSoc, readSocPayload, type SignedSocInput } from "../lib/swarm/soc-upload.js";
+import { uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js";
+import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { batchForDeploy } from "../lib/etherna/batch-router.js";
 import { clientIp } from "../lib/http/client-ip.js";
@@ -151,23 +153,57 @@ swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAut
   }
 });
 
+// The public read is a bee network search (and, for Etherna-stamped feeds, an
+// Etherna read) per call. Per IP; sized for the write-path version probes a
+// single publish makes (a few dozen) with headroom for a venue NAT.
+const SOC_READ_IP = new SlidingWindowLimiter([{ limit: 600, windowMs: 60_000 }]);
+
 /**
- * GET /api/swarm/soc/:owner/:identifier — read a SOC's inline payload by computed
- * chunk address. UNAUTHENTICATED: SOCs are public on Swarm, and the recovery
- * envelope payload is HPKE-sealed. Reads happen during new-device login BEFORE a
- * session exists, so this must be open. Returns the payload base64-encoded.
+ * GET /api/swarm/soc/:owner/:identifier[?gatewayUrl=…] — the client's server
+ * FALLBACK read (#156). UNAUTHENTICATED: SOCs are public on Swarm, and reads
+ * happen during new-device login BEFORE a session exists.
+ *
+ * Returns the WHOLE SOC (owner, identifier, signature, span, payload) so the
+ * client re-verifies it — this origin is a transport, never a trust root. The
+ * server verifies too, and a source that answers with bytes that are not this
+ * chunk is treated as unreachable, not as "absent". Three answers:
+ *   200 { …soc }                       — verified found
+ *   404 { code: "absent" }             — every verdict source ran its search and found nothing
+ *   503 { code: "unavailable", error } — somebody could not be asked; NOT a verdict
+ * `gatewayUrl` is the writer's own routing signal, forwarded by the write-path
+ * probe: an Etherna-stamped feed's head may still sit only in Etherna's store
+ * for a few seconds, so that read must ask Etherna too, and must say
+ * `unavailable` (not 404) if Etherna cannot be asked.
  */
 swarmRoutes.get("/soc/:owner/:identifier", async (c) => {
   const owner = c.req.param("owner");
   const identifier = c.req.param("identifier");
+  if (!SOC_READ_IP.allow(`ip:${clientIp(c)}`)) return c.json({ ok: false, error: "Rate limited" }, 429);
+  const gatewayUrl = c.req.query("gatewayUrl");
   try {
-    const payload = await readSocPayload(owner, identifier);
-    if (!payload) return c.json({ ok: false, error: "Not found" }, 404);
-    return c.json({ ok: true, data: { payloadB64: Buffer.from(payload).toString("base64") } });
+    const res = await readVerifiedSoc(owner, identifier, {
+      gatewayUrl: typeof gatewayUrl === "string" && gatewayUrl.length <= 512 ? gatewayUrl : undefined,
+    });
+    if (res.status === "absent") return c.json({ ok: false, error: "Not found", code: "absent" }, 404);
+    if (res.status === "unavailable") {
+      return c.json({ ok: false, error: `SOC read unavailable: ${res.reason}`, code: "unavailable" }, 503);
+    }
+    const { soc } = res;
+    return c.json({
+      ok: true,
+      data: {
+        owner: soc.owner,
+        identifier: soc.identifier,
+        signature: soc.signature,
+        span: soc.span,
+        payloadB64: Buffer.from(soc.payload).toString("base64"),
+        source: soc.source,
+      },
+    });
   } catch (err) {
     const status = (err as { status?: number })?.status;
     if (status === 400) return c.json({ ok: false, error: (err as Error).message }, 400);
     console.error("[swarm] SOC read failed:", err);
-    return c.json({ ok: false, error: "SOC read failed" }, 502);
+    return c.json({ ok: false, error: "SOC read failed", code: "unavailable" }, 503);
   }
 });

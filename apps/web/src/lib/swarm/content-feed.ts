@@ -180,7 +180,11 @@ export async function writeContentFeed(args: {
     // thorough: the write-path probe MUST see chunks still settling on the
     // public net (Etherna-stamped writes) — a missed version here re-writes an
     // existing immutable SOC and silently loses the edit (see probeSoc).
-    const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true });
+    // `gatewayUrl` rides along so the server's fallback asks Etherna for an
+    // Etherna-stamped feed — the head this writer just wrote may sit only there
+    // for a few seconds — and answers unavailable (→ refuse below) rather than
+    // absent when Etherna cannot be asked (#156).
+    const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true, gatewayUrl: args.gatewayUrl });
     const hint = args.versionHint ?? readVersionHint(owner, args.topic);
     const { latest, clean, hintGiven, hintValidated } =
       await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
