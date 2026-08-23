@@ -12,6 +12,7 @@ export * from "./event/snapshot.js";
 export * from "./event/jsonld.js";
 export * from "./crypto/index.js";
 export * from "./recovery/types.js";
+export * from "./recovery/guardian-index.js";
 export * from "./manifest/types.js";
 export * from "./swarm/soc.js";
 export * from "./pod/types.js";

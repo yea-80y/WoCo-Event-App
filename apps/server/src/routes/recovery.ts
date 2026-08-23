@@ -2,15 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { RECOVERY_STATUS_VERSION } from "@woco/shared";
-import {
-  getRecoveryEnvelope,
-  getRecoveryStatus,
-  putRecoveryStatus,
-  getRecoveryByGuardian,
-  getRecoveryByGuardianRaw,
-  putRecoveryByGuardian,
-} from "../lib/recovery/service.js";
-import { MAX_CLEAR_GUARDIANS, mayTombstone, planHintClear } from "../lib/recovery/tombstone.js";
+import { getRecoveryEnvelope, putRecoveryStatus, getRecoveryStatus } from "../lib/recovery/service.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
@@ -18,14 +10,10 @@ import { jsonBodyLimit } from "../lib/http/body-limit.js";
 export const recovery = new Hono<AppEnv>();
 
 const ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
-// Sub-ENS label charset (a single DNS-ish label, no dot/suffix): bounds what we
-// persist as the human-readable display hint.
-const LABEL_RE = /^[a-z0-9-]{1,63}$/;
 
 // ── Rate limits (#176) ────────────────────────────────────────────────────────
 // Both POST routes make an unconditional, non-deferred platform-batch feed write
-// per call (the presence doc; `/clear` also walks up to 33 index entries), and a
-// free passkey account can loop them. Authentication is not a cost here, so the
+// per call (the presence doc), and a free passkey account can loop them. Authentication is not a cost here, so the
 // limiter is: per verified parent (the binding key — a protect ceremony is one
 // call, and a user adding a few backups in a sitting is a handful) AND per client
 // IP (a looser secondary bound, because a venue NAT is one IP).
@@ -40,8 +28,8 @@ const RECOVERY_WRITE_IP = new SlidingWindowLimiter([
 // The public reads cost a bee feed read each. Same order as the directory's read
 // limiter (events.ts), per IP.
 const RECOVERY_READ_IP = new SlidingWindowLimiter([{ limit: 120, windowMs: 60_000 }]);
-// Bodies here are an address, a label, or ≤32 addresses — a cap well above any of
-// them keeps a caller from making the auth middleware read and hash megabytes.
+// Bodies here are empty or a single flag — a cap well above that keeps a caller
+// from making the auth middleware read and hash megabytes.
 const RECOVERY_MAX_BODY_BYTES = 8 * 1024;
 
 function writeLimited(c: { req: { header: (n: string) => string | undefined } }, parentAddress: string): boolean {
@@ -58,47 +46,23 @@ function readLimited(c: { req: { header: (n: string) => string | undefined } }):
   return !RECOVERY_READ_IP.allow(`ip:${clientIp(c)}`);
 }
 
-// POST /api/recovery/escrow — authenticated. §13: the sealed escrow itself is now a
-// GUARDIAN-owned SOC the client signs + uploads directly (`/api/swarm/soc`); this
-// endpoint no longer stores the envelope. It records only the untrusted PLATFORM
-// HINTS — a presence flag (kernel→guardian) and the guardian→kernel reverse index —
-// used to render the setup screen and auto-find an account at recovery time.
-// The kernelAddress is taken from the verified session parent, never the body.
+// POST /api/recovery/escrow — authenticated. §13: the sealed escrow itself is a
+// GUARDIAN-owned SOC the client signs + uploads directly (`/api/swarm/soc`), and
+// since #157 so is the guardian→account auto-find index. This endpoint records
+// ONLY the untrusted platform PRESENCE hint (kernel→"protected") that the setup
+// screen renders when the chain is unreadable. It takes no body fields: the
+// kernelAddress is the verified session parent, and the guardian + label that
+// used to be stored here were a public linkage leak.
 recovery.post("/escrow", jsonBodyLimit(RECOVERY_MAX_BODY_BYTES), requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   if (writeLimited(c, parentAddress)) return c.json({ ok: false, error: "Rate limited" }, 429);
-  const body = (c.get("body") ?? {}) as { guardianAddress?: unknown; label?: unknown };
-
-  if (typeof body.guardianAddress !== "string" || !ADDR_RE.test(body.guardianAddress)) {
-    return c.json({ ok: false, error: "Invalid guardianAddress" }, 400);
-  }
-  const guardianAddress = body.guardianAddress.toLowerCase();
-  const label =
-    typeof body.label === "string" && LABEL_RE.test(body.label.toLowerCase())
-      ? body.label.toLowerCase()
-      : undefined;
-
   try {
-    // Presence hint keyed by the caller's own Kernel — drives the "backup on record"
-    // UI. Holds no escrow/key; a user can only write their own (parent-stamped) doc.
+    // A user can only write their own (parent-stamped) doc. Holds no escrow/key.
     await putRecoveryStatus(parentAddress, {
       v: RECOVERY_STATUS_VERSION,
       configured: true,
-      guardianAddress,
-      label,
       updatedAt: Date.now(),
     });
-
-    // Best-effort reverse-lookup so the backup wallet can auto-find this account.
-    // NON-FATAL and unverified: a poisoned hit is harmless because recovery reads +
-    // decrypts the guardian-owned SOC (sealed to the real guardian key) before any
-    // on-chain action (see RecoveryGuardianIndex SECURITY).
-    try {
-      await putRecoveryByGuardian(guardianAddress, { kernelAddress: parentAddress, label });
-    } catch (err) {
-      console.error("[api] putRecoveryByGuardian (non-fatal):", err);
-    }
-
     return c.json({ ok: true, data: { kernelAddress: parentAddress } });
   } catch (err) {
     console.error("[api] putRecoveryStatus error:", err);
@@ -108,79 +72,35 @@ recovery.post("/escrow", jsonBodyLimit(RECOVERY_MAX_BODY_BYTES), requireAuth, as
 });
 
 // POST /api/recovery/escrow/clear — authenticated. The mirror of /escrow, run after
-// the account proved on-chain that it uninstalled its recovery route (#165). Marks
-// the presence hint not-configured and tombstones the guardian reverse-index entries
-// so a removed backup no longer auto-finds this account in the portal.
+// the account proved on-chain that it changed its recovery route (#165, #164).
 //
-// AUTHZ: an index entry is only tombstoned when it already points AT the caller's own
-// Kernel, so naming someone else's guardian address does nothing. The hints carry no
-// authority either way — the chain does (see RecoveryGuardianIndex SECURITY).
+//  - REMOVE ALL (default): flip the presence hint to not-configured.
+//  - REVOKE ONE (`keepStatus: true`): the account still HAS working backups, so
+//    the presence hint must stay — flipping it would make the portal's
+//    chain-unreadable fallback tell a protected user "no backup found". Nothing
+//    to do here then; the route answers ok so the client's bookkeeping is uniform.
 //
-// It clears HINTS ONLY. The revoke itself is the client's sudo userOp; a server that
-// could turn recovery off by itself would be a new attack surface.
+// There are no auto-find tombstones any more: the guardian-owned index cannot be
+// edited without the backup wallet, and the portal filters a stale entry by
+// asking the chain whether this guardian still protects the account (#157).
+//
+// It clears a HINT ONLY. The revoke itself is the client's sudo userOp; a server
+// that could turn recovery off by itself would be a new attack surface.
 recovery.post("/escrow/clear", jsonBodyLimit(RECOVERY_MAX_BODY_BYTES), requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   if (writeLimited(c, parentAddress)) return c.json({ ok: false, error: "Rate limited" }, 429);
-  const body = (c.get("body") ?? {}) as { guardianAddresses?: unknown; keepStatus?: unknown };
-  // `keepStatus: true` = the client revoked ONE guardian on-chain and the account
-  // still has working backups (#164): tombstone only the named entries and leave the
-  // presence hint standing. Anything but literal `true` is the remove-all shape.
+  const body = (c.get("body") ?? {}) as { keepStatus?: unknown };
+  // Anything but literal `true` is the remove-all shape.
   const keepStatus = body.keepStatus === true;
-
-  const requested = Array.isArray(body.guardianAddresses) ? body.guardianAddresses : [];
-  // Bound BEFORE validating or de-duplicating: no request should get the server to
-  // walk a multi-megabyte array at all. Reject rather than truncate, so a caller
-  // with more guardians than this learns instead of silently losing some.
-  if (requested.length > MAX_CLEAR_GUARDIANS) {
-    return c.json({ ok: false, error: `Too many guardianAddresses (max ${MAX_CLEAR_GUARDIANS})` }, 400);
-  }
-  if (requested.some((g) => typeof g !== "string" || !ADDR_RE.test(g))) {
-    return c.json({ ok: false, error: "Invalid guardianAddresses" }, 400);
-  }
-
   try {
-    // The status doc names the most recent guardian; the client supplies the rest
-    // from its own manifest, which is the only record of guardians replaced earlier.
-    const existing = await getRecoveryStatus(parentAddress);
-    const { flipStatus, targets } = planHintClear({
-      requested: requested as string[],
-      statusGuardian: existing?.guardianAddress,
-      keepStatus,
-    });
-
-    if (flipStatus) {
+    if (!keepStatus) {
       await putRecoveryStatus(parentAddress, {
         v: RECOVERY_STATUS_VERSION,
         configured: false,
         updatedAt: Date.now(),
       });
     }
-
-    // Best-effort, exactly like the register path — but REPORTED, not swallowed.
-    //
-    // Do NOT reason that "#162's on-chain pre-flight rejects a stale hint anyway":
-    // that pre-flight reads the caller hook's `allowed` mapping, which is APPEND-ONLY
-    // and still returns true for a removed guardian. What actually neutralises a
-    // stale hint is the portal's own recovery-route read returning "absent". Saying
-    // it wrong here would invite someone to weaken that read later.
-    let cleared = 0;
-    let failed = 0;
-    for (const guardianAddress of targets) {
-      try {
-        const index = await getRecoveryByGuardianRaw(guardianAddress);
-        if (!mayTombstone(index, parentAddress)) continue;
-        await putRecoveryByGuardian(guardianAddress, { ...index!, revoked: true });
-        cleared++;
-      } catch (err) {
-        failed++;
-        console.error("[api] tombstone putRecoveryByGuardian (non-fatal):", err);
-      }
-    }
-
-    return c.json({
-      ok: true,
-      data: { kernelAddress: parentAddress, clearedGuardians: cleared, failedGuardians: failed },
-    });
+    return c.json({ ok: true, data: { kernelAddress: parentAddress, statusFlipped: !keepStatus } });
   } catch (err) {
     console.error("[api] clear recovery hint error:", err);
     const msg = err instanceof Error ? err.message : String(err);
@@ -188,10 +108,12 @@ recovery.post("/escrow/clear", jsonBodyLimit(RECOVERY_MAX_BODY_BYTES), requireAu
   }
 });
 
-// GET /api/recovery/status/:kernelAddress — PUBLIC presence hint (§13). Returns the
-// kernel→guardian status doc, or a synthesised {configured:true} for LEGACY accounts
-// whose envelope still sits on the old platform feed. Untrusted convenience: real
-// recoverability is proven only by decrypting the guardian SOC.
+// GET /api/recovery/status/:kernelAddress — PUBLIC presence hint (§13). Returns
+// `{ v, configured, updatedAt }`, or a synthesised {configured:true} for LEGACY
+// accounts whose envelope still sits on the old platform feed. Untrusted
+// convenience: real recoverability is proven only by decrypting the guardian SOC.
+// It says nothing about WHO the guardian is (#157) — a public Kernel address must
+// not resolve to its backup wallet in one call.
 recovery.get("/status/:kernelAddress", async (c) => {
   const kernelAddress = c.req.param("kernelAddress");
   if (!ADDR_RE.test(kernelAddress)) {
@@ -199,33 +121,17 @@ recovery.get("/status/:kernelAddress", async (c) => {
   }
   if (readLimited(c)) return c.json({ ok: false, error: "Rate limited" }, 429);
   try {
-    let status = await getRecoveryStatus(kernelAddress);
-    if (!status) {
-      const legacy = await getRecoveryEnvelope(kernelAddress);
-      if (legacy) status = { v: RECOVERY_STATUS_VERSION, configured: true };
+    const status = await getRecoveryStatus(kernelAddress);
+    if (status) {
+      // Project, never forward: a doc written before #157 carries the guardian
+      // and label, and this endpoint must not hand them out.
+      return c.json({ ok: true, data: { v: status.v, configured: status.configured, updatedAt: status.updatedAt } });
     }
-    return c.json({ ok: true, data: status });
+    const legacy = await getRecoveryEnvelope(kernelAddress);
+    return c.json({ ok: true, data: legacy ? { v: RECOVERY_STATUS_VERSION, configured: true } : null });
   } catch (err) {
     console.error("[api] getRecoveryStatus error:", err);
     return c.json({ ok: false, error: "Failed to load recovery status" }, 500);
-  }
-});
-
-// GET /api/recovery/by-guardian/:guardianAddress — PUBLIC. Returns the account a
-// guardian protects (RecoveryGuardianIndex), so a connected backup wallet can
-// auto-find it. Convenience hint only; the escrow decrypt is the real guard.
-recovery.get("/by-guardian/:guardianAddress", async (c) => {
-  const guardianAddress = c.req.param("guardianAddress");
-  if (!ADDR_RE.test(guardianAddress)) {
-    return c.json({ ok: false, error: "Invalid guardianAddress" }, 400);
-  }
-  if (readLimited(c)) return c.json({ ok: false, error: "Rate limited" }, 429);
-  try {
-    const index = await getRecoveryByGuardian(guardianAddress);
-    return c.json({ ok: true, data: index });
-  } catch (err) {
-    console.error("[api] getRecoveryByGuardian error:", err);
-    return c.json({ ok: false, error: "Failed to load recovery index" }, 500);
   }
 });
 

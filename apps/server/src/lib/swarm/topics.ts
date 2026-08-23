@@ -129,14 +129,6 @@ export const topicRecovery = (kernelAddress: string) =>
 // hints). Untrusted convenience — it holds no escrow and no key.
 export const topicRecoveryStatus = (kernelAddress: string) =>
   Topic.fromString(`${RECOVERY_NS}/status/${kernelAddress.toLowerCase()}`);
-
-// Reverse lookup: guardian address → account it protects. Lets a connected
-// backup wallet auto-find the account at recovery time (RecoveryGuardianIndex).
-// Untrusted convenience hint — see the type's SECURITY note; the escrow decrypt
-// is the authoritative guard.
-export const topicRecoveryGuardian = (guardianAddress: string) =>
-  Topic.fromString(`${RECOVERY_NS}/by-guardian/${guardianAddress.toLowerCase()}`);
-
 // ---------------------------------------------------------------------------
 // Marketing feeds — pointer to the organiser's SEALED contact-list blob.
 // The feed page holds only {swarmRef, count, updatedAt}; the blob itself is
