@@ -20,15 +20,23 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v7
+      # Actions pinned by commit SHA: a tag is movable, so `@v7` trusts whoever
+      # controls the tag at run time; the SHA trusts only the audited commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Must match apps/server/Dockerfile + .nvmrc — CI builds what production runs.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      - run: npm ci
+      # --ignore-scripts: no dependency runs code at install time in CI. Proven
+      # against this tree 2026-08-23: esbuild resolves its binary from the
+      # platform optionalDependency without its postinstall, and the native
+      # addons (bufferutil, utf-8-validate, tiny-secp256k1) have pure-JS
+      # fallbacks. A future dep that genuinely needs its install script will
+      # fail HERE, visibly — which is the point: it gets reviewed, not trusted.
+      - run: npm ci --ignore-scripts
 
       # packages/shared ships raw TS (main: ./src/index.ts) — consumers compile it,
       # so there is nothing to build, only to typecheck.
