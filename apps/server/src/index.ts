@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { FEATURES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { requireAuth } from "./middleware/auth.js";
+import { securityHeaders, FRAME_INLINE_SCRIPT, FRAME_CSP } from "./lib/http/security-headers.js";
 import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
@@ -200,6 +201,12 @@ app.use(
 // remain the precise answer; this stops an unbounded body from reaching a
 // handler that has none. See API_MAX_BODY_BYTES for the sizing.
 app.use("/api/*", apiBodyLimit());
+
+// nosniff + referrer hygiene — scoped, NOT "*": customDomainProxy streams
+// organiser-site assets through this origin, where nosniff would turn a
+// mistyped content-type into a dead asset. See lib/http/security-headers.ts.
+app.use("/api/*", securityHeaders());
+app.use("/embed/*", securityHeaders());
 
 // Health check. Includes payout-sweep liveness (no amounts — this endpoint is
 // public): if `payoutSweep.stale` is ever true, organiser money has stopped moving
@@ -398,27 +405,14 @@ app.get("/embed/frame/:eventId", (c) => {
     show-image="${showImage}"
     show-description="${showDesc}"
   ></woco-tickets>
-  <script>
-    var widget = document.querySelector('woco-tickets');
-
-    // Forward woco-claim events to parent page
-    widget.addEventListener('woco-claim', function(e) {
-      window.parent.postMessage({ type: 'woco-claim', detail: e.detail }, '*');
-    });
-
-    // Auto-resize: notify parent of height changes
-    function notifyResize() {
-      var h = widget.getBoundingClientRect().height || document.body.scrollHeight;
-      window.parent.postMessage({ type: 'woco-resize', height: Math.ceil(h) }, '*');
-    }
-    new ResizeObserver(notifyResize).observe(widget);
-    setTimeout(notifyResize, 300);
-  <\/script>
+  <script>${FRAME_INLINE_SCRIPT}<\/script>
 </body>
 </html>`;
 
   c.header("Content-Type", "text/html");
-  c.header("X-Frame-Options", "ALLOWALL");
+  // frame-ancestors * in the CSP is the valid spelling of what the old
+  // `X-Frame-Options: ALLOWALL` (an invalid value) was trying to say.
+  c.header("Content-Security-Policy", FRAME_CSP);
   c.header("Cache-Control", "no-store");
   return c.body(html);
 });
