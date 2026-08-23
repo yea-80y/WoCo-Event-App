@@ -15,7 +15,7 @@ import { getEvent } from "../event/service.js";
 import { chainEventEndMs } from "../event/end-date-guard.js";
 import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
-import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
+import { uploadToBytes } from "../swarm/bytes.js";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../chain/sponsor-wallet.js";
 import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
@@ -37,7 +37,6 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   markPayoutVoid: markVoid,
   getOrganiserByStripeAccount,
   uploadToBytes: (data) => uploadToBytes(data),
-  downloadFromBytes,
   generateBurner,
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,

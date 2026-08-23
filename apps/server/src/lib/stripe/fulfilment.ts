@@ -32,7 +32,6 @@ import {
   buildTicketCanonicalMessage,
   type EventFeed,
   type SealedBox,
-  type SeriesManifestBlob,
   type SitePalette,
 } from "@woco/shared";
 import { checkSalesWindow } from "../event/sales-window.js";
@@ -89,9 +88,8 @@ export interface FulfilmentDeps {
   markPayoutVoid(sessionId: string, reason: string): void;
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
-  /** Swarm /bytes. Both may throw — the caller decides what each failure means. */
+  /** Swarm /bytes — the fallback order seal. May throw; the caller decides what that means. */
   uploadToBytes(data: string): Promise<string>;
-  downloadFromBytes(ref: string): Promise<string>;
 
   /** Chain. `batchClaimForOnChain` rejects on a revert; partial state is never left. */
   generateBurner(): Burner;
@@ -319,7 +317,6 @@ export async function fulfilPaidSession(
   let totalSupply = 0;
   let isV2 = false;
   let v2OnChainEventId = "";
-  let v2SwarmManifestRef = "";
 
   try {
     // Phase B: thread the site carrier (from checkout metadata) so the issued
@@ -340,7 +337,6 @@ export async function fulfilPaidSession(
         if (ser.swarmManifestRef && ser.onChainEventId) {
           isV2 = true;
           v2OnChainEventId = ser.onChainEventId;
-          v2SwarmManifestRef = ser.swarmManifestRef;
         }
       }
       if (!prefetchedOrderRef && ev.encryptionKey) {
@@ -448,7 +444,6 @@ export async function fulfilPaidSession(
         seriesId,
         quantity,
         v2OnChainEventId,
-        v2SwarmManifestRef,
         prefetchedOrderRef,
         encryptedOrder,
         accountClaim,
@@ -720,7 +715,6 @@ interface MintV2Args {
   seriesId: string;
   quantity: number;
   v2OnChainEventId: string;
-  v2SwarmManifestRef: string;
   prefetchedOrderRef: string | undefined;
   encryptedOrder: SealedBox | undefined;
   accountClaim: { parentAddress: string; podPubKey: string | undefined } | undefined;
@@ -749,23 +743,14 @@ async function mintV2(a: MintV2Args): Promise<void> {
     }
   }
 
-  // Fetch the manifest blob once; all slots for this series share it.
-  let manifestBlob: SeriesManifestBlob | null = null;
-  try {
-    const raw = await deps.downloadFromBytes(a.v2SwarmManifestRef);
-    manifestBlob = JSON.parse(raw) as SeriesManifestBlob;
-  } catch (err) {
-    console.error("[fulfilment/v2] Failed to fetch manifest blob:", err);
-    a.setStopped("Manifest not found");
-    return;
-  }
+  // No manifest read here, on purpose (#368): the series manifest blob used to
+  // be fetched for the pod-body refs the QR once carried. The QR is a ticket
+  // signature now, the contract holds `manifestRef` from registration, and
+  // door verification is ecrecover vs `slotOwner` — so the only thing a
+  // Swarm read could still do on this path is refund a paid buyer over a blip.
 
   if (!batchOrderRef) {
     a.setStopped("No orderRef available for on-chain claim");
-    return;
-  }
-  if (!manifestBlob) {
-    a.setStopped("Manifest not available");
     return;
   }
 
