@@ -49,6 +49,8 @@ import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
+import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
+import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
@@ -216,6 +218,11 @@ app.get("/api/health", (c) =>
   c.json({
     ok: true,
     payoutSweep: payoutSweepHealth(),
+    // Auto-refunds that could not be created (#367). `pending` or `abandoned`
+    // non-zero is an alarm: a buyer paid, got no ticket, and has no money back
+    // yet — and until it lands the organiser is still scheduled to be paid for
+    // it. Counts only; the ops route has the entries.
+    pendingRefunds: pendingRefundsHealth(),
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
@@ -640,6 +647,7 @@ startSnapshotMaintenance();
 // eventually breach Stripe's hold ceiling — so its absence is a production alarm,
 // not a degraded feature. See docs/PAYOUTS.md.
 startPayoutReleaseJob();
+startPendingRefundRetryJob(liveRefundGateway);
 // Broadcast recipients are encrypted at rest under a key held only in the
 // process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
 // it, mark the jobs that were in flight `died`, and hand back their daily-cap

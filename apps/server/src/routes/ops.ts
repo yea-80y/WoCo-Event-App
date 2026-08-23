@@ -36,6 +36,13 @@ import {
   type EmailFailure,
 } from "../lib/email/failure-ledger.js";
 import { forgetRetries } from "../lib/email/retry-queue.js";
+import {
+  listPendingRefunds,
+  resolvePendingRefund,
+  retryPendingRefunds,
+  pendingRefundsHealth,
+} from "../lib/stripe/pending-refunds.js";
+import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social/participants.js";
 import { clearTallyCache } from "./social.js";
 
@@ -305,6 +312,56 @@ ops.get("/social/subjects", (c) => {
       subjects: subjects.map((subject) => ({ subject, participants: participantsFor(format, subject).length })),
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// Pending auto-refunds (#367)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/ops/pending-refunds
+ *
+ * Auto-refunds that could not be created, oldest first — the rows behind
+ * `pendingRefunds` on /api/health. `?includeSettled=1` for the full history.
+ * Session / payment-intent / account ids and amounts only; no buyer data lives
+ * in this store.
+ */
+ops.get("/pending-refunds", (c) => {
+  const includeSettled = c.req.query("includeSettled") === "1";
+  const entries = listPendingRefunds({ includeSettled });
+  return c.json({ ok: true, data: { health: pendingRefundsHealth(), count: entries.length, entries } });
+});
+
+/**
+ * POST /api/ops/pending-refunds/retry
+ *
+ * Run one retry pass now instead of waiting for the timer — after a Stripe
+ * outage clears, or to confirm a dashboard refund is recognised.
+ */
+ops.post("/pending-refunds/retry", async (c) => {
+  const outcomes = await retryPendingRefunds(liveRefundGateway);
+  console.log(`[ops] pending-refund retry run by hand: ${JSON.stringify(outcomes)}`);
+  return c.json({ ok: true, data: { outcomes, health: pendingRefundsHealth() } });
+});
+
+/**
+ * POST /api/ops/pending-refunds/:sessionId/resolve
+ *
+ * The buyer was made whole another way (dashboard refund without our marker,
+ * bank transfer, a dispute that went their way). Clears the alarm for that
+ * row; `by` is required for the same reason as the email ledger — an alarm
+ * cleared by nobody is an alarm nobody owns.
+ */
+ops.post("/pending-refunds/:sessionId/resolve", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  if (!resolvePendingRefund(sessionId, by)) {
+    return c.json({ ok: false, error: "No open pending refund for that session" }, 404);
+  }
+  console.log(`[ops] pending refund ${sessionId} marked resolved by ${by}`);
+  return c.json({ ok: true, data: { resolved: true, health: pendingRefundsHealth() } });
 });
 
 /** Tests only — clears the failed-attempt window between cases. */

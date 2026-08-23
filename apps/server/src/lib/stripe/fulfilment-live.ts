@@ -23,6 +23,7 @@ import { captureCheckoutConsent } from "../marketing/consent-capture.js";
 import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { recordFailure } from "../email/failure-ledger.js";
+import { recordPendingRefund } from "./pending-refunds.js";
 import type { FulfilmentDeps } from "./fulfilment.js";
 
 export const liveFulfilmentDeps: FulfilmentDeps = {
@@ -41,13 +42,16 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
   bindTicket,
   consumeReservation,
-  createRefund: async (params, connectedAccountId) => {
+  createRefund: async (params, connectedAccountId, idempotencyKey) => {
     // Direct-charge sessions: the refund must go through the connected account.
-    const refund = await getStripe().refunds.create(
-      params,
-      connectedAccountId ? { stripeAccount: connectedAccountId } : undefined,
-    );
+    const refund = await getStripe().refunds.create(params, {
+      ...(connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
+      idempotencyKey,
+    });
     return { id: refund.id };
+  },
+  recordPendingRefund: (input) => {
+    recordPendingRefund(input);
   },
   captureCheckoutConsent,
   getSiteTheme,

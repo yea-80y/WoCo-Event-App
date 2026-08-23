@@ -239,6 +239,19 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "stripe/pending-refunds",
+    drive: async () => {
+      const m = await import("../src/lib/stripe/pending-refunds.js");
+      m.recordPendingRefund({
+        sessionId: "cs_1",
+        paymentIntentId: "pi_1",
+        reason: "test",
+        metadata: {},
+        error: "stripe down",
+      });
+    },
+  },
+  {
     store: "stripe/payout-ledger",
     drive: async () => {
       const m = await import("../src/lib/stripe/payout-ledger.js");
