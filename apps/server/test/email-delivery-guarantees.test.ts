@@ -170,6 +170,10 @@ describe("failure ledger", () => {
         maxAttempts: 1,
         context: { stripeSessionId: "cs_test_123", eventId: "evt_1" },
       }),
+      // The thrown error is MARKED as ledgered: paid-ticket fulfilment (#314)
+      // reads this to know it must not write a second row — and to know that
+      // an error WITHOUT the mark never reached the mailer and needs one.
+      (err: unknown) => err instanceof EmailSendError && err.ledgered === true,
     );
     const [entry] = ledger.listFailures();
     assert.ok(entry);
@@ -179,6 +183,18 @@ describe("failure ledger", () => {
     assert.equal(entry.recipients[0]?.address, "buyer@example.com");
     assert.equal(entry.context?.stripeSessionId, "cs_test_123");
     assert.equal(entry.subject, "Your ticket");
+  });
+
+  test("a noLedger send (drain worker) throws WITHOUT the ledgered mark", async () => {
+    const primary = flakyProvider("ses", 99, retryable);
+    await assert.rejects(
+      send.sendVia({ primary: primary.provider, secondary: null, sleep: noSleep }, MSG, {
+        maxAttempts: 1,
+        noLedger: true,
+      }),
+      (err: unknown) => err instanceof EmailSendError && err.ledgered === false,
+    );
+    assert.equal(ledger.listFailures().length, 0);
   });
 
   test("an abandoned MARKETING send keeps the hash only, never the address", async () => {

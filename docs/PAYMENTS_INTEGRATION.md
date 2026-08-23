@@ -93,8 +93,12 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
 - Production rejects unsigned webhooks (prevents forged free-ticket claims)
 - Pre-flight check on `/api/stripe/create-checkout`: returns 409 if sold out or user already
   has a ticket (prevents charge-without-ticket race)
-- Auto-refund on claim failure for unrecoverable reasons (Already claimed, No tickets
-  available, Series not found); transient failures skipped
+- Fulfilment (paid session → mint → email) lives in `lib/stripe/fulfilment.ts` behind an
+  injected-deps seam (#314). Any stop (mint revert, sales closed, unregistered series,
+  unreadable event feed) auto-refunds the unfilled part; an issued ticket whose email
+  cannot go out is always in the undelivered ledger (`email-failures.json`), whether the
+  mailer or the renderer failed. `test/fulfilment.test.ts` makes every collaborator throw
+  and asserts that property.
 
 ---
 
@@ -127,6 +131,8 @@ Rationale in git history + the `project_stripe_ux` memory. Load-bearing facts on
 
 ```
 apps/server/src/routes/stripe.ts                # Connect: onboarding, checkout, webhook
+apps/server/src/lib/stripe/fulfilment.ts        # paid session → mint → refund/email (deps seam, #314)
+apps/server/src/lib/stripe/fulfilment-live.ts   # production wiring of that seam
 apps/server/src/routes/reservations.ts          # slot reserve/release (Phase 3)
 apps/server/src/routes/ticket-page.ts           # /t/{...} HTML page + composite PNG
 apps/server/src/lib/event/reservation-store.ts  # .data/reservations.json

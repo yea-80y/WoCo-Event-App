@@ -28,21 +28,18 @@ import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { chainEventEndMs } from "../lib/event/end-date-guard.js";
-import { hashEmail, type ClaimIdentifier } from "../lib/event/claim-service.js";
+import { hashEmail } from "../lib/event/claim-service.js";
 import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
-import { sealJson, buildTicketCanonicalMessage } from "@woco/shared";
 import { computeCardFees } from "../lib/stripe/checkout-fees.js";
-import { captureCheckoutConsent } from "../lib/marketing/consent-capture.js";
-import type { SealedBox, SeriesManifestBlob, PayoutsResponse } from "@woco/shared";
-import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX, isSponsorReady } from "../lib/chain/sponsor-wallet.js";
+import type { SealedBox, PayoutsResponse } from "@woco/shared";
+import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId, getOnChainEvent } from "../lib/chain/event-contract.js";
-import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
-import { readFeedPage, writeFeedPage, decodeJsonFeed, encodeJsonFeed } from "../lib/swarm/feeds.js";
+import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
-import { sendTicketEmail } from "./tickets.js";
-import { bindTicket } from "../lib/gate/store.js";
-import { getSiteTheme, resolveSiteEventSigner } from "../lib/site/service.js";
-import { getReservation, consume as consumeReservation } from "../lib/event/reservation-store.js";
+import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
+import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
+import { resolveSiteEventSigner } from "../lib/site/service.js";
+import { getReservation } from "../lib/event/reservation-store.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
 import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } from "../lib/shop/service.js";
 import { sendShopOrderEmail } from "../lib/email/shop-receipt.js";
@@ -59,10 +56,9 @@ import {
   setNudgeState,
 } from "../lib/stripe/requirement-nudge.js";
 import { sendRequirementNudge } from "../lib/email/requirement-nudge.js";
-import { eventReleaseAfter, shopReleaseAfter } from "../lib/stripe/payout-policy.js";
+import { shopReleaseAfter } from "../lib/stripe/payout-policy.js";
 import {
   recordHeld as recordHeldPayout,
-  markVoid as markPayoutVoid,
   listByOrganiser as listPayoutsByOrganiser,
 } from "../lib/stripe/payout-ledger.js";
 import { buildPayoutsResponse } from "../lib/stripe/payout-view.js";
@@ -910,13 +906,25 @@ stripe.post("/webhook", async (c) => {
         }
 
         // Return 200 to Stripe immediately — Stripe best practice.
-        // Stripe's delivery timeout is 30 s; our Swarm writes take 10–25 s.
+        // Stripe's delivery timeout is 30 s; the mint + email take longer.
         // The payment is already confirmed (payment_status === "paid") — the
-        // Swarm writes are the result of that confirmation, not a prerequisite.
-        // Errors are logged; unrecoverable failures auto-refund inside the handler.
-        void handleSuccessfulPayment(session, event.created).catch((err) => {
-          console.error("[stripe-webhook] Background claim failed:", err);
-        });
+        // mint is the result of that confirmation, not a prerequisite.
+        // Fulfilment never rejects: every failure is a refund reason, a
+        // degraded accessory, or a ledgered email failure (lib/stripe/fulfilment.ts).
+        void fulfilPaidSession(session, event.created, liveFulfilmentDeps)
+          .then((outcome) => {
+            if (outcome.kind === "processed" && (outcome.stoppedReason || outcome.email === "failed")) {
+              console.warn(
+                `[stripe-webhook] fulfilment ${session.id}: issued=${outcome.issued}/${outcome.quantity} ` +
+                  `refund=${outcome.refund.kind} email=${outcome.email}` +
+                  (outcome.stoppedReason ? ` — ${outcome.stoppedReason}` : ""),
+              );
+            }
+          })
+          .catch((err) => {
+            // Cannot happen by contract; if it ever does, the log is the only trace.
+            console.error("[stripe-webhook] fulfilPaidSession rejected — INVARIANT BROKEN:", err);
+          });
       }
       break;
     }
@@ -1108,504 +1116,6 @@ async function handleShopOrderPaid(
         console.error("[stripe-webhook] Shop receipt email failed (non-fatal):", err);
       }
     })();
-  }
-}
-
-/**
- * Handle a successful Checkout Session — claim ticket(s) for the attendee.
- *
- * Uses the per-series queue (same as the /claim endpoint) to prevent two
- * concurrent webhooks from racing to claim the same slot.
- *
- * @param webhookEventCreated - Stripe event.created Unix timestamp (seconds).
- *   Used as claimedAt so the dashboard shows the actual payment time, not the
- *   webhook-processing time.
- */
-async function handleSuccessfulPayment(
-  session: import("stripe").Stripe.Checkout.Session,
-  webhookEventCreated: number,
-): Promise<void> {
-  const { eventId, seriesId, claimerEmail, claimerAddress, quantity: qtyStr, orderRef: metaOrderRef, reservationId: metaReservationId, siteId: metaSiteId, podPubKey: metaPodPubKey, marketingConsent: metaConsent } = session.metadata ?? {};
-
-  // Tri-state, and the absent case is NOT a decline: it means the order form was
-  // never shown, so the buyer was never asked and nothing should be recorded.
-  const metaMarketingConsent =
-    metaConsent === "1" ? true : metaConsent === "0" ? false : undefined;
-
-  if (!eventId || !seriesId) {
-    console.error("[stripe-webhook] Missing eventId/seriesId in session metadata");
-    return;
-  }
-
-  const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
-  const claimedAt = new Date(webhookEventCreated * 1000).toISOString();
-
-  // The reservation is consumed AFTER all claims commit (see end of function),
-  // not at webhook entry. Reason: claiming N tickets is sequential through the
-  // per-series mutex and each claim is a Swarm write (~3–8s). Consuming up
-  // front would drop heldFor() to 0 immediately, letting concurrent buyers
-  // race in and reserve the same physical slots while this webhook is still
-  // mid-claim. Holding the reservation for the duration keeps `available`
-  // honest from the perspective of any /reserve call that lands in parallel.
-
-  let identifier: ClaimIdentifier;
-  if (claimerAddress) {
-    identifier = {
-      type: "wallet",
-      address: claimerAddress.toLowerCase() as `0x${string}`,
-      ...(claimerEmail
-        ? { secondaryEmail: claimerEmail, secondaryEmailHash: hashEmail(claimerEmail) }
-        : {}),
-    };
-  } else if (claimerEmail) {
-    identifier = {
-      type: "email",
-      email: claimerEmail,
-      emailHash: hashEmail(claimerEmail),
-    };
-  } else {
-    console.error("[stripe-webhook] No claimer identifier in session metadata");
-    return;
-  }
-
-  // claimed.v2: buyer was signed in at checkout (claimerAddress is server-
-  // vouched — written only from a verified session). Applied to the FIRST
-  // ticket of the order only: the buyer needs exactly one edition for their
-  // own unlock; the rest stay bearer so group-buy forwarding keeps working.
-  const accountClaim = claimerAddress
-    ? {
-        parentAddress: claimerAddress.toLowerCase(),
-        podPubKey:
-          typeof metaPodPubKey === "string" && /^[0-9a-f]{64}$/i.test(metaPodPubKey)
-            ? metaPodPubKey.toLowerCase()
-            : undefined,
-      }
-    : undefined;
-
-  // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
-  // via session metadata). Falls back to a minimal server-built seal for the
-  // edge case where the browser skipped pre-upload (e.g. offline at checkout).
-  const prefetchedOrderRef =
-    typeof metaOrderRef === "string" && /^[0-9a-f]{64}$/i.test(metaOrderRef)
-      ? metaOrderRef.toLowerCase()
-      : undefined;
-
-  let encryptedOrder: SealedBox | undefined;
-  let eventTitle = "";
-  let eventDate = "";
-  /** Event END — anchors when these takings may be paid out (payout-policy.ts). */
-  let eventEndDate = "";
-  /** True only when the event feed was definitively read — the #300 sales
-   *  re-check below must fail OPEN on a feed hiccup, never refund over one. */
-  let eventLoaded = false;
-  /** Fallback organiser identity for the payout ledger if the account map misses. */
-  let eventCreatorAddress = "";
-  let eventLocation = "";
-  let seriesName = "";
-  let totalSupply = 0;
-  let isV2 = false;
-  let v2OnChainEventId = "";
-  let v2SwarmManifestRef = "";
-
-  try {
-    // Phase B: thread the site carrier (from checkout metadata) so the issued
-    // ticket's title/date + v2 manifest come from the authentic client-signed SOC.
-    const siteSigner = metaSiteId ? await resolveSiteEventSigner(metaSiteId, eventId) : null;
-    const ev = await getEvent(eventId, siteSigner ?? undefined);
-    if (ev) {
-      eventLoaded = true;
-      eventTitle = ev.title;
-      eventDate = ev.startDate;
-      eventEndDate = ev.endDate ?? "";
-      eventCreatorAddress = (ev.creatorAddress ?? "").toLowerCase();
-      eventLocation = ev.location ?? "";
-      const ser = ev.series.find((s) => s.seriesId === seriesId);
-      if (ser) {
-        seriesName = ser.name;
-        totalSupply = ser.totalSupply;
-        if (ser.swarmManifestRef && ser.onChainEventId) {
-          isV2 = true;
-          v2OnChainEventId = ser.onChainEventId;
-          v2SwarmManifestRef = ser.swarmManifestRef;
-        }
-      }
-      if (!prefetchedOrderRef && ev.encryptionKey) {
-        // Fallback minimal seal — only when no pre-uploaded ref is available.
-        encryptedOrder = await sealJson(ev.encryptionKey, {
-          seriesId,
-          ...(claimerEmail ? { claimerEmail } : {}),
-          ...(claimerAddress ? { claimerAddress: claimerAddress.toLowerCase() } : {}),
-        });
-      }
-    }
-  } catch (err) {
-    console.warn("[stripe-webhook] Could not build encrypted order (non-fatal):", err);
-  }
-
-  // Register the sale as HELD organiser funds. The connected account is on a
-  // manual payout schedule, so nothing reaches the organiser until the release
-  // sweep decides it may (event end + grace, or Stripe's hold ceiling).
-  //
-  // Recorded BEFORE claiming, not after: if the claim fails and we refund below,
-  // the entry is voided — whereas a sale we never recorded is money sitting in a
-  // frozen balance with nothing scheduled to ever release it.
-  const payoutAccountId = session.metadata?.connectedAccountId;
-  if (payoutAccountId && session.amount_total && session.currency) {
-    try {
-      recordHeldPayout({
-        sessionId: session.id,
-        stripeAccountId: payoutAccountId,
-        organiserAddress:
-          getOrganiserByStripeAccount(payoutAccountId) ?? eventCreatorAddress ?? "",
-        kind: "event",
-        eventId,
-        seriesId,
-        currency: session.currency,
-        grossAmount: session.amount_total,
-        paymentIntentId:
-          typeof session.payment_intent === "string"
-            ? session.payment_intent
-            : session.payment_intent?.id,
-        recordedAt: claimedAt,
-        releaseAfter: eventReleaseAfter(claimedAt, eventEndDate, eventDate),
-      });
-    } catch (err) {
-      // Never fail a paid claim over bookkeeping. A missing entry means funds sit
-      // held until the ceiling sweep releases them — recoverable, and loud here.
-      console.error("[stripe-webhook] FAILED to record payout ledger entry:", err);
-    }
-  } else if (session.amount_total) {
-    console.error(
-      `[stripe-webhook] Paid session ${session.id} has no connectedAccountId in metadata — ` +
-        `funds are held with no release schedule. Manual payout required.`,
-    );
-  }
-
-  const claimedResults: Array<{ edition: number; qrContent: string }> = [];
-  let stoppedReason: string | null = null;
-
-  // #300 rider: a payment can complete after the event's end — inside the
-  // expires_at floor window, or on a session created before the clamp shipped.
-  // The mint would revert SalesClosed at eventEndTs, i.e. the sponsor pays gas
-  // for a doomed tx before the same refund runs. Re-check the window here and
-  // go straight to the refund; the CONTRACT stays the authority — this only
-  // skips a broadcast the chain would refuse. Fails OPEN unless the event feed
-  // was definitively read, and only on a definitive "ended" — a feed hiccup or
-  // odd dates must never turn a paid mint into a refund.
-  if (isV2 && eventLoaded) {
-    const windowNow = checkSalesWindow({ startDate: eventDate, endDate: eventEndDate });
-    if (!windowNow.open && windowNow.reason === "ended") {
-      console.warn(
-        `[stripe-webhook] event ended before payment completed — refunding without broadcasting ` +
-        `(eventId=${eventId.slice(0, 8)} end=${eventEndDate || eventDate})`,
-      );
-      stoppedReason = "Event ended before payment completed — sales closed";
-    }
-  }
-  // #294: the CHAIN's own end, checked independently of the feed — an endDate
-  // extended past the registered eventEndTs (the exact divergence #294 names)
-  // keeps the feed check above green while every mint reverts. Memo hit in the
-  // common case (create-checkout warmed it); fail-OPEN on a transport error —
-  // the contract remains the authority and refuses the mint itself.
-  if (isV2 && !stoppedReason) {
-    try {
-      const chainEndMs = await chainEventEndMs(v2OnChainEventId);
-      if (chainEndMs !== null && Date.now() >= chainEndMs) {
-        console.warn(
-          `[stripe-webhook] on-chain sales end passed before payment completed — refunding without ` +
-          `broadcasting (eventId=${eventId.slice(0, 8)} chainEnd=${new Date(chainEndMs).toISOString()})`,
-        );
-        stoppedReason = "Event ended before payment completed — sales closed";
-      }
-    } catch (err) {
-      console.warn("[stripe-webhook] chain-end read failed (continuing to mint):", err);
-    }
-  }
-
-  if (stoppedReason) {
-    // Sales re-check refused the mint — fall through to the refund + payout
-    // void below with zero claims, exactly as a SalesClosed revert would have.
-  } else if (isV2) {
-    // ── v2 on-chain path ────────────────────────────────────────────────────
-    // Resolve the orderRef once for the whole batch (all tickets share one
-    // encrypted order blob — same buyer, same form submission).
-    let batchOrderRef: string | undefined = prefetchedOrderRef;
-    if (!batchOrderRef && encryptedOrder) {
-      try {
-        batchOrderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
-        console.log(`[stripe-webhook/v2] Fallback order uploaded: ${batchOrderRef}`);
-      } catch (err) {
-        console.warn("[stripe-webhook/v2] Fallback order upload failed:", err);
-      }
-    }
-
-    // Fetch the manifest blob once; all slots for this series share it.
-    let manifestBlob: SeriesManifestBlob | null = null;
-    try {
-      const raw = await downloadFromBytes(v2SwarmManifestRef);
-      manifestBlob = JSON.parse(raw) as SeriesManifestBlob;
-    } catch (err) {
-      console.error("[stripe-webhook/v2] Failed to fetch manifest blob:", err);
-      stoppedReason = "Manifest not found";
-    }
-
-    if (!batchOrderRef) {
-      stoppedReason = "No orderRef available for on-chain claim";
-    } else if (!manifestBlob) {
-      stoppedReason = "Manifest not available";
-    } else {
-      const orderRefBytes32 = "0x" + batchOrderRef;
-
-      // Generate ALL burners up front. Keys live in memory only for as long
-      // as it takes to sign their canonical message; the array is discarded
-      // when this scope exits. Nothing about the burner is persisted apart
-      // from its address (recorded on-chain as slotOwner).
-      const burners = Array.from({ length: quantity }, () => generateBurner());
-
-      // Chunk into on-chain batches of ON_CHAIN_BATCH_MAX (=100). For
-      // quantity ≤ 100 this is one tx. For an enterprise 200-ticket order:
-      // 2 sequential txs. Each chunk is all-or-nothing on-chain (the
-      // contract reverts if the batch would exceed supply); partial
-      // refund logic below handles cross-chunk partial failure (chunk 1
-      // succeeds, chunk 2 fails on supply exhaustion).
-      const slotsForBurners: number[] = [];
-      for (let chunkStart = 0; chunkStart < burners.length && !stoppedReason; chunkStart += ON_CHAIN_BATCH_MAX) {
-        const chunk = burners.slice(chunkStart, chunkStart + ON_CHAIN_BATCH_MAX);
-        const chunkAddresses = chunk.map((w) => w.address);
-        try {
-          const chunkSlots = await batchClaimForOnChain(
-            v2OnChainEventId,
-            chunkAddresses,
-            orderRefBytes32,
-          );
-          slotsForBurners.push(...chunkSlots);
-          console.log(
-            `[stripe-webhook/v2] batchClaimFor chunk ${chunkStart}..${chunkStart + chunk.length} ` +
-            `→ slots=${chunkSlots[0]}..${chunkSlots[chunkSlots.length - 1]}`,
-          );
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[stripe-webhook/v2] batchClaimFor failed at chunk ${chunkStart}:`, msg);
-          // Insufficient supply / Sold out / Event not found are all unrecoverable.
-          // Any tx-level revert means this chunk's state changes were rolled back —
-          // we keep whatever slotsForBurners has from prior chunks and refund the rest.
-          stoppedReason = msg;
-        }
-      }
-
-      // Sign + build QR for every slot we actually got. Signing is purely
-      // local crypto; ~0.2ms per sig, no chain round-trip.
-      for (let i = 0; i < slotsForBurners.length; i++) {
-        const slot = slotsForBurners[i];
-        const edition = slot + 1;
-        const canonical = buildTicketCanonicalMessage({
-          onChainEventId: v2OnChainEventId,
-          seriesId,
-          edition,
-        });
-        const ticketSig = await burners[i].signMessage(canonical);
-
-        // QR carries the per-ticket signature. Door verifies by:
-        //   recovered = ecrecover(personalHash(canonical), ticketSig)
-        //   require(recovered == slotOwner[onChainEventId][edition - 1])
-        const qrContent = `woco://t/${eventId}/${seriesId}/${edition}/${ticketSig}`;
-        claimedResults.push({ edition, qrContent });
-      }
-      // burners[] goes out of scope here — private keys are unreferenced
-      // and eligible for garbage collection.
-
-      // claimed.v2 on the on-chain rail: there is no ClaimedTicket POD to
-      // stamp (the contract is the ledger), but the buyer's account still
-      // gets its gate binding at purchase — first edition only, same
-      // group-buy reasoning as the v1 path.
-      if (accountClaim && slotsForBurners.length > 0) {
-        const firstEdition = slotsForBurners[0] + 1;
-        // `bindTicket` throws when the binding cannot be persisted — correct at
-        // /redeem, wrong here. The tickets are already minted and this line sits
-        // ABOVE the refund decision and the ticket email, so an escaping throw
-        // would leave the buyer charged, the QR contents discarded with
-        // `claimedResults`, no email, no refund, and nothing in the
-        // undelivered-ticket ledger, because none of that code would run. The
-        // binding is an accessory at purchase — the email carries a bind-later
-        // path — so it degrades on its own rather than taking fulfilment with it.
-        try {
-          const bound = bindTicket({
-            seriesId,
-            edition: firstEdition,
-            eventId,
-            parentAddress: accountClaim.parentAddress,
-            podPubKey: accountClaim.podPubKey,
-            paid: true,
-            route: "claim",
-          });
-          if (bound) {
-            console.log(`[gate] bound ${seriesId}#${firstEdition} → ${accountClaim.parentAddress} (claim, on-chain)`);
-          }
-        } catch (err) {
-          console.error(
-            `[gate] could not bind ${seriesId}#${firstEdition} for ${accountClaim.parentAddress} — ` +
-              `fulfilment continues, attendee can bind from the ticket email:`,
-            err,
-          );
-        }
-      }
-    }
-  } else {
-    // No fallback rail: the contract is the only ticket ledger, and a series
-    // without an on-chain registration has nothing to mint against. Setting
-    // `stoppedReason` drives the full auto-refund + payout void below — the
-    // same money outcome the deleted v1 path's guaranteed "No tickets
-    // available" produced, without pretending to try. create-checkout now
-    // refuses these sessions up front; this covers one created before that
-    // gate, or a feed/chain disagreement.
-    console.error(
-      `[stripe-webhook] Paid session for unregistered series ${seriesId} — refunding`,
-    );
-    stoppedReason = "Series is not registered on chain — no mint path";
-  }
-
-  // Now release the seat hold — all claims that were going to land have
-  // landed. Doing this here (vs. at webhook entry) means concurrent /reserve
-  // calls saw the correct held count throughout the slow Swarm-write phase.
-  if (metaReservationId) {
-    const consumed = consumeReservation(metaReservationId);
-    if (consumed) {
-      console.log(
-        `[stripe-webhook] Consumed reservation ${metaReservationId} (qty=${consumed.quantity}, claimed=${claimedResults.length})`,
-      );
-    }
-  }
-
-  // Partial-refund logic: if some tickets claimed but the batch couldn't
-  // finish (oversold mid-flight, etc.), refund only the unfilled portion
-  // pro-rata against amount_total. Refunding the whole intent here would
-  // claw back £176 from a buyer who already received 7 of 8 emailed tickets.
-  // If ZERO tickets claimed, refund the whole intent as before.
-  const unfilled = quantity - claimedResults.length;
-  if (stoppedReason && unfilled > 0 && session.payment_intent) {
-    const piId = typeof session.payment_intent === "string"
-      ? session.payment_intent
-      : session.payment_intent.id;
-    try {
-      const s = getStripe();
-      // Direct-charge sessions: refund must go through the connected account.
-      // connectedAccountId is stamped into metadata at checkout-session creation.
-      const connectedAccountId = session.metadata?.connectedAccountId || undefined;
-      const amountTotal = session.amount_total ?? 0;
-      // Pro-rata the total (which already includes any buyer-paid fee) by
-      // unit. Round so we never refund more than was paid.
-      const refundAmount =
-        amountTotal > 0 && quantity > 0
-          ? Math.min(amountTotal, Math.round((amountTotal / quantity) * unfilled))
-          : 0;
-      const refundParams: import("stripe").Stripe.RefundCreateParams = {
-        payment_intent: piId,
-        reason: "requested_by_customer",
-        metadata: {
-          reason: "ticket-claim-failed",
-          failureMessage: stoppedReason.slice(0, 200),
-          seriesId,
-          eventId,
-          quantityPaid: String(quantity),
-          quantityClaimed: String(claimedResults.length),
-          quantityUnfilled: String(unfilled),
-        },
-      };
-      // Only set `amount` for partial refunds. When claimedResults.length === 0
-      // we omit it so Stripe refunds the full intent — same as the old behaviour.
-      if (claimedResults.length > 0 && refundAmount > 0) {
-        refundParams.amount = refundAmount;
-      }
-      const refund = await s.refunds.create(
-        refundParams,
-        connectedAccountId ? { stripeAccount: connectedAccountId } : undefined,
-      );
-      console.log(
-        `[stripe-webhook] Auto-refunded ${piId} (refund=${refund.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
-      );
-      // A wholly refunded sale has no proceeds to release, so drop it from the
-      // payout schedule now rather than leaving it "held" and misreporting the
-      // organiser's pending balance. Partial refunds stay held on purpose: the
-      // release job reads the real balance transactions, so the remaining net is
-      // computed from Stripe rather than re-derived here.
-      if (claimedResults.length === 0) {
-        markPayoutVoid(session.id, `refunded — ${stoppedReason}`);
-      }
-    } catch (refundErr) {
-      console.error("[stripe-webhook] Auto-refund FAILED — manual intervention required:", refundErr);
-    }
-  }
-
-  // Record the checkout marketing decision — only now that a ticket actually
-  // landed. An abandoned or refunded-in-full purchase must not leave a marketing
-  // permission behind, which is why this lives in the webhook rather than at
-  // session creation.
-  //
-  // Mirrors the free/wallet claim path in routes/claims.ts: a GRANT goes to the
-  // consent store as Art. 7(1) evidence, a REFUSAL goes to suppression so it is
-  // enforced by the existing send-time check and survives a CSV re-upload.
-  // Before this, the checkbox was rendered, ticked, and silently dropped on the
-  // paid path — the buyer's answer was lost either way round.
-  if (metaMarketingConsent !== undefined && claimedResults.length > 0 && eventCreatorAddress) {
-    const consentHash =
-      identifier.type === "email" ? identifier.emailHash : identifier.secondaryEmailHash;
-    if (consentHash) {
-      captureCheckoutConsent({
-        emailHash: consentHash,
-        organiserAddress: eventCreatorAddress,
-        granted: metaMarketingConsent,
-        ts: claimedAt,
-        eventId,
-      });
-    }
-  }
-
-  // Auto-send confirmation email with all claimed tickets if we have an email address.
-  // Stripe gives us the buyer's name from `customer_details` (filled by the user
-  // at checkout when card billing is collected). Pass it through so it can be
-  // baked into the composite ticket-card PNG and shown on the standalone page.
-  if (claimerEmail && claimedResults.length > 0 && eventTitle) {
-    const buyerName = session.customer_details?.name?.trim() || undefined;
-    const siteThemePromise = metaSiteId ? getSiteTheme(metaSiteId) : Promise.resolve(null);
-    siteThemePromise
-      .then((siteTheme) =>
-        sendTicketEmail({
-          to: claimerEmail,
-          eventTitle,
-          eventDate,
-          eventLocation,
-          seriesName,
-          totalSupply,
-          tickets: claimedResults,
-          buyerName,
-          palette: siteTheme?.palette,
-          siteId: metaSiteId || undefined,
-          // Attendee replies reach the organiser instead of a void. Absent for
-          // events with no site, or no contact email set on it.
-          replyTo: siteTheme?.contactEmail,
-          // `to` here IS the verified purchase email (Stripe checkout) — the
-          // only path allowed to mint Route A gate tokens. Skipped when a
-          // signed-in buyer's single ticket was already bound at claim time;
-          // multi-ticket orders keep the per-ticket links for forwarding.
-          profileCta: !accountClaim || claimedResults.length > 1,
-          // The buyer has paid. If every retry and the failover both fail, this
-          // is what makes the undelivered ticket findable — see
-          // lib/email/failure-ledger.ts.
-          failureContext: {
-            stripeSessionId: session.id,
-            eventId,
-            ...(metaSiteId ? { siteId: metaSiteId } : {}),
-          },
-        }),
-      )
-      .catch((err) => {
-        // Still non-fatal to the webhook — returning non-2xx to Stripe would
-        // make it redeliver and re-run the whole claim path over an email
-        // problem. It is no longer SILENT though: sendEmail has already written
-        // the failure to .data/email-failures.json, which flips /api/health,
-        // so this log line is a breadcrumb rather than the only record.
-        console.error("[stripe-webhook] Auto-email failed (recorded in email-failures):", err);
-      });
   }
 }
 
