@@ -51,14 +51,18 @@ const RESERVATION_KEEP_AFTER_MS = 60 * 60 * 1000; // 1 hour
 export const RESERVATION_MAX_QTY = 10;
 
 /**
- * Hard ceiling on simultaneous held seats from a single IP across all
- * series. Defends against single-IP floods that clientKey rotation could
- * otherwise bypass (each rotated clientKey can hold its own qty-N
- * reservation). 30 is generous enough for a small office or family LAN
- * (~30 concurrent buyers × 1 ticket each), tight enough to block one
- * actor from locking out an entire small event.
+ * The per-IP held-seat cap is no longer a constant — it is sized per event by
+ * `perIpSeatCapForEvent()` in `seat-cap.ts` and passed into `reserve()`.
+ *
+ * It was 30 for every event, which #223 showed to be wrong in both directions:
+ * 60% of a 50-seat room, and too tight to admit a 40-person block booking at a
+ * 2,000-seat one. The justification given for 30 — "a small office or family LAN
+ * (~30 concurrent buyers × 1 ticket each)" — also pre-dated #218, which moved
+ * IPv6 to /64 bucketing and made that office ONE bucket rather than thirty.
+ *
+ * The cap is computed at the route, not here, so the check below stays
+ * synchronous. See the invariant note on the check itself.
  */
-export const RESERVATION_MAX_SEATS_PER_IP = 30;
 
 export interface Reservation {
   id: string;
@@ -80,8 +84,8 @@ export interface Reservation {
    */
   clientKey?: string;
   /**
-   * Source IP recorded for the per-IP held-seats cap (see
-   * RESERVATION_MAX_SEATS_PER_IP). Derived at the route layer by `clientIp()`
+   * Source IP recorded for the per-IP held-seats cap (see `seat-cap.ts`).
+   * Derived at the route layer by `clientIp()`
    * from `cf-connecting-ip` ONLY — never `x-forwarded-for`, whose first element
    * the caller writes (#179). Still never trusted for identity, only as a
    * flood-control hint.
@@ -167,12 +171,22 @@ export function heldFor(seriesId: string): number {
 }
 
 /** Sum of qty across all active reservations from a given IP, all series. */
-export function heldSeatsByIp(ip: string): number {
+/**
+ * Seats currently held by one address AT ONE EVENT.
+ *
+ * The event filter is the fix in #223. This counted every active hold for the
+ * address platform-wide, so seats held at tonight's gig silently consumed the
+ * allowance at an unrelated event — while the comment on the check claimed it
+ * was already event-scoped. Post-#218 a venue, office or campus is a single /64
+ * bucket, so that cross-event interference landed on exactly the shared
+ * networks most likely to have several genuine buyers behind them.
+ */
+export function heldSeatsByIp(ip: string, eventId: string): number {
   ensureLoaded();
   const now = Date.now();
   let total = 0;
   for (const r of reservations.values()) {
-    if (r.ip === ip && isActive(r, now)) total += r.quantity;
+    if (r.ip === ip && r.eventId === eventId && isActive(r, now)) total += r.quantity;
   }
   return total;
 }
@@ -215,6 +229,7 @@ export async function reserve(
   seriesId: string,
   quantity: number,
   availableSupplier: () => Promise<number>,
+  perIpSeatCap: number,
   replaceReservationId?: string,
   clientKey?: string,
   ip?: string,
@@ -288,11 +303,20 @@ export async function reserve(
         physicalAvailable: canonicalAvailable,
       };
     }
-    // Per-IP cap — checked AFTER the replace/clientKey-dedup loops above,
-    // so a buyer changing quantity isn't double-counted (their prior hold
-    // is already marked expired). Counts across all series so an attacker
-    // can't spread a flood across many series of the same event.
-    if (ip && heldSeatsByIp(ip) + quantity > RESERVATION_MAX_SEATS_PER_IP) {
+    // Per-IP cap — checked AFTER the replace/clientKey-dedup loops above, so a
+    // buyer changing quantity isn't double-counted (their prior hold is already
+    // marked expired). Counts every series of THIS event, so a flood can't be
+    // spread across tiers, and no other event, so an unrelated hold can't
+    // consume this event's allowance.
+    //
+    // INVARIANT — DO NOT ADD AN `await` BETWEEN THIS CHECK AND THE `set` BELOW.
+    // The per-series mutex does not protect this: the count spans series, so a
+    // concurrent reserve on a DIFFERENT series of the same event holds a
+    // different lock. What makes the check-then-insert atomic is that it is one
+    // synchronous stretch under Node's run-to-completion. `perIpSeatCap` is
+    // passed in already computed for exactly this reason — deriving it here
+    // would need I/O and would silently reopen the race.
+    if (ip && heldSeatsByIp(ip, eventId) + quantity > perIpSeatCap) {
       return { ok: false, error: "IpCapExceeded" };
     }
     const now = new Date();
