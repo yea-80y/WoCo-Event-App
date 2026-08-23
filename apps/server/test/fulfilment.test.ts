@@ -125,7 +125,6 @@ type Step =
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
   | "uploadToBytes"
-  | "downloadFromBytes"
   | "generateBurner"
   | "signMessage"
   | "batchClaimForOnChain"
@@ -210,10 +209,6 @@ function fakeDeps(o: FakeOpts = {}) {
     uploadToBytes: async () => {
       boom("uploadToBytes");
       return "aa".repeat(32);
-    },
-    downloadFromBytes: async () => {
-      boom("downloadFromBytes");
-      return JSON.stringify({ v: 2, podRefs: [], manifestDigestHex: "0x", signedManifest: {} });
     },
     generateBurner: () => {
       boom("generateBurner");
@@ -452,6 +447,13 @@ describe("happy path", () => {
     assert.equal(f.minted.length, 1);
   });
 
+  test("the mint path makes NO Swarm read (#368): a prefetched orderRef means no bytes call at all", async () => {
+    const { f, outcome } = await run();
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.calls.includes("uploadToBytes"), false);
+    assert.equal(f.calls.some((c) => /download/i.test(c)), false);
+  });
+
   test("no orderRef at all (no encryption key to seal with): stops, refunds in full", async () => {
     const { f, outcome } = await run({ orderRef: null });
     assert.equal(outcome.issued, 0);
@@ -578,7 +580,6 @@ describe("every collaborator throws", () => {
     { step: "chainEventEndMs", issued: 2, refund: "not-needed", email: "sent", note: "fail OPEN" },
     { step: "recordHeldPayout", issued: 2, refund: "not-needed", email: "sent", note: "bookkeeping never fails a paid claim" },
     { step: "getOrganiserByStripeAccount", issued: 2, refund: "not-needed", email: "sent", note: "inside the ledger fence" },
-    { step: "downloadFromBytes", issued: 0, refund: "created", email: "nothing-issued", note: "manifest read — see #368" },
     { step: "generateBurner", issued: 0, refund: "created", email: "nothing-issued", note: "unknown throw before the mint" },
     { step: "batchClaimForOnChain", issued: 0, refund: "created", email: "nothing-issued", note: "revert" },
     { step: "bindTicket", issued: 2, refund: "not-needed", email: "sent", note: "the #313 hole — accessory" },
@@ -666,7 +667,7 @@ describe("every collaborator throws", () => {
 test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
     "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "recordHeldPayout",
-    "getOrganiserByStripeAccount", "uploadToBytes", "downloadFromBytes", "generateBurner",
+    "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "markPayoutVoid", "captureCheckoutConsent", "getSiteTheme", "sendTicketEmail",
     "sendTicketEmailLedgered", "recordUndeliveredTicket",
