@@ -14,9 +14,9 @@
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
-  import { fetchRecoveryByGuardian } from "../../api/recovery.js";
   import { guardianConfigForBackup } from "../../auth/guardian-config.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
+  import type { GuardianKeys } from "../../auth/recovery-escrow.js";
   import { resolveSubEnsAddress } from "../../api/sub-ens.js";
 
   type Phase =
@@ -39,6 +39,12 @@
   let manualInput = $state("");
   let manualOpen = $state(false);
   let displayName = $state<string | null>(null);
+  // Guardian keys derived from the connected backup for auto-find (#157). ONE
+  // backup signature: the ceremony reuses these instead of prompting again.
+  // Reset whenever a different backup is connected.
+  let guardianKeys = $state<GuardianKeys | null>(null);
+  // Why auto-find did not land an account, when it could not (shown above manual entry).
+  let autoFindNote = $state<string | null>(null);
   let errorMsg = $state("");
   let restoreStep = $state("");
   // Forward sign-in credential for the recovered account (owner decision 2026-07-02):
@@ -91,6 +97,8 @@
   async function connectWith(method: "email" | "wallet" | "passkey") {
     phase = "connecting";
     errorMsg = "";
+    guardianKeys = null;
+    autoFindNote = null;
     try {
       backup = method === "email"
         ? await connectWeb3AuthBackup()
@@ -107,25 +115,46 @@
     }
   }
 
-  // Derive the guardian address from the connected backup (same deterministic
-  // config as setup) and look up the account it protects. Best-effort: if the
-  // hint is missing/poisoned the user falls back to manual entry, and recovery's
-  // escrow-decrypt guard means a wrong hit can never cause harm.
+  // Auto-find (#157): read the GUARDIAN'S OWN account index — a SOC owned by a key
+  // derived from the backup wallet's signature, the same signer that owns the
+  // escrow — and confirm each listed account against the chain before showing it.
+  // The signature is the ceremony's own first prompt, moved earlier and reused, so
+  // wallet backups still sign once. Best-effort: anything short of a confirmed hit
+  // falls through to manual entry; a confirmed hit is still only a PRE-CHECK — the
+  // escrow decrypt inside recoverAndRekey is what proves ownership.
   async function autoFind() {
     if (!backup) return;
+    phase = "checking";
     try {
+      const [{ deriveGuardianKeys }, { guardianAddressFor }, { isGuardianRegistered }, { readGuardianAccountIndex }, { autoFindAccount }] =
+        await Promise.all([
+          import("../../auth/recovery-escrow.js"),
+          import("../../auth/guardian-address.js"),
+          import("../../auth/kernel-account.js"),
+          import("../../swarm/guardian-index-feed.js"),
+          import("../../auth/recovery-autofind.js"),
+        ]);
+      const gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+      guardianKeys = gk;
       // Same helper-built config as setup, derived purely (no RPC) — #161.
-      const { guardianAddressFor } = await import("../../auth/guardian-address.js");
       const guardian = guardianAddressFor(guardianConfigForBackup(backup.address));
-      const hit = await fetchRecoveryByGuardian(guardian);
-      if (hit?.kernelAddress) {
-        displayName = hit.label ? `${hit.label}.woco.eth` : null;
-        await checkAddress(hit.kernelAddress.toLowerCase());
+      const index = await readGuardianAccountIndex(gk.socSigner.address);
+      const out = await autoFindAccount({ index, isRegistered: (k) => isGuardianRegistered(guardian, k) });
+      if (out.status === "found") {
+        account = out.kernelAddress;
+        displayName = out.label ? `${out.label}.woco.eth` : null;
+        phase = "found";
         return;
       }
+      if (out.status === "unavailable") {
+        autoFindNote = "Couldn't look up your account automatically — enter it below.";
+      }
     } catch {
-      /* auto-find is a convenience; fall through to manual entry */
+      // A declined signature or a network fault: manual entry still works, and the
+      // ceremony will ask for the signature itself if we never got one.
+      autoFindNote = "Couldn't look up your account automatically — enter it below.";
     }
+    phase = "intro";
     manualOpen = true; // nothing auto-found → reveal the manual box
   }
 
@@ -215,6 +244,8 @@
         targetAddress: account.trim(),
         newOwnerKind: newOwnerKind === "email" ? "web3auth" : "passkey",
         onProgress: (m) => { restoreStep = m; },
+        // Derived for auto-find from THIS backup — one signature serves both.
+        guardianKeys: guardianKeys ?? undefined,
       });
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : "Recovery couldn't be completed — please try again";
@@ -462,6 +493,9 @@
               Not your account? Enter it manually
             </button>
           {:else}
+            {#if autoFindNote}
+              <p class="step-hint" role="note">{autoFindNote}</p>
+            {/if}
             <p class="step-hint">Enter your WoCo name (e.g. you.woco.eth) or your account address.</p>
             <div class="row">
               <input

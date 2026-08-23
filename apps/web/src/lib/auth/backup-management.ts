@@ -132,10 +132,10 @@ export interface RemoveBackupsOutcome {
   alreadyAbsent: boolean;
   txHash?: string;
   /**
-   * Server presence hint flipped AND every named guardian's reverse-index entry
-   * tombstoned. False means some hint somewhere may still point at this account —
-   * cosmetic (the chain governs every decision), but the flag exists to be honest,
-   * so it must not report success it cannot see.
+   * Server presence hint flipped to not-configured. False means the setup screen's
+   * chain-unreadable fallback may still say "on record" — cosmetic (the chain
+   * governs every decision), but the flag exists to be honest, so it must not
+   * report success it cannot see.
    */
   hintCleared: boolean;
   /** Local encrypted-to-self backup list retired (best-effort). */
@@ -175,70 +175,16 @@ export async function removeAllAccountBackups(args: {
   const { removeAllBackups } = await import("./kernel-account.js");
   const chain = await removeAllBackups(args.kernel, { expectInstalled: args.expectInstalled });
 
-  // Read the guardian list BEFORE retiring it, and read the FULL history rather
-  // than the live entries: a previous removal whose tombstone pass failed left
-  // retired rows whose reverse-index hints still point at this account, and this
-  // is the run that can finally clear them.
-  // ENUMERATED, not just non-empty. An empty list is ambiguous — no past guardians,
-  // or we never managed to look — and the server can only ever contribute the single
-  // guardian named in its own status doc. So an unread history leaves every OLDER
-  // auto-find hint live while the request still returns ok, which would make
-  // `hintCleared` true for a clearance that did not happen.
-  let guardianHistoryKnown = false;
-  let guardianAddresses: string[] = [];
-  let guardiansTruncated = false;
-  if (args.feedSigner) {
-    try {
-      const { MAX_CLEAR_GUARDIANS } = await import("@woco/shared");
-      const { readUserManifestResult } = await import("../manifest/inventory.js");
-      // The tri-state read — a lenient one would collapse "no manifest" and
-      // "couldn't read it" into the same empty array (#138/#155 class).
-      const res = await readUserManifestResult({
-        signer: { privKey: args.feedSigner.privKey, address: args.feedSigner.address },
-        parentAddress: args.kernelAddress,
-        // THOROUGH, for the same reason the tri-state read is used above. A
-        // false absent hands this an EMPTY history, so it clears no auto-find
-        // hints — and sets `guardianHistoryKnown = true`, suppressing the
-        // "history unreadable" warning below. The user asked to remove all
-        // backups and would be told it worked while every stale hint survived.
-        // The chain still governs the revoke itself, so this is a privacy leak
-        // rather than a lost revocation — but it is silent, and this path runs
-        // once, on a deliberate user action, where a slow read costs nothing.
-        thorough: true,
-      });
-      if (res.status !== "unavailable") {
-        guardianHistoryKnown = true;
-        const history = res.status === "found" ? res.manifest.backups : [];
-        // The server REJECTS an over-long list rather than truncating it, so sending
-        // more than the cap would clear nothing at all. Newest first, because a recent
-        // guardian is the one whose auto-find hint is actually live.
-        guardiansTruncated = history.length > MAX_CLEAR_GUARDIANS;
-        guardianAddresses = [...history]
-          .sort((a, b) => b.addedAt - a.addedAt)
-          .slice(0, MAX_CLEAR_GUARDIANS)
-          .map((b) => b.guardianAddress);
-        if (guardiansTruncated) {
-          console.warn(
-            `[recovery] ${history.length} past guardians but only ${MAX_CLEAR_GUARDIANS} hints can be ` +
-              "cleared per request — the oldest keep their auto-find hint (cosmetic; the chain governs).",
-          );
-        }
-      } else {
-        console.warn("[recovery] guardian history unreadable — older auto-find hints may survive");
-      }
-    } catch (err) {
-      console.warn("[recovery] couldn't read the guardian history for tombstoning:", err);
-    }
-  }
-
+  // Flip the platform presence hint. There are no auto-find tombstones to write
+  // any more: the guardian-owned index (#157) cannot be edited from here (it needs
+  // the backup wallet), and the portal filters a stale entry by asking the chain
+  // whether this guardian still protects the account — exact where the tombstones
+  // were best-effort.
   let hintCleared = false;
   try {
     const { clearRecoveryHint } = await import("../api/recovery.js");
-    const res = await clearRecoveryHint({ guardianAddresses });
-    // `ok` only says the request was served. Individual tombstone writes are
-    // swallowed server-side, so a green response with failures is not "cleared".
-    hintCleared =
-      res.ok && (res.data?.failedGuardians ?? 0) === 0 && !guardiansTruncated && guardianHistoryKnown;
+    const res = await clearRecoveryHint();
+    hintCleared = res.ok && res.data?.statusFlipped === true;
     if (!res.ok) console.warn("[recovery] clearing the presence hint failed (non-fatal):", res.error);
   } catch (err) {
     console.warn("[recovery] clearing the presence hint failed (non-fatal):", err);
@@ -284,8 +230,6 @@ export interface RevokeBackupOutcome {
   /** Proven on-chain: this guardian is no longer in the account's set. Always true on return. */
   revoked: true;
   txHash: string;
-  /** Its reverse-index hint tombstoned (presence hint left standing — other backups still work). */
-  hintCleared: boolean;
   /** Its manifest row marked retired (best-effort; an unreadable manifest reports false). */
   manifestMarked: boolean;
 }
@@ -296,9 +240,10 @@ export interface RevokeBackupOutcome {
  * THROWS unless the hook's set provably no longer contains the guardian; only then
  * the two pieces of bookkeeping, best-effort and reported, never assumed.
  *
- * The presence hint is deliberately left standing (`keepStatus`): the account still
- * has working backups, and flipping it would make the portal's chain-unreadable
- * fallback tell a protected user "no backup found".
+ * The presence hint is deliberately left standing: the account still has working
+ * backups, and flipping it would make the portal's chain-unreadable fallback tell
+ * a protected user "no backup found". Nothing server-side changes on a single
+ * revoke any more (#157 removed the reverse-index tombstones), so no call is made.
  */
 export async function revokeAccountBackup(args: {
   kernel: BuiltKernel;
@@ -308,16 +253,6 @@ export async function revokeAccountBackup(args: {
 }): Promise<RevokeBackupOutcome> {
   const { revokeGuardianOnChain } = await import("./kernel-account.js");
   const chain = await revokeGuardianOnChain(args.kernel, args.guardianAddress);
-
-  let hintCleared = false;
-  try {
-    const { clearRecoveryHint } = await import("../api/recovery.js");
-    const res = await clearRecoveryHint({ guardianAddresses: [args.guardianAddress], keepStatus: true });
-    hintCleared = res.ok && (res.data?.failedGuardians ?? 0) === 0;
-    if (!res.ok) console.warn("[recovery] tombstoning the revoked guardian's hint failed (non-fatal):", res.error);
-  } catch (err) {
-    console.warn("[recovery] tombstoning the revoked guardian's hint failed (non-fatal):", err);
-  }
 
   // FALSE without a signer, for the reason `removeAllAccountBackups` spells out: a
   // null signer is a swallowed failure, not "no manifest".
@@ -339,5 +274,5 @@ export async function revokeAccountBackup(args: {
     }
   }
 
-  return { revoked: true, txHash: chain.txHash, hintCleared, manifestMarked };
+  return { revoked: true, txHash: chain.txHash, manifestMarked };
 }

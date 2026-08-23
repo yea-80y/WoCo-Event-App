@@ -142,8 +142,23 @@ and **"Remove all backups"**. ~~"Replace backup"~~ was removed in #148 — it ne
 OF protection — it can never prove absence, or the portal would tell a locked-out user that
 recovery is impossible. Copy says "on record", not "guaranteed"; only a real recovery proves live
 recoverability. The independence + no-accidental-duplicate guard stands (rejects a backup == the
-account's own key, or a wallet already this account's guardian via the by-guardian hint). Multiple
+account's own key; "already this account's guardian" is refused against the ON-CHAIN set). Multiple
 guardians = 1-of-N (contained, gated) vs M-of-N (VSS, deferred); see §12.2.
+
+**#157 (2026-08-23): auto-find is a GUARDIAN-owned SOC, not a server index.** The guardian→account
+reverse index used to be a platform feed the server wrote from a caller-supplied guardian address
+(world-writable: any account could claim any guardian and misdirect the victim's auto-find) and
+served publicly (a Kernel→backup linkage in one call). It is now `GuardianAccountIndex` (shared
+`recovery/guardian-index.ts`): a content feed at a fixed topic whose OWNER is the guardian SOC signer
+(`deriveGuardianKeys().socSigner`, the same key that owns the escrow). Only the backup-wallet holder
+can write it, and nobody can compute where it lives without that wallet's signature. Setup upserts
+the account after the on-chain install; the portal derives the keys from the connected backup (the
+ceremony's own first signature, moved earlier and reused), reads the index, and confirms each listed
+account against the chain (`isGuardianRegistered`) before showing "Protected account found" — which
+also filters the stale entry a replaced backup leaves behind (the signed-in account cannot rewrite
+the guardian's index, so there are no tombstones; the chain check is exact where they were
+best-effort). The server keeps ONLY the presence hint (`{ v, configured, updatedAt }` — no guardian,
+no label) and `/by-guardian` is gone.
 
 ## PHASE 1 PROGRESS (2026-06-20d) — Guardian chooser + bind-time confirm SHIPPED
 
@@ -753,8 +768,8 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
   **resurrects every past guardian**, so retired backups are MARKED in the manifest, not deleted,
   and the UI warns before any later add. The durable fix is a WoCo-owned hook with set-semantics
   (#164). The **independence + no-accidental-duplicate guard** in `AccountRecoverySetup.svelte`
-  stands (rejects a backup == account's own key, or a wallet already registered as THIS account's
-  guardian via the by-guardian reverse hint — fail-safe: a missing hint just falls through).
+  stands (rejects a backup == account's own key, or a wallet already in THIS account's on-chain
+  guardian set — `decideAddPath`; the by-guardian reverse hint is gone since #157).
 
   **#164 SHIPPED (2026-08-22): the WoCo guardian hook.** Every route is now installed against
   `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db` (Arb Sepolia, CREATE2 singleton,

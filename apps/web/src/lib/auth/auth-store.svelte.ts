@@ -2306,15 +2306,32 @@ async function setupAccountRecovery(backup: {
     /* name lookup is a display nicety, never block setup on it */
   }
 
-  // Register the platform presence + auto-find hints (untrusted convenience; the
-  // guardian SOC above is the source of truth). NON-FATAL — the escrow is already
-  // persisted, so a hint write failing must not fail the whole protect.
+  // Register the platform PRESENCE hint (untrusted convenience; the guardian SOC
+  // above is the source of truth). NON-FATAL — the escrow is already persisted,
+  // so a hint write failing must not fail the whole protect.
   try {
     const { registerRecoveryHint } = await import("../api/recovery.js");
-    const res = await registerRecoveryHint({ guardianAddress, label });
+    const res = await registerRecoveryHint();
     if (!res.ok) console.warn("[recovery] hint registration failed (non-fatal):", res.error);
   } catch (err) {
     console.warn("[recovery] hint registration failed (non-fatal):", err);
+  }
+
+  // Auto-find: list this account in the GUARDIAN'S OWN index — a SOC owned by the
+  // same guardian-derived signer as the escrow, so only the backup-wallet holder
+  // can write it and nobody can compute where it lives without that wallet (#157).
+  // The portal reads it back from the connected backup and confirms each listed
+  // account against the chain. NON-FATAL, same as the hint: manual entry remains.
+  try {
+    const { upsertGuardianAccountIndex } = await import("../swarm/guardian-index-feed.js");
+    const idx = await upsertGuardianAccountIndex({
+      socSignerPrivKey: gk.socSigner.privKey,
+      socOwnerAddress: gk.socSigner.address,
+      entry: { kernelAddress, label, addedAt: Date.now() },
+    });
+    if (idx.status === "skipped") console.warn("[recovery] guardian index not updated (non-fatal):", idx.reason);
+  } catch (err) {
+    console.warn("[recovery] guardian index write failed (non-fatal):", err);
   }
 
   // Record this backup in the user's encrypted-to-self manifest so a signed-in
@@ -2454,6 +2471,10 @@ async function recoverAndRekey(args: {
    *  the user knows what they're approving (the guardian userOp signs an opaque
    *  hash that the wallet can't describe). */
   onProgress?: (msg: string) => void;
+  /** Guardian keys the portal already derived for auto-find (#157) — ONE backup
+   *  signature serves both; passing them skips a second prompt. They are
+   *  re-derived here when absent (manual-entry path), exactly as before. */
+  guardianKeys?: import("./recovery-escrow.js").GuardianKeys;
 }): Promise<{ recoveredAddress: string; txHash: string }> {
   const { backup, targetAddress, onProgress } = args;
   const newOwnerKind = args.newOwnerKind ?? "passkey";
@@ -2478,9 +2499,12 @@ async function recoverAndRekey(args: {
     // account can read AND decrypt it. A wrong address or a poisoned auto-find hint
     // fails here — before a passkey is minted or the on-chain owner is rotated.
     // This is the security linchpin of recovery.
-    onProgress?.("Confirm the signature in your backup wallet to unlock this account's data");
     const { deriveGuardianKeys, openRecoveryBundle } = await import("./recovery-escrow.js");
-    const gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+    let gk = args.guardianKeys ?? null;
+    if (!gk) {
+      onProgress?.("Confirm the signature in your backup wallet to unlock this account's data");
+      gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+    }
 
     // Read the guardian-owned escrow SOC (owner derived LOCALLY from the backup
     // wallet — no platform signer in the loop, §13), falling back to the legacy
