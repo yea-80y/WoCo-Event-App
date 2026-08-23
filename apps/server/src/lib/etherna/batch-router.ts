@@ -48,7 +48,7 @@ export class StripeVerificationRequired extends Error {
   }
 }
 
-function isEthernaGateway(url: string): boolean {
+export function isEthernaGateway(url: string): boolean {
   try {
     return new URL(url).host.endsWith(new URL(ETHERNA_URL).host);
   } catch {

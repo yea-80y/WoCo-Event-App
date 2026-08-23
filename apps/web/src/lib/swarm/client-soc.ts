@@ -15,6 +15,7 @@
 
 import { countProbe, countGatewayMissStatus } from "./probe-stats.js";
 import { isOurGateDenial } from "./gate-denial.js";
+import { verifyServedSoc } from "./soc-verify.js";
 import { Bee, PrivateKey, Bytes, Span, Identifier, Reference } from "@ethersphere/bee-js";
 import { calculateCacAddress, encodeSpan, SOC_MAX_PAYLOAD_SIZE, type SocReadOutcome } from "@woco/shared";
 import { authPost, get } from "../api/client.js";
@@ -109,17 +110,23 @@ export async function signAndUploadSoc(args: {
  * is self-authenticating — `makeSOCReader(owner).download(identifier)` resolves
  * the chunk at `keccak(identifier‖owner)` and rejects unless the recovered signer
  * equals `owner`, so no gateway (hostile or not) can serve a chunk that verifies
- * for this (owner, identifier) unless the real owner signed it. The payload is
- * additionally HPKE-sealed, and the ultimate authority is the on-chain owner
- * check. So multiple read sources add availability/censorship-resistance with
- * ZERO added trust. The gateway path needs the SOC address whitelisted (done
- * server-side at write time); the server fallback covers a whitelist lag and is
- * availability-only. No auth required on either path.
+ * for this (owner, identifier) unless the real owner signed it. The server
+ * fallback is held to the SAME standard (#156): it returns the whole SOC and
+ * `verifyServedSoc` re-runs the identifier/span/signature checks here, so a
+ * response that is not this owner's chunk for this identifier is `unavailable`,
+ * never `found`. Multiple read sources therefore add availability/censorship-
+ * resistance with zero added trust. The gateway path needs the SOC address
+ * whitelisted (done server-side at write time); the server fallback covers a
+ * whitelist lag and a just-written Etherna-stamped chunk. No auth on either path.
+ *
+ * `gatewayUrl` is the WRITE-PATH probe's routing signal, forwarded to the server
+ * so an Etherna-stamped feed's read asks Etherna too (and answers `unavailable`,
+ * not absent, when Etherna cannot be asked). Display reads leave it off.
  */
 export async function probeSoc(
   ownerAddress: string,
   identifier: Uint8Array,
-  opts: { thorough?: boolean } = {},
+  opts: { thorough?: boolean; gatewayUrl?: string } = {},
 ): Promise<SocReadOutcome> {
   if (identifier.length !== 32) throw new Error("SOC identifier must be 32 bytes");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
@@ -167,24 +174,41 @@ export async function probeSoc(
     gatewayReason = `gateway HTTP ${status ?? "?"}`;
   }
 
-  // 2. Server fallback (availability only).
-  const res = await get<{ payloadB64: string }>(`/api/swarm/soc/${owner}/${bytesToHex(identifier)}`);
-  countProbe(res.ok && res.data ? "serverHit" : "serverMiss");
+  // 2. Server fallback — availability only, and VERIFIED (#156).
+  const idHex = bytesToHex(identifier);
+  const qs = opts.gatewayUrl ? `?gatewayUrl=${encodeURIComponent(opts.gatewayUrl)}` : "";
+  const res = await get<{ owner: string; identifier: string; signature: string; span: string; payloadB64: string }>(
+    `/api/swarm/soc/${owner}/${idHex}${qs}`,
+  );
   if (res.ok && res.data) {
-    const bin = atob(res.data.payloadB64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return { status: "found", bytes: out };
+    const d = res.data;
+    if (typeof d.signature !== "string" || typeof d.span !== "string" || typeof d.payloadB64 !== "string") {
+      // An origin that will not show its work is not a source.
+      countProbe("serverMiss");
+      return { status: "unavailable", reason: "server returned a SOC without signature/span (cannot verify)" };
+    }
+    const bin = atob(d.payloadB64);
+    const payload = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) payload[i] = bin.charCodeAt(i);
+    const v = verifyServedSoc(
+      { owner: d.owner ?? owner, identifier: d.identifier ?? idHex, signature: d.signature, span: d.span, payload },
+      { owner, identifier },
+    );
+    if (!v.ok) {
+      console.warn(`[swarm] server-served SOC failed verification (${v.reason}) — treating as unavailable`);
+      countProbe("serverMiss");
+      return { status: "unavailable", reason: `server SOC failed verification: ${v.reason}` };
+    }
+    countProbe("serverHit");
+    return { status: "found", bytes: payload };
   }
-  // A server 404 is the closest thing to a verdict this stack has — the server's
-  // bee reported not-found — so we treat it as one. Know what it rests on, though:
-  // `readSocPayload` ALSO maps bee's 500 "read chunk failed" to not-found, and its
-  // Etherna backstop returns null when Etherna is merely unreachable (bad token,
-  // timeout, 5xx). Either can dress a "couldn't ask" as a verdict (#156).
-  //
-  // So this is a NARROWER channel than the one it replaced — any completed-but-
-  // failed HTTP response — not a closed one. A caller that caches off `absent`
-  // inherits the remainder (#138). Do not restate this as "absent means absent".
+  countProbe("serverMiss");
+  // A server 404 is now a real verdict: the server answers 404 ONLY when every
+  // source with negative authority ran its search and found nothing, and 503
+  // (`code: "unavailable"`) whenever anybody could not be asked — including the
+  // bee 500 / Etherna-unreachable cases that used to be dressed as not-found.
+  // A caller that caches off `absent` still inherits the remaining trust in the
+  // bee's own search (#138); nothing here changes that.
   if (res.status === 404) return { status: "absent" };
   return {
     status: "unavailable",
