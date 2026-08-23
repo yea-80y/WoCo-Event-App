@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import { cspInject } from './vite-plugins/csp'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -17,6 +18,7 @@ export default defineConfig(({ mode }) => {
       // `process` is still injected; the module import resolves via the alias.
       nodePolyfills({ globals: { Buffer: true, process: true }, exclude: ['process'] }),
       svelte(),
+      cspInject(),
     ],
     optimizeDeps: {
       // @web3auth/modal dynamically loads its sibling packages (no-modal, auth,
