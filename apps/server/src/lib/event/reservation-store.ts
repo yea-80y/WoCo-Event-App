@@ -151,10 +151,25 @@ function sweep(): void {
 
 /** Per-series mutex: serialises reserve/consume/release for a single series. */
 const seriesLocks = new Map<string, Promise<void>>();
-function withSeriesLock<T>(seriesId: string, fn: () => Promise<T> | T): Promise<T> {
-  const prev = seriesLocks.get(seriesId) ?? Promise.resolve();
+/**
+ * Serialise work on one series of one event.
+ *
+ * The event is in the key for the same reason it is in `heldFor` (#377). Keyed
+ * on seriesId alone, two events declaring the same id shared a lock — harmless
+ * for correctness, but it let anyone who registered a colliding event force the
+ * victim's buyers to queue behind their own reserve calls, each of which makes a
+ * chain read. NUL separates the parts so no pair of ids can produce the same key
+ * by concatenation.
+ */
+function withSeriesLock<T>(
+  eventId: string,
+  seriesId: string,
+  fn: () => Promise<T> | T,
+): Promise<T> {
+  const key = `${eventId}\u0000${seriesId}`;
+  const prev = seriesLocks.get(key) ?? Promise.resolve();
   const next = prev.then(() => fn());
-  seriesLocks.set(seriesId, next.then(() => {}, () => {}));
+  seriesLocks.set(key, next.then(() => {}, () => {}));
   return next as Promise<T>;
 }
 
@@ -164,16 +179,28 @@ function isActive(r: Reservation, now: number): boolean {
 }
 
 /**
- * Total seats currently held by active reservations for a given series.
- * Used inside `reserve()` to enforce concurrency at reservation time, and
- * exposed informationally on SeriesClaimStatus.held.
+ * Total seats currently held by active reservations for a given series OF A
+ * GIVEN EVENT. Used inside `reserve()` to enforce concurrency at reservation
+ * time, and exposed informationally on SeriesClaimStatus.held.
+ *
+ * The event is part of the key on purpose (#377). This matched `seriesId` alone,
+ * which is only sound if series ids are globally unique — true in practice
+ * because both client mint sites emit `crypto.randomUUID()`, but NOT enforced:
+ * `isValidSeriesId` is a shape check that happily accepts another event's id.
+ * An attacker who registered their own event declaring a victim's (public)
+ * seriesId could hold seats on their own event and shrink the victim's
+ * availability, so the victim's tickets read sold out with nothing bought.
+ * Keying by (event, series) makes the code correct regardless of how ids are
+ * minted, rather than correct by coincidence.
  */
-export function heldFor(seriesId: string): number {
+export function heldFor(eventId: string, seriesId: string): number {
   ensureLoaded();
   const now = Date.now();
   let total = 0;
   for (const r of reservations.values()) {
-    if (r.seriesId === seriesId && isActive(r, now)) total += r.quantity;
+    if (r.eventId === eventId && r.seriesId === seriesId && isActive(r, now)) {
+      total += r.quantity;
+    }
   }
   return total;
 }
@@ -246,10 +273,10 @@ export async function reserve(
     return { ok: false, error: "InvalidQuantity" };
   }
 
-  return withSeriesLock(seriesId, async () => {
+  return withSeriesLock(eventId, seriesId, async () => {
     if (replaceReservationId) {
       const prior = reservations.get(replaceReservationId);
-      if (prior && prior.seriesId === seriesId && !prior.consumedAt) {
+      if (prior && prior.eventId === eventId && prior.seriesId === seriesId && !prior.consumedAt) {
         prior.expiresAt = new Date().toISOString();
       }
     }
@@ -265,6 +292,7 @@ export async function reserve(
       let existing: Reservation | undefined;
       for (const r of reservations.values()) {
         if (
+          r.eventId === eventId &&
           r.seriesId === seriesId &&
           r.clientKey === clientKey &&
           !r.consumedAt &&
@@ -290,6 +318,7 @@ export async function reserve(
       const nowIso = new Date().toISOString();
       for (const r of reservations.values()) {
         if (
+          r.eventId === eventId &&
           r.seriesId === seriesId &&
           r.clientKey === clientKey &&
           !r.consumedAt &&
@@ -300,7 +329,7 @@ export async function reserve(
       }
     }
     const canonicalAvailable = await availableSupplier();
-    const currentlyHeld = heldFor(seriesId);
+    const currentlyHeld = heldFor(eventId, seriesId);
     const realAvailable = Math.max(0, canonicalAvailable - currentlyHeld);
     if (quantity > realAvailable) {
       return {
