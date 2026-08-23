@@ -4,6 +4,15 @@ import { requireAuth } from "../middleware/auth.js";
 import { uploadSignedSoc, readSocPayload, type SignedSocInput } from "../lib/swarm/soc-upload.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { batchForDeploy } from "../lib/etherna/batch-router.js";
+import { clientIp } from "../lib/http/client-ip.js";
+import { jsonBodyLimit } from "../lib/http/body-limit.js";
+import {
+  socRelayGate,
+  bytesRelayGate,
+  classifyRelayPayload,
+  SOC_RELAY_MAX_BODY_BYTES,
+  BYTES_RELAY_MAX_BODY_BYTES,
+} from "../lib/swarm/soc-relay-limits.js";
 
 /**
  * Generic client-signed Single-Owner-Chunk write rail (Phase A of
@@ -17,8 +26,14 @@ export const swarmRoutes = new Hono<AppEnv>();
  * POST /api/swarm/soc — stamp + upload a client-signed SOC.
  * Auth-gated. Any authenticated user may stamp their OWN validly-signed SOC; the
  * server verifies the signature recovers to the claimed owner before stamping.
+ *
+ * Rate-limited per parent / per IP / globally, with a tighter bucket for
+ * statement-shaped payloads (#301) — see soc-relay-limits.ts. The body cap is
+ * the largest honest request (4096-byte payload as hex, signature, identifier,
+ * owner, span, a gateway URL) with room to spare; it sits BEFORE requireAuth so
+ * the auth middleware never reads and hashes megabytes.
  */
-swarmRoutes.post("/soc", requireAuth, async (c) => {
+swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, async (c) => {
   let body: unknown;
   try {
     body = await c.req.json();
@@ -38,6 +53,15 @@ swarmRoutes.post("/soc", requireAuth, async (c) => {
   if (b.gatewayUrl !== undefined && typeof b.gatewayUrl !== "string") {
     return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
   }
+
+  // After the shape check (so a malformed flood is a 400, not a charge) and
+  // BEFORE the signature verify + whitelist + upload, which is the cost.
+  const gate = socRelayGate.decide({
+    parent: (c.get("parentAddress") as string).toLowerCase(),
+    ip: clientIp(c),
+    kind: classifyRelayPayload(b.payload),
+  });
+  if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
 
   try {
     // Same routing as /bytes: Etherna user batch when the builder picked the
@@ -82,7 +106,7 @@ swarmRoutes.post("/soc", requireAuth, async (c) => {
  */
 const MAX_STAMP_BYTES = 64 * 1024;
 
-swarmRoutes.post("/bytes", requireAuth, async (c) => {
+swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAuth, async (c) => {
   let body: unknown;
   try {
     body = await c.req.json();
@@ -108,6 +132,9 @@ swarmRoutes.post("/bytes", requireAuth, async (c) => {
   }
 
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  // Up to 16 chunks per call, so its own (tighter) gate (#301).
+  const gate = bytesRelayGate.decide({ parent: parentAddress, ip: clientIp(c), kind: "other" });
+  if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
   try {
     // Route to the event's batch — Etherna when the builder picked it (events
     // never trigger a batch purchase; falls back to the platform Etherna batch).
