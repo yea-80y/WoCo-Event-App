@@ -6,6 +6,7 @@ import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
 const V2_DOWNLOAD_CONCURRENCY = 8;
@@ -60,14 +61,19 @@ orders.get("/:id/orders", requireAuth, async (c) => {
 
         const slotCount = Number(onChainData.nextSlot);
 
-        // Read all slot data in parallel — these are public view calls
-        const slotResults = await Promise.all(
-          Array.from({ length: slotCount }, (_, slot) =>
+        // Slot reads are public view calls, but they are still one RPC round trip
+        // EACH, and `slotCount` is however many tickets this series has sold. An
+        // unbounded burst here meant a sold-out event rate-limited its own
+        // organiser's dashboard — the fan-out grew with success (#201). Bounded
+        // to the same ceiling the door scanner has used for this read all along.
+        const slotResults = await mapWithConcurrency(
+          Array.from({ length: slotCount }, (_, slot) => slot),
+          SLOT_READ_CONCURRENCY,
+          (slot) =>
             getSlotData(series.onChainEventId!, slot, chainId).catch((err) => {
               console.warn(`[orders/v2] getSlotData failed for slot ${slot}:`, err);
               return null;
             }),
-          ),
         );
 
         // Download encrypted order blobs from Swarm with bounded concurrency.
@@ -103,16 +109,17 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           };
         };
 
-        // Batch downloads: V2_DOWNLOAD_CONCURRENCY at a time to avoid flooding the Bee node
-        for (let i = 0; i < slotCount; i += V2_DOWNLOAD_CONCURRENCY) {
-          const batch = Array.from(
-            { length: Math.min(V2_DOWNLOAD_CONCURRENCY, slotCount - i) },
-            (_, j) => downloadSlot(i + j),
-          );
-          const results = await Promise.all(batch);
-          for (const entry of results) {
-            if (entry) orderEntries.push(entry);
-          }
+        // Same ceiling as before, but as a sliding window rather than lock-step
+        // batches: the old loop waited for all eight of a batch before starting
+        // the next, so one slow Bee read idled seven workers. Order is preserved
+        // either way — `mapWithConcurrency` returns results in input order.
+        const downloaded = await mapWithConcurrency(
+          Array.from({ length: slotCount }, (_, slot) => slot),
+          V2_DOWNLOAD_CONCURRENCY,
+          downloadSlot,
+        );
+        for (const entry of downloaded) {
+          if (entry) orderEntries.push(entry);
         }
       }
     }
