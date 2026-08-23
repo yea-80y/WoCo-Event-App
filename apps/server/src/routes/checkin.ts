@@ -34,8 +34,8 @@ import {
   readCheckins,
   mergeCheckins,
 } from "../lib/checkin/store.js";
+import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
-const SLOT_READ_CONCURRENCY = 8;
 const MAX_ROSTER_CIPHERTEXT = 4 * 1024 * 1024;
 const MAX_SYNC_RECORDS = 5000;
 
@@ -138,24 +138,6 @@ function authorisePass(c: Context<AppEnv>): { ok: true; signer?: string } | { ok
     return { ok: false, resp: c.json({ ok: false, error: "Door pass is for a different event" }, 403) };
   }
   return { ok: true, ...(verdict.signer ? { signer: verdict.signer } : {}) };
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const i = next++;
-        results[i] = await fn(items[i], i);
-      }
-    }),
-  );
-  return results;
 }
 
 checkin.get("/:eventId/pack", async (c) => {
