@@ -59,3 +59,10 @@ test("a bodiless request is untouched", async () => {
 test("rejects a nonsense cap at construction", () => {
   assert.throws(() => jsonBodyLimit(0));
 });
+
+test("the API-wide backstop clears the largest per-route body (8 MB image as base64 JSON)", async () => {
+  const { API_MAX_BODY_BYTES, apiBodyLimit } = await import("../src/lib/http/body-limit.js");
+  const eventImageAsBase64Json = Math.ceil((8 * 1024 * 1024) * 4 / 3) + 1024;
+  assert.ok(API_MAX_BODY_BYTES > eventImageAsBase64Json, "backstop must not undercut routes/events.ts");
+  assert.equal(typeof apiBodyLimit(), "function");
+});
