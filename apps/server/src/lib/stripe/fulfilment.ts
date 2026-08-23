@@ -515,6 +515,16 @@ export async function fulfilPaidSession(
         const refundParams: Stripe.RefundCreateParams = {
           payment_intent: piId,
           reason: "requested_by_customer",
+          // #121. Stripe does NOT refund the application fee by default — the
+          // connected account (the organiser, merchant of record on a direct
+          // charge) eats it. Every refund on this path is caused by OUR side —
+          // a mint that reverted, a feed or chain we could not read, a sale we
+          // closed — so the platform fee goes back with it: in full on a full
+          // refund, pro-rata on a partial (Stripe's semantics). Stripe's own
+          // processing fee is not returnable by anyone; ORGANISER_TERMS §6
+          // says so. A buyer-requested refund is a different policy and does
+          // not come through here.
+          refund_application_fee: true,
           metadata: {
             reason: "ticket-claim-failed",
             failureMessage: stoppedReason.slice(0, 200),

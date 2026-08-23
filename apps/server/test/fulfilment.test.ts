@@ -495,6 +495,8 @@ describe("stop reasons", () => {
     assert.equal(f.refunds[0].account, ACCT);
     assert.equal(f.refunds[0].params.amount, undefined, "full refund omits amount");
     assert.equal(f.refunds[0].params.payment_intent, "pi_1");
+    // #121: an infrastructure-caused refund returns our fee to the organiser.
+    assert.equal(f.refunds[0].params.refund_application_fee, true);
     const md = f.refunds[0].params.metadata as Record<string, string>;
     assert.equal(md.reason, "ticket-claim-failed");
     assert.equal(md.quantityUnfilled, "2");
@@ -510,6 +512,7 @@ describe("stop reasons", () => {
     assert.equal(outcome.issued, 2);
     assert.equal(outcome.refund.kind, "created");
     assert.equal(f.refunds[0].params.amount, 2200, "one unfilled unit of three");
+    assert.equal(f.refunds[0].params.refund_application_fee, true, "pro-rata fee return on a partial (#121)");
     assert.equal(f.voided.length, 0);
     assert.equal(f.emails[0].tickets.length, 2);
     assert.deepEqual(f.emails[0].tickets.map((t) => t.edition), [1, 2]);
