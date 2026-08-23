@@ -57,6 +57,13 @@ export class EmailSendError extends Error {
   readonly retryable: boolean;
   readonly code?: string;
   readonly status?: number;
+  /**
+   * Set by `sendEmail` once the failure is in the undelivered ledger, so a
+   * caller that must guarantee a ledger row (paid-ticket fulfilment, #314) can
+   * tell "abandoned after it reached the mailer — already recorded" from "never
+   * reached the mailer — record it yourself" without a second entry.
+   */
+  ledgered = false;
 
   constructor(message: string, init: EmailSendErrorInit) {
     super(message, init.cause !== undefined ? { cause: init.cause } : undefined);

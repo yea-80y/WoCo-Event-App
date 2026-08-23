@@ -322,6 +322,7 @@ export async function sendVia(
       retryable: failure.retryable,
       ...(opts.context ? { context: opts.context } : {}),
     });
+    failure.ledgered = true;
 
     // Hand a transient failure to the drain worker. Two conditions, both
     // load-bearing.
