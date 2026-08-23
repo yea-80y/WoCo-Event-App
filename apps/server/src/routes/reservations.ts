@@ -12,6 +12,7 @@ import {
   RESERVATION_MAX_QTY,
   heldFor,
 } from "../lib/event/reservation-store.js";
+import { perIpSeatCapForEvent, declaredSupplyOf } from "../lib/event/seat-cap.js";
 import { clientIp } from "../lib/http/client-ip.js";
 
 const reservations = new Hono<AppEnv>();
@@ -22,10 +23,10 @@ const reservations = new Hono<AppEnv>();
  * standalone-ENS users have no session at form-open time), so we cap by IP
  * to prevent abuse (someone hammering /reserve to lock out other buyers).
  *
- * 12/min is the burst guard — typical legit flow is form-open + a few
- * quantity changes (≤5/min). Sustained abuse is bounded structurally by
- * RESERVATION_MAX_SEATS_PER_IP (held-seats cap inside the store), so the
- * rate limit doesn't have to do all the work.
+ * 30/min is the burst guard — typical legit flow is form-open + a few
+ * quantity changes (≤5/min). Sustained abuse is bounded structurally by the
+ * per-event held-seats cap inside the store (`seat-cap.ts`), so the rate limit
+ * doesn't have to do all the work.
  */
 const reserveRateMap = new Map<string, number[]>();
 const RESERVE_RATE_LIMIT = 30; // max calls
@@ -137,11 +138,18 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
   };
 
+  // How many seats one network may hold unpaid at THIS event (#223). Sized from
+  // declared supply on the event record already loaded above, so it costs no
+  // extra I/O, and computed here rather than in the store so the cap check stays
+  // synchronous — see the invariant note at the check.
+  const perIpSeatCap = perIpSeatCapForEvent(declaredSupplyOf(event.series));
+
   const result = await reserve(
     eventId,
     seriesId,
     quantity,
     availableSupplier,
+    perIpSeatCap,
     replaceReservationId,
     clientKey,
     ip,
@@ -161,7 +169,12 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     }
     if (result.error === "IpCapExceeded") {
       return c.json(
-        { ok: false, error: "Too many active reservations from your network — try again shortly" },
+        {
+          ok: false,
+          error:
+            "Too many seats are already being held from your network. " +
+            "Complete a pending purchase, or try again in a few minutes.",
+        },
         429,
       );
     }
