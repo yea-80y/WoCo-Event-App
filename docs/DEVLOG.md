@@ -4,6 +4,28 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Recovery onto an email sign-in scans the chain for every account that sign-in owns — the cross-device collision is closed (#234, 2026-08-23)
+
+`recovery-owner-collision.ts` refused to hand an account to a credential that already had
+one, but its evidence was per-device (binding, seed, caches) plus one per-counterfactual chain
+point-read — and a RECOVERED account lives at a preserved address no per-credential read can
+reach, so two recoveries onto the same email on two devices both passed. Kernel v3.1's ECDSA
+validator emits `OwnerRegistered(address indexed kernel, address indexed owner)` from
+`onInstall` (its sole owner writer), on recoveries as well as deploys, so `eth_getLogs(topics[2]
+= credential)` is the authoritative owner→account record with no server and no new write.
+`owned-accounts-scan.ts`: paged (10M blocks; ZeroDev answers a page in ~1.4 s, measured), head
+snapshotted once, any page failure aborts as `unknown` (never partial), every hit re-read LIVE
+with a tri-state owner read that aborts the whole check on a single error, target + own
+counterfactual excluded; union argument, polarity (fails CLOSED, opposite of the guardian
+pre-flight, with the passkey route as the escape hatch) and "accident prevention, not
+enforcement" written into the module. Runs only on the web3auth branch and only after the
+cheaper evidence allows; a tail re-scan after the rotation confirms (pre-scan head − reorg
+margin → now) makes the same-moment race loud: refuse the local commit and route to a
+passkey re-recovery. Evidence field `ownedAccountsScan` on `decideOwnerCollision`; the email
+option in the portal says the check can take a minute or two.
+
+---
+
 ## The SOC relay's fallback read is verified and source-listed: a 404 is a verdict, a 503 is "could not ask", and the client checks the signature (#156, 2026-08-23)
 
 `GET /api/swarm/soc/:owner/:identifier` returned a bare payload the client decoded and

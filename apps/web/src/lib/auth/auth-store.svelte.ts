@@ -2613,6 +2613,10 @@ async function recoverAndRekey(args: {
     // re-homed under the new owner EOA (PRF-EOA for passkey, Web3Auth EOA otherwise).
     let newOwnerAddress: string;
     let newOwnerPrivKey: `0x${string}`;
+    // #234: set by the web3auth branch when its owner scan completed, so the
+    // post-rotation tail re-scan below can pick up where the pre-scan left off.
+    let ownerScanHead: bigint | undefined;
+    let ownerScanIO: import("./owned-accounts-scan.js").OwnedAccountsScanIO | undefined;
     if (newOwnerKind === "web3auth") {
       onProgress?.("Log in with email or social to take ownership on this device…");
       const { loginWithWeb3Auth } = await import("./web3auth-account.js");
@@ -2648,16 +2652,43 @@ async function recoverAndRekey(args: {
       } catch {
         podSeedPresent = null; // read FAILED — not evidence that the slot is free
       }
-      const verdict = decideOwnerCollision({
+      const counterfactualAddress = await counterfactualKernelOf(newOwnerAddress);
+      const evidence = {
         newOwnerEoa: newOwnerAddress,
         targetKernel: target,
         existingBinding: (await localOrNull(() => _recoveryKernelFor(newOwnerAddress))) ?? undefined,
         podSeedPresent,
         cachedKernel: await localOrNull(() => readCachedKernelAddress("web3auth", newOwnerAddress)),
         verifiedBinding: await localOrNull(() => readVerifiedBinding("web3auth", newOwnerAddress)),
-        counterfactualAddress: await counterfactualKernelOf(newOwnerAddress),
+        counterfactualAddress,
         counterfactualOwner: await readCounterfactualOwner(newOwnerAddress),
-      });
+      };
+      let verdict = decideOwnerCollision(evidence);
+      // (1c) CROSS-DEVICE (#234). Local evidence is per-device and the point-read
+      // is per-counterfactual; neither can see an account this credential
+      // RECOVERED on another device, which lives at a preserved address. The
+      // validator's OwnerRegistered log can, so it is scanned — only once the
+      // cheaper evidence has allowed (a full scan is pages of eth_getLogs), only
+      // on this branch (a fresh passkey cannot pre-own anything), and it FAILS
+      // CLOSED: an incomplete scan blocks with the passkey route as the way out.
+      // The target and the credential's own counterfactual are excluded — the
+      // repair path and rule (0b) already judge those.
+      if (verdict.status !== "block") {
+        onProgress?.("Checking this sign-in for other accounts on-chain — this can take a minute or two…");
+        const { scanOwnedAccounts, buildOwnedAccountsScanIO } = await import("./owned-accounts-scan.js");
+        const scanIO = await buildOwnedAccountsScanIO(newOwnerAddress);
+        const scan = await scanOwnedAccounts({
+          eoa: newOwnerAddress,
+          exclude: [target, counterfactualAddress],
+          io: scanIO,
+          onPage: (d, n) => onProgress?.(`Checking this sign-in for other accounts on-chain… ${d}/${n}`),
+        });
+        verdict = decideOwnerCollision({ ...evidence, ownedAccountsScan: scan });
+        if (scan.status !== "unknown") {
+          ownerScanHead = scan.head;
+          ownerScanIO = scanIO;
+        }
+      }
       if (verdict.status === "block") {
         console.warn("[auth] recovery refused — owner collision:", verdict.reason);
         // Drop the Web3Auth session, or the advice in the message is a lie: the SDK
@@ -2753,6 +2784,42 @@ async function recoverAndRekey(args: {
             "We couldn't confirm the change on-chain — it may well have gone through. " +
               "Don't assume either way: run recovery again and it will pick up wherever it landed.",
       );
+    }
+
+    // (2c) TAIL RE-SCAN (#234). Both devices can scan clean and both rotate —
+    // window = scan duration + inclusion + log-index lag, and no client-side
+    // design closes it without an on-chain mutex. It is made LOUD instead: one
+    // cheap page from the pre-scan head (minus a reorg margin) to now. A collision
+    // found here cannot be un-rotated, but NOTHING local has been written yet, so
+    // the client refuses to commit, says so plainly, and routes the user to
+    // re-recover this account onto a fresh passkey — the rotation that just landed
+    // is itself the event that proves the collision. Fails closed like the pre-scan.
+    if (newOwnerKind === "web3auth" && ownerScanHead !== undefined && ownerScanIO) {
+      onProgress?.("Re-checking this sign-in on-chain…");
+      const { scanOwnedAccounts, OWNER_SCAN_REORG_MARGIN } = await import("./owned-accounts-scan.js");
+      const { counterfactualKernelOf } = await import("./kernel-account.js");
+      const tail = await scanOwnedAccounts({
+        eoa: newOwnerAddress,
+        exclude: [target, await counterfactualKernelOf(newOwnerAddress)],
+        io: ownerScanIO,
+        fromBlock: ownerScanHead - OWNER_SCAN_REORG_MARGIN,
+      });
+      if (tail.status === "collision") {
+        console.warn("[auth] post-rotation owner scan found a collision:", tail.kernels);
+        throw new Error(
+          "Another recovery used this same sign-in while this one was running, so it now opens " +
+            "two accounts. Nothing was saved on this device. To keep the accounts apart, run " +
+            "recovery for this account again and choose \"Passkey on this device\".",
+        );
+      }
+      if (tail.status === "unknown") {
+        console.warn("[auth] post-rotation owner scan did not complete:", tail.reason);
+        throw new Error(
+          "We couldn't re-check this sign-in on-chain after the change — it may well have gone " +
+            "through. Nothing was saved on this device. Run recovery again and it will pick up " +
+            "wherever it landed.",
+        );
+      }
     }
 
     // (3) Rebuild the Kernel at the OLD address with the NEW owner key.

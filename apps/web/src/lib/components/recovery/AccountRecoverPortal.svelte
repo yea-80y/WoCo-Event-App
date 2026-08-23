@@ -536,7 +536,7 @@
               <input type="radio" name="newowner" value="email" bind:group={newOwnerKind} />
               <span class="owner-opt-body">
                 <strong>Email or social</strong>
-                <span class="owner-opt-hint">Log in the same easy way. Recommended.</span>
+                <span class="owner-opt-hint">Log in the same easy way. Includes an on-chain check that can take a minute or two. Recommended.</span>
               </span>
             </label>
             <label class="owner-opt" class:sel={newOwnerKind === "passkey"}>
