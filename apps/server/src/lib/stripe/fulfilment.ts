@@ -109,7 +109,21 @@ export interface FulfilmentDeps {
   createRefund(
     params: Stripe.RefundCreateParams,
     connectedAccountId: string | undefined,
+    idempotencyKey: string,
   ): Promise<{ id: string }>;
+  /**
+   * The refund call threw. Record it durably so the retry job replays it and
+   * /api/health alarms until it lands (#367). Must not throw — fenced anyway.
+   */
+  recordPendingRefund(input: {
+    sessionId: string;
+    paymentIntentId: string;
+    connectedAccountId?: string;
+    amount?: number;
+    reason: string;
+    metadata: Record<string, string>;
+    error: string;
+  }): void;
 
   /** Art. 7(1) consent capture — must not throw; fenced anyway. */
   captureCheckoutConsent(input: CaptureConsentInput): void;
@@ -501,46 +515,52 @@ export async function fulfilPaidSession(
       refund = { kind: "no-payment-intent" };
       console.error(`[fulfilment] stopped (${stoppedReason}) but session ${session.id} has no payment intent to refund`);
     } else {
+      // Direct-charge sessions: refund must go through the connected account.
+      // connectedAccountId is stamped into metadata at checkout-session creation.
+      const connectedAccountId = metaConnectedAccountId || undefined;
+      const amountTotal = session.amount_total ?? 0;
+      // Pro-rata the total (which already includes any buyer-paid fee) by
+      // unit. Round so we never refund more than was paid.
+      const refundAmount =
+        amountTotal > 0 && quantity > 0
+          ? Math.min(amountTotal, Math.round((amountTotal / quantity) * unfilled))
+          : 0;
+      const refundMetadata: Record<string, string> = {
+        reason: "ticket-claim-failed",
+        failureMessage: stoppedReason.slice(0, 200),
+        // The retry job (#367) recognises a refund that landed while the
+        // response was lost by this marker — never re-creates one.
+        sessionId: session.id,
+        seriesId,
+        eventId,
+        quantityPaid: String(quantity),
+        quantityClaimed: String(claimedResults.length),
+        quantityUnfilled: String(unfilled),
+      };
+      const refundParams: Stripe.RefundCreateParams = {
+        payment_intent: piId,
+        reason: "requested_by_customer",
+        // #121. Stripe does NOT refund the application fee by default — the
+        // connected account (the organiser, merchant of record on a direct
+        // charge) eats it. Every refund on this path is caused by OUR side —
+        // a mint that reverted, a feed or chain we could not read, a sale we
+        // closed — so the platform fee goes back with it: in full on a full
+        // refund, pro-rata on a partial (Stripe's semantics). Stripe's own
+        // processing fee is not returnable by anyone; ORGANISER_TERMS §6
+        // says so. A buyer-requested refund is a different policy and does
+        // not come through here.
+        refund_application_fee: true,
+        metadata: refundMetadata,
+      };
+      // Only set `amount` for partial refunds. When claimedResults.length === 0
+      // we omit it so Stripe refunds the full intent — same as the old behaviour.
+      if (claimedResults.length > 0 && refundAmount > 0) {
+        refundParams.amount = refundAmount;
+      }
       try {
-        // Direct-charge sessions: refund must go through the connected account.
-        // connectedAccountId is stamped into metadata at checkout-session creation.
-        const connectedAccountId = metaConnectedAccountId || undefined;
-        const amountTotal = session.amount_total ?? 0;
-        // Pro-rata the total (which already includes any buyer-paid fee) by
-        // unit. Round so we never refund more than was paid.
-        const refundAmount =
-          amountTotal > 0 && quantity > 0
-            ? Math.min(amountTotal, Math.round((amountTotal / quantity) * unfilled))
-            : 0;
-        const refundParams: Stripe.RefundCreateParams = {
-          payment_intent: piId,
-          reason: "requested_by_customer",
-          // #121. Stripe does NOT refund the application fee by default — the
-          // connected account (the organiser, merchant of record on a direct
-          // charge) eats it. Every refund on this path is caused by OUR side —
-          // a mint that reverted, a feed or chain we could not read, a sale we
-          // closed — so the platform fee goes back with it: in full on a full
-          // refund, pro-rata on a partial (Stripe's semantics). Stripe's own
-          // processing fee is not returnable by anyone; ORGANISER_TERMS §6
-          // says so. A buyer-requested refund is a different policy and does
-          // not come through here.
-          refund_application_fee: true,
-          metadata: {
-            reason: "ticket-claim-failed",
-            failureMessage: stoppedReason.slice(0, 200),
-            seriesId,
-            eventId,
-            quantityPaid: String(quantity),
-            quantityClaimed: String(claimedResults.length),
-            quantityUnfilled: String(unfilled),
-          },
-        };
-        // Only set `amount` for partial refunds. When claimedResults.length === 0
-        // we omit it so Stripe refunds the full intent — same as the old behaviour.
-        if (claimedResults.length > 0 && refundAmount > 0) {
-          refundParams.amount = refundAmount;
-        }
-        const created = await deps.createRefund(refundParams, connectedAccountId);
+        // Idempotent at Stripe for 24h: a retry after a lost response returns
+        // the original refund instead of minting a second (partial) one.
+        const created = await deps.createRefund(refundParams, connectedAccountId, `woco-autorefund-${session.id}`);
         refund = { kind: "created", refundId: created.id, amount: refundParams.amount ?? "full" };
         console.log(
           `[fulfilment] Auto-refunded ${piId} (refund=${created.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
@@ -558,8 +578,24 @@ export async function fulfilPaidSession(
           }
         }
       } catch (refundErr) {
-        refund = { kind: "failed", error: errMessage(refundErr) };
-        console.error("[fulfilment] Auto-refund FAILED — manual intervention required:", refundErr);
+        const error = errMessage(refundErr);
+        refund = { kind: "failed", error };
+        console.error("[fulfilment] Auto-refund FAILED — recording for retry:", refundErr);
+        // The one branch of the invariant that had no ledger (#367). The retry
+        // job replays exactly these params; /api/health alarms until it lands.
+        try {
+          deps.recordPendingRefund({
+            sessionId: session.id,
+            paymentIntentId: piId,
+            connectedAccountId,
+            ...(refundParams.amount !== undefined ? { amount: refundParams.amount } : {}),
+            reason: stoppedReason,
+            metadata: refundMetadata,
+            error,
+          });
+        } catch (recordErr) {
+          console.error("[fulfilment] could not record the pending refund either — INVARIANT BROKEN:", recordErr);
+        }
       }
     }
   }

@@ -354,6 +354,8 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
     the next deploy: the counterfactual fallback returns and a lagging RPC replica
     can roll the owner back to a retired key)
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
+  pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
+    charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json

@@ -132,6 +132,7 @@ type Step =
   | "bindTicket"
   | "consumeReservation"
   | "createRefund"
+  | "recordPendingRefund"
   | "markPayoutVoid"
   | "captureCheckoutConsent"
   | "getSiteTheme"
@@ -156,7 +157,8 @@ interface FakeOpts {
 
 function fakeDeps(o: FakeOpts = {}) {
   const calls: string[] = [];
-  const refunds: Array<{ params: Record<string, unknown>; account: string | undefined }> = [];
+  const refunds: Array<{ params: Record<string, unknown>; account: string | undefined; key: string }> = [];
+  const pendingRefunds: Array<Parameters<FulfilmentDeps["recordPendingRefund"]>[0]> = [];
   const emails: Array<Parameters<FulfilmentDeps["sendTicketEmail"]>[0]> = [];
   const ledgerRows: Array<Parameters<FulfilmentDeps["recordUndeliveredTicket"]>[0]> = [];
   /** Rows the MAILER wrote before rejecting with `ledgered: true`. */
@@ -246,10 +248,14 @@ function fakeDeps(o: FakeOpts = {}) {
       consumed.push(id);
       return { quantity: 2 };
     },
-    createRefund: async (params, account) => {
+    createRefund: async (params, account, key) => {
       boom("createRefund");
-      refunds.push({ params: params as unknown as Record<string, unknown>, account });
+      refunds.push({ params: params as unknown as Record<string, unknown>, account, key });
       return { id: `re_${refunds.length}` };
+    },
+    recordPendingRefund: (input) => {
+      boom("recordPendingRefund");
+      pendingRefunds.push(input);
     },
     captureCheckoutConsent: (input) => {
       boom("captureCheckoutConsent");
@@ -280,7 +286,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, consumed, minted };
+  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, consumed, minted };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -314,11 +320,12 @@ function assertInvariant(
     assert.ok(outcome.stoppedReason, "unfilled tickets need a stop reason");
     if (outcome.refund.kind === "created") {
       assert.equal(refundedUnits(outcome, s), unfilled, "refund covers exactly the unfilled units");
+    } else if (outcome.refund.kind === "failed") {
+      // #367: a refund that could not be created is RECORDED for retry (the
+      // attempt is made even if the store itself then throws).
+      assert.ok(f.calls.includes("recordPendingRefund"), "failed refund must reach recordPendingRefund");
     } else {
-      assert.ok(
-        outcome.refund.kind === "failed" || outcome.refund.kind === "no-payment-intent",
-        `unfilled=${unfilled} but refund=${JSON.stringify(outcome.refund)}`,
-      );
+      assert.equal(outcome.refund.kind, "no-payment-intent", `unfilled=${unfilled} but refund=${JSON.stringify(outcome.refund)}`);
     }
   } else {
     assert.equal(outcome.refund.kind, "not-needed");
@@ -500,6 +507,9 @@ describe("stop reasons", () => {
     const md = f.refunds[0].params.metadata as Record<string, string>;
     assert.equal(md.reason, "ticket-claim-failed");
     assert.equal(md.quantityUnfilled, "2");
+    assert.equal(md.sessionId, "cs_test_1", "the retry job recognises a landed refund by this (#367)");
+    assert.equal(f.refunds[0].key, "woco-autorefund-cs_test_1", "idempotent at Stripe (#367)");
+    assert.equal(f.pendingRefunds.length, 0);
     assert.deepEqual(f.voided, ["cs_test_1"]);
     assert.equal(f.emails.length, 0);
     assert.equal(outcome.email, "nothing-issued");
@@ -625,12 +635,37 @@ describe("every collaborator throws", () => {
     assert.equal(f.voided.length, 0);
   });
 
-  test("createRefund throws: the outcome names it — buyer still charged (#367 makes it durable)", async () => {
+  test("createRefund throws: recorded for retry with the exact params, payout NOT voided (#367)", async () => {
     const { outcome, f } = await run({}, { fail: "createRefund", revertAtChunk: 0 });
     assert.equal(outcome.issued, 0);
     assert.deepEqual(outcome.refund, { kind: "failed", error: "createRefund exploded" });
     assert.equal(f.voided.length, 0, "payout entry must NOT be voided when no refund landed");
     assert.equal(f.emails.length, 0);
+    assert.equal(f.pendingRefunds.length, 1);
+    const p = f.pendingRefunds[0];
+    assert.equal(p.sessionId, "cs_test_1");
+    assert.equal(p.paymentIntentId, "pi_1");
+    assert.equal(p.connectedAccountId, ACCT);
+    assert.equal(p.amount, undefined, "full refund → no amount");
+    assert.match(p.reason, /Insufficient supply/);
+    assert.equal(p.metadata.sessionId, "cs_test_1");
+    assert.equal(p.error, "createRefund exploded");
+  });
+
+  test("createRefund throws on a PARTIAL: the pro-rata amount is what gets recorded", async () => {
+    const { f } = await run({ quantity: 3, amountTotal: 6600 }, { batchMax: 2, revertAtChunk: 1, fail: "createRefund" });
+    assert.equal(f.pendingRefunds.length, 1);
+    assert.equal(f.pendingRefunds[0].amount, 2200);
+    assert.equal(f.emails[0].tickets.length, 2, "the issued tickets still go out");
+  });
+
+  test("createRefund AND recordPendingRefund throw: still resolves, outcome still honest", async () => {
+    const f = fakeDeps({ fail: "createRefund", revertAtChunk: 0 });
+    f.deps.recordPendingRefund = () => {
+      throw new Error("disk full");
+    };
+    const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+    assert.equal(outcome.refund.kind, "failed");
   });
 
   test("markPayoutVoid throws after a successful refund: the refund stands", async () => {

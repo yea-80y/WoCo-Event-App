@@ -98,7 +98,10 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   unreadable event feed) auto-refunds the unfilled part; an issued ticket whose email
   cannot go out is always in the undelivered ledger (`email-failures.json`), whether the
   mailer or the renderer failed. `test/fulfilment.test.ts` makes every collaborator throw
-  and asserts that property.
+  and asserts that property. An auto-refund that Stripe refuses to create is recorded in
+  `.data/pending-refunds.json` and retried every 10 min under the same idempotency key
+  (`lib/stripe/pending-refunds.ts`, #367); `/api/health` `pendingRefunds` alarms until it
+  lands, and `/api/ops/pending-refunds` lists / retries / resolves.
 
 ---
 
