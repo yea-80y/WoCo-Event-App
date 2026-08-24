@@ -129,6 +129,38 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   - Tickets sold before the index existed are not in it, and cannot be — the plaintext address
     is never stored. `hasUnverifiableSeries` selects honest wording for that case and grants
     nothing.
+- **SERVICE NOTICES CROSS A MARKETING UNSUBSCRIBE — CONSENT MARKS ONLY** (#60 item 1). The one
+  class of message that reaches a suppressed address on the marketing path. Rationale: WoCo
+  already does this for transactional mail (ticket confirmations never consult suppression, see
+  above), and the `/u` page tells the person so — *"Stop marketing emails from this organiser…
+  Ticket confirmations for events you book are not affected."* The gap was arbitrary: we would
+  tell an unsubscribed buyer their ticket exists but not that the event was cancelled.
+  - **Crossable (consent facts): `unsub`, `unsub_all`, `declined`.** `unsub_all` included — its
+    checkbox says "block all **marketing** email sent via WoCo", so the booking channel was
+    explicitly reserved.
+  - **Never crossed: `bounce`, `complaint`, `manual`.** The first two are DELIVERABILITY facts,
+    not consent — mailing them informs nobody and burns the sending reputation shared by every
+    organiser. `manual` is refused because it is OVERLOADED: written both by the organiser's own
+    suppress endpoint and by an Art. 17 erasure (`subject-request.ts`). If that ever bites, split
+    the source label; do NOT widen the set. Rule lives in `lib/email/service-notice-crossing.ts`
+    and fails closed on any source not named there.
+  - **The organiser cannot declare a message operational.** They pick one of three fixed
+    categories (`cancelled` / `rescheduled` / `venue_changed` — `packages/shared/.../service-notice.ts`)
+    and write a plain-text note. The PLATFORM composes the subject and the whole document
+    (`lib/email/service-notice-email.ts`), injecting "You're receiving this because you hold a
+    ticket for X. This is a service notice about your booking, not marketing." above the note.
+    There is deliberately no `other` category — a catch-all is a free-pick flag in a taxonomy's
+    clothes. Unlike every other broadcast, `htmlBody` from the client is NOT accepted here.
+  - **Three types and no more.** The line is a change that costs the attendee money or sends them
+    to the wrong place at the wrong time. A lineup or doors-time change is an ordinary broadcast.
+  - **Every crossing is counted**, per job, as `crossed` — never folded into `sent` — and surfaced
+    on the job view. A crossing that nobody recorded is not answerable to the person, the mailbox
+    provider or a regulator.
+  - Service notices still carry the footer, postal address and RFC 8058 one-click unsubscribe.
+    The link governs marketing; re-marking an already-marked address is idempotent.
+  - **Recipients must be proven ticket-holders** (#387). This is load-bearing: with the event lane
+    accepting arbitrary addresses, the crossing would be an unsubscribe-bypass rather than a
+    service. Do not decouple these two.
 - **CONSENT AT CHECKOUT IS BUILT AND WIRED ON EVERY PATH.** The field is `marketingConsent`, NOT
   `marketingOptIn` — grepping the latter finds nothing and has already produced one wrong "this
   does not exist" write-up. Wording + version live in `packages/shared/src/legal/consent.ts`

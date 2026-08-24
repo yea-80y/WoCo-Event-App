@@ -41,7 +41,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import { MARKETING_MAX_LIST_EMAILS , type ServiceNoticeType } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import { effectiveSendRate } from "./rate-limiter.js";
 
@@ -180,6 +180,13 @@ export interface BroadcastJob {
   kind: BroadcastJobKind;
   eventId?: string;
   state: BroadcastJobState;
+  /**
+   * Present only on an `event` job the platform composed as a service notice
+   * (#60 item 1). Its presence is what permits the send to cross a CONSENT
+   * suppression mark, so it is set from a fixed enum at job creation and never
+   * from anything the organiser can type.
+   */
+  serviceType?: ServiceNoticeType;
 
   subject: string;
   html: string;
@@ -203,6 +210,12 @@ export interface BroadcastJob {
   skipped: number;
   sent: number;
   suppressed: number;
+  /**
+   * Delivered DESPITE an active suppression mark, because this job is a service
+   * notice. Kept out of `sent` deliberately: this is the number that has to be
+   * answerable later, and one folded into a total cannot be.
+   */
+  crossed: number;
   failed: number;
 
   /**
@@ -458,6 +471,8 @@ export interface CreateJobInput {
   fromAddress: string;
   /** Membership snapshot for `event` jobs — taken once, by the caller. */
   attendees?: AttendeeSnapshot;
+  /** Fixed service-notice category; see `BroadcastJob.serviceType`. */
+  serviceType?: ServiceNoticeType;
   /** Prior job whose delivered recipients this one must not mail again. */
   resumeOf?: string;
 }
@@ -492,9 +507,11 @@ export function createJob(input: CreateJobInput): BroadcastJob {
     skipped: 0,
     sent: 0,
     suppressed: 0,
+    crossed: 0,
     failed: 0,
     sentHashes: [],
     errors: [],
+    ...(input.serviceType ? { serviceType: input.serviceType } : {}),
     ...(input.resumeOf ? { resumeOf: input.resumeOf } : {}),
   };
 
@@ -719,6 +736,8 @@ export function destroyPayload(jobId: string, chunkCount: number): number {
 export interface ChunkOutcome {
   sent: number;
   suppressed: number;
+  /** Delivered over a crossable suppression mark — see `BroadcastJob.crossed`. */
+  crossed: number;
   failed: number;
   sentHashes: string[];
   errors: string[];
@@ -737,6 +756,7 @@ export function recordChunkDrained(job: BroadcastJob, outcome: ChunkOutcome): bo
   const index = job.nextChunk;
   job.sent += outcome.sent;
   job.suppressed += outcome.suppressed;
+  job.crossed += outcome.crossed;
   job.failed += outcome.failed;
   job.sentHashes.push(...outcome.sentHashes);
   job.errors = [...job.errors, ...outcome.errors].slice(0, MAX_STORED_ERRORS);

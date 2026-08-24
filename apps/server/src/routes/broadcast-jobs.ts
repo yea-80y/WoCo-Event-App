@@ -36,6 +36,8 @@ import { hashEmail } from "../lib/event/claim-service.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getAttendeeEmailHashes } from "../lib/event/attendee-emails.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
+import { isServiceNoticeType, serviceNoticeSubject, SERVICE_NOTICE_TYPES } from "@woco/shared";
+import { buildServiceNoticeHtml } from "../lib/email/service-notice-email.js";
 import { getList, withOrgLock } from "../lib/marketing/list-store.js";
 import { capRemaining, reserveSend } from "../lib/marketing/send-cap.js";
 import {
@@ -98,6 +100,16 @@ function jobView(job: BroadcastJob) {
     suppressed: job.suppressed,
     failed: job.failed,
     skipped: job.skipped,
+    ...(job.serviceType ? { serviceType: job.serviceType } : {}),
+    /**
+     * How many of `sent` went to an address carrying an active suppression
+     * mark, which only a service notice can do (#60 item 1). Surfaced per job
+     * rather than only counted internally because this is the number that has
+     * to be answerable afterwards — to the recipient, to a mailbox provider, or
+     * to a regulator asking why someone who unsubscribed was mailed. Present
+     * only when it happened, so it reads as an event rather than a metric.
+     */
+    ...(job.crossed ? { crossed: job.crossed } : {}),
     remaining: Math.max(0, job.accepted - job.sent - job.suppressed - job.failed),
     chunkCount: job.chunkCount,
     drainedChunks: job.nextChunk,
@@ -172,13 +184,42 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
   // send — and, more importantly, a resume carries the prior job's delivered
   // set as a skip list. Letting a different body ride that skip list would be a
   // way to send a message while silently excluding chosen recipients.
-  const subject = prior ? prior.subject : typeof body.subject === "string" ? body.subject.trim() : "";
-  const htmlBody = prior ? prior.html : typeof body.htmlBody === "string" ? body.htmlBody : "";
-  if (!subject || subject.length > 200) {
-    return c.json({ ok: false, error: "Subject required (max 200 chars)" }, 400);
+  // A service notice is the one message allowed past a marketing unsubscribe
+  // (#60 item 1), so the organiser chooses a CATEGORY from a fixed list and
+  // writes a note — nothing more. Subject and body are composed below from the
+  // event's own title; an unknown category is refused rather than ignored,
+  // because ignoring it would silently downgrade a cancellation to an ordinary
+  // broadcast that the people who most need it never receive.
+  const serviceType = prior
+    ? prior.serviceType
+    : isServiceNoticeType(body.serviceType)
+      ? body.serviceType
+      : undefined;
+  if (!prior && body.serviceType !== undefined && !serviceType) {
+    return c.json(
+      { ok: false, error: `Unknown notice type. Must be one of: ${SERVICE_NOTICE_TYPES.join(", ")}` },
+      400,
+    );
   }
-  if (!htmlBody || htmlBody.length > 50_000) {
-    return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
+  if (serviceType && kind !== "event") {
+    return c.json({ ok: false, error: "Only event broadcasts can be sent as a service notice" }, 400);
+  }
+
+  const note = typeof body.note === "string" ? body.note.trim() : "";
+  let subject = prior ? prior.subject : typeof body.subject === "string" ? body.subject.trim() : "";
+  let htmlBody = prior ? prior.html : typeof body.htmlBody === "string" ? body.htmlBody : "";
+
+  if (serviceType && !prior) {
+    if (!note || note.length > 5_000) {
+      return c.json({ ok: false, error: "A note is required (max 5000 chars)" }, 400);
+    }
+  } else {
+    if (!subject || subject.length > 200) {
+      return c.json({ ok: false, error: "Subject required (max 200 chars)" }, 400);
+    }
+    if (!htmlBody || htmlBody.length > 50_000) {
+      return c.json({ ok: false, error: "Body required (max 50KB)" }, 400);
+    }
   }
 
   let fromDisplayName: string;
@@ -248,6 +289,18 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     // promises not to cause.
     const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event);
 
+    if (serviceType && !prior) {
+      // Composed HERE, from the event's own title — the organiser controls the
+      // note and nothing that frames it. See lib/email/service-notice-email.ts.
+      subject = serviceNoticeSubject(serviceType, event.title);
+      htmlBody = buildServiceNoticeHtml({
+        type: serviceType,
+        eventTitle: event.title,
+        heading: subject,
+        note,
+      });
+    }
+
     fromDisplayName = event.title;
     // The event lane KEEPS the transactional fallback that the marketing lane
     // above refuses, and the asymmetry is deliberate. These recipients consented
@@ -270,6 +323,7 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
       fromDisplayName,
       fromAddress: resolveMarketingFrom(org) ?? getFromAddress(),
       attendees: { hashes, hasUnverifiableSeries: unverifiableSeries > 0 },
+      ...(serviceType ? { serviceType } : {}),
       ...(resumeOf ? { resumeOf } : {}),
     });
   }

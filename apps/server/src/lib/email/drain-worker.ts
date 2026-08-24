@@ -184,6 +184,9 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
         subject: job.subject,
         html: job.html,
         recipients: fresh,
+        // Set from the job's fixed category, never from chunk content. A job
+        // without one behaves exactly as before: suppression is absolute.
+        ...(job.serviceType ? { serviceNotice: true as const } : {}),
         // Stops between in-flight groups, so a cancel or a TTL expiry takes
         // effect within ten messages instead of after the whole chunk.
         ...(jobSignal(job.id) ? { signal: jobSignal(job.id)! } : {}),
@@ -206,6 +209,7 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
   const persisted = recordChunkDrained(job, {
     sent: result.sent,
     suppressed: result.suppressed,
+    crossed: result.crossed,
     failed: result.failed,
     sentHashes: result.sentHashes,
     // Hash-prefixed. The organiser is the controller of these addresses, but a
