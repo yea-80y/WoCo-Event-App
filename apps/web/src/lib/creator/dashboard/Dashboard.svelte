@@ -5,6 +5,7 @@
   import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
   import { startBroadcast, pollBroadcast, type BroadcastJobStatus } from "../../api/broadcasts.js";
   import BroadcastProgress from "../audience/BroadcastProgress.svelte";
+  import { buildEventBroadcastHtml } from "./event-broadcast-email.js";
   import { getEventSWR, getEventOrdersSWR } from "../../api/creator-cache.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -271,20 +272,6 @@
     return recipients;
   }
 
-  function wrapHtmlEmail(body: string, eventTitle: string): string {
-    const escaped = body.replace(/\n/g, "<br>");
-    return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #e0e0e0; background: #1a1a2e; padding: 2rem;">
-  <div style="max-width: 600px; margin: 0 auto; background: #16213e; border-radius: 12px; padding: 2rem;">
-    <h2 style="color: #fff; margin: 0 0 1rem;">${eventTitle}</h2>
-    <div style="color: #c0c0c0; line-height: 1.6; font-size: 15px;">${escaped}</div>
-    <hr style="border: none; border-top: 1px solid #2a2a4a; margin: 2rem 0 1rem;">
-    <p style="font-size: 12px; color: #666;">Sent via <a href="https://woco.eth.limo" style="color: #7c6cf0;">WoCo</a></p>
-  </div>
-</body></html>`;
-  }
-
   async function handleSendBroadcast(resumeOf?: string) {
     if (!event || broadcastSending) return;
     broadcastError = null;
@@ -330,7 +317,7 @@
           ? { resumeOf }
           : {
               subject: broadcastSubject.trim(),
-              htmlBody: wrapHtmlEmail(broadcastBody.trim(), event.title),
+              htmlBody: buildEventBroadcastHtml(broadcastBody.trim(), event.title),
             }),
       });
       broadcastSubject = "";
@@ -681,7 +668,7 @@
                   </div>
                 </div>
                 <div class="preview-body">
-                  {@html wrapHtmlEmail(broadcastBody.trim(), event.title)}
+                  {@html buildEventBroadcastHtml(broadcastBody.trim(), event.title)}
                 </div>
               </div>
             {/if}
