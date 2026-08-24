@@ -6,6 +6,13 @@
   import { startBroadcast, pollBroadcast, type BroadcastJobStatus } from "../../api/broadcasts.js";
   import BroadcastProgress from "../audience/BroadcastProgress.svelte";
   import { buildEventBroadcastHtml } from "./event-broadcast-email.js";
+  import {
+    SERVICE_NOTICE_TYPES,
+    SERVICE_NOTICE_LABELS,
+    serviceNoticeSubject,
+    serviceNoticeDisclosure,
+    type ServiceNoticeType,
+  } from "@woco/shared";
   import { getEventSWR, getEventOrdersSWR } from "../../api/creator-cache.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -61,6 +68,18 @@
   let broadcastJob = $state<BroadcastJobStatus | null>(null);
   let broadcastError = $state<string | null>(null);
   let broadcastSeriesFilter = $state<string>("all");
+  /**
+   * Empty = an ordinary broadcast. Any other value makes this a SERVICE NOTICE,
+   * which is the one message that reaches a ticket-holder who unsubscribed from
+   * this organiser's marketing (#60 item 1).
+   *
+   * The organiser picks the category and writes the note; the SERVER composes
+   * the subject and the whole email and injects the disclosure line. Nothing
+   * here is the enforcement point — the API refuses an unknown category and
+   * ignores any subject or body sent alongside one. This is the way in, not
+   * the guard.
+   */
+  let broadcastServiceType = $state<ServiceNoticeType | "">("");
   let showPreview = $state(false);
   let showRecipientList = $state(false);
 
@@ -285,12 +304,13 @@
     // A resume re-sends what the server already holds; the compose box was
     // cleared when the first job queued, so there is nothing here to validate.
     if (!resumeOf) {
-      if (!broadcastSubject.trim()) {
+      // A service notice has no subject field — the platform writes it.
+      if (!broadcastServiceType && !broadcastSubject.trim()) {
         broadcastError = "Subject is required.";
         return;
       }
       if (!broadcastBody.trim()) {
-        broadcastError = "Message body is required.";
+        broadcastError = broadcastServiceType ? "Write a short note explaining what changed." : "Message body is required.";
         return;
       }
     }
@@ -299,8 +319,18 @@
       ? "all series"
       : event.series.find((s) => s.seriesId === broadcastSeriesFilter)?.name ?? "selected series";
 
-    const verb = resumeOf ? "Send again to the attendees who missed it" : `Send "${broadcastSubject.trim()}"`;
-    if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?`)) {
+    const verb = resumeOf
+      ? "Send again to the attendees who missed it"
+      : broadcastServiceType && event
+        ? `Send "${serviceNoticeSubject(broadcastServiceType, event.title)}"`
+        : `Send "${broadcastSubject.trim()}"`;
+    // Say the quiet part at the moment of sending. A service notice reaches
+    // people who told this organiser to stop emailing them; that is lawful for
+    // a booking change and still not something to discover afterwards.
+    const crossingWarning = broadcastServiceType && !resumeOf
+      ? "\n\nThis is a service notice, so it will also reach ticket-holders who unsubscribed from your marketing. It cannot reach addresses that bounced or reported spam."
+      : "";
+    if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?${crossingWarning}`)) {
       return;
     }
 
@@ -315,13 +345,16 @@
         recipients,
         ...(resumeOf
           ? { resumeOf }
-          : {
-              subject: broadcastSubject.trim(),
-              htmlBody: buildEventBroadcastHtml(broadcastBody.trim(), event.title),
-            }),
+          : broadcastServiceType
+            ? { serviceType: broadcastServiceType, note: broadcastBody.trim() }
+            : {
+                subject: broadcastSubject.trim(),
+                htmlBody: buildEventBroadcastHtml(broadcastBody.trim(), event.title),
+              }),
       });
       broadcastSubject = "";
       broadcastBody = "";
+      broadcastServiceType = "";
       showPreview = false;
       void pollBroadcast(broadcastJob.jobId, (update) => { broadcastJob = update; }).catch(() => {
         // A dropped poll says nothing about a send running on the server.
@@ -623,19 +656,50 @@
           <!-- Compose form -->
           <div class="broadcast-compose">
             <label class="broadcast-field">
-              <span>Subject</span>
-              <input
-                type="text"
-                placeholder="e.g. Important update about the event"
-                bind:value={broadcastSubject}
-                maxlength="200"
-              />
+              <span>Message type</span>
+              <select class="filter-select" bind:value={broadcastServiceType}>
+                <option value="">Regular update</option>
+                {#each SERVICE_NOTICE_TYPES as t}
+                  <option value={t}>{SERVICE_NOTICE_LABELS[t]}</option>
+                {/each}
+              </select>
             </label>
 
+            {#if broadcastServiceType && event}
+              <div class="service-notice-banner">
+                <p>
+                  <strong>This reaches everyone holding a ticket</strong> — including people who
+                  unsubscribed from your marketing. That is allowed because it is about their
+                  booking, not promotion, so WoCo writes the subject and the wording around your
+                  note and you cannot change them.
+                </p>
+                <p class="service-notice-sub">
+                  It will not reach addresses that bounced or reported spam — nothing can.
+                </p>
+              </div>
+
+              <div class="broadcast-field">
+                <span>Subject <em>(written for you)</em></span>
+                <input type="text" value={serviceNoticeSubject(broadcastServiceType, event.title)} readonly />
+              </div>
+            {:else}
+              <label class="broadcast-field">
+                <span>Subject</span>
+                <input
+                  type="text"
+                  placeholder="e.g. Important update about the event"
+                  bind:value={broadcastSubject}
+                  maxlength="200"
+                />
+              </label>
+            {/if}
+
             <label class="broadcast-field">
-              <span>Message</span>
+              <span>{broadcastServiceType ? "Your note" : "Message"}</span>
               <textarea
-                placeholder="Write your message here. Line breaks will be preserved in the email."
+                placeholder={broadcastServiceType
+                  ? "Say what changed and what happens next — e.g. refunds are automatic and arrive within 5 working days."
+                  : "Write your message here. Line breaks will be preserved in the email."}
                 bind:value={broadcastBody}
                 rows="8"
               ></textarea>
@@ -660,16 +724,38 @@
                   </div>
                   <div class="preview-meta">
                     <span class="preview-label">Subject:</span>
-                    <span>{broadcastSubject || "(no subject)"}</span>
+                    <span>
+                      {#if broadcastServiceType}
+                        {serviceNoticeSubject(broadcastServiceType, event.title)}
+                      {:else}
+                        {broadcastSubject || "(no subject)"}
+                      {/if}
+                    </span>
                   </div>
                   <div class="preview-meta">
                     <span class="preview-label">To:</span>
                     <span>{emailRecipients.length} recipient{emailRecipients.length !== 1 ? "s" : ""} (sent individually)</span>
                   </div>
                 </div>
-                <div class="preview-body">
-                  {@html buildEventBroadcastHtml(broadcastBody.trim(), event.title)}
-                </div>
+                {#if broadcastServiceType}
+                  <!--
+                    Rendered from the same shared strings the server composes with,
+                    rather than re-implementing its HTML builder here. Duplicating the
+                    builder is how two copies drift, which is exactly what #252 was.
+                    So this shows the CONTENT faithfully and not the exact chrome.
+                  -->
+                  <div class="preview-body service-notice-preview">
+                    <p class="service-notice-disclosure">{serviceNoticeDisclosure(event.title)}</p>
+                    <p class="service-notice-note">{broadcastBody.trim()}</p>
+                    <p class="service-notice-footnote">
+                      WoCo adds your unsubscribe link and postal address below this.
+                    </p>
+                  </div>
+                {:else}
+                  <div class="preview-body">
+                    {@html buildEventBroadcastHtml(broadcastBody.trim(), event.title)}
+                  </div>
+                {/if}
               </div>
             {/if}
           {/if}
@@ -691,7 +777,10 @@
           <div class="broadcast-actions">
             <button
               class="btn-broadcast"
-              disabled={broadcastSending || emailRecipients.length === 0 || !broadcastSubject.trim() || !broadcastBody.trim()}
+              disabled={broadcastSending
+                || emailRecipients.length === 0
+                || !broadcastBody.trim()
+                || (!broadcastServiceType && !broadcastSubject.trim())}
               onclick={() => void handleSendBroadcast()}
             >
               {#if broadcastSending}
@@ -1554,6 +1643,76 @@
   .broadcast-field {
     display: block;
     margin-bottom: 1rem;
+  }
+
+  /* Service notices reach people who unsubscribed, so the banner is a warning,
+     not decoration — it uses the accent border the rest of the app reserves for
+     things the organiser must read before acting. */
+  .service-notice-banner {
+    margin: 0 0 1rem;
+    padding: 0.75rem 0.875rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+  }
+
+  .service-notice-banner p {
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--text-muted);
+  }
+
+  .service-notice-banner strong {
+    color: var(--text);
+  }
+
+  .service-notice-sub {
+    margin-top: 0.5rem !important;
+    opacity: 0.75;
+  }
+
+  .broadcast-field input[readonly] {
+    opacity: 0.75;
+    cursor: default;
+  }
+
+  .broadcast-field span em {
+    font-style: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    opacity: 0.7;
+  }
+
+  .service-notice-preview {
+    padding: 1rem;
+  }
+
+  .service-notice-disclosure {
+    margin: 0 0 0.875rem;
+    padding: 0.625rem 0.75rem;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .service-notice-note {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+
+  .service-notice-footnote {
+    margin: 0.875rem 0 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    opacity: 0.7;
   }
 
   .broadcast-field span {
