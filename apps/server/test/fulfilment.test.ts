@@ -134,6 +134,7 @@ type Step =
   | "recordPendingRefund"
   | "markPayoutVoid"
   | "captureCheckoutConsent"
+  | "recordAttendeeEmail"
   | "getSiteTheme"
   | "sendTicketEmail"
   | "sendTicketEmailLedgered"
@@ -166,6 +167,7 @@ function fakeDeps(o: FakeOpts = {}) {
   const voided: string[] = [];
   const bindings: Array<Record<string, unknown>> = [];
   const consents: Array<Record<string, unknown>> = [];
+  const attendees: Array<{ eventId: string; emailHash: string; at: string }> = [];
   const consumed: string[] = [];
   const minted: string[][] = [];
   let nextSlot = 0;
@@ -256,6 +258,10 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("captureCheckoutConsent");
       consents.push(input as unknown as Record<string, unknown>);
     },
+    recordAttendeeEmail: (eventId, emailHash, at) => {
+      boom("recordAttendeeEmail");
+      attendees.push({ eventId, emailHash, at });
+    },
     getSiteTheme: async () => {
       boom("getSiteTheme");
       return {
@@ -281,7 +287,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, consumed, minted };
+  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -401,6 +407,13 @@ describe("happy path", () => {
     assert.equal(f.consents[0].granted, true);
     assert.equal(f.consents[0].emailHash, "h(buyer@example.com)");
     assert.equal(f.consents[0].organiserAddress, ORGANISER);
+
+    // Attendee index (#387): the only server-visible proof that this person
+    // holds a ticket, and therefore the only thing that lets the organiser be
+    // told they may mail them about it.
+    assert.deepEqual(f.attendees, [
+      { eventId: EVENT_ID, emailHash: "h(buyer@example.com)", at: new Date(PAID_AT * 1000).toISOString() },
+    ]);
   });
 
   test("ordering: ledger before mint, hold release before refund decision, refund before email", async () => {
@@ -707,7 +720,7 @@ test("never rejects, whichever step throws", async () => {
     "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "recordHeldPayout",
     "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
-    "markPayoutVoid", "captureCheckoutConsent", "getSiteTheme", "sendTicketEmail",
+    "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
     "sendTicketEmailLedgered", "recordUndeliveredTicket",
   ];
   for (const step of steps) {

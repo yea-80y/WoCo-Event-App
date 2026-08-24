@@ -126,6 +126,14 @@ export interface FulfilmentDeps {
   /** Art. 7(1) consent capture — must not throw; fenced anyway. */
   captureCheckoutConsent(input: CaptureConsentInput): void;
 
+  /**
+   * Record that this buyer holds a ticket for this event (#387). NOT a consent
+   * — it is the contract relationship, written whatever the buyer chose about
+   * marketing, and it is the only server-visible proof of attendee membership
+   * that exists. Must not throw; fenced anyway.
+   */
+  recordAttendeeEmail(eventId: string, emailHash: string, at: string): void;
+
   /** Organiser palette for the ticket email. Never rejects in production; fenced anyway. */
   getSiteTheme(siteId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
   /**
@@ -602,6 +610,21 @@ export async function fulfilPaidSession(
   // session creation. A GRANT goes to the consent store as Art. 7(1) evidence,
   // a REFUSAL goes to suppression so it is enforced by the existing send-time
   // check and survives a CSV re-upload.
+  // The attendee index (#387) is written for EVERY email buyer, whatever they
+  // chose about marketing, and independently of whether a consent decision was
+  // even offered — it records that this person bought a ticket, not that they
+  // agreed to anything. It is what lets the organiser prove a broadcast
+  // recipient is their attendee, so without it "your event is cancelled"
+  // reaches nobody. Gated on a ticket actually landing, for the same reason
+  // consent is: an abandoned purchase must not create an attendee.
+  if (claimedResults.length > 0 && emailHash) {
+    try {
+      deps.recordAttendeeEmail(eventId, emailHash, claimedAt);
+    } catch (err) {
+      console.error("[fulfilment] attendee index write threw (continuing):", err);
+    }
+  }
+
   if (metaMarketingConsent !== undefined && claimedResults.length > 0 && eventCreatorAddress && emailHash) {
     try {
       deps.captureCheckoutConsent({

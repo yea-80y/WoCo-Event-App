@@ -254,20 +254,14 @@ export interface AttendeeSnapshot {
   /** Email hashes proven to hold a ticket for this event. */
   hashes: Set<string>;
   /**
-   * Whether recipients absent from `hashes` may still be mailed. True only when
-   * the event has an on-chain series whose claimers the server cannot see AND
-   * the organiser is Stripe-verified — the same narrow fallback the inline
-   * route used, not a general escape hatch.
-   */
-  allowUnproven: boolean;
-  /**
-   * Whether the event HAS a series whose membership is unprovable server-side.
+   * Whether the event has an on-chain series registered before the attendee
+   * index existed (#387), so some of its real buyers are not in `hashes`.
    *
-   * Separate from `allowUnproven` so a rejection can say the right thing. With
-   * an on-chain series present but the organiser unverified, the recipients are
-   * not "not attendees" — they may well be — the organiser simply has not met
-   * the gate that lets us take their word for it. Telling them the wrong one
-   * sends them to fix the wrong problem.
+   * DIAGNOSTIC ONLY — it selects the wording of a rejection, never whether one
+   * happens. It replaced an `allowUnproven` flag that DID grant permission, and
+   * that flag is why a Stripe-verified organiser could mail arbitrary strangers
+   * for a month: its data source was deleted by #207 while it stayed true. Do
+   * not let this field regain the power to widen the recipient set.
    */
   hasUnverifiableSeries: boolean;
 }

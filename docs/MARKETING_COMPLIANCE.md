@@ -111,14 +111,24 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   `STRIPE_VERIFICATION_REQUIRED`. Import/read/suppress stay open; **event broadcasts are
   deliberately ungated** (attendee-relationship mail must not depend on Stripe). UI
   pre-checks via `StripeVerifyGate` in `AudienceScreen`.
-- **EVENT BROADCASTS ARE ATTENDEE-ONLY** (2026-07-27): `/api/events/:id/broadcast` HMAC-hashes
-  every recipient and requires it in the event's claimers feeds (`email:{hash}` handle or
-  `secondaryEmailHash`) — `lib/event/attendee-emails.ts`. This is what makes the two exemptions
-  above defensible; without it the endpoint reached arbitrary addresses outside the consent
-  warranty. Rejections report a COUNT, never the addresses (otherwise the error is an oracle for
-  "does this person hold a ticket"). v2 on-chain series keep the claimer identity inside the
-  sealed blob only, so membership is unprovable server-side — those fall back to
-  `isVerifiedOrganiser`.
+- **EVENT BROADCASTS ARE ATTENDEE-ONLY** (2026-07-27; membership source replaced 2026-08-24, #387):
+  every recipient is HMAC-hashed and must appear in the event's ATTENDEE INDEX
+  (`lib/event/attendee-index.ts`), appended at Stripe fulfilment from the verified purchase
+  email. This is what makes the two exemptions above defensible; without it the endpoint reached
+  arbitrary addresses outside the consent warranty. Rejections report a COUNT, never the
+  addresses (otherwise the error is an oracle for "does this person hold a ticket").
+  - The index REPLACED a read of the v1 claimers feeds. Those feeds were deleted with the v1
+    rail (#207), which left `getAttendeeEmailHashes` returning an empty set — so for a month
+    the check was vacuous in BOTH directions: a Stripe-verified organiser was waved through to
+    any address at all (`allowUnproven` → `() => true`), while an unverified organiser matched
+    nobody and so could not send "your event is cancelled" to a single attendee, which is the
+    exact harm the "deliberately ungated" line above exists to prevent.
+  - `allowUnproven` IS DELETED. There is no "cannot prove membership, allow anyway" path, and
+    `isVerifiedOrganiser` is deliberately NOT consulted on the event lane: it is an abuse gate
+    for mailing strangers, and there are no strangers left to mail.
+  - Tickets sold before the index existed are not in it, and cannot be — the plaintext address
+    is never stored. `hasUnverifiableSeries` selects honest wording for that case and grants
+    nothing.
 - **CONSENT AT CHECKOUT IS BUILT AND WIRED ON EVERY PATH.** The field is `marketingConsent`, NOT
   `marketingOptIn` — grepping the latter finds nothing and has already produced one wrong "this
   does not exist" write-up. Wording + version live in `packages/shared/src/legal/consent.ts`
