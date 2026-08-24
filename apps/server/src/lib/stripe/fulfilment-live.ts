@@ -20,6 +20,7 @@ import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../cha
 import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
 import { captureCheckoutConsent } from "../marketing/consent-capture.js";
+import { recordAttendeeEmail } from "../event/attendee-index.js";
 import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { recordFailure } from "../email/failure-ledger.js";
@@ -54,6 +55,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
     recordPendingRefund(input);
   },
   captureCheckoutConsent,
+  recordAttendeeEmail,
   getSiteTheme,
   sendTicketEmail,
   recordUndeliveredTicket: ({ to, subject, error, context }) => {

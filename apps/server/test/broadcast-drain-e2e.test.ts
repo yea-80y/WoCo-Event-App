@@ -203,11 +203,14 @@ describe("event membership", () => {
       html: "<p>7pm</p>",
       fromDisplayName: "Venue",
       fromAddress: "news@woco-net.com",
-      attendees: { hashes: new Set<string>(), allowUnproven: false, hasUnverifiableSeries: true },
+      attendees: { hashes: new Set<string>(), hasUnverifiableSeries: true },
     });
     const snapshot = jobs.attendeeSnapshot(job.id);
     assert.equal(snapshot?.hasUnverifiableSeries, true);
-    assert.equal(snapshot?.allowUnproven, false, "unverified organisers still fail closed");
+    assert.ok(
+      !("allowUnproven" in (snapshot as object)),
+      "allowUnproven is gone (#387) — it granted permission from a data source #207 deleted",
+    );
   });
 });
 

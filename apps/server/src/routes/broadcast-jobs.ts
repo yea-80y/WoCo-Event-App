@@ -238,13 +238,15 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Only the event organiser can send broadcasts" }, 403);
     }
 
-    // On-chain series record the claimer only inside the sealed order blob, so
-    // attendee membership is unprovable server-side — the proven set is empty
-    // (see lib/event/attendee-emails.ts). Event broadcasts therefore ride the
-    // marketing abuse gate: a verified organiser may mail their decrypted
-    // recipient list; an unverified one cannot event-broadcast at all.
-    const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event);
-    const allowUnproven = unverifiableSeries > 0 && (await isVerifiedOrganiser(org));
+    // Membership is proven against the attendee index, appended at Stripe
+    // fulfilment from the verified purchase email (#387). Stripe verification
+    // is deliberately NOT consulted here: it is an abuse gate for mailing
+    // STRANGERS, and after the index there are no strangers to mail — every
+    // recipient is either a proven ticket-holder or rejected. Gating attendee
+    // mail on it would deny an unverified organiser the ability to say "your
+    // event is cancelled", which is the attendee harm MARKETING_COMPLIANCE.md
+    // promises not to cause.
+    const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event, eventId);
 
     fromDisplayName = event.title;
     // The event lane KEEPS the transactional fallback that the marketing lane
@@ -267,7 +269,7 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
       html: htmlBody,
       fromDisplayName,
       fromAddress: resolveMarketingFrom(org) ?? getFromAddress(),
-      attendees: { hashes, allowUnproven, hasUnverifiableSeries: unverifiableSeries > 0 },
+      attendees: { hashes, hasUnverifiableSeries: unverifiableSeries > 0 },
       ...(resumeOf ? { resumeOf } : {}),
     });
   }
@@ -355,9 +357,10 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
             {
               ok: false,
               error:
-                "Broadcasts for on-chain ticket series require a verified Stripe account — " +
-                "this event has a series whose ticket holders we cannot check for you.",
-              code: "STRIPE_VERIFICATION_REQUIRED",
+                `${unproven.length} of ${recipients.length} recipients are not in our attendee ` +
+                `records for this event. Tickets sold before we began recording attendees are not ` +
+                `covered — for those, use your marketing audience.`,
+              code: "RECIPIENTS_NOT_ATTENDEES",
             },
             403,
           )
@@ -404,7 +407,6 @@ function memberTest(job: BroadcastJob): (email: string) => boolean {
   // Snapshot lost to a restart. The job is dead and the guard above has already
   // said so, but fail closed rather than waving recipients through.
   if (!snapshot) return () => false;
-  if (snapshot.allowUnproven) return () => true;
   return (email) => snapshot.hashes.has(hashEmail(email));
 }
 

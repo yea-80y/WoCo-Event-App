@@ -357,6 +357,10 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
+  event-attendees.json (#387 — eventId → attendee email hashes, appended at fulfilment;
+    the ONLY server-visible proof a broadcast recipient holds a ticket. Losing it means no
+    organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the
+    plaintext address is never stored anywhere we could re-derive it from)
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
   consumed-resend-events.json
