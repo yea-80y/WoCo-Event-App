@@ -17,6 +17,7 @@
  * not stop it, and reopening shows where it got to.
  */
 
+import type { ServiceNoticeType } from "@woco/shared";
 import { authPost, authGet } from "./client.js";
 import { apiError } from "./errors.js";
 
@@ -77,6 +78,19 @@ export interface StartBroadcastInput {
   fromName?: string;
   /** `event` only. */
   eventId?: string;
+  /**
+   * `event` only. Sends this as a SERVICE NOTICE, which is the one class of
+   * message permitted to reach a ticket-holder who unsubscribed from the
+   * organiser's marketing (#60 item 1).
+   *
+   * When set, `subject` and `htmlBody` are NOT sent and would be ignored: the
+   * server composes both from this category and the event's own title, and
+   * injects the disclosure line above `note`. That is what stops an organiser
+   * putting marketing wording on a message that crosses a suppression.
+   */
+  serviceType?: ServiceNoticeType;
+  /** Organiser's plain-text note. Required with `serviceType`, unused without. */
+  note?: string;
   /** Re-run a job that died or ended with failures, mailing only the remainder. */
   resumeOf?: string;
   /** Upload progress, so a 20,000-contact list is not a frozen button. */
@@ -94,6 +108,7 @@ export async function startBroadcast(input: StartBroadcastInput): Promise<Broadc
     ...(input.htmlBody ? { htmlBody: input.htmlBody } : {}),
     ...(input.fromName ? { fromName: input.fromName } : {}),
     ...(input.eventId ? { eventId: input.eventId } : {}),
+    ...(input.serviceType ? { serviceType: input.serviceType, note: input.note ?? "" } : {}),
     ...(input.resumeOf ? { resumeOf: input.resumeOf } : {}),
   });
   if (!created.data) throw apiError(created, "Could not start the broadcast");
