@@ -45,6 +45,26 @@ const MAX_SYNC_RECORDS = 5000;
 
 const checkinOrganiser = new Hono<AppEnv>();
 
+/**
+ * Resolve an event this caller owns, and hand back the TRUSTED id to key stores
+ * with (#389).
+ *
+ * `eventId` here is the route parameter — the value ownership was actually
+ * resolved against. `event.eventId` is a field in a feed BODY, and for a Phase B
+ * event that body is a client-signed SOC the server never writes; `readEventFeedSoc`
+ * (`lib/event/service.ts`) returns it as-is and does not reconcile the id inside
+ * it with the topic it was read from. The two can therefore disagree, and an
+ * organiser controls both the feed they sign and the `creatorAddress` inside it.
+ *
+ * So `eventId` is returned explicitly rather than left for each route to pick the
+ * right one of two similar-looking values. Three routes here previously keyed
+ * their stores on the feed's copy — one of them a WRITE — which let a crafted
+ * feed reach another event's records. Same class as #387 and #377.
+ *
+ * Use the returned `eventId` for anything that identifies the event to a store.
+ * Fields like `endDate` and `creatorFeedSigner` come from the feed by necessity
+ * and are self-consistent with it.
+ */
 async function loadOwnedEvent(c: Context<AppEnv>, eventId: string) {
   const parentAddress = c.get("parentAddress");
   const event = await getEventForOwner(eventId, parentAddress).catch(() => null);
@@ -52,11 +72,11 @@ async function loadOwnedEvent(c: Context<AppEnv>, eventId: string) {
   if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
     return { error: c.json({ ok: false, error: "Only the event organiser can manage check-in" }, 403 as const) };
   }
-  return { event };
+  return { event, eventId };
 }
 
 checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
-  const { event, error } = await loadOwnedEvent(c, c.req.param("id"));
+  const { event, eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
   if (error) return error;
 
   // Pass outlives the event end by 24h; fall back to a week for open-ended events.
@@ -69,7 +89,7 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
     // Stamp the content-feed signer into the pass record — the organiser is
     // authenticated here, so this is the last point where an unlisted event's
     // signer can be resolved from trusted state. /pack has no parent address.
-    const token = issueDoorPass(event.eventId, exp, event.creatorFeedSigner);
+    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner);
     return c.json({ ok: true, data: { token, exp } });
   } catch (err) {
     console.error("[checkin] door-pass issue failed:", err);
@@ -78,7 +98,7 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
 });
 
 checkinOrganiser.post("/:id/checkin-roster", requireAuth, async (c) => {
-  const { event, error } = await loadOwnedEvent(c, c.req.param("id"));
+  const { eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
   if (error) return error;
 
   const body = c.get("body") as Partial<EncryptedRoster> | undefined;
@@ -89,7 +109,7 @@ checkinOrganiser.post("/:id/checkin-roster", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Roster too large" }, 413);
   }
 
-  storeRoster(event.eventId, {
+  storeRoster(eventId, {
     iv: body.iv,
     ciphertext: body.ciphertext,
     updatedAt: new Date().toISOString(),
@@ -98,10 +118,10 @@ checkinOrganiser.post("/:id/checkin-roster", requireAuth, async (c) => {
 });
 
 checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
-  const { event, error } = await loadOwnedEvent(c, c.req.param("id"));
+  const { eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
   if (error) return error;
 
-  const checkins = readCheckins(event.eventId);
+  const checkins = readCheckins(eventId);
   const uniqueTickets = new Set(checkins.map((r) => `${r.seriesId} ${r.edition}`));
   const bySeries: Record<string, number> = {};
   for (const key of uniqueTickets) {
