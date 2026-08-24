@@ -166,6 +166,30 @@ export function marksFor(
   return entry ? { ...(entry.global ? { global: entry.global } : {}), orgs: { ...entry.orgs } } : null;
 }
 
+/**
+ * Every ACTIVE mark blocking this address for this organiser, by source.
+ *
+ * `isSuppressed` answers yes/no and discards WHY, which is enough to refuse a
+ * marketing send and not enough to decide whether a service notice may cross
+ * (#60 item 1): crossing an unsubscribe is a consent judgement, crossing a hard
+ * bounce is a deliverability mistake, and the two are indistinguishable through
+ * a boolean.
+ *
+ * Both scopes are reported because both can be present at once and a crossing
+ * must be refused if ANY blocking mark is one that may not be crossed. Ordered
+ * global-first only for readability; callers must not depend on the order.
+ */
+export function suppressionSources(emailHash: string, organiserAddress: string): SuppressSource[] {
+  ensureLoaded();
+  const entry = entries.get(emailHash);
+  if (!entry) return [];
+  const out: SuppressSource[] = [];
+  if (suppresses(entry.global)) out.push(entry.global!.source);
+  const org = entry.orgs[organiserAddress.toLowerCase()];
+  if (suppresses(org)) out.push(org!.source);
+  return out;
+}
+
 /** Is this address suppressed for this organiser (globally or per-org)? */
 export function isSuppressed(emailHash: string, organiserAddress: string): boolean {
   ensureLoaded();

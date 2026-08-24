@@ -14,7 +14,8 @@
 import { sendEmail, type OutboundEmail, type SendEmailOptions } from "./send.js";
 import { footerHtml, footerText, withFooter, htmlToPlainText } from "./marketing-footer.js";
 import { hashEmail } from "../event/claim-service.js";
-import { isSuppressed } from "../marketing/suppression-store.js";
+import { suppressionSources } from "../marketing/suppression-store.js";
+import { mayCrossSuppression } from "./service-notice-crossing.js";
 import { mintUnsubToken } from "../marketing/unsub-token.js";
 
 /**
@@ -62,6 +63,14 @@ export interface MarketingSendResult {
    * counters alone cannot answer "which of the 20,000".
    */
   sentHashes: string[];
+  /**
+   * Recipients delivered DESPITE an active suppression mark, because this send
+   * is a service notice (#60 item 1). Counted separately and never folded into
+   * `sent`: crossing a suppression is the one thing on this path that needs to
+   * be answerable afterwards — to the person, to a mailbox provider, or to a
+   * regulator — and a number nobody records is not an answer.
+   */
+  crossed: number;
 }
 
 export interface MarketingSendOptions {
@@ -84,6 +93,19 @@ export interface MarketingSendOptions {
    * would report as unsent something the recipient is reading.
    */
   signal?: AbortSignal;
+  /**
+   * Marks this send as a service notice about a booking, which permits it to
+   * cross CONSENT suppression marks (`unsub` / `unsub_all` / `declined`) but
+   * never deliverability ones (`bounce` / `complaint`) or the overloaded
+   * `manual` — see `service-notice-crossing.ts` for why each falls where it
+   * does.
+   *
+   * Set only by the event lane, only for a platform-composed notice whose
+   * recipients are proven ticket-holders of the event it names (#387). The
+   * organiser cannot set it: they pick a category from a fixed list, and
+   * everything the recipient reads before the note is written by the platform.
+   */
+  serviceNotice?: boolean;
 }
 
 /**
@@ -131,6 +153,7 @@ export async function sendMarketingBatch(
     failed: 0,
     failures: [],
     sentHashes: [],
+    crossed: 0,
   };
 
   interface Prepared {
@@ -145,9 +168,16 @@ export async function sendMarketingBatch(
     const emailHash = hashEmail(r.email);
     if (seen.has(emailHash)) continue; // dedupe within the batch
     seen.add(emailHash);
-    if (isSuppressed(emailHash, organiserAddress)) {
-      result.suppressed++;
-      continue;
+    const blocking = suppressionSources(emailHash, organiserAddress);
+    if (blocking.length > 0) {
+      // A service notice crosses consent marks and nothing else. Anything not
+      // classified as crossable — including a source added to SuppressSource
+      // after this was written — suppresses as before.
+      if (!(opts.serviceNotice && mayCrossSuppression(blocking))) {
+        result.suppressed++;
+        continue;
+      }
+      result.crossed++;
     }
     const token = mintUnsubToken({ emailHash, organiserAddress });
     prepared.push({ email: r.email, emailHash, unsubUrl: `${apiBase}/u/${token}` });
