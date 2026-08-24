@@ -14,6 +14,20 @@
  * and unverified organisers could reach nobody at all, including to say an
  * event was cancelled. Do not reintroduce a "no proof" fallback; an empty set
  * now means "no attendees recorded", which is the truth.
+ *
+ * THE STORE KEY COMES FROM THE CALLER, NEVER FROM THE FEED. `eventId` is the
+ * route parameter that ownership was resolved against; `event.eventId` is a
+ * field in a feed body. For a Phase B event that body is a CLIENT-SIGNED SOC
+ * which the server never writes, and `getEventBySigner` (`event/service.ts`)
+ * does not check that the body's `eventId` matches the topic it was read from.
+ * So an organiser could register their own event Y, sign its content SOC with a
+ * body claiming `eventId: "Z"`, pass the `creatorAddress === org` check they
+ * also control, and have this function load VICTIM EVENT Z's attendee set into
+ * their job snapshot. Since the chunk endpoint answers accept/reject against
+ * that set, it would become a cross-event attendance oracle — "did this person
+ * attend Z?" — answerable at draft time with no send and no rate limit. Keying
+ * on the trusted parameter closes it; for a legitimate event the two values are
+ * equal, so nothing else changes. Same class as #377.
  */
 
 import type { EventFeed } from "@woco/shared";
@@ -32,9 +46,14 @@ export interface AttendeeEmailSet {
   unverifiableSeries: number;
 }
 
-/** Collect the provable email hashes for `event` — see module header. */
-export function getAttendeeEmailHashes(event: EventFeed): AttendeeEmailSet {
-  const hashes = attendeeEmailHashes(event.eventId);
+/**
+ * Collect the provable email hashes for `event` — see module header.
+ *
+ * @param eventId TRUSTED id — the route parameter, not `event.eventId`.
+ * @param event Used ONLY for its series list, which feeds the diagnostic.
+ */
+export function getAttendeeEmailHashes(event: EventFeed, eventId: string): AttendeeEmailSet {
+  const hashes = attendeeEmailHashes(eventId);
   let unverifiableSeries = 0;
   for (const series of event.series) {
     if (series.swarmManifestRef && series.onChainEventId) {

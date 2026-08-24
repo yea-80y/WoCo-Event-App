@@ -89,10 +89,30 @@ const eventWith = (eventId: string, onChain: boolean) =>
     series: [onChain ? { swarmManifestRef: "ref", onChainEventId: "1" } : {}],
   }) as never;
 
+test("the store key is the CALLER'S id, never the feed body's — a crafted feed reads nobody", () => {
+  const victim = nextEvent();
+  const attacker = nextEvent();
+  recordAttendeeEmail(victim, "hash_victims_attendee", T);
+
+  // A Phase B event feed is a client-signed SOC, and `getEventBySigner` does not
+  // check that the body's eventId matches the topic it was read from. So this is
+  // a feed the attacker can actually produce: served at their own event's topic,
+  // body claiming to be the victim's event.
+  const craftedFeed = eventWith(victim, true);
+  const { hashes } = getAttendeeEmailHashes(craftedFeed, attacker);
+
+  assert.equal(
+    hashes.has("hash_victims_attendee"),
+    false,
+    "reading the feed body's eventId would make the chunk endpoint a cross-event attendance oracle",
+  );
+  assert.equal(hashes.size, 0);
+});
+
 test("PROPERTY: a proven attendee is a member — an unverified organiser can still say 'cancelled'", () => {
   const e = nextEvent();
   recordAttendeeEmail(e, "hash_alice", T);
-  const { hashes } = getAttendeeEmailHashes(eventWith(e, true));
+  const { hashes } = getAttendeeEmailHashes(eventWith(e, true), e);
   assert.equal(
     hashes.has("hash_alice"),
     true,
@@ -104,7 +124,7 @@ test("PROPERTY: a stranger is NOT a member, whatever the event's on-chain state"
   const e = nextEvent();
   recordAttendeeEmail(e, "hash_alice", T);
   for (const onChain of [true, false]) {
-    const { hashes } = getAttendeeEmailHashes(eventWith(e, onChain));
+    const { hashes } = getAttendeeEmailHashes(eventWith(e, onChain), e);
     assert.equal(
       hashes.has("hash_stranger"),
       false,
@@ -114,7 +134,8 @@ test("PROPERTY: a stranger is NOT a member, whatever the event's on-chain state"
 });
 
 test("unverifiableSeries still counts on-chain series, but is a diagnostic and grants nothing", () => {
-  const { hashes, unverifiableSeries } = getAttendeeEmailHashes(eventWith(nextEvent(), true));
+  const e = nextEvent();
+  const { hashes, unverifiableSeries } = getAttendeeEmailHashes(eventWith(e, true), e);
   assert.equal(unverifiableSeries, 1);
   assert.equal(hashes.size, 0, "an unverifiable series must not widen the proven set");
 });

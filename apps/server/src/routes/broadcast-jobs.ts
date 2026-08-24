@@ -287,7 +287,7 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     // mail on it would deny an unverified organiser the ability to say "your
     // event is cancelled", which is the attendee harm MARKETING_COMPLIANCE.md
     // promises not to cause.
-    const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event);
+    const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event, eventId);
 
     if (serviceType && !prior) {
       // Composed HERE, from the event's own title — the organiser controls the
