@@ -246,7 +246,7 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
     // mail on it would deny an unverified organiser the ability to say "your
     // event is cancelled", which is the attendee harm MARKETING_COMPLIANCE.md
     // promises not to cause.
-    const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event);
+    const { hashes, unverifiableSeries } = getAttendeeEmailHashes(event, eventId);
 
     fromDisplayName = event.title;
     // The event lane KEEPS the transactional fallback that the marketing lane
