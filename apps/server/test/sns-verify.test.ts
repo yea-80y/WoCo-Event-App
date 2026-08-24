@@ -202,7 +202,17 @@ describe("verifySnsSignature", () => {
 
   test("REJECTS a certificate served from a non-AWS host", async () => {
     const msg = signedEnvelope({ SigningCertURL: "https://evil.com/cert.pem" });
-    await assert.rejects(verify(msg), /not an AWS SNS HTTPS URL/);
+    await assert.rejects(verify(msg), /not an AWS SNS certificate URL/);
+  });
+
+  // The cert URL is fetched BEFORE the signature can be checked, so an
+  // unauthenticated caller chooses it. The host was always pinned; #104 pins
+  // the path too, which is what bounds the set of URLs a forged post can make
+  // us fetch. Asserted here at the verify boundary as well as on the validator
+  // itself (test/sns-cert-url.test.ts), because this is the reachable path.
+  test("REJECTS a certificate at a novel path on a GENUINE AWS host (#104)", async () => {
+    const msg = signedEnvelope({ SigningCertURL: "https://sns.eu-west-2.amazonaws.com/attacker-chosen.pem" });
+    await assert.rejects(verify(msg), /not an AWS SNS certificate URL/);
   });
 
   test("REJECTS an empty signature", async () => {

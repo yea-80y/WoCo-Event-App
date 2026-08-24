@@ -81,6 +81,47 @@ export function isSnsAwsHttpsUrl(url: string): boolean {
 }
 
 /**
+ * SNS signing certificates live at exactly one shape of path:
+ * `/SimpleNotificationService-<hex>.pem`.
+ *
+ * `isSnsAwsHttpsUrl` cannot carry this check because it also guards
+ * `SubscribeURL`, which is a query-bearing confirmation link on the same hosts
+ * — pinning the path there would refuse every real subscription confirmation.
+ * Hence a second validator rather than a stricter shared one; both stay in this
+ * file so they cannot drift apart on the host pattern they share.
+ *
+ * Why the path matters (#104): `verifySnsMessage` fetches this URL BEFORE it can
+ * check the signature, because the certificate is what the signature is checked
+ * against. The route is unauthenticated by necessity — SNS cannot present our
+ * credentials — so an attacker chooses this string. The host allowlist already
+ * stops it pointing anywhere but AWS, so this is not SSRF; what remains is that
+ * a novel path is a cache miss, and a cache miss is an outbound HTTPS fetch with
+ * a 5s timeout. Unlimited distinct paths meant unlimited uncached fetches.
+ * Pinning the path collapses that to one cacheable URL per region per rotation.
+ *
+ * Query and fragment must be empty for the same reason: `certCache` is keyed by
+ * the full URL string, so `…​.pem?1`, `…​.pem?2` are distinct keys pointing at
+ * one file — a cache-busting parameter that costs nothing to send.
+ */
+const CERT_PATH_RE = /^\/SimpleNotificationService-[A-Za-z0-9]+\.pem$/;
+
+export function isSnsCertUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (
+    parsed.protocol === "https:" &&
+    CERT_HOST_RE.test(parsed.hostname) &&
+    CERT_PATH_RE.test(parsed.pathname) &&
+    parsed.search === "" &&
+    parsed.hash === ""
+  );
+}
+
+/**
  * The canonical string to sign: `name\nvalue\n` per field, in the documented
  * order, INCLUDING the trailing newline after the last pair.
  *
@@ -195,8 +236,8 @@ export async function verifySnsSignature(
     if (now() - ts > opts.maxAgeMs) throw new SnsVerificationError("Message is too old");
   }
 
-  if (!isSnsAwsHttpsUrl(msg.SigningCertURL)) {
-    throw new SnsVerificationError(`SigningCertURL is not an AWS SNS HTTPS URL: ${msg.SigningCertURL}`);
+  if (!isSnsCertUrl(msg.SigningCertURL)) {
+    throw new SnsVerificationError(`SigningCertURL is not an AWS SNS certificate URL: ${msg.SigningCertURL}`);
   }
 
   let signature: Buffer;
