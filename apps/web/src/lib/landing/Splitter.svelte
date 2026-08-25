@@ -28,6 +28,7 @@
   import Coins from "lucide-svelte/icons/coins";
   import HomeIcon from "lucide-svelte/icons/house";
   import Users from "lucide-svelte/icons/users-round";
+  import Mail from "lucide-svelte/icons/mail";
 </script>
 
 <div class="root">
@@ -62,7 +63,7 @@
     <div class="hero-inner">
       <div class="hero-kicker">
         <span class="live-dot" aria-hidden="true"></span>
-        <span class="mono-kicker">// THE EVENT PLATFORM YOU ACTUALLY OWN</span>
+        <span class="mono-kicker">// TICKETING FOR PEOPLE WHO PUT ON NIGHTS</span>
       </div>
 
       <h1 class="hero-headline">
@@ -70,9 +71,9 @@
       </h1>
 
       <p class="hero-sub">
-        The full event stack — ticketing, sites, payments, audience —
-        owned by you, not us. Built so creators and venues can keep
-        every part of the night they make.
+        Sell tickets, run the night on your own page, and build a following
+        that stays yours — even if you leave. 1.5% when you sell.
+        No monthly bill.
       </p>
 
       <div class="hero-ctas">
@@ -81,8 +82,8 @@
             <TicketStub size={32} color="currentColor" />
           </span>
           <span class="cta-body">
-            <span class="cta-label">I run events</span>
-            <span class="cta-sub">Create, deploy, sell tickets</span>
+            <span class="cta-label">I put on nights</span>
+            <span class="cta-sub">Set one up and put tickets on sale</span>
           </span>
           <span class="cta-arrow"><ArrowRight size={20} strokeWidth={2.25} /></span>
         </button>
@@ -92,30 +93,54 @@
             <DoorOpen size={32} color="currentColor" />
           </span>
           <span class="cta-body">
-            <span class="cta-label">I'm here for a show</span>
-            <span class="cta-sub">Find events, claim tickets</span>
+            <span class="cta-label">I'm going out</span>
+            <span class="cta-sub">Find something on near you</span>
           </span>
           <span class="cta-arrow"><ArrowRight size={20} strokeWidth={2.25} /></span>
         </button>
       </div>
 
       <div class="hero-meta">
-        <span class="mono-kicker">DECENTRALISED</span>
+        <span class="mono-kicker">1.5% PLATFORM FEE</span>
         <span class="dot">·</span>
-        <span class="mono-kicker">OPEN STANDARDS</span>
+        <span class="mono-kicker">NO MONTHLY BILL</span>
         <span class="dot">·</span>
-        <span class="mono-kicker">YOURS TO LEAVE</span>
+        <span class="mono-kicker">YOUR FOLLOWING IS YOURS</span>
       </div>
     </div>
 
     <!-- corner stamps -->
     <div class="corner corner-tl mono">EST. 2025 · PRE-LAUNCH</div>
-    <div class="corner corner-br mono">v0 // YOURS TO LEAVE</div>
+    <div class="corner corner-br mono">v0 // NO LOCK-IN</div>
+  </section>
+
+  <!-- ── Launch offer ────────────────────────────────────────────────
+       An offer with a shelf life, not a product feature — so it sits in its
+       own band under the hero rather than becoming a seventh numbered reason. -->
+  <section class="offer">
+    <div class="offer-inner">
+      <span class="mono-kicker offer-kicker">// LAUNCH OFFER</span>
+      <h2>Bring a venue over. Take 40% of our fee.<span class="star">*</span></h2>
+      <p>
+        Share your link. When someone starts selling through it, 40% of the
+        1.5% we take comes back to you.
+      </p>
+      <button class="btn btn--primary" onclick={() => navigate("/profile")}>
+        Get your link
+        <ArrowRight size={18} strokeWidth={2.5} />
+      </button>
+      <p class="offer-fine">
+        * Launch rate, and it can change — we'll tell you before it does. What
+        you earn builds up per sale and is paid after the event, when the
+        organiser is paid.
+        <button class="link-inline" onclick={() => navigate("/legal/terms")}>Full terms</button>
+      </p>
+    </div>
   </section>
 
   <!-- ── Section divider ─────────────────────────────────────────────── -->
   <div class="divider">
-    <span class="divider-tag tag-display">Five reasons</span>
+    <span class="divider-tag tag-display">Six reasons</span>
     <span class="divider-line"></span>
     <span class="mono-kicker">// WHY ORGANISERS BUILD HERE</span>
   </div>
@@ -123,16 +148,24 @@
   <!-- ── USP blocks — alternating editorial rhythm ───────────────────── -->
   <section class="usps">
 
-    <!-- 01 -->
+    <!-- 01 — the one nobody else can offer, so it leads. Deliberately says
+         nothing about where a follow is stored: the benefit is that it outlives
+         us, and a promoter does not need the mechanism to understand that. -->
     <article class="usp usp--left">
       <div class="usp-num mono">01</div>
       <div class="usp-body">
-        <span class="usp-icon"><HomeIcon size={22} strokeWidth={2.25} /></span>
-        <h2>Your event, your house.</h2>
+        <span class="usp-icon"><Users size={22} strokeWidth={2.25} /></span>
+        <h2>Your followers stay yours.</h2>
         <p>
-          Run it on your own domain. Keep your audience, your brand,
-          your community — not someone else's email list. The platform
-          is a toolkit you use, not a landlord you pay rent to.
+          On other platforms, the follow belongs to the platform. It sends the
+          alerts, on its schedule. You can't take that following anywhere, and
+          if the platform folds or drops you, it's gone — the people are still
+          out there, but your connection to them isn't.
+        </p>
+        <p>
+          Here, the follow belongs to your fan. They keep it, we don't. We
+          can't hold it hostage, it isn't locked to us, and if WoCo disappeared
+          tomorrow your following would still be there.
         </p>
       </div>
     </article>
@@ -141,12 +174,25 @@
     <article class="usp usp--right">
       <div class="usp-num mono">02</div>
       <div class="usp-body">
-        <span class="usp-icon"><Coins size={22} strokeWidth={2.25} /></span>
-        <h2>Keep more of what you sell.</h2>
+        <span class="usp-icon"><Layers size={22} strokeWidth={2.25} /></span>
+        <h2>Every ticket becomes a memento of the night.</h2>
         <p>
-          Booking fees fund platforms. Ours doesn't. Price the ticket;
-          charge what's fair. The economics of your night should belong
-          to you and the room — not to a logo in a corner.
+          The ticket doesn't die at the door. It stays on your fan's phone as
+          a digital memento of the night they were there — and you can build on
+          it. Open the presale to everyone who came last time. Put a fiver off
+          the third time somebody comes. Give the people who were actually in
+          the room first refusal.
+        </p>
+        <p>
+          You don't need to have collected their email to do any of it. The
+          ticket is the proof they were there.
+        </p>
+        <p class="usp-aside">
+          And because it's a real thing your fan holds rather than a line in
+          our records, it doesn't have to stop here. A stub that gets you into
+          a presale could just as easily unlock something in a game, at a
+          record shop, or at another promoter's night. That's the direction
+          this is going.
         </p>
       </div>
     </article>
@@ -156,26 +202,41 @@
       <div class="usp-num mono">03</div>
       <div class="usp-body">
         <span class="usp-icon"><Shield size={22} strokeWidth={2.25} /></span>
-        <h2>Every ticket, provably real.</h2>
+        <h2>The door works without internet.</h2>
         <p>
-          Cryptographically signed the moment it's issued.
-          Counterfeit-proof, dispute-proof, screenshot-proof.
-          Door staff scan once and know. No more "we can't find your order."
+          The scanner downloads the night's tickets before doors open, then
+          checks each one on the phone itself. Nothing to connect to, so a
+          venue with no phone signal scans just as fast as anywhere else.
+        </p>
+        <p>
+          There's no list to look up, so there's nothing to fail to find. And
+          when your fan has an account, their phone signs a fresh code at the
+          door — so a screenshot going round a group chat gets nobody in.
         </p>
       </div>
     </article>
 
-    <!-- 04 -->
+    <!-- 04 — the page and the web address are separate sentences on purpose:
+         the page carries no WoCo branding at all, but the free address has our
+         name behind theirs. Claiming otherwise buys a bad first five minutes. -->
     <article class="usp usp--right">
       <div class="usp-num mono">04</div>
       <div class="usp-body">
-        <span class="usp-icon"><Layers size={22} strokeWidth={2.25} /></span>
-        <h2>Tickets your attendees actually own.</h2>
+        <span class="usp-icon"><HomeIcon size={22} strokeWidth={2.25} /></span>
+        <h2>Your name on it, not ours.</h2>
         <p>
-          A ticket should be a keepsake, not a receipt. Yours forever —
-          a stub from the night, proof you were there, the key to
-          whatever comes next. Built on open standards so they're
-          really, properly yours.
+          The page is yours — your artwork, your colours, your name at the top.
+          No WoCo logo in the corner, and no eleven other gigs down the side of
+          it.
+        </p>
+        <p>
+          Point your own domain at it if you've got one. If you haven't, you
+          get a free web address with your name at the front, and you can swap
+          to your own whenever you like.
+        </p>
+        <p>
+          Need a full site for the venue? Build that here too — pages, artwork,
+          your events on it, no separate subscription.
         </p>
       </div>
     </article>
@@ -184,16 +245,65 @@
     <article class="usp usp--left">
       <div class="usp-num mono">05</div>
       <div class="usp-body">
-        <span class="usp-icon"><Users size={22} strokeWidth={2.25} /></span>
-        <h2>A community that follows you home.</h2>
+        <span class="usp-icon"><Coins size={22} strokeWidth={2.25} /></span>
+        <h2>Charge a booking fee. Keep it.</h2>
         <p>
-          Every ticket is a thread back to your audience. Reward returning
-          fans, drop perks for early supporters, build a membership loop
-          that doesn't reset to zero after every event.
+          Every platform adds a booking fee and pockets it. Set yours here and
+          it's yours. We take 1.5% of the ticket price and nothing else.
+        </p>
+        <p>
+          A £20 ticket with a 10% booking fee: the buyer pays £22, 30p comes to
+          us, and the rest is yours once the card fee's paid. Or charge nothing
+          and let the ticket be £20. Your call, night by night.
         </p>
       </div>
     </article>
 
+    <!-- 06 — last because it answers the objection that lands right before
+         someone commits: moving is a hassle. Kept separate from 01 on purpose;
+         folding the two is what produced the old "someone else's email list". -->
+    <article class="usp usp--right">
+      <div class="usp-num mono">06</div>
+      <div class="usp-body">
+        <span class="usp-icon"><Mail size={22} strokeWidth={2.25} /></span>
+        <h2>Bring your mailing list. The boring bit is done.</h2>
+        <p>
+          Import from Skiddle, Eventbrite or a spreadsheet and you've moved.
+          Unsubscribes, consent records and the one-click opt-out the rules now
+          require are built in and run on every send, so it isn't a spreadsheet
+          you're keeping by hand any more.
+        </p>
+        <p>
+          Then email your people from here. Emailing your own ticket buyers is
+          free, and always will be.
+        </p>
+        <p>
+          And your list grows on its own: anyone who follows you can opt in to
+          hear from you directly, whether or not they've bought a ticket yet.
+        </p>
+      </div>
+    </article>
+
+  </section>
+
+  <!-- ── The declaration ─────────────────────────────────────────────
+       Five commitments about our own conduct. Every line is deliberately a
+       promise we can keep unilaterally — nothing here says what anyone owns,
+       which is the constraint that governs this block. -->
+  <section class="creed">
+    <div class="creed-inner">
+      <span class="mono-kicker">// WHAT WE'RE PROMISING</span>
+      <h2>What we're promising</h2>
+      <ul>
+        <li>The fee only ever goes down. It's 1.5% today. If we ever put it up, we got this wrong.</li>
+        <li>Everything you build here is yours to take with you.</li>
+        <li>We're building it so it would keep working even without us.</li>
+        <li>No ads. No promoted events. We don't sell what we know about your room.</li>
+        <li>Nothing here is designed to make leaving difficult.</li>
+        <li>We're building this to still be here in ten years, not to be bought.</li>
+        <li>The people who use this should be the ones it answers to.</li>
+      </ul>
+    </div>
   </section>
 
   <!-- ── Closing CTA strip ───────────────────────────────────────────── -->
@@ -209,18 +319,18 @@
 
       <div class="closing-text">
         <SprayCan size={42} color="var(--text)" paintColor="var(--accent)" />
-        <h2>Ready to build something the platform can't take from you?</h2>
+        <h2>Put your next night on sale.</h2>
         <p>
-          Free to start. Your data, your audience, your call. Leave any
-          time and your events come with you.
+          Free to set up. 1.5% when you sell. The following you build here is
+          yours to keep.
         </p>
         <div class="closing-actions">
           <button class="btn btn--primary btn--lg" onclick={() => navigate("/creator")}>
-            Open the creator portal
+            Set up an event
             <ArrowRight size={18} strokeWidth={2.5} />
           </button>
           <button class="link link-quiet" onclick={() => navigate("/discover")}>
-            or browse events on the platform →
+            or have a look at what's on →
           </button>
         </div>
       </div>
@@ -232,7 +342,7 @@
     <div class="footer-grid">
       <div class="footer-brand">
         <WocoWordmark height={28} variant="ink" />
-        <p class="footer-line">Decentralised event infrastructure.</p>
+        <p class="footer-line">Ticketing and websites for people who put on nights.</p>
       </div>
       <div class="footer-cols">
         <div class="footer-col">
@@ -243,7 +353,7 @@
         </div>
       </div>
     </div>
-    <div class="footer-fine mono">© 2026 · BUILT ON OPEN RAILS · LEAVE WHENEVER</div>
+    <div class="footer-fine mono">© 2026 · YOUR FOLLOWING IS YOURS TO KEEP</div>
   </footer>
 </div>
 
@@ -664,6 +774,9 @@
     font-size: 1rem;
     line-height: 1.65;
   }
+  /* Blocks run to two or three paragraphs now; .usp p zeroes margin, so the
+     gap has to be declared here rather than inherited from anywhere. */
+  .usp p + p { margin-top: 0.875rem; }
   /* offset right-aligned ones to add editorial rhythm on desktop */
   @media (min-width: 880px) {
     .usp--right {
@@ -680,6 +793,112 @@
       text-align: right;
     }
     .usp--right .usp-icon { margin-left: auto; }
+  }
+
+  /* ── Launch offer band ──────────────────────────────────────────────
+     Tinted rather than plain so it reads as an offer and not a sixth USP,
+     and so the page gets a change of ground between the hero and the list. */
+
+  .offer {
+    border-bottom: 1px solid var(--border);
+    background:
+      linear-gradient(180deg, var(--accent-subtle), transparent 70%),
+      var(--bg);
+    padding: 2.75rem 1.5rem;
+  }
+  .offer-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.875rem;
+  }
+  .offer-kicker { color: var(--accent); }
+  .offer h2 {
+    font-size: clamp(1.5rem, 3.2vw, 2.25rem);
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    margin: 0;
+    max-width: 20ch;
+  }
+  .offer .star { color: var(--accent); }
+  .offer > .offer-inner > p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1.6;
+    max-width: 56ch;
+  }
+  .offer-inner p.offer-fine {
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    max-width: 62ch;
+  }
+  .link-inline {
+    font-family: var(--font-body);
+    font-size: inherit;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    padding: 0;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .link-inline:hover { color: var(--accent); }
+
+  /* The interoperability paragraph in USP 02. Ruled off so it reads as an
+     aside about where this is heading, not as a feature that ships today —
+     and so it can be removed without touching the rest of the block. */
+  .usp .usp-aside {
+    border-top: 1px dashed var(--border);
+    padding-top: 0.875rem;
+    color: var(--text-muted);
+  }
+
+  /* ── Declaration ────────────────────────────────────────────────── */
+
+  .creed {
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+    padding: 3.5rem 1.5rem;
+  }
+  .creed-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .creed h2 {
+    font-size: clamp(1.5rem, 3vw, 2.125rem);
+    letter-spacing: -0.03em;
+    margin: 0 0 0.5rem;
+  }
+  .creed ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-width: 68ch;
+  }
+  .creed li {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.75rem;
+    align-items: baseline;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1.6;
+  }
+  .creed li::before {
+    content: "—";
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
   }
 
   /* ── Closing strip ──────────────────────────────────────────────── */
