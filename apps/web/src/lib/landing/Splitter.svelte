@@ -277,10 +277,6 @@
           Then email your people from here. Emailing your own ticket buyers is
           free, and always will be.
         </p>
-        <p>
-          And your list grows on its own: anyone who follows you can opt in to
-          hear from you directly, whether or not they've bought a ticket yet.
-        </p>
       </div>
     </article>
 
