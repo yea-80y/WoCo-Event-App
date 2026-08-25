@@ -2,6 +2,7 @@
   import type { OrderField, SealedBox, PaymentConfig } from "@woco/shared";
   import { sealJson } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getClaimStatus } from "../../api/events.js";
   import { createCheckoutSession } from "../../api/stripe.js";
   import type { SeriesClaimStatus } from "@woco/shared";
@@ -256,7 +257,12 @@
       const email = getEmailFromForm() || stripeEmail.trim() || undefined;
       const address = auth.parent?.toLowerCase() || undefined;
       if (!email && !address) {
-        error = "Please enter an email address or sign in with a wallet.";
+        // Deployed builder sites mount no login modal, so "sign in" names an
+        // action that surface does not offer (#194). Ask only for what is
+        // actually reachable from here.
+        error = loginRequest.available
+          ? "Please enter an email address or sign in with a wallet."
+          : "Please enter an email address to continue.";
         return;
       }
 
