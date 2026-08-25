@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build && vite build --config vite.count.config.ts",
+    "check": "tsc --noEmit",
     "dev": "vite build --watch",
     "test": "node --import tsx --test test/*.test.ts",
     "build:count": "vite build --config vite.count.config.ts"
