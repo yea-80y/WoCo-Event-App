@@ -113,7 +113,7 @@ docs/ON_CHAIN_TICKETING_PLAN.md
 # Private ops runbook — never track (re-learned 2026-07-13; see ed0c5cd for the first time)
 CLAUDE.local.md
 
-# Written by scripts/deploy-server.sh immediately before the rsync, from the SHA
+# Written by scripts/deploy-server.mjs immediately before the rsync, from the SHA
 # it just verified, and carried to the VM so /api/health can report what is
 # actually running (#125). Never committed — it describes a deploy, not the tree.
 .deploy-commit

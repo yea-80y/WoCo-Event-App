@@ -3,7 +3,7 @@
  *
  * The deploy rsyncs a working directory and builds the image ON the VM, so
  * neither the container nor the host has a `.git` to ask — the answer has to
- * travel with the bytes. `scripts/deploy-server.sh` writes `.deploy-commit`
+ * travel with the bytes. `scripts/deploy-server.mjs` writes `.deploy-commit`
  * from the SHA it has just verified, immediately before the rsync, and the
  * Dockerfile copies it in. Read once at boot: the file cannot change under a
  * running container, and re-reading it per request would only add a syscall to

@@ -66,7 +66,7 @@ DEV COMMANDS:
   npm run build:site     # generated-site build → apps/web/dist-site/
   npm run build:multisite # deployed-site runtime → apps/web/dist-multisite/
 
-- Server deploy goes through `scripts/deploy-server.sh` — it refuses an unclean tree, a
+- Server deploy goes through `scripts/deploy-server.mjs` — it refuses an unclean tree, a
   HEAD that is not `origin/main`, and a linked worktree (which lacks the untracked files
   `--delete` would then remove), dry-runs first and prints the deletion count, and stamps
   the verified commit so `/api/health` reports what is actually running (#125). The

@@ -17,7 +17,7 @@ COPY packages/embed/    ./packages/embed/
 COPY apps/server/src    ./apps/server/src
 COPY apps/server/tsconfig.json ./apps/server/
 
-# The deployed commit, written by scripts/deploy-server.sh from the SHA it
+# The deployed commit, written by scripts/deploy-server.mjs from the SHA it
 # verified just before the rsync (#125). The glob is deliberate: it tolerates
 # the file being absent, so a build from a plain checkout still works and simply
 # reports an unknown commit rather than failing.
