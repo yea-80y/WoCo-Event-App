@@ -62,6 +62,8 @@
   let events = $state<EventDirectoryEntry[]>([]);
   let eventsLoaded = $state(false);
   let eventsLoading = $state(false);
+  /** The events read failed — distinct from the organiser having none (#291). */
+  let eventsFailed = $state(false);
   type EventsSubTab = "upcoming" | "past";
   let eventsSubTab = $state<EventsSubTab>("upcoming");
   // Reactive clock — drives the upcoming/past split without any server involvement
@@ -310,17 +312,24 @@
   async function loadEvents() {
     if (eventsLoaded || eventsLoading) return;
     eventsLoading = true;
+    eventsFailed = false;
     try {
       if (isOwner) {
         // Fast path: per-creator Swarm index, no global scan
         const resp = await authGet<EventDirectoryEntry[]>("/api/events/mine");
         if (resp.ok && resp.data) events = resp.data;
+        else eventsFailed = true;
       } else {
         // Public profile: the organiser's full catalogue (incl. past events),
         // straight from their per-creator index — no global directory scan.
         events = await getEventsByCreator(viewAddress);
       }
-    } catch { /* silent */ }
+    } catch {
+      // Swallowed on purpose — the tab must not take the page down — but the
+      // failure is recorded. Rendering it as "No events yet" told an organiser
+      // their catalogue was empty when we simply had not read it (#291).
+      eventsFailed = true;
+    }
     finally { eventsLoading = false; eventsLoaded = true; }
   }
 
@@ -371,7 +380,7 @@
     const key = `${v}:${auth.isConnected}`;
     if (key === _prevView) return;
     _prevView = key;
-    profile = null; events = []; eventsLoaded = false; eventsLoading = false;
+    profile = null; events = []; eventsLoaded = false; eventsLoading = false; eventsFailed = false;
     eventsSubTab = "upcoming";
     following = []; followingLoaded = false; followingLoading = false;
     trending = []; avatarPreviewUrl = null; pendingAvatarDataUrl = null;
@@ -818,6 +827,11 @@
             <span class="spin-md"></span>
             <span>Loading your events…</span>
           </div>
+        {:else if eventsFailed && events.length === 0}
+          <div class="events-empty">
+            <p class="empty-title">Couldn't load your events</p>
+            <p class="empty-sub">They aren't lost — try again in a moment.</p>
+          </div>
         {:else if events.length === 0}
           <div class="events-empty">
             <div class="empty-icon">
@@ -962,6 +976,11 @@
         <div class="events-loading">
           <span class="spin-md"></span>
           <span>Loading events…</span>
+        </div>
+      {:else if eventsFailed && events.length === 0}
+        <div class="events-empty">
+          <p class="empty-title">Couldn't load these events</p>
+          <p class="empty-sub">Try again in a moment.</p>
         </div>
       {:else if events.length === 0}
         <div class="events-empty">

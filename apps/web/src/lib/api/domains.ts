@@ -60,9 +60,16 @@ export async function verifyDomainDns(
   return resp.data;
 }
 
+/**
+ * Throws on failure rather than returning `[]`. An empty array is a real
+ * answer ("you have no domains") and a failed read is not — collapsing the two
+ * meant a rejected session or an offline phone showed as an organiser having
+ * no connected domains (#291). Callers that genuinely do not care can catch.
+ */
 export async function getMyDomains(): Promise<DomainEntry[]> {
   const resp = await authPost<DomainEntry[]>("/api/domains/mine", {});
-  return resp.data ?? [];
+  if (!resp.ok || !resp.data) throw new Error(resp.error || "Could not load your domains");
+  return resp.data;
 }
 
 export async function getEventDomains(eventId: string): Promise<DomainEntry[]> {

@@ -13,6 +13,8 @@
   // prompt is pending — which looks confusing and phishing-adjacent.
   let loading = $state(true);
   let error = $state<string | null>(null);
+  /** Some ticket details did not resolve — the list on screen is incomplete. */
+  let partial = $state(false);
   let tickets = $state<ClaimedTicket[]>([]);
   let authFailed = $state(false);
 
@@ -109,15 +111,27 @@
           }),
       );
 
+      const unresolved = details.filter((t) => t === null).length;
       const freshTickets = details.filter((t): t is ClaimedTicket => t !== null);
-      // Persist the full resolved list so next visit is instant
-      cacheSet(colKey, freshTickets, TTL.COLLECTION);
-      tickets = freshTickets;
+
+      // Only persist a COMPLETE resolution. A ticket whose detail read failed
+      // is dropped from `details`, and caching the shortened list made a
+      // transient Swarm failure outlive itself — the ticket stayed missing on
+      // every later visit until the cache expired, with nothing on screen
+      // saying anything had failed (#291).
+      if (unresolved === 0) cacheSet(colKey, freshTickets, TTL.COLLECTION);
+      // If every detail read failed, keep whatever the cache already painted
+      // rather than replacing it with an empty collection.
+      if (freshTickets.length > 0 || unresolved === 0) tickets = freshTickets;
+      partial = unresolved > 0;
     } catch (e) {
       console.error("[MyTickets] loadTickets error:", e);
-      // Only show error if we have nothing cached to fall back on
+      // Only show error if we have nothing cached to fall back on. The raw
+      // message is a server string ("Invalid session signature") — useful in
+      // the console, meaningless to an attendee, and it reads like the tickets
+      // are gone.
       if (!cachedTickets) {
-        error = e instanceof Error ? e.message : "Failed to load tickets";
+        error = "Couldn't load your tickets right now — they aren't lost. Try again in a moment.";
       }
     } finally {
       loading = false;
@@ -146,8 +160,14 @@
   {:else}
     {#if tickets.length === 0 && linkedTickets.length === 0}
       <div class="empty-state">
-        <p>No tickets yet. Browse events and claim your first ticket!</p>
+        {#if partial}
+          <p>Couldn't load your tickets right now — they aren't lost. Try again in a moment.</p>
+        {:else}
+          <p>No tickets yet. Browse events and claim your first ticket!</p>
+        {/if}
       </div>
+    {:else if partial}
+      <p class="partial-note">Some tickets couldn't be loaded just now, so this list may be incomplete.</p>
     {/if}
 
     {#if tickets.length > 0}
@@ -209,6 +229,11 @@
 
   .empty-state,
   .loading-state,
+  .partial-note {
+    margin: 0 0 1rem;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
   .error-state {
     padding: 3rem 1.5rem;
     text-align: center;
