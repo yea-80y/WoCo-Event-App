@@ -160,6 +160,11 @@ test("a pointer whose target is ABSENT is unavailable, not absent", async () => 
     }),
   );
   assert.equal(res.status, "unavailable");
+  // The REASON, not just the status. Asserting the status alone leaves this test
+  // passing when the pointer branch never runs at all — the fixture then falls to
+  // the legacy branch, fails its siteId check, and returns `unavailable` for a
+  // different reason entirely. Only this branch emits this string (#217).
+  assert.match(res.status === "unavailable" ? res.reason : "", /pointer target absent/);
 });
 
 test("a pointer target that throws is unavailable", async () => {
@@ -173,6 +178,7 @@ test("a pointer target that throws is unavailable", async () => {
     }),
   );
   assert.equal(res.status, "unavailable");
+  assert.match(res.status === "unavailable" ? res.reason : "", /pointer target unreadable/);
 });
 
 test("a pointer target that is not JSON is unavailable", async () => {
@@ -184,6 +190,7 @@ test("a pointer target that is not JSON is unavailable", async () => {
     }),
   );
   assert.equal(res.status, "unavailable");
+  assert.match(res.status === "unavailable" ? res.reason : "", /did not parse as JSON/);
 });
 
 test("a pointer target naming a DIFFERENT siteId is unavailable", async () => {
@@ -195,6 +202,7 @@ test("a pointer target naming a DIFFERENT siteId is unavailable", async () => {
     }),
   );
   assert.equal(res.status, "unavailable");
+  assert.match(res.status === "unavailable" ? res.reason : "", /names a different siteId/);
 });
 
 // ── The happy paths still work ───────────────────────────────────────────────
