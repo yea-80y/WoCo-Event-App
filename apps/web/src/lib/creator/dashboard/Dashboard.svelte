@@ -479,9 +479,19 @@
 
     // ── Step 2: Refresh from the server ───────────────────────────────────
     try {
-      const ev = await evSWR.refresh();
+      const evResp = await evSWR.refresh();
+      const ev = evResp.data;
       if (!ev) {
-        if (!cachedShown) { error = "Event not found"; loading = false; }
+        if (!cachedShown) {
+          // Only a 404 means the event is not there. Every other failure — a
+          // rejected session, an offline phone, a 500 — used to render here as
+          // "Event not found", telling an organiser their event had vanished
+          // when nothing had happened to it (#291).
+          error = evResp.status === 404
+            ? "Event not found"
+            : "Couldn't load this event right now — it hasn't gone anywhere. Try again in a moment.";
+          loading = false;
+        }
         return;
       }
       if (auth.parent?.toLowerCase() !== ev.creatorAddress.toLowerCase()) {
@@ -494,7 +504,7 @@
         return;
       }
 
-      const freshOrders = await ordersSWR.refresh();
+      const freshOrders = (await ordersSWR.refresh()).data;
 
       event = ev;
       if (freshOrders) ordersResponse = freshOrders;

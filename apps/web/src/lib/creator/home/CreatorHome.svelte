@@ -49,6 +49,13 @@
   let loadingEvents = $state(true);
   let loadingSites = $state(true);
   let loadingShops = $state(true);
+
+  // A read that FAILED is not a read that came back empty (#291). Set only when
+  // the panel has nothing to show, so a failed refresh never replaces a list
+  // that painted from cache.
+  let eventsFailed = $state(false);
+  let sitesFailed = $state(false);
+  let shopsFailed = $state(false);
   let ownedNames = $state<OwnedSubEnsName[]>([]);
   let loadingNames = $state(true);
   let backupInventory = $state<BackupInventoryEntry[]>([]);
@@ -134,18 +141,21 @@
     // shouldn't wipe the last-known-good view.
     const eventsPromise = evSWR.refresh().then((fresh) => {
       if (token !== loadToken) return;
-      if (fresh && (fresh.length > 0 || !evSWR.cached)) events = fresh;
+      if (fresh.data && (fresh.data.length > 0 || !evSWR.cached)) events = fresh.data;
+      eventsFailed = !fresh.ok && events.length === 0;
       loadingEvents = false;
     });
     siteSWR.refresh().then((fresh) => {
       if (token !== loadToken) return;
-      if (fresh && (fresh.length > 0 || !siteSWR.cached)) sites = fresh;
+      if (fresh.data && (fresh.data.length > 0 || !siteSWR.cached)) sites = fresh.data;
+      sitesFailed = !fresh.ok && sites.length === 0;
       loadingSites = false;
     });
 
     shopSWR.refresh().then((fresh) => {
       if (token !== loadToken) return;
-      if (fresh && (fresh.length > 0 || !shopSWR.cached)) shops = fresh;
+      if (fresh.data && (fresh.data.length > 0 || !shopSWR.cached)) shops = fresh.data;
+      shopsFailed = !fresh.ok && shops.length === 0;
       loadingShops = false;
     });
 
@@ -409,6 +419,10 @@
 
           {#if loadingEvents}
             <div class="panel-empty">Loading…</div>
+          {:else if eventsFailed}
+            <div class="panel-empty">
+              <span>Couldn't load your events — they're not lost.</span>
+            </div>
           {:else if latestEvents.length === 0}
             <div class="panel-empty">
               <span>No events yet.</span>
@@ -449,6 +463,10 @@
 
           {#if loadingSites}
             <div class="panel-empty">Loading…</div>
+          {:else if sitesFailed}
+            <div class="panel-empty">
+              <span>Couldn't load your sites — they're not lost.</span>
+            </div>
           {:else if latestSites.length === 0}
             <div class="panel-empty">
               <span>No sites yet.</span>
@@ -489,6 +507,10 @@
 
           {#if loadingShops}
             <div class="panel-empty">Loading…</div>
+          {:else if shopsFailed}
+            <div class="panel-empty">
+              <span>Couldn't load your shops — they're not lost.</span>
+            </div>
           {:else if latestShops.length === 0}
             <div class="panel-empty">
               <span>No shops yet.</span>
