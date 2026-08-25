@@ -139,6 +139,14 @@ test("every id the builder can mint passes the guard, including its degenerate o
   // The timestamp half is 8 base36 chars from 2010 until 2059, so the floor of 8
   // is not being met by the suffix alone at any point we care about.
   assert.equal(new Date(parseInt("100000000", 36)).getUTCFullYear(), 2059);
+
+  // The create route applies the same guard, so a site can never be born with an
+  // id the read and deploy routes will later refuse. Pinning the two together is
+  // the point: a guard on use without a guard on creation is what turns a
+  // malformed id into a site that exists and cannot be reached.
+  for (const bad of ["short", "has space", "a/b/cdefgh", "<script>alert</script>"]) {
+    assert.ok(!isSafeIdParam(bad), `create must refuse: ${bad}`);
+  }
 });
 
 // ── URL allowlists ───────────────────────────────────────────────────────────

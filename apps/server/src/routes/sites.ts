@@ -276,6 +276,15 @@ sitesRouter.post("/", requireAuth, async (c) => {
     if (!body?.site?.siteId) {
       return c.json({ ok: false, error: "Invalid site data" }, 400);
     }
+    // The SAME shape guard the read/deploy routes below now apply. Without it
+    // this PR would create the asymmetry it exists to close: an id that only has
+    // to be PRESENT here, but must be well-formed everywhere else, makes a
+    // malformed site creatable and then permanently unreadable and undeployable
+    // through every guarded route. The guard belongs at the point the id enters
+    // the system, not only where it is used (#213).
+    if (!isSafeIdParam(body.site.siteId)) {
+      return c.json({ ok: false, error: "siteId is malformed" }, 400);
+    }
     if (body.gatewayUrl !== undefined && typeof body.gatewayUrl !== "string") {
       return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
     }
