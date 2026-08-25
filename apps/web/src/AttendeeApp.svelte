@@ -44,22 +44,34 @@
   {#if router.route === "home" || router.route === "discover"}
     <Home />
   {:else if router.route === "event"}
-    {#if getExternalEventApi(router.params.id)}
-      <LazyRoute
-        loader={loadEventPage}
-        props={{
-          eventId: router.params.id,
-          apiUrl: getExternalEventApi(router.params.id),
-          onback: () => navigate("/"),
-          ondashboard: () => navigate(`/creator/events/${router.params.id}`),
-        }}
-      />
-    {:else}
-      <LazyRoute
-        loader={loadEventDetail}
-        props={{ eventId: router.params.id, onback: () => navigate("/") }}
-      />
-    {/if}
+    <!--
+      Keyed on the event id so a hash change from one event to another builds a
+      FRESH component instead of reusing the mounted one. Both event components
+      read their feed in onMount and capture their cache key at instance init,
+      so a props-only update left the previous event's content — title, dates,
+      past/on-sale badge — rendered at the new event's URL, and ClaimButton took
+      its eventId, seriesId and payment from that same stale object. The buyer
+      could complete a purchase for the event they had just navigated away from.
+      Same guard as ShopEditor in CreatorApp.
+    -->
+    {#key router.params.id}
+      {#if getExternalEventApi(router.params.id)}
+        <LazyRoute
+          loader={loadEventPage}
+          props={{
+            eventId: router.params.id,
+            apiUrl: getExternalEventApi(router.params.id),
+            onback: () => navigate("/"),
+            ondashboard: () => navigate(`/creator/events/${router.params.id}`),
+          }}
+        />
+      {:else}
+        <LazyRoute
+          loader={loadEventDetail}
+          props={{ eventId: router.params.id, onback: () => navigate("/") }}
+        />
+      {/if}
+    {/key}
   {:else if router.route === "event-purchased"}
     <LazyRoute loader={loadEventPurchased} props={{ eventId: router.params.id }} />
   {:else if router.route === "my-tickets"}

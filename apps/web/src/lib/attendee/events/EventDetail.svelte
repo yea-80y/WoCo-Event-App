@@ -39,8 +39,11 @@
     return true;
   })();
 
-  // External API URL — set by home page when navigating to an externally-listed event
-  // (eventId is per-mount stable — the route remounts this component per event)
+  // External API URL — set by home page when navigating to an externally-listed event.
+  // eventId is per-mount stable ONLY because AttendeeApp keys the event route on it;
+  // this file reads its feed in onMount and captures `_KEY`/`_cached` at instance
+  // init, so without that key an event-to-event hash change reused the instance and
+  // left the previous event rendered here (#242).
   // svelte-ignore state_referenced_locally
   const externalApiUrl = getExternalEventApi(eventId);
 

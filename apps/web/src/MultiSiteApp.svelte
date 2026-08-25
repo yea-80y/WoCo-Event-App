@@ -374,9 +374,15 @@
       <ShopOrderScreen shopId={route.shopId} code={route.code} />
     </main>
   {:else if route.type === 'event'}
-    <main>
-      <EventPage eventId={route.eventId} {apiUrl} onback={() => history.back()} />
-    </main>
+    <!-- Keyed for the same reason the page branch below is: EventPage reads its
+         feed in onMount and captures its cache key at instance init, so moving
+         between two event hashes reused the instance and left the previous
+         event rendered at the new event's URL. -->
+    {#key route.eventId}
+      <main>
+        <EventPage eventId={route.eventId} {apiUrl} onback={() => history.back()} />
+      </main>
+    {/key}
   {:else}
     {#key route.slug + '|' + previewEventsKey}
       {@const page = currentPage(route.slug)}
