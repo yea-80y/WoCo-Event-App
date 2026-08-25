@@ -64,11 +64,21 @@ export interface MarketingSendResult {
    */
   sentHashes: string[];
   /**
-   * Recipients delivered DESPITE an active suppression mark, because this send
-   * is a service notice (#60 item 1). Counted separately and never folded into
+   * Recipients ADMITTED PAST an active suppression mark, because this send is a
+   * service notice (#60 item 1). Counted separately and never folded into
    * `sent`: crossing a suppression is the one thing on this path that needs to
    * be answerable afterwards — to the person, to a mailbox provider, or to a
    * regulator — and a number nobody records is not an answer.
+   *
+   * ADMITTED, not delivered, and the word is the whole point (#391). The
+   * increment is at the GATE, before the send is attempted, so a message that
+   * then fails is still counted here. That is deliberate: the question this
+   * number answers is "did the platform decide to mail people who had
+   * unsubscribed, and how many", and the decision is what happened at the gate.
+   * It also means the number over-counts rather than under-counts, which is the
+   * safe direction for a record of this kind — a counter that quietly dropped
+   * crossings whenever the ESP had a bad minute would be the dangerous one.
+   * It does NOT reconcile against `sent`, and is not meant to.
    */
   crossed: number;
 }
@@ -177,6 +187,8 @@ export async function sendMarketingBatch(
         result.suppressed++;
         continue;
       }
+      // Counted HERE, at the admission decision, not on the fulfilled branch —
+      // see `MarketingSendResult.crossed` for why (#391).
       result.crossed++;
     }
     const token = mintUnsubToken({ emailHash, organiserAddress });

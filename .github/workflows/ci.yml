@@ -78,10 +78,19 @@ jobs:
       # as a floor, a dead counter is never painted as zero, a stale figure is
       # marked rather than blanked — lives in one DOM-free module so it can be
       # checked here. `build:embed` cannot catch any of it: esbuild strips types
-      # without checking them and never runs a line. See #322 for the typecheck
-      # gap this package still has.
+      # without checking them and never runs a line.
       - name: Test embed (lap-count honesty rules)
         run: npm test -w @woco/embed
+
+      # `build:embed` cannot stand in for this: esbuild strips types without
+      # checking them, so the package compiled and shipped green while `tsc`
+      # reported five errors — one of them #143, a live TypeError on the passkey
+      # claim path that sat undetected for three weeks because there was no gate
+      # to see it against. Gating at ZERO, not ratcheting: the debt was five
+      # errors in one file and is now cleared, and a known-failing check is not a
+      # check — it converts a signal into noise (#144).
+      - name: Typecheck embed
+        run: npm run check -w @woco/embed
 
       - name: Build embed
         run: npm run build:embed

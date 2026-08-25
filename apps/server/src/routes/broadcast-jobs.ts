@@ -102,12 +102,15 @@ function jobView(job: BroadcastJob) {
     skipped: job.skipped,
     ...(job.serviceType ? { serviceType: job.serviceType } : {}),
     /**
-     * How many of `sent` went to an address carrying an active suppression
-     * mark, which only a service notice can do (#60 item 1). Surfaced per job
-     * rather than only counted internally because this is the number that has
-     * to be answerable afterwards — to the recipient, to a mailbox provider, or
-     * to a regulator asking why someone who unsubscribed was mailed. Present
-     * only when it happened, so it reads as an event rather than a metric.
+     * How many recipients carrying an active suppression mark were ADMITTED to
+     * this send, which only a service notice can do (#60 item 1). Not a subset
+     * of `sent` and does not reconcile against it: the count is taken at the
+     * gate, so a crossing whose message then failed is still counted (#391).
+     * Surfaced per job rather than only counted internally because this is the
+     * number that has to be answerable afterwards — to the recipient, to a
+     * mailbox provider, or to a regulator asking why someone who unsubscribed
+     * was mailed. Present only when it happened, so it reads as an event rather
+     * than a metric.
      */
     ...(job.crossed ? { crossed: job.crossed } : {}),
     remaining: Math.max(0, job.accepted - job.sent - job.suppressed - job.failed),
