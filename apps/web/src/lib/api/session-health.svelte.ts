@@ -9,8 +9,9 @@
  * events", "verify with Stripe") — a recoverable situation that reads as
  * data loss.
  *
- * Written from exactly one place (client.ts's recovery-suppression branch) so
- * true always means "proven", never "some request failed". Cleared the moment
+ * Written from client.ts alone, and there only from a recovery-suppression
+ * branch (authFetch's and authStream's, which share the same proof), so true
+ * always means "proven", never "some request failed". Cleared the moment
  * any authenticated request succeeds; the banner's sign-in path reloads the
  * app instead, so nothing painted from the dead session survives.
  */

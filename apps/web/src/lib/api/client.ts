@@ -211,8 +211,9 @@ async function authFetch<T>(
       // A fresh delegation was just rejected the same way — re-minting is not
       // the cure here. Stop burning signing prompts on it, and raise the one
       // app-wide fact the screens can't each discover: reads are now
-      // unverifiable, not empty (#256). This is the ONLY writer of that flag,
-      // so it always means "proven", never "a request failed".
+      // unverifiable, not empty (#256). THIS MODULE is the only writer of that
+      // flag — here and in authStream, both behind the same proof — so it always
+      // means "proven", never "a request failed".
       _recoverySuppressedUntil = Date.now() + RECOVERY_SUPPRESSION_MS;
       sessionHealth.markEnded();
       console.warn(
