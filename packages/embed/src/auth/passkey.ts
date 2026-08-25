@@ -291,7 +291,13 @@ export function signClaimDigest(privateKey: Uint8Array, digest: Uint8Array): str
   //     32 bytes. That failure is silent: the server recovers a different
   //     address and answers "not the claimer".
   //   format: "recovered" — 'compact' (the default) is 64 bytes with no
-  //     recovery byte, and the server needs `v` to recover the signer.
+  //     recovery byte, and `v` is what lets a verifier recover the signer.
+  //
+  // NOTE ON REACH: no server consumes this today. The v1 claim route this posts
+  // to was deleted with the rail (#207), so the embed's claim buttons currently
+  // reach a 404 — tracked as #206. Fixing the signing is groundwork for the v2
+  // rail (#202), not a live round trip. Worth stating, because a reader could
+  // otherwise conclude from this function that the path works end to end.
   //
   // Layout is [recovery, r(32), s(32)] — recovery FIRST, verified against
   // ethers rather than assumed; `test/passkey-signing.test.ts` pins the exact
