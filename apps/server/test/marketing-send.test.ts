@@ -199,3 +199,68 @@ test("nothing is sent at all when the send cannot be compliant", async () => {
 
   assert.equal(r.sent.length, 0, "a message escaped despite a failed compliance gate");
 });
+
+test("`crossed` counts admission past suppression, not delivery (#391)", async () => {
+  // The number and its name have to agree. It is taken at the GATE — the moment
+  // a suppressed recipient is admitted because this send is a service notice —
+  // so a crossing whose message then FAILS is still counted. That is the
+  // deliberate reading: the question the field answers is whether the platform
+  // decided to mail someone who had unsubscribed, and the decision happened at
+  // the gate regardless of what the ESP did next.
+  //
+  // It also means the count over-reports rather than under-reports, which is
+  // the safe direction here — a counter that quietly dropped crossings whenever
+  // the ESP had a bad minute would be the dangerous one.
+  const crossable = addr();
+  store.suppressOrg(hashEmail(crossable), ORG, "unsub");
+
+  const failing = {
+    send: async () => {
+      throw new Error("ESP rejected");
+    },
+  };
+  const result = await send.sendMarketingBatch(
+    batch({ recipients: [{ email: crossable }], serviceNotice: true }),
+    failing,
+  );
+
+  assert.equal(result.sent, 0, "nothing was delivered");
+  assert.equal(result.failed, 1, "the send failed");
+  assert.equal(result.crossed, 1, "admission past suppression is still recorded");
+  assert.equal(result.suppressed, 0, "a service notice does not suppress a consent mark");
+});
+
+test("`crossed` is not a subset of `sent`, and the delivered case still counts", async () => {
+  // Non-vacuity for the test above: if `crossed` only ever counted failures the
+  // assertion there would pass while the field was useless. The ordinary path —
+  // admitted AND delivered — must count too.
+  const crossable = addr();
+  store.suppressOrg(hashEmail(crossable), ORG, "unsub");
+
+  const r = recorder();
+  const result = await send.sendMarketingBatch(
+    batch({ recipients: [{ email: crossable }], serviceNotice: true }),
+    r.deps,
+  );
+
+  assert.equal(result.sent, 1);
+  assert.equal(result.crossed, 1);
+  assert.equal(r.sent.length, 1);
+});
+
+test("a mark a service notice may NOT cross is suppressed and never counted as crossed", async () => {
+  // The other side of the boundary: a deliverability mark stops the send, so
+  // nothing was admitted and there is nothing to answer for.
+  const bounced = addr();
+  store.suppressGlobal(hashEmail(bounced), "bounce");
+
+  const r = recorder();
+  const result = await send.sendMarketingBatch(
+    batch({ recipients: [{ email: bounced }], serviceNotice: true }),
+    r.deps,
+  );
+
+  assert.equal(result.suppressed, 1);
+  assert.equal(result.crossed, 0);
+  assert.equal(r.sent.length, 0);
+});
