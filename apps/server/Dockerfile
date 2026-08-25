@@ -17,6 +17,12 @@ COPY packages/embed/    ./packages/embed/
 COPY apps/server/src    ./apps/server/src
 COPY apps/server/tsconfig.json ./apps/server/
 
+# The deployed commit, written by scripts/deploy-server.sh from the SHA it
+# verified just before the rsync (#125). The glob is deliberate: it tolerates
+# the file being absent, so a build from a plain checkout still works and simply
+# reports an unknown commit rather than failing.
+COPY .deploy-commit* ./
+
 # Ops scripts must ship with the image: payout-schedule-audit.ts is the documented
 # post-deploy step (docs/PAYOUTS.md §9) and has to run against the live .data store
 COPY apps/server/scripts ./apps/server/scripts

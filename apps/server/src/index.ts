@@ -7,6 +7,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FEATURES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
+import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
 import { securityHeaders, FRAME_INLINE_SCRIPT, FRAME_CSP } from "./lib/http/security-headers.js";
 import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
