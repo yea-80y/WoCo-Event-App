@@ -22,7 +22,7 @@
   import LikeButton from "../likes/LikeButton.svelte";
   import SpendingWallet from "../../attendee/shop/SpendingWallet.svelte";
   import EventCard from "../../attendee/events/EventCard.svelte";
-  import { getEventsByCreator } from "../../api/events.js";
+  import { getEventsByCreatorResult } from "../../api/events.js";
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
 
@@ -322,7 +322,12 @@
       } else {
         // Public profile: the organiser's full catalogue (incl. past events),
         // straight from their per-creator index — no global directory scan.
-        events = await getEventsByCreator(viewAddress);
+        // Through the envelope form: getEventsByCreator returns `resp.data ?? []`,
+        // so an HTTP failure would arrive here as an empty catalogue and render
+        // as "No events yet" — the very thing this change exists to stop.
+        const resp = await getEventsByCreatorResult(viewAddress);
+        if (resp.ok && resp.data) events = resp.data;
+        else eventsFailed = true;
       }
     } catch {
       // Swallowed on purpose — the tab must not take the page down — but the
