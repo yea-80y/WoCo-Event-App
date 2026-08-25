@@ -69,13 +69,13 @@
     // An empty response is treated like a soft-fail when we already have cached
     // data, to avoid wiping the UI on a transient auth/identity mismatch.
     const fresh = await swr.refresh();
-    if (fresh && (fresh.length > 0 || !swr.cached)) {
-      applyEventList(fresh);
+    if (fresh.data && (fresh.data.length > 0 || !swr.cached)) {
+      applyEventList(fresh.data);
       loadState = "ready";
-    } else if (!swr.cached && !fresh) {
+    } else if (!swr.cached && !fresh.ok) {
       // No cache to fall back on AND refresh failed.
       loadState = "error";
-      stateError = "Could not load events";
+      stateError = fresh.error || "Could not load events";
     }
   }
 

@@ -14,6 +14,7 @@
   // Single fetch — client-side split via reactive clock
   let allEvents = $state<EventDirectoryEntry[]>([]);
   let loading = $state(true);
+  let loadFailed = $state(false);
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
 
@@ -112,7 +113,10 @@
     }
     const fresh = await swr.refresh();
     // Don't overwrite a populated cached view with an unexpected empty response.
-    if (fresh && (fresh.length > 0 || !swr.cached)) allEvents = fresh;
+    if (fresh.data && (fresh.data.length > 0 || !swr.cached)) allEvents = fresh.data;
+    // A failed read is not an empty list (#291): "No upcoming events" here would
+    // tell an organiser their events are gone.
+    loadFailed = !fresh.ok && allEvents.length === 0;
     loading = false;
   });
 
@@ -143,6 +147,10 @@
 
     {#if loading}
       <p class="status">Loading...</p>
+    {:else if loadFailed}
+      <div class="empty">
+        <p>Couldn't load your events right now — they're not lost.</p>
+      </div>
     {:else if tab === "upcoming"}
       {#if upcoming.length === 0}
         <div class="empty">
