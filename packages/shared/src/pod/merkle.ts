@@ -19,7 +19,6 @@ import { SimpleMerkleTree } from "@openzeppelin/merkle-tree";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   bytesToHex0x,
-  canonicalEncodeManifest,
   hex0xToBytes,
   manifestDigest,
   podLeafHash,

@@ -1,4 +1,4 @@
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
 import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
