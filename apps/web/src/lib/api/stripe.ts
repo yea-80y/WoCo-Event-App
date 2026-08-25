@@ -2,7 +2,7 @@
  * Frontend API client for Stripe Connect integration.
  */
 
-import { authPost, authGet, apiBase } from "./client.js";
+import { authPost, authGet, authDelete, apiBase } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import type { SealedBox } from "@woco/shared";
 
@@ -58,18 +58,12 @@ export async function getStripeAccountStatus(): Promise<StripeAccountStatus> {
   return resp as any as StripeAccountStatus;
 }
 
+/** Throws on failure, which is what its callers expect. */
 export async function removeStripeAccount(): Promise<void> {
-  const { buildAuthHeaders } = await import("./client.js");
-  const path = "/api/stripe/account";
-  const authHeaders = await buildAuthHeaders("DELETE", path, "");
-  const resp = await fetch(`${apiBase}${path}`, {
-    method: "DELETE",
-    headers: authHeaders,
-  });
-  if (!resp.ok) {
-    const json = await resp.json().catch(() => ({}));
-    throw new Error((json as any).error ?? "Failed to remove Stripe account");
-  }
+  // Was a hand-rolled fetch with no reason to be one, so it never inherited the
+  // one-shot session recovery every other authenticated verb gets (#108).
+  const resp = await authDelete("/api/stripe/account");
+  if (!resp.ok) throw new Error(resp.error ?? "Failed to remove Stripe account");
 }
 
 /**
