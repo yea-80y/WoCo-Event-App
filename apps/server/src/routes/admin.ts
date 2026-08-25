@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import {
-  getBee,
   getPlatformOwner,
   FEED_PRIVATE_KEY,
   POSTAGE_BATCH_ID,

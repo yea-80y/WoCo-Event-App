@@ -1,7 +1,6 @@
 import { Bee, PrivateKey } from "@ethersphere/bee-js";
 
 export const ETHERNA_ENABLED = process.env.ETHERNA_ENABLED === "true";
-const ETHERNA_GATEWAY_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
 
 // getBee() always reads/writes via the local node — per-deploy Etherna uploads
 // use getEthernaBee() (lib/etherna/upload.ts) and never go through here.
