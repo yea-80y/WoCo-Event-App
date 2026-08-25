@@ -30,6 +30,9 @@
   /** Contacts who ticked the opt-in themselves — the server holds the evidence,
    *  keyed by hash, so this is the only way the client can know. */
   let consentedEmails = $state<Set<string>>(new Set());
+  /** The consent/suppression read failed, so the labels and counts below are
+   *  not evidence of anything — distinct from everyone being 'imported'. */
+  let consentUnknown = $state(false);
   let saving = $state(false);
   let wizardOpen = $state(false);
   let panel = $state<"contacts" | "compose" | "attendees" | null>(null);
@@ -71,9 +74,15 @@
       const res = await checkMarketingEmails(list.map((c) => c.email));
       suppressedEmails = new Set(res.suppressed);
       consentedEmails = new Set(res.consented ?? []);
+      consentUnknown = false;
     } catch {
-      // Non-fatal — the ledger falls back to showing everyone as imported,
-      // which is the cautious reading rather than an optimistic one.
+      // Non-fatal for sending — the server is the enforcement boundary and
+      // refuses suppressed addresses whatever this screen believes. But it is
+      // NOT the cautious reading it was described as: an empty suppression set
+      // renders an unsubscribed contact as an ordinary one, and the counts then
+      // report "0 unsubscribed" as though that had been checked (#291). Say the
+      // states are unknown instead of showing states we did not read.
+      consentUnknown = true;
     }
   }
 
@@ -261,6 +270,13 @@
       <AttendeeImport {contacts} busy={saving} {getKeys} onCommit={commitList} />
     {/if}
 
+    {#if panel === "contacts" && contacts.length > 0 && consentUnknown}
+      <p class="consent-unknown">
+        Couldn't check who has opted in or unsubscribed, so the labels below may be wrong.
+        Sending is unaffected — unsubscribes are always honoured when a broadcast goes out.
+      </p>
+    {/if}
+
     {#if panel === "contacts" && contacts.length > 0}
       <ContactSearch
         {contacts}
@@ -350,6 +366,11 @@
   }
 
   .muted { color: var(--text-muted); font-size: 0.875rem; }
+  .consent-unknown {
+    margin: 0 0 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
   .err { color: var(--error); font-size: 0.875rem; }
 
   .when { color: var(--text-dim); }

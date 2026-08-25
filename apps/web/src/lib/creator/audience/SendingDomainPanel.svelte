@@ -12,6 +12,8 @@
   let loading = $state(true);
   let working = $state(false);
   let error = $state<string | null>(null);
+  /** The status read failed — not the same as having no domain (#291). */
+  let loadFailed = $state(false);
 
   let domainInput = $state("");
   let localPartInput = $state("news");
@@ -22,7 +24,10 @@
     try {
       info = await getSendingDomain();
     } catch {
-      // Panel is optional — a fetch error just shows the connect form
+      // Showing the connect form here told an organiser who ALREADY has a
+      // domain that they have none, and invited them to add it again (#291).
+      // The panel stays optional — it just says it could not check.
+      loadFailed = true;
     } finally {
       loading = false;
     }
@@ -89,6 +94,11 @@
 
   {#if loading}
     <p class="muted">Checking…</p>
+  {:else if loadFailed}
+    <p class="muted">
+      Couldn't check your sending domain just now. If you already have one connected, it is
+      still there — this panel just could not read it.
+    </p>
   {:else if !info}
     <!--
       Deliberately describes what connecting a domain GIVES you rather than
