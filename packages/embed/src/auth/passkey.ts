@@ -36,7 +36,10 @@ function toBase64url(buf: ArrayBuffer): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function fromBase64url(str: string): Uint8Array {
+/** `Uint8Array<ArrayBuffer>`, not bare `Uint8Array`: WebAuthn's `BufferSource`
+ *  excludes SharedArrayBuffer-backed views, and this always allocates a plain
+ *  one — so this is a tightening, not a cast. Mirrors `getPrfSalt` above. */
+function fromBase64url(str: string): Uint8Array<ArrayBuffer> {
   const padded = str.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
@@ -48,12 +51,21 @@ function toHex(bytes: Uint8Array): string {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Coerce a WebAuthn `BufferSource` to a plain `ArrayBuffer`. TS 5.7's lib.dom
+ *  models the PRF result as `BufferSource`, which admits views over a
+ *  `SharedArrayBuffer`, so normalise by copying out of any view. Mirrors
+ *  `apps/web/src/lib/auth/passkey-account.ts:34`, which already solved this. */
+function toArrayBuffer(src: BufferSource): ArrayBuffer {
+  if (src instanceof ArrayBuffer) return src;
+  return src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength) as ArrayBuffer;
+}
+
 function extractPrfResult(extensions: AuthenticationExtensionsClientOutputs): ArrayBuffer {
   const prf = extensions.prf;
   if (!prf?.results?.first) {
     throw new Error("PRF extension did not return a result. Your browser or passkey may not support PRF.");
   }
-  return prf.results.first;
+  return toArrayBuffer(prf.results.first);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,12 +277,30 @@ async function restorePasskey(meta: CredentialMeta): Promise<{ privateKey: Uint8
 export function signClaimDigest(privateKey: Uint8Array, digest: Uint8Array): string {
   if (digest.length !== 32) throw new Error("eip712 digest must be 32 bytes");
 
-  const sig = secp256k1.sign(digest, privateKey);
+  // @noble/curves v2 returns ENCODED BYTES. v1 returned a RecoveredSignature
+  // object, so `sig.r` was a bigint; here it is `undefined`, and
+  // `undefined.toString(16)` threw on EVERY call — the embed's passkey claim
+  // path had been dead since the v2 bump on 2026-07-13 (#143). Nothing caught
+  // it because vite/esbuild strip types without checking them and this package
+  // was typechecked nowhere (#144).
+  //
+  // BOTH options are load-bearing:
+  //   prehash: false — v2 defaults to TRUE, i.e. it would sha256 the argument.
+  //     The caller passes an EIP-712 digest that is already the message to sign,
+  //     so the default produces a perfectly valid signature over the wrong
+  //     32 bytes. That failure is silent: the server recovers a different
+  //     address and answers "not the claimer".
+  //   format: "recovered" — 'compact' (the default) is 64 bytes with no
+  //     recovery byte, and the server needs `v` to recover the signer.
+  //
+  // Layout is [recovery, r(32), s(32)] — recovery FIRST, verified against
+  // ethers rather than assumed; `test/passkey-signing.test.ts` pins the exact
+  // bytes for four frozen vectors covering both v=27 and v=28.
+  const sig = secp256k1.sign(digest, privateKey, { prehash: false, format: "recovered" });
 
-  // Encode as 65-byte signature: r (32) + s (32) + v (1)
-  const r = sig.r.toString(16).padStart(64, "0");
-  const s = sig.s.toString(16).padStart(64, "0");
-  const v = (sig.recovery + 27).toString(16).padStart(2, "0");
+  const recovery = sig[0]!;
+  const rs = toHex(sig.subarray(1));
+  const v = (recovery + 27).toString(16).padStart(2, "0");
 
-  return "0x" + r + s + v;
+  return "0x" + rs + v;
 }
