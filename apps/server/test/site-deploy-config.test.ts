@@ -112,6 +112,35 @@ test("id guard admits the ids we mint and rejects anything that could break out"
   assert.ok(!isSafeIdParam("a".repeat(101)), "over the length ceiling");
 });
 
+test("every id the builder can mint passes the guard, including its degenerate ones", () => {
+  // #213 puts this guard in front of `sitesRouter`'s id params. That only
+  // improves things if REAL ids pass it — a guard that refuses every live site
+  // is a worse outage than the asymmetry it closes, and it would refuse them at
+  // read routes too, so nobody could even load a site to diagnose it.
+  //
+  // Mirrors `uid()` in MultiSiteBuilder.svelte:31 and PagesTab.svelte:21:
+  //   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`
+  const uid = (rnd: number, now: number) =>
+    `${now.toString(36)}-${rnd.toString(36).slice(2, 9)}`;
+
+  for (let i = 0; i < 500; i++) {
+    const id = uid(Math.random(), Date.now());
+    assert.ok(isSafeIdParam(id), `builder-minted id rejected: ${JSON.stringify(id)}`);
+  }
+
+  // The two ends of the random suffix, which are what a length floor can trip on.
+  // `Math.random()` returning 0 yields "0" — `slice(2, 9)` is then EMPTY, so the
+  // id is the timestamp plus a trailing hyphen and nothing else. That is the
+  // shortest id this generator can produce.
+  assert.equal(uid(0, 1787668185643), "mt8rhc17-");
+  assert.ok(isSafeIdParam(uid(0, 1787668185643)), "shortest possible builder id");
+  assert.ok(isSafeIdParam(uid(0.9999999999999999, 1787668185643)), "longest possible builder id");
+
+  // The timestamp half is 8 base36 chars from 2010 until 2059, so the floor of 8
+  // is not being met by the suffix alone at any point we care about.
+  assert.equal(new Date(parseInt("100000000", 36)).getUTCFullYear(), 2059);
+});
+
 // ── URL allowlists ───────────────────────────────────────────────────────────
 
 test("apiUrl comes from the server, so a caller-chosen host cannot be supplied", () =>
