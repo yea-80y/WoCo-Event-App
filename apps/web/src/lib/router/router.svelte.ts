@@ -177,22 +177,26 @@ function update() {
   if (refMatch) {
     void import("../campaign/referral-capture.js").then(async (m) => {
       const token = m.classifyRefToken(decodeURIComponent(refMatch[1]));
-      if (token.kind === "address") {
-        m.storeCapturedRef(token.address);
-        return;
-      }
+      // One call for either kind: it replaces the whole previous capture, so a
+      // second invite can never inherit the first one's name or address.
+      m.beginCapture(token);
       if (token.kind !== "name") return;
-      // Store the name FIRST. Resolution is a network read and may fail; the
-      // visitor is owed the acknowledgement either way, and the post path
-      // re-resolves later so a registrar blip does not cost the referrer their
-      // credit.
-      m.storeCapturedRefName(token.label);
+      // The name is stored BEFORE it resolves. Resolution is a network read and
+      // may fail; the visitor is owed the acknowledgement either way, and the
+      // post path re-resolves later so a registrar blip does not cost the
+      // referrer their credit.
       const { resolveSubEnsAddress } = await import("../api/sub-ens.js");
       const res = await resolveSubEnsAddress(token.label).catch(() => null);
-      // Only "found" writes an address. "none" means the name is not registered
-      // — a bad link, nothing to post — and "error" means nobody answered, which
-      // must never be treated as absence (#177), so the name stays pending.
-      if (res?.status === "found") m.storeCapturedRef(res.address);
+      if (res?.status === "found") {
+        m.storeCapturedRef(res.address);
+      } else if (res?.status === "none") {
+        // "none" is the registrar answering that the name is not registered —
+        // authoritative, so forget the capture here rather than leaving a dead
+        // name pending and telling the visitor someone will get the credit.
+        // "error" is nobody answering and must never be read as absence (#177),
+        // so that case alone leaves the name for the post path to retry.
+        m.clearCapturedRef();
+      }
     });
     window.location.replace(`${window.location.pathname}#/discover`);
     return;

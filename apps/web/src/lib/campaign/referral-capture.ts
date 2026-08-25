@@ -71,7 +71,35 @@ function write(key: string, value: string): void {
   }
 }
 
-/** Persist a referral capture (from `#/ref/{address}`) until first sign-in. */
+/**
+ * Start a NEW capture from a followed link, replacing whatever the previous one
+ * left behind.
+ *
+ * The address and the name are separate keys, and leaving either behind mixes
+ * two invites into one wrong answer. Following a name link and later an address
+ * link left the old name in place, so the banner named an inviter who was not
+ * the one being credited; the reverse left the old address in place, so
+ * `unresolvedRefName()` saw an address, never retried the new name, and the
+ * previous referrer silently kept the credit.
+ *
+ * Re-following the SAME link is not a new capture and returns untouched, so a
+ * dismissal is not undone by revisiting the link that produced it.
+ */
+export function beginCapture(token: RefToken): void {
+  if (token.kind === "invalid") return;
+  const sameName = token.kind === "name" && capturedRefName() === token.label;
+  const sameAddress =
+    token.kind === "address" && !capturedRefName() && readCapturedRef() === token.address;
+  if (sameName || sameAddress) return;
+
+  clearCapturedRef();
+  if (token.kind === "address") write(REF_STORAGE_KEY, token.address);
+  else write(REF_NAME_KEY, token.label);
+}
+
+/** Persist a referral capture (from `#/ref/{address}`) until first sign-in.
+ *  Leaves any captured NAME alone — resolution calls this to fill in the
+ *  address behind a name link, and the name is what the visitor is shown. */
 export function storeCapturedRef(referrer: string): void {
   if (!ADDRESS_RE.test(referrer)) return;
   // No dismissal bookkeeping here: the dismissal is stored AS the address it

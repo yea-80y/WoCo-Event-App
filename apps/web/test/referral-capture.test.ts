@@ -26,6 +26,7 @@ const {
   dismissReferralNotice,
   shortRef,
   classifyRefToken,
+  beginCapture,
   storeCapturedRefName,
   capturedRefName,
   unresolvedRefName,
@@ -169,4 +170,48 @@ test("clearing the capture clears the name with it", () => {
 test("a malformed name is not stored", () => {
   storeCapturedRefName("not a name!");
   assert.equal(capturedRefName(), null);
+});
+
+// ── successive invites must not mix (review catch) ───────────────────────────
+
+test("an address link after a name link does not inherit the name", () => {
+  // Otherwise the banner names the earlier inviter while the credit posts to
+  // the later one — and if the earlier name had been dismissed, the new invite
+  // shows no notice at all, because the notice is keyed on the name.
+  beginCapture({ kind: "name", label: "thevenue" });
+  storeCapturedRef(A);
+  dismissReferralNotice();
+
+  beginCapture({ kind: "address", address: B.toLowerCase() as `0x${string}` });
+  assert.equal(capturedRefName(), null, "the previous name must not survive");
+  assert.equal(readCapturedRef(), B.toLowerCase());
+  assert.equal(referralNoticeFor()?.display, "0xbbbb…bbbb");
+});
+
+test("a name link after an address link does not inherit the address", () => {
+  // Otherwise unresolvedRefName() sees an address, the new name is never
+  // retried, and the earlier referrer silently keeps the credit.
+  beginCapture({ kind: "address", address: B.toLowerCase() as `0x${string}` });
+  beginCapture({ kind: "name", label: "thevenue" });
+  assert.equal(readCapturedRef(), null, "the previous address must not survive");
+  assert.equal(unresolvedRefName(), "thevenue", "the new name must still be retried");
+  assert.equal(referralNoticeFor()?.display, "thevenue.woco.eth");
+});
+
+test("re-following the same link leaves a dismissal in place", () => {
+  beginCapture({ kind: "name", label: "thevenue" });
+  dismissReferralNotice();
+  beginCapture({ kind: "name", label: "thevenue" });
+  assert.equal(referralNoticeFor(), null, "revisiting the same invite must not nag");
+
+  beginCapture({ kind: "address", address: A.toLowerCase() as `0x${string}` });
+  dismissReferralNotice();
+  beginCapture({ kind: "address", address: A.toLowerCase() as `0x${string}` });
+  assert.equal(referralNoticeFor(), null);
+});
+
+test("an invalid token leaves an existing capture untouched", () => {
+  beginCapture({ kind: "address", address: A.toLowerCase() as `0x${string}` });
+  beginCapture({ kind: "invalid" });
+  assert.equal(readCapturedRef(), A.toLowerCase());
 });
