@@ -163,7 +163,28 @@ may close your account; tickets you already hold remain valid.
 
 ---
 
-## 9. Law and disputes
+## 9. Referral scheme
+
+If you share a referral link and an organiser signs up through it, WoCo pays you **40% of its
+1.5% platform fee** on ticket sales that organiser makes.
+
+**This is a launch rate.** WoCo may vary or withdraw it at any time on reasonable notice, and may
+set a different rate for different referrers or different periods. Any change applies from the
+date of notice and **does not affect earnings you have already accrued**.
+
+Earnings build up per sale and are released after the event, at the same time the organiser is
+paid. WoCo intends to move referral payouts to automated stablecoin settlement once the relevant
+contracts have been independently audited; until then they are paid manually.
+
+Referral earnings are payment for introducing a customer. **They are not an investment and give
+you no interest in WoCo.**
+
+We may withhold or reverse referral earnings arising from self-referral, fraudulent or refunded
+sales, or any breach of these terms.
+
+---
+
+## 10. Law and disputes
 
 These terms are governed by the law of **England and Wales**, and the courts of England and Wales
 have jurisdiction.
@@ -175,7 +196,7 @@ consumer in the EU, mandatory protections of your home country still apply.
 
 ---
 
-## 10. Contact
+## 11. Contact
 
 [COMPANY LEGAL NAME]
 [REGISTERED OFFICE ADDRESS]
