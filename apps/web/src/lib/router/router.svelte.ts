@@ -165,11 +165,35 @@ function matchRoute(pathWithQuery: string): Match {
 }
 
 function update() {
-  // Referral capture: #/ref/{address} isn't a screen — persist the referrer
-  // and land on discover. Lazy import keeps wallet deps out of the router.
-  const refMatch = parseHash().match(/^\/ref\/(0x[0-9a-fA-F]{40})$/);
+  // Referral capture: #/ref/{referrer} isn't a screen — persist the referrer
+  // and land on discover. The referrer is an address OR a WoCo sub-ENS name, so
+  // an organiser can share `#/ref/theirvenue` instead of forty hex characters.
+  //
+  // The lazy import points at the dependency-free capture module rather than
+  // the API client, so an address link costs a few lines instead of the client
+  // + auth graph; the resolver is only pulled when a link actually carries a
+  // name.
+  const refMatch = parseHash().match(/^\/ref\/([^/?#]+)$/);
   if (refMatch) {
-    void import("../api/campaign.js").then((m) => m.storeCapturedRef(refMatch[1]));
+    void import("../campaign/referral-capture.js").then(async (m) => {
+      const token = m.classifyRefToken(decodeURIComponent(refMatch[1]));
+      if (token.kind === "address") {
+        m.storeCapturedRef(token.address);
+        return;
+      }
+      if (token.kind !== "name") return;
+      // Store the name FIRST. Resolution is a network read and may fail; the
+      // visitor is owed the acknowledgement either way, and the post path
+      // re-resolves later so a registrar blip does not cost the referrer their
+      // credit.
+      m.storeCapturedRefName(token.label);
+      const { resolveSubEnsAddress } = await import("../api/sub-ens.js");
+      const res = await resolveSubEnsAddress(token.label).catch(() => null);
+      // Only "found" writes an address. "none" means the name is not registered
+      // — a bad link, nothing to post — and "error" means nobody answered, which
+      // must never be treated as absence (#177), so the name stays pending.
+      if (res?.status === "found") m.storeCapturedRef(res.address);
+    });
     window.location.replace(`${window.location.pathname}#/discover`);
     return;
   }

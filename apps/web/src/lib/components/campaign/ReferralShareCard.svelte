@@ -1,18 +1,50 @@
 <!--
   ReferralShareCard — the user's referral link, on their own profile.
-  Deliberately zero-fetch: the link is derived from the signed-in address,
-  nothing else is loaded. Earnings/history views come later with the payout
-  dashboard.
+
+  The link prefers a WoCo sub-ENS name the sharer owns (`#/ref/theirvenue`) and
+  falls back to their address. That is not cosmetic: the name is what the
+  RECIPIENT is shown when they land, so a named organiser's invite says who they
+  are instead of forty hex characters.
+
+  No longer zero-fetch, deliberately. It costs one authenticated read of names
+  the organiser already owns, on a profile screen that is already fetching. The
+  address link paints first and is swapped only if a name comes back, so a
+  failed or slow lookup degrades to exactly the previous behaviour rather than
+  to an empty card.
 -->
 <script lang="ts">
   import type { Hex0x } from "@woco/shared";
+  import { onMount } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { referralLink } from "../../api/campaign.js";
 
   let copied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  let ensLabel = $state<string | null>(null);
 
-  const link = $derived(auth.parent ? referralLink(auth.parent.toLowerCase() as Hex0x) : null);
+  onMount(async () => {
+    if (!auth.parent) return;
+    try {
+      const { getOwnedSubEns } = await import("../../api/sub-ens.js");
+      const resp = await getOwnedSubEns();
+      // Sorted so a sharer with several names gets a STABLE link — a referral
+      // link that changes between visits is one people cannot recognise as
+      // theirs, and old copies of it must keep working anyway (they do: the
+      // router resolves whichever name was shared).
+      const names = [...(resp.data?.names ?? [])].map((n) => n.label).sort();
+      ensLabel = names[0] ?? null;
+    } catch {
+      // Falls back to the address link — the card is never empty.
+    }
+  });
+
+  const link = $derived(
+    ensLabel
+      ? referralLink(ensLabel)
+      : auth.parent
+        ? referralLink(auth.parent.toLowerCase() as Hex0x)
+        : null,
+  );
   const displayLink = $derived(link?.replace(/^https?:\/\//, "") ?? "");
 
   async function copy() {
