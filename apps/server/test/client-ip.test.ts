@@ -127,8 +127,8 @@ test("an unrecognised value keeps its own bucket rather than joining unknown", (
 
 test("no literal can be spelled to land in a real address's bucket", () => {
   // The other half of the same property. A literal that LOOKS like a normalised
-  // key must not become one — otherwise a caller picks its victim's bucket by
-  // sending the bucket name.
+  // key must not become one — otherwise the value a caller sends decides which
+  // bucket it shares, which is the property this whole module exists to deny.
   // NOT "203.0.113.7 " — a whitespace-padded real address is the same caller and
   // SHOULD trim into the same bucket; the test above asserts exactly that. It is
   // an impostor only if the value is not that address.
