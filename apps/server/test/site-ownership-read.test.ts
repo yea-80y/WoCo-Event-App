@@ -66,6 +66,58 @@ test("a feed the network reports as never written is absent", async () => {
 
 // ── Everything else must refuse ──────────────────────────────────────────────
 
+test("a legacy config with no ownerAddress is unavailable, not found (#246)", async () => {
+  // It decodes, and it names the right site — so the old code returned it as
+  // `found`. Each gate then did `site.ownerAddress.toLowerCase()`, which throws
+  // on `undefined` and surfaced as a 500 with no line naming the cause.
+  const ownerless = { siteId: SITE_ID, theme: { brandName: "x" }, pages: [] };
+  const res = await resolveSiteConfig(
+    SITE_ID,
+    readers({ readConfigPage: async () => ({ status: "found", data: encodeJsonFeed(ownerless) }) }),
+  );
+  assert.equal(res.status, "unavailable");
+  assert.match(res.status === "unavailable" ? res.reason : "", /no usable ownerAddress/);
+});
+
+test("an ownerAddress that is not an address is unavailable — there is nothing to compare", async () => {
+  // A string that is not an address can never equal a verified parentAddress, so
+  // returning it as `found` only ever produces a 403 that says "not the site
+  // owner" about a record where ownership was never established.
+  for (const bad of ["", "   ", "not-an-address", "0x", "0xdeadbeef"]) {
+    const site = { siteId: SITE_ID, ownerAddress: bad, theme: { brandName: "x" }, pages: [] };
+    const res = await resolveSiteConfig(
+      SITE_ID,
+      readers({ readConfigPage: async () => ({ status: "found", data: encodeJsonFeed(site) }) }),
+    );
+    assert.equal(res.status, "unavailable", `ownerAddress ${JSON.stringify(bad)} should be undecidable`);
+  }
+});
+
+test("a pointer whose ownerAddress is empty is unavailable, not found", async () => {
+  // `isSitePointer` only requires ownerAddress to be a STRING, so "" reaches the
+  // assignment and would otherwise be handed to the gates.
+  const res = await resolveSiteConfig(
+    SITE_ID,
+    readers({
+      readConfigPage: async () => ({ status: "found", data: encodeJsonFeed({ ...pointer, ownerAddress: "" }) }),
+      readPointerTarget: async () => ({ status: "found", bytes: bytesOf(legacySite()) }),
+    }),
+  );
+  assert.equal(res.status, "unavailable");
+  assert.match(res.status === "unavailable" ? res.reason : "", /pointer carries no usable ownerAddress/);
+});
+
+test("a well-formed config is still found — the guard is not refusing everything", async () => {
+  // The non-vacuity check for the three above: a fix that refused every config
+  // would pass all of them while making publish and deploy impossible.
+  const res = await resolveSiteConfig(
+    SITE_ID,
+    readers({ readConfigPage: async () => ({ status: "found", data: encodeJsonFeed(legacySite()) }) }),
+  );
+  assert.equal(res.status, "found");
+  assert.equal(res.status === "found" ? res.site.ownerAddress : "", OWNER);
+});
+
 test("a failed config read is unavailable, not absent", async () => {
   // The sharpest case: this is the one a caller can provoke by retrying.
   const res = await resolveSiteConfig(
