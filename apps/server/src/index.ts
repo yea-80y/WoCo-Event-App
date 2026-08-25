@@ -225,6 +225,16 @@ app.use("/embed/*", securityHeaders());
 app.get("/api/health", (c) =>
   c.json({
     ok: true,
+    // Which commit is answering (#125). Before this, "is production running what
+    // I think?" could only be inferred — from a log line, a container creation
+    // time, or by curling a behaviour and reasoning backwards. It is also the
+    // prerequisite for any real rollback story: you cannot roll back to a
+    // known-good commit without being able to say which one is live.
+    // `clean: false` beside a real SHA means the deploying tree carried
+    // uncommitted changes, so the commit names roughly what shipped rather than
+    // exactly what shipped — a distinction worth publishing, because a
+    // half-truth on an endpoint an operator acts on is worse than no claim.
+    build: buildInfo(),
     payoutSweep: payoutSweepHealth(),
     // Auto-refunds that could not be created (#367). `pending` or `abandoned`
     // non-zero is an alarm: a buyer paid, got no ticket, and has no money back

@@ -67,10 +67,11 @@ DEV COMMANDS:
   npm run build:multisite # deployed-site runtime → apps/web/dist-multisite/
 
 - Server deploy goes through `scripts/deploy-server.mjs` — it refuses an unclean tree, a
-  HEAD that is not `origin/main`, and a linked worktree (which lacks the untracked files
-  `--delete` would then remove), dry-runs first and prints the deletion count, and stamps
-  the verified commit so `/api/health` reports what is actually running (#125). The
-  destination comes from `WOCO_DEPLOY_HOST`/`WOCO_DEPLOY_PATH`, never from this repo.
+  HEAD that is not `origin/main`, a linked worktree (which lacks the untracked files
+  `--delete` would then remove) and a non-monorepo root, dry-runs first and prints the
+  removal count, re-checks cleanliness after the prompt, and stamps the verified commit so
+  `/api/health` reports what is actually running (#125). The destination comes from
+  `WOCO_DEPLOY_HOST`/`WOCO_DEPLOY_PATH`, never from this repo.
 - All operational detail (dev bee tunnel, deploy procedure, env management, required
   production secrets) lives in CLAUDE.local.md — untracked, this machine only.
 - Public shape: backend = Docker Compose stack (bee + bee-proxy + server) on a VM;

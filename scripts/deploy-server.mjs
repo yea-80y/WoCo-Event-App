@@ -4,11 +4,10 @@
  *
  * The deploy rsyncs a MUTABLE WORKING DIRECTORY, not a git ref. Whatever is in
  * the folder ships: committed or not, merged or not, reviewed or not, and
- * nothing checked. That is not hypothetical — on 2026-08-01 a parallel session
- * had uncommitted, actively-changing edits to the card-fee arithmetic in the
- * shared checkout, and the documented deploy would have shipped half-finished
- * money-path code. It was caught because the tree happened to be inspected
- * first. Procedure alone has not held; this is the mechanism.
+ * nothing checked. That is not hypothetical — half-finished money-path code has
+ * come within one command of shipping from a shared checkout, caught only
+ * because the tree happened to be inspected first. Procedure alone has not
+ * held; this is the mechanism. (Dates and specifics: the private runbook.)
  *
  * NO DEPLOY TARGET LIVES IN THIS FILE. The repo is public. Pass it in:
  *
@@ -23,7 +22,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 
 const flags = new Set(process.argv.slice(2));
@@ -50,12 +49,23 @@ if (!DEST) die("set WOCO_DEPLOY_PATH (see the private runbook)");
 
 process.chdir(git("rev-parse", "--show-toplevel"));
 
+// `--show-toplevel` resolves whatever repo the caller is standing in, and this
+// tree contains a NESTED one (`contracts/`). Run from inside it, every later
+// check would be answering about the wrong repository. Assert identity rather
+// than depending on the HEAD/fetch checks to fail for unrelated reasons.
+try {
+  const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
+  if (pkg.name !== "woco") die(`this is not the woco monorepo root (package.json name = ${pkg.name}).`);
+} catch (e) {
+  die(`cannot read package.json at ${process.cwd()}: ${(e && e.message) || e}`);
+}
+
 // ── 1. Not a linked worktree ────────────────────────────────────────────────
 // A worktree does not carry the repo's untracked files — contracts/ (a nested
 // repo), .swarm/, scripts/, deploy/ — so `--delete` reads them as removals. A
-// dry run from one on 2026-08-01 showed 2124 deletions, 1669 of them
-// contracts/. It was caught by -n and never executed. This is that catch, made
-// automatic rather than remembered.
+// dry run from one once itemised over two thousand of them, most of contracts/.
+// It was caught by -n and never executed. This is that catch, made automatic
+// rather than remembered.
 if (git("rev-parse", "--git-dir") !== git("rev-parse", "--git-common-dir")) {
   die(`this is a linked worktree (${process.cwd()}). Deploy from the canonical checkout.`);
 }
@@ -92,7 +102,6 @@ if (!ALLOW_DIRTY) {
 // is not a missing stamp but a stale one read as current. `.deploy-commit` is
 // gitignored, and rsync carries it because rsync does not read .gitignore.
 const stamp = dirty ? `${head}-dirty` : head;
-writeFileSync(".deploy-commit", `${stamp}\n${new Date().toISOString().replace(/\.\d{3}Z$/, "Z")}\n`);
 
 console.log("About to deploy:");
 console.log(`  commit   ${git("log", "-1", "--oneline")}`);
@@ -137,6 +146,12 @@ if (DRY_RUN) {
   process.exit(0);
 }
 
+// Stamped only now, past the dry-run exit: a --dry-run that rewrote the local
+// stamp would leave a SHA on disk for a deploy that never happened, and the next
+// manual rsync would carry it. A stale stamp read as current is the one outcome
+// worse than no stamp at all.
+writeFileSync(".deploy-commit", `${stamp}\n${new Date().toISOString().replace(/\.\d{3}Z$/, "Z")}\n`);
+
 if (!ASSUME_YES) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const reply = await rl.question("Proceed? [y/N] ");
@@ -145,6 +160,15 @@ if (!ASSUME_YES) {
 }
 
 // ── 6. Deploy ───────────────────────────────────────────────────────────────
+// The clean check above raced the confirmation prompt. In a SHARED CHECKOUT —
+// which is this repo's documented failure mode, and the 2026-08-01 near-miss was
+// "actively-changing edits" — another process can dirty the tree while the
+// operator is reading the removal list. Re-checking here costs one git call and
+// closes exactly that window.
+if (!ALLOW_DIRTY && git("status", "--porcelain") !== dirty) {
+  die("the working tree changed while you were deciding. Nothing was sent — re-run.");
+}
+
 execFileSync("rsync", [...RSYNC, "./", `${HOST}:${DEST}/repo/`], { stdio: "inherit" });
 // `up -d --build`, never `docker compose restart` — restart reuses the env the
 // container was CREATED with and silently ignores env_file changes.
