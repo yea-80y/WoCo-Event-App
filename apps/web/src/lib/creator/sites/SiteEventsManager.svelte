@@ -57,7 +57,7 @@
         myEvents = [...cached].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
         if (siteEventsReady) loadState = "ready";
       }
-      const fresh = await swr.value.refresh();
+      const fresh = (await swr.value.refresh()).data;
       if (fresh && fresh.length > 0) {
         myEvents = [...fresh].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
       }

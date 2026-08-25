@@ -179,7 +179,7 @@
       mySites = swr.cached ? [...swr.cached] : [];
 
       // Refresh from Swarm in the background. On failure the cached view stays.
-      const apiSites = await swr.refresh();
+      const apiSites = (await swr.refresh()).data;
       if (_prevAddr !== addr) return;
       if (!apiSites) return;
       const apiIds = new Set(apiSites.map((s) => s.siteId));
