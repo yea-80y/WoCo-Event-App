@@ -418,7 +418,7 @@ sitesRouter.get("/mine", requireAuth, async (c) => {
  * quote or slash, so it holds even if an escaper downstream is ever bypassed
  * (#193). Every id-bearing route here reached `Topic.fromString`, the escaped
  * SITE_CONFIG and the owner-gated overwrite check without it. Nothing was
- * exploitable, but a guarantee that holds on one identifier and not its sibling
+ * reachable today, but a guarantee that holds on one identifier and not its sibling
  * is one refactor away from not holding at all (#213).
  */
 function malformedId(c: Context, name: "siteId" | "eventId") {
