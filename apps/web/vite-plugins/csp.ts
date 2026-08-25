@@ -23,6 +23,23 @@ import type { IndexHtmlTransformContext, Plugin } from "vite";
 
 type Policy = Record<string, string[]>;
 
+/**
+ * The origin the app's OWN bundle is fetched from, on every serving origin.
+ *
+ * `scripts/upload-to-swarm-feed.cjs` injects `<base href="{this}/bzz/{hash}/">`
+ * into index.html at pass 2 of the upload, so every relative `./assets/…` URL
+ * resolves HERE — whichever origin served the HTML.
+ *
+ * That makes it same-origin on gateway.woco-net.com and CROSS-origin on
+ * woco.eth.limo, which is why `'self'` alone is not enough and why the first
+ * release of this policy took the eth.limo build down while the gateway looked
+ * perfect: the bug is invisible from the origin that happens to match.
+ *
+ * MUST equal the origin in that upload script — `csp-asset-origin.test.ts`
+ * fails the build if the two drift.
+ */
+export const ASSET_ORIGIN = "https://gateway.woco-net.com";
+
 /** Serialise a policy object into a CSP string. */
 export function serialisePolicy(policy: Policy): string {
   return Object.entries(policy)
@@ -63,13 +80,16 @@ export function serialisePolicy(policy: Policy): string {
  * - VITE_OWNER_SCAN_FALLBACK_RPCS entries beyond the default Arbitrum endpoint
  *   need adding here too, or the owner scan silently loses its fallback.
  */
-const APP_POLICY: Policy = {
+export const APP_POLICY: Policy = {
   "default-src": ["'self'"],
-  "base-uri": ["'self'"],
+  // The injected <base href> points at ASSET_ORIGIN; without it here the tag is
+  // ignored and every relative asset URL 404s against the serving origin.
+  "base-uri": ["'self'", ASSET_ORIGIN],
   "object-src": ["'none'"],
   "form-action": ["'self'"],
   "script-src": [
     "'self'",
+    ASSET_ORIGIN, // our own JS chunks — see ASSET_ORIGIN
     "https://connect-js.stripe.com", // Connect embedded components loader (payouts screen)
     "https://js.stripe.com", // loaded BY connect.js per Stripe's documented CSP
     "https://hcaptcha.com",
@@ -77,6 +97,7 @@ const APP_POLICY: Policy = {
   ],
   "style-src": [
     "'self'",
+    ASSET_ORIGIN, // our own CSS — see ASSET_ORIGIN
     "'unsafe-inline'", // Web3Auth modal + Reown AppKit inject <style>; 27 components use style= attributes
     "https://fonts.googleapis.com",
     "https://hcaptcha.com",
@@ -141,7 +162,7 @@ const APP_POLICY: Policy = {
  * It talks to the indexer API and the Swarm gateway, loads the shared fonts, and
  * nothing else — so it starts from 'none' rather than inheriting the app policy.
  */
-const VERIFY_POLICY: Policy = {
+export const VERIFY_POLICY: Policy = {
   "default-src": ["'none'"],
   "base-uri": ["'self'"],
   "form-action": ["'none'"],
