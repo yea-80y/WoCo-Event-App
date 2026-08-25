@@ -29,7 +29,8 @@ export interface ResolvedSite {
  *   absent       the feed provably holds no site. A caller MAY treat the siteId
  *                as unclaimed.
  *   unavailable  neither could be established: a network fault, bytes that will
- *                not decode, a payload naming a different site. Nothing may be
+ *                not decode, a payload naming a different site, or a config with
+ *                no address to compare a caller against. Nothing may be
  *                concluded, and an authorisation gate must refuse.
  *
  * The ownership gates use this to answer "does someone already own this siteId?"
@@ -65,6 +66,20 @@ const DEFAULT_READERS: SiteConfigReaders = {
   readPointerTarget: readContentFeedJsonResult,
   readPagesPage: readFeedPage,
 };
+
+/**
+ * Is there an address here to compare a caller against?
+ *
+ * `ownerAddress` is stamped server-side from the verified `parentAddress` on
+ * every publish and deploy, so a site written by this code always has one. A
+ * config that does not is a fourth undecidable shape, not a site with an owner
+ * of `undefined` — and the three gates that ask this question are the
+ * takeover-prevention for sites (#246).
+ */
+const OWNER_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+function ownerIsEstablishable(site: Site): boolean {
+  return typeof site.ownerAddress === "string" && OWNER_ADDRESS_RE.test(site.ownerAddress);
+}
 
 export async function resolveSiteConfig(
   siteId: string,
@@ -114,6 +129,13 @@ export async function resolveSiteConfig(
       return { status: "unavailable", reason: "pointer target names a different siteId" };
     }
     site.ownerAddress = head.ownerAddress;
+    // The pointer is server-written, so this is belt-and-braces — but
+    // `isSitePointer` only checks that `ownerAddress` is a STRING, and an empty
+    // one would sail through to the gates and throw there instead of answering
+    // here.
+    if (!ownerIsEstablishable(site)) {
+      return { status: "unavailable", reason: "pointer carries no usable ownerAddress" };
+    }
     return { status: "found", site, siteFeedSigner: head.siteFeedSigner };
   }
 
@@ -123,11 +145,24 @@ export async function resolveSiteConfig(
   // document, a config naming a different siteId. The pointer branch already
   // refuses those; this branch used to cast and return them as `found`, which
   // contradicted this function's own contract and handed a malformed Site to the
-  // display paths. The gates fail closed on it either way (a missing or mismatched
-  // ownerAddress refuses a stranger), so this is correctness, not a second hole.
+  // display paths.
   const site = head as Site;
   if (!site?.siteId || site.siteId !== siteId) {
     return { status: "unavailable", reason: "config payload is not a site config for this siteId" };
+  }
+  // This branch used to validate `siteId` and nothing else, so a decodable config
+  // naming the right site but carrying no `ownerAddress` came back as `found`.
+  // Every gate then did `site.ownerAddress.toLowerCase()`, which throws on
+  // `undefined`, reaches the route's catch, and becomes a 500 — no log line
+  // naming the cause, and the caller told "server error" for what is a data
+  // condition. The outcome was fail-closed, so this was never a hole; the
+  // problem was that this function's own contract said "refuses" and what
+  // happened was an unhandled TypeError. Deciding it once here, rather than
+  // three times at the call sites, puts it with the other undecidable shapes and
+  // makes all three gates answer 503 "could not verify" — which is what they
+  // already do for every other unreadable case, and is true (#246).
+  if (!ownerIsEstablishable(site)) {
+    return { status: "unavailable", reason: "config carries no usable ownerAddress" };
   }
 
   // Pages live in their own split feed. A failed pages read stays non-fatal — the
