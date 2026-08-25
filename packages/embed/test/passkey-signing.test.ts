@@ -1,9 +1,15 @@
 /**
  * The embed's passkey claim signature, pinned to exact bytes.
  *
- * `signClaimDigest` produces the `signature` field of a passkey claim. The
- * server recovers an address from it and treats that address as the claimer, so
- * three things have to hold at once and only the first fails loudly:
+ * `signClaimDigest` produces the `signature` field of a passkey claim. A
+ * verifier recovers an address from it and treats that address as the claimer,
+ * so three things have to hold at once and only the first fails loudly.
+ *
+ * No server does that today — the route this posts to died with the v1 rail
+ * (#207), so the claim buttons reach a 404 (#206). These vectors therefore pin
+ * the format against ethers rather than against a live endpoint, which is the
+ * stronger thing to pin anyway: they will still be right when the v2 rail
+ * (#202) arrives, and they would catch a v3 @noble change in the meantime.
  *
  *   1. the call must not throw — @noble/curves v2 returns encoded BYTES where v1
  *      returned an object with `.r`/`.s`/`.recovery`, so the old code threw on
