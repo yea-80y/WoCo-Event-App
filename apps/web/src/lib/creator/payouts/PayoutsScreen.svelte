@@ -119,8 +119,8 @@
     const shopSWR = getMyShopsSWR(address);
     applyEventTitles(evSWR.cached);
     applyShopTitles(shopSWR.cached);
-    evSWR.refresh().then((fresh) => { if (token === loadToken) applyEventTitles(fresh); });
-    shopSWR.refresh().then((fresh) => { if (token === loadToken) applyShopTitles(fresh); });
+    evSWR.refresh().then((fresh) => { if (token === loadToken) applyEventTitles(fresh.data ?? null); });
+    shopSWR.refresh().then((fresh) => { if (token === loadToken) applyShopTitles(fresh.data ?? null); });
 
     const result = await swr.refresh();
     if (token !== loadToken) return;

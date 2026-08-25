@@ -29,7 +29,9 @@
     "https://gateway.woco-net.com";
 
   // ── Event loading ─────────────────────────────────────────────────────────
-  // Synchronous mount-time cache read (eventId is per-mount stable)
+  // Synchronous mount-time cache read. eventId is per-mount stable only because
+  // both hosts key this component on it (AttendeeApp, MultiSiteApp) — the key is
+  // what makes capturing it here safe (#242).
   // svelte-ignore state_referenced_locally
   const _KEY = cacheKey.event(eventId);
   const _cached = cacheGet<EventFeed>(_KEY);

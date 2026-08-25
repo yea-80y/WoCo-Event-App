@@ -21,7 +21,25 @@
   $effect(() => {
     if (!auth.isAuthenticated || refPostInFlight) return;
     void import("./lib/api/campaign.js").then(async (m) => {
-      const ref = m.readCapturedRef();
+      // A link that carried a sub-ENS name whose lookup did not answer on the
+      // landing page leaves the name stored with no address. Retry it here
+      // rather than dropping the referral: "error" is not "unregistered"
+      // (#177), and this is the next moment we are online.
+      async function resolvePendingName(): Promise<`0x${string}` | null> {
+        const capture = await import("./lib/campaign/referral-capture.js");
+        const pendingName = capture.unresolvedRefName();
+        if (!pendingName) return null;
+        const { resolveSubEnsAddress } = await import("./lib/api/sub-ens.js");
+        const res = await resolveSubEnsAddress(pendingName).catch(() => null);
+        // Only an unregistered name is a dead link worth forgetting; an
+        // unanswered lookup keeps the name for the next authenticated visit.
+        if (res?.status === "none") { m.clearCapturedRef(); return null; }
+        if (res?.status !== "found") return null;
+        capture.storeCapturedRef(res.address);
+        return capture.readCapturedRef();
+      }
+
+      const ref = m.readCapturedRef() ?? (await resolvePendingName());
       if (!ref) return;
       if (auth.parent && ref === auth.parent.toLowerCase()) {
         m.clearCapturedRef();

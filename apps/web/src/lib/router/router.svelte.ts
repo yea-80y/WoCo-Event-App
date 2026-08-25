@@ -165,11 +165,39 @@ function matchRoute(pathWithQuery: string): Match {
 }
 
 function update() {
-  // Referral capture: #/ref/{address} isn't a screen — persist the referrer
-  // and land on discover. Lazy import keeps wallet deps out of the router.
-  const refMatch = parseHash().match(/^\/ref\/(0x[0-9a-fA-F]{40})$/);
+  // Referral capture: #/ref/{referrer} isn't a screen — persist the referrer
+  // and land on discover. The referrer is an address OR a WoCo sub-ENS name, so
+  // an organiser can share `#/ref/theirvenue` instead of forty hex characters.
+  //
+  // The lazy import points at the dependency-free capture module rather than
+  // the API client, so an address link costs a few lines instead of the client
+  // + auth graph; the resolver is only pulled when a link actually carries a
+  // name.
+  const refMatch = parseHash().match(/^\/ref\/([^/?#]+)$/);
   if (refMatch) {
-    void import("../api/campaign.js").then((m) => m.storeCapturedRef(refMatch[1]));
+    void import("../campaign/referral-capture.js").then(async (m) => {
+      const token = m.classifyRefToken(decodeURIComponent(refMatch[1]));
+      // One call for either kind: it replaces the whole previous capture, so a
+      // second invite can never inherit the first one's name or address.
+      m.beginCapture(token);
+      if (token.kind !== "name") return;
+      // The name is stored BEFORE it resolves. Resolution is a network read and
+      // may fail; the visitor is owed the acknowledgement either way, and the
+      // post path re-resolves later so a registrar blip does not cost the
+      // referrer their credit.
+      const { resolveSubEnsAddress } = await import("../api/sub-ens.js");
+      const res = await resolveSubEnsAddress(token.label).catch(() => null);
+      if (res?.status === "found") {
+        m.storeCapturedRef(res.address);
+      } else if (res?.status === "none") {
+        // "none" is the registrar answering that the name is not registered —
+        // authoritative, so forget the capture here rather than leaving a dead
+        // name pending and telling the visitor someone will get the credit.
+        // "error" is nobody answering and must never be read as absence (#177),
+        // so that case alone leaves the name for the post path to retry.
+        m.clearCapturedRef();
+      }
+    });
     window.location.replace(`${window.location.pathname}#/discover`);
     return;
   }

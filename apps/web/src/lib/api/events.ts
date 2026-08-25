@@ -289,8 +289,20 @@ export async function listEvents(): Promise<SnapshotCard[]> {
  * (never trimmed by unlist), unlike the global directory scan it replaces.
  */
 export async function getEventsByCreator(address: string): Promise<EventDirectoryEntry[]> {
-  const resp = await get<EventDirectoryEntry[]>(`/api/events/by-creator/${address.toLowerCase()}`);
-  return resp.data ?? [];
+  return (await getEventsByCreatorResult(address)).data ?? [];
+}
+
+/**
+ * Envelope form of the same read, for callers that must tell an organiser with
+ * no events from a read that did not answer (#291).
+ *
+ * The `?? []` above cannot: a 500 and an empty catalogue both arrive as `[]`,
+ * which a profile page renders as "No events yet". The lossy form is kept
+ * because its other callers genuinely do not care — they are populating a
+ * picker, and an empty picker is the right answer either way.
+ */
+export async function getEventsByCreatorResult(address: string) {
+  return get<EventDirectoryEntry[]>(`/api/events/by-creator/${address.toLowerCase()}`);
 }
 
 /**

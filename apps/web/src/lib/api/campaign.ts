@@ -39,31 +39,39 @@ export function getBadge(address: Hex0x) {
   return get<BadgeRecord | null>(`/api/campaign/badges/${address}`);
 }
 
-/** The shareable referral link for an account. */
-export function referralLink(address: Hex0x): string {
-  return `${window.location.origin}${window.location.pathname}#/ref/${address}`;
+/**
+ * The shareable referral link for an account — deliberately whatever origin and
+ * path the sharer is browsing.
+ *
+ * #34 proposed rewriting this to drop a versioned `/bzz/{hash}/` prefix, on the
+ * grounds that sharing from one pins the recipient to a frozen build. Checked
+ * against the live gateways before building it, and it does not hold:
+ *
+ *   - gateway.woco-net.com serves the app ONLY under /bzz/{hash}/. Its origin
+ *     root 404s, so stripping the prefix produces a dead link — worse than the
+ *     defect it was meant to fix.
+ *   - the path normally browsed there is the FEED MANIFEST hash, which is
+ *     stable across deploys and resolves to the current build. A link shared
+ *     from it was never frozen.
+ *
+ * A fixed canonical host was the other option and is worse again: it bakes one
+ * gateway into every build, and an old build would emit whatever host was
+ * canonical when it was built — the same frozen-pointer problem one level up.
+ *
+ * `referrer` is an address or a WoCo sub-ENS label — the router accepts both,
+ * so a sharer with a name gets `#/ref/theirvenue` instead of forty hex
+ * characters, and the visitor who follows it is told a name rather than hex.
+ */
+export function referralLink(referrer: Hex0x | string): string {
+  return `${window.location.origin}${window.location.pathname}#/ref/${referrer}`;
 }
 
-// ---------------------------------------------------------------------------
-// Ref-link capture — persisted until the visitor's first authenticated moment,
-// then posted as a pending attribution (App.svelte effect). Kept in this light
-// module so the router can import it without dragging in wallet/kernel deps.
-// ---------------------------------------------------------------------------
-
-const REF_STORAGE_KEY = "woco:ref";
-
-/** Persist a referral capture (from #/ref/{address}) until first sign-in. */
-export function storeCapturedRef(referrer: string): void {
-  if (/^0x[0-9a-fA-F]{40}$/.test(referrer)) {
-    localStorage.setItem(REF_STORAGE_KEY, referrer.toLowerCase());
-  }
-}
-
-export function readCapturedRef(): Hex0x | null {
-  const v = localStorage.getItem(REF_STORAGE_KEY);
-  return v && /^0x[0-9a-f]{40}$/.test(v) ? (v as Hex0x) : null;
-}
-
-export function clearCapturedRef(): void {
-  localStorage.removeItem(REF_STORAGE_KEY);
-}
+// Ref-link capture moved to lib/campaign/referral-capture.ts, which imports
+// nothing — the router reaches capture on every hash change and should not pull
+// the API client (and through it a runes module) to write one string.
+// Re-exported so existing callers are unaffected.
+export {
+  storeCapturedRef,
+  readCapturedRef,
+  clearCapturedRef,
+} from "../campaign/referral-capture.js";
