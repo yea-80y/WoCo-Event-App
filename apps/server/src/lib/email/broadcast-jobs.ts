@@ -211,9 +211,10 @@ export interface BroadcastJob {
   sent: number;
   suppressed: number;
   /**
-   * Delivered DESPITE an active suppression mark, because this job is a service
-   * notice. Kept out of `sent` deliberately: this is the number that has to be
-   * answerable later, and one folded into a total cannot be.
+   * ADMITTED PAST an active suppression mark, because this job is a service
+   * notice — counted at the gate, so it includes a crossing whose message then
+   * failed (#391). Kept out of `sent` deliberately: this is the number that has
+   * to be answerable later, and one folded into a total cannot be.
    */
   crossed: number;
   failed: number;
@@ -736,7 +737,7 @@ export function destroyPayload(jobId: string, chunkCount: number): number {
 export interface ChunkOutcome {
   sent: number;
   suppressed: number;
-  /** Delivered over a crossable suppression mark — see `BroadcastJob.crossed`. */
+  /** Admitted past a crossable suppression mark — see `BroadcastJob.crossed`. */
   crossed: number;
   failed: number;
   sentHashes: string[];

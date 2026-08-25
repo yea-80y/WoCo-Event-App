@@ -14,7 +14,7 @@
 import type { Context, Next } from "hono";
 import type { AppEnv } from "../types.js";
 import type { PaymentChainId } from "@woco/shared";
-import { USDC_ADDRESSES, CHAIN_NAMES } from "@woco/shared";
+import { USDC_ADDRESSES } from "@woco/shared";
 import { getEvent } from "../lib/event/service.js";
 import { getEscrowAddress } from "../lib/payment/constants.js";
 

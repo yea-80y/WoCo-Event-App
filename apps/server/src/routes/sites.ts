@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { Topic, Reference } from "@ethersphere/bee-js";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
@@ -13,6 +14,7 @@ import {
   injectBeforeHeadClose,
   siteConfigScript,
   resolveDeployUrls,
+  isSafeIdParam,
 } from "../lib/site/deploy-config.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
@@ -26,7 +28,6 @@ import {
   getPlatformSigner,
   getPlatformOwner,
   BEE_URL,
-  POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired, type BatchSelection } from "../lib/etherna/batch-router.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
@@ -274,6 +275,15 @@ sitesRouter.post("/", requireAuth, async (c) => {
     if (!body?.site?.siteId) {
       return c.json({ ok: false, error: "Invalid site data" }, 400);
     }
+    // The SAME shape guard the read/deploy routes below now apply. Without it
+    // this PR would create the asymmetry it exists to close: an id that only has
+    // to be PRESENT here, but must be well-formed everywhere else, makes a
+    // malformed site creatable and then permanently unreadable and undeployable
+    // through every guarded route. The guard belongs at the point the id enters
+    // the system, not only where it is used (#213).
+    if (!isSafeIdParam(body.site.siteId)) {
+      return c.json({ ok: false, error: "siteId is malformed" }, 400);
+    }
     if (body.gatewayUrl !== undefined && typeof body.gatewayUrl !== "string") {
       return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
     }
@@ -407,8 +417,25 @@ sitesRouter.get("/mine", requireAuth, async (c) => {
 // GET /api/sites/:id — read site config (public)
 // ---------------------------------------------------------------------------
 
+/**
+ * Refuse an id whose SHAPE is wrong, before it reaches a feed topic or the
+ * deployed page's config.
+ *
+ * `site.ts:73` already does this for `eventId` on the reasoning that the shape
+ * is a security property rather than hygiene — the charset admits no `<`, `>`,
+ * quote or slash, so it holds even if an escaper downstream is ever bypassed
+ * (#193). Every id-bearing route here reached `Topic.fromString`, the escaped
+ * SITE_CONFIG and the owner-gated overwrite check without it. Nothing was
+ * reachable today, but a guarantee that holds on one identifier and not its sibling
+ * is one refactor away from not holding at all (#213).
+ */
+function malformedId(c: Context, name: "siteId" | "eventId") {
+  return c.json({ ok: false, error: `${name} is malformed` }, 400);
+}
+
 sitesRouter.get("/:id", async (c) => {
   const siteId = c.req.param("id");
+  if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
   try {
     const site = await readSiteConfig(siteId);
     if (!site) return c.json({ ok: false, error: "Site not found" }, 404);
@@ -424,6 +451,7 @@ sitesRouter.get("/:id", async (c) => {
 
 sitesRouter.get("/:id/events", async (c) => {
   const siteId = c.req.param("id");
+  if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
   try {
     const topic = Topic.fromString(siteEventsIndexTopic(siteId));
     const page = await readFeedPage(topic);
@@ -456,6 +484,7 @@ const SITE_EVENTS_FULL_TTL_MS = 5 * 60_000;
 
 sitesRouter.get("/:id/events-full", async (c) => {
   const siteId = c.req.param("id");
+  if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
   try {
     const now = Date.now();
     const cached = _siteEventsFull.get(siteId);
@@ -503,6 +532,7 @@ sitesRouter.get("/:id/events-full", async (c) => {
 sitesRouter.post("/:id/events", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const siteId = c.req.param("id");
+  if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
 
   try {
     const site = await readSiteConfig(siteId);
@@ -556,7 +586,9 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
 sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const siteId = c.req.param("id");
+  if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
   const eventId = c.req.param("eventId");
+  if (!isSafeIdParam(eventId)) return malformedId(c, "eventId");
 
   try {
     const site = await readSiteConfig(siteId);
@@ -591,6 +623,7 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
 
 sitesRouter.post("/:id/contact", async (c) => {
   const siteId = c.req.param("id");
+  if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
   const ip = clientIp(c);
   const now = Date.now();
   const hits = (contactRateMap.get(ip) ?? []).filter((t) => now - t < CONTACT_RATE_WINDOW);
@@ -647,6 +680,7 @@ sitesRouter.post("/:id/contact", async (c) => {
 sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const siteId = c.req.param("id");
+  if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
 
   let tmpDir: string | null = null;
   let tarPath: string | null = null;

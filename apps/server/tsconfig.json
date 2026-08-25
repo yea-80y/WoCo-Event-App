@@ -4,11 +4,15 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noEmit": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

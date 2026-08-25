@@ -23,7 +23,6 @@ import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { normalizeEmails } from "../lib/marketing/emails.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
 import { consentedSubset } from "../lib/marketing/consent-store.js";
-import { capRemaining, recordSend } from "../lib/marketing/send-cap.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
 import {
@@ -68,12 +67,19 @@ const MAX_LIST_EMAILS = MARKETING_MAX_LIST_EMAILS;
  * blob, NOT the thing that makes a legitimate max-size list fit.
  */
 const MAX_SEALED_JSON = 6_000_000;
-const MAX_BROADCAST_RECIPIENTS = 1000;
 
-/** Marketing broadcast rate limit: 2/hour per organiser. */
-const broadcastRateMap = new Map<string, number[]>();
-const BROADCAST_RATE_LIMIT = 2;
-const BROADCAST_RATE_WINDOW = 3_600_000;
+/**
+ * The window the TEST-SEND limiter uses. It was named BROADCAST_RATE_WINDOW and
+ * sat beside a `broadcastRateMap` / `BROADCAST_RATE_LIMIT = 2` pair documented
+ * as "2/hour per organiser" — which nothing applied. The broadcast endpoint
+ * moved to `routes/broadcast-jobs.ts`, which enforces the DAILY VOLUME cap
+ * (`capRemaining` + `reserveSend`) but not the hourly FREQUENCY limit, and the
+ * three dead symbols stayed behind with a comment asserting a control that no
+ * longer existed. Removed rather than left looking load-bearing; the missing
+ * frequency limit is recorded in its own issue so the deletion is a decision
+ * rather than a silent loss — see #410.
+ */
+const TEST_SEND_RATE_WINDOW = 3_600_000;
 
 interface SealedBoxShape {
   ephemeralPublicKey: string;
@@ -325,7 +331,7 @@ marketing.post("/broadcast/test", requireAuth, async (c) => {
 
     const now = Date.now();
     const timestamps = testSendRateMap.get(org) ?? [];
-    const recent = timestamps.filter((t) => now - t < BROADCAST_RATE_WINDOW);
+    const recent = timestamps.filter((t) => now - t < TEST_SEND_RATE_WINDOW);
     if (recent.length >= TEST_SEND_RATE_LIMIT) {
       return c.json({ ok: false, error: "Rate limit exceeded (5 test sends per hour)" }, 429);
     }
