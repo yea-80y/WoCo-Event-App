@@ -10,6 +10,7 @@
   // From its own module: importing this key from envelope-reprobe.ts would hoist
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
+  import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
 
@@ -19,6 +20,9 @@
   }
 
   let { open = $bindable(false), onclose }: Props = $props();
+
+  // Declare that this bundle can carry a login to a conclusion (#194).
+  onMount(() => loginRequest.register());
 
   // Modal is visible if either prop-driven or store-driven
   const visible = $derived(open || loginRequest.pending);

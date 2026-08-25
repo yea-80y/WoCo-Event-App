@@ -4,6 +4,10 @@
   // offers wallet login only. Email/social login here (Web3Auth) is a follow-up —
   // it does not block event loading. Restoring the dead import broke `build:site`.
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { onMount } from "svelte";
+
+  // Declare that this bundle can carry a login to a conclusion (#194).
+  onMount(() => loginRequest.register());
 
   const visible = $derived(loginRequest.pending);
 
