@@ -12,7 +12,7 @@ import type {
   OrderEntry,
 } from "@woco/shared";
 export type { OrderEntry };
-import { authPost, authGet, get, apiBase, buildAuthHeaders, currentSiteId } from "./client.js";
+import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import { eventContentTopic } from "@woco/shared";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
@@ -85,13 +85,12 @@ export async function createEventStreaming(
   }
   const bodyText = JSON.stringify(req);
   const path = "/api/events";
-  const authHeaders = await buildAuthHeaders("POST", path, bodyText);
-
-  const resp = await fetch(`${base}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders },
-    body: bodyText,
-  });
+  // Through authStream, not a hand-rolled fetch: publish is a path passkey
+  // organisers hit routinely, and building headers here kept the pre-#107
+  // behaviour where a rejected delegation wedged the user until they signed out
+  // and back in (#108). authStream recovers once and replays, which is safe
+  // because requireAuth rejects before the handler runs.
+  const resp = await authStream("POST", path, bodyText, base);
 
   if (!resp.ok) {
     try {

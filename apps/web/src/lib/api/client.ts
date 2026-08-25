@@ -277,8 +277,82 @@ export async function authDelete<T>(path: string, baseUrl?: string): Promise<Api
   return authFetch<T>("DELETE", path, null, baseUrl);
 }
 
-/** Exported so callers that need to build a custom fetch (streaming, etc.) can reuse the same auth flow. */
-export { buildAuthHeaders };
+/**
+ * Authenticated request whose RESPONSE BODY the caller reads itself — the
+ * streaming case, where `authFetch` cannot help because it consumes the body as
+ * JSON.
+ *
+ * Exists so `buildAuthHeaders` does not have to be exported. A hand-rolled
+ * caller keeps the pre-#107 behaviour: the server rejects the delegation, the
+ * caller surfaces a raw error, and the user stays wedged until they manually
+ * sign out and back in — the exact failure one-shot recovery was added to
+ * remove (#108). An invariant with one permitted exception is one nobody can
+ * check, so there is now no exception: this module is the only place auth
+ * headers are built, enforced by the module system rather than by a rule.
+ *
+ * Replaying a rejected request is safe: `requireAuth` rejects BEFORE the route
+ * handler runs, so a rejected publish has no side effects to replay
+ * (`apps/server/test/auth-rejection-codes.test.ts` pins that).
+ *
+ * `bodyText === null` means "no request body" — distinct from an empty string,
+ * which would still set Content-Type.
+ */
+export async function authStream(
+  method: string,
+  path: string,
+  bodyText: string | null,
+  baseUrl?: string,
+): Promise<Response> {
+  const send = async (): Promise<Response> => {
+    const authHeaders = await buildAuthHeaders(method, path, bodyText ?? "");
+    return fetch(`${baseUrl ?? BASE}${path}`, {
+      method,
+      headers:
+        bodyText === null
+          ? authHeaders
+          : { "Content-Type": "application/json", ...authHeaders },
+      ...(bodyText === null ? {} : { body: bodyText }),
+    });
+  };
+
+  const generation = _recoveryGeneration;
+  const resp = await send();
+  if (resp.ok) {
+    sessionHealth.clear();
+    return resp;
+  }
+
+  // Peek at the error through a CLONE: the caller still owns the original body
+  // and reads it for its own error message when we hand this response back.
+  const body = await resp
+    .clone()
+    .json()
+    .catch(() => null) as { code?: string } | null;
+  if (body?.code !== AuthErrorCode.SESSION_INVALID) return resp;
+
+  await recoverSession(generation);
+
+  const retried = await send();
+  if (retried.ok) {
+    sessionHealth.clear();
+    return retried;
+  }
+  const retriedBody = await retried
+    .clone()
+    .json()
+    .catch(() => null) as { code?: string } | null;
+  if (retriedBody?.code === AuthErrorCode.SESSION_INVALID) {
+    // Same reasoning as authFetch: a freshly-minted delegation rejected the
+    // same way is not curable by minting another.
+    _recoverySuppressedUntil = Date.now() + RECOVERY_SUPPRESSION_MS;
+    sessionHealth.markEnded();
+    console.warn(
+      "[api] a freshly-minted session was rejected too — pausing recovery; " +
+        "check ALLOWED_HOSTS and the account's on-chain owner",
+    );
+  }
+  return retried;
+}
 
 /** Unauthenticated GET request. */
 export async function get<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
