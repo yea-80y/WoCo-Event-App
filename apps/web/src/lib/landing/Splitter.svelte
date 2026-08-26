@@ -41,7 +41,7 @@
     </button>
     <nav class="top-nav">
       <button class="link" onclick={() => navigate("/discover")}>Discover</button>
-      <button class="link" onclick={() => navigate("/creator")}>Creator portal</button>
+      <button class="link" onclick={() => navigate("/creator")}>For organisers</button>
       {#if auth.isConnected}
         <button class="btn btn--ghost btn-sm" onclick={() => navigate("/soon/tickets")}>My tickets</button>
       {:else}
@@ -63,7 +63,7 @@
     <div class="hero-inner">
       <div class="hero-kicker">
         <span class="live-dot" aria-hidden="true"></span>
-        <span class="mono-kicker">// TICKETING FOR PEOPLE WHO PUT THINGS ON</span>
+        <span class="mono-kicker">// TICKETING AND WEBSITES FOR EVENT ORGANISERS</span>
       </div>
 
       <h1 class="hero-headline">
@@ -71,9 +71,8 @@
       </h1>
 
       <p class="hero-sub">
-        Sell tickets, run it on your own page, and build a following that
-        stays yours — even if you leave. 1.5% when you sell.
-        No monthly bill.
+        Sell tickets from your own page and build a following that stays
+        yours — even if you leave. 1.5% when you sell, no monthly bill.
       </p>
 
       <div class="hero-ctas">
@@ -82,8 +81,8 @@
             <TicketStub size={32} color="currentColor" />
           </span>
           <span class="cta-body">
-            <span class="cta-label">I put things on</span>
-            <span class="cta-sub">Set up an event and sell tickets</span>
+            <span class="cta-label">Host an event</span>
+            <span class="cta-sub">Set it up and start selling tickets</span>
           </span>
           <span class="cta-arrow"><ArrowRight size={20} strokeWidth={2.25} /></span>
         </button>
@@ -93,8 +92,8 @@
             <DoorOpen size={32} color="currentColor" />
           </span>
           <span class="cta-body">
-            <span class="cta-label">I'm buying tickets</span>
-            <span class="cta-sub">Find what's on near you</span>
+            <span class="cta-label">Discover events</span>
+            <span class="cta-sub">See what's on near you</span>
           </span>
           <span class="cta-arrow"><ArrowRight size={20} strokeWidth={2.25} /></span>
         </button>
@@ -157,15 +156,14 @@
         <span class="usp-icon"><Users size={22} strokeWidth={2.25} /></span>
         <h2>Your followers stay yours.</h2>
         <p>
-          On other platforms, the follow belongs to the platform. It sends the
-          alerts, on its schedule. You can't take that following anywhere, and
-          if the platform folds or drops you, it's gone — the people are still
-          out there, but your connection to them isn't.
+          On other platforms, your followers belong to the platform. It sends
+          the alerts, on its schedule, and you can't take the list anywhere. If
+          the platform folds or drops you, it's gone.
         </p>
         <p>
-          Here, a follow belongs to the person who made it. They keep it, we
-          don't. We can't hold it hostage, it isn't locked to us, and if WoCo
-          disappeared tomorrow your following would still be there.
+          Here, a follow belongs to the person who made it. We can't hold it
+          hostage, and if WoCo disappeared tomorrow your following would still
+          be there.
         </p>
       </div>
     </article>
@@ -178,21 +176,19 @@
         <h2>Every ticket becomes a memento.</h2>
         <p>
           The ticket doesn't die at the door. It stays on their phone as a
-          digital memento of being there — and you can build on it. Open the
-          presale to everyone who came last time. Put a fiver off the third
-          time somebody comes. Give the people who actually turned up first
-          refusal.
+          memento of being there — and you can build on it. Open the presale to
+          everyone who came last time. Put a fiver off the third visit. Give
+          the people who actually turned up first refusal.
         </p>
         <p>
-          You don't need to have collected their email to do any of it. The
-          ticket is the proof they were there.
+          No email address needed. The ticket is the proof they were
+          there.
         </p>
         <p class="usp-aside">
-          And because it's a real thing they hold rather than a line in our
-          records, it doesn't have to stop here. A stub that gets you into a
-          presale could just as easily unlock something in a game, a discount
-          at a local shop, or early access to somebody else's event. That's
-          the direction this is going.
+          And because it's a real thing they hold, it doesn't have to stop
+          here. The same stub could unlock a discount at a local shop, early
+          access to somebody else's event, or something in a game. That's the
+          direction this is going.
         </p>
       </div>
     </article>
@@ -204,15 +200,14 @@
         <span class="usp-icon"><Shield size={22} strokeWidth={2.25} /></span>
         <h2>The door works without internet.</h2>
         <p>
-          The scanner downloads your tickets in advance, then checks each one
-          on the phone itself. Nothing to connect to, so a cellar bar or a
-          field with no phone signal scans just as fast as anywhere else.
+          The scanner downloads your tickets in advance and checks each one on
+          the phone itself. Nothing to connect to, so a cellar bar or a field
+          scans just as fast as anywhere else.
         </p>
         <p>
-          There's no list to look up, so there's nothing to fail to find. And
-          when the ticket holder has an account, their phone signs a fresh
-          code on arrival — so a screenshot going round a group chat gets
-          nobody in.
+          There's no list to look up, so nothing to fail to find. And when the
+          ticket holder has an account, their phone signs a fresh code on
+          arrival — so a screenshot in a group chat gets nobody in.
         </p>
       </div>
     </article>
@@ -227,17 +222,15 @@
         <h2>Your name on it, not ours.</h2>
         <p>
           The page is yours — your artwork, your colours, your name at the top.
-          No WoCo logo in the corner, and no eleven other events down the side
-          of it.
+          No WoCo logo in the corner, no eleven other events down the side.
         </p>
         <p>
-          Point your own domain at it if you've got one. If you haven't, you
-          get a free web address with your name at the front, and you can swap
-          to your own whenever you like.
+          Point your own domain at it, or use the free web address with your
+          name at the front and swap to your own later.
         </p>
         <p>
-          Need a full website? Build that here too — pages, artwork, your
-          events on it, no separate subscription.
+          Need a full website? Build it here too — pages, artwork, your events
+          on it, no separate subscription.
         </p>
       </div>
     </article>
@@ -250,12 +243,12 @@
         <h2>Charge a booking fee. Keep it.</h2>
         <p>
           Every platform adds a booking fee and pockets it. Set yours here and
-          it's yours. We take 1.5% of the ticket price and nothing else.
+          it's yours. We take 1.5% of the ticket price, nothing else.
         </p>
         <p>
           A £20 ticket with a 10% booking fee: the buyer pays £22, 30p comes to
-          us, and the rest is yours once the card fee's paid. Or charge nothing
-          and let the ticket be £20. Your call, event by event.
+          us, the rest is yours once the card fee's paid. Or charge nothing at
+          all. Your call, event by event.
         </p>
       </div>
     </article>
@@ -270,10 +263,8 @@
         <h2>Bring your mailing list. The boring bit is done.</h2>
         <p>
           Import from Eventbrite, Ticket Tailor or a spreadsheet and you've
-          moved.
-          Unsubscribes, consent records and the one-click opt-out the rules now
-          require are built in and run on every send, so it isn't a spreadsheet
-          you're keeping by hand any more.
+          moved. Unsubscribes, consent records and the one-click opt-out the
+          rules require are built in and run on every send.
         </p>
         <p>
           Then email your people from here. Emailing your own ticket buyers is
@@ -281,7 +272,7 @@
         </p>
         <p>
           And when someone follows you, they can opt in to hear from you
-          directly — so your list is people who actually asked for it.
+          directly — so your list is people who actually asked.
         </p>
       </div>
     </article>
@@ -323,8 +314,8 @@
         <SprayCan size={42} color="var(--text)" paintColor="var(--accent)" />
         <h2>Put your next event on sale.</h2>
         <p>
-          Free to set up. 1.5% when you sell. The following you build here is
-          yours to keep.
+          Free to set up. 1.5% when you sell. The following you build is yours
+          to keep.
         </p>
         <div class="closing-actions">
           <button class="btn btn--primary btn--lg" onclick={() => navigate("/creator")}>
@@ -332,7 +323,7 @@
             <ArrowRight size={18} strokeWidth={2.5} />
           </button>
           <button class="link link-quiet" onclick={() => navigate("/discover")}>
-            or have a look at what's on →
+            or see what's on →
           </button>
         </div>
       </div>
@@ -344,7 +335,7 @@
     <div class="footer-grid">
       <div class="footer-brand">
         <WocoWordmark height={28} variant="ink" />
-        <p class="footer-line">Ticketing and websites for people who put things on.</p>
+        <p class="footer-line">Ticketing and websites for event organisers.</p>
       </div>
       <div class="footer-cols">
         <div class="footer-col">
