@@ -28,7 +28,6 @@ import {
   getPlatformSigner,
   getPlatformOwner,
   BEE_URL,
-  POSTAGE_BATCH_ID,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired, type BatchSelection } from "../lib/etherna/batch-router.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";

@@ -66,11 +66,43 @@ test("spelling does not change the bucket", () => {
   ]) {
     assert.equal(normaliseClientIp(variant), canonical, `variant keyed differently: ${variant}`);
   }
+
+  // The name claimed a universal the code did not deliver (#221): an IPv4-mapped
+  // address has three spellings and only the dotted one was recognised. The
+  // other two fell to the /64 path and keyed `0:0:0:0::/64`.
+  const v4 = normaliseClientIp("203.0.113.7");
+  for (const variant of [
+    "::ffff:203.0.113.7",         // dotted-mapped
+    "::ffff:cb00:7107",           // hex-mapped — 0xcb00 = 203.0, 0x7107 = 113.7
+    "0:0:0:0:0:ffff:203.0.113.7", // expanded-mapped
+    "::FFFF:CB00:7107",           // upper case
+  ]) {
+    assert.equal(normaliseClientIp(variant), v4, `variant keyed differently: ${variant}`);
+  }
 });
 
 test("an IPv4-mapped address lands in the IPv4 caller's bucket", () => {
   assert.equal(normaliseClientIp("::ffff:203.0.113.7"), "203.0.113.7");
   assert.equal(normaliseClientIp("::ffff:203.0.113.7"), normaliseClientIp("203.0.113.7"));
+  assert.equal(normaliseClientIp("::ffff:cb00:7107"), "203.0.113.7");
+  assert.equal(normaliseClientIp("0:0:0:0:0:ffff:203.0.113.7"), "203.0.113.7");
+});
+
+test("two hex-mapped IPv4 callers do not collide, as they used to", () => {
+  // The converse of the defect above, and the one that mattered: EVERY
+  // hex-spelled IPv4 address keyed the single bucket `0:0:0:0::/64`, so
+  // unrelated machines shared one allowance and one of them could spend it.
+  assert.equal(normaliseClientIp("::ffff:102:304"), "1.2.3.4");
+  assert.equal(normaliseClientIp("::ffff:506:708"), "5.6.7.8");
+  assert.notEqual(normaliseClientIp("::ffff:102:304"), normaliseClientIp("::ffff:506:708"));
+});
+
+test("an IPv4-COMPATIBLE address is not treated as mapped", () => {
+  // `::1.2.3.4` has no ffff prefix. It is a deprecated form and not evidence of
+  // an IPv4 caller, so it stays on the /64 path — the mapped check must key on
+  // the ffff hextet, not merely on there being a dotted tail.
+  assert.equal(normaliseClientIp("::1.2.3.4"), "0:0:0:0::/64");
+  assert.notEqual(normaliseClientIp("::1.2.3.4"), normaliseClientIp("1.2.3.4"));
 });
 
 test("IPv4 is used whole — the whole address is the caller", () => {
@@ -82,9 +114,46 @@ test("an unrecognised value keeps its own bucket rather than joining unknown", (
   // Collapsing it into UNKNOWN_CLIENT would let one malformed value share a
   // bucket with the header-less case, and with every other malformed value.
   const odd = normaliseClientIp("not-an-address");
-  assert.equal(odd, "not-an-address");
   assert.notEqual(odd, UNKNOWN_CLIENT);
   assert.notEqual(odd, normaliseClientIp("also-not-an-address"));
+
+  // The name was false for one input, and it was the input that mattered: the
+  // literal "unknown" normalised to exactly UNKNOWN_CLIENT, so a caller could
+  // choose to join the shared header-less bucket. Literal keys are namespaced
+  // now, which makes the two keyspaces disjoint by construction (#221).
+  assert.notEqual(normaliseClientIp("unknown"), UNKNOWN_CLIENT);
+  assert.notEqual(normaliseClientIp("unknown"), normaliseClientIp("not-an-address"));
+});
+
+test("no literal can be spelled to land in a real address's bucket", () => {
+  // The other half of the same property. A literal that LOOKS like a normalised
+  // key must not become one — otherwise the value a caller sends decides which
+  // bucket it shares, which is the property this whole module exists to deny.
+  // NOT "203.0.113.7 " — a whitespace-padded real address is the same caller and
+  // SHOULD trim into the same bucket; the test above asserts exactly that. It is
+  // an impostor only if the value is not that address.
+  for (const impostor of ["unknown", "2001:db8:1:2::/64", "raw:203.0.113.7", "0:0:0:0::/64"]) {
+    const key = normaliseClientIp(impostor);
+    assert.notEqual(key, normaliseClientIp("203.0.113.7"), `impostor reached an IPv4 bucket: ${impostor}`);
+    assert.notEqual(key, normaliseClientIp("2001:db8:1:2:3:4:5:6"), `impostor reached a /64 bucket: ${impostor}`);
+    assert.notEqual(key, UNKNOWN_CLIENT, `impostor reached the shared bucket: ${impostor}`);
+  }
+});
+
+test("whitespace around a real address does not mint a second bucket", () => {
+  // Handled by the trim() in normaliseClientIp, previously untested.
+  assert.equal(normaliseClientIp("  203.0.113.7  "), "203.0.113.7");
+  assert.equal(normaliseClientIp("\t2001:db8:1:2:3:4:5:6\n"), normaliseClientIp("2001:db8:1:2:3:4:5:6"));
+});
+
+test("an IPv4 with leading zeros keeps its own bucket — deliberately", () => {
+  // `isIPv4` rejects `203.0.113.007`, so it is not treated as an address. That
+  // is the RIGHT answer rather than a gap: accepting a form Node rejects would
+  // mean parsing octets ourselves, and the ambiguity (octal? decimal?) is the
+  // reason it is rejected. It gets a literal bucket, distinct from the canonical
+  // spelling — which costs one bucket and grants nothing.
+  assert.notEqual(normaliseClientIp("203.0.113.007"), normaliseClientIp("203.0.113.7"));
+  assert.notEqual(normaliseClientIp("203.0.113.007"), UNKNOWN_CLIENT);
 });
 
 test("the edge value is normalised, not passed through raw", () => {
