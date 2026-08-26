@@ -63,7 +63,7 @@
     <div class="hero-inner">
       <div class="hero-kicker">
         <span class="live-dot" aria-hidden="true"></span>
-        <span class="mono-kicker">// TICKETING FOR PEOPLE WHO PUT ON NIGHTS</span>
+        <span class="mono-kicker">// TICKETING FOR PEOPLE WHO PUT THINGS ON</span>
       </div>
 
       <h1 class="hero-headline">
@@ -71,8 +71,8 @@
       </h1>
 
       <p class="hero-sub">
-        Sell tickets, run the night on your own page, and build a following
-        that stays yours — even if you leave. 1.5% when you sell.
+        Sell tickets, run it on your own page, and build a following that
+        stays yours — even if you leave. 1.5% when you sell.
         No monthly bill.
       </p>
 
@@ -82,8 +82,8 @@
             <TicketStub size={32} color="currentColor" />
           </span>
           <span class="cta-body">
-            <span class="cta-label">I put on nights</span>
-            <span class="cta-sub">Set one up and put tickets on sale</span>
+            <span class="cta-label">I put things on</span>
+            <span class="cta-sub">Set up an event and sell tickets</span>
           </span>
           <span class="cta-arrow"><ArrowRight size={20} strokeWidth={2.25} /></span>
         </button>
@@ -93,8 +93,8 @@
             <DoorOpen size={32} color="currentColor" />
           </span>
           <span class="cta-body">
-            <span class="cta-label">I'm going out</span>
-            <span class="cta-sub">Find something on near you</span>
+            <span class="cta-label">I'm buying tickets</span>
+            <span class="cta-sub">Find what's on near you</span>
           </span>
           <span class="cta-arrow"><ArrowRight size={20} strokeWidth={2.25} /></span>
         </button>
@@ -120,7 +120,7 @@
   <section class="offer">
     <div class="offer-inner">
       <span class="mono-kicker offer-kicker">// LAUNCH OFFER</span>
-      <h2>Bring a venue over. Take 40% of our fee.<span class="star">*</span></h2>
+      <h2>Bring someone over. Take 40% of our fee.<span class="star">*</span></h2>
       <p>
         Share your link. When someone starts selling through it, 40% of the
         1.5% we take comes back to you.
@@ -150,7 +150,7 @@
 
     <!-- 01 — the one nobody else can offer, so it leads. Deliberately says
          nothing about where a follow is stored: the benefit is that it outlives
-         us, and a promoter does not need the mechanism to understand that. -->
+         us, and an organiser does not need the mechanism to understand that. -->
     <article class="usp usp--left">
       <div class="usp-num mono">01</div>
       <div class="usp-body">
@@ -163,9 +163,9 @@
           out there, but your connection to them isn't.
         </p>
         <p>
-          Here, the follow belongs to your fan. They keep it, we don't. We
-          can't hold it hostage, it isn't locked to us, and if WoCo disappeared
-          tomorrow your following would still be there.
+          Here, a follow belongs to the person who made it. They keep it, we
+          don't. We can't hold it hostage, it isn't locked to us, and if WoCo
+          disappeared tomorrow your following would still be there.
         </p>
       </div>
     </article>
@@ -175,24 +175,24 @@
       <div class="usp-num mono">02</div>
       <div class="usp-body">
         <span class="usp-icon"><Layers size={22} strokeWidth={2.25} /></span>
-        <h2>Every ticket becomes a memento of the night.</h2>
+        <h2>Every ticket becomes a memento.</h2>
         <p>
-          The ticket doesn't die at the door. It stays on your fan's phone as
-          a digital memento of the night they were there — and you can build on
-          it. Open the presale to everyone who came last time. Put a fiver off
-          the third time somebody comes. Give the people who were actually in
-          the room first refusal.
+          The ticket doesn't die at the door. It stays on their phone as a
+          digital memento of being there — and you can build on it. Open the
+          presale to everyone who came last time. Put a fiver off the third
+          time somebody comes. Give the people who actually turned up first
+          refusal.
         </p>
         <p>
           You don't need to have collected their email to do any of it. The
           ticket is the proof they were there.
         </p>
         <p class="usp-aside">
-          And because it's a real thing your fan holds rather than a line in
-          our records, it doesn't have to stop here. A stub that gets you into
-          a presale could just as easily unlock something in a game, at a
-          record shop, or at another promoter's night. That's the direction
-          this is going.
+          And because it's a real thing they hold rather than a line in our
+          records, it doesn't have to stop here. A stub that gets you into a
+          presale could just as easily unlock something in a game, a discount
+          at a local shop, or early access to somebody else's event. That's
+          the direction this is going.
         </p>
       </div>
     </article>
@@ -204,14 +204,15 @@
         <span class="usp-icon"><Shield size={22} strokeWidth={2.25} /></span>
         <h2>The door works without internet.</h2>
         <p>
-          The scanner downloads the night's tickets before doors open, then
-          checks each one on the phone itself. Nothing to connect to, so a
-          venue with no phone signal scans just as fast as anywhere else.
+          The scanner downloads your tickets in advance, then checks each one
+          on the phone itself. Nothing to connect to, so a cellar bar or a
+          field with no phone signal scans just as fast as anywhere else.
         </p>
         <p>
           There's no list to look up, so there's nothing to fail to find. And
-          when your fan has an account, their phone signs a fresh code at the
-          door — so a screenshot going round a group chat gets nobody in.
+          when the ticket holder has an account, their phone signs a fresh
+          code on arrival — so a screenshot going round a group chat gets
+          nobody in.
         </p>
       </div>
     </article>
@@ -226,8 +227,8 @@
         <h2>Your name on it, not ours.</h2>
         <p>
           The page is yours — your artwork, your colours, your name at the top.
-          No WoCo logo in the corner, and no eleven other gigs down the side of
-          it.
+          No WoCo logo in the corner, and no eleven other events down the side
+          of it.
         </p>
         <p>
           Point your own domain at it if you've got one. If you haven't, you
@@ -235,8 +236,8 @@
           to your own whenever you like.
         </p>
         <p>
-          Need a full site for the venue? Build that here too — pages, artwork,
-          your events on it, no separate subscription.
+          Need a full website? Build that here too — pages, artwork, your
+          events on it, no separate subscription.
         </p>
       </div>
     </article>
@@ -254,7 +255,7 @@
         <p>
           A £20 ticket with a 10% booking fee: the buyer pays £22, 30p comes to
           us, and the rest is yours once the card fee's paid. Or charge nothing
-          and let the ticket be £20. Your call, night by night.
+          and let the ticket be £20. Your call, event by event.
         </p>
       </div>
     </article>
@@ -268,7 +269,8 @@
         <span class="usp-icon"><Mail size={22} strokeWidth={2.25} /></span>
         <h2>Bring your mailing list. The boring bit is done.</h2>
         <p>
-          Import from Skiddle, Eventbrite or a spreadsheet and you've moved.
+          Import from Eventbrite, Ticket Tailor or a spreadsheet and you've
+          moved.
           Unsubscribes, consent records and the one-click opt-out the rules now
           require are built in and run on every send, so it isn't a spreadsheet
           you're keeping by hand any more.
@@ -298,7 +300,7 @@
         <li>The fee only ever goes down. It's 1.5% today. If we ever put it up, we got this wrong.</li>
         <li>Everything you build here is yours to take with you.</li>
         <li>We're building it so it would keep working even without us.</li>
-        <li>No ads. No promoted events. We don't sell what we know about your room.</li>
+        <li>No ads. No promoted events. We don't sell what we know about the people who come.</li>
         <li>Nothing here is designed to make leaving difficult.</li>
         <li>We're building this to still be here in ten years, not to be bought.</li>
         <li>The people who use this should be the ones it answers to.</li>
@@ -319,7 +321,7 @@
 
       <div class="closing-text">
         <SprayCan size={42} color="var(--text)" paintColor="var(--accent)" />
-        <h2>Put your next night on sale.</h2>
+        <h2>Put your next event on sale.</h2>
         <p>
           Free to set up. 1.5% when you sell. The following you build here is
           yours to keep.
@@ -342,7 +344,7 @@
     <div class="footer-grid">
       <div class="footer-brand">
         <WocoWordmark height={28} variant="ink" />
-        <p class="footer-line">Ticketing and websites for people who put on nights.</p>
+        <p class="footer-line">Ticketing and websites for people who put things on.</p>
       </div>
       <div class="footer-cols">
         <div class="footer-col">
