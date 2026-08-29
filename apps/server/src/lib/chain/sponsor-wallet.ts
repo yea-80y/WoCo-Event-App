@@ -13,18 +13,61 @@ import {
   isSponsorAuthorisedV2,
   V2_ABI,
 } from "./event-contract-v2.js";
+import { LEDGER_ABI } from "./event-contract-ledger.js";
+import { unhandledVersion } from "./event-contract.js";
+import type { EventContractVersion } from "./event-contract.js";
 
-/** V2 registerEvent params not present in the V1 2-arg call. */
-export interface RegisterV2Params {
-  /** Per-ticket price in payment-token base units. Stripe path = 0n. */
-  priceBaseUnits: bigint;
-  /** Receives escrowed funds at withdraw time (the organiser). */
-  payoutRecipient: string;
-  /** Optional gate contract; address(0) = open FIFO. */
-  dropGate: string;
-  /** UNIX seconds sales cutoff; MUST be > now (contract reverts otherwise). */
-  eventEndTs: number;
+/**
+ * Fragment set carrying the `Registered` event for a given contract version.
+ *
+ * The topic differs per version — V2 carries the escrow config, the ledger
+ * carries `registrant` — so parsing a receipt with the wrong set matches
+ * NOTHING and reports a landed registration as absent, which is how the #318
+ * resolver ends up broadcasting a duplicate.
+ */
+function registeredFragmentsFor(v: EventContractVersion): readonly string[] {
+  switch (v) {
+    case "ledger": return LEDGER_ABI;
+    case "v2":     return V2_ABI;
+    case "v1":     return REGISTER_ABI;
+    default:       return unhandledVersion(v, "registeredFragmentsFor");
+  }
 }
+
+/**
+ * registerEvent params not present in the V1 2-arg call. Consumed differently
+ * per version — the field comments say which contract reads what.
+ */
+export interface RegisterEventParams {
+  /**
+   * The event's owner of record, stamped on chain by the LEDGER.
+   *
+   * Required, and it must be the real organiser (the feed's creator address) —
+   * NOT the sponsor wallet. On V2 the on-chain `organiser` was `msg.sender`,
+   * i.e. the sponsor, which is exactly the defect the ledger's explicit
+   * parameter exists to fix. Passing the sponsor here would recreate it, and
+   * the field is immutable once stamped.
+   *
+   * Ignored by V1 and V2.
+   */
+  organiser: string;
+  /** Sales cutoff, UNIX seconds. MUST be > now (both V2 and the ledger revert
+   *  `InvalidEventEnd` otherwise). Read by V2 and the ledger. */
+  eventEndTs: number;
+  /** V2 ONLY — per-ticket price in payment-token base units. Stripe path = 0n.
+   *  The ledger holds no funds and has no concept of price. */
+  priceBaseUnits: bigint;
+  /** V2 ONLY — receives escrowed funds at withdraw time. Gone from the ledger
+   *  along with the rest of the payment surface; `organiser` replaces its role
+   *  as the on-chain record of who the event belongs to. */
+  payoutRecipient: string;
+  /** V2 ONLY — optional gate contract; address(0) = open FIFO. Removed from
+   *  the ledger, which never consulted it on the sponsor path anyway. */
+  dropGate: string;
+}
+
+/** @deprecated Name kept so existing imports keep compiling. Use RegisterEventParams. */
+export type RegisterV2Params = RegisterEventParams;
 
 const CLAIM_ABI = [
   "function claimFor(bytes32 eventId, address burner, bytes32 orderRef) returns (uint256 slot)",
@@ -103,7 +146,12 @@ export async function resolveRegisterTx(txHash: string, nonce: number): Promise<
   const chainId = getActiveChainId();
 
   const parse = (receipt: { logs: ReadonlyArray<{ topics: readonly string[]; data: string }> }): string | null => {
-    const iface = new Interface(getEventContractVersion(chainId) === "v2" ? V2_ABI : REGISTER_ABI);
+    // The `Registered` topic differs per version (V2 carries the escrow config,
+    // the ledger carries `registrant`), so the fragment set must match the
+    // active contract or `parseLog` silently matches nothing and the resolver
+    // reports a landed registration as absent.
+    const v = getEventContractVersion(chainId);
+    const iface = new Interface(registeredFragmentsFor(v));
     for (const log of receipt.logs) {
       try {
         const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
@@ -166,7 +214,13 @@ let _sponsorReady: { chainId: number; expires: number } | null = null;
  * `false` means the sponsor is genuinely not on the allow-list.
  */
 export async function isSponsorReady(chainId: number): Promise<boolean> {
-  if (getEventContractVersion(chainId) !== "v2") return true;
+  const version = getEventContractVersion(chainId);
+  // Only V1 skips the probe (deploy-time authorisation, nothing to read).
+  // Written as an explicit V1 test rather than `!== "v2"`: the old form
+  // returned TRUE — check skipped — for any version that was not literally
+  // "v2", so the ledger would have bypassed the guard that exists to refuse a
+  // checkout BEFORE the buyer is charged.
+  if (version === "v1") return true;
 
   const now = Date.now();
   if (_sponsorReady && _sponsorReady.chainId === chainId && _sponsorReady.expires > now) {
@@ -176,7 +230,19 @@ export async function isSponsorReady(chainId: number): Promise<boolean> {
   const address = getWoCoEventAddress(chainId);
   if (!address) return false;
 
-  const ready = await isSponsorAuthorisedV2(getSponsorAddress(), address, chainId);
+  let ready: boolean;
+  switch (version) {
+    case "ledger": {
+      const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
+      ready = await isSponsorAuthorisedLedger(getSponsorAddress(), address, chainId);
+      break;
+    }
+    case "v2":
+      ready = await isSponsorAuthorisedV2(getSponsorAddress(), address, chainId);
+      break;
+    default:
+      return unhandledVersion(version, "isSponsorReady");
+  }
   if (ready) _sponsorReady = { chainId, expires: now + SPONSOR_READY_TTL_MS };
   return ready;
 }
@@ -232,11 +298,23 @@ export async function claimForOnChain(
   const address = getWoCoEventAddress(chainId);
   if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
 
-  if (getEventContractVersion(chainId) === "v2") {
+  const version = getEventContractVersion(chainId);
+  if (version === "ledger") {
+    const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+    if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    const { claimForLedger } = await import("./event-contract-ledger.js");
+    return claimForLedger(onChainEventId, burnerAddress, orderRefBytes32, address, pk, chainId);
+  }
+  if (version === "v2") {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
     return claimForV2(onChainEventId, burnerAddress, orderRefBytes32, address, pk, chainId);
   }
+  // Everything below is the V1 path. Narrowing explicitly rather than letting
+  // it be the fallthrough tail: a new union member would otherwise compile
+  // clean here and silently mint through V1's ABI — the same silent-V1
+  // fallthrough this module was rewritten to remove.
+  if (version !== "v1") return unhandledVersion(version, "claimForOnChain");
 
   const wallet = getSponsorWallet();
   const contract = new Contract(address, CLAIM_ABI, wallet);
@@ -299,11 +377,20 @@ export async function batchClaimForOnChain(
   const address = getWoCoEventAddress(chainId);
   if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
 
-  if (getEventContractVersion(chainId) === "v2") {
+  const version = getEventContractVersion(chainId);
+  if (version === "ledger") {
+    const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+    if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    const { batchClaimForLedger } = await import("./event-contract-ledger.js");
+    return batchClaimForLedger(onChainEventId, burners, orderRefBytes32, address, pk, chainId);
+  }
+  if (version === "v2") {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
     return batchClaimForV2(onChainEventId, burners, orderRefBytes32, address, pk, chainId);
   }
+  // See claimForOnChain — V1 is narrowed, never a fallthrough tail.
+  if (version !== "v1") return unhandledVersion(version, "batchClaimForOnChain");
 
   const wallet = getSponsorWallet();
   const contract = new Contract(address, CLAIM_ABI, wallet);
@@ -369,7 +456,32 @@ export async function registerEventOnChain(
   const address = getWoCoEventAddress(chainId);
   if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
 
-  if (getEventContractVersion(chainId) === "v2") {
+  const version = getEventContractVersion(chainId);
+
+  if (version === "ledger") {
+    const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+    if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    if (!v2Params) {
+      throw new Error(`registerEventOnChain: chain ${chainId} runs the ledger but no params supplied`);
+    }
+    if (!v2Params.organiser) {
+      throw new Error("registerEventOnChain: ledger requires an explicit organiser address");
+    }
+    const { registerEventLedger } = await import("./event-contract-ledger.js");
+    return registerEventLedger(
+      v2Params.organiser,
+      supply,
+      manifestRef,
+      v2Params.eventEndTs,
+      address,
+      pk,
+      chainId,
+      onTxSent,
+      onTxReserved,
+    );
+  }
+
+  if (version === "v2") {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
     if (!v2Params) {
@@ -389,6 +501,9 @@ export async function registerEventOnChain(
       onTxReserved,
     );
   }
+
+  // See claimForOnChain — V1 is narrowed, never a fallthrough tail.
+  if (version !== "v1") return unhandledVersion(version, "registerEventOnChain");
 
   const wallet = getSponsorWallet();
   const contract = new Contract(address, REGISTER_ABI, wallet);

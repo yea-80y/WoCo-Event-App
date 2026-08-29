@@ -243,7 +243,20 @@ function deriveEventId(sponsor: string, nonce: number): string {
 async function walkChainRegistrations(): Promise<void> {
   const chainId = getActiveChainId();
   const deployed = getDeployedContract(chainId);
-  if (!deployed || deployed.version !== "v2") return; // resolver only applies to V2
+  if (!deployed) return;
+  // V1 has no per-sponsor registration walk (no `eventEndTs`, different id
+  // derivation), so it is genuinely out of scope. Every OTHER version must be
+  // handled: this function's contract is that it THROWS rather than returns, so
+  // callers can distinguish "walked and absent" from "could not walk". A silent
+  // return for an unrecognised version reads as "absent" to the #318 intent
+  // resolver, which then re-broadcasts and DUPLICATES a landed registration.
+  if (deployed.version === "v1") return;
+  if (deployed.version !== "v2" && deployed.version !== "ledger") {
+    throw new Error(
+      `walkChainRegistrations: unhandled contract version ${JSON.stringify(deployed.version)} — ` +
+      `refusing to report registrations as absent`,
+    );
+  }
   const sponsor = getSponsorAddress();
   const { getOrganiserNonce } = await import("../chain/event-contract.js");
   const count = Number(await getOrganiserNonce(sponsor, chainId));

@@ -64,8 +64,11 @@ const REGISTRAR_ABI = [
   "function PERMIT_TYPEHASH() view returns (bytes32)",
   // Sponsor writes
   "function register(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues) returns (bytes32 node)",
+  // setContenthash is the ONLY post-mint record write the platform retains.
+  // `setText(string,string,string)` was REMOVED from WoCoRegistrar (#422) — it
+  // was never called from here, so it was standing authority over holders'
+  // profile records with no operational benefit. Do not re-add the fragment.
   "function setContenthash(string label, bytes contenthash)",
-  "function setText(string label, string key, string value)",
   // Permit write — organiser submits tx, server only signs off-chain
   "function registerWithPermit(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues, uint256 expiry, bytes sig) returns (bytes32 node)",
   // Custom errors — required for ethers v6 to decode reverts by name

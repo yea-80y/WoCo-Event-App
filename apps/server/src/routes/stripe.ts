@@ -33,7 +33,7 @@ import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-ch
 import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
-import { getActiveChainId, getOnChainEvent } from "../lib/chain/event-contract.js";
+import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
@@ -694,7 +694,16 @@ stripe.post("/create-checkout", async (c) => {
     try {
       sponsorReady = await isSponsorReady(getActiveChainId());
     } catch (err) {
-      console.warn("[stripe/create-checkout] sponsor readiness check errored (continuing):", err);
+      // Transient RPC failures fail OPEN — a flaky node must not stop sales,
+      // and the webhook auto-refund is the backstop. A CONFIG error is the
+      // opposite case: it will not heal, it applies to every buyer, and
+      // continuing here charges all of them for tickets that can never mint.
+      if (err instanceof EventContractConfigError) {
+        console.error("[stripe/create-checkout] BLOCKED — event contract misconfigured:", err.message);
+        sponsorReady = false;
+      } else {
+        console.warn("[stripe/create-checkout] sponsor readiness check errored (continuing):", err);
+      }
     }
     if (!sponsorReady) {
       console.error(

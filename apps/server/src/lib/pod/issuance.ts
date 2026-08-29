@@ -84,8 +84,10 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
   //    certificate badge reads its holdings from issuer signatures and never
   //    touches a chain, so this requirement does not apply to it. ───────────
   const chainId = getActiveChainId();
-  if (!certSourced && getEventContractVersion(chainId) !== "v2") {
-    throw new Error(`POD issuance requires WoCoEventV2; active chain ${chainId} is not V2`);
+  if (!certSourced && getEventContractVersion(chainId) === "v1") {
+    throw new Error(
+      `POD issuance needs the on-chain slot rail; active chain ${chainId} is on v1`,
+    );
   }
   if (certSourced && !opts.certLogOwner) {
     throw new Error("a certificate badge needs certLogOwner, or its log can never be found");
@@ -186,10 +188,13 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
     console.log(`[pod] minted certificate ${kind} "${name}" cap=${supply} manifest=${manifestRef.slice(0, 10)} (no chain)`);
   } else {
     const registered = await registerEventOnChain(supply, manifestRef, {
+      // The ledger stamps this as the event's owner of record — the creator,
+      // never the sponsor wallet that submits the transaction.
+      organiser: creatorAddress,
+      eventEndTs: NEVER_EXPIRES_TS,
       priceBaseUnits: 0n,
       payoutRecipient: creatorAddress,
       dropGate: ZERO_ADDRESS,
-      eventEndTs: NEVER_EXPIRES_TS,
     });
     onChainEventId = registered.onChainEventId;
     console.log(`[pod] minted ${kind} "${name}" supply=${supply} eventId=${onChainEventId} tx=${registered.txHash}`);

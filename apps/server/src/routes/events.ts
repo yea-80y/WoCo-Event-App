@@ -822,10 +822,12 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     }
   }
 
-  // V2 (USDC-escrow) register params. The live website ticket flow settles outside
-  // this escrow (Stripe card, or direct-USDC verify), so priceBaseUnits=0 keeps the
-  // on-chain escrow dormant; the organiser is the
-  // payout recipient; dropGate is open FIFO. eventEndTs is the event's real end
+  // On-chain register params. `organiser` is the field the LEDGER stamps as the
+  // event's owner of record — it must be the creator, never the sponsor wallet
+  // that submits the tx. The V2-only fields below are inert on the live flow
+  // (Stripe card, or direct-USDC verify, both settle outside the escrow), so
+  // priceBaseUnits=0 keeps V2's escrow dormant and dropGate is open FIFO.
+  // eventEndTs is the event's real end
   // (Unix secs) but floored at now+1h so past-dated test events still satisfy
   // the contract's `eventEndTs > block.timestamp` guard. It doubles as the
   // on-chain sales cutoff and the start of the withdraw release window.
@@ -849,10 +851,11 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
       supply: series.totalSupply,
       manifestRef,
       v2Params: {
+        organiser: feed.creatorAddress,
+        eventEndTs,
         priceBaseUnits: 0n,
         payoutRecipient: feed.creatorAddress,
         dropGate: ZERO_ADDRESS,
-        eventEndTs,
       },
       ...(feed.creatorFeedSigner ? { signerHint: feed.creatorFeedSigner } : {}),
       ...(series.onChainEventId ? { feedOnChainEventId: series.onChainEventId } : {}),

@@ -27,11 +27,21 @@ async function nonceOf(abi: string[], fn: string, args: unknown[]): Promise<numb
   return tx.nonce;
 }
 
-test("registerEvent (6 scalar args) takes the nonce as an override", async () => {
+test("registerEvent (V2, 6 scalar args) takes the nonce as an override", async () => {
   const abi = [
     "function registerEvent(uint256 supply, uint128 priceBaseUnits, address payoutRecipient, address dropGate, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32)",
   ];
   assert.equal(await nonceOf(abi, "registerEvent", [10, 0n, ADDR, ADDR, B32, 1784390700]), 42);
+});
+
+test("registerEvent (ledger, 4 args, leading address) takes the nonce as an override", async () => {
+  // The ledger's signature drops the payment args and leads with `organiser`.
+  // Overload resolution differs by arity and leading type, so the override
+  // plumbing is pinned against the shape actually deployed, not just V2's.
+  const abi = [
+    "function registerEvent(address organiser, uint64 supply, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32)",
+  ];
+  assert.equal(await nonceOf(abi, "registerEvent", [ADDR, 10, B32, 1784390700]), 42);
 });
 
 test("batchClaimFor (address[] arg) takes the nonce as an override", async () => {

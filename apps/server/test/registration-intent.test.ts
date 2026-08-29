@@ -79,7 +79,7 @@ const PARAMS: RegisterParams = {
   seriesId: "ser-i",
   supply: 10,
   manifestRef: "0xdef",
-  v2Params: { priceBaseUnits: 0n, payoutRecipient: "0xc", dropGate: "0x0", eventEndTs: 9_999_999_999 },
+  v2Params: { organiser: "0xc", eventEndTs: 9_999_999_999, priceBaseUnits: 0n, payoutRecipient: "0xc", dropGate: "0x0" },
 };
 const FEED = { eventId: "evt-i" } as unknown as EventFeed;
 
