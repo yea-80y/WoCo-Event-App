@@ -355,6 +355,12 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
 
 `.data/` FILES THAT MUST SURVIVE RESTARTS (loaded on startup — don't delete):
   consumed-tx-hashes.json · revoked-sessions.json · consumed-stripe-sessions.json
+  onchain-events.json (#424 — eventId+seriesId → the on-chain event THIS server
+    registered. The checkout refuses to charge for a series with no record, and
+    `byEventSeries` CANNOT be rebuilt from chain: the walk fills `byManifestRef`
+    only, and a registered series never re-enters the tier-3 fill. Losing it
+    stops ALL sales until restored. It was a pure cache before #424 — it is not
+    one now)
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
     owner, and at which L2 block — losing it reopens the #200 windows, silently, on
     the next deploy: the counterfactual fallback returns and a lagging RPC replica

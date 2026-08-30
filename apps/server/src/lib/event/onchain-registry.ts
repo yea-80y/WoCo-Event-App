@@ -3,9 +3,18 @@
  * rebuildable CACHE (not authoritative state) with three speed tiers:
  *
  *   1. in-memory map  — hot path, filled at registration → zero I/O on create→buy.
- *   2. .data cache    — write-through JSON, loaded on startup so a RESTART/DEPLOY
- *                       does NOT pay a chain rebuild. Pure cache: deletable, always
- *                       reconstructable from the chain.
+ *   2. .data store    — write-through JSON, loaded on startup so a RESTART/DEPLOY
+ *                       does NOT pay a chain rebuild.
+ *
+ *                       ⚠️ NOT a pure cache, despite starting life as one. Since
+ *                       #424 the checkout refuses to charge for a series this
+ *                       server has no registration record for, and
+ *                       `byEventSeries` CANNOT be rebuilt from chain — the walk
+ *                       populates `byManifestRef` only (the chain carries no
+ *                       feed keys), and a registered series never re-enters the
+ *                       tier-3 fill because its feed already carries an id.
+ *                       Losing onchain-events.json therefore stops ALL sales
+ *                       until it is restored. See CLAUDE.md's must-survive list.
  *   3. chain reconcile — slower fallback for a truly-cold miss (entry in neither
  *                       tier), then persisted so it's paid at most once.
  *

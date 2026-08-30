@@ -34,7 +34,8 @@ import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
-import { checkSeriesOnChainBinding } from "../lib/event/onchain-binding.js";
+import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
+import { lookupOnChainEventId } from "../lib/event/onchain-registry.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
@@ -653,8 +654,38 @@ stripe.post("/create-checkout", async (c) => {
   // OPEN — the same trade the sponsor gate makes, and safe because the no-I/O
   // guard in `applyOnChainEventIds` has already run on this feed.
   {
+    // THE ANCHOR: this server must have registered this series itself.
+    //
+    // The blob digest below is consistency enforcement, NOT the anti-theft
+    // anchor: `swarmManifestRef` is creator-controlled, so an attacker can
+    // point it at the VICTIM's public, content-addressed blob and the
+    // recomputed digest matches the victim's event exactly. No forgery needed.
+    // `verifySignedManifest` does not help — it verifies against `issuerPubkey`
+    // embedded in the blob, and nothing binds that key to `creatorAddress`.
+    //
+    // `byEventSeries` is different in kind: written by `recordOnChainEventId`
+    // at registration, before the feed merge, and every legitimate setter
+    // funnels through `confirmSeriesOnChain`. Keyed on the REQUEST's eventId —
+    // the same key registration wrote — so a feed mislabelling its own
+    // `eventId` (#426) cannot slip past this the way it can past the
+    // feed-keyed strip in `applyOnChainEventIds`. That is load-bearing.
+    //
+    // FAILS CLOSED, AND DOES NOT SELF-HEAL. `.data/onchain-events.json` is no
+    // longer a pure cache: `walkChainRegistrations` rebuilds only
+    // `byManifestRef`, never `byEventSeries` (the chain carries no feed keys),
+    // and a registered series never re-enters the tier-3 fill because its feed
+    // already carries an id. So losing that file stops ALL sales until it is
+    // restored. It is on the must-survive list in CLAUDE.md for that reason.
+    // One Swarm read per manifest ref EVER — the ref is content-addressed, so
+    // the digest is memoised for the process lifetime. Steady state is a Map hit.
+    const blobManifestDigest = series.swarmManifestRef
+      ? await resolveManifestDigest(series.swarmManifestRef)
+      : null;
     const binding = checkSeriesOnChainBinding({
+      claimedOnChainEventId: series.onChainEventId,
+      recordedOnChainEventId: lookupOnChainEventId(eventId, seriesId),
       seriesManifestRef: series.manifestRef,
+      blobManifestDigest,
       onChainManifestRef: onChain?.manifestRef,
     });
     if (!binding.ok) {
