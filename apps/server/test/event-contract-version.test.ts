@@ -24,6 +24,7 @@ import {
 } from "../src/lib/chain/event-contract.js";
 import { LEDGER_ABI } from "../src/lib/chain/event-contract-ledger.js";
 import { V2_ABI } from "../src/lib/chain/event-contract-v2.js";
+import { deriveEventId } from "../src/lib/event/onchain-registry.js";
 
 const CHAIN = 421614;
 const VERSION_KEY = `WOCO_EVENT_VERSION_${CHAIN}`;
@@ -202,4 +203,76 @@ test("Registered does NOT collide across versions — a V2 receipt cannot parse 
   const own = v2.parseLog({ topics: v2Log.topics as string[], data: v2Log.data });
   assert.equal(own?.name, "Registered");
   assert.equal((own?.args.eventId as string).toLowerCase(), eventId);
+});
+
+// ── eventId derivation — the cross-repo drift guard ──────────────────────────
+//
+// The server mirrors the contract's derivation so it can walk registrations
+// without a log scan. If the two drift, `walkChainRegistrations` finds NOTHING,
+// which the #318 resolver reads as "never registered" and answers by
+// broadcasting a DUPLICATE registration (#423).
+//
+// The expected values below are ground truth from Solidity tooling, not from
+// this code:
+//   cast keccak $(cast abi-encode "f(uint256,address,address,uint256)" \
+//                 8453 0x…aa 0x…bb 7)
+// Regenerate them the same way if the derivation ever legitimately changes.
+
+test("ledger derivation matches the contract, byte for byte", () => {
+  const CHAIN_ID = 8453;
+  const CONTRACT = "0x00000000000000000000000000000000000000aa";
+  const SPONSOR = "0x00000000000000000000000000000000000000bb";
+  const NONCE = 7;
+
+  assert.equal(
+    deriveEventId("ledger", SPONSOR, NONCE, CHAIN_ID, CONTRACT),
+    "0xf2e609b38f3da8e3659ebf6be0cfb7d4d6a3be2a4d46e35899a5f51ff41660d8",
+    "server derivation drifted from WoCoTicketLedger.registerEvent",
+  );
+});
+
+test("v2 derivation is unchanged — the old shape still walks old registrations", () => {
+  assert.equal(
+    deriveEventId("v2", "0x00000000000000000000000000000000000000bb", 7, 8453, "0x00000000000000000000000000000000000000aa"),
+    "0xced105af4f8f301759df09f00865179865421b33cf78c95c13ea2f275fb4638b",
+  );
+});
+
+test("the two derivations cannot collide — this is #423 made structural", () => {
+  const SPONSOR = "0x00000000000000000000000000000000000000bb";
+  const CONTRACT = "0x00000000000000000000000000000000000000aa";
+
+  // Same sponsor, same nonce, and the ledger's counter restarting at 0 — the
+  // exact condition that reproduced V2's ids before domain separation.
+  for (let nonce = 0; nonce < 5; nonce++) {
+    assert.notEqual(
+      deriveEventId("ledger", SPONSOR, nonce, 8453, CONTRACT),
+      deriveEventId("v2", SPONSOR, nonce, 8453, CONTRACT),
+      `ledger and v2 produced the same id at nonce ${nonce}`,
+    );
+  }
+});
+
+test("ledger ids differ across chains and across contracts", () => {
+  const SPONSOR = "0x00000000000000000000000000000000000000bb";
+  const A = "0x00000000000000000000000000000000000000aa";
+  const B = "0x00000000000000000000000000000000000000cc";
+
+  assert.notEqual(
+    deriveEventId("ledger", SPONSOR, 0, 8453, A),
+    deriveEventId("ledger", SPONSOR, 0, 42161, A),
+    "chainId does not participate",
+  );
+  assert.notEqual(
+    deriveEventId("ledger", SPONSOR, 0, 8453, A),
+    deriveEventId("ledger", SPONSOR, 0, 8453, B),
+    "contract address does not participate",
+  );
+});
+
+test("v1 is never walked, and says so rather than guessing a shape", () => {
+  assert.throws(
+    () => deriveEventId("v1", "0x00000000000000000000000000000000000000bb", 0, 8453, "0x00000000000000000000000000000000000000aa"),
+    /not walked/,
+  );
 });
