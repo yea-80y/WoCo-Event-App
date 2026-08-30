@@ -34,7 +34,7 @@ import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
-import { checkSeriesOnChainBinding } from "../lib/event/onchain-binding.js";
+import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
@@ -653,8 +653,14 @@ stripe.post("/create-checkout", async (c) => {
   // OPEN — the same trade the sponsor gate makes, and safe because the no-I/O
   // guard in `applyOnChainEventIds` has already run on this feed.
   {
+    // One Swarm read per manifest ref EVER — the ref is content-addressed, so
+    // the digest is memoised for the process lifetime. Steady state is a Map hit.
+    const blobManifestDigest = series.swarmManifestRef
+      ? await resolveManifestDigest(series.swarmManifestRef)
+      : null;
     const binding = checkSeriesOnChainBinding({
       seriesManifestRef: series.manifestRef,
+      blobManifestDigest,
       onChainManifestRef: onChain?.manifestRef,
     });
     if (!binding.ok) {

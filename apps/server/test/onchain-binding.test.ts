@@ -2,16 +2,20 @@
  * #424 tier 2 — binding a series to the on-chain event it claims.
  *
  * The property: a series may only be sold against an on-chain event that
- * belongs to it. `series.onChainEventId` arrives from the creator's own
- * client-signed feed, so it is untrusted; `manifestRef` is stamped on chain at
- * registration and cannot be edited, so it is the anchor.
+ * belongs to it.
  *
- * The case that matters most here is the ABSENT series digest. `manifestRef` is
- * optional in the schema and the checkout's registration gate requires
- * `swarmManifestRef` instead — so an implementation that treats "absent" as
- * "nothing to check" is bypassed by omitting one field, which costs an attacker
- * less than forging it. That exact hole existed in the first version of this
- * fix and is pinned below.
+ * The first version of this check compared the chain's `manifestRef` against
+ * `series.manifestRef`. Both are creator-supplied in the forged case, so an
+ * attacker who set BOTH consistently walked straight through — it cost them one
+ * extra forged field and nothing else. The anchor now is the digest recomputed
+ * from the manifest BLOB, which is content-addressed and signed, so it cannot be
+ * made to match an event the creator did not register.
+ *
+ * The tests below are written around what an attacker controls:
+ *   `seriesManifestRef`  — controlled (feed)
+ *   `swarmManifestRef`   — controlled (feed), hence the blob it points at
+ *   `blobManifestDigest` — derived from the blob, so only as good as the blob
+ *   `onChainManifestRef` — NOT controlled; stamped at registration
  */
 
 import { test } from "node:test";
@@ -22,66 +26,104 @@ import { checkSeriesOnChainBinding } from "../src/lib/event/onchain-binding.js";
 const OURS   = `0x${"c3".repeat(32)}`;
 const THEIRS = `0x${"d4".repeat(32)}`;
 
-test("matching digests bind, and the verdict records that a check happened", () => {
+test("the series' own manifest digests to the event it claims — bound", () => {
   const v = checkSeriesOnChainBinding({
     seriesManifestRef: OURS,
+    blobManifestDigest: OURS,
     onChainManifestRef: OURS,
   });
   assert.deepEqual(v, { ok: true, checked: true });
 });
 
-test("a series pointed at another event's manifestRef is REFUSED", () => {
+test("THE REGRESSION: forging both feed fields no longer passes", () => {
+  // The attacker points at the victim's event AND declares the victim's digest,
+  // which defeated the previous version of this check. Their manifest blob still
+  // digests to their own manifest, and that is what is compared now.
+  const v = checkSeriesOnChainBinding({
+    seriesManifestRef: THEIRS,   // forged to match the victim
+    blobManifestDigest: OURS,    // but their actual manifest is their own
+    onChainManifestRef: THEIRS,  // the victim's event
+  });
+  assert.equal(v.ok, false, "forging both feed fields still bound the series");
+  assert.equal(v.ok === false && v.reason, "manifest-mismatch");
+});
+
+test("a series pointed at another event's manifest is REFUSED", () => {
   const v = checkSeriesOnChainBinding({
     seriesManifestRef: OURS,
+    blobManifestDigest: OURS,
     onChainManifestRef: THEIRS,
   });
   assert.equal(v.ok, false);
   assert.equal(v.ok === false && v.reason, "manifest-mismatch");
 });
 
+test("an unresolvable blob is REFUSED, not waved through", () => {
+  // `swarmManifestRef` is creator-controlled, so "could not fetch the blob" is
+  // an attacker-reachable state. Treating it as "nothing to check" would hand
+  // the bypass straight back by pointing the ref at nothing.
+  const v = checkSeriesOnChainBinding({
+    seriesManifestRef: THEIRS,
+    blobManifestDigest: null,
+    onChainManifestRef: THEIRS,
+  });
+  assert.equal(v.ok, false, "an unfetchable manifest was treated as verified");
+  assert.equal(v.ok === false && v.reason, "manifest-unresolvable");
+});
+
 test("an ABSENT series manifestRef is refused, not skipped", () => {
-  // The bypass: omit the optional field and the whole binding disappears.
-  // Cheaper for an attacker than forging it, so absence must be disqualifying.
   const v = checkSeriesOnChainBinding({
     seriesManifestRef: undefined,
-    onChainManifestRef: THEIRS,
+    blobManifestDigest: OURS,
+    onChainManifestRef: OURS,
   });
   assert.equal(v.ok, false, "omitting manifestRef skipped the binding check");
   assert.equal(v.ok === false && v.reason, "no-manifest-ref");
 });
 
-test("an empty-string manifestRef is treated as absent, not as a match", () => {
+test("a series whose declared digest contradicts its own manifest is refused", () => {
+  // Not required for safety — the blob already settled it against the chain —
+  // but a series declaring a digest its own manifest does not produce is
+  // malformed, and saying so beats ignoring it.
   const v = checkSeriesOnChainBinding({
-    seriesManifestRef: "",
-    onChainManifestRef: THEIRS,
+    seriesManifestRef: THEIRS,
+    blobManifestDigest: OURS,
+    onChainManifestRef: OURS,
   });
   assert.equal(v.ok, false);
-  assert.equal(v.ok === false && v.reason, "no-manifest-ref");
+  assert.equal(v.ok === false && v.reason, "series-manifest-inconsistent");
 });
 
-test("no chain value — passes UNCHECKED so a flaky RPC cannot stop every sale", () => {
-  // Fails open deliberately: this is a transient network condition, not a
-  // property of the series. `checked: false` lets the caller tell the two apart.
+test("no CHAIN value — passes UNCHECKED so a flaky RPC cannot stop every sale", () => {
+  // The one legitimate fail-open. Unlike the blob, the chain value is not
+  // creator-controlled, so its absence is a transport condition rather than an
+  // attacker-reachable state.
   for (const onChainManifestRef of [null, undefined]) {
-    const v = checkSeriesOnChainBinding({ seriesManifestRef: OURS, onChainManifestRef });
+    const v = checkSeriesOnChainBinding({
+      seriesManifestRef: OURS,
+      blobManifestDigest: OURS,
+      onChainManifestRef,
+    });
     assert.deepEqual(v, { ok: true, checked: false });
   }
 });
 
-test("no chain value AND no series digest still passes — nothing to judge", () => {
-  // The refusal must be caused by a contradiction with the chain, never by the
-  // absence of information. Otherwise a chain outage would refuse every sale.
+test("no chain value wins over every other missing input — nothing to judge", () => {
+  // The refusal must always be caused by a contradiction with the chain, never
+  // by absence of information, or a chain outage would refuse every sale.
   const v = checkSeriesOnChainBinding({
     seriesManifestRef: undefined,
+    blobManifestDigest: null,
     onChainManifestRef: null,
   });
   assert.deepEqual(v, { ok: true, checked: false });
 });
 
-test("comparison is case-insensitive — hex casing is not a refusal", () => {
+test("comparison is case-insensitive throughout — hex casing is not a refusal", () => {
   const v = checkSeriesOnChainBinding({
     seriesManifestRef: OURS.toUpperCase().replace("0X", "0x"),
-    onChainManifestRef: OURS,
+    blobManifestDigest: OURS,
+    onChainManifestRef: OURS.toUpperCase().replace("0X", "0x"),
   });
-  assert.equal(v.ok, true);
+  assert.deepEqual(v, { ok: true, checked: true });
 });
