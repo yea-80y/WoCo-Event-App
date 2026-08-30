@@ -83,6 +83,15 @@ export interface FulfilmentDeps {
   /** `null` = "could not determine" (transport); the caller fails OPEN. */
   chainEventEndMs(onChainEventId: string): Promise<number | null>;
 
+  /**
+   * The on-chain event THIS server registered for a series — its own
+   * registration record, the #424 anchor. `null` when it has none.
+   *
+   * Zero I/O (an in-memory map), so it has no transient failure mode: a `null`
+   * means "never registered here", never "could not check".
+   */
+  lookupOnChainEventId(eventId: string, seriesId: string): string | null;
+
   /** Payout ledger — must not throw (a failed write is a health alarm, not a claim failure). */
   recordHeldPayout(entry: Omit<PayoutLedgerEntry, "status" | "recordedAt"> & { recordedAt?: string }): void;
   markPayoutVoid(sessionId: string, reason: string): void;
@@ -240,6 +249,7 @@ export async function fulfilPaidSession(
     podPubKey: metaPodPubKey,
     marketingConsent: metaConsent,
     connectedAccountId: metaConnectedAccountId,
+    onChainEventId: metaOnChainEventId,
   } = session.metadata ?? {};
 
   const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
@@ -309,7 +319,11 @@ export async function fulfilPaidSession(
       ? metaOrderRef.toLowerCase()
       : undefined;
 
-  // ── 1. Event feed (fenced: a feed hiccup degrades to "no v2 path" → refund) ──
+  // ── 1. Event feed (fenced: a feed hiccup degrades the TICKET EMAIL, not the sale) ──
+  //
+  // It used to degrade to "no v2 path" → refund, because the mint target came
+  // from here. Since #426 it does not: the feed supplies display fields, and a
+  // hiccup costs a title and a series name rather than a paid buyer's tickets.
   let encryptedOrder: SealedBox | undefined;
   let eventTitle = "";
   let eventDate = "";
@@ -323,8 +337,8 @@ export async function fulfilPaidSession(
   let eventLocation = "";
   let seriesName = "";
   let totalSupply = 0;
-  let isV2 = false;
-  let v2OnChainEventId = "";
+  /** The feed's own copy — used ONLY to notice a disagreement, never to mint. */
+  let feedOnChainEventId = "";
 
   try {
     // Phase B: thread the site carrier (from checkout metadata) so the issued
@@ -342,10 +356,7 @@ export async function fulfilPaidSession(
       if (ser) {
         seriesName = ser.name;
         totalSupply = ser.totalSupply;
-        if (ser.swarmManifestRef && ser.onChainEventId) {
-          isV2 = true;
-          v2OnChainEventId = ser.onChainEventId;
-        }
+        feedOnChainEventId = ser.onChainEventId ?? "";
       }
       if (!prefetchedOrderRef && ev.encryptionKey) {
         // Fallback minimal seal — only when no pre-uploaded ref is available.
@@ -358,6 +369,104 @@ export async function fulfilPaidSession(
     }
   } catch (err) {
     console.warn("[fulfilment] Could not build encrypted order (non-fatal):", err);
+  }
+
+  // ── 1b. WHICH on-chain event to mint against (#426) ──
+  //
+  // Server state only. This used to be `ser.onChainEventId`, re-read from the
+  // event feed at mint time — and for a Phase B event that feed is the
+  // CREATOR's client-signed SOC. So every check `create-checkout` performs held
+  // at CHARGE time and not at mint: re-signing the SOC in between re-pointed
+  // the mint, with the money already taken. `applyOnChainEventIds` heals such a
+  // swap only when its record key matches the feed's own `eventId` field, which
+  // is itself unvalidated inside that SOC.
+  //
+  // Two server-controlled values, and the feed is not consulted for either:
+  //   · `validated` — stamped into the Stripe session at checkout, after the
+  //     binding check passed. The organiser cannot write session metadata
+  //     (controller.stripe_dashboard.type = "none"), so it is as trustworthy as
+  //     the decision it records.
+  //   · `recorded`  — this server's registration record, read now.
+  //
+  // Absent metadata means a session created before this shipped; those fall
+  // back to the record. `eventId`/`seriesId` are themselves server-written
+  // metadata, so the lookup key is not the buyer's or the creator's to choose.
+  const validatedOnChainEventId =
+    typeof metaOnChainEventId === "string" && metaOnChainEventId.length > 0
+      ? metaOnChainEventId
+      : null;
+  // Fenced: this function's contract is that it NEVER rejects, and an unfenced
+  // collaborator call here would break it. A throw is not "no record" — that
+  // would silently refuse a legitimate legacy session — so it degrades to the
+  // validated id, which is server-written and was already checked at checkout.
+  // With no validated id either, `isV2` stays false and the sale refunds.
+  let recordedOnChainEventId: string | null = null;
+  try {
+    recordedOnChainEventId = deps.lookupOnChainEventId(eventId, seriesId);
+  } catch (err) {
+    console.error("[fulfilment] registration-record lookup threw — falling back to the validated id:", err);
+    recordedOnChainEventId = validatedOnChainEventId;
+  }
+
+  let isV2 = false;
+  let v2OnChainEventId = "";
+  /** Set when the two server-side values disagree — drives the refund below. */
+  let bindingStopReason: string | null = null;
+
+  if (validatedOnChainEventId && recordedOnChainEventId
+      && validatedOnChainEventId.toLowerCase() !== recordedOnChainEventId.toLowerCase()) {
+    // The registration this sale was priced against is not the one the server
+    // now holds. Minting against EITHER is wrong: the record may have moved
+    // under an in-flight session, and the validated id is a registration the
+    // server no longer stands behind. Refund — the only outcome that cannot
+    // drain the wrong event's supply. With #433's rebind refusal in place this
+    // should be unreachable; it stays as the tripwire for when it is not.
+    console.error(
+      `[fulfilment] BLOCKED — on-chain event changed between checkout and mint ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+      `validated=${validatedOnChainEventId.slice(0, 10)}… ` +
+      `recorded=${recordedOnChainEventId.slice(0, 10)}…) — refunding (see #426)`,
+    );
+    bindingStopReason = "Ticket registration changed after payment — refunding";
+  } else {
+    // The order here is immaterial and deliberately so. The branch above has
+    // already stopped the sale when both are present and disagree, so what
+    // reaches here is either one of them null, or the two differing ONLY in hex
+    // case (that comparison is case-insensitive). Case is immaterial downstream:
+    // `buildTicketCanonicalMessage` lowercases, and the chain calls are
+    // case-agnostic. Written validated-first because that is the decision this
+    // sale was actually priced against; do not read it as a precedence rule, and
+    // do not add one without a case that needs it.
+    const mintTarget = validatedOnChainEventId ?? recordedOnChainEventId;
+    if (mintTarget) {
+      isV2 = true;
+      v2OnChainEventId = mintTarget;
+    }
+  }
+
+  // A feed that disagrees with what we are about to mint is not fatal — the
+  // feed is not an input here any more — but it is the signature of the #426
+  // attack and of a stale SOC, and neither should pass unremarked.
+  if (isV2 && feedOnChainEventId
+      && feedOnChainEventId.toLowerCase() !== v2OnChainEventId.toLowerCase()) {
+    console.error(
+      `[fulfilment] event feed claims a DIFFERENT on-chain event than the one being ` +
+      `minted — minting the server's own and ignoring the feed ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+      `feed=${feedOnChainEventId.slice(0, 10)}… minting=${v2OnChainEventId.slice(0, 10)}…)`,
+    );
+  }
+  // Minting for a series the feed could not show us is now REACHABLE, where it
+  // previously fell through to a refund: the mint target no longer comes from
+  // the feed, so a Swarm hiccup stops costing a paid buyer their tickets. Said
+  // loudly because the ticket email degrades (empty series/event name) and
+  // because a persistently unreadable feed is a real fault, just not this
+  // buyer's problem.
+  if (isV2 && !seriesName) {
+    console.warn(
+      `[fulfilment] minting without the series in view — feed unreadable or series absent ` +
+      `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} loaded=${eventLoaded})`,
+    );
   }
 
   // ── 2. Payout ledger (fenced: bookkeeping never fails a paid claim) ──
@@ -398,7 +507,7 @@ export async function fulfilPaidSession(
   }
 
   const claimedResults: Array<{ edition: number; qrContent: string }> = [];
-  let stoppedReason: string | null = null;
+  let stoppedReason: string | null = bindingStopReason;
 
   // ── 3. Sales-window re-checks (fail OPEN on anything but a definitive "ended") ──
   // #300 rider: a payment can complete after the event's end — inside the
@@ -482,7 +591,12 @@ export async function fulfilPaidSession(
     // same money outcome the deleted v1 path's guaranteed "No tickets
     // available" produced, without pretending to try. create-checkout now
     // refuses these sessions up front; this covers one created before that
-    // gate, or a feed/chain disagreement.
+    // gate.
+    //
+    // Since #426 this means the session carried no validated id AND this server
+    // holds no registration record — both server-side facts. It is no longer
+    // reachable by a feed that merely failed to load or was re-signed without
+    // its `onChainEventId`, which used to land a paid buyer here.
     console.error(`[fulfilment] Paid session for unregistered series ${seriesId} — refunding`);
     stoppedReason = "Series is not registered on chain — no mint path";
   }
