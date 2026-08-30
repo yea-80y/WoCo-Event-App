@@ -451,7 +451,7 @@ async function resolveEventForOwner(
   }
   if (!feed) {
     const page = await readFeedPageWithRetry(topicEvent(eventId));
-    feed = page ? decodeJsonFeed<EventFeed>(page) : null;
+    feed = page ? decodeEventFeed(page, eventId) : null;
     if (feed) source = "platform";
   }
   if (!feed && signerHint) {
@@ -688,6 +688,48 @@ const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number }>();
 const EVENT_CACHE_TTL_MS = 10 * 60_000;
 
 /**
+ * Decode an event feed and require it to be the feed that was ASKED for.
+ *
+ * A feed is fetched at a topic derived from `eventId`, but nothing checked that
+ * the decoded body's own `eventId` field agreed — and for a Phase B event that
+ * body is the CREATOR's client-signed SOC, so the field is untrusted input.
+ *
+ * That mattered because `applyOnChainEventIds` keys BOTH its "strip an id the
+ * server's record contradicts" check and its tier-3 record write on
+ * `feed.eventId` (lib/event/onchain-registry.ts). A feed mislabelling itself
+ * misses the strip, so an id the server knows to be wrong survives into every
+ * consumer that is not the checkout — the order counter behind delete-safety,
+ * the door scanner's pack, the reservation and orders views.
+ *
+ * THE COMPARISON IS EXACT, and that is load-bearing rather than fussy: the
+ * record lookup is a `Map.get` on `${eventId}|${seriesId}`, which is
+ * case-SENSITIVE. A feed self-describing as `ABC…` fetched under `abc…` would
+ * pass a case-insensitive check here and STILL miss the strip, leaving the
+ * defect open. Nothing legitimate can differ even in case: ids are
+ * `crypto.randomUUID()` (lowercase), and `topicEvent`'s component gate rejects
+ * uppercase outright, so a case-varied id addresses a different feed anyway.
+ *
+ * A feed that does not know its own id is malformed whatever the intent, so
+ * this returns null — "not found" — and every caller already degrades
+ * correctly from that.
+ *
+ * Exported so the rule can be tested directly, the same way
+ * `checkSeriesOnChainBinding` and `checkSalesWindow` are.
+ */
+export function decodeEventFeed(payload: Uint8Array, expectedEventId: string): EventFeed | null {
+  const feed = decodeJsonFeed<EventFeed>(payload);
+  if (!feed) return null;
+  if (feed.eventId !== expectedEventId) {
+    console.error(
+      `[event] REJECTED a feed that does not identify as the event it was read under: ` +
+      `asked for ${expectedEventId}, feed says ${JSON.stringify(feed.eventId)} — treating as not found`,
+    );
+    return null;
+  }
+  return feed;
+}
+
+/**
  * Read a client-owned event detail feed (Phase B) as a SOC owned by `signer`.
  * The payload is the raw EventFeed JSON the client signed (≤4096 bytes); decode
  * with the null-tolerant feed decoder. Returns null if the chunk is absent (e.g.
@@ -696,7 +738,7 @@ const EVENT_CACHE_TTL_MS = 10 * 60_000;
 export async function readEventFeedSoc(eventId: string, signer: string): Promise<EventFeed | null> {
   const payload = await readContentFeedJson(signer.replace(/^0x/, ""), eventContentTopic(eventId)).catch(() => null);
   if (!payload) return null;
-  return decodeJsonFeed<EventFeed>(payload);
+  return decodeEventFeed(payload, eventId);
 }
 
 /**
@@ -742,7 +784,7 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
   let feed: EventFeed | null = signer ? await readEventFeedSoc(eventId, signer) : null;
   if (!feed) {
     const page = await readFeedPageWithRetry(topicEvent(eventId));
-    feed = page ? decodeJsonFeed<EventFeed>(page) : null;
+    feed = page ? decodeEventFeed(page, eventId) : null;
   }
   // Tombstoned (deleted) events read as not-found on every path — money included.
   if (feed?.deleted) return null;
