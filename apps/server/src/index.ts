@@ -66,6 +66,7 @@ import {
   stopDrainWorker,
 } from "./lib/email/drain-worker.js";
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
+import { assertEventContractConfig } from "./lib/chain/event-contract.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -635,6 +636,12 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 checkEmailProviderConfig();
 checkMarketingSenderConfig();
 startDomainPoller();
+// Fail fast on a bad event-contract config. Deliberately NOT inside a catch:
+// every runtime reader of this config sits behind a handler that fails open or
+// logs-and-continues (correct for a flaky RPC, wrong for a typo), so this is
+// the only place a misconfiguration can still stop the process.
+assertEventContractConfig();
+
 void logSponsorReadiness();
 // Prime the directory-snapshot read cache (#37: 1 pointer + 1 blob) so the first
 // GET /api/events after a restart serves from memory instead of a cold read.

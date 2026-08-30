@@ -9,10 +9,12 @@
  *   3. chain reconcile — slower fallback for a truly-cold miss (entry in neither
  *                       tier), then persisted so it's paid at most once.
  *
- * Why this exists: the money path detects a v2 (on-chain) series via
- * `swarmManifestRef && onChainEventId`. `WoCoEventV2.registerEvent` sets
- * `eventId = keccak256(abi.encode(msg.sender, organiserNonce[msg.sender]++))` — a
- * function of the SPONSOR WALLET's nonce, not recomputable from the manifest. Reading
+ * Why this exists: the money path detects an on-chain series via
+ * `swarmManifestRef && onChainEventId`. Registration derives the id from the
+ * REGISTRANT's nonce — the sponsor wallet's — so it is not recomputable from the
+ * manifest. The exact shape differs per contract version (V2 hashed
+ * `(sender, nonce)`; the ledger domain-separates by chain and contract) — see
+ * `deriveEventId` below, which carries both. Reading
  * `onChainEventId` only from the organiser's client-signed event SOC is fragile (the
  * browser re-sign silently fails), which made every paid purchase fall to the dead v1
  * path → "Series not found" → refund. So the server resolves it from the chain and
@@ -25,7 +27,8 @@ import { join } from "node:path";
 import { AbiCoder, keccak256 } from "ethers";
 import type { EventFeed } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
-import { getActiveChainId, getDeployedContract, getOnChainEvent } from "../chain/event-contract.js";
+import { getActiveChainId, getDeployedContract, getOnChainEvent, unhandledVersion } from "../chain/event-contract.js";
+import type { EventContractVersion } from "../chain/event-contract.js";
 import { getSponsorAddress } from "../chain/sponsor-wallet.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
@@ -228,9 +231,47 @@ export function clearPendingRegistration(eventId: string, seriesId: string): voi
   }
 }
 
-/** Deterministic eventId for the sponsor's nth registration — mirrors the contract. */
-function deriveEventId(sponsor: string, nonce: number): string {
-  return keccak256(AbiCoder.defaultAbiCoder().encode(["address", "uint256"], [sponsor, nonce]));
+/**
+ * Deterministic eventId for the sponsor's nth registration — MIRRORS THE
+ * CONTRACT, and the two derivations differ by version:
+ *
+ *   v2     keccak256(abi.encode(msg.sender, nonce))
+ *   ledger keccak256(abi.encode(block.chainid, address(this), msg.sender, nonce))
+ *
+ * The ledger domain-separates by chain and contract so ids cannot collide
+ * across deployments. V2 did not, which is why a successor registering from
+ * the same sponsor wallet reproduced its ids exactly (#423) — the very reason
+ * the ledger changed shape.
+ *
+ * If this drifts from the contract the walk finds NOTHING, which the #318
+ * resolver reads as "never registered" and answers with a duplicate
+ * registration. It is pinned by test against both shapes.
+ */
+export function deriveEventId(
+  version: EventContractVersion,
+  sponsor: string,
+  nonce: number,
+  chainId: number,
+  contractAddress: string,
+): string {
+  const abi = AbiCoder.defaultAbiCoder();
+  switch (version) {
+    case "ledger":
+      return keccak256(
+        abi.encode(
+          ["uint256", "address", "address", "uint256"],
+          [chainId, contractAddress, sponsor, nonce],
+        ),
+      );
+    case "v2":
+      return keccak256(abi.encode(["address", "uint256"], [sponsor, nonce]));
+    case "v1":
+      // V1 is never walked — guarded by the caller — but the case is spelled
+      // out so a new version is a compile error rather than a silent v2 shape.
+      throw new Error("deriveEventId: v1 registrations are not walked");
+    default:
+      return unhandledVersion(version, "deriveEventId");
+  }
 }
 
 /**
@@ -243,7 +284,20 @@ function deriveEventId(sponsor: string, nonce: number): string {
 async function walkChainRegistrations(): Promise<void> {
   const chainId = getActiveChainId();
   const deployed = getDeployedContract(chainId);
-  if (!deployed || deployed.version !== "v2") return; // resolver only applies to V2
+  if (!deployed) return;
+  // V1 has no per-sponsor registration walk (no `eventEndTs`, different id
+  // derivation), so it is genuinely out of scope. Every OTHER version must be
+  // handled: this function's contract is that it THROWS rather than returns, so
+  // callers can distinguish "walked and absent" from "could not walk". A silent
+  // return for an unrecognised version reads as "absent" to the #318 intent
+  // resolver, which then re-broadcasts and DUPLICATES a landed registration.
+  if (deployed.version === "v1") return;
+  if (deployed.version !== "v2" && deployed.version !== "ledger") {
+    throw new Error(
+      `walkChainRegistrations: unhandled contract version ${JSON.stringify(deployed.version)} — ` +
+      `refusing to report registrations as absent`,
+    );
+  }
   const sponsor = getSponsorAddress();
   const { getOrganiserNonce } = await import("../chain/event-contract.js");
   const count = Number(await getOrganiserNonce(sponsor, chainId));
@@ -251,7 +305,7 @@ async function walkChainRegistrations(): Promise<void> {
   for (let start = 0; start < count; start += BATCH) {
     const ids = Array.from(
       { length: Math.min(BATCH, count - start) },
-      (_, i) => deriveEventId(sponsor, start + i),
+      (_, i) => deriveEventId(deployed.version, sponsor, start + i, chainId, deployed.address),
     );
     // No per-id catch: a dropped read here must fail the WALK, not read as an
     // absent registration (the intent resolver re-broadcasts on "absent").
