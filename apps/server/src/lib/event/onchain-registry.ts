@@ -78,11 +78,74 @@ function persist(): void {
   }
 }
 
-/** Record the id the contract assigned to a series (called right after the tx). */
+/**
+ * Thrown when a write would move an existing binding. Named so a caller can
+ * tell it apart from a transport failure: this one never succeeds on retry.
+ */
+export class RegistrationRebindError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistrationRebindError";
+  }
+}
+
+/**
+ * Record the id the contract assigned to a series (called right after the tx).
+ *
+ * REFUSES TO REBIND, in both directions: one on-chain event belongs to exactly
+ * one `(eventId, seriesId)`, and one `(eventId, seriesId)` to exactly one
+ * on-chain event. Re-recording the SAME id stays idempotent — `register-once`
+ * replays a landed registration to heal a feed write that failed, and that path
+ * depends on it.
+ *
+ * WHY THIS IS IN THE STORE AND NOT IN THE ROUTES (#433). This map is the anchor
+ * the money path rests on: `routes/stripe.ts` refuses to charge for a series
+ * whose claimed on-chain event contradicts the record, and `applyOnChainEventIds`
+ * rewrites a feed to agree with it. An anchor is only an anchor if the attacker
+ * cannot write it — and `confirm-chain` could, because it authorised the caller
+ * against the ON-CHAIN event they named rather than the WoCo event they were
+ * writing to. That route is gone, but the property belongs here, where it holds
+ * for every caller that ever exists rather than for the two that exist today.
+ *
+ * It is the same invariant the tier-3 fill already enforced for itself via
+ * `findKeyBoundTo` (see `applyOnChainEventIds`); this lifts it out of that one
+ * call site.
+ *
+ * CHAIN CUTOVER: the key carries no chainId, so records from a previous chain
+ * are stale rather than wrong. In practice this refusal does NOT fire on a flip —
+ * `register-once` short-circuits on the stale record (and the route short-circuits
+ * earlier still on the feed's own id) and hands back the dead id as "already
+ * registered", so nothing reaches here to be refused. Wipe `onchain-events.json`
+ * as part of any chain flip; that is required for the same underlying reason and
+ * is on the cutover checklist (#423).
+ *
+ * @throws {RegistrationRebindError} when the key or the id is already bound
+ *   elsewhere. Callers must NOT swallow it: it means two events disagree about
+ *   who owns one on-chain registration, and continuing picks a winner silently.
+ */
 export function recordOnChainEventId(eventId: string, seriesId: string, onChainEventId: string): void {
   ensureLoaded();
   const k = key(eventId, seriesId);
-  if (byEventSeries.get(k) === onChainEventId) return;
+
+  const existing = byEventSeries.get(k);
+  if (existing) {
+    // Idempotent replay — the landed-tx heal path in `register-once` relies on
+    // this returning quietly.
+    if (existing.toLowerCase() === onChainEventId.toLowerCase()) return;
+    throw new RegistrationRebindError(
+      `refusing to rebind ${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: already registered as ` +
+      `${existing.slice(0, 10)}…, asked to record ${onChainEventId.slice(0, 10)}…`,
+    );
+  }
+
+  const boundElsewhere = findKeyBoundTo(onChainEventId);
+  if (boundElsewhere) {
+    throw new RegistrationRebindError(
+      `refusing to bind on-chain event ${onChainEventId.slice(0, 10)}… to ` +
+      `${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: it is already bound to ${boundElsewhere}`,
+    );
+  }
+
   byEventSeries.set(k, onChainEventId);
   dirty = true;
   persist();
@@ -521,10 +584,34 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
       continue;
     }
 
-    s.onChainEventId = id as typeof s.onChainEventId;
-    byEventSeries.set(key(feed.eventId, s.seriesId), id);
-    dirty = true;
+    // Written through the guarded writer, NOT a raw `set`, so that "a binding is
+    // only ever created by the guarded writer" is true of every path rather than
+    // of most of them.
+    //
+    // WHAT THE CATCH IS ACTUALLY FOR — narrower than it looks, and worth stating
+    // so nobody widens it later. The two refusal shapes cannot reach here by the
+    // ordinary route: the key-already-bound case is filled by tier 1/2 above and
+    // never enters `stillMissing`, and the id-bound-elsewhere case is caught by
+    // `findKeyBoundTo` a few lines up. What remains is the await window — this
+    // tier awaits a chain reconcile, so a registration can land between the map
+    // read above and the write here. A raw `set` would silently overwrite it;
+    // the writer refuses, and we log and move on.
+    //
+    // NOT COVERED BY A TEST, deliberately rather than by omission: reaching this
+    // tier at all needs `byManifestRef`, which only a chain walk populates, and
+    // reproducing the window needs concurrency injection on top. A refusal here
+    // must therefore never be fatal to a feed READ, which has to return the rest
+    // of the feed regardless.
+    try {
+      recordOnChainEventId(feed.eventId, s.seriesId, id);
+      s.onChainEventId = id as typeof s.onChainEventId;
+    } catch (err) {
+      console.error(
+        `[onchain-registry] could not bind ${feed.eventId.slice(0, 8)}/${s.seriesId.slice(0, 8)} ` +
+        `to ${id.slice(0, 10)}…:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
-  persist();
   return feed;
 }

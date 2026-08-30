@@ -34,6 +34,20 @@ const OURS   = `0x${"a1".repeat(32)}`;
 const THEIRS = `0x${"b2".repeat(32)}`;
 const MANIFEST = `0x${"c3".repeat(32)}`;
 
+/**
+ * A distinct on-chain id per scenario.
+ *
+ * These tests used to share one `OURS` across five independent scenarios. That
+ * was never a shape the chain can produce — `eventId` is `keccak(sender,
+ * nonce++)`, so one registration yields one id and it belongs to exactly one
+ * series — and since #433 the store enforces it, refusing to bind an id that is
+ * already bound to another key. The same property this file asserts in "an
+ * on-chain event already bound to one series is reported as taken".
+ */
+function oursFor(tag: string): string {
+  return `0x${tag.padStart(2, "0").slice(0, 2)}${"a1".repeat(31)}`;
+}
+
 let dir: string;
 let originalCwd: string;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,6 +113,7 @@ test("a forged id is HEALED to the server's own, not merely dropped", async () =
   // the first version of these tests allowed either outcome and so did not
   // distinguish a working heal from a silent no-op.
   const eventId = "evt-heal";
+  const OURS = oursFor("d1");
   const seriesId = "ser-heal";
 
   registry.recordOnChainEventId(eventId, seriesId, OURS);
@@ -136,6 +151,7 @@ test("an on-chain event already bound to one series is reported as taken", async
 
 test("a feed id that AGREES with the record is left alone", async () => {
   const eventId = "evt-honest";
+  const OURS = oursFor("d2");
   const seriesId = "ser-honest";
 
   registry.recordOnChainEventId(eventId, seriesId, OURS);
@@ -146,6 +162,7 @@ test("a feed id that AGREES with the record is left alone", async () => {
 
 test("comparison is case-insensitive — mixed-case hex is not a false positive", async () => {
   const eventId = "evt-case";
+  const OURS = oursFor("d3");
   const seriesId = "ser-case";
 
   registry.recordOnChainEventId(eventId, seriesId, OURS);
@@ -157,6 +174,7 @@ test("comparison is case-insensitive — mixed-case hex is not a false positive"
 
 test("an absent id is still filled from the record — the fill path is intact", async () => {
   const eventId = "evt-absent";
+  const OURS = oursFor("d4");
   const seriesId = "ser-absent";
 
   registry.recordOnChainEventId(eventId, seriesId, OURS);

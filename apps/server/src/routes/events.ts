@@ -4,11 +4,11 @@ import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirector
 import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createEventV2, confirmSeriesOnChain, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
+import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { setListed } from "../lib/event/listing-state.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
-import { getOrganiserNonce, getOnChainEvent, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
+import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
@@ -704,70 +704,6 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   return c.json({ ok: true, eventId });
 });
 
-// POST /api/events/:id/confirm-chain — verify on-chain registration and update event feed
-// Called by the organiser after their registerEvent tx is confirmed.
-events.post("/:id/confirm-chain", requireAuth, async (c) => {
-  const eventId = c.req.param("id");
-  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = c.get("body") as { seriesId: string; onChainEventId: string; chainId: number };
-
-  const { seriesId, onChainEventId, chainId } = body;
-  if (!seriesId || !onChainEventId || !chainId) {
-    return c.json({ ok: false, error: "Missing seriesId, onChainEventId, or chainId" }, 400);
-  }
-
-  // Load event from Swarm — owner-scoped, so an unlisted client-signed event
-  // resolves via the caller's own creator index rather than 404ing.
-  const feed = await getEventForOwner(eventId, parentAddress);
-  if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
-
-  const seriesSummary = feed.series.find((s) => s.seriesId === seriesId);
-  if (!seriesSummary) return c.json({ ok: false, error: "Series not found" }, 404);
-  if (!seriesSummary.swarmManifestRef) {
-    return c.json({ ok: false, error: "Series has no manifest (not a v2 event)" }, 400);
-  }
-
-  // Fetch manifest blob from Swarm to get the manifest digest
-  let blob: SeriesManifestBlob;
-  try {
-    const raw = await downloadFromBytes(seriesSummary.swarmManifestRef);
-    blob = JSON.parse(raw) as SeriesManifestBlob;
-  } catch {
-    return c.json({ ok: false, error: "Failed to fetch manifest from Swarm" }, 500);
-  }
-
-  // Recompute digest from the manifest body we already validated at creation
-  const digestBytes = manifestDigest(blob.signedManifest.body);
-  const localDigest = bytesToHex0x(digestBytes).toLowerCase();
-
-  // Read on-chain state
-  let onChain: Awaited<ReturnType<typeof getOnChainEvent>>;
-  try {
-    onChain = await getOnChainEvent(onChainEventId, chainId);
-  } catch (err) {
-    console.error("[api] confirm-chain getOnChainEvent error:", err);
-    return c.json({ ok: false, error: "Failed to read on-chain state" }, 500);
-  }
-
-  if (!onChain) return c.json({ ok: false, error: "Event not found on chain" }, 404);
-  if (onChain.organiser !== parentAddress) {
-    return c.json({ ok: false, error: "On-chain organiser does not match caller" }, 403);
-  }
-  if (onChain.manifestRef.toLowerCase() !== localDigest) {
-    return c.json({ ok: false, error: "On-chain manifestRef does not match local manifest" }, 400);
-  }
-
-  // Update event feed with on-chain eventId
-  try {
-    await confirmSeriesOnChain(eventId, seriesId, onChainEventId);
-  } catch (err) {
-    console.error("[api] confirm-chain update error:", err);
-    return c.json({ ok: false, error: "Failed to update event feed" }, 500);
-  }
-
-  return c.json({ ok: true, eventId, seriesId, onChainEventId });
-});
-
 // POST /api/events/:id/register-on-chain — authenticated, organiser-only
 // Calls registerEvent via the sponsor wallet (no EOA needed for the organiser).
 // Verifies ownership, sends the tx, then writes onChainEventId back to the Swarm feed.
@@ -786,8 +722,9 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   // feed.creatorAddress, so the feed must come from a source the caller cannot
   // author. A client-supplied signer hint would let anyone register (sponsor-gas
   // tx!) against an eventId they don't own and poison the on-chain registry via
-  // recordOnChainEventId (it overwrites, and applyOnChainEventIds merges it into
-  // every read). getEventForOwner resolves only trusted bases (cache peek → the
+  // recordOnChainEventId (which applyOnChainEventIds then merges into every
+  // read; since #433 it refuses to rebind, so the damage would be a fail-loud
+  // wedge rather than a silent redirect — still not something to allow). getEventForOwner resolves only trusted bases (cache peek → the
   // caller's own platform-written creator index → the trusted global carrier).
   const feed = await getEventForOwner(eventId, parentAddress);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
@@ -807,9 +744,14 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   // The on-chain manifestRef is the manifest digest, which createEventV2 already
   // stamped into the feed as `series.manifestRef` — no need to re-download the
   // SeriesManifestBlob from Swarm just to recompute it (that was ~1.3s of feedRead).
-  // The trusted feed (cache, server-built) carries it; confirm-chain re-verifies the
-  // digest against the stored blob + chain separately. Fall back to the blob only if
-  // a legacy feed lacks the field.
+  // Fall back to the blob only if a legacy feed lacks the field.
+  //
+  // This value is NOT re-derived from the blob here, so a creator can register a
+  // digest their own manifest does not produce. What catches that is the binding
+  // check on the money path (`lib/event/onchain-binding.ts`), which recomputes the
+  // digest from `swarmManifestRef` and refuses the sale on a mismatch — one Swarm
+  // read per ref, memoised. It used to say `confirm-chain` re-verified this; that
+  // route is gone (#433), and the checkout check is what the guarantee rests on.
   let manifestRef = series.manifestRef as Hex0x | undefined;
   if (!manifestRef) {
     try {

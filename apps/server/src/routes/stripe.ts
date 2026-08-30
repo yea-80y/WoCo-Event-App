@@ -653,6 +653,14 @@ stripe.post("/create-checkout", async (c) => {
   // directly. Definitive verdicts fail CLOSED; an unavailable chain value fails
   // OPEN — the same trade the sponsor gate makes, and safe because the no-I/O
   // guard in `applyOnChainEventIds` has already run on this feed.
+  // The id this server's own registration record holds for this series — the
+  // #424 anchor, and the value carried to fulfilment below. Deliberately NOT
+  // `series.onChainEventId`: the feed's copy is creator-cased and the binding
+  // check only requires it to match case-INSENSITIVELY, so stamping the feed's
+  // spelling would turn a mere case difference into a refused mint and a
+  // refund on every sale of that series.
+  const validatedOnChainEventId = lookupOnChainEventId(eventId, seriesId);
+
   {
     // THE ANCHOR: this server must have registered this series itself.
     //
@@ -683,7 +691,7 @@ stripe.post("/create-checkout", async (c) => {
       : null;
     const binding = checkSeriesOnChainBinding({
       claimedOnChainEventId: series.onChainEventId,
-      recordedOnChainEventId: lookupOnChainEventId(eventId, seriesId),
+      recordedOnChainEventId: validatedOnChainEventId,
       seriesManifestRef: series.manifestRef,
       blobManifestDigest,
       onChainManifestRef: onChain?.manifestRef,
@@ -848,6 +856,28 @@ stripe.post("/create-checkout", async (c) => {
           // the webhook stamps it as owner-of-record + gate-binds at claim.
           ...(verifiedAddress && podPubKey ? { podPubKey } : {}),
           quantity: String(quantity),
+          // The on-chain event this sale was VALIDATED against, carried to
+          // fulfilment (#426).
+          //
+          // Fulfilment used to re-read `onChainEventId` from the event feed at
+          // mint time, so everything the checks above establish held at CHARGE
+          // time and not at mint: for a Phase B event the feed is the creator's
+          // own client-signed SOC, and re-signing it between the two re-pointed
+          // the mint. Carrying the decision forward is what makes the guarantee
+          // end to end.
+          //
+          // Session metadata is a sound carrier because the ORGANISER cannot
+          // write it. Connected accounts are created with
+          // `controller.stripe_dashboard.type = "none"`
+          // (lib/stripe/account-params.ts), so an organiser holds no dashboard
+          // and no API credentials for the account this session lives on —
+          // only the platform can update it.
+          //
+          // Empty string when this server has no record. `create-checkout`
+          // refuses those sales outright, so it should be unreachable; it is
+          // written rather than omitted so fulfilment can tell "old session,
+          // created before this shipped" from "recorded as nothing".
+          onChainEventId: validatedOnChainEventId ?? "",
           // Stored so the webhook can issue refunds through the connected account.
           connectedAccountId: organiserRecord.stripeAccountId,
           // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
