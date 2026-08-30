@@ -263,16 +263,6 @@ export async function registerSeriesOnChain(
   return { onChainEventId: resp.onChainEventId, txHash: resp.txHash, eventFeed: resp.eventFeed };
 }
 
-/** Confirm on-chain registration for a series after the organiser's registerEvent tx. */
-export async function confirmChainRegistration(
-  eventId: string,
-  seriesId: string,
-  onChainEventId: string,
-  chainId: number,
-): Promise<{ ok: boolean; error?: string }> {
-  return authPost(`/api/events/${eventId}/confirm-chain`, { seriesId, onChainEventId, chainId });
-}
-
 /**
  * The global directory. Cards are SnapshotCard (a superset of EventDirectoryEntry —
  * see service.ts `listEvents`), so this is typed as SnapshotCard[] to expose

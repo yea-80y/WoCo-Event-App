@@ -85,6 +85,12 @@ interface SessionOpts {
   connectedAccountId?: string | null;
   paymentIntent?: string | null;
   amountTotal?: number;
+  /**
+   * The on-chain event the sale was validated against, as create-checkout now
+   * stamps it (#426). `null` = a session created BEFORE that shipped, which
+   * must still fulfil from the server's registration record.
+   */
+  onChainEventId?: string | null;
   /** Drop eventId/seriesId entirely — "not our session". */
   noEventKeys?: boolean;
 }
@@ -103,6 +109,7 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.siteId !== null) md.siteId = o.siteId ?? "site-1";
   if (o.consent !== null) md.marketingConsent = o.consent ?? "1";
   if (o.connectedAccountId !== null) md.connectedAccountId = o.connectedAccountId ?? ACCT;
+  if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
   return {
     id: "cs_test_1",
     metadata: md,
@@ -122,6 +129,7 @@ type Step =
   | "resolveSiteEventSigner"
   | "getEvent"
   | "chainEventEndMs"
+  | "lookupOnChainEventId"
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
   | "uploadToBytes"
@@ -147,6 +155,13 @@ interface FakeOpts {
   event?: EventFeed | null;
   /** Value of chainEventEndMs. Default: far future. */
   chainEndMs?: number | null;
+  /**
+   * What the server's registration record holds for this series (#426).
+   * Default: the same id the default feed carries. `null` = never registered
+   * here, which is what "not registered on chain" now means — the FEED's copy
+   * no longer decides.
+   */
+  recorded?: string | null;
   /** Contract batch cap. Default 100 (one chunk for any test quantity). */
   batchMax?: number;
   /** Chunk index (0-based) at which batchClaimFor reverts. Default: never. */
@@ -170,6 +185,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const attendees: Array<{ eventId: string; emailHash: string; at: string }> = [];
   const consumed: string[] = [];
   const minted: string[][] = [];
+  /** The on-chain event each batch was minted against — the #426 assertion. */
+  const mintedAgainst: string[] = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -195,6 +212,10 @@ function fakeDeps(o: FakeOpts = {}) {
     chainEventEndMs: async () => {
       boom("chainEventEndMs");
       return o.chainEndMs === undefined ? Date.parse(FUTURE) : o.chainEndMs;
+    },
+    lookupOnChainEventId: () => {
+      boom("lookupOnChainEventId");
+      return o.recorded === undefined ? ON_CHAIN_EVENT_ID : o.recorded;
     },
     recordHeldPayout: (entry) => {
       boom("recordHeldPayout");
@@ -226,11 +247,12 @@ function fakeDeps(o: FakeOpts = {}) {
         },
       };
     },
-    batchClaimForOnChain: async (_ev, burners) => {
+    batchClaimForOnChain: async (ev, burners) => {
       boom("batchClaimForOnChain");
       const idx = chunkIdx++;
       if (o.revertAtChunk === idx) throw new Error("execution reverted: Insufficient supply");
       minted.push(burners);
+      mintedAgainst.push(ev);
       const slots = burners.map(() => nextSlot++);
       return slots;
     },
@@ -287,7 +309,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted };
+  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -544,9 +566,13 @@ describe("stop reasons", () => {
   });
 
   test("series not registered on chain: refunded in full without touching the chain", async () => {
+    // Since #426 this is a property of SERVER state, not of the feed. Genuinely
+    // unregistered means BOTH are absent: no id carried on the session and no
+    // registration record. (A session that carries a validated id survives the
+    // loss of the record — see the test below; that is deliberate.)
     const { f, outcome } = await run(
-      {},
-      { event: eventFeed({}, { onChainEventId: undefined, swarmManifestRef: undefined }) },
+      { onChainEventId: null },
+      { event: eventFeed({}, { onChainEventId: undefined, swarmManifestRef: undefined }), recorded: null },
     );
     assert.equal(outcome.stoppedReason, "Series is not registered on chain — no mint path");
     assert.equal(f.calls.includes("batchClaimForOnChain"), false);
@@ -554,11 +580,70 @@ describe("stop reasons", () => {
     assert.deepEqual(f.voided, ["cs_test_1"]);
   });
 
+  // ── #426: the mint binds to the id validated at CHARGE time ──────────────
+  //
+  // For a Phase B event the feed is the CREATOR's client-signed SOC. Fulfilment
+  // used to re-read `onChainEventId` from it at mint time, so every check
+  // create-checkout performs held at charge time and not at mint: re-signing the
+  // SOC in between re-pointed the mint, with the money already taken. The mint
+  // target is now server state only.
+
+  test("ANCHOR: a feed re-signed to another event after checkout does NOT move the mint", async () => {
+    // The attack, exactly: the sale was validated against ON_CHAIN_EVENT_ID, and
+    // by the time the webhook runs the creator's SOC names someone else's event.
+    const VICTIM = `0x${"ee".repeat(32)}`;
+    const { f, outcome } = await run(
+      {},
+      { event: eventFeed({}, { onChainEventId: VICTIM }) },
+    );
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(
+      f.minted[0].length, 2,
+      "minted the validated event, not the feed's",
+    );
+    assert.equal(
+      f.mintedAgainst[0], ON_CHAIN_EVENT_ID,
+      "the re-signed feed moved the mint — this is #426",
+    );
+  });
+
+  test("validated id and the server's record disagree: refund, mint nothing", async () => {
+    // Should be unreachable once #433's rebind refusal is in place; kept as the
+    // tripwire for when it is not. Minting against EITHER value would be wrong.
+    const OTHER = `0x${"dd".repeat(32)}`;
+    const { f, outcome } = await run({}, { recorded: OTHER });
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "Ticket registration changed after payment — refunding");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false, "nothing was minted");
+    assert.equal(outcome.refund.kind, "created");
+    assert.deepEqual(f.voided, ["cs_test_1"]);
+  });
+
+  test("a session created before #426 shipped falls back to the server's record", async () => {
+    const { f, outcome } = await run({ onChainEventId: null }, {});
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.mintedAgainst[0], ON_CHAIN_EVENT_ID);
+  });
+
+  test("the registration record is lost, but an in-flight session carries its validated id", async () => {
+    // `onchain-events.json` is no longer a pure cache and losing it stops new
+    // sales. Sessions already validated should still fulfil rather than refund.
+    const { f, outcome } = await run({}, { recorded: null });
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.mintedAgainst[0], ON_CHAIN_EVENT_ID);
+  });
+
+  test("the record lookup throwing degrades to the validated id, and never rejects", async () => {
+    const { f, outcome } = await run({}, { fail: "lookupOnChainEventId" });
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.mintedAgainst[0], ON_CHAIN_EVENT_ID);
+  });
+
   test("event feed says the event has ended: refund without broadcasting", async () => {
     const { f, outcome } = await run({}, { event: eventFeed({ startDate: PAST, endDate: PAST }) });
     assert.equal(outcome.stoppedReason, "Event ended before payment completed — sales closed");
     assert.equal(f.calls.includes("batchClaimForOnChain"), false);
-    assert.equal(f.calls.includes("chainEventEndMs"), false, "feed verdict is enough; chain not asked");
+    assert.equal(f.calls.includes("chainEventEndMs"), false, "the ended verdict is enough; chain not asked");
     assert.equal(outcome.refund.kind, "created");
   });
 
@@ -574,11 +659,18 @@ describe("stop reasons", () => {
     assert.equal(outcome.issued, 2);
   });
 
-  test("event feed unreadable (null): no v2 path known → refund, never a blind mint", async () => {
+  test("event feed unreadable: the buyer still gets tickets — the mint no longer needs the feed (#426)", async () => {
+    // BEHAVIOUR CHANGE, deliberate. This used to refund, on the reasoning that
+    // an unreadable feed left "no v2 path known" — true when the mint target
+    // WAS the feed's `onChainEventId`. It now comes from the server's own
+    // registration record, so a Swarm blip no longer costs a paid buyer their
+    // tickets. What still bounds the mint is the CONTRACT: supply and
+    // `eventEndTs` are checked on chain, and the chain-end guard below runs.
     const { f, outcome } = await run({}, { event: null });
-    assert.equal(outcome.issued, 0);
-    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
-    assert.equal(outcome.refund.kind, "created");
+    assert.equal(outcome.issued, 2, "a feed hiccup must not refund a paid buyer");
+    assert.equal(outcome.refund.kind, "not-needed");
+    assert.deepEqual(f.minted.length, 1, "minted against the record, with no feed in hand");
+    assert.equal(f.calls.includes("chainEventEndMs"), true, "the chain end guard still applies");
   });
 
   test("stopped with no payment intent on the session: outcome says so, nothing else breaks", async () => {
@@ -601,8 +693,8 @@ describe("every collaborator throws", () => {
     note: string;
   }> = [
     { step: "hashEmail", issued: 2, refund: "not-needed", email: "sent", note: "consent hash is an accessory" },
-    { step: "resolveSiteEventSigner", issued: 0, refund: "created", email: "nothing-issued", note: "event feed unread → no v2 path → refund" },
-    { step: "getEvent", issued: 0, refund: "created", email: "nothing-issued", note: "same" },
+    { step: "resolveSiteEventSigner", issued: 2, refund: "not-needed", email: "sent", note: "feed unread, but the mint target is the server's record (#426)" },
+    { step: "getEvent", issued: 2, refund: "not-needed", email: "sent", note: "same" },
     { step: "chainEventEndMs", issued: 2, refund: "not-needed", email: "sent", note: "fail OPEN" },
     { step: "recordHeldPayout", issued: 2, refund: "not-needed", email: "sent", note: "bookkeeping never fails a paid claim" },
     { step: "getOrganiserByStripeAccount", issued: 2, refund: "not-needed", email: "sent", note: "inside the ledger fence" },
@@ -717,7 +809,7 @@ describe("every collaborator throws", () => {
 
 test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
-    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "recordHeldPayout",
+    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId", "recordHeldPayout",
     "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
