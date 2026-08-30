@@ -299,6 +299,54 @@ export function deriveEventId(
 }
 
 /**
+ * Fold walked registrations into the manifestRef projection, FIRST-WRITER-WINS.
+ *
+ * The contract does not enforce that a `manifestRef` is unique — `registerEvent`
+ * is permissionless and takes whatever digest it is handed — so two on-chain
+ * events can carry the same one. This used to be a plain `set`, i.e.
+ * last-writer-wins, which let anyone who registered a copy of an existing
+ * manifest digest SHADOW the original in this projection.
+ *
+ * That matters because `findOnChainEventIdByManifestRef` is the positive arm of
+ * the #318 intent resolver, whose NEGATIVE answer causes a re-broadcast, and
+ * because the tier-3 fill resolves ids through this same map.
+ *
+ * First-wins is the right rule in both directions. The walk runs in ascending
+ * nonce order, so the first entry seen is the EARLIEST registration — the one
+ * that actually landed for that manifest, which is what the resolver is asking
+ * about. It is also the only direction an attacker cannot choose: registering a
+ * copied digest AFTER the victim is free, whereas getting in before them means
+ * winning a race inside a crash window. And it is stable across re-walks, where
+ * last-wins depended on iteration order.
+ *
+ * A repeat of the SAME id is just a re-walk (this map is process-lifetime state
+ * and the walk restarts from nonce 0), so only a genuine collision warns.
+ *
+ * Exported so the rule is testable without a chain.
+ */
+export function indexWalkedRegistrations(
+  into: Map<string, string>,
+  walked: Array<{ id: string; manifestRef?: string | null }>,
+): void {
+  for (const { id, manifestRef } of walked) {
+    if (!manifestRef) continue;
+    const ref = manifestRef.toLowerCase();
+    const existing = into.get(ref);
+    if (existing === undefined) {
+      into.set(ref, id);
+      continue;
+    }
+    if (existing !== id) {
+      console.warn(
+        `[onchain-cache] duplicate on-chain manifestRef ${ref.slice(0, 10)}… — keeping the ` +
+        `earlier registration ${existing.slice(0, 10)}… and ignoring ${id.slice(0, 10)}…. ` +
+        `The chain does not enforce uniqueness; a later duplicate must not shadow the original`,
+      );
+    }
+  }
+}
+
+/**
  * Walk EVERY sponsor registration on chain into `byManifestRef`. Bounded by
  * `organiserNonce` (exact count), batched. THROWS on any failure — a caller
  * that needs a definitive answer (the #318 intent resolver) must be able to
@@ -334,10 +382,10 @@ async function walkChainRegistrations(): Promise<void> {
     // No per-id catch: a dropped read here must fail the WALK, not read as an
     // absent registration (the intent resolver re-broadcasts on "absent").
     const events = await Promise.all(ids.map((id) => getOnChainEvent(id, chainId)));
-    for (let i = 0; i < ids.length; i++) {
-      const ev = events[i];
-      if (ev?.manifestRef) byManifestRef.set(ev.manifestRef.toLowerCase(), ids[i]);
-    }
+    indexWalkedRegistrations(
+      byManifestRef,
+      ids.map((id, i) => ({ id, manifestRef: events[i]?.manifestRef })),
+    );
   }
   console.log(`[onchain-cache] reconciled ${byManifestRef.size} on-chain events from chain`);
 }
