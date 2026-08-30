@@ -201,7 +201,8 @@ export async function resolveManifestDigest(swarmManifestRef: string): Promise<s
   try {
     const raw = await downloadFromBytes(swarmManifestRef);
     const blob = JSON.parse(raw) as SeriesManifestBlob;
-    // Same recomputation confirm-chain performs (routes/events.ts).
+    // The digest recomputation that `confirm-chain` used to perform before that
+    // route was deleted (#433). This is now the only place it happens.
     const digest = bytesToHex0x(manifestDigest(blob.signedManifest.body)).toLowerCase();
     _digestByRef.set(key, digest);
     return digest;
