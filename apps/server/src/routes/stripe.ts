@@ -34,6 +34,7 @@ import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
+import { checkSeriesOnChainBinding } from "../lib/event/onchain-binding.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
@@ -632,13 +633,43 @@ stripe.post("/create-checkout", async (c) => {
   // count stays undefined on failure, which computeGatePhase fail-safes to
   // holders-only — never a definite 0 that could hold a window open.
   let onChain: Awaited<ReturnType<typeof getOnChainEvent>> = null;
-  if (!skipAvailability || (series.gate && gateNeedsClaimCount(series.gate))) {
-    try {
-      onChain = await getOnChainEvent(series.onChainEventId, getActiveChainId());
-    } catch (err) {
-      console.warn("[stripe/create-checkout] availability chain read failed (continuing):", err);
+  try {
+    onChain = await getOnChainEvent(series.onChainEventId, getActiveChainId());
+  } catch (err) {
+    console.warn("[stripe/create-checkout] availability chain read failed (continuing):", err);
+  }
+
+  // #424 — bind the id to THIS series before charging.
+  //
+  // `series.onChainEventId` comes from the creator's own client-signed feed, so
+  // it is untrusted input. Left unchecked, a creator can point their series at
+  // another organiser's on-chain event: an authorised sponsor may append slots
+  // to any event, so every sale would mint out of the VICTIM's supply while the
+  // payment lands in the attacker's account, and the buyer receives a genuine
+  // ticket to the victim's event.
+  //
+  // Decision logic lives in `checkSeriesOnChainBinding` so it is testable
+  // directly. Definitive verdicts fail CLOSED; an unavailable chain value fails
+  // OPEN — the same trade the sponsor gate makes, and safe because the no-I/O
+  // guard in `applyOnChainEventIds` has already run on this feed.
+  {
+    const binding = checkSeriesOnChainBinding({
+      seriesManifestRef: series.manifestRef,
+      onChainManifestRef: onChain?.manifestRef,
+    });
+    if (!binding.ok) {
+      console.error(
+        `[stripe/create-checkout] BLOCKED — ${binding.reason}: ${binding.detail} ` +
+        `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+        `claimed=${series.onChainEventId.slice(0, 10)}…) — refusing to charge (see #424)`,
+      );
+      return c.json(
+        { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
+        409,
+      );
     }
   }
+
   if (!skipAvailability && onChain
       && Number(onChain.totalSupply) - Number(onChain.nextSlot) < quantity) {
     return c.json({ ok: false, error: "Sold out" }, 409);
