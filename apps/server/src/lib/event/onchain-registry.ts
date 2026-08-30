@@ -93,6 +93,21 @@ export function recordOnChainEventId(eventId: string, seriesId: string, onChainE
  * genuinely-first registration its tier-3 miss triggers a full chain walk, which
  * would land on the publish hot path.
  */
+/**
+ * The `eventId|seriesId` key already bound to this on-chain event, if any.
+ *
+ * Scans rather than keeping a reverse map: it runs only on the tier-3 cold-miss
+ * path, never on the hot path, and the map is small enough that a second
+ * persisted index would be more to keep correct than it is worth.
+ */
+export function findKeyBoundTo(onChainEventId: string): string | null {
+  const needle = onChainEventId.toLowerCase();
+  for (const [k, v] of byEventSeries) {
+    if (v.toLowerCase() === needle) return k;
+  }
+  return null;
+}
+
 export function lookupOnChainEventId(eventId: string, seriesId: string): string | null {
   ensureLoaded();
   return byEventSeries.get(key(eventId, seriesId)) ?? null;
@@ -355,15 +370,67 @@ export async function findOnChainEventIdByManifestRef(manifestRef: string): Prom
 }
 
 /**
- * Fill each series' `onChainEventId` from cache/chain when the signed feed lacks it.
- * Only fills when ABSENT — never overrides a value already in the feed. Hot path
- * (cache hit) does NO chain work; a cold miss triggers ONE throttled reconcile whose
- * result is persisted. Mutates and returns `feed`.
+ * Fill each series' `onChainEventId` from cache/chain when the signed feed lacks it,
+ * and STRIP one the server knows to be wrong. Hot path (cache hit) does NO chain
+ * work; a cold miss triggers ONE throttled reconcile whose result is persisted.
+ * Mutates and returns `feed`.
+ *
+ * On the strip: for Phase B events the feed is the CREATOR's client-signed SOC —
+ * the server has no key for it and the client merges `onChainEventId` itself
+ * (lib/event/service.ts). So that field is creator-controlled input, not server
+ * state, and it used to be passed through untouched whenever it was present.
+ * A creator could therefore point their series at ANOTHER organiser's on-chain
+ * event; because an authorised sponsor may append slots to any event, each sale
+ * then minted out of the victim's supply while payment landed with the attacker
+ * (#424).
+ *
+ * `byEventSeries` is the server's OWN record, written by `recordOnChainEventId`
+ * at registration and backed by `.data`. When it disagrees with the feed, the
+ * feed is wrong, so the id is dropped rather than trusted.
+ *
+ * WHAT ACTUALLY HAPPENS TO A DROPPED SERIES — stated precisely, because it is
+ * not what "drop" suggests: the fill below immediately re-fills it from that
+ * same record, so an honest-but-stale feed is CORRECTED to the server's id and
+ * a forged one is corrected away from the attacker's. It only ends up with no
+ * id at all when the fill cannot resolve one, and that state is what
+ * routes/stripe.ts already refuses to charge for. So the usual outcome is heal,
+ * and refuse is the floor — both safe, but do not rely on "it lands unset".
+ *
+ * TWO LIMITS, both real:
+ *   · A series the server has no record for cannot be checked here. The money
+ *     path carries a second, chain-backed check for that case.
+ *   · `byEventSeries` is NOT beyond a creator's reach. Tier 3 below resolves an
+ *     id from the CREATOR-SUPPLIED `manifestRef` and persists it as a record —
+ *     so a creator naming another series' manifestRef could otherwise have the
+ *     server write the forged binding itself, after which this comparison would
+ *     agree with it forever. That is why tier 3 refuses to bind an on-chain
+ *     event already bound to a different series; without that guard, this tier
+ *     is anchored on something the attacker can move.
+ *   · The key uses `feed.eventId`, which is a field INSIDE the creator-signed
+ *     SOC and is not validated against the id the feed was fetched under. A
+ *     mislabelled SOC therefore misses the lookup. Tracked separately.
  */
 export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> {
+  ensureLoaded();
+
+  // Strip an id the server's own record contradicts (#424). Runs before the
+  // fill below so a stripped series can be re-filled with the correct id.
+  for (const s of feed.series) {
+    if (!s.onChainEventId) continue;
+    const recorded = byEventSeries.get(key(feed.eventId, s.seriesId));
+    if (recorded && recorded.toLowerCase() !== s.onChainEventId.toLowerCase()) {
+      console.error(
+        `[onchain-registry] REJECTED feed-supplied onChainEventId for ` +
+        `${feed.eventId.slice(0, 8)}/${s.seriesId.slice(0, 8)}: feed says ` +
+        `${s.onChainEventId.slice(0, 10)}… but this server registered ` +
+        `${recorded.slice(0, 10)}… — dropping (see #424)`,
+      );
+      s.onChainEventId = undefined as unknown as typeof s.onChainEventId;
+    }
+  }
+
   const missing = feed.series.filter((s) => !s.onChainEventId && s.manifestRef);
   if (missing.length === 0) return feed;
-  ensureLoaded();
 
   // Tier 1/2: per-(event,series) cache (in-memory, backed by .data).
   for (const s of missing) {
@@ -379,11 +446,27 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
 
   for (const s of stillMissing) {
     const id = byManifestRef.get(s.manifestRef!.toLowerCase());
-    if (id) {
-      s.onChainEventId = id as typeof s.onChainEventId;
-      byEventSeries.set(key(feed.eventId, s.seriesId), id);
-      dirty = true;
+    if (!id) continue;
+
+    // One on-chain event belongs to exactly one series. This lookup is keyed by
+    // the CREATOR-SUPPLIED `s.manifestRef`, so without this check a creator can
+    // name another organiser's manifestRef, omit `onChainEventId`, and have the
+    // server resolve the victim's id and PERSIST it as its own record — after
+    // which the tier-1 comparison above agrees with the forgery forever,
+    // because the record it trusts is the forged one (#424).
+    const boundElsewhere = findKeyBoundTo(id);
+    if (boundElsewhere && boundElsewhere !== key(feed.eventId, s.seriesId)) {
+      console.error(
+        `[onchain-registry] REFUSED to bind on-chain event ${id.slice(0, 10)}… to ` +
+        `${feed.eventId.slice(0, 8)}/${s.seriesId.slice(0, 8)} — it is already bound to ` +
+        `${boundElsewhere}. A manifestRef naming another series' event (see #424)`,
+      );
+      continue;
     }
+
+    s.onChainEventId = id as typeof s.onChainEventId;
+    byEventSeries.set(key(feed.eventId, s.seriesId), id);
+    dirty = true;
   }
   persist();
   return feed;
