@@ -88,7 +88,9 @@
       // ClaimedTicket (client-verifiable ownership; never blocks the unlock).
       let podPubKey: string | undefined;
       try {
-        podPubKey = (await auth.ensurePodIdentity()) ?? undefined;
+        // Bare 64-hex — the redeem route drops a 0x-prefixed key and binds
+        // without it, silently costing the holder their badge eligibility (#445).
+        podPubKey = (await auth.ensurePodIdentity())?.replace(/^0x/, "") ?? undefined;
       } catch {
         podPubKey = undefined;
       }
