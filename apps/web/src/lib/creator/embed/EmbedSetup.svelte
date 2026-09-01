@@ -18,7 +18,7 @@
   let showDescription = $state(false);
   let theme = $state<"dark" | "light">("dark");
   let copied = $state(false);
-  let embedType = $state<"webcomponent" | "iframe">("iframe");
+  let embedType = $state<"webcomponent" | "iframe">("webcomponent");
 
   // Default API URL (user can override)
   const defaultApiUrl = "https://events-api.woco-net.com";

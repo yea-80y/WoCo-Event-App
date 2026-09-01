@@ -471,7 +471,11 @@ export class WocoTickets extends HTMLElement {
   private renderBuyPanel(s: SeriesSummary, st: SeriesState): string {
     const avail = Number(st.status?.available ?? s.totalSupply);
     const maxQty = maxSelectableQty(avail);
-    const qty = Math.min(st.quantity, maxQty);
+    // Write the clamp back: if availability dropped below the picked quantity,
+    // the picker shows the clamped value and checkout must charge for exactly
+    // what is shown — display and wire may never disagree.
+    st.quantity = Math.min(st.quantity, maxQty);
+    const qty = st.quantity;
     const fees = calculateBuyerFees(s.payment, qty);
 
     let qtyOptions = "";
