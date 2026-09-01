@@ -13,9 +13,7 @@
  */
 
 import type { Hex64, Hex0x } from "../types.js";
-
-/** Hex-encoded ed25519 public key (32 bytes, lowercase, no 0x prefix). */
-export type Hex32 = string;
+import type { IssuerPubkeyV1 } from "../crypto/brands.js";
 
 /** 0x-prefixed bytes32 hex (66 chars including 0x). */
 export type Bytes32Hex = string;
@@ -43,7 +41,7 @@ export interface PodV2Body {
    */
   metadata: Record<string, unknown>;
   /** ed25519 issuer public key (hex, lowercase, no 0x). Mirrors manifest. */
-  issuer: Hex32;
+  issuer: IssuerPubkeyV1;
 }
 
 /**
@@ -72,7 +70,7 @@ export interface ManifestV1Body {
   eventId: Bytes32Hex;
   totalSupply: number;
   /** ed25519 issuer pubkey (hex, lowercase, no 0x). */
-  issuerPubkey: Hex32;
+  issuerPubkey: IssuerPubkeyV1;
   /** 0x-prefixed bytes32 — Merkle root over all edition leaves. */
   metadataRoot: Bytes32Hex;
   /** Locked encoder identifier — only `cbor-v1` ships in v1. */
@@ -196,7 +194,7 @@ export interface PodDirectoryEntry {
   /** ed25519 issuer pubkey (hex, lowercase, no 0x) — mirrors the manifest.
    *  Optional: not needed for the manager/holdings/gating; populated only where
    *  a use (e.g. verifying off-event badges) requires it. */
-  issuer?: Hex32;
+  issuer?: IssuerPubkeyV1;
   /** On-chain eventId (0x bytes32) the manifest is committed under — the
    *  holdings reader needs this to read slot ownership. Present once on-chain
    *  registration confirms; for `ticket` PODs that is `confirmSeriesOnChain`. */

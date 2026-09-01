@@ -8,13 +8,13 @@
  * covered by ordinary unit tests rather than by inspection.
  */
 
-import type { Hex32 } from "../pod/types.js";
+import type { HolderPubkey } from "../crypto/brands.js";
 
 export interface CertIssuancePlan {
   /** Holders to certify in this run, request order, deduped. */
-  toIssue: Hex32[];
+  toIssue: HolderPubkey[];
   /** Requested holders the log already carries — skipped, not re-signed. */
-  alreadyHeld: Hex32[];
+  alreadyHeld: HolderPubkey[];
   /** Distinct holders the badge will have once this run lands. */
   totalAfter: number;
 }
@@ -45,16 +45,16 @@ const ED25519_PUB_RE = /^[0-9a-f]{64}$/;
  * can be explained to the issuer rather than discovered by a stranger.
  */
 export function planCertIssuance(args: {
-  requested: readonly Hex32[];
+  requested: readonly HolderPubkey[];
   /** Distinct holders already carried by the badge's log. */
-  existingHolders: readonly Hex32[];
+  existingHolders: readonly HolderPubkey[];
   /** The manifest's `totalSupply`. Omit only when it is genuinely unknown. */
   cap?: number;
 }): CertIssuancePlanResult {
   const existing = new Set(args.existingHolders ?? []);
   const seen = new Set<string>();
-  const toIssue: Hex32[] = [];
-  const alreadyHeld: Hex32[] = [];
+  const toIssue: HolderPubkey[] = [];
+  const alreadyHeld: HolderPubkey[] = [];
 
   for (const holder of args.requested ?? []) {
     if (typeof holder !== "string" || !ED25519_PUB_RE.test(holder)) {

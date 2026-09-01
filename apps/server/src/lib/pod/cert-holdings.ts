@@ -17,7 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  CertPodGate, PodHolding, SignedManifestV1, SeriesManifestBlob, Hex32,
+  CertPodGate, PodHolding, SignedManifestV1, SeriesManifestBlob, HolderPubkey,
   PodCertPresentation, PodCertChallengeExpectation,
 } from "@woco/shared";
 import { podCertHoldingFromManifest, resolvePodCertIssuer } from "@woco/shared";
@@ -97,7 +97,7 @@ export async function getCertHolding(
   gate: CertPodGate,
   presentations: readonly PodCertPresentation[],
   expect: PodCertChallengeExpectation,
-  expectedHolder: Hex32,
+  expectedHolder: HolderPubkey,
 ): Promise<PodHolding> {
   const empty: PodHolding = { manifestRef: gate.manifestRef, count: 0, slots: [] };
   if (!presentations?.length || !expectedHolder) return empty;

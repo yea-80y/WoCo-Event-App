@@ -35,7 +35,8 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { Hex0x } from "../types.js";
-import type { Bytes32Hex, Hex32 } from "../pod/types.js";
+import type { Bytes32Hex } from "../pod/types.js";
+import type { EncryptionPubkey, HolderPubkey, IssuerPubkeyV1 } from "../crypto/brands.js";
 import {
   STATEMENT_SIGNING_PREFIXES,
   publicTopicSalt,
@@ -114,7 +115,7 @@ export interface PodCertV1 {
    * the possession challenge. This field is what makes the certificate
    * soulbound in substance rather than by declaration.
    */
-  holder: Hex32;
+  holder: HolderPubkey;
   /**
    * UTC calendar date, YYYY-MM-DD. SELF-DECLARED and unverifiable — nothing
    * timestamps a Swarm write. Hardened only by the optional per-epoch anchor
@@ -139,7 +140,7 @@ export interface PodCertV1 {
    * Optional because a certificate may be issued for a holder whose encryption
    * key the issuer does not have, and omitting it must stay free.
    */
-  encPubKey?: Hex32;
+  encPubKey?: EncryptionPubkey;
   /**
    * OPTIONAL audit trail: what the issuer read before signing (e.g. the
    * indexer evidence report behind a verified lap count).
@@ -204,7 +205,7 @@ export interface PodCertChallengeV1 {
   /** Badge type being claimed — must equal the presented certificate's `badge`. */
   badge: Bytes32Hex;
   /** Holder key being challenged — must equal the certificate's `holder`. */
-  holder: Hex32;
+  holder: HolderPubkey;
   /**
    * The verifier's identity: an origin (`https://club.example.com`), a scanner
    * id, whatever the door calls itself. Printable ASCII, no spaces, so it can
@@ -423,7 +424,7 @@ export function podCertChallengeDigest(unsigned: UnsignedPodCertChallengeV1): Ui
 export function signPodCert(
   unsigned: UnsignedPodCertV1,
   issuerPrivKey: Uint8Array,
-  expectedIssuerPubkey: Hex32,
+  expectedIssuerPubkey: IssuerPubkeyV1,
 ): PodCertV1 {
   const digest = podCertDigest(unsigned);
   const pub = bytesToHex(ed25519.getPublicKey(issuerPrivKey));
@@ -476,7 +477,7 @@ export function signPodCertChallenge(
  * else (a directory entry, a gate config, a URL) checks a signature against a
  * key nothing binds to the badge, which is not a check at all.
  */
-export function verifyPodCert(value: unknown, issuerPubkey: Hex32): value is PodCertV1 {
+export function verifyPodCert(value: unknown, issuerPubkey: IssuerPubkeyV1): value is PodCertV1 {
   try {
     if (!ED25519_PUB_RE.test(issuerPubkey)) return false;
     if (!validatePodCertV1(value)) return false;

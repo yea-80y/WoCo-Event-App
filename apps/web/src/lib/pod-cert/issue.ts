@@ -35,8 +35,10 @@ import {
   verifyPodCertLogPage,
   type Bytes32Hex,
   type CertLogCursor,
+  type EncryptionPubkey,
   type Hex0x,
-  type Hex32,
+  type HolderPubkey,
+  type IssuerPubkeyV1,
   type PodCertLogPageV1,
   type PodCertV1,
   type SeriesManifestBlob,
@@ -70,7 +72,7 @@ export interface CertIssuerKeys {
 
 export interface CertLogState {
   /** Distinct holders already certified, first-seen order. */
-  holders: Hex32[];
+  holders: HolderPubkey[];
   /** Head coordinates, or null when the log has never been written. */
   head: { band: number; version: number } | null;
   pagesRead: number;
@@ -94,9 +96,9 @@ const topicFor = (badge: Bytes32Hex) => (band: number) => podCertLogTopic(salt, 
  * why both live here rather than being spelled out twice.
  */
 function extrasFor(
-  extras: Record<string, { encPubKey?: Hex32; evidence?: string[] }> | undefined,
-  holder: Hex32,
-): { encPubKey?: Hex32; evidence?: string[] } {
+  extras: Record<string, { encPubKey?: EncryptionPubkey; evidence?: string[] }> | undefined,
+  holder: HolderPubkey,
+): { encPubKey?: EncryptionPubkey; evidence?: string[] } {
   if (!extras) return {};
   const direct = extras[holder];
   if (direct) return direct;
@@ -221,9 +223,9 @@ export type IssueRunStop = "refused" | "superseded" | "unconfirmed";
 export interface IssueRunResult {
   ok: boolean;
   /** Holders certified by THIS run, in the order their pages landed. */
-  landed: Hex32[];
+  landed: HolderPubkey[];
   /** Requested holders the log already carried. */
-  alreadyHeld: Hex32[];
+  alreadyHeld: HolderPubkey[];
   pagesWritten: number;
   /** Set when the run stopped early. Everything in `landed` is still real. */
   error?: string;
@@ -238,14 +240,14 @@ export interface IssueRunResult {
 export interface IssuancePrecheckArgs {
   badge: Bytes32Hex;
   keys: CertIssuerKeys;
-  holders: readonly Hex32[];
+  holders: readonly HolderPubkey[];
   manifest: SignedManifestV1;
   expectedLogOwner: Hex0x;
-  extras?: Record<string, { encPubKey?: Hex32; evidence?: string[] }>;
+  extras?: Record<string, { encPubKey?: EncryptionPubkey; evidence?: string[] }>;
 }
 
 export type IssuancePrecheck =
-  | { ok: true; issuerPubkey: Hex32 }
+  | { ok: true; issuerPubkey: IssuerPubkeyV1 }
   | { ok: false; error: string };
 
 /**
@@ -321,7 +323,7 @@ export async function precheckIssuance(args: IssuancePrecheckArgs): Promise<Issu
 export async function issueCertificates(args: {
   badge: Bytes32Hex;
   keys: CertIssuerKeys;
-  holders: readonly Hex32[];
+  holders: readonly HolderPubkey[];
   /**
    * The badge's signed manifest. REQUIRED, and it carries THREE things this
    * call refuses to be told separately:
@@ -348,11 +350,11 @@ export async function issueCertificates(args: {
   /** UTC `YYYY-MM-DD`; defaults to today. Self-declared and unverifiable. */
   issuedAt?: string;
   /** Optional per-holder extras, keyed by holder. */
-  extras?: Record<string, { encPubKey?: Hex32; evidence?: string[] }>;
+  extras?: Record<string, { encPubKey?: EncryptionPubkey; evidence?: string[] }>;
   onProgress?: (done: number, total: number) => void;
 }): Promise<IssueRunResult> {
   const { badge, keys } = args;
-  const empty = { landed: [] as Hex32[], alreadyHeld: [] as Hex32[], pagesWritten: 0 };
+  const empty = { landed: [] as HolderPubkey[], alreadyHeld: [] as HolderPubkey[], pagesWritten: 0 };
   const refuse = (error: string): IssueRunResult => ({ ok: false, ...empty, error, stop: "refused" });
 
   const pre = await precheckIssuance(args);
@@ -405,7 +407,7 @@ export async function issueCertificates(args: {
 
   const pages = packPodCertLogPages(certs);
   const topic = topicFor(badge);
-  const landed: Hex32[] = [];
+  const landed: HolderPubkey[] = [];
   let pagesWritten = 0;
 
   // Where the first page goes. An absent log starts at band 0 version 0, which

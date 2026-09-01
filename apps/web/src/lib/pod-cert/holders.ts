@@ -8,9 +8,8 @@
  * awarded a badge to someone who never received one — and the run is permanent.
  */
 
-import type { Hex32 } from "@woco/shared";
-
-const ED25519_PUB_RE = /^[0-9a-f]{64}$/;
+import { isHolderPubkey } from "@woco/shared";
+import type { HolderPubkey } from "@woco/shared";
 
 export interface HolderReject {
   /** 1-indexed line as the organiser sees it in the box. */
@@ -22,7 +21,7 @@ export interface HolderReject {
 
 export interface ParsedHolders {
   /** Valid, lowercased, de-duplicated, in first-seen order. */
-  keys: Hex32[];
+  keys: HolderPubkey[];
   /** Everything that did not make it, and why. Never silently discarded. */
   rejects: HolderReject[];
 }
@@ -42,7 +41,7 @@ export interface ParsedHolders {
  * count they typed.
  */
 export function parseHolderKeys(text: string): ParsedHolders {
-  const keys: Hex32[] = [];
+  const keys: HolderPubkey[] = [];
   const rejects: HolderReject[] = [];
   const seen = new Set<string>();
 
@@ -54,7 +53,7 @@ export function parseHolderKeys(text: string): ParsedHolders {
     const bare = (raw.startsWith("0x") || raw.startsWith("0X") ? raw.slice(2) : raw).toLowerCase();
     const display = raw.length > 24 ? `${raw.slice(0, 24)}…` : raw;
 
-    if (!ED25519_PUB_RE.test(bare)) {
+    if (!isHolderPubkey(bare)) {
       rejects.push({ line: i + 1, text: display, reason: "not-a-key" });
       continue;
     }
@@ -63,7 +62,7 @@ export function parseHolderKeys(text: string): ParsedHolders {
       continue;
     }
     seen.add(bare);
-    keys.push(bare as Hex32);
+    keys.push(bare);
   }
 
   return { keys, rejects };
@@ -103,7 +102,7 @@ export interface UncertifiableAttendee {
 
 export interface AttendeeSplit {
   /** Distinct holders, first-seen order — the unit of issuance is the PERSON. */
-  certifiable: Hex32[];
+  certifiable: HolderPubkey[];
   /** Everyone who cannot be awarded, and why. Counted and shown, never dropped. */
   withoutKey: UncertifiableAttendee[];
   /** Editions collapsed into a holder already counted — a multi-ticket buyer. */
@@ -139,7 +138,7 @@ export function splitAttendees(args: {
   const byEdition = new Map<string, AttendeeCandidate>();
   for (const b of args.bindings ?? []) byEdition.set(`${b.seriesId}\u0000${b.edition}`, b);
 
-  const certifiable: Hex32[] = [];
+  const certifiable: HolderPubkey[] = [];
   const withoutKey: UncertifiableAttendee[] = [];
   const seen = new Set<string>();
   let duplicateEditions = 0;
@@ -156,7 +155,7 @@ export function splitAttendees(args: {
     // A malformed key counts as absent. The server already filters these at
     // serve time; repeating it costs one regex and makes this function correct
     // on its own terms rather than on a promise.
-    if (!ED25519_PUB_RE.test(key)) {
+    if (!isHolderPubkey(key)) {
       withoutKey.push({ seriesId: claim.seriesId, edition: claim.edition, reason: "no-key" });
       continue;
     }
@@ -165,7 +164,7 @@ export function splitAttendees(args: {
       continue;
     }
     seen.add(key);
-    certifiable.push(key as Hex32);
+    certifiable.push(key);
   }
 
   return { certifiable, withoutKey, duplicateEditions, totalClaims: claims.length };
