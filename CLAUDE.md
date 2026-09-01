@@ -90,10 +90,21 @@ DEV COMMANDS:
 AUTH ARCHITECTURE
 ============================================================================
 
-Three identity layers:
+Four identity layers (issuer-curve migration #443, PRs #447–#453, 2026-09-01):
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
-3. POD identity (ed25519, deterministic) — signs tickets + derives encryption key
+3. Holder identity (ed25519, deterministic — the "POD seed") — attendee side: owns
+   tickets, answers cert challenges; the same seed derives the X25519 encryption key
+4. Issuing key (secp256k1, HKDF from the same seed, generation-parameterised —
+   `packages/shared/src/crypto/issuing.ts`) — organiser side: signs manifests + certs.
+   Identity of record = its 20-byte ADDRESS, bound to the parent by proof-of-possession
+   at every create and by the issuer registry (`woco/issuer/{parent}`, parent-signed
+   EIP-712 statements; rotation = a gen bump, no new secret at rest)
+
+NAMING (owner decision, 2026-09-01): "POD" is retired from docs and code names — the
+standard is "object data"; code speaks editions / certs / holder identity. FROZEN signed
+literals (domains, salts, `woco/pod/*` topics, the "POD seed" storage key) keep their
+exact bytes — only names and copy changed.
 
 Login methods. AUTHORITATIVE LIST = `AuthKind` in `packages/shared/src/auth/types.ts`
 (`"web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none"`) — read it there.
@@ -105,7 +116,9 @@ account (secp256k1 in IndexedDB) were both deleted in `e127c97` to cut eager bun
 
 Deferred signing: login just connects; EIP-712 `AuthorizeSession` is signed on first
 action that needs it (publish, claim, MyTickets). `ensureSession()` is the gate.
-`ensurePodIdentity()` runs on publish AND first dashboard decrypt.
+`ensurePodIdentity()` runs on publish AND first dashboard decrypt;
+`ensureIssuingKey()` (`lib/auth/issuing-key.ts`) wraps it + derivation — FAIL LOUD when
+no seed, never another signer.
 
 Global login popup pattern: `loginRequest.request() → Promise<boolean>` — opens
 `LoginModal` from any component. Used by ClaimButton, PublishButton, MyTickets, nav.
@@ -142,6 +155,7 @@ FEED TOPICS:
   woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
   woco/pod/collection/{ethAddress}        # User's collection
   woco/recovery/{kernelAddress}[...]      # Recovery escrow + status + by-guardian hint (see topics.ts)
+  woco/issuer/{parentAddress}             # Issuer-registry statement log (parent-signed)
   woco/profile/data/{ethAddress}          # User profile
   woco/profile/avatar/{ethAddress}        # Avatar ref (separate feed → independent updates)
   woco/marketing/list/{ethAddress}        # Sealed contact-list pointer
@@ -159,8 +173,12 @@ Payment mechanics: `docs/PAYMENTS_INTEGRATION.md`. Payouts: `docs/PAYOUTS.md`.
 
 TICKETS:
 - Series = event ticket type (`totalSupply`, metadata, image)
-- Editions = individual tickets, signed by the creator's ed25519 key
-- Formats: `woco.ticket.v1` / `woco.ticket.claimed.v1`
+- Editions = individual tickets ("object data") — committed by a Merkle root in a
+  manifest the creator's ISSUING key personal-signs; nothing signs per-edition
+- Formats: `woco.manifest.v2` + `woco.edition.v1` (tickets/badges) · `woco.cert.v1` +
+  `woco.cert-challenge.v1` (awarded certificates). The v1 formats are DELETED and every
+  verifier dispatch-refuses them; creates also require the `issuerBinding` PoP, verified
+  and pinned server-side (`.data/issuer-bindings.json`)
 - Always-on encryption: every claim encrypts `seriesId + claimerAddress/Email` for the
   organiser dashboard, even without order form fields
 
@@ -249,7 +267,8 @@ AUTH (frontend):
   apps/web/src/lib/auth/login-request.svelte.ts      # global login popup trigger
   apps/web/src/lib/auth/signing-request.svelte.ts    # EIP-712 confirm dialog trigger
   apps/web/src/lib/auth/session-delegation.ts        # session key + delegation
-  apps/web/src/lib/auth/pod-identity.ts              # ed25519 POD derivation
+  apps/web/src/lib/auth/pod-identity.ts              # holder-identity seed derivation
+  apps/web/src/lib/auth/issuing-key.ts               # ensureIssuingKey() — fail-loud wrapper
   apps/web/src/lib/auth/ensure-action.ts             # requireAccountForAction() gate
   apps/web/src/lib/auth/signers/{index,web3-signer,passkey-signer,coinbase-signer,local-signer}.ts
   apps/web/src/lib/auth/{web3auth-account,passkey-account,kernel-account,coinbase-account}.ts
@@ -267,7 +286,11 @@ CLAIMS / EVENTS:
   apps/server/src/lib/event/claim-service.ts         # core claim + approval logic
   apps/server/src/lib/event/service.ts               # event creation
   apps/server/src/lib/swarm/topics.ts                # feed topic derivation
-  packages/shared/src/pod/verify.ts                  # ed25519 ticket signature verification
+  packages/shared/src/edition/                       # woco.manifest.v2 + woco.edition.v1 (sign/verify)
+  packages/shared/src/cert/                          # woco.cert.v1 rail (sign/verify/log/door)
+  packages/shared/src/crypto/issuing.ts              # issuing-key derivation + personal-sign wrapper
+  packages/shared/src/issuer/types.ts                # issuer-registry statements + log verify
+  apps/server/src/lib/issuer/{binding,registry}.ts   # PoP pin + rotation relay
 
 EAS LIKES:
   apps/web/src/lib/eas/{eas-abi,attest}.ts           # attestLike/revokeLike
