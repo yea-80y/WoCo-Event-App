@@ -27,6 +27,7 @@ import {
 } from "@woco/shared";
 import { getOnChainHolding } from "./holdings.js";
 import { getCertHolding, loadVerifiedBadgeManifest } from "./cert-holdings.js";
+import { isRetiredIssuer } from "../issuer/binding.js";
 import { getOnChainEvent } from "../chain/event-contract.js";
 
 /**
@@ -131,8 +132,20 @@ export async function validatePodGate(
       // conformant issuer key. This is organiser UX — catching a dead ref where
       // it can still be explained — NOT the trust check, which is re-proved on
       // every use. A transient Swarm failure here is a refusal worth retrying.
-      if (!(await loadVerifiedBadgeManifest(g, { bypassCache: true }))) {
+      const badgeManifest = await loadVerifiedBadgeManifest(g, { bypassCache: true });
+      if (!badgeManifest) {
         return { ok: false, error: "could not read this POD's manifest to confirm who issues it — try again" };
+      }
+      // The leaked-key containment seam (PR 5b): a badge whose manifest names
+      // an issuer some parent has ROTATED AWAY FROM must not become a stored
+      // gate — a leaked old-generation key could have minted it after the
+      // bump. The registry's rotation is what retires the address; re-minting
+      // the badge under the current key is the organiser's path forward.
+      if (isRetiredIssuer(badgeManifest.body.issuer)) {
+        return {
+          ok: false,
+          error: "this badge's issuer key has been rotated away — re-mint the badge under the current key",
+        };
       }
       continue;
     }

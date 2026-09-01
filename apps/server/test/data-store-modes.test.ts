@@ -103,6 +103,34 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "issuer/registry",
+    drive: async () => {
+      const m = await import("../src/lib/issuer/registry.js");
+      const sh = await import("@woco/shared");
+      const feeds = await import("../src/lib/swarm/feeds.js");
+      feeds.__feedWriteTestHooks.setBaseBackoffMs(1);
+      const { Wallet } = await import("ethers");
+      const wallet = new Wallet(`0x${"07".repeat(32)}`);
+      const parent = wallet.address.toLowerCase();
+      const { privateKey, address } = sh.deriveIssuingKey(BYTES32, 0);
+      const base = {
+        parent, issuer: address, gen: 0,
+        certLogOwner: sh.ZERO_ADDRESS, reason: "seed", issuedAt: "2026-09-01T12:00:00Z",
+      };
+      const parentSig = await wallet.signTypedData(
+        { ...sh.ISSUER_REGISTRY_DOMAIN },
+        sh.ISSUER_STATEMENT_TYPES as never,
+        base,
+      );
+      await m.relayIssuerStatement(parent, {
+        format: "woco.issuer-statement.v1",
+        ...base,
+        parentSig,
+        bindingSig: sh.signPersonalMessage(sh.buildIssuerBindingMessage(parent, 0), privateKey),
+      });
+    },
+  },
+  {
     // The store caught at 0644 in production: three files, two of them in
     // subdirectories the writer creates itself.
     store: "checkin/store",

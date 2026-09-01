@@ -1,3 +1,4 @@
+import { issuerRegistryTopicName } from "@woco/shared";
 import { Topic } from "@ethersphere/bee-js";
 
 /**
@@ -134,6 +135,16 @@ export const topicRecoveryStatus = (kernelAddress: string) =>
 // The feed page holds only {swarmRef, count, updatedAt}; the blob itself is
 // ECIES-sealed to the organiser's X25519 key (server never sees plaintext).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Issuer registry (issuer-curve migration PR 5b)
+// ---------------------------------------------------------------------------
+
+/** A parent's issuer-registry log — the parent-signed statement chain. Topic
+ *  name derivation lives in shared (`issuerRegistryTopicName`) so third-party
+ *  readers derive it with no server code. */
+export const topicIssuerRegistry = (parentAddress: string) =>
+  Topic.fromString(issuerRegistryTopicName(parentAddress));
+
 const MARKETING_NS = "woco/marketing";
 
 export const topicMarketingList = (ethAddress: string) =>

@@ -15,8 +15,11 @@
  *
  * Domains covered: SOC (\n32) · woco-ticket-v1 (burner) · woco-manifest-v2
  * (issuing key) · woco-cert-v1 (issuing key) · woco-issuer-binding-v1 (issuing
- * key, PR 4). `woco-claimed-owner-v2` left the codebase with #448 (produced by
- * nothing, verified by nothing) and so left the matrix with it.
+ * key, PR 4) · woco-issuer-rotation-v1 (previous-gen issuing key, PR 5b).
+ * The parent's EIP-712 statement signature is NOT a personal-sign message and
+ * needs no row: its 0x1901 envelope prefix makes the preimage domain disjoint
+ * from every personal-sign by construction. `woco-claimed-owner-v2` left the
+ * codebase with #448 and so left the matrix with it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -29,6 +32,7 @@ import {
   recoverPersonalSigner,
   signPersonalMessage,
 } from "../../src/crypto/issuing.js";
+import { buildIssuerRotationMessage } from "../../src/issuer/types.js";
 import { buildManifestV2Message, manifestV2Digest } from "../../src/edition/canonical.js";
 import { signManifestV2, verifyManifestV2 } from "../../src/edition/merkle.js";
 import type { ManifestV2Body } from "../../src/edition/types.js";
@@ -76,9 +80,14 @@ test("no WoCo canonical builder can emit a 32-byte message", () => {
   const minimalBinding = buildIssuerBindingMessage("0x" + "00".repeat(20), 0);
   assert.equal(utf8ToBytes(minimalBinding).length, 67, "the shortest possible binding message");
 
+  const minimalRotation = buildIssuerRotationMessage(
+    "0x" + "00".repeat(20), 0, 1, "0x" + "00".repeat(20),
+  );
+  assert.equal(utf8ToBytes(minimalRotation).length, 113, "the shortest possible rotation message");
+
   // All fields only grow the messages, so these are the floors: every domain
   // clears 32 bytes and the SOC domain is disjoint by length alone.
-  for (const len of [83, 79, 86, 67]) assert.notEqual(len, 32);
+  for (const len of [83, 79, 86, 67, 113]) assert.notEqual(len, 32);
 });
 
 test("every domain line is distinct", () => {
@@ -92,8 +101,23 @@ test("every domain line is distinct", () => {
       edition: 1,
     }).split("\n")[0],
     buildIssuerBindingMessage("0x" + "00".repeat(20), 0).split("\n")[0],
+    buildIssuerRotationMessage("0x" + "00".repeat(20), 0, 1, "0x" + "00".repeat(20)).split("\n")[0],
   ];
   assert.equal(new Set(domains).size, domains.length, `domain collision in: ${domains}`);
+});
+
+test("a rotation co-signature can endorse no other successor, hop, or domain", () => {
+  // The SAME issuing key signs bindings AND (as the outgoing generation)
+  // rotation co-signatures. The rotation message binds parent + both gens +
+  // the successor, so one co-signature endorses exactly one hop.
+  const parent = "0x" + "11".repeat(20);
+  const succ = "0x" + "22".repeat(20);
+  const other = "0x" + "33".repeat(20);
+  const sig = signPersonalMessage(buildIssuerRotationMessage(parent, 0, 1, succ), ISSUING_PRIV);
+  assert.equal(recoverPersonalSigner(buildIssuerRotationMessage(parent, 0, 1, succ), sig), ISSUER);
+  assert.notEqual(recoverPersonalSigner(buildIssuerRotationMessage(parent, 0, 1, other), sig), ISSUER);
+  assert.notEqual(recoverPersonalSigner(buildIssuerRotationMessage(parent, 1, 2, succ), sig), ISSUER);
+  assert.notEqual(recoverPersonalSigner(buildIssuerBindingMessage(parent, 1), sig), ISSUER);
 });
 
 test("an issuer-binding signature does not verify as a manifest signature, nor the reverse", () => {
