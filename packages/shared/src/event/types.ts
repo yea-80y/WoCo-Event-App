@@ -308,7 +308,7 @@ export interface SeriesSummary {
   onChainEventId?: string;
   /** keccak256(dagCbor(manifestBody)) stored on-chain as manifestRef */
   manifestRef?: string;
-  /** Swarm ref to SeriesManifestBlob (SignedManifestV1 + podRefs array) */
+  /** Swarm ref to SeriesManifestBlob (SignedManifestV2 + podRefs array) */
   swarmManifestRef?: Hex64;
   /** POD-holdings gate — when set, the claim route requires the claimer's wallet
    *  to hold the gating POD on-chain. May be a single PodGate (legacy) or a

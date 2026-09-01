@@ -26,8 +26,18 @@ import {
   type ManifestV2Body,
 } from "../../src/edition/types.js";
 import { signManifestV2, verifyManifestV2 } from "../../src/edition/merkle.js";
-import { signManifest } from "../../src/pod/merkle.js";
-import type { ManifestV1Body } from "../../src/pod/types.js";
+import * as dagCbor from "@ipld/dag-cbor";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+
+/**
+ * Test-local v1 manifest signer — the production v1 sign path is DELETED
+ * (PR 5a), and this replica exists so the refusal below keeps facing a
+ * VALIDLY-SIGNED v1 artifact rather than shaped garbage. Recipe frozen as it
+ * shipped: ed25519 over keccak256(dagCbor(body)), signature hex without 0x.
+ */
+function signManifestV1(body: Record<string, unknown>, priv: Uint8Array) {
+  return { body, signature: bytesToHex(ed25519.sign(keccak_256(dagCbor.encode(body)), priv)) };
+}
 
 const SEED = "0x" + "ab".repeat(32);
 const { privateKey: ISSUING_PRIV, address: ISSUER } = deriveIssuingKey(SEED, 0);
@@ -122,7 +132,7 @@ test("a signature by a different issuing generation does not verify", () => {
 test("verifyManifestV2 REFUSES a valid v1 manifest at dispatch", () => {
   const edPriv = new Uint8Array(32).fill(5);
   const edPub = bytesToHex(ed25519.getPublicKey(edPriv));
-  const v1Body: ManifestV1Body = {
+  const v1Body = {
     format: "woco.manifest.v1",
     eventId: "0x" + "00".repeat(32),
     totalSupply: 3,
@@ -131,7 +141,7 @@ test("verifyManifestV2 REFUSES a valid v1 manifest at dispatch", () => {
     encoding: "cbor-v1",
     treeScheme: "oz-simple-v1",
   };
-  const signedV1 = signManifest(v1Body, edPriv);
+  const signedV1 = signManifestV1(v1Body, edPriv);
   assert.ok(
     !verifyManifestV2(signedV1 as unknown),
     "a woco.manifest.v1 envelope verified as v2 — the format dispatch refusal is gone",

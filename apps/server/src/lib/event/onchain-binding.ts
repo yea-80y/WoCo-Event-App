@@ -23,9 +23,11 @@ import { downloadFromBytes } from "../swarm/bytes.js";
  * otherwise: `swarmManifestRef` is creator-controlled, so an attacker need not
  * forge a manifest at all — they can point it at the VICTIM's blob, which is
  * public and content-addressed. The recomputed digest then matches the victim's
- * on-chain event exactly. `verifySignedManifest` does not help: it verifies
- * against `issuerPubkey` embedded in the blob, proving someone signed it, not
- * that THIS feed's creator did, and nothing binds that key to `creatorAddress`.
+ * on-chain event exactly. `verifyManifestV2` does not help: it verifies
+ * against the `issuer` address embedded in the blob, proving someone signed
+ * it, not that THIS feed's creator did.  (The 5a issuer-binding store pins
+ * parent → issuer at CREATE, but this seam deliberately keeps its own anchor:
+ * the registration record below needs no second lookup to stay sound.)
  *
  * THE ANCHOR is therefore the server's OWN registration record — the one input
  * here a creator cannot influence. The blob digest is kept as consistency

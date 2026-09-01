@@ -1,15 +1,13 @@
 /**
- * On-chain ticketing v1 — POD + manifest schemas.
+ * POD layer — the LIVE display, directory and gating types.
  *
- * `woco.ticket.v2` PODs are pre-signed at event creation as a Merkle-tree
- * batch under a single `woco.manifest.v1`. There is no per-POD signature;
- * authenticity comes from (a) the ed25519-signed manifest, (b) the chain
- * commitment to `manifestRef = keccak256(dagCbor(manifestBody))`, and
- * (c) a Merkle proof from the POD's leaf to `manifestBody.metadataRoot`.
- *
- * The cryptographic surface (encoder, leaf format, tree scheme, signature
- * domain) is locked. See `canonical.ts` and `merkle.ts` for the producer/
- * consumer code that ships in v1 — DO NOT change without a format bump.
+ * The v1 cryptographic surface that used to open this file (`woco.ticket.v2`
+ * bodies, `woco.manifest.v1`, the ed25519 issuer) was DELETED in the
+ * issuer-curve migration (PR 5a). The live formats are `woco.edition.v1` +
+ * `woco.manifest.v2` in `edition/`, signed by the derived secp256k1 issuing
+ * key; certificates are `woco.cert.v1` in `cert/`. Nothing here signs or
+ * verifies — these are the mutable classification/display records and the
+ * gate schema, keyed on `manifestRef` digests.
  */
 
 import type { Hex64, Hex0x } from "../types.js";
@@ -17,114 +15,11 @@ import type { Hex64, Hex0x } from "../types.js";
 /** 0x-prefixed bytes32 hex (66 chars including 0x). */
 export type Bytes32Hex = string;
 
-/**
- * `woco.ticket.v2` POD body — pre-signed at event creation.
- *
- * No `claimedBy` field: ownership is recorded on chain
- * (`slotOwner[eventId][slot]`), not in the POD. No per-POD signature: the
- * manifest signs the Merkle root of all leaves, and each leaf binds the
- * edition number to the canonical CBOR encoding of this body.
- */
-export interface PodV2Body {
-  format: "woco.ticket.v2";
-  /** Informational only — same value as `ManifestV1Body.eventId`, and equally
-   *  unrelated to the on-chain eventId. See the note there. */
-  eventId: Bytes32Hex;
-  seriesId: string;
-  /** 1-indexed edition number (1..totalSupply). Bound into the leaf hash. */
-  edition: number;
-  /**
-   * Ticket metadata — name, image, description, anything the organiser wants
-   * the buyer to see. Free-form so PODs can carry arbitrary asset payloads
-   * for the long-term composability story.
-   */
-  metadata: Record<string, unknown>;
-  /** ed25519 issuer public key (hex, lowercase, no 0x). Mirrors manifest.
-   *  Plain string since PR 4 deleted the `IssuerPubkeyV1` brand: this v1 body
-   *  is produced by nothing any more and dies with the v1 verify paths (5a). */
-  issuer: string;
-}
-
-/**
- * `woco.manifest.v1` body — signed by the organiser's ed25519 key.
- *
- * The signed payload is `keccak256(dagCbor(this body))` (32 bytes). That same
- * digest is what the chain stores as `manifestRef` in `WoCoEvent.events`,
- * binding the signature to the on-chain commitment.
- */
-export interface ManifestV1Body {
-  format: "woco.manifest.v1";
-  /**
-   * 0x-prefixed bytes32 — INFORMATIONAL ONLY. It does NOT match the on-chain
-   * eventId and cannot be used to join a manifest to its chain registration.
-   *
-   * The producer computes `keccak256(abi.encode(organiserAddress, 0))`
-   * (`event-builder.ts`, nonce hardcoded 0 at both call sites). The contract
-   * computes `keccak256(abi.encode(msg.sender, organiserNonce[msg.sender]++))`
-   * where `msg.sender` is the platform SPONSOR, not the organiser — so both the
-   * address and the nonce differ.
-   *
-   * The real chain binding is `manifestRef` = `keccak256(dagCbor(this body))`,
-   * which `registerEvent` stores. The authoritative eventId is the one that call
-   * emits.
-   */
-  eventId: Bytes32Hex;
-  totalSupply: number;
-  /** ed25519 issuer pubkey (hex, lowercase, no 0x). Plain string since PR 4
-   *  deleted the brand — produced by nothing, dies with the v1 verify paths (5a). */
-  issuerPubkey: string;
-  /** 0x-prefixed bytes32 — Merkle root over all edition leaves. */
-  metadataRoot: Bytes32Hex;
-  /** Locked encoder identifier — only `cbor-v1` ships in v1. */
-  encoding: "cbor-v1";
-  /**
-   * Locked tree scheme identifier.
-   * `oz-simple-v1`: leaves used verbatim (already hashed by us); internal
-   * nodes are `keccak256(sort(L, R))`; non-power-of-2 supplies use OZ's
-   * unbalanced tree shape (no padding leaves). Matches
-   * `@openzeppelin/merkle-tree`'s `SimpleMerkleTree` default.
-   */
-  treeScheme: "oz-simple-v1";
-  /**
-   * Optional shared metadata template — purely informational. Each POD's own
-   * `metadata` is what's committed to via Merkle proof. The template helps
-   * humans read the manifest without fetching every POD.
-   */
-  podTemplate?: Record<string, unknown>;
-}
-
-/**
- * Signed manifest envelope — what gets uploaded to Swarm.
- *
- * Verifiers split `body` from `signature`, recompute `keccak256(dagCbor(body))`,
- * and check (a) ed25519 sig with `body.issuerPubkey` and (b) chain
- * `manifestRef == that digest`. The signature itself is NOT in the signed bytes.
- */
-export interface SignedManifestV1 {
-  body: ManifestV1Body;
-  /** ed25519 signature (hex, lowercase, no 0x prefix; 64 bytes). */
-  signature: string;
-}
-
-/**
- * Per-edition Merkle proof. Carried alongside a POD when a verifier needs to
- * confirm membership in `manifestBody.metadataRoot` without holding the full
- * leaf set. The scanner caches the leaf set pre-event so this is mostly used
- * by web verifiers (ticket page, dashboard).
- */
-export interface MerkleProofV1 {
-  edition: number;
-  /** 0x-prefixed bytes32 — the leaf hash for this edition. */
-  leaf: Bytes32Hex;
-  /** Sibling hashes from leaf up to root, each 0x-prefixed bytes32. */
-  proof: Bytes32Hex[];
-}
-
 // ===========================================================================
 // POD layer — kinds, display metadata, creator directory (Step 4, 2026-06-03)
 //
-// A POD *type* is a manifest. Its cryptographic surface (ManifestV1Body) is
-// LOCKED and untouched here. Everything in this section is the MUTABLE,
+// A POD *type* is a manifest. Its cryptographic surface (`woco.manifest.v2`,
+// edition/types.ts) is LOCKED and untouched here. Everything in this section is the MUTABLE,
 // creator-facing classification + display layer that lives in the directory
 // entry — so re-categorising or renaming a POD never requires re-signing the
 // manifest. See docs/WOCO_SHOP_PLAN.md §4.

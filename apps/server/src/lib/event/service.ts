@@ -181,11 +181,11 @@ export async function createEventV2(opts: {
   imagePromise.catch(() => {});
 
   // ── Phase 2: image upload (pod bodies are NOT uploaded) ───────────────
-  // The per-edition pod bodies are never fetched by the claim/payment/order
+  // The per-edition bodies are never fetched by the claim/payment/order
   // paths — those read `blob.signedManifest` and recompute the on-chain digest
   // from `signedManifest.body` (events.ts, stripe.ts, orders.ts); none read
   // `podRefs`. The on-chain anchor is the manifest digest (over the Merkle
-  // `metadataRoot`, already validated in-memory above via buildPodTree), so
+  // `metadataRoot`, already validated in-memory above via buildEditionTree), so
   // uploading N copies of near-identical bodies was pure cost (the dominant
   // create-step latency, ~N serialised /bytes writes). podRefs is left empty;
   // a future Merkle-inclusion claim path (B2) can rebuild refs from the bodies

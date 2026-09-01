@@ -35,9 +35,19 @@ import {
 } from "../../src/crypto/issuing.js";
 import { asHolderPubkey } from "../../src/crypto/brands.js";
 import { evaluatePodGate } from "../../src/pod/gate.js";
-import { signManifest } from "../../src/pod/merkle.js";
-import { bytesToHex0x, manifestDigest } from "../../src/pod/canonical.js";
-import type { ManifestV1Body } from "../../src/pod/types.js";
+import { bytesToHex0x } from "../../src/crypto/hex.js";
+import * as dagCbor from "@ipld/dag-cbor";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+
+/**
+ * Test-local v1 manifest signer — the production v1 sign path is DELETED
+ * (PR 5a), and this replica exists so the refusal below keeps facing a
+ * VALIDLY-SIGNED v1 artifact rather than shaped garbage. Recipe frozen as it
+ * shipped: ed25519 over keccak256(dagCbor(body)), signature hex without 0x.
+ */
+function signManifestV1(body: Record<string, unknown>, priv: Uint8Array) {
+  return { body, signature: bytesToHex(ed25519.sign(keccak_256(dagCbor.encode(body)), priv)) };
+}
 
 const ISSUING = deriveIssuingKey(`0x${"ab".repeat(32)}`, 0);
 const ATTACKER_ISSUING = deriveIssuingKey(`0x${"cd".repeat(32)}`, 0);
@@ -144,7 +154,7 @@ test("a v1 signed manifest resolves nothing — the dispatch refusal IS the cuto
   // schema dispatches on `format` and fails it whole. A v1 badge therefore
   // cannot open a v2 door, which is the migration boundary made structural.
   const v1IssuerPriv = new Uint8Array(32).fill(7);
-  const v1Body: ManifestV1Body = {
+  const v1Body = {
     format: "woco.manifest.v1",
     eventId: `0x${"11".repeat(32)}`,
     totalSupply: 500,
@@ -153,8 +163,8 @@ test("a v1 signed manifest resolves nothing — the dispatch refusal IS the cuto
     encoding: "cbor-v1",
     treeScheme: "oz-simple-v1",
   };
-  const v1Signed = signManifest(v1Body, v1IssuerPriv);
-  const v1Badge = bytesToHex0x(manifestDigest(v1Body));
+  const v1Signed = signManifestV1(v1Body, v1IssuerPriv);
+  const v1Badge = bytesToHex0x(keccak_256(dagCbor.encode(v1Body)));
 
   assert.equal(resolveCertIssuer(v1Signed, v1Badge), null, "its own badge does not save it");
   assert.equal(resolveCertIssuer(v1Signed, BADGE), null);
