@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Wallet } from "ethers";
-import { precheckIssuance } from "../src/lib/pod-cert/issue.js";
+import { precheckIssuance } from "../src/lib/cert/issue.js";
 import { buildCertBadgeManifest } from "../src/lib/pod/cert-builder.js";
 import { verifySignedManifest, type Hex0x } from "@woco/shared";
 

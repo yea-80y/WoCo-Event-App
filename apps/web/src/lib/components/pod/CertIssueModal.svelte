@@ -32,7 +32,7 @@
     issueCertificates,
     loadBadgeManifest,
     type IssueRunResult,
-  } from "../../pod-cert/issue.js";
+  } from "../../cert/issue.js";
   import {
     parseHolderKeys,
     splitAttendees,
@@ -40,7 +40,7 @@
     uncertifiableLabel,
     type HolderReject,
     type TicketClaim,
-  } from "../../pod-cert/holders.js";
+  } from "../../cert/holders.js";
   import { hintCounts, probeCounts, probeTotals } from "../../swarm/probe-stats.js";
 
   interface Props {

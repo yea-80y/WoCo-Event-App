@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
-const ISSUE = strip(read("../src/lib/pod-cert/issue.ts"));
+const ISSUE = strip(read("../src/lib/cert/issue.ts"));
 const MODAL_RAW = read("../src/lib/components/pod/CertIssueModal.svelte");
 const MODAL = strip(MODAL_RAW);
 const DRAWER = read("../src/lib/components/pod/PodEditDrawer.svelte");
