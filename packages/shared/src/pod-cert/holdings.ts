@@ -27,7 +27,6 @@
  */
 
 import type { PodHolding, SignedManifestV1, Bytes32Hex } from "../pod/types.js";
-import type { IssuerPubkeyV1 } from "../crypto/brands.js";
 import { manifestDigest, bytesToHex0x } from "../pod/canonical.js";
 import { verifySignedManifest } from "../pod/merkle.js";
 import {
@@ -80,7 +79,7 @@ export type PodCertCheck = { ok: true } | { ok: false; reason: string };
 export function resolvePodCertIssuer(
   manifest: SignedManifestV1,
   badge: Bytes32Hex,
-): IssuerPubkeyV1 | null {
+): string | null {
   try {
     if (!manifest?.body) return null;
     if (typeof badge !== "string" || !/^0x[0-9a-f]{64}$/.test(badge)) return null;
@@ -111,7 +110,7 @@ export function resolvePodCertIssuer(
 export function checkPodCertPresentation(
   presentation: PodCertPresentation,
   badge: Bytes32Hex,
-  issuerPubkey: IssuerPubkeyV1,
+  issuerPubkey: string,
   expect: PodCertChallengeExpectation,
 ): PodCertCheck {
   const { cert, challenge } = presentation ?? {};
@@ -178,7 +177,7 @@ export function checkPodCertPresentation(
 export function podCertHolding(
   badge: Bytes32Hex,
   presentations: readonly PodCertPresentation[],
-  issuerPubkey: IssuerPubkeyV1,
+  issuerPubkey: string,
   expect: PodCertChallengeExpectation,
 ): PodHolding {
   const held = (presentations ?? []).some(
@@ -192,7 +191,7 @@ export function podCertHolding(
  * manifest, resolving the issuer key internally.
  *
  * Prefer this to {@link podCertHolding} everywhere. The difference is not
- * convenience: the bare form takes an `issuerPubkey: IssuerPubkeyV1`, and
+ * convenience: the bare form takes an `issuerPubkey`, and
  * `PodDirectoryEntry.issuer` is an unverified display mirror sitting in this
  * same package that type-checks perfectly as that parameter. Passing it would
  * check every signature against a key bound to the badge by nothing — the

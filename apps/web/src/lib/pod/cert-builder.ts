@@ -1,18 +1,19 @@
 /**
- * Build the signed manifest for a CERTIFICATE badge (Gate B, slice 4).
- * Design record: docs/SWARM_SOCIAL_PLAN.md, BUILD RECORD slices 3 and 4.
+ * Build the signed manifest for a CERTIFICATE badge (Gate B, slice 4; on the
+ * v2 issuer curve since PR 4). Design record: docs/SWARM_SOCIAL_PLAN.md,
+ * BUILD RECORD slices 3 and 4; curve migration: HANDOVER-pod-curve-migration.md.
  *
  * A SIBLING OF `event-builder.ts`, NEVER A FLAG ON IT. The two rails disagree
- * about what a pod body IS: on the chain rail a body is an EDITION, one per
+ * about what a body IS: on the chain rail a body is an EDITION, one per
  * claimable slot, and `metadataRoot` commits to all of them. On this rail a
  * certificate names its holder, so no edition is ever claimed and pre-signing
- * one body per unit of supply would cost N signatures and N uploads to commit
- * to bytes no reader reads. `issuePodType` enforces the difference: exactly one
- * body for a certificate badge, exactly `supply` for a chain badge.
+ * one body per unit of supply would cost N uploads to commit to bytes no
+ * reader reads. `issuePodType` enforces the difference: exactly one body for a
+ * certificate badge, exactly `supply` for a chain badge.
  *
  * WHAT IS SHARED, AND WHAT IS NOT. The seal-and-sign core — leaf hashing, the
- * Merkle tree, canonical CBOR, the ed25519 signature and the digest — is ONE
- * implementation in `seal.ts` that both rails call, and sharing it is what
+ * Merkle tree, canonical CBOR, the issuing-key signature and the digest — is
+ * ONE implementation in `seal.ts` that both rails call, and sharing it is what
  * guarantees they cannot drift into signing bytes that differ from the bytes a
  * verifier checks. What is NOT shared is body construction, because that is the
  * single thing the rails genuinely disagree about, and `sealManifest` takes the
@@ -21,29 +22,26 @@
  * root covers one body while the contract expects N claimable editions —
  * correct-looking, and failing only at claim time on the money path.
  *
- * `event-builder.ts`'s golden vector (apps/web/test/pod-manifest-golden.test.ts)
+ * `event-builder.ts`'s golden vector (apps/web/test/manifest-golden.test.ts)
  * pins the ticket rail's signed bytes across that shared core precisely so this
  * arrangement stays provable rather than merely intended.
  */
 
-import type { PodV2Body, SignedManifestV1 } from "@woco/shared";
-import { asIssuerPubkeyV1 } from "@woco/shared";
-import { predictOnChainEventId } from "./event-builder.js";
+import type { EditionV1Body, SignedManifestV2 } from "@woco/shared";
+import { issuingAddress } from "@woco/shared";
 import { sealManifest } from "./seal.js";
 
 export interface CertBadgeManifest {
   /** The single template body the manifest's root commits to. */
-  podBodies: PodV2Body[];
-  signedManifest: SignedManifestV1;
+  editionBodies: EditionV1Body[];
+  signedManifest: SignedManifestV2;
   /** keccak256(dagCbor(manifestBody)) — the badge id everything keys on. */
   manifestDigestHex: string;
 }
 
 export interface BuildCertBadgeManifestOpts {
-  organiserAddress: string;
-  creatorPodPrivateKey: Uint8Array;
-  /** ed25519 public key hex, with or without 0x. */
-  creatorPodPublicKeyHex: string;
+  /** The derived secp256k1 issuing key (`ensureIssuingKey`). */
+  issuingPrivKey: Uint8Array;
   name: string;
   description: string;
   /** Display artwork Swarm ref (no 0x), if any. */
@@ -84,35 +82,24 @@ export interface BuildCertBadgeManifestOpts {
 }
 
 /**
- * Build and ed25519-sign a certificate badge's manifest over a single-leaf tree.
+ * Build and sign a certificate badge's manifest over a single-leaf tree, with
+ * the derived issuing key.
  *
  * `edition: 1` on a rail with no editions is honest rather than a placeholder:
  * the field indexes the committed LEAF, and this tree genuinely has one leaf.
  * The manifest layer carries no kind field, and the template body is display
  * bytes no door ever reads — the door reads certificates, which name their
- * holder and are verified against `issuerPubkey`.
+ * holder and are verified against the manifest's `issuer` address.
  */
 export function buildCertBadgeManifest(opts: BuildCertBadgeManifestOpts): CertBadgeManifest {
-  const issuer = asIssuerPubkeyV1(
-    opts.creatorPodPublicKeyHex.startsWith("0x")
-      ? opts.creatorPodPublicKeyHex.slice(2)
-      : opts.creatorPodPublicKeyHex,
-  );
-
   if (!Number.isInteger(opts.cap) || opts.cap < 1) {
     throw new Error(`a certificate badge needs an integer cap of at least 1, got ${opts.cap}`);
   }
 
   const seriesId = opts.seriesId ?? crypto.randomUUID();
-  // Informational, and identical in construction to the chain rail's so the two
-  // manifests stay structurally indistinguishable to a reader. Nonce 0 matches
-  // both existing call sites; the value joins nothing on this rail, which has
-  // no chain registration at all.
-  const eventId = predictOnChainEventId(opts.organiserAddress, 0n);
 
-  const templateBody: PodV2Body = {
-    format: "woco.ticket.v2",
-    eventId,
+  const templateBody: EditionV1Body = {
+    format: "woco.edition.v1",
     seriesId,
     edition: 1,
     metadata: {
@@ -121,10 +108,10 @@ export function buildCertBadgeManifest(opts: BuildCertBadgeManifestOpts): CertBa
       ...(opts.imageHash ? { image: opts.imageHash } : {}),
       mintedAt: opts.mintedAt ?? new Date().toISOString(),
     },
-    issuer,
+    issuer: issuingAddress(opts.issuingPrivKey),
   };
 
-  const podBodies = [templateBody];
+  const editionBodies = [templateBody];
 
   // Seal + sign through the SAME core the ticket rail uses. The divergence is
   // visible right here and nowhere else: one body, but `totalSupply` is the
@@ -132,12 +119,10 @@ export function buildCertBadgeManifest(opts: BuildCertBadgeManifestOpts): CertBa
   // was asked for, so a builder that quietly wrote `1` here would be refused
   // rather than minting a badge capped at a single holder.
   const { signedManifest, manifestDigestHex } = sealManifest({
-    bodies: podBodies,
-    eventId,
+    bodies: editionBodies,
     totalSupply: opts.cap,
-    issuer,
-    podPrivateKey: opts.creatorPodPrivateKey,
+    issuingPrivKey: opts.issuingPrivKey,
   });
 
-  return { podBodies, signedManifest, manifestDigestHex };
+  return { editionBodies, signedManifest, manifestDigestHex };
 }

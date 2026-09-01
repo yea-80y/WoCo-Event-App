@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
-  import { deriveEncryptionKeypairFromPodSeed, FEATURES } from "@woco/shared";
+  import { buildIssuerBindingMessage, deriveEncryptionKeypairFromPodSeed, FEATURES, signPersonalMessage } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { restorePodSeed } from "../../auth/pod-identity.js";
+  import { ensureIssuingKey } from "../../auth/issuing-key.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
   import { eventContentTopic } from "@woco/shared";
@@ -158,7 +159,11 @@
       const keypair = await auth.getPodKeypair();
       if (!keypair) { error = "Could not get signing key"; return; }
 
-      const organiserNonce = 0n;
+      // The derived secp256k1 issuing key — signs every manifest below AND the
+      // proof-of-possession binding the server pins at create. Throws (fail
+      // loud, never another signer) when no seed is available; the catch below
+      // surfaces its message.
+      const issuing = await ensureIssuingKey();
       progress = 8;
 
       // Convert the datetime-local picker values (local wall-clock, no zone) to
@@ -177,10 +182,7 @@
       // The image hash is embedded in pod metadata so it matches the event feed.
       // We pass an empty string if the image isn't available yet (rare edge case).
       const manifests = buildEventManifests({
-        organiserAddress: (auth.parent as string).toLowerCase(),
-        organiserNonce,
-        creatorPodPrivateKey: keypair.privateKey,
-        creatorPodPublicKeyHex: keypair.publicKeyHex,
+        issuingPrivKey: issuing.privateKey,
         eventMeta: { startDate: startDateIso, endDate: endDateIso, location },
         series: series.map((s) => ({
           seriesId: s.seriesId,
@@ -218,7 +220,7 @@
             description: s.description || "",
             totalSupply: s.totalSupply,
             signedManifest: manifests[i]!.signedManifest,
-            podBodies: manifests[i]!.podBodies,
+            editionBodies: manifests[i]!.editionBodies,
             ...(s.wave ? { wave: s.wave } : {}),
             ...(s.saleStart ? { saleStart: s.saleStart } : {}),
             ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
@@ -228,6 +230,18 @@
           image: imageDataUrl!,
           creatorAddress: auth.parent as `0x${string}`,
           creatorPodKey: keypair.publicKeyHex,
+          // Proof of possession: the issuing key signs the parent it belongs
+          // to, so a replayed foreign manifest cannot get a foreign issuer
+          // pinned to this account (#345 class). The server (5a) verifies
+          // recovered == issuer == every manifest's issuer, then pins it.
+          issuerBinding: {
+            issuer: issuing.address,
+            gen: 0,
+            sig: signPersonalMessage(
+              buildIssuerBindingMessage((auth.parent as string).toLowerCase(), 0),
+              issuing.privateKey,
+            ),
+          },
           encryptionKey,
           orderFields: orderFields?.length ? orderFields : undefined,
           claimMode: claimMode && claimMode !== "wallet" ? claimMode : undefined,

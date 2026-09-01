@@ -24,12 +24,10 @@ type Brand<T, B extends string> = T & { readonly [__brand]: B };
 export type HolderPubkey = Brand<string, "HolderPubkey">;
 /** Bare lowercase 64-hex X25519 ENCRYPTION public key (sealed-order recipient). */
 export type EncryptionPubkey = Brand<string, "EncryptionPubkey">;
-/**
- * Bare lowercase 64-hex ed25519 ISSUER public key — v1 formats only.
- * DELETED in PR 3 with the v1 sign/verify paths; its removal re-forces the
- * issuer-site audit exactly where the curve changes.
- */
-export type IssuerPubkeyV1 = Brand<string, "IssuerPubkeyV1">;
+// `IssuerPubkeyV1` (the branded ed25519 v1 issuer key) was DELETED in PR 4
+// with the web v1 producers — its removal forced the issuer-site audit exactly
+// where the curve changed. The surviving v1 VERIFY paths (`pod/` + `pod-cert/`,
+// condemned, deleted in PR 5a) carry plain `string` issuer keys until then.
 /** 0x-prefixed lowercase 20-byte eth address — the v2 issuer identity unit. */
 export type IssuerAddress = Brand<string, "IssuerAddress">;
 
@@ -58,12 +56,6 @@ export function asEncryptionPubkey(v: unknown): EncryptionPubkey {
   refuse("encryption pubkey", "bare lowercase 64-hex X25519 key", v);
 }
 
-/** Validate + brand a v1 issuer public key. Throws on non-canonical input. */
-export function asIssuerPubkeyV1(v: unknown): IssuerPubkeyV1 {
-  if (typeof v === "string" && BARE_KEY_RE.test(v)) return v as IssuerPubkeyV1;
-  refuse("issuer pubkey (v1)", "bare lowercase 64-hex ed25519 key", v);
-}
-
 /** Validate + brand a v2 issuer address. Throws on non-canonical input. */
 export function asIssuerAddress(v: unknown): IssuerAddress {
   if (typeof v === "string" && ETH_ADDRESS_RE.test(v)) return v as IssuerAddress;
@@ -74,8 +66,6 @@ export function asIssuerAddress(v: unknown): IssuerAddress {
 export const isHolderPubkey = (v: unknown): v is HolderPubkey =>
   typeof v === "string" && BARE_KEY_RE.test(v);
 export const isEncryptionPubkey = (v: unknown): v is EncryptionPubkey =>
-  typeof v === "string" && BARE_KEY_RE.test(v);
-export const isIssuerPubkeyV1 = (v: unknown): v is IssuerPubkeyV1 =>
   typeof v === "string" && BARE_KEY_RE.test(v);
 export const isIssuerAddress = (v: unknown): v is IssuerAddress =>
   typeof v === "string" && ETH_ADDRESS_RE.test(v);

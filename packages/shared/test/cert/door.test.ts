@@ -33,7 +33,7 @@ import {
   deriveIssuingKey,
   signPersonalMessage,
 } from "../../src/crypto/issuing.js";
-import { asHolderPubkey, asIssuerPubkeyV1 } from "../../src/crypto/brands.js";
+import { asHolderPubkey } from "../../src/crypto/brands.js";
 import { evaluatePodGate } from "../../src/pod/gate.js";
 import { signManifest } from "../../src/pod/merkle.js";
 import { bytesToHex0x, manifestDigest } from "../../src/pod/canonical.js";
@@ -148,7 +148,7 @@ test("a v1 signed manifest resolves nothing — the dispatch refusal IS the cuto
     format: "woco.manifest.v1",
     eventId: `0x${"11".repeat(32)}`,
     totalSupply: 500,
-    issuerPubkey: asIssuerPubkeyV1(bytesToHex(ed25519.getPublicKey(v1IssuerPriv))),
+    issuerPubkey: bytesToHex(ed25519.getPublicKey(v1IssuerPriv)),
     metadataRoot: `0x${"22".repeat(32)}`,
     encoding: "cbor-v1",
     treeScheme: "oz-simple-v1",

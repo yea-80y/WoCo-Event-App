@@ -2,7 +2,7 @@ import type {
   EventFeed,
   EventDirectoryEntry,
   SnapshotCard,
-  CreateEventV2Request,
+  CreateEventV3Request,
   UpdateEventMetaRequest,
   CreateEventResponse,
   SeriesClaimStatus,
@@ -71,7 +71,7 @@ export async function signEventFeedSoc(
  *   registration fails, or the event is unreadable once the server cache expires.
  */
 export async function createEventStreaming(
-  req: CreateEventV2Request,
+  req: CreateEventV3Request,
   onProgress?: (p: PublishProgress) => void,
   baseUrlOverride?: string,
   feedSigner?: ContentFeedSigner | null,

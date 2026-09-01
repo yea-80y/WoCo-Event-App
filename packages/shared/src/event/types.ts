@@ -1,6 +1,8 @@
 import type { Hex64, Hex0x } from "../types.js";
 import type { OrderField, SealedBox } from "../crypto/types.js";
 import type { SignedManifestV1, PodV2Body, PodGate, PodGateGroup } from "../pod/types.js";
+import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
+import type { IssuerBindingV1 } from "../crypto/issuing.js";
 
 /** How attendees can claim tickets for an event */
 export type ClaimMode = "wallet" | "email" | "both";
@@ -366,6 +368,58 @@ export interface CreateEventV2Request {
   creatorFeedSigner?: Hex0x;
   /** Builder's selected gateway. Etherna ⇒ event content is stamped on the
    *  organiser's Etherna batch; otherwise the WoCo bee. Directory stays on WoCo. */
+  gatewayUrl?: string;
+}
+
+/**
+ * Request body for POST /api/events (v3 — issuer-curve migration PR 4).
+ *
+ * What changed from {@link CreateEventV2Request}, and only this:
+ *  - each series carries a `woco.manifest.v2` signed by the derived secp256k1
+ *    ISSUING key, and `editionBodies` (`woco.edition.v1`) replace `podBodies`;
+ *  - `issuerBinding` — the issuing key's proof of possession over the parent
+ *    (see {@link IssuerBindingV1}). The server pins `parent → issuer` on the
+ *    event record at create, atomically with first issuance (PR 5a), and must
+ *    verify: recovered PoP signer == `issuerBinding.issuer` == every series
+ *    manifest's `body.issuer`.
+ *
+ * THE PRE-5a SEAM, stated so nobody trips on it: the web client sends THIS
+ * shape from PR 4 on, while the server keeps casting to `CreateEventV2Request`
+ * and verifying v1 until PR 5a re-points it — so between the two merges a
+ * live create would be refused loudly (missing `podBodies`). That window is
+ * covered by the deploy freeze (PRs 3–5a are ONE deploy unit; see
+ * HANDOVER-pod-curve-migration.md). PR 5a flips the server to this type and
+ * deletes the v2 request type.
+ */
+export interface CreateEventV3Request {
+  event: CreateEventV2Request["event"];
+  series: Array<{
+    seriesId: string;
+    name: string;
+    description: string;
+    totalSupply: number;
+    /** Client-built, personal-signed by the creator's derived issuing key. */
+    signedManifest: SignedManifestV2;
+    /** The edition bodies committed by the manifest's Merkle root, edition order. */
+    editionBodies: EditionV1Body[];
+    wave?: string;
+    saleStart?: string;
+    saleEnd?: string;
+    payment?: PaymentConfig;
+    /** POD-holdings gate for this series (server-enforced at claim). */
+    gate?: PodGate | PodGateGroup;
+  }>;
+  image: string;
+  creatorAddress: Hex0x;
+  creatorPodKey: string;
+  /** Proof of possession binding the issuing key to the (server-verified)
+   *  parent — see {@link IssuerBindingV1} for what the server must check. */
+  issuerBinding: IssuerBindingV1;
+  encryptionKey?: string;
+  orderFields?: OrderField[];
+  claimMode?: ClaimMode;
+  skipAutoList?: boolean;
+  creatorFeedSigner?: Hex0x;
   gatewayUrl?: string;
 }
 

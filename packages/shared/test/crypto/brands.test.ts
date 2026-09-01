@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import {
   asHolderPubkey,
   asEncryptionPubkey,
-  asIssuerPubkeyV1,
   asIssuerAddress,
   isHolderPubkey,
   isIssuerAddress,
@@ -21,14 +20,12 @@ const ADDR = "0x" + "cd".repeat(20);
 test("canonical values pass through unchanged", () => {
   assert.equal(asHolderPubkey(KEY), KEY);
   assert.equal(asEncryptionPubkey(KEY), KEY);
-  assert.equal(asIssuerPubkeyV1(KEY), KEY);
   assert.equal(asIssuerAddress(ADDR), ADDR);
 });
 
 test("a 0x-prefixed pubkey is REFUSED, not stripped — the #445 defect class", () => {
   assert.throws(() => asHolderPubkey("0x" + KEY), /invalid holder pubkey/);
   assert.throws(() => asEncryptionPubkey("0x" + KEY), /invalid encryption pubkey/);
-  assert.throws(() => asIssuerPubkeyV1("0x" + KEY), /invalid issuer pubkey/);
 });
 
 test("uppercase hex is refused, not case-folded", () => {

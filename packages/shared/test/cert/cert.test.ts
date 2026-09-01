@@ -37,7 +37,6 @@ import { deriveIssuingKey } from "../../src/crypto/issuing.js";
 import {
   asEncryptionPubkey,
   asHolderPubkey,
-  asIssuerPubkeyV1,
   type IssuerAddress,
 } from "../../src/crypto/brands.js";
 import { signPodCert } from "../../src/pod-cert/types.js";
@@ -293,7 +292,7 @@ test("a well-formed woco.pod-cert.v1 certificate is refused — dispatch, not si
   // dispatch fails them whole, before any curve is chosen. That refusal IS the
   // curve migration's cutoff.
   const v1IssuerPriv = new Uint8Array(32).fill(7);
-  const v1Issuer = asIssuerPubkeyV1(bytesToHex(ed25519.getPublicKey(v1IssuerPriv)));
+  const v1Issuer = bytesToHex(ed25519.getPublicKey(v1IssuerPriv));
   const legacy = signPodCert(
     { format: "woco.pod-cert.v1", badge: BADGE, holder: HOLDER, issuedAt: "2026-08-20" },
     v1IssuerPriv,

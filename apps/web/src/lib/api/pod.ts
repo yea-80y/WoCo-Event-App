@@ -1,6 +1,6 @@
 import type {
   PodDirectory, PodCategory, PodHolding, PodDirectoryEntry,
-  SignedManifestV1, PodV2Body,
+  SignedManifestV2, EditionV1Body, IssuerBindingV1,
 } from "@woco/shared";
 import { authGet, authPut, authPost, get } from "./client.js";
 
@@ -24,22 +24,37 @@ export async function setPodCategories(categories: PodCategory[]): Promise<PodCa
   return r.data.categories;
 }
 
-/** Request body for minting a standalone POD type (badge/collectible). */
+/**
+ * Request body for minting a standalone badge/collectible type.
+ *
+ * v2 formats since PR 4 (issuer-curve migration): the manifest is
+ * `woco.manifest.v2` signed by the derived issuing key, the bodies are
+ * `woco.edition.v1`, and `issuerBinding` carries the issuing key's proof of
+ * possession over the parent. THE PRE-5a SEAM: the server still reads
+ * `podBodies` and verifies v1 until PR 5a re-points it, so a live mint in the
+ * window is refused loudly — covered by the deploy freeze (PRs 3–5a are one
+ * deploy unit).
+ */
 export interface CreatePodRequest {
   kind: "badge" | "collectible";
   name: string;
   description?: string;
   categoryId?: string;
   supply: number;
-  /** Client-built, ed25519-signed by the creator's POD key. */
-  signedManifest: SignedManifestV1;
+  /** Client-built, personal-signed by the creator's derived issuing key. */
+  signedManifest: SignedManifestV2;
   /**
-   * The pod bodies committed to by the manifest's Merkle root. `supply` of them
-   * on the chain rail, where each is a claimable edition; exactly ONE template
-   * body for a certificate badge, which has no editions to claim. The server
-   * enforces the count per rail.
+   * The edition bodies committed to by the manifest's Merkle root. `supply` of
+   * them on the chain rail, where each is a claimable edition; exactly ONE
+   * template body for a certificate badge, which has no editions to claim. The
+   * server enforces the count per rail.
    */
-  podBodies: PodV2Body[];
+  editionBodies: EditionV1Body[];
+  /** Proof of possession binding the issuing key to the (server-verified)
+   *  parent — same statement the event-create payload carries; the server
+   *  (5a) pins `parent → issuer` and must check recovered == issuer ==
+   *  the manifest's `body.issuer`. */
+  issuerBinding: IssuerBindingV1;
   /** Display artwork — Swarm ref (no 0x) from uploadSiteImage. */
   image?: string;
   /**

@@ -160,3 +160,65 @@ export function recoverPersonalSigner(message: string, signature: unknown): Issu
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// The issuer-binding proof of possession (PR 4) — carried by create payloads
+// ---------------------------------------------------------------------------
+
+/** The personal-sign domain line for issuer-binding proofs. */
+export const ISSUER_BINDING_SIGNING_DOMAIN = "woco-issuer-binding-v1";
+
+/** Canonical lowercase parent address — the exact form the server rebuilds the
+ *  message from (its verified parentAddress, lowercased). REFUSED, never
+ *  folded: a checksummed parent signed here would verify against nothing. */
+const PARENT_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
+/**
+ * The proof-of-possession statement an event/badge CREATE payload carries so
+ * the server can pin `parent → issuerAddress` at creation (#345 class: never
+ * accept a client-asserted issuer identity without PoP).
+ *
+ * Why the manifests in the same payload are NOT proof enough: a signed
+ * manifest proves its key exists and signed THAT manifest — but manifests are
+ * public, so anyone can replay someone else's into their own authenticated
+ * create and have a foreign issuer address pinned to their parent. The binding
+ * signature closes that: the issuing key signs the PARENT it belongs to, and a
+ * replayer cannot produce it for a parent the key never named.
+ *
+ * `issuer` is deliberately redundant — ecrecover of `sig` already yields it —
+ * so the verifier can distinguish "wrong key" from "garbled message" and say
+ * so, instead of silently pinning whatever address a malformed signature
+ * recovers to. The server (PR 5a) must check: recovered == issuer AND
+ * issuer == every manifest's `issuer` in the payload.
+ */
+export interface IssuerBindingV1 {
+  /** The issuing ADDRESS this payload's manifests are signed under. */
+  issuer: IssuerAddress;
+  /** Issuing-key generation (0 until the issuer registry ships, PR 5b). */
+  gen: number;
+  /** personal_sign by the issuing key over {@link buildIssuerBindingMessage}. */
+  sig: Hex0x;
+}
+
+/**
+ * The EXACT ASCII message the issuing key personal-signs to bind itself to a
+ * parent account:
+ *
+ *   woco-issuer-binding-v1\n{0x + 40-hex lowercase parent}\n{gen decimal}
+ *
+ * Always ≥ 67 bytes — never 32, so it stays disjoint from the feed signer's
+ * personal-signed SOC digests by length, and its domain line keeps it disjoint
+ * from `woco-manifest-v2` / `woco-cert-v1`, which the SAME key signs (pinned
+ * in test/crypto/cross-protocol.test.ts). Deterministic and replayable BY
+ * DESIGN: it asserts a durable fact, and the server only accepts it inside a
+ * session-authenticated create whose verified parent must equal `parent`.
+ */
+export function buildIssuerBindingMessage(parent: string, gen: number): string {
+  if (typeof parent !== "string" || !PARENT_ADDRESS_RE.test(parent)) {
+    throw new Error("issuer binding: parent must be a 0x-prefixed lowercase 20-byte address");
+  }
+  if (!Number.isInteger(gen) || gen < 0) {
+    throw new Error(`invalid issuing-key generation: ${gen}`);
+  }
+  return `${ISSUER_BINDING_SIGNING_DOMAIN}\n${parent}\n${gen}`;
+}
