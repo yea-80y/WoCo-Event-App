@@ -1,6 +1,6 @@
 import type { Hex64, Hex0x } from "../types.js";
 import type { OrderField, SealedBox } from "../crypto/types.js";
-import type { SignedManifestV1, PodV2Body, PodGate, PodGateGroup } from "../pod/types.js";
+import type { PodGate, PodGateGroup } from "../pod/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
 
@@ -244,6 +244,13 @@ export interface EventFeed {
   location: string;
   creatorAddress: Hex0x;
   creatorPodKey: string;
+  /** The creator's v2 ISSUING address (0x + 40 lowercase hex) — the identity
+   *  every series manifest is signed under. Stamped server-side at create from
+   *  the VERIFIED issuer binding (PoP-checked), so this copy is a discovery
+   *  mirror of a checked fact — but verification never trusts it: doors and
+   *  gates re-resolve the issuer from the manifest digest every time. Absent
+   *  on pre-5a events. */
+  issuer?: string;
   series: SeriesSummary[];
   createdAt: string;
   /** Discovery facet tags (genre/…). Creator-signed content is the truth home;
@@ -312,19 +319,42 @@ export interface SeriesSummary {
 /**
  * Swarm blob stored at SeriesSummary.swarmManifestRef.
  * One fetch gives the door scanner (or server) everything needed for
- * offline verification: the signed manifest + all pod body Swarm refs.
+ * offline verification: the signed manifest + the edition-body Swarm refs.
+ *
+ * `v: 2` versions the BLOB shape, which is unchanged; the manifest inside
+ * self-describes via its `format` and is `woco.manifest.v2` since PR 5a.
+ * Readers must treat `signedManifest` as untrusted bytes: closed-schema
+ * validation (`validateSignedManifestV2` / `resolveCertIssuer`) is what turns
+ * it into a type, and a legacy `woco.manifest.v1` object fails that dispatch —
+ * the v1 cutoff, enforced structurally.
  */
 export interface SeriesManifestBlob {
   v: 2;
-  signedManifest: SignedManifestV1;
-  /** Swarm refs to individual pod body JSON blobs, indexed by edition-1 (0-based). */
+  signedManifest: SignedManifestV2;
+  /** Swarm refs to individual edition body JSON blobs, indexed by edition-1 (0-based). */
   podRefs: Hex64[];
   /** keccak256(dagCbor(manifestBody)), 0x-prefixed bytes32 — matches on-chain manifestRef. */
   manifestDigestHex: string;
 }
 
-/** Request body for POST /api/events (v2 — manifest-based) */
-export interface CreateEventV2Request {
+/**
+ * Request body for POST /api/events (v3 — issuer-curve migration PR 4).
+ *
+ * What changed from the retired v2 request shape, and only this:
+ *  - each series carries a `woco.manifest.v2` signed by the derived secp256k1
+ *    ISSUING key, and `editionBodies` (`woco.edition.v1`) replace `podBodies`;
+ *  - `issuerBinding` — the issuing key's proof of possession over the parent
+ *    (see {@link IssuerBindingV1}). The server pins `parent → issuer` on the
+ *    event record at create, atomically with first issuance (PR 5a), and must
+ *    verify: recovered PoP signer == `issuerBinding.issuer` == every series
+ *    manifest's `body.issuer`.
+ *
+ * Since PR 5a this is the shape BOTH sides speak — the v2 request type is
+ * deleted and the server verifies v2 and refuses v1. The deploy freeze that
+ * covered the PR 4→5a seam lifts when 5a merges (server + frontend deploy
+ * together; see HANDOVER-pod-curve-migration.md).
+ */
+export interface CreateEventV3Request {
   event: {
     title: string;
     /** Optional short sub-heading shown below the title (one-line tagline). */
@@ -339,60 +369,6 @@ export interface CreateEventV2Request {
      *  EventFeed. Populate via a client-side open geocoder at create time. */
     geo?: EventGeo;
   };
-  series: Array<{
-    seriesId: string;
-    name: string;
-    description: string;
-    totalSupply: number;
-    signedManifest: SignedManifestV1;
-    podBodies: PodV2Body[];
-    wave?: string;
-    saleStart?: string;
-    saleEnd?: string;
-    payment?: PaymentConfig;
-    /** POD-holdings gate for this series (server-enforced at claim). */
-    gate?: PodGate | PodGateGroup;
-  }>;
-  image: string;
-  creatorAddress: Hex0x;
-  creatorPodKey: string;
-  encryptionKey?: string;
-  orderFields?: OrderField[];
-  claimMode?: ClaimMode;
-  skipAutoList?: boolean;
-  /** Phase B: organiser's content-feed-signer address (lowercased 0x). When set,
-   *  the server stamps it into the event feed + directory entries (discovery
-   *  carrier) and SKIPS the platform-signed detail-feed write — returning the
-   *  assembled EventFeed in the stream `done` for the client to sign as a SOC.
-   *  Absent ⇒ legacy platform-signed write (web3/coinbase/cold-restore). */
-  creatorFeedSigner?: Hex0x;
-  /** Builder's selected gateway. Etherna ⇒ event content is stamped on the
-   *  organiser's Etherna batch; otherwise the WoCo bee. Directory stays on WoCo. */
-  gatewayUrl?: string;
-}
-
-/**
- * Request body for POST /api/events (v3 — issuer-curve migration PR 4).
- *
- * What changed from {@link CreateEventV2Request}, and only this:
- *  - each series carries a `woco.manifest.v2` signed by the derived secp256k1
- *    ISSUING key, and `editionBodies` (`woco.edition.v1`) replace `podBodies`;
- *  - `issuerBinding` — the issuing key's proof of possession over the parent
- *    (see {@link IssuerBindingV1}). The server pins `parent → issuer` on the
- *    event record at create, atomically with first issuance (PR 5a), and must
- *    verify: recovered PoP signer == `issuerBinding.issuer` == every series
- *    manifest's `body.issuer`.
- *
- * THE PRE-5a SEAM, stated so nobody trips on it: the web client sends THIS
- * shape from PR 4 on, while the server keeps casting to `CreateEventV2Request`
- * and verifying v1 until PR 5a re-points it — so between the two merges a
- * live create would be refused loudly (missing `podBodies`). That window is
- * covered by the deploy freeze (PRs 3–5a are ONE deploy unit; see
- * HANDOVER-pod-curve-migration.md). PR 5a flips the server to this type and
- * deletes the v2 request type.
- */
-export interface CreateEventV3Request {
-  event: CreateEventV2Request["event"];
   series: Array<{
     seriesId: string;
     name: string;

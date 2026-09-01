@@ -93,6 +93,16 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "issuer/binding",
+    drive: async () => {
+      const m = await import("../src/lib/issuer/binding.js");
+      const sh = await import("@woco/shared");
+      const { privateKey, address } = sh.deriveIssuingKey(BYTES32, 0);
+      const sig = sh.signPersonalMessage(sh.buildIssuerBindingMessage(OWNER, 0), privateKey);
+      m.verifyAndPinIssuerBinding(OWNER, { issuer: address, gen: 0, sig }, [address], "event-create");
+    },
+  },
+  {
     // The store caught at 0644 in production: three files, two of them in
     // subdirectories the writer creates itself.
     store: "checkin/store",

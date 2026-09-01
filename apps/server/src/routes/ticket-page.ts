@@ -11,7 +11,9 @@
  *
  * Both endpoints accept optional query params `?n=` (buyer name) and `?e=`
  * (buyer email). These are display-only — the cryptographic guarantee comes
- * from the ed25519 signature in the URL path, not from the displayed text.
+ * from the secp256k1 ticket signature in the URL path (EIP-191 by the burner
+ * key, recovered against the on-chain slotOwner — see lib/ticket/verify-sig.ts),
+ * not from the displayed text.
  *
  * No auth: possession of the URL is possession of the ticket. Buyers can
  * forward one URL per ticket to a friend in a multi-ticket purchase. This

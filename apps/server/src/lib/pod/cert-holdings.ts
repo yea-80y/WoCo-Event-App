@@ -1,6 +1,8 @@
 // ---------------------------------------------------------------------------
-// POD-certificate holdings reader — the second half of the holdings primitive
-// (docs/SWARM_SOCIAL_PLAN.md, Gate B). The chain half is `holdings.ts`.
+// Certificate holdings reader — the second half of the holdings primitive
+// (docs/SWARM_SOCIAL_PLAN.md, Gate B; on the v2 issuer curve since PR 5a:
+// `woco.cert.v1` under a `woco.manifest.v2` badge, issuer = 20-byte address).
+// The chain half is `holdings.ts`.
 //
 // Answers the same question as `getOnChainHolding` — "what does this identity
 // hold of POD type M?" — from a different source: an issuer-signed certificate
@@ -17,22 +19,22 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  CertPodGate, PodHolding, SignedManifestV1, SeriesManifestBlob, HolderPubkey,
-  PodCertPresentation, PodCertChallengeExpectation,
+  CertPodGate, PodHolding, SignedManifestV2, SeriesManifestBlob, HolderPubkey,
+  CertPresentation, CertChallengeExpectation,
 } from "@woco/shared";
-import { podCertHoldingFromManifest, resolvePodCertIssuer } from "@woco/shared";
+import { certHoldingFromManifest, resolveCertIssuer, validateSignedManifestV2 } from "@woco/shared";
 import { downloadFromBytes } from "../swarm/bytes.js";
 
 /**
  * Verified manifests, keyed by `manifestRef` (lowercased).
  *
  * A cache that CANNOT be wrong: the key is the digest of the value, and an
- * entry is only ever written after `resolvePodCertIssuer` has proved that
+ * entry is only ever written after `resolveCertIssuer` has proved that
  * binding. So a poisoned entry would require a keccak collision, not a bad
  * write. In-process and unbounded-by-design in the same sense the chain arm's
  * RPC results are transient — losing it costs one Swarm read.
  */
-const verifiedManifests = new Map<string, SignedManifestV1>();
+const verifiedManifests = new Map<string, SignedManifestV2>();
 
 /**
  * Load and verify the badge manifest a certificate gate points at.
@@ -59,7 +61,7 @@ const verifiedManifests = new Map<string, SignedManifestV1>();
 export async function loadVerifiedBadgeManifest(
   gate: CertPodGate,
   opts: { bypassCache?: boolean } = {},
-): Promise<SignedManifestV1 | null> {
+): Promise<SignedManifestV2 | null> {
   const key = gate.manifestRef.toLowerCase();
   if (!opts.bypassCache) {
     const cached = verifiedManifests.get(key);
@@ -75,7 +77,12 @@ export async function loadVerifiedBadgeManifest(
   }
 
   const manifest = blob?.signedManifest;
-  if (!manifest || !resolvePodCertIssuer(manifest, gate.manifestRef)) return null;
+  // Closed v2 validation narrows the untrusted bytes; `resolveCertIssuer`
+  // re-proves the digest binding + issuer signature. A legacy v1 manifest
+  // fails the dispatch — the v1 cutoff on the gate rail.
+  if (!manifest || !validateSignedManifestV2(manifest) || !resolveCertIssuer(manifest, gate.manifestRef)) {
+    return null;
+  }
 
   verifiedManifests.set(key, manifest);
   return manifest;
@@ -95,8 +102,8 @@ export async function loadVerifiedBadgeManifest(
  */
 export async function getCertHolding(
   gate: CertPodGate,
-  presentations: readonly PodCertPresentation[],
-  expect: PodCertChallengeExpectation,
+  presentations: readonly CertPresentation[],
+  expect: CertChallengeExpectation,
   expectedHolder: HolderPubkey,
 ): Promise<PodHolding> {
   const empty: PodHolding = { manifestRef: gate.manifestRef, count: 0, slots: [] };
@@ -113,5 +120,5 @@ export async function getCertHolding(
   const manifest = await loadVerifiedBadgeManifest(gate);
   if (!manifest) return empty;
 
-  return podCertHoldingFromManifest(gate.manifestRef, manifest, mine, expect);
+  return certHoldingFromManifest(gate.manifestRef, manifest, mine, expect);
 }

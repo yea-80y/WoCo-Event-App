@@ -1,5 +1,5 @@
 import type { SeriesManifestBlob } from "@woco/shared";
-import { manifestDigest, bytesToHex0x } from "@woco/shared";
+import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
 import { downloadFromBytes } from "../swarm/bytes.js";
 
 /**
@@ -203,7 +203,12 @@ export async function resolveManifestDigest(swarmManifestRef: string): Promise<s
     const blob = JSON.parse(raw) as SeriesManifestBlob;
     // The digest recomputation that `confirm-chain` used to perform before that
     // route was deleted (#433). This is now the only place it happens.
-    const digest = bytesToHex0x(manifestDigest(blob.signedManifest.body)).toLowerCase();
+    // Closed v2 validation FIRST: a legacy v1 blob (or garbage) resolves to
+    // null → the binding check refuses the sale, which is the v1 cutoff doing
+    // its job on the money path. Negative results are not cached (below), so a
+    // re-published v2 blob at a new ref heals it.
+    if (!validateSignedManifestV2(blob?.signedManifest)) return null;
+    const digest = bytesToHex0x(manifestV2Digest(blob.signedManifest.body)).toLowerCase();
     _digestByRef.set(key, digest);
     return digest;
   } catch {

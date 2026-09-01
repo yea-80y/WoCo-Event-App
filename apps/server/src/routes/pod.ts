@@ -2,8 +2,10 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import type {
-  PodCategory, PodDirectoryEntry, Hex0x, Hex64, SignedManifestV1, PodV2Body,
+  PodCategory, PodDirectoryEntry, Hex0x, Hex64, SignedManifestV2, EditionV1Body,
 } from "@woco/shared";
+import { validateSignedManifestV2 } from "@woco/shared";
+import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
 import {
   getCreatorPodDirectory,
   setCreatorPodCategories,
@@ -38,11 +40,12 @@ podRouter.get("/mine", requireAuth, async (c) => {
 });
 
 /**
- * POST /api/pod — mint a standalone `badge`/`collectible` POD type.
+ * POST /api/pod — mint a standalone `badge`/`collectible` type.
  *
- * The client builds + ed25519-signs the manifest (creator's POD key) and uploads
- * the artwork, then posts the signed manifest + pod bodies. The server validates
- * the manifest, uploads the bodies, sponsor-registers on-chain, and writes the
+ * The client builds + signs the manifest with its derived issuing key and
+ * uploads the artwork, then posts the signed manifest + edition bodies + the
+ * issuer binding (PoP). The server verifies + pins the binding, validates the
+ * manifest, uploads the bodies, sponsor-registers on-chain, and writes the
  * directory entry. Owner is the verified parentAddress (never from the body).
  */
 podRouter.post("/", requireAuth, async (c) => {
@@ -62,7 +65,8 @@ podRouter.post("/", requireAuth, async (c) => {
     categoryId?: unknown;
     supply?: unknown;
     signedManifest?: unknown;
-    podBodies?: unknown;
+    editionBodies?: unknown;
+    issuerBinding?: unknown;
     image?: unknown;
     holdingSource?: unknown;
     certLogOwner?: unknown;
@@ -86,8 +90,27 @@ podRouter.post("/", requireAuth, async (c) => {
   if (!b.signedManifest || typeof b.signedManifest !== "object") {
     return c.json({ ok: false, error: "signedManifest is required" }, 400);
   }
-  if (!Array.isArray(b.podBodies)) {
-    return c.json({ ok: false, error: "podBodies must be an array" }, 400);
+  // Closed-schema dispatch: a legacy `woco.manifest.v1` payload fails HERE,
+  // whole — the v1 cutoff on this rail (full signature verification runs in
+  // issuePodType; this shape pass lets the binding check compare identities).
+  if (!validateSignedManifestV2(b.signedManifest)) {
+    return c.json({ ok: false, error: "signedManifest is not a valid woco.manifest.v2" }, 400);
+  }
+  if (!Array.isArray(b.editionBodies)) {
+    return c.json({ ok: false, error: "editionBodies must be an array" }, 400);
+  }
+  // Proof of possession over the VERIFIED parent, checked and pinned before
+  // anything is written (#345 class). See lib/issuer/binding.ts.
+  {
+    const verdict = verifyAndPinIssuerBinding(
+      parentAddress,
+      b.issuerBinding,
+      [b.signedManifest.body.issuer],
+      "pod-mint",
+    );
+    if (!verdict.ok) {
+      return c.json({ ok: false, error: verdict.error }, 400);
+    }
   }
   if (b.image !== undefined && typeof b.image !== "string") {
     return c.json({ ok: false, error: "image must be a Swarm ref string" }, 400);
@@ -122,8 +145,8 @@ podRouter.post("/", requireAuth, async (c) => {
       ...(certSourced
         ? { holdingSource: "pod-cert" as const, certLogOwner: (b.certLogOwner as string).toLowerCase() as Hex0x }
         : {}),
-      signedManifest: b.signedManifest as SignedManifestV1,
-      podBodies: b.podBodies as PodV2Body[],
+      signedManifest: b.signedManifest as SignedManifestV2,
+      editionBodies: b.editionBodies as EditionV1Body[],
       ...(b.image ? { image: b.image as Hex64 } : {}),
     });
     return c.json({ ok: true, data: entry });

@@ -19,7 +19,7 @@
 
 import type {
   PodGate, PodGateGroup, Hex0x, HolderPubkey, GateEvalContext, GatePhase, PodHolding,
-  PodCertPresentation, PodCertChallengeExpectation,
+  CertPresentation, CertChallengeExpectation,
 } from "@woco/shared";
 import {
   evaluatePodGateGroup, computeGatePhase, normalizeGate, verifyPodGateBinding,
@@ -40,8 +40,8 @@ import { getOnChainEvent } from "../chain/event-contract.js";
  * never one from the request body".
  */
 export interface GateEvidence {
-  presentations: PodCertPresentation[];
-  expect: PodCertChallengeExpectation;
+  presentations: CertPresentation[];
+  expect: CertChallengeExpectation;
   /**
    * The claimer's VERIFIED POD identity — the ed25519 key the route already
    * authenticated, never one from the body. Required, not optional, so a route

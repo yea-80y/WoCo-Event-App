@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
-import type { Hex0x, CreateEventV2Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
+import type { Hex0x, CreateEventV3Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
 import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -14,7 +14,8 @@ import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy } from "../lib/etherna/batch-router.js";
 import type { SeriesManifestBlob } from "@woco/shared";
-import { manifestDigest, bytesToHex0x } from "@woco/shared";
+import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
+import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
 import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
 import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
 import { getStripe } from "../lib/stripe/client.js";
@@ -175,7 +176,7 @@ events.get("/:id/owned", requireAuth, async (c) => {
 // POST /api/events — authenticated, creates event + manifests on Swarm (v2)
 // Streams NDJSON progress events; final line is the result.
 events.post("/", requireAuth, async (c) => {
-  const body = c.get("body") as unknown as CreateEventV2Request;
+  const body = c.get("body") as unknown as CreateEventV3Request;
   const parentAddress = c.get("parentAddress") as string;
 
   const { event: ev, series, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
@@ -223,8 +224,15 @@ events.post("/", requireAuth, async (c) => {
   }
 
   for (const s of series) {
-    if (!s.signedManifest || !s.podBodies?.length) {
-      return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or podBodies` }, 400);
+    if (!s.signedManifest || !s.editionBodies?.length) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or editionBodies` }, 400);
+    }
+    // Closed-schema dispatch: a legacy `woco.manifest.v1` payload fails HERE,
+    // whole, with a nameable error — the v1 cutoff on the live create rail.
+    // (Full signature verification runs in createEventV2; this shape pass is
+    // what lets the issuer-binding check below compare identities safely.)
+    if (!validateSignedManifestV2(s.signedManifest)) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: signedManifest is not a valid woco.manifest.v2` }, 400);
     }
     // The approvals feature went with the v1 claim rail. Reject rather than
     // silently drop: an organiser who set this flag expects a review queue
@@ -268,6 +276,24 @@ events.post("/", requireAuth, async (c) => {
           400,
         );
       }
+    }
+  }
+
+  // The issuer binding: proof of possession over the VERIFIED parent, checked
+  // and pinned before anything is created (#345 class — a replayed foreign
+  // manifest must not get a foreign issuer recorded against this account).
+  // Pinning before the Stripe gate is deliberate: the binding is a durable,
+  // idempotent fact about the account, true whether or not this create
+  // proceeds. See lib/issuer/binding.ts for every rule enforced here.
+  {
+    const verdict = verifyAndPinIssuerBinding(
+      parentAddress,
+      (body as { issuerBinding?: unknown }).issuerBinding,
+      series.map((s) => s.signedManifest.body.issuer),
+      "event-create",
+    );
+    if (!verdict.ok) {
+      return c.json({ ok: false, error: verdict.error }, 400);
     }
   }
 
@@ -359,6 +385,7 @@ events.post("/", requireAuth, async (c) => {
         ...(ev.geo ? { geo: ev.geo } : {}),
         creatorAddress: parentAddress.toLowerCase() as Hex0x,
         creatorPodKey,
+        issuer: body.issuerBinding.issuer,
         imageData,
         series,
         encryptionKey,
@@ -757,7 +784,12 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     try {
       const raw = await downloadFromBytes(series.swarmManifestRef);
       const blob = JSON.parse(raw) as SeriesManifestBlob;
-      const digestBytes = manifestDigest(blob.signedManifest.body);
+      // Closed validation before the digest: a legacy v1 blob (or garbage) is
+      // refused here rather than silently digested — v2 is the only live rail.
+      if (!validateSignedManifestV2(blob.signedManifest)) {
+        return c.json({ ok: false, error: "Stored manifest is not a valid woco.manifest.v2" }, 500);
+      }
+      const digestBytes = manifestV2Digest(blob.signedManifest.body);
       manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
     } catch {
       return c.json({ ok: false, error: "Failed to fetch manifest from Swarm" }, 500);

@@ -1,9 +1,9 @@
 import type {
   Hex0x, EventFeed, EventDirectoryEntry, SeriesSummary,
   OrderField, ClaimMode, SeriesManifestBlob,
-  SignedManifestV1, PodV2Body,
+  SignedManifestV2, EditionV1Body,
 } from "@woco/shared";
-import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x, eventContentTopic } from "@woco/shared";
+import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
@@ -68,20 +68,24 @@ export interface CreateProgress {
  * so a regression here is caught by nothing downstream. Extracted from
  * `createEventV2`'s loop so it can be tested at the seam (the certificate
  * rail's twin lives in issuance.ts and has its own tests).
+ *
+ * v2 ONLY since PR 5a: `verifyManifestV2` dispatch-refuses `woco.manifest.v1`
+ * whole, so a legacy payload fails here loudly — the v1 cutoff on the live
+ * create rail.
  */
 export function validateSeriesManifest(s: {
   seriesId: string;
   totalSupply: number;
-  signedManifest: SignedManifestV1;
-  podBodies: PodV2Body[];
+  signedManifest: SignedManifestV2;
+  editionBodies: EditionV1Body[];
 }): void {
-  if (s.podBodies.length !== s.totalSupply) {
-    throw new Error(`Series ${s.seriesId}: expected ${s.totalSupply} pod bodies, got ${s.podBodies.length}`);
+  if (s.editionBodies.length !== s.totalSupply) {
+    throw new Error(`Series ${s.seriesId}: expected ${s.totalSupply} edition bodies, got ${s.editionBodies.length}`);
   }
-  if (!verifySignedManifest(s.signedManifest)) {
+  if (!verifyManifestV2(s.signedManifest)) {
     throw new Error(`Series ${s.seriesId}: manifest signature invalid`);
   }
-  const { root } = buildPodTree(s.podBodies);
+  const { root } = buildEditionTree(s.editionBodies);
   if (root.toLowerCase() !== s.signedManifest.body.metadataRoot.toLowerCase()) {
     throw new Error(`Series ${s.seriesId}: Merkle root mismatch — edition bodies don't match manifest`);
   }
@@ -101,14 +105,18 @@ export async function createEventV2(opts: {
   geo?: import("@woco/shared").EventGeo;
   creatorAddress: Hex0x;
   creatorPodKey: string;
+  /** The creator's VERIFIED v2 issuing address (PoP-checked by the route via
+   *  `verifyAndPinIssuerBinding` before this runs) — stamped into the feed as
+   *  a discovery mirror. Never read back for verification. */
+  issuer?: string;
   imageData: Uint8Array;
   series: Array<{
     seriesId: string;
     name: string;
     description: string;
     totalSupply: number;
-    signedManifest: SignedManifestV1;
-    podBodies: PodV2Body[];
+    signedManifest: SignedManifestV2;
+    editionBodies: EditionV1Body[];
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
@@ -132,7 +140,7 @@ export async function createEventV2(opts: {
 }): Promise<EventFeed> {
   const {
     eventId, title, tagline, description, startDate, endDate, location, tags, geo,
-    creatorAddress, creatorPodKey, imageData, series,
+    creatorAddress, creatorPodKey, issuer, imageData, series,
     encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
 
@@ -194,7 +202,7 @@ export async function createEventV2(opts: {
 
   const seriesSummaries: SeriesSummary[] = await Promise.all(
     series.map(async (s, i) => {
-      const digestBytes = manifestDigest(s.signedManifest.body);
+      const digestBytes = manifestV2Digest(s.signedManifest.body);
       const manifestDigestHex = bytesToHex0x(digestBytes);
 
       const blob: SeriesManifestBlob = {
@@ -238,6 +246,7 @@ export async function createEventV2(opts: {
     ...(geo ? { geo } : {}),
     creatorAddress,
     creatorPodKey,
+    ...(issuer ? { issuer } : {}),
     series: seriesSummaries,
     createdAt,
     ...(encryptionKey ? { encryptionKey } : {}),
