@@ -38,7 +38,7 @@ STACK & STRUCTURE
 apps/web/              # Vite + Svelte main platform UI
 apps/server/           # Hono API server (Swarm relay + auth)
 packages/shared/       # Shared types, POD schema, constants (single source of truth)
-packages/embed/        # <woco-tickets> (IIFE 113KB) + <woco-lap-count> (41KB, separate bundle)
+packages/embed/        # <woco-tickets> (IIFE 51KB, guest Stripe checkout) + <woco-lap-count> (42KB, separate bundle)
 contracts/             # WoCoEscrow.sol + deploy scripts
 
 ============================================================================
@@ -417,7 +417,8 @@ SVELTE 5 / BEE-JS:
 RUNTIME:
 - Local account sign-out clears session but keeps keypair for re-login
 - `MyTickets` triggers `ensureSession` on mount (lazy EIP-712), not just on login
-- Embed widget wallet claims disabled — needs session delegation support in the widget
+- Embed widget is card-only (#141 decision): guest Stripe checkout, no wallet/passkey/account.
+  Bump the `?v=` cache-buster (EmbedSetup + the frame page) whenever its behaviour changes
 - Web3 auth init: if the wallet isn't immediately available after redirect, session restores
   from IndexedDB and the wallet reconnects in background (10s retry). Prevents logout on
   external redirects (Stripe onboarding, etc.)

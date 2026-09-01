@@ -32,9 +32,10 @@ export function securityHeaders(): MiddlewareHandler {
 export const FRAME_INLINE_SCRIPT = `
     var widget = document.querySelector('woco-tickets');
 
-    // Forward woco-claim events to parent page
-    widget.addEventListener('woco-claim', function(e) {
-      window.parent.postMessage({ type: 'woco-claim', detail: e.detail }, '*');
+    // Forward woco-checkout events (fired just before the Stripe redirect)
+    // to the parent page
+    widget.addEventListener('woco-checkout', function(e) {
+      window.parent.postMessage({ type: 'woco-checkout', detail: e.detail }, '*');
     });
 
     // Auto-resize: notify parent of height changes

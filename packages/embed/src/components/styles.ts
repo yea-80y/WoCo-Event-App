@@ -135,56 +135,6 @@ export function getStyles(theme: "dark" | "light"): string {
       cursor: not-allowed;
     }
 
-    .pending-approval-badge {
-      padding: 0.5rem 0.75rem;
-      font-size: 0.8125rem;
-      font-weight: 600;
-      color: #d97706;
-      border: 1px solid #d97706;
-      border-radius: 6px;
-      white-space: nowrap;
-      margin-top: 0.5rem;
-    }
-
-    .pending-approval-msg {
-      font-size: 0.75rem;
-      color: ${vars.textMuted};
-      margin: 0.375rem 0 0;
-      line-height: 1.5;
-    }
-
-    .claimed-badge {
-      padding: 0.5rem 0.75rem;
-      font-size: 0.8125rem;
-      font-weight: 600;
-      color: ${vars.success};
-      border: 1px solid ${vars.success};
-      border-radius: 6px;
-      white-space: nowrap;
-    }
-
-    .email-form {
-      display: flex;
-      gap: 0.5rem;
-      margin-top: 0.5rem;
-    }
-
-    .email-form input {
-      flex: 1;
-      padding: 0.5rem 0.625rem;
-      font-size: 0.8125rem;
-      border: 1px solid ${vars.border};
-      border-radius: 6px;
-      background: ${vars.inputBg};
-      color: ${vars.text};
-      font-family: inherit;
-      outline: none;
-    }
-
-    .email-form input:focus {
-      border-color: ${vars.accent};
-    }
-
     .error-msg {
       color: ${vars.error};
       font-size: 0.75rem;
@@ -302,55 +252,33 @@ export function getStyles(theme: "dark" | "light"): string {
       accent-color: ${vars.accent};
     }
 
-    /* Passkey confirmation overlay */
-    .passkey-confirm {
+    /* Quantity + total */
+    .qty-row select {
+      width: 5rem;
+    }
+
+    .total-row {
       display: flex;
-      flex-direction: column;
+      align-items: baseline;
       gap: 0.5rem;
-      padding: 0.75rem;
-      border: 1px solid ${vars.border};
-      border-radius: 8px;
-      margin-top: 0.5rem;
-    }
-
-    .passkey-confirm-title {
-      margin: 0;
-      font-size: 0.9rem;
-      font-weight: 600;
+      font-size: 0.8125rem;
       color: ${vars.text};
+      padding: 0.375rem 0;
     }
 
-    .passkey-confirm-detail {
-      margin: 0;
-      display: flex;
-      justify-content: space-between;
-      gap: 0.5rem;
-      font-size: 0.8rem;
-      color: ${vars.text};
+    .total-row strong {
+      font-size: 0.9375rem;
     }
 
-    .passkey-confirm-label {
+    .total-row .fee-note {
+      font-size: 0.6875rem;
       color: ${vars.textMuted};
-      flex-shrink: 0;
     }
 
-    .passkey-confirm-note {
+    .redirect-note {
+      font-size: 0.6875rem;
+      color: ${vars.textMuted};
       margin: 0.25rem 0 0;
-      font-size: 0.7rem;
-      color: ${vars.textMuted};
-    }
-
-    .passkey-confirm-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 0.5rem;
-      margin-top: 0.25rem;
-    }
-
-    .passkey-btn--confirm {
-      padding: 0.5rem 0.875rem;
-      font-size: 0.8rem;
-      width: auto;
     }
 
     .claim-options {
@@ -362,10 +290,6 @@ export function getStyles(theme: "dark" | "light"): string {
     }
 
     .claim-options .claim-btn {
-      width: 100%;
-    }
-
-    .claim-options .email-form {
       width: 100%;
     }
 
@@ -414,71 +338,6 @@ export function getStyles(theme: "dark" | "light"): string {
     .powered-by a {
       color: ${vars.accentText};
       text-decoration: none;
-    }
-
-    /* Passkey */
-    .passkey-section {
-      margin-top: 0.5rem;
-    }
-
-    .passkey-divider {
-      display: flex;
-      align-items: center;
-      gap: 0.625rem;
-      margin: 0.625rem 0;
-      font-size: 0.6875rem;
-      color: ${vars.textMuted};
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-
-    .passkey-divider::before,
-    .passkey-divider::after {
-      content: "";
-      flex: 1;
-      height: 1px;
-      background: ${vars.border};
-    }
-
-    .passkey-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      width: 100%;
-      padding: 0.625rem 1rem;
-      font-size: 0.8125rem;
-      font-weight: 600;
-      border: 1px solid ${vars.border};
-      border-radius: 6px;
-      background: ${vars.bgSurface};
-      color: ${vars.text};
-      cursor: pointer;
-      transition: border-color 0.15s ease, background 0.15s ease;
-      font-family: inherit;
-    }
-
-    .passkey-btn:hover:not(:disabled) {
-      border-color: ${vars.borderHover};
-      background: ${vars.bgSurfaceHover};
-    }
-
-    .passkey-btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-
-    .passkey-btn svg {
-      width: 16px;
-      height: 16px;
-      flex-shrink: 0;
-    }
-
-    .passkey-providers {
-      text-align: center;
-      font-size: 0.625rem;
-      color: ${vars.textMuted};
-      margin-top: 0.375rem;
     }
   `;
 }

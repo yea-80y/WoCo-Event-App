@@ -16,10 +16,9 @@
   // Configurator options
   let showImage = $state(true);
   let showDescription = $state(false);
-  let claimMode = $state<"wallet" | "email" | "both">("email");
   let theme = $state<"dark" | "light">("dark");
   let copied = $state(false);
-  let embedType = $state<"webcomponent" | "iframe">("iframe");
+  let embedType = $state<"webcomponent" | "iframe">("webcomponent");
 
   // Default API URL (user can override)
   const defaultApiUrl = "https://events-api.woco-net.com";
@@ -34,21 +33,20 @@
       `\n  event-id="${eventId}"`,
       `\n  api-url="${defaultApiUrl}"`,
     ];
-    attrs.push(`\n  claim-mode="${claimMode}"`);
     if (theme !== "dark") attrs.push(`\n  theme="${theme}"`);
     if (!showImage) attrs.push(`\n  show-image="false"`);
     if (!showDescription) attrs.push(`\n  show-description="false"`);
 
-    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=7"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
+    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=8"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
   }
 
   function buildIframeSnippet(): string {
     const params = new URLSearchParams();
-    params.set("claim-mode", claimMode);
     if (theme !== "dark") params.set("theme", theme);
     if (!showImage) params.set("show-image", "false");
     if (!showDescription) params.set("show-description", "false");
-    const frameUrl = `${defaultApiUrl}/embed/frame/${eventId}?${params.toString()}`;
+    const qs = params.toString();
+    const frameUrl = `${defaultApiUrl}/embed/frame/${eventId}${qs ? `?${qs}` : ""}`;
     const frameId = `woco-frame-${eventId.slice(0, 8)}`;
 
     return `<iframe
@@ -56,7 +54,6 @@
   id="${frameId}"
   style="width:100%;border:none;overflow:hidden;min-height:200px;"
   title="Ticket widget"
-  allow="publickey-credentials-get *; publickey-credentials-create *"
 ></iframe>
 <script>
 window.addEventListener('message', function(e) {
@@ -64,7 +61,7 @@ window.addEventListener('message', function(e) {
   var frame = document.getElementById('${frameId}');
   if (!frame || e.source !== frame.contentWindow) return;
   if (e.data.type === 'woco-resize') frame.style.height = e.data.height + 'px';
-  if (e.data.type === 'woco-claim') console.log('Ticket claimed:', e.data.detail);
+  if (e.data.type === 'woco-checkout') console.log('Checkout started:', e.data.detail);
 });
 <\/script>`;
   }
@@ -119,16 +116,16 @@ window.addEventListener('message', function(e) {
         <label class="radio-row">
           <input type="radio" name="embed-type" value="webcomponent" bind:group={embedType} />
           <div>
-            <span class="radio-label">Web Component</span>
-            <span class="radio-desc">Email claims only — passkeys bind to the host page domain</span>
+            <span class="radio-label">Web Component (recommended)</span>
+            <span class="radio-desc">Renders in your page flow — one script tag, no iframe plumbing</span>
           </div>
         </label>
 
         <label class="radio-row">
           <input type="radio" name="embed-type" value="iframe" bind:group={embedType} />
           <div>
-            <span class="radio-label">iframe (recommended)</span>
-            <span class="radio-desc">Consistent passkey identity across all organizer sites — required for passkey claims</span>
+            <span class="radio-label">iframe</span>
+            <span class="radio-desc">Fully isolated from your page's CSS and scripts; auto-resizes</span>
           </div>
         </label>
       </fieldset>
@@ -145,35 +142,6 @@ window.addEventListener('message', function(e) {
         <label class="toggle-row">
           <span class="toggle-label">Show event description</span>
           <input type="checkbox" bind:checked={showDescription} class="toggle" />
-        </label>
-      </fieldset>
-
-      <!-- Claim mode -->
-      <fieldset class="config-section">
-        <legend>Claim method</legend>
-
-        <label class="radio-row">
-          <input type="radio" name="claim-mode" value="email" bind:group={claimMode} />
-          <div>
-            <span class="radio-label">Email only</span>
-            <span class="radio-desc">Users enter email — no wallet needed</span>
-          </div>
-        </label>
-
-        <label class="radio-row">
-          <input type="radio" name="claim-mode" value="wallet" bind:group={claimMode} />
-          <div>
-            <span class="radio-label">Wallet / Passkey</span>
-            <span class="radio-desc">Wallet signs a claim message (no extension needed for passkey)</span>
-          </div>
-        </label>
-
-        <label class="radio-row">
-          <input type="radio" name="claim-mode" value="both" bind:group={claimMode} />
-          <div>
-            <span class="radio-label">All methods (recommended)</span>
-            <span class="radio-desc">Email, wallet, and passkey — maximum reach</span>
-          </div>
         </label>
       </fieldset>
 
@@ -214,10 +182,11 @@ window.addEventListener('message', function(e) {
       <pre class="snippet-code"><code>{snippet}</code></pre>
       <p class="snippet-hint">
         {#if embedType === "iframe"}
-          Paste into your HTML. The iframe auto-resizes and forwards claim events via <code>postMessage</code>.
+          Paste into your HTML. The iframe auto-resizes and forwards checkout events via <code>postMessage</code>.
         {:else}
           Paste this into your website's HTML where you want the ticket widget to appear.
         {/if}
+        Buyers pay by card via Stripe and receive their ticket by email.
       </p>
     </div>
   {/if}
