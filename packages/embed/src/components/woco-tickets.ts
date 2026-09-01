@@ -1,31 +1,32 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
-import { connectWallet, signClaimTypedData, isWalletAvailable } from "../auth/wallet.js";
-import {
-  isPasskeySupported,
-  passkeySignIn,
-  PasskeyAssertionUnavailableError,
-  signClaimDigest,
-} from "../auth/passkey.js";
 import { getStyles } from "./styles.js";
 import {
   sealJson,
-  CLAIM_DOMAIN,
-  CLAIM_TYPES,
-  eip712Digest,
+  calculateBuyerFees,
   MARKETING_CONSENT_NOTICE,
   TRANSACTIONAL_EMAIL_NOTICE,
   CHECKOUT_PRIVACY_SUMMARY,
   type OrderField,
+  type PaymentConfig,
   type SealedBox,
 } from "@woco/shared";
 import { cacheGet, cacheSet, TTL_7D, embedCacheKey } from "../cache.js";
+import {
+  MAX_QTY,
+  seriesPayable,
+  validateEmail,
+  maxSelectableQty,
+  buildOrderPayload,
+  buildCheckoutBody,
+  reserveOutcome,
+} from "../checkout.js";
 
 interface SeriesSummary {
   seriesId: string;
   name: string;
   description: string;
   totalSupply: number;
-  approvalRequired?: boolean;
+  payment?: PaymentConfig;
 }
 
 interface EventData {
@@ -49,18 +50,18 @@ interface ClaimStatus {
 
 interface SeriesState {
   status: ClaimStatus | null;
-  claiming: boolean;
-  claimedEdition: number | null;
+  /** Reserve + checkout-session round-trip in flight (ends in navigation). */
+  busy: boolean;
   error: string | null;
-  emailMode: boolean;
-  orderFormVisible: boolean;
+  /** Buy panel expanded (order form + email + quantity + consent). */
+  buyOpen: boolean;
+  quantity: number;
+  /** Email + consent live in state, not just the DOM: a quantity change
+   *  re-renders the card to refresh the total, which would otherwise wipe
+   *  what the buyer already typed/ticked. */
+  email: string;
+  consent: boolean;
   orderFormData: Record<string, string>;
-  passkeyConfirm: boolean; // show confirmation overlay before biometric
-  /** Sign-in found no passkey — offer a retry and explain why there is no
-   *  create option here (#175: an embed-minted passkey would be a separate
-   *  per-organiser-domain account, never the buyer's WoCo account). */
-  passkeyRetryOffer: boolean;
-  pendingApproval: boolean; // claim submitted, awaiting organizer approval
 }
 
 export class WocoTickets extends HTMLElement {
@@ -71,7 +72,7 @@ export class WocoTickets extends HTMLElement {
   private delegationSetup = false;
 
   static get observedAttributes() {
-    return ["event-id", "api-url", "claim-mode", "theme", "show-image", "show-description"];
+    return ["event-id", "api-url", "theme", "show-image", "show-description"];
   }
 
   constructor() {
@@ -90,8 +91,8 @@ export class WocoTickets extends HTMLElement {
 
   attributeChangedCallback() {
     // Only reload when already in the DOM — attributeChangedCallback fires once per
-    // attribute during initial parse (6x), all before connectedCallback. Without this
-    // guard, 6 concurrent loadEvent() calls race and reset state mid-interaction.
+    // attribute during initial parse, all before connectedCallback. Without this
+    // guard, concurrent loadEvent() calls race and reset state mid-interaction.
     if (this.isConnected) this.loadEvent();
   }
 
@@ -108,8 +109,7 @@ export class WocoTickets extends HTMLElement {
    *
    * The host page is already fully privileged on its own page, so this is not a
    * privilege boundary. It is here so the widget cannot be turned into the
-   * instrument of an injection against a claimer mid-ceremony — at that moment
-   * the claimer's derived account key is in this page's JS memory.
+   * instrument of an injection against a buyer mid-purchase.
    */
   private get appUrl(): string {
     const raw = this.getAttribute("app-url");
@@ -122,10 +122,22 @@ export class WocoTickets extends HTMLElement {
       return WocoTickets.DEFAULT_APP_URL;
     }
   }
-  private get claimMode() { return (this.getAttribute("claim-mode") || "email") as "wallet" | "email" | "both"; }
   private get theme() { return (this.getAttribute("theme") || "dark") as "dark" | "light"; }
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
   private get showDescription() { return this.getAttribute("show-description") !== "false"; }
+
+  private freshSeriesState(status: ClaimStatus | null = null): SeriesState {
+    return {
+      status,
+      busy: false,
+      error: null,
+      buyOpen: false,
+      quantity: 1,
+      email: "",
+      consent: false,
+      orderFormData: {},
+    };
+  }
 
   private async loadEvent() {
     if (!this.eventId || !this.apiUrl) return;
@@ -141,22 +153,9 @@ export class WocoTickets extends HTMLElement {
 
     if (cachedEvent) {
       this.event = cachedEvent;
-      // Restore cached series states (availability counts etc.)
       for (const s of cachedEvent.series) {
         const stKey = embedCacheKey.claimStatus(this.eventId, s.seriesId);
-        const cachedStatus = cacheGet<ClaimStatus>(stKey);
-        this.seriesStates.set(s.seriesId, {
-          status: cachedStatus ?? null,
-          claiming: false,
-          claimedEdition: null,
-          error: null,
-          emailMode: false,
-          orderFormVisible: false,
-          orderFormData: {},
-          passkeyConfirm: false,
-          passkeyRetryOffer: false,
-          pendingApproval: false,
-        });
+        this.seriesStates.set(s.seriesId, this.freshSeriesState(cacheGet<ClaimStatus>(stKey)));
       }
       this.render(); // Instant render from cache
     } else {
@@ -193,22 +192,13 @@ export class WocoTickets extends HTMLElement {
         }),
       );
 
-      // Merge fresh statuses — preserve any in-progress claim state
+      // Merge fresh statuses — preserve any in-progress buyer state
       for (let i = 0; i < freshEvent.series.length; i++) {
         const sid = freshEvent.series[i].seriesId;
         const existing = this.seriesStates.get(sid);
         this.seriesStates.set(sid, {
+          ...(existing ?? this.freshSeriesState()),
           status: statuses[i],
-          // Preserve live UI state if user is mid-claim
-          claiming: existing?.claiming ?? false,
-          claimedEdition: existing?.claimedEdition ?? null,
-          error: existing?.error ?? null,
-          emailMode: existing?.emailMode ?? false,
-          orderFormVisible: existing?.orderFormVisible ?? false,
-          orderFormData: existing?.orderFormData ?? {},
-          passkeyConfirm: existing?.passkeyConfirm ?? false,
-          passkeyRetryOffer: existing?.passkeyRetryOffer ?? false,
-          pendingApproval: existing?.pendingApproval ?? false,
         });
       }
 
@@ -222,10 +212,10 @@ export class WocoTickets extends HTMLElement {
     }
   }
 
-  /** Returns true if the user has an active form open in any series card. */
+  /** Returns true if the user has an active buy panel open in any series card. */
   private isUserInteracting(): boolean {
     for (const [, st] of this.seriesStates) {
-      if (st.claiming || st.orderFormVisible || st.passkeyConfirm || st.passkeyRetryOffer) return true;
+      if (st.busy || st.buyOpen) return true;
     }
     return false;
   }
@@ -306,97 +296,53 @@ export class WocoTickets extends HTMLElement {
     this.shadow.addEventListener("click", (e) => {
       const target = e.target as Element;
 
-      // data-wallet-claim
-      const walletClaimBtn = target.closest<HTMLElement>("[data-wallet-claim]");
-      if (walletClaimBtn) {
-        const sid = walletClaimBtn.getAttribute("data-wallet-claim")!;
-        const st = this.seriesStates.get(sid);
-        if (this.hasOrderForm && st && !st.orderFormVisible) {
-          st.orderFormVisible = true;
-          this.updateSeries(sid);
-        } else {
-          this.handleWalletClaim(sid);
-        }
-        return;
-      }
-
-      // data-show-email
-      const showEmailBtn = target.closest<HTMLElement>("[data-show-email]");
-      if (showEmailBtn) {
-        const sid = showEmailBtn.getAttribute("data-show-email")!;
+      // data-buy — expand the buy panel
+      const buyBtn = target.closest<HTMLElement>("[data-buy]");
+      if (buyBtn) {
+        const sid = buyBtn.getAttribute("data-buy")!;
         const st = this.seriesStates.get(sid);
         if (st) {
-          st.emailMode = true;
-          if (this.hasOrderForm && !st.orderFormVisible) st.orderFormVisible = true;
-          this.updateSeries(sid);
-        }
-        return;
-      }
-
-      // data-email-claim
-      const emailClaimBtn = target.closest<HTMLElement>("[data-email-claim]");
-      if (emailClaimBtn) {
-        const sid = emailClaimBtn.getAttribute("data-email-claim")!;
-        this.handleEmailClaim(sid);
-        return;
-      }
-
-      // data-cancel-order
-      const cancelOrderBtn = target.closest<HTMLElement>("[data-cancel-order]");
-      if (cancelOrderBtn) {
-        const sid = cancelOrderBtn.getAttribute("data-cancel-order")!;
-        const st = this.seriesStates.get(sid);
-        if (st) {
-          st.orderFormVisible = false;
-          st.emailMode = false;
-          st.orderFormData = {};
+          st.buyOpen = true;
           st.error = null;
           this.updateSeries(sid);
         }
         return;
       }
 
-      // data-passkey-claim — show confirm overlay first
-      const passkeyClaimBtn = target.closest<HTMLElement>("[data-passkey-claim]");
-      if (passkeyClaimBtn) {
-        const sid = passkeyClaimBtn.getAttribute("data-passkey-claim")!;
-        const st = this.seriesStates.get(sid);
-        if (st) { st.passkeyConfirm = true; this.updateSeries(sid); }
+      // data-checkout — reserve + create the Stripe session + redirect
+      const checkoutBtn = target.closest<HTMLElement>("[data-checkout]");
+      if (checkoutBtn) {
+        this.handleCheckout(checkoutBtn.getAttribute("data-checkout")!);
         return;
       }
 
-      // data-passkey-confirm — proceed with actual claim
-      const passkeyConfirmBtn = target.closest<HTMLElement>("[data-passkey-confirm]");
-      if (passkeyConfirmBtn) {
-        const sid = passkeyConfirmBtn.getAttribute("data-passkey-confirm")!;
+      // data-cancel-order — collapse and reset the buy panel
+      const cancelOrderBtn = target.closest<HTMLElement>("[data-cancel-order]");
+      if (cancelOrderBtn) {
+        const sid = cancelOrderBtn.getAttribute("data-cancel-order")!;
         const st = this.seriesStates.get(sid);
-        if (st) st.passkeyConfirm = false;
-        this.handlePasskeyClaim(sid);
-        return;
-      }
-
-      // data-cancel-passkey
-      const cancelPasskeyBtn = target.closest<HTMLElement>("[data-cancel-passkey]");
-      if (cancelPasskeyBtn) {
-        const sid = cancelPasskeyBtn.getAttribute("data-cancel-passkey")!;
-        const st = this.seriesStates.get(sid);
-        if (st) { st.passkeyConfirm = false; st.passkeyRetryOffer = false; this.updateSeries(sid); }
-        return;
-      }
-
-      // data-wallet-order / data-both-order — show order form
-      const orderBtn = target.closest<HTMLElement>("[data-wallet-order], [data-both-order]");
-      if (orderBtn) {
-        const sid = orderBtn.getAttribute("data-wallet-order") || orderBtn.getAttribute("data-both-order")!;
-        const st = this.seriesStates.get(sid);
-        if (st) { st.orderFormVisible = true; this.updateSeries(sid); }
+        if (st) {
+          st.buyOpen = false;
+          st.orderFormData = {};
+          st.email = "";
+          st.consent = false;
+          st.quantity = 1;
+          st.error = null;
+          this.updateSeries(sid);
+        }
         return;
       }
     });
 
-    // Order form field sync — update state without re-rendering
+    // Field sync — update state without re-rendering (a re-render would drop focus)
     this.shadow.addEventListener("input", (e) => {
       const el = e.target as HTMLElement;
+      const emailAttr = el.getAttribute("data-email-input");
+      if (emailAttr && el instanceof HTMLInputElement) {
+        const st = this.seriesStates.get(emailAttr);
+        if (st) st.email = el.value;
+        return;
+      }
       const attr = el.getAttribute("data-order-field");
       if (!attr) return;
       const [sid, fieldId] = attr.split(":");
@@ -409,6 +355,27 @@ export class WocoTickets extends HTMLElement {
 
     this.shadow.addEventListener("change", (e) => {
       const el = e.target as HTMLElement;
+
+      // Quantity changes the total, so this one re-renders the card. Email and
+      // consent survive because they are read back out of state.
+      const qtyAttr = el.getAttribute("data-qty-select");
+      if (qtyAttr && el instanceof HTMLSelectElement) {
+        const st = this.seriesStates.get(qtyAttr);
+        if (st) {
+          const q = parseInt(el.value, 10);
+          st.quantity = Number.isInteger(q) && q >= 1 && q <= MAX_QTY ? q : 1;
+          this.updateSeries(qtyAttr);
+        }
+        return;
+      }
+
+      const consentAttr = el.getAttribute("data-marketing-consent");
+      if (consentAttr && el instanceof HTMLInputElement) {
+        const st = this.seriesStates.get(consentAttr);
+        if (st) st.consent = el.checked;
+        return;
+      }
+
       const attr = el.getAttribute("data-order-field");
       if (!attr) return;
       const [sid, fieldId] = attr.split(":");
@@ -420,8 +387,6 @@ export class WocoTickets extends HTMLElement {
     });
   }
 
-  private readonly fingerprintIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"/><path d="M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"/></svg>`;
-
   /**
    * Point-of-collection notice + marketing opt-in.
    *
@@ -431,12 +396,12 @@ export class WocoTickets extends HTMLElement {
    * consent.ts) because the server stores it as Art. 7(1) evidence — the two
    * surfaces must not drift, so both read the same shared constants.
    */
-  private renderConsent(seriesId: string): string {
+  private renderConsent(seriesId: string, st: SeriesState): string {
     return `
       <div class="consent-block">
         <div class="transactional-note">${this.esc(TRANSACTIONAL_EMAIL_NOTICE)}</div>
         <label class="consent-row">
-          <input type="checkbox" data-marketing-consent="${this.esc(seriesId)}" />
+          <input type="checkbox" data-marketing-consent="${this.esc(seriesId)}" ${st.consent ? "checked" : ""} />
           <span>${this.esc(MARKETING_CONSENT_NOTICE)}</span>
         </label>
         <div class="privacy-note">
@@ -447,76 +412,16 @@ export class WocoTickets extends HTMLElement {
     `;
   }
 
-  private renderPasskeyButton(seriesId: string, disabled = false, approvalRequired = false): string {
-    return `
-      <div class="passkey-section">
-        <button class="passkey-btn" data-passkey-claim="${this.esc(seriesId)}" ${disabled ? "disabled" : ""}>
-          ${this.fingerprintIcon}
-          ${approvalRequired ? "Request with passkey" : "Claim with passkey"}
-        </button>
-        <div class="passkey-providers">Secured by Apple, Google, 1Password</div>
-      </div>
-    `;
-  }
-
-  private renderPasskeyConfirm(seriesId: string, ticketName: string, approvalRequired = false): string {
-    return `
-      <div class="passkey-confirm">
-        <p class="passkey-confirm-title">${approvalRequired ? "Confirm request" : "Confirm claim"}</p>
-        <p class="passkey-confirm-detail">
-          <span class="passkey-confirm-label">Ticket</span>
-          <span>${this.esc(ticketName)}</span>
-        </p>
-        <p class="passkey-confirm-detail">
-          <span class="passkey-confirm-label">Sign with</span>
-          <span>Your passkey (${this.esc(window.location.hostname)})</span>
-        </p>
-        <p class="passkey-confirm-note">Your passkey will authenticate this ${approvalRequired ? "request" : "claim"}. No personal data is shared.</p>
-        <div class="passkey-confirm-actions">
-          <button class="cancel-btn" data-cancel-passkey="${this.esc(seriesId)}">Cancel</button>
-          <button class="passkey-btn passkey-btn--confirm" data-passkey-confirm="${this.esc(seriesId)}">
-            ${this.fingerprintIcon}
-            ${approvalRequired ? "Sign &amp; Request" : "Sign &amp; Claim"}
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  /**
-   * Shown when sign-in produced no assertion — "you cancelled" and "no passkey
-   * here" are indistinguishable to us, so retry is offered as the
-   * non-destructive answer. There is deliberately NO create option (#175):
-   * a passkey minted on the organiser's domain would be a separate account
-   * scoped to this site, never the buyer's WoCo account, so the honest exits
-   * are retry, the widget's other claim options, or the WoCo app itself.
-   */
-  private renderPasskeyRetryOffer(seriesId: string): string {
-    return `
-      <div class="passkey-confirm">
-        <p class="passkey-confirm-title">No passkey used</p>
-        <p class="passkey-confirm-note">
-          Either you cancelled, or this device has no WoCo passkey. New passkey
-          accounts can't be set up from this widget — if you don't have one,
-          use another claim option here, or claim at
-          <a href="${this.esc(this.appUrl)}" target="_blank" rel="noopener noreferrer">the WoCo app</a>.
-        </p>
-        <div class="passkey-confirm-actions">
-          <button class="cancel-btn" data-cancel-passkey="${this.esc(seriesId)}">Cancel</button>
-          <button class="passkey-btn passkey-btn--confirm" data-passkey-confirm="${this.esc(seriesId)}">
-            ${this.fingerprintIcon}
-            Try again
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
   private get hasOrderForm(): boolean {
     return !!(this.event?.orderFields?.length && this.event?.encryptionKey);
   }
 
-  private renderOrderForm(seriesId: string, st: SeriesState, approvalRequired = false): string {
+  /** True when this series can actually be sold here: Stripe rail on, price > 0. */
+  private isPayable(s: SeriesSummary): boolean {
+    return seriesPayable(s.payment);
+  }
+
+  private renderOrderFields(seriesId: string, st: SeriesState): string {
     const fields = this.event?.orderFields ?? [];
     let fieldsHtml = "";
 
@@ -525,7 +430,7 @@ export class WocoTickets extends HTMLElement {
     // `OrderField.maxLength` is typed `number?` but that is a COMPILE-TIME claim
     // about our own code; the value arrives as JSON from the event manifest and
     // the server never validates orderFields (it destructures and passes the
-    // array straight through — apps/server/src/routes/events.ts:185,341, whose
+    // array straight through — apps/server/src/routes/events.ts, whose
     // validation block covers title/dates/tags/geo/payment only). A crafted
     // event carrying `maxLength: '1" onfocus="…'` would otherwise break out of
     // the attribute. Emitting it only when it really is a positive integer
@@ -560,57 +465,51 @@ export class WocoTickets extends HTMLElement {
       `;
     }
 
-    const mode = this.claimMode;
-    const passkeyAvail = isPasskeySupported();
-    let submitHtml: string;
-    const claimLabel = approvalRequired ? "Request" : "Claim";
-    if (st.claiming) {
-      submitHtml = `<button class="claim-btn" disabled>${approvalRequired ? "Requesting..." : "Claiming..."}</button>`;
-    } else if (mode === "email" || st.emailMode) {
-      submitHtml = `
-        <div class="email-form">
-          <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
-          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">${claimLabel}</button>
-        </div>
-        ${this.renderConsent(seriesId)}
-      `;
-    } else if (mode === "wallet") {
-      // Wallet: sign claim message via MetaMask (EIP-191) + passkey
-      const walletAvail = isWalletAvailable();
-      submitHtml = walletAvail
-        ? `<button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">${claimLabel} with wallet</button>`
-        : `<button class="claim-btn" disabled>No wallet detected</button>`;
-      if (passkeyAvail) {
-        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId, false, approvalRequired);
-      }
-    } else {
-      // both — email + wallet + passkey
-      submitHtml = `
-        <div class="email-form">
-          <input type="email" placeholder="your@email.com" data-email-input="${this.esc(seriesId)}" />
-          <button class="claim-btn" data-email-claim="${this.esc(seriesId)}">${claimLabel}</button>
-        </div>
-        ${this.renderConsent(seriesId)}
-      `;
-      if (isWalletAvailable()) {
-        submitHtml += `<div class="passkey-divider">or</div>
-          <button class="claim-btn" data-wallet-claim="${this.esc(seriesId)}">${claimLabel} with wallet</button>`;
-      }
-      if (passkeyAvail) {
-        submitHtml += `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(seriesId, false, approvalRequired);
-      }
+    return fieldsHtml;
+  }
+
+  private renderBuyPanel(s: SeriesSummary, st: SeriesState): string {
+    const avail = Number(st.status?.available ?? s.totalSupply);
+    const maxQty = maxSelectableQty(avail);
+    const qty = Math.min(st.quantity, maxQty);
+    const fees = calculateBuyerFees(s.payment, qty);
+
+    let qtyOptions = "";
+    for (let i = 1; i <= maxQty; i++) {
+      qtyOptions += `<option value="${i}" ${i === qty ? "selected" : ""}>${i}</option>`;
     }
 
+    const totalHtml = fees?.cardTotal
+      ? `<div class="total-row">
+          <span>Total</span>
+          <strong>${this.esc(fees.cardTotal)}</strong>
+          ${fees.feePercent > 0 ? `<span class="fee-note">incl. ${this.esc(fees.fee)} booking fee</span>` : ""}
+        </div>`
+      : "";
+
     return `
-      <div class="order-form" data-order-form="${this.esc(seriesId)}">
-        ${fieldsHtml}
+      <div class="order-form" data-order-form="${this.esc(s.seriesId)}">
+        ${this.hasOrderForm ? this.renderOrderFields(s.seriesId, st) : ""}
+        <label class="form-field">
+          <span class="form-label">Email for your ticket <span class="required">*</span></span>
+          <input type="email" data-email-input="${this.esc(s.seriesId)}" value="${this.esc(st.email)}" placeholder="your@email.com" autocomplete="email" />
+        </label>
+        <label class="form-field qty-row">
+          <span class="form-label">Quantity</span>
+          <select data-qty-select="${this.esc(s.seriesId)}">${qtyOptions}</select>
+        </label>
+        ${totalHtml}
+        ${this.renderConsent(s.seriesId, st)}
         <div class="claim-options">
-          ${submitHtml}
+          ${st.busy
+            ? `<button class="claim-btn" disabled>Starting checkout...</button>`
+            : `<button class="claim-btn" data-checkout="${this.esc(s.seriesId)}">Continue to payment</button>`}
         </div>
         ${st.error ? `<p class="error-msg">${this.esc(st.error)}</p>` : ""}
+        <p class="redirect-note">You'll be redirected to Stripe's secure checkout. Your ticket arrives by email.</p>
         <div class="form-actions">
-          <p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>
-          <button class="cancel-btn" data-cancel-order="${this.esc(seriesId)}">Cancel</button>
+          ${this.hasOrderForm ? `<p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>` : "<span></span>"}
+          <button class="cancel-btn" data-cancel-order="${this.esc(s.seriesId)}">Cancel</button>
         </div>
       </div>
     `;
@@ -623,385 +522,154 @@ export class WocoTickets extends HTMLElement {
     // "NaN" and compares false — visibly wrong, never executable.
     const avail = Number(st?.status?.available ?? s.totalSupply);
     const total = Number(st?.status?.totalSupply ?? s.totalSupply);
+    const header = `
+      <div class="series-info">
+        <h3>${this.esc(s.name)}</h3>
+        <p class="avail">${avail} / ${total} available</p>
+      </div>
+    `;
 
-    if (st?.pendingApproval) {
+    if (st?.buyOpen && this.isPayable(s) && avail !== 0) {
       return `
         <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
-          <div class="series-info">
-            <h3>${this.esc(s.name)}</h3>
-            <p class="avail">${avail} / ${total} available</p>
-          </div>
-          <div class="pending-approval-badge">&#9679; Pending Approval</div>
-          <p class="pending-approval-msg">Your request has been submitted. You'll receive your ticket once the organiser approves it.</p>
-        </div>
-      `;
-    }
-
-    if (st?.claimedEdition != null) {
-      return `
-        <div class="series-card" data-series="${this.esc(s.seriesId)}">
-          <div class="series-info">
-            <h3>${this.esc(s.name)}</h3>
-            <p class="avail">${avail} / ${total} available</p>
-          </div>
-          <div class="claimed-badge">&#10003; Claimed #${Number(st.claimedEdition)}</div>
-        </div>
-      `;
-    }
-
-    const approvalRequired = s.approvalRequired ?? false;
-    const claimLabel = approvalRequired ? "Request to attend" : "Claim ticket";
-
-    // Passkey confirmation overlay
-    if (st?.passkeyConfirm) {
-      return `
-        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
-          <div class="series-info">
-            <h3>${this.esc(s.name)}</h3>
-            <p class="avail">${avail} / ${total} available</p>
-          </div>
-          ${this.renderPasskeyConfirm(s.seriesId, s.name, approvalRequired)}
-        </div>
-      `;
-    }
-
-    // Sign-in found no passkey — creating one is the user's call, never ours
-    if (st?.passkeyRetryOffer) {
-      return `
-        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
-          <div class="series-info">
-            <h3>${this.esc(s.name)}</h3>
-            <p class="avail">${avail} / ${total} available</p>
-          </div>
-          ${this.renderPasskeyRetryOffer(s.seriesId)}
-        </div>
-      `;
-    }
-
-    // Show order form if visible
-    if (st?.orderFormVisible && this.hasOrderForm) {
-      return `
-        <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
-          <div class="series-info">
-            <h3>${this.esc(s.name)}</h3>
-            <p class="avail">${avail} / ${total} available</p>
-          </div>
-          ${this.renderOrderForm(s.seriesId, st, approvalRequired)}
+          ${header}
+          ${this.renderBuyPanel(s, st)}
         </div>
       `;
     }
 
     let actionHtml: string;
-    if (st?.claiming) {
-      actionHtml = `<button class="claim-btn" disabled>${approvalRequired ? "Requesting..." : "Claiming..."}</button>`;
+    if (!this.isPayable(s)) {
+      // No live payment rail for this series (crypto-only, free, or a stale
+      // cache entry from before prices were in the payload). Nothing can be
+      // sold here — say so rather than dead-ending at checkout.
+      actionHtml = `<button class="claim-btn" disabled>Not available here</button>`;
     } else if (avail === 0) {
       actionHtml = `<button class="claim-btn" disabled>Sold out</button>`;
-    } else if (st?.emailMode && !this.hasOrderForm) {
-      actionHtml = `
-        <div>
-          <div class="email-form">
-            <input type="email" placeholder="your@email.com" data-email-input="${this.esc(s.seriesId)}" />
-            <button class="claim-btn" data-email-claim="${this.esc(s.seriesId)}">${approvalRequired ? "Request" : "Claim"}</button>
-          </div>
-          ${st?.error ? `<p class="error-msg">${this.esc(st.error)}</p>` : ""}
-        </div>
-      `;
     } else {
-      const mode = this.claimMode;
-      const passkeyAvail = isPasskeySupported();
-      if (mode === "email") {
-        actionHtml = `<button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">${approvalRequired ? "Request to attend" : "Claim with email"}</button>`;
-      } else if (mode === "wallet") {
-        // Wallet: sign claim message via MetaMask (EIP-191) + passkey
-        if (this.hasOrderForm) {
-          actionHtml = `<button class="claim-btn" data-wallet-order="${this.esc(s.seriesId)}">${claimLabel}</button>`;
-        } else {
-          const walletAvail = isWalletAvailable();
-          actionHtml = `<div class="claim-options">
-            ${walletAvail
-              ? `<button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">${approvalRequired ? "Request with wallet" : "Claim with wallet"}</button>`
-              : `<button class="claim-btn" disabled>No wallet detected</button>`}
-            ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId, false, approvalRequired) : ""}
-          </div>`;
-        }
-      } else {
-        // both — email + wallet + passkey
-        if (this.hasOrderForm) {
-          actionHtml = `<button class="claim-btn" data-both-order="${this.esc(s.seriesId)}">${claimLabel}</button>`;
-        } else {
-          const walletAvail = isWalletAvailable();
-          actionHtml = `
-            <div class="claim-options">
-              <button class="claim-btn" data-show-email="${this.esc(s.seriesId)}">${approvalRequired ? "Request with email" : "Claim with email"}</button>
-              ${walletAvail ? `<div class="passkey-divider">or</div>
-                <button class="claim-btn" data-wallet-claim="${this.esc(s.seriesId)}">${approvalRequired ? "Request with wallet" : "Claim with wallet"}</button>` : ""}
-              ${passkeyAvail ? `<div class="passkey-divider">or</div>` + this.renderPasskeyButton(s.seriesId, false, approvalRequired) : ""}
-            </div>
-          `;
-        }
-      }
-      if (st?.error) {
-        actionHtml += `<p class="error-msg">${this.esc(st.error)}</p>`;
-      }
+      const unit = calculateBuyerFees(s.payment, 1)?.unit ?? "";
+      actionHtml = `<button class="claim-btn" data-buy="${this.esc(s.seriesId)}">Buy${unit ? ` — ${this.esc(unit)}` : ""}</button>`;
     }
 
-    const hasMultipleOptions = actionHtml.includes("claim-options");
     return `
-      <div class="series-card${hasMultipleOptions ? " series-card--expanded" : ""}" data-series="${this.esc(s.seriesId)}">
-        <div class="series-info">
-          <h3>${this.esc(s.name)}</h3>
-          <p class="avail">${avail} / ${total} available</p>
-        </div>
+      <div class="series-card" data-series="${this.esc(s.seriesId)}">
+        ${header}
         ${actionHtml}
       </div>
     `;
   }
 
   /**
-   * Validate required order fields and encrypt form data if present.
-   * Returns undefined if no order form, or the encrypted SealedBox.
-   * Sets st.error and returns null if validation fails.
+   * Validate required order fields and encrypt the buyer's answers (plus the
+   * email, mirroring the main checkout's inline seal) to the organiser's
+   * X25519 key. The fields never leave this page unencrypted — the server
+   * stores the SealedBox and only the organiser's dashboard can open it.
+   *
+   * Returns undefined when there is nothing to seal or sealing failed (the
+   * server builds a minimal fallback record at fulfilment — same trade the
+   * main checkout makes: a lost form answer must not lose the sale), and
+   * null when validation failed (stops the checkout).
    */
-  private async encryptOrderData(seriesId: string, st: SeriesState): Promise<SealedBox | undefined | null> {
-    if (!this.hasOrderForm || !st.orderFormVisible) return undefined;
-
-    const fields = this.event?.orderFields ?? [];
+  private async encryptOrderData(seriesId: string, st: SeriesState, email: string): Promise<SealedBox | undefined | null> {
     const encryptionKey = this.event?.encryptionKey;
+    if (!encryptionKey) return undefined;
 
-    // Validate required fields
-    for (const f of fields) {
-      if (f.required && !(st.orderFormData[f.id] ?? "").trim()) {
-        st.error = `${f.label} is required`;
-        this.updateSeries(seriesId);
-        return null;
+    if (this.hasOrderForm) {
+      for (const f of this.event?.orderFields ?? []) {
+        if (f.required && !(st.orderFormData[f.id] ?? "").trim()) {
+          st.error = `${f.label} is required`;
+          this.updateSeries(seriesId);
+          return null;
+        }
       }
     }
 
     try {
-      return await sealJson(encryptionKey!, {
-        fields: st.orderFormData,
-        seriesId,
-      });
+      return await sealJson(encryptionKey, buildOrderPayload(st.orderFormData, seriesId, email));
     } catch {
-      st.error = "Failed to encrypt your info";
-      this.updateSeries(seriesId);
-      return null;
+      return undefined;
     }
   }
 
-  private async handleWalletClaim(seriesId: string) {
+  /**
+   * The v2 purchase path: optionally hold seats, create a guest Stripe
+   * checkout session, and hand the buyer to Stripe. The ticket itself is
+   * minted by the webhook at payment and delivered by email — nothing is
+   * claimed in-page, so there is no signing ceremony and no account here.
+   */
+  private async handleCheckout(seriesId: string) {
     const st = this.seriesStates.get(seriesId);
-    if (!st || st.claiming || !this.api) return;
+    if (!st || st.busy || !this.api) return;
 
-    st.claiming = true;
-    st.error = null;
-    this.updateSeries(seriesId);
-
-    // Encrypt order data if form is present
-    const encryptedOrder = await this.encryptOrderData(seriesId, st);
-    if (encryptedOrder === null) { st.claiming = false; return; }
-
-    const address = await connectWallet();
-    if (!address) {
-      st.claiming = false;
-      st.error = "Wallet not available or connection rejected";
-      this.updateSeries(seriesId);
-      return;
-    }
-
-    // Sign EIP-712 typed data — wallet displays structured claim fields.
-    // No session delegation needed for embed path.
-    const timestamp = Date.now();
-    const typedData = {
-      types: {
-        EIP712Domain: [
-          { name: "name", type: "string" },
-          { name: "version", type: "string" },
-          { name: "salt", type: "bytes32" },
-        ],
-        ClaimTicket: CLAIM_TYPES.ClaimTicket,
-      },
-      domain: CLAIM_DOMAIN,
-      primaryType: "ClaimTicket",
-      message: {
-        eventId: this.eventId,
-        seriesId,
-        claimer: address.toLowerCase(),
-        timestamp,
-      },
-    };
-    const signature = await signClaimTypedData(address, typedData);
-    if (!signature) {
-      st.claiming = false;
-      st.error = "Wallet signing rejected";
-      this.updateSeries(seriesId);
-      return;
-    }
-
-    try {
-      const body: Record<string, unknown> = { mode: "wallet-signed", address, signature, timestamp };
-      if (encryptedOrder) body.encryptedOrder = encryptedOrder;
-
-      const resp = await this.api.post<unknown>(
-        `/api/events/${this.eventId}/series/${seriesId}/claim`,
-        body,
-      );
-
-      if (!resp.ok) {
-        st.error = (resp.error as string) || "Claim failed";
-      } else if ((resp as Record<string, unknown>).approvalPending) {
-        st.pendingApproval = true;
-        st.orderFormVisible = false;
-      } else {
-        st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
-        st.orderFormVisible = false;
-        this.dispatchEvent(new CustomEvent("woco-claim", {
-          detail: { seriesId, mode: "wallet", address, edition: st.claimedEdition },
-          bubbles: true,
-        }));
-      }
-    } catch {
-      st.error = "Network error";
-    } finally {
-      st.claiming = false;
-      this.updateSeries(seriesId);
-    }
-  }
-
-  private async handlePasskeyClaim(seriesId: string) {
-    const st = this.seriesStates.get(seriesId);
-    if (!st || st.claiming || !this.api) return;
-
-    st.claiming = true;
-    st.error = null;
-    st.passkeyRetryOffer = false;
-    this.updateSeries(seriesId);
-
-    // Encrypt order data if form is present
-    const encryptedOrder = await this.encryptOrderData(seriesId, st);
-    if (encryptedOrder === null) { st.claiming = false; return; }
-
-    let privateKey: Uint8Array;
-    let address: string;
-    try {
-      const result = await passkeySignIn();
-      privateKey = result.privateKey;
-      address = result.address;
-    } catch (err) {
-      st.claiming = false;
-      // Sign-in found no assertion. That means "you cancelled" OR "there is no
-      // WoCo passkey here" — indistinguishable by spec, so offer a retry. There
-      // is no create fallback: minting here would scope the account to the
-      // organiser's domain (#175), and a claim never mints an account (#140).
-      if (err instanceof PasskeyAssertionUnavailableError) {
-        st.passkeyRetryOffer = true;
-        st.error = null;
-      } else {
-        st.error = err instanceof Error ? err.message : "Passkey authentication failed";
-      }
-      this.updateSeries(seriesId);
-      return;
-    }
-
-    // Build EIP-712 claim digest and sign with the passkey-derived secp256k1 key
-    const timestamp = Date.now();
-    const claimMessage = {
-      eventId: this.eventId,
-      seriesId,
-      claimer: address.toLowerCase(),
-      timestamp,
-    };
-    const digest = eip712Digest(
-      CLAIM_DOMAIN,
-      "ClaimTicket",
-      CLAIM_TYPES.ClaimTicket,
-      claimMessage,
-    );
-    const signature = signClaimDigest(privateKey, digest);
-
-    try {
-      const body: Record<string, unknown> = { mode: "passkey", address, signature, timestamp };
-      if (encryptedOrder) body.encryptedOrder = encryptedOrder;
-
-      const resp = await this.api.post<unknown>(
-        `/api/events/${this.eventId}/series/${seriesId}/claim`,
-        body,
-      );
-
-      if (!resp.ok) {
-        st.error = (resp.error as string) || "Claim failed";
-      } else if ((resp as Record<string, unknown>).approvalPending) {
-        st.pendingApproval = true;
-        st.orderFormVisible = false;
-      } else {
-        st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
-        st.orderFormVisible = false;
-        this.dispatchEvent(new CustomEvent("woco-claim", {
-          detail: { seriesId, mode: "passkey", address, edition: st.claimedEdition },
-          bubbles: true,
-        }));
-      }
-    } catch {
-      st.error = "Network error";
-    } finally {
-      st.claiming = false;
-      this.updateSeries(seriesId);
-    }
-  }
-
-  private async handleEmailClaim(seriesId: string) {
-    const st = this.seriesStates.get(seriesId);
-    if (!st || st.claiming || !this.api) return;
-
-    const input = this.shadow.querySelector<HTMLInputElement>(
-      `[data-email-input="${CSS.escape(seriesId)}"]`,
-    );
-    const email = input?.value?.trim();
-    if (!email || !email.includes("@")) {
+    const email = validateEmail(st.email);
+    if (!email) {
       st.error = "Enter a valid email address";
       this.updateSeries(seriesId);
       return;
     }
 
-    st.claiming = true;
+    const encryptedOrder = await this.encryptOrderData(seriesId, st, email);
+    if (encryptedOrder === null) return;
+
+    st.busy = true;
     st.error = null;
     this.updateSeries(seriesId);
 
-    // Encrypt order data if form is present
-    const encryptedOrder = await this.encryptOrderData(seriesId, st);
-    if (encryptedOrder === null) { st.claiming = false; return; }
-
     try {
-      const body: Record<string, unknown> = { mode: "email", email };
-      if (encryptedOrder) body.encryptedOrder = encryptedOrder;
-      // The form was rendered, so the opt-out WAS offered — an untouched box is
-      // an explicit refusal (recorded as a suppression), not "never asked".
-      body.marketingConsent = !!this.shadow.querySelector<HTMLInputElement>(
-        `[data-marketing-consent="${CSS.escape(seriesId)}"]`,
-      )?.checked;
-
-      const resp = await this.api.post<unknown>(
-        `/api/events/${this.eventId}/series/${seriesId}/claim`,
-        body,
-      );
-
-      if (!resp.ok) {
-        st.error = (resp.error as string) || "Claim failed";
-      } else if ((resp as Record<string, unknown>).approvalPending) {
-        st.pendingApproval = true;
-        st.orderFormVisible = false;
-      } else {
-        st.claimedEdition = (resp as Record<string, unknown>).edition as number ?? null;
-        st.orderFormVisible = false;
-        this.dispatchEvent(new CustomEvent("woco-claim", {
-          detail: { seriesId, mode: "email", email, edition: st.claimedEdition },
-          bubbles: true,
-        }));
+      // Hold the seats while the buyer is at Stripe — see reserveOutcome for
+      // why every failure short of "Insufficient seats" proceeds without one.
+      const rsv = await this.api.post<{ reservationId: string }>(
+        `/api/events/${this.eventId}/series/${seriesId}/reserve`,
+        { quantity: st.quantity },
+      ).catch(() => null);
+      const outcome = reserveOutcome(rsv);
+      if (outcome.kind === "blocked") {
+        st.error = outcome.message;
+        st.busy = false;
+        this.updateSeries(seriesId);
+        return;
       }
+
+      const body = buildCheckoutBody({
+        eventId: this.eventId,
+        seriesId,
+        claimerEmail: email,
+        quantity: st.quantity,
+        marketingConsent: st.consent,
+        cancelUrl: window.location.href,
+        encryptedOrder,
+        reservationId: outcome.kind === "reserved" ? outcome.reservationId : undefined,
+      });
+
+      const resp = await this.api.post<never>("/api/stripe/create-checkout", body);
+      const url = (resp as Record<string, unknown>).url;
+      if (!resp.ok || typeof url !== "string") {
+        st.error = (resp.error as string) || "Failed to start checkout";
+        st.busy = false;
+        this.updateSeries(seriesId);
+        return;
+      }
+
+      this.dispatchEvent(new CustomEvent("woco-checkout", {
+        detail: { seriesId, quantity: st.quantity },
+        bubbles: true,
+      }));
+
+      // Navigate the TOP window: Stripe Checkout refuses to render framed, so
+      // inside the /embed/frame iframe the frame itself must not navigate.
+      // Cross-origin top navigation is permitted under the click's transient
+      // user activation; the fallback covers a sandboxed host page without
+      // allow-top-navigation. href assignment (not replace) keeps the
+      // organiser's page in history so Back from Stripe returns to it.
+      try {
+        (window.top ?? window).location.href = url;
+      } catch {
+        window.location.href = url;
+      }
+      // Deliberately leave st.busy = true — we are navigating away.
     } catch {
       st.error = "Network error";
-    } finally {
-      st.claiming = false;
+      st.busy = false;
       this.updateSeries(seriesId);
     }
   }
@@ -1009,7 +677,7 @@ export class WocoTickets extends HTMLElement {
   /**
    * Escape for interpolation into HTML — including into a double-quoted
    * ATTRIBUTE, which is how most call sites here use it (`data-series="..."`,
-   * `data-passkey-create="..."`). `textContent`→`innerHTML` alone escapes only
+   * `data-buy="..."`). `textContent`→`innerHTML` alone escapes only
    * `& < >`, so a value containing a double quote could close the attribute and
    * open a new one; that is enough to inject an event handler without ever
    * needing a `<`. The strings interpolated are event/series fields fetched from

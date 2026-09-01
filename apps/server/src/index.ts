@@ -395,7 +395,6 @@ app.post("/api/payment/quote", async (c) => {
 // Serve embed iframe frame page
 app.get("/embed/frame/:eventId", (c) => {
   const eventId = c.req.param("eventId").replace(/[^a-zA-Z0-9\-]/g, "");
-  const claimMode = (c.req.query("claim-mode") || "both").replace(/[^a-z]/g, "");
   const theme = (c.req.query("theme") || "dark").replace(/[^a-z]/g, "");
   const showImage = c.req.query("show-image") !== "false" ? "true" : "false";
   const showDesc = c.req.query("show-description") !== "false" ? "true" : "false";
@@ -409,11 +408,10 @@ app.get("/embed/frame/:eventId", (c) => {
   <style>* { margin: 0; padding: 0; box-sizing: border-box; } html, body { background: transparent; }</style>
 </head>
 <body>
-  <script src="${apiUrl}/embed/woco-embed.js?v=7"><\/script>
+  <script src="${apiUrl}/embed/woco-embed.js?v=8"><\/script>
   <woco-tickets
     event-id="${eventId}"
     api-url="${apiUrl}"
-    claim-mode="${claimMode}"
     theme="${theme}"
     show-image="${showImage}"
     show-description="${showDesc}"
