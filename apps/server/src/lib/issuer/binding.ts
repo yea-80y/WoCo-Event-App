@@ -46,19 +46,32 @@ import { writeJsonAtomic } from "../marketing/persist.js";
 const STORE_FILE = join(process.cwd(), ".data", "issuer-bindings.json");
 
 export interface IssuerBindingRecord {
-  /** The pinned issuing ADDRESS (0x + 40 lowercase hex). */
+  /** The pinned issuing ADDRESS (0x + 40 lowercase hex) — the CURRENT generation's. */
   issuer: string;
-  /** Issuing-key generation — 0 until the registry ships (5b). */
+  /** Current issuing-key generation (bumped by registry rotations, PR 5b). */
   gen: number;
   /** The proof-of-possession signature that pinned it, kept as evidence. */
   sig: string;
   boundAt: string;
-  /** Which create pinned it first: "event-create" | "pod-mint". */
+  /** What pinned it: "event-create" | "pod-mint" | "issuer-statement" | "rotation". */
   source: string;
+  /** Issuing addresses this parent ROTATED AWAY FROM — refused everywhere a
+   *  current issuer is expected, and the gate write boundary refuses badges
+   *  whose manifest names one (the leaked-key containment seam, PR 5b). */
+  retiredIssuers?: string[];
 }
 
 let bindings = new Map<string, IssuerBindingRecord>();
+/** Flat view of every parent's retiredIssuers, for O(1) refusals. */
+let retired = new Set<string>();
 let loaded = false;
+
+function rebuildRetired(): void {
+  retired = new Set();
+  for (const rec of bindings.values()) {
+    for (const r of rec.retiredIssuers ?? []) retired.add(r);
+  }
+}
 
 function ensureLoaded(): void {
   if (loaded) return;
@@ -66,6 +79,7 @@ function ensureLoaded(): void {
   try {
     const obj = JSON.parse(readFileSync(STORE_FILE, "utf-8")) as Record<string, IssuerBindingRecord>;
     if (obj && typeof obj === "object") bindings = new Map(Object.entries(obj));
+    rebuildRetired();
   } catch {
     // File doesn't exist yet — that's fine.
   }
@@ -96,7 +110,7 @@ export function verifyAndPinIssuerBinding(
   parentAddress: string,
   binding: unknown,
   manifestIssuers: readonly string[],
-  source: "event-create" | "pod-mint",
+  source: "event-create" | "pod-mint" | "issuer-statement",
 ): BindingVerdict {
   const parent = parentAddress.toLowerCase();
 
@@ -107,10 +121,8 @@ export function verifyAndPinIssuerBinding(
   if (!isIssuerAddress(b.issuer)) {
     return { ok: false, error: "issuerBinding.issuer must be a 0x-prefixed lowercase 20-byte address" };
   }
-  // Gen-0 only until the registry (5b) exists: a gen > 0 binding would claim a
-  // rotation nothing can anchor or audit yet. Refusing is the honest answer.
-  if (b.gen !== 0) {
-    return { ok: false, error: "issuerBinding.gen must be 0 — generation rotation arrives with the issuer registry" };
+  if (typeof b.gen !== "number" || !Number.isInteger(b.gen) || b.gen < 0) {
+    return { ok: false, error: "issuerBinding.gen must be a non-negative integer" };
   }
 
   let message: string;
@@ -141,26 +153,79 @@ export function verifyAndPinIssuerBinding(
 
   ensureLoaded();
   const existing = bindings.get(parent);
-  if (existing && existing.issuer !== b.issuer) {
-    // Seed-derived keys cannot legitimately diverge for one account at gen 0.
-    // This firing means a client bug or the seed-divergence class — surface it.
-    return {
-      ok: false,
-      error:
-        "this account is already bound to a different issuer address — refusing to record a second issuer identity",
-    };
+  if (existing) {
+    // The pinned record is the truth about this account's CURRENT generation.
+    // A binding for another generation is a stale or premature client, and a
+    // binding for another issuer at the current generation is either a client
+    // bug or the seed-divergence class — both surface loudly.
+    if (b.gen !== existing.gen) {
+      return {
+        ok: false,
+        error: `this account's issuing key is at generation ${existing.gen} — the create must bind the current generation`,
+      };
+    }
+    if (b.issuer !== existing.issuer) {
+      return {
+        ok: false,
+        error:
+          "this account is already bound to a different issuer address — refusing to record a second issuer identity",
+      };
+    }
+    return { ok: true };
   }
-  if (!existing) {
-    bindings.set(parent, {
-      issuer: b.issuer,
-      gen: 0,
-      sig: b.sig as string,
-      boundAt: new Date().toISOString(),
-      source,
-    });
-    persist();
+  // No record: an account with no rotation history starts at generation 0.
+  if (b.gen !== 0) {
+    return { ok: false, error: "issuerBinding.gen must be 0 — an account with no rotation history starts at generation 0" };
   }
+  bindings.set(parent, {
+    issuer: b.issuer,
+    gen: 0,
+    sig: b.sig as string,
+    boundAt: new Date().toISOString(),
+    source,
+  });
+  persist();
   return { ok: true };
+}
+
+/**
+ * Apply a REGISTRY-VERIFIED rotation: bump the pinned record to the new
+ * generation and retire the outgoing issuer. The caller
+ * (`lib/issuer/registry.ts`) has already verified the parent-signed statement,
+ * the PoP and the sequencing — this only mutates state, and refuses rather
+ * than guesses if called out of order.
+ */
+export function applyIssuerRotation(
+  parentAddress: string,
+  newIssuer: string,
+  newGen: number,
+  bindingSig: string,
+): BindingVerdict {
+  ensureLoaded();
+  const parent = parentAddress.toLowerCase();
+  const existing = bindings.get(parent);
+  if (!existing || newGen !== existing.gen + 1) {
+    return { ok: false, error: "rotation out of order — the pinned record does not precede this generation" };
+  }
+  bindings.set(parent, {
+    issuer: newIssuer,
+    gen: newGen,
+    sig: bindingSig,
+    boundAt: new Date().toISOString(),
+    source: "rotation",
+    retiredIssuers: [...(existing.retiredIssuers ?? []), existing.issuer],
+  });
+  rebuildRetired();
+  persist();
+  return { ok: true };
+}
+
+/** Has ANY parent rotated away from this issuing address? Refused at the gate
+ *  write boundary — a badge under a retired key is a badge a leaked key could
+ *  have minted after the bump. */
+export function isRetiredIssuer(issuer: string): boolean {
+  ensureLoaded();
+  return retired.has(issuer.toLowerCase());
 }
 
 /** The pinned binding for a parent, if any (lowercased lookup). */
@@ -172,5 +237,6 @@ export function getIssuerBinding(parentAddress: string): IssuerBindingRecord | n
 /** Test seam — the store is process-lifetime state. */
 export function _resetIssuerBindings(): void {
   bindings = new Map();
+  retired = new Set();
   loaded = true;
 }
