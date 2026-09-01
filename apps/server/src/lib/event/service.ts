@@ -61,6 +61,32 @@ export interface CreateProgress {
   message: string;
 }
 
+/**
+ * Pure per-series manifest validation for the TICKET rail's write boundary.
+ * This is the only signature check that rail ever runs — the charge-time
+ * binding (onchain-binding.ts) compares digests, deliberately not signatures —
+ * so a regression here is caught by nothing downstream. Extracted from
+ * `createEventV2`'s loop so it can be tested at the seam (the certificate
+ * rail's twin lives in issuance.ts and has its own tests).
+ */
+export function validateSeriesManifest(s: {
+  seriesId: string;
+  totalSupply: number;
+  signedManifest: SignedManifestV1;
+  podBodies: PodV2Body[];
+}): void {
+  if (s.podBodies.length !== s.totalSupply) {
+    throw new Error(`Series ${s.seriesId}: expected ${s.totalSupply} pod bodies, got ${s.podBodies.length}`);
+  }
+  if (!verifySignedManifest(s.signedManifest)) {
+    throw new Error(`Series ${s.seriesId}: manifest signature invalid`);
+  }
+  const { root } = buildPodTree(s.podBodies);
+  if (root.toLowerCase() !== s.signedManifest.body.metadataRoot.toLowerCase()) {
+    throw new Error(`Series ${s.seriesId}: Merkle root mismatch — edition bodies don't match manifest`);
+  }
+}
+
 export async function createEventV2(opts: {
   eventId: string;
   title: string;
@@ -128,19 +154,10 @@ export async function createEventV2(opts: {
 
   // ── Validate all manifests before touching Swarm ─────────────────────
   for (const s of series) {
-    if (s.podBodies.length !== s.totalSupply) {
-      throw new Error(`Series ${s.seriesId}: expected ${s.totalSupply} pod bodies, got ${s.podBodies.length}`);
-    }
-    if (!verifySignedManifest(s.signedManifest)) {
-      throw new Error(`Series ${s.seriesId}: manifest signature invalid`);
-    }
-    const { root } = buildPodTree(s.podBodies);
-    if (root.toLowerCase() !== s.signedManifest.body.metadataRoot.toLowerCase()) {
-      throw new Error(`Series ${s.seriesId}: Merkle root mismatch — pod bodies don't match manifest`);
-    }
-    // Chain-validate any POD gate at the write boundary so enforcement can trust
+    validateSeriesManifest(s);
+    // Chain-validate any gate at the write boundary so enforcement can trust
     // the stored gate (manifestRef↔eventId binding verified on-chain). See
-    // validatePodGate — closes the silent-wrong-POD gap.
+    // validatePodGate — closes the silent wrong-badge gap.
     if (s.gate) {
       const v = await validatePodGate(s.gate);
       if (!v.ok) throw new Error(`Series ${s.seriesId}: invalid POD gate — ${v.error}`);
