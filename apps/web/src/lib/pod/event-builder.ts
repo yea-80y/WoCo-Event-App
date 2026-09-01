@@ -1,4 +1,5 @@
 import { keccak256, AbiCoder } from "ethers";
+import { asIssuerPubkeyV1 } from "@woco/shared";
 import type { PodV2Body, SignedManifestV1 } from "@woco/shared";
 import { sealManifest } from "./seal.js";
 
@@ -79,9 +80,9 @@ export function buildEventManifests(opts: BuildEventManifestsOpts): SeriesManife
   } = opts;
 
   // ed25519 pubkey without 0x prefix (convention in pod types)
-  const issuer = creatorPodPublicKeyHex.startsWith("0x")
-    ? creatorPodPublicKeyHex.slice(2)
-    : creatorPodPublicKeyHex;
+  const issuer = asIssuerPubkeyV1(
+    creatorPodPublicKeyHex.startsWith("0x") ? creatorPodPublicKeyHex.slice(2) : creatorPodPublicKeyHex,
+  );
 
   const mintedAt = opts.mintedAt ?? new Date().toISOString();
 

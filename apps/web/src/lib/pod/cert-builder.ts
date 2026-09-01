@@ -27,6 +27,7 @@
  */
 
 import type { PodV2Body, SignedManifestV1 } from "@woco/shared";
+import { asIssuerPubkeyV1 } from "@woco/shared";
 import { predictOnChainEventId } from "./event-builder.js";
 import { sealManifest } from "./seal.js";
 
@@ -92,9 +93,11 @@ export interface BuildCertBadgeManifestOpts {
  * holder and are verified against `issuerPubkey`.
  */
 export function buildCertBadgeManifest(opts: BuildCertBadgeManifestOpts): CertBadgeManifest {
-  const issuer = opts.creatorPodPublicKeyHex.startsWith("0x")
-    ? opts.creatorPodPublicKeyHex.slice(2)
-    : opts.creatorPodPublicKeyHex;
+  const issuer = asIssuerPubkeyV1(
+    opts.creatorPodPublicKeyHex.startsWith("0x")
+      ? opts.creatorPodPublicKeyHex.slice(2)
+      : opts.creatorPodPublicKeyHex,
+  );
 
   if (!Number.isInteger(opts.cap) || opts.cap < 1) {
     throw new Error(`a certificate badge needs an integer cap of at least 1, got ${opts.cap}`);

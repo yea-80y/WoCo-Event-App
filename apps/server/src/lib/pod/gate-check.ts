@@ -18,7 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  PodGate, PodGateGroup, Hex0x, Hex32, GateEvalContext, GatePhase, PodHolding,
+  PodGate, PodGateGroup, Hex0x, HolderPubkey, GateEvalContext, GatePhase, PodHolding,
   PodCertPresentation, PodCertChallengeExpectation,
 } from "@woco/shared";
 import {
@@ -49,7 +49,7 @@ export interface GateEvidence {
    * actually claiming, or a cooperative holder can answer challenges for
    * strangers. The certificate-rail twin of the wallet-must-be-the-claimer rule.
    */
-  expectedHolder: Hex32;
+  expectedHolder: HolderPubkey;
 }
 
 export interface GateDecision {

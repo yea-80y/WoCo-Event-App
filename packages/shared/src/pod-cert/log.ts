@@ -28,7 +28,7 @@
 
 import { LAST_VERSION_IN_BAND } from "../statement/discipline.js";
 import { SOC_MAX_PAYLOAD_SIZE } from "../swarm/soc.js";
-import type { Hex32 } from "../pod/types.js";
+import type { HolderPubkey, IssuerPubkeyV1 } from "../crypto/brands.js";
 import { jsonByteLength, validatePodCertV1, verifyPodCert, type PodCertV1 } from "./types.js";
 
 export const POD_CERT_LOG_FORMAT = "woco.pod-cert-log.v1" as const;
@@ -111,7 +111,7 @@ export function packPodCertLogPages(certs: readonly PodCertV1[]): PodCertLogPage
  * not hide the holders alongside it. Returns empty for a page that is not a
  * well-formed log page at all.
  */
-export function verifyPodCertLogPage(value: unknown, issuerPubkey: Hex32): PodCertV1[] {
+export function verifyPodCertLogPage(value: unknown, issuerPubkey: IssuerPubkeyV1): PodCertV1[] {
   if (!validatePodCertLogPageV1(value)) return [];
   return value.certs.filter((c) => verifyPodCert(c, issuerPubkey));
 }
@@ -124,9 +124,9 @@ export function verifyPodCertLogPage(value: unknown, issuerPubkey: Hex32): PodCe
  * re-signs when a holder rotates keys or a date was wrong, and counting
  * certificates would inflate. Presence, not quantity, all the way through.
  */
-export function holdersFromLogPages(pages: readonly PodCertV1[][]): Hex32[] {
+export function holdersFromLogPages(pages: readonly PodCertV1[][]): HolderPubkey[] {
   const seen = new Set<string>();
-  const out: Hex32[] = [];
+  const out: HolderPubkey[] = [];
   for (const page of pages) {
     for (const cert of page) {
       if (seen.has(cert.holder)) continue;

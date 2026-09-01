@@ -23,7 +23,7 @@
    *    written, and the probe counters — are printed verbatim, so an operator
    *    verifies from the screen rather than from devtools.
    */
-  import type { PodDirectoryEntry, SignedManifestV1, Hex0x, Hex32 } from "@woco/shared";
+  import type { PodDirectoryEntry, SignedManifestV1, Hex0x, HolderPubkey } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { getAttendeeKeys, updatePod, type AttendeeKeyRow } from "../../api/pod.js";
   import { getEventsByCreator, getEventOrders } from "../../api/events.js";
@@ -57,7 +57,7 @@
 
   let manifest = $state<SignedManifestV1 | null>(null);
   /** Distinct holders the log already carries. */
-  let existing = $state<Hex32[]>([]);
+  let existing = $state<HolderPubkey[]>([]);
   let source = $state<"paste" | "event">("paste");
   let pasteText = $state("");
 

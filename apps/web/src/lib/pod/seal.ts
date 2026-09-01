@@ -34,7 +34,7 @@ import type {
   ManifestV1Body,
   SignedManifestV1,
   Bytes32Hex,
-  Hex32,
+  IssuerPubkeyV1,
 } from "@woco/shared";
 
 export interface SealedManifest {
@@ -60,7 +60,7 @@ export interface SealManifestOpts {
    */
   totalSupply: number;
   /** ed25519 issuer pubkey, hex, no 0x. Must be `podPrivateKey`'s public half. */
-  issuer: Hex32;
+  issuer: IssuerPubkeyV1;
   podPrivateKey: Uint8Array;
 }
 
