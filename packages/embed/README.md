@@ -14,9 +14,12 @@ Two standalone IIFE bundles for organiser pages outside the platform:
 
 There is **no separate embed deploy**. The API server serves
 `packages/embed/dist/woco-embed.js` at `GET /embed/woco-embed.js` straight off
-its filesystem, so the embed ships with the normal server deploy — build it
-first (`npm run build:embed` at the repo root) and the files ride along inside
-the server image. The iframe variant (`GET /embed/frame/:eventId`) is a page
+its filesystem, and the server's Docker image runs `npm run build:embed`
+itself (`apps/server/Dockerfile`) — which is why the deploy sync excludes
+`packages/embed/dist`. The embed therefore ships with the normal server
+deploy and nothing else. (Local dev serves the same path, so run
+`npm run build:embed` once locally or the route 404s with a build hint.)
+The iframe variant (`GET /embed/frame/:eventId`) is a page
 the server renders around the same bundle; its one inline script lives in
 `apps/server/src/lib/http/security-headers.ts`, where its CSP hash is computed
 from the constant so the two cannot drift.
