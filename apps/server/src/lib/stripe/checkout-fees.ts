@@ -1,7 +1,8 @@
 /**
  * Card-checkout fee arithmetic — one place, because Organiser Terms §6 states
- * this structure contractually and the buyer receipt (apps/web claim/fees.ts)
- * mirrors it. Change all three together.
+ * this structure contractually and the buyer receipt (packages/shared
+ * event/fees.ts, rendered by the web app and the embed) mirrors it. Change
+ * all three together.
  *
  * The organiser chooses per series: pass a booking fee to the buyer
  * (`feePassedToCustomer`, `buyerFeePercent` ≥ floor, default 10%) and keep the

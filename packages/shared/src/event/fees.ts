@@ -1,6 +1,12 @@
-import type { PaymentConfig } from "@woco/shared";
-import { PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT } from "@woco/shared";
-import { CURRENCY_SYMBOLS } from "./helpers.js";
+import type { PaymentConfig } from "./types.js";
+import { PLATFORM_FEE_BP } from "./types.js";
+import { FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT } from "../features.js";
+
+export const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: "$",
+  GBP: "£",
+  EUR: "€",
+};
 
 export interface BuyerFees {
   qty: number;

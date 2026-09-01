@@ -1,11 +1,5 @@
 import type { OrderField } from "@woco/shared";
 
-export const CURRENCY_SYMBOLS: Record<string, string> = {
-  USD: "$",
-  GBP: "\u00a3",
-  EUR: "\u20ac",
-};
-
 /**
  * Synchronously compute the initial Stripe-success state at script-init time
  * (BEFORE the first render). The URL hash is the canonical signal of a fresh

@@ -10,6 +10,7 @@ export * from "./event/tags.js";
 export * from "./event/geo.js";
 export * from "./event/snapshot.js";
 export * from "./event/jsonld.js";
+export * from "./event/fees.js";
 export * from "./crypto/index.js";
 export * from "./recovery/types.js";
 export * from "./recovery/guardian-index.js";

@@ -5,7 +5,7 @@
     TRANSACTIONAL_EMAIL_NOTICE,
     CHECKOUT_PRIVACY_SUMMARY,
   } from "@woco/shared";
-  import type { BuyerFees } from "./fees.js";
+  import type { BuyerFees } from "@woco/shared";
 
   // Stripe-only: the form collects the organiser's order fields (+ a buyer
   // email when needed) ahead of the checkout redirect. The direct wallet/email
