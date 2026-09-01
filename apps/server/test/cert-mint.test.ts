@@ -9,28 +9,21 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Hex0x, ManifestV1Body, PodV2Body } from "@woco/shared";
-import { buildPodTree, signManifest } from "@woco/shared";
+import type { EditionV1Body, Hex0x, ManifestV2Body } from "@woco/shared";
+import { buildEditionTree, issuingAddress, signManifestV2 } from "@woco/shared";
 import { issuePodType } from "../src/lib/pod/issuance.js";
 
-/**
- * The fixture keypair, with the public half written out rather than derived.
- * This workspace resolves an older `@noble/curves` that does not export
- * `/ed25519.js`, so a server test cannot import the curve directly — and every
- * signing primitive it needs is re-exported from `@woco/shared` anyway, which
- * resolves its own. Verified against `ed25519.getPublicKey(fill(7))`.
- */
+/** The issuing key (secp256k1) — its ADDRESS is the v2 issuer identity. */
 const ISSUER_PRIV = new Uint8Array(32).fill(7);
-const ISSUER = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+const ISSUER = issuingAddress(ISSUER_PRIV);
 const CREATOR = "0x1111111111111111111111111111111111111111" as Hex0x;
 const LOG_OWNER = "0x2222222222222222222222222222222222222222" as Hex0x;
 const CAP = 500;
 
 /** The single real template body a certificate badge commits to. */
-function templateBody(seriesId = "cert-badge-1", edition = 1): PodV2Body {
+function templateBody(seriesId = "cert-badge-1", edition = 1): EditionV1Body {
   return {
-    format: "woco.ticket.v2",
-    eventId: `0x${"11".repeat(32)}`,
+    format: "woco.edition.v1",
     seriesId,
     edition,
     metadata: { name: "Century Rider", description: "100 laps" },
@@ -38,18 +31,17 @@ function templateBody(seriesId = "cert-badge-1", edition = 1): PodV2Body {
   };
 }
 
-function manifestFor(bodies: PodV2Body[], totalSupply = CAP) {
-  const { root } = buildPodTree(bodies);
-  const body: ManifestV1Body = {
-    format: "woco.manifest.v1",
-    eventId: `0x${"11".repeat(32)}`,
+function manifestFor(bodies: EditionV1Body[], totalSupply = CAP) {
+  const { root } = buildEditionTree(bodies);
+  const body: ManifestV2Body = {
+    format: "woco.manifest.v2",
     totalSupply,
-    issuerPubkey: ISSUER,
+    issuer: ISSUER,
     metadataRoot: root,
     encoding: "cbor-v1",
     treeScheme: "oz-simple-v1",
   };
-  return signManifest(body, ISSUER_PRIV);
+  return signManifestV2(body, ISSUER_PRIV);
 }
 
 function certOpts(over: Record<string, unknown> = {}) {
@@ -62,7 +54,7 @@ function certOpts(over: Record<string, unknown> = {}) {
     holdingSource: "pod-cert" as const,
     certLogOwner: LOG_OWNER,
     signedManifest: manifestFor(bodies),
-    podBodies: bodies,
+    editionBodies: bodies,
     ...over,
   };
 }
@@ -83,8 +75,8 @@ test("a certificate badge commits to exactly one template body, not one per unit
   // reads. The cap lives in the manifest's totalSupply instead.
   const many = [templateBody("a", 1), templateBody("a", 2)];
   await assert.rejects(
-    () => issuePodType(certOpts({ podBodies: many, signedManifest: manifestFor(many) })),
-    /exactly 1 template pod body, got 2/,
+    () => issuePodType(certOpts({ editionBodies: many, signedManifest: manifestFor(many) })),
+    /exactly 1 template edition body, got 2/,
   );
 });
 
@@ -94,7 +86,7 @@ test("the single template body is a REAL leaf — a mismatched root is still ref
   // special case for this rail.
   const bodies = [templateBody()];
   await assert.rejects(
-    () => issuePodType(certOpts({ podBodies: bodies, signedManifest: manifestFor([templateBody("other")]) })),
+    () => issuePodType(certOpts({ editionBodies: bodies, signedManifest: manifestFor([templateBody("other")]) })),
     /Merkle root mismatch/,
   );
 });
@@ -102,7 +94,7 @@ test("the single template body is a REAL leaf — a mismatched root is still ref
 test("the manifest's totalSupply must be the declared cap", async () => {
   const bodies = [templateBody()];
   await assert.rejects(
-    () => issuePodType(certOpts({ podBodies: bodies, signedManifest: manifestFor(bodies, 7) })),
+    () => issuePodType(certOpts({ editionBodies: bodies, signedManifest: manifestFor(bodies, 7) })),
     /totalSupply does not match/,
   );
 });
@@ -111,7 +103,33 @@ test("a tampered manifest signature is refused on this rail too", async () => {
   const bodies = [templateBody()];
   const signed = manifestFor(bodies);
   await assert.rejects(
-    () => issuePodType(certOpts({ podBodies: bodies, signedManifest: { ...signed, body: { ...signed.body, totalSupply: CAP } , signature: `${"0".repeat(128)}` } })),
+    () =>
+      issuePodType(
+        certOpts({
+          editionBodies: bodies,
+          signedManifest: { ...signed, signature: `0x${"00".repeat(64)}1b` },
+        }),
+      ),
+    /Manifest signature invalid/,
+  );
+});
+
+test("a legacy woco.manifest.v1 object is REFUSED at dispatch — the v1 cutoff", async () => {
+  const bodies = [templateBody()];
+  const v1Shaped = {
+    body: {
+      format: "woco.manifest.v1",
+      eventId: `0x${"11".repeat(32)}`,
+      totalSupply: CAP,
+      issuerPubkey: "ab".repeat(32),
+      metadataRoot: `0x${"22".repeat(32)}`,
+      encoding: "cbor-v1",
+      treeScheme: "oz-simple-v1",
+    },
+    signature: "cd".repeat(64),
+  };
+  await assert.rejects(
+    () => issuePodType(certOpts({ editionBodies: bodies, signedManifest: v1Shaped })),
     /Manifest signature invalid/,
   );
 });

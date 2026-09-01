@@ -668,8 +668,8 @@ stripe.post("/create-checkout", async (c) => {
     // anchor: `swarmManifestRef` is creator-controlled, so an attacker can
     // point it at the VICTIM's public, content-addressed blob and the
     // recomputed digest matches the victim's event exactly. No forgery needed.
-    // `verifySignedManifest` does not help — it verifies against `issuerPubkey`
-    // embedded in the blob, and nothing binds that key to `creatorAddress`.
+    // `verifyManifestV2` does not help — it verifies against the `issuer`
+    // address embedded in the blob, which the blob itself supplies.
     //
     // `byEventSeries` is different in kind: written by `recordOnChainEventId`
     // at registration, before the feed merge, and every legitimate setter

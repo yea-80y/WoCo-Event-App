@@ -69,3 +69,15 @@ test("a v1 woco.ticket.v2 body is refused at dispatch, not hashed", () => {
     "a v1 ticket body passed the v2 inclusion verifier — the dispatch refusal is gone",
   );
 });
+
+test("scale: a 1000-edition tree builds and spot-checked editions verify", () => {
+  // Carried over from the deleted v1 suite: real events sell at this scale,
+  // and tree-shape bugs (unbalanced non-power-of-2 handling) only appear
+  // above toy sizes.
+  const list = bodies(1000);
+  const { tree, root } = buildEditionTree(list);
+  for (const edition of [1, 2, 499, 500, 501, 999, 1000]) {
+    const body = list[edition - 1]!;
+    assert.ok(verifyEditionInclusion(body, proveEdition(tree, body), root), `edition ${edition}`);
+  }
+});

@@ -39,7 +39,22 @@ import {
   asHolderPubkey,
   type IssuerAddress,
 } from "../../src/crypto/brands.js";
-import { signPodCert } from "../../src/pod-cert/types.js";
+import * as dagCbor from "@ipld/dag-cbor";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
+
+/**
+ * Test-local v1 pod-cert signer — the production v1 sign path is DELETED
+ * (PR 5a); this replica keeps the dispatch refusal below facing a
+ * VALIDLY-SIGNED legacy certificate. Recipe frozen as it shipped:
+ * ed25519 over keccak256("woco-pod-cert-v1\n" || dagCbor(unsigned)).
+ */
+function signPodCertV1(unsigned: Record<string, unknown>, priv: Uint8Array) {
+  const digest = keccak_256(
+    new Uint8Array([...utf8ToBytes("woco-pod-cert-v1\n"), ...dagCbor.encode(unsigned)]),
+  );
+  return { ...unsigned, issuerSig: bytesToHex(ed25519.sign(digest, priv)) };
+}
 import { signCreditStatement, creditSubject } from "../../src/credit/types.js";
 
 /** The same fixed seed test/crypto/issuing.test.ts pins its golden vectors to. */
@@ -292,11 +307,9 @@ test("a well-formed woco.pod-cert.v1 certificate is refused — dispatch, not si
   // dispatch fails them whole, before any curve is chosen. That refusal IS the
   // curve migration's cutoff.
   const v1IssuerPriv = new Uint8Array(32).fill(7);
-  const v1Issuer = bytesToHex(ed25519.getPublicKey(v1IssuerPriv));
-  const legacy = signPodCert(
+  const legacy = signPodCertV1(
     { format: "woco.pod-cert.v1", badge: BADGE, holder: HOLDER, issuedAt: "2026-08-20" },
     v1IssuerPriv,
-    v1Issuer,
   );
 
   assert.ok(!validateCertV1(legacy), "a v1 certificate is not a v2 certificate");

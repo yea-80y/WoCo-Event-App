@@ -8,18 +8,18 @@
 // (so the POD gets an on-chain eventId + slot space → holdable + gateable), and
 // upsert the creator's POD directory entry.
 //
-// The manifest is signed CLIENT-side by the creator's ed25519 POD key (same as
-// events); this server path never holds that key. The on-chain `eventId` is
-// keccak256(sponsor, sponsorNonce) — informational `eventId` baked into the pod
-// bodies never matches it (true for events too), so the AUTHORITATIVE eventId is
-// the one emitted by registerEvent and stored on the directory entry; that is
-// what the holdings reader keys on.
+// The manifest is signed CLIENT-side by the creator's derived secp256k1
+// ISSUING key (same as events; v2 formats since PR 5a); this server path never
+// holds that key. The route verifies + pins the issuer binding (PoP) BEFORE
+// calling here. The on-chain `eventId` is keccak256(sponsor, sponsorNonce) —
+// the AUTHORITATIVE eventId is the one emitted by registerEvent and stored on
+// the directory entry; that is what the holdings reader keys on.
 // ---------------------------------------------------------------------------
 
 import type {
-  Hex0x, Hex64, PodDirectoryEntry, SignedManifestV1, PodV2Body, SeriesManifestBlob,
+  Hex0x, Hex64, PodDirectoryEntry, SignedManifestV2, EditionV1Body, SeriesManifestBlob,
 } from "@woco/shared";
-import { verifySignedManifest, buildPodTree, manifestDigest, bytesToHex0x } from "@woco/shared";
+import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { upsertCreatorPod } from "./directory.js";
@@ -61,10 +61,10 @@ export interface IssuePodOpts {
   /** References a `PodCategory.id` in the creator's directory. */
   categoryId?: string;
   supply: number;
-  /** Client-built, ed25519-signed by the creator's POD key. */
-  signedManifest: SignedManifestV1;
-  /** The supply pre-signed pod bodies committed to by the manifest's Merkle root. */
-  podBodies: PodV2Body[];
+  /** Client-built, personal-signed by the creator's derived issuing key. */
+  signedManifest: SignedManifestV2;
+  /** The edition bodies committed to by the manifest's Merkle root. */
+  editionBodies: EditionV1Body[];
   /** Display artwork — a Swarm ref already uploaded by the client (no 0x). */
   image?: Hex64;
 }
@@ -76,7 +76,7 @@ export interface IssuePodOpts {
  * write here, not the fire-and-forget it is for tickets).
  */
 export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntry> {
-  const { creatorAddress, kind, name, description, categoryId, supply, signedManifest, podBodies, image } = opts;
+  const { creatorAddress, kind, name, description, categoryId, supply, signedManifest, editionBodies, image } = opts;
   const certSourced = opts.holdingSource === "pod-cert";
 
   // ── Holdings/gating on the CHAIN rail is a WoCoEventV2 feature — refuse to
@@ -104,19 +104,20 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
   //    template body carrying the badge's display metadata: a genuine leaf of a
   //    genuine (degenerate) tree under the locked scheme, so `metadataRoot` is
   //    an honest commitment to bytes that exist and are fetchable, and
-  //    `verifySignedManifest` needs no special case. ─────────────────────────
+  //    `verifyManifestV2` needs no special case. (It also dispatch-refuses
+  //    `woco.manifest.v1` whole — the v1 cutoff on this rail.) ──────────────
   const expectedBodies = certSourced ? 1 : supply;
-  if (podBodies.length !== expectedBodies) {
+  if (editionBodies.length !== expectedBodies) {
     throw new Error(
       certSourced
-        ? `A certificate badge commits to exactly 1 template pod body, got ${podBodies.length}`
-        : `Expected ${supply} pod bodies, got ${podBodies.length}`,
+        ? `A certificate badge commits to exactly 1 template edition body, got ${editionBodies.length}`
+        : `Expected ${supply} edition bodies, got ${editionBodies.length}`,
     );
   }
-  if (!verifySignedManifest(signedManifest)) {
+  if (!verifyManifestV2(signedManifest)) {
     throw new Error("Manifest signature invalid");
   }
-  const { root } = buildPodTree(podBodies);
+  const { root } = buildEditionTree(editionBodies);
   if (root.toLowerCase() !== signedManifest.body.metadataRoot.toLowerCase()) {
     throw new Error("Merkle root mismatch — pod bodies don't match manifest");
   }
@@ -135,13 +136,13 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
 
   // ── Upload pod bodies + the SeriesManifestBlob to Swarm. ──────────────────
   const podRefs: Hex64[] = [];
-  for (let i = 0; i < podBodies.length; i += BATCH) {
-    const batch = podBodies.slice(i, i + BATCH);
+  for (let i = 0; i < editionBodies.length; i += BATCH) {
+    const batch = editionBodies.slice(i, i + BATCH);
     const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p))));
     podRefs.push(...batchRefs);
   }
 
-  const manifestRef = bytesToHex0x(manifestDigest(signedManifest.body)); // 0x-prefixed bytes32
+  const manifestRef = bytesToHex0x(manifestV2Digest(signedManifest.body)); // 0x-prefixed bytes32
   const blob: SeriesManifestBlob = { v: 2, signedManifest, podRefs, manifestDigestHex: manifestRef };
   const swarmManifestRef = await uploadToBytes(JSON.stringify(blob));
 
@@ -211,7 +212,9 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
     ...(categoryId ? { categoryId } : {}),
     supply,
     issuedCount: 0,
-    issuer: signedManifest.body.issuerPubkey,
+    // v2: the 20-byte issuing ADDRESS — still the unverified display mirror
+    // the entry has always carried, never a trust input.
+    issuer: signedManifest.body.issuer,
     // A certificate badge has no chain registration, so it carries neither
     // coordinate. `PodDirectoryEntry` already documents both as present only
     // once on-chain registration confirms — this is the case that optionality

@@ -7,10 +7,10 @@
  * boundary) is the class these exist to kill: brands catch KIND confusion at
  * compile time; the constructors catch VALUE defects where JSON enters.
  *
- * Rules the constructors enforce — REFUSE, never normalise. The lenient
- * strip-and-case-fold path inside `verifySignedManifest` is exactly the trap
- * door.test.ts documents; boundaries must reject non-canonical input so a
- * producer bug is caught at ingestion, not laundered into the store.
+ * Rules the constructors enforce — REFUSE, never normalise. The v1 rail's
+ * lenient strip-and-case-fold verify path (deleted in 5a) was exactly the
+ * trap; boundaries must reject non-canonical input so a producer bug is
+ * caught at ingestion, not laundered into the store.
  *
  * `IssuerAddress` is defined here ahead of PR 3 (nothing constructs one yet):
  * the v2 issuer identity is a 20-byte eth address — shape-distinct from every
