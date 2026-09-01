@@ -19,6 +19,7 @@ export * from "./pod/types.js";
 export * from "./pod/topics.js";
 export * from "./pod/gate.js";
 export * from "./pod/merkle.js";
+export * from "./crypto/hex.js";
 export * from "./edition/index.js";
 export * from "./ticket/canonical.js";
 export * from "./checkin/types.js";

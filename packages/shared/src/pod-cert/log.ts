@@ -26,9 +26,7 @@
  * NOTHING HERE CHANGES `woco.pod-cert.v1`. Certificates nest byte-identical.
  */
 
-import { LAST_VERSION_IN_BAND } from "../statement/discipline.js";
 import { SOC_MAX_PAYLOAD_SIZE } from "../swarm/soc.js";
-import type { HolderPubkey } from "../crypto/brands.js";
 import { jsonByteLength, validatePodCertV1, verifyPodCert, type PodCertV1 } from "./types.js";
 
 export const POD_CERT_LOG_FORMAT = "woco.pod-cert-log.v1" as const;
@@ -116,68 +114,11 @@ export function verifyPodCertLogPage(value: unknown, issuerPubkey: string): PodC
   return value.certs.filter((c) => verifyPodCert(c, issuerPubkey));
 }
 
-/**
- * Distinct holder keys across pages, in first-seen order — the supply audit's
- * unit, and the enumeration a per-drop encryption publisher needs.
- *
- * DEDUPED BY HOLDER, because certificate count is not supply: an issuer
- * re-signs when a holder rotates keys or a date was wrong, and counting
- * certificates would inflate. Presence, not quantity, all the way through.
- *
- * Typed structurally (`{ holder }`) rather than to `PodCertV1`: the function —
- * like the cursor arithmetic below — is log-format-agnostic and serves the v2
- * `woco.cert-log.v1` pages too, until the v1 module's deletion relocates them.
- */
-export function holdersFromLogPages(
-  pages: ReadonlyArray<ReadonlyArray<{ holder: HolderPubkey }>>,
-): HolderPubkey[] {
-  const seen = new Set<string>();
-  const out: HolderPubkey[] = [];
-  for (const page of pages) {
-    for (const cert of page) {
-      if (seen.has(cert.holder)) continue;
-      seen.add(cert.holder);
-      out.push(cert.holder);
-    }
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Log addressing — pure, because it is the highest-stakes arithmetic here
-// ---------------------------------------------------------------------------
-
-/** Where a page goes: a band, and a version inside it. */
-export interface CertLogCursor {
-  band: number;
-  version: number;
-}
-
-/**
- * Where the NEXT page goes after `head`, or `{0,0}` for a log never written.
- *
- * The rollover case is the one worth stating: a head sitting at the last slot
- * of its band means the band is full, and a full band is an immutable fact — so
- * opening the next one is licensed by OBSERVATION, which is what the full-band
- * invariant requires. `>=` rather than `===` deliberately: an overshoot would
- * otherwise turn a transient loss of rollover into a permanent one.
- *
- * A `{0,0}` start is only safe when the caller RESOLVED the log absent cleanly —
- * this function cannot know that, and its caller must.
- */
-export function firstCertLogCursor(head: CertLogCursor | null): CertLogCursor {
-  if (!head) return { band: 0, version: 0 };
-  if (head.version >= LAST_VERSION_IN_BAND) return { band: head.band + 1, version: 0 };
-  return { band: head.band, version: head.version + 1 };
-}
-
-/**
- * Where the page after `written` goes, given `written` has been VERIFIED to
- * have landed. That verification is the observation the invariant needs when
- * this crosses a band boundary — which is why this takes the cursor just
- * written rather than a count.
- */
-export function nextCertLogCursor(written: CertLogCursor): CertLogCursor {
-  if (written.version >= LAST_VERSION_IN_BAND) return { band: written.band + 1, version: 0 };
-  return { band: written.band, version: written.version + 1 };
-}
+// Log-cursor arithmetic + holder dedupe MOVED to `cert/log.ts` (PR 5a) —
+// re-exported here as the SAME bindings until this v1 module is deleted.
+export {
+  holdersFromLogPages,
+  firstCertLogCursor,
+  nextCertLogCursor,
+  type CertLogCursor,
+} from "../cert/log.js";

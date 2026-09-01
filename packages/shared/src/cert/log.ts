@@ -33,8 +33,9 @@
  */
 
 import { utf8ToBytes } from "@noble/hashes/utils.js";
+import { LAST_VERSION_IN_BAND } from "../statement/discipline.js";
 import { SOC_MAX_PAYLOAD_SIZE } from "../swarm/soc.js";
-import type { IssuerAddress } from "../crypto/brands.js";
+import type { HolderPubkey, IssuerAddress } from "../crypto/brands.js";
 import { validateCertV1, verifyCertV1, type CertV1 } from "./types.js";
 
 export const CERT_LOG_FORMAT = "woco.cert-log.v1" as const;
@@ -135,14 +136,69 @@ export function verifyCertLogPage(value: unknown, issuer: IssuerAddress): CertV1
 }
 
 // ---------------------------------------------------------------------------
-// NOT PORTED, deliberately: `CertLogCursor`, `firstCertLogCursor`,
-// `nextCertLogCursor` and `holdersFromLogPages`.
-//
-// All four are LOG-FORMAT-AGNOSTIC — band/version arithmetic over the
+// Log-cursor arithmetic + holder dedupe — MOVED here from `pod-cert/log.ts`
+// (PR 5a, verbatim), where they were deliberately left until the v1 module's
+// deletion. All four are LOG-FORMAT-AGNOSTIC: band/version arithmetic over the
 // discipline's `LAST_VERSION_IN_BAND`, and a first-seen dedupe over holder
-// keys, neither of which knows anything about a certificate's issuer curve.
-// Copying them here would fork the highest-stakes arithmetic in the rail into
-// two identical implementations that could drift, and would collide on the
-// package barrel besides. They stay in `pod-cert/log.ts` and are imported from
-// there until the v1 module is deleted (PR 5a), which is where they move.
+// keys — the highest-stakes arithmetic in the rail, kept as ONE implementation.
 // ---------------------------------------------------------------------------
+
+/**
+ * Distinct holders across log pages, first-seen order.
+ *
+ * FIRST-SEEN DEDUPE is the semantic, not a tidy-up: a holder re-certified
+ * (key rotation, corrected date) appears on multiple pages, and counting
+ * certificates would inflate. Presence, not quantity, all the way through.
+ *
+ * Typed structurally (`{ holder }`) rather than to `CertV1` — like the cursor
+ * arithmetic below, it knows nothing about the issuer's curve.
+ */
+export function holdersFromLogPages(
+  pages: ReadonlyArray<ReadonlyArray<{ holder: HolderPubkey }>>,
+): HolderPubkey[] {
+  const seen = new Set<string>();
+  const out: HolderPubkey[] = [];
+  for (const page of pages) {
+    for (const cert of page) {
+      if (seen.has(cert.holder)) continue;
+      seen.add(cert.holder);
+      out.push(cert.holder);
+    }
+  }
+  return out;
+}
+
+/** Where a page goes: a band, and a version inside it. */
+export interface CertLogCursor {
+  band: number;
+  version: number;
+}
+
+/**
+ * Where the NEXT page goes after `head`, or `{0,0}` for a log never written.
+ *
+ * The rollover case is the one worth stating: a head sitting at the last slot
+ * of its band means the band is full, and a full band is an immutable fact — so
+ * opening the next one is licensed by OBSERVATION, which is what the full-band
+ * invariant requires. `>=` rather than `===` deliberately: an overshoot would
+ * otherwise turn a transient loss of rollover into a permanent one.
+ *
+ * A `{0,0}` start is only safe when the caller RESOLVED the log absent cleanly —
+ * this function cannot know that, and its caller must.
+ */
+export function firstCertLogCursor(head: CertLogCursor | null): CertLogCursor {
+  if (!head) return { band: 0, version: 0 };
+  if (head.version >= LAST_VERSION_IN_BAND) return { band: head.band + 1, version: 0 };
+  return { band: head.band, version: head.version + 1 };
+}
+
+/**
+ * Where the page after `written` goes, given `written` has been VERIFIED to
+ * have landed. That verification is the observation the invariant needs when
+ * this crosses a band boundary — which is why this takes the cursor just
+ * written rather than a count.
+ */
+export function nextCertLogCursor(written: CertLogCursor): CertLogCursor {
+  if (written.version >= LAST_VERSION_IN_BAND) return { band: written.band + 1, version: 0 };
+  return { band: written.band, version: written.version + 1 };
+}

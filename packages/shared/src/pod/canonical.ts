@@ -112,32 +112,6 @@ export function manifestDigest(body: ManifestV1Body): Uint8Array {
   return keccak_256(canonicalEncodeManifest(body));
 }
 
-// ---------------------------------------------------------------------------
-// Hex helpers — OZ's merkle-tree expects 0x-prefixed hex strings.
-// ---------------------------------------------------------------------------
-
-const HEX_LOOKUP = "0123456789abcdef";
-
-export function bytesToHex0x(bytes: Uint8Array): string {
-  let out = "0x";
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i]!;
-    out += HEX_LOOKUP[b >>> 4]! + HEX_LOOKUP[b & 0xf]!;
-  }
-  return out;
-}
-
-export function hex0xToBytes(hex: string): Uint8Array {
-  const s = hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
-  if (s.length % 2 !== 0) throw new Error(`hex0xToBytes: odd-length input`);
-  const out = new Uint8Array(s.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    const hi = parseInt(s[i * 2]!, 16);
-    const lo = parseInt(s[i * 2 + 1]!, 16);
-    if (Number.isNaN(hi) || Number.isNaN(lo)) {
-      throw new Error(`hex0xToBytes: bad hex char at ${i * 2}`);
-    }
-    out[i] = (hi << 4) | lo;
-  }
-  return out;
-}
+// Hex helpers moved to `crypto/hex.ts` (PR 5a) — re-exported here as the SAME
+// bindings so both star-exports resolve identically until this module dies.
+export { bytesToHex0x, hex0xToBytes } from "../crypto/hex.js";

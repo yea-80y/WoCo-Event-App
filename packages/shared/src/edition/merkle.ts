@@ -11,7 +11,7 @@
  */
 
 import { SimpleMerkleTree } from "@openzeppelin/merkle-tree";
-import { bytesToHex0x } from "../pod/canonical.js";
+import { bytesToHex0x } from "../crypto/hex.js";
 import {
   issuingAddress,
   recoverPersonalSigner,
