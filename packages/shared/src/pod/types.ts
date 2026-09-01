@@ -13,7 +13,6 @@
  */
 
 import type { Hex64, Hex0x } from "../types.js";
-import type { IssuerPubkeyV1 } from "../crypto/brands.js";
 
 /** 0x-prefixed bytes32 hex (66 chars including 0x). */
 export type Bytes32Hex = string;
@@ -40,8 +39,10 @@ export interface PodV2Body {
    * for the long-term composability story.
    */
   metadata: Record<string, unknown>;
-  /** ed25519 issuer public key (hex, lowercase, no 0x). Mirrors manifest. */
-  issuer: IssuerPubkeyV1;
+  /** ed25519 issuer public key (hex, lowercase, no 0x). Mirrors manifest.
+   *  Plain string since PR 4 deleted the `IssuerPubkeyV1` brand: this v1 body
+   *  is produced by nothing any more and dies with the v1 verify paths (5a). */
+  issuer: string;
 }
 
 /**
@@ -69,8 +70,9 @@ export interface ManifestV1Body {
    */
   eventId: Bytes32Hex;
   totalSupply: number;
-  /** ed25519 issuer pubkey (hex, lowercase, no 0x). */
-  issuerPubkey: IssuerPubkeyV1;
+  /** ed25519 issuer pubkey (hex, lowercase, no 0x). Plain string since PR 4
+   *  deleted the brand — produced by nothing, dies with the v1 verify paths (5a). */
+  issuerPubkey: string;
   /** 0x-prefixed bytes32 — Merkle root over all edition leaves. */
   metadataRoot: Bytes32Hex;
   /** Locked encoder identifier — only `cbor-v1` ships in v1. */
@@ -191,10 +193,10 @@ export interface PodDirectoryEntry {
   supply: number;
   /** How many editions have been issued/claimed so far (best-effort counter). */
   issuedCount?: number;
-  /** ed25519 issuer pubkey (hex, lowercase, no 0x) — mirrors the manifest.
-   *  Optional: not needed for the manager/holdings/gating; populated only where
-   *  a use (e.g. verifying off-event badges) requires it. */
-  issuer?: IssuerPubkeyV1;
+  /** Issuer identity mirror — UNVERIFIED display hint, never a trust input.
+   *  v1 entries hold the ed25519 pubkey (bare 64-hex); v2 entries (5a) hold the
+   *  20-byte issuing ADDRESS. Optional: not needed for manager/holdings/gating. */
+  issuer?: string;
   /** On-chain eventId (0x bytes32) the manifest is committed under — the
    *  holdings reader needs this to read slot ownership. Present once on-chain
    *  registration confirms; for `ticket` PODs that is `confirmSeriesOnChain`. */

@@ -3,8 +3,9 @@
    * PodCreateModal — mint a standalone badge / collectible POD type.
    *
    * The crypto-sensitive half of the POD manager: the manifest is built and
-   * ed25519-signed CLIENT-side with the creator's POD key (reusing the exact
-   * event-creation builder), then handed to the server which uploads it,
+   * signed CLIENT-side with the creator's derived secp256k1 issuing key
+   * (reusing the exact event-creation builder), then handed to the server
+   * which uploads it,
    * sponsor-registers it on-chain, and writes the directory entry. The artwork
    * is display-layer only (uploaded separately, stored on the directory entry,
    * never in the signed manifest).
@@ -14,7 +15,9 @@
    * single lime affordance is "Mint POD".
    */
   import type { PodCategory, PodDirectoryEntry } from "@woco/shared";
+  import { buildIssuerBindingMessage, signPersonalMessage } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { ensureIssuingKey } from "../../auth/issuing-key.js";
   import { buildEventManifests } from "../../pod/event-builder.js";
   import { buildCertBadgeManifest } from "../../pod/cert-builder.js";
   import { uploadSiteImage } from "../../api/sites.js";
@@ -134,11 +137,10 @@
           return;
         }
       }
-      const keypair = await auth.getPodKeypair();
-      if (!keypair) {
-        error = "Could not get signing key";
-        return;
-      }
+      // The derived issuing key signs the manifest and the parent binding.
+      // Throws (fail loud, never another signer) when no seed is available;
+      // the catch below surfaces its message.
+      const issuing = await ensureIssuingKey();
 
       // ── The certificate rail needs one more key than the chain rail, and
       //    getting it WRONG is not an error anywhere. `certLogOwner` is the
@@ -165,22 +167,16 @@
       //    badge commits ONE template body while `totalSupply` declares a
       //    holder cap. Both seal through the same core (`pod/seal.ts`). ──────
       step = "Signing manifest…";
-      const organiserAddress = (auth.parent as string).toLowerCase();
       const built = isCert
         ? buildCertBadgeManifest({
-            organiserAddress,
-            creatorPodPrivateKey: keypair.privateKey,
-            creatorPodPublicKeyHex: keypair.publicKeyHex,
+            issuingPrivKey: issuing.privateKey,
             name: name.trim(),
             description: description.trim(),
             ...(image ? { imageHash: image } : {}),
             cap: supply,
           })
         : buildEventManifests({
-            organiserAddress,
-            organiserNonce: 0n,
-            creatorPodPrivateKey: keypair.privateKey,
-            creatorPodPublicKeyHex: keypair.publicKeyHex,
+            issuingPrivKey: issuing.privateKey,
             eventMeta: image ? { imageHash: image } : {},
             series: [{ seriesId: crypto.randomUUID(), name: name.trim(), description: description.trim(), totalSupply: supply }],
           })[0]!;
@@ -200,7 +196,18 @@
         ...(categoryId ? { categoryId } : {}),
         supply,
         signedManifest: built.signedManifest,
-        podBodies: built.podBodies,
+        editionBodies: built.editionBodies,
+        // Proof of possession: the issuing key signs the parent it belongs to,
+        // so a replayed foreign manifest cannot get a foreign issuer pinned to
+        // this account (#345 class). Server-verified + pinned in 5a.
+        issuerBinding: {
+          issuer: issuing.address,
+          gen: 0,
+          sig: signPersonalMessage(
+            buildIssuerBindingMessage((auth.parent as string).toLowerCase(), 0),
+            issuing.privateKey,
+          ),
+        },
         ...(image ? { image } : {}),
         ...(isCert ? { holdingSource: "pod-cert" as const, certLogOwner: certLogOwner! } : {}),
       });

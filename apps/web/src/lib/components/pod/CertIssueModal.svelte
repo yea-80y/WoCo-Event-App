@@ -23,8 +23,9 @@
    *    written, and the probe counters — are printed verbatim, so an operator
    *    verifies from the screen rather than from devtools.
    */
-  import type { PodDirectoryEntry, SignedManifestV1, Hex0x, HolderPubkey } from "@woco/shared";
+  import type { PodDirectoryEntry, SignedManifestV2, Hex0x, HolderPubkey } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { ensureIssuingKey } from "../../auth/issuing-key.js";
   import { getAttendeeKeys, updatePod, type AttendeeKeyRow } from "../../api/pod.js";
   import { getEventsByCreator, getEventOrders } from "../../api/events.js";
   import {
@@ -32,7 +33,7 @@
     issueCertificates,
     loadBadgeManifest,
     type IssueRunResult,
-  } from "../../pod-cert/issue.js";
+  } from "../../cert/issue.js";
   import {
     parseHolderKeys,
     splitAttendees,
@@ -40,7 +41,7 @@
     uncertifiableLabel,
     type HolderReject,
     type TicketClaim,
-  } from "../../pod-cert/holders.js";
+  } from "../../cert/holders.js";
   import { hintCounts, probeCounts, probeTotals } from "../../swarm/probe-stats.js";
 
   interface Props {
@@ -55,7 +56,7 @@
   let phase = $state<Phase>("loading");
   let blockedReason = $state("");
 
-  let manifest = $state<SignedManifestV1 | null>(null);
+  let manifest = $state<SignedManifestV2 | null>(null);
   /** Distinct holders the log already carries. */
   let existing = $state<HolderPubkey[]>([]);
   let source = $state<"paste" | "event">("paste");
@@ -212,19 +213,19 @@
     const before = { probes: probeCounts(), hints: hintCounts() };
 
     // EVERYTHING that can throw lives inside this try, and the key ceremonies
-    // are the reason. `getContentFeedSigner` is documented FAIL-LOUD — it
-    // throws rather than falling through, and the likeliest trigger is the most
-    // ordinary user action there is: rejecting the wallet signing prompt on a
-    // first award. Left outside, that throw escapes `run()` with `phase` stuck
-    // at "running", and because `close()` refuses mid-run the organiser is
-    // trapped in a dialog with a disabled X and a refused Escape, with only a
-    // reload to get out. Nothing has been written at that point, which is
-    // exactly why it must NOT be reported as `unconfirmed`: `refused` is the
-    // honest stop, and re-running is safe.
+    // are the reason. `ensureIssuingKey` and `getContentFeedSigner` are both
+    // documented FAIL-LOUD — they throw rather than falling through, and the
+    // likeliest trigger is the most ordinary user action there is: rejecting
+    // the wallet signing prompt on a first award. Left outside, that throw
+    // escapes `run()` with `phase` stuck at "running", and because `close()`
+    // refuses mid-run the organiser is trapped in a dialog with a disabled X
+    // and a refused Escape, with only a reload to get out. Nothing has been
+    // written at that point, which is exactly why it must NOT be reported as
+    // `unconfirmed`: `refused` is the honest stop, and re-running is safe.
     try {
-      const keypair = await auth.getPodKeypair();
+      const issuing = await ensureIssuingKey();
       const signer = await auth.getContentFeedSigner();
-      if (!keypair || !signer) {
+      if (!signer) {
         result = {
           ok: false,
           landed: [],
@@ -244,7 +245,7 @@
         // refused rather than starting a parallel log nobody reads.
         expectedLogOwner: pod.certLogOwner as Hex0x,
         keys: {
-          podPrivKey: keypair.privateKey,
+          issuingPrivKey: issuing.privateKey,
           feedPrivKey: signer.privKey,
           feedAddress: signer.address,
         },

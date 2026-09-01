@@ -28,7 +28,7 @@
 
 import { LAST_VERSION_IN_BAND } from "../statement/discipline.js";
 import { SOC_MAX_PAYLOAD_SIZE } from "../swarm/soc.js";
-import type { HolderPubkey, IssuerPubkeyV1 } from "../crypto/brands.js";
+import type { HolderPubkey } from "../crypto/brands.js";
 import { jsonByteLength, validatePodCertV1, verifyPodCert, type PodCertV1 } from "./types.js";
 
 export const POD_CERT_LOG_FORMAT = "woco.pod-cert-log.v1" as const;
@@ -111,7 +111,7 @@ export function packPodCertLogPages(certs: readonly PodCertV1[]): PodCertLogPage
  * not hide the holders alongside it. Returns empty for a page that is not a
  * well-formed log page at all.
  */
-export function verifyPodCertLogPage(value: unknown, issuerPubkey: IssuerPubkeyV1): PodCertV1[] {
+export function verifyPodCertLogPage(value: unknown, issuerPubkey: string): PodCertV1[] {
   if (!validatePodCertLogPageV1(value)) return [];
   return value.certs.filter((c) => verifyPodCert(c, issuerPubkey));
 }

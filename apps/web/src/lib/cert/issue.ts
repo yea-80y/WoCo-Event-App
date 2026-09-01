@@ -1,6 +1,7 @@
 /**
- * Issuing POD certificates — the issuer's write path (Gate B, slice 3).
- * Design record: docs/SWARM_SOCIAL_PLAN.md, BUILD RECORD slice 3.
+ * Issuing certificates — the issuer's write path (Gate B, slice 3; on the v2
+ * issuer curve since PR 4). Design record: docs/SWARM_SOCIAL_PLAN.md, BUILD
+ * RECORD slice 3; curve migration: HANDOVER-pod-curve-migration.md.
  *
  * TREAT EVERY WRITE HERE AS DELIVERY, NOT AS AUDIT DÉCOR. Until the holder's
  * passport import exists, a certificate lives NOWHERE except this log — and
@@ -10,39 +11,44 @@
  * letting them settle in the background the way a lap does.
  *
  * BOTH SIGNATURES ARE THE ISSUER'S, AND NEITHER KEY CAN LIVE ON THE SERVER: the
- * certificate is signed by the creator's ed25519 POD key, and the SOC wrapper by
- * their secp256k1 content-feed signer. The server stamps and uploads chunks it
- * verifiably could not have authored — the same shape as credits, and what
- * keeps the log in the issuer's own address space rather than the platform's.
+ * certificate is signed by the creator's derived secp256k1 ISSUING key
+ * (`ensureIssuingKey`), and the SOC wrapper by their separate secp256k1
+ * content-feed signer. Two keys, two jobs — the issuing key is the credential
+ * identity (rotatable by generation), the feed key owns the log's address
+ * space. The server stamps and uploads chunks it verifiably could not have
+ * authored — the same shape as credits, and what keeps the log in the issuer's
+ * own address space rather than the platform's.
  */
 
 import {
+  CERT_LOG_FORMAT,
+  CERT_SUBJECT_INDEX_FORMAT,
   LAST_VERSION_IN_BAND,
-  POD_CERT_LOG_FORMAT,
-  POD_CERT_SUBJECT_INDEX_FORMAT,
+  certLogTopic,
+  certPublicSalt,
+  certSubjectIndexTopic,
+  // Log-cursor arithmetic + holder dedupe still live in `pod-cert/log.ts`
+  // (format-agnostic; they move to `cert/log.ts` when 5a deletes the v1 module).
   firstCertLogCursor,
   holdersFromLogPages,
   nextCertLogCursor,
-  packPodCertLogPages,
+  packCertLogPages,
   planCertIssuance,
-  podCertLogTopic,
-  podCertPublicSalt,
-  podCertSubjectIndexTopic,
-  resolvePodCertIssuer,
-  signPodCert,
-  validatePodCertLogPageV1,
-  validatePodCertSubjectIndex,
-  verifyPodCertLogPage,
+  resolveCertIssuer,
+  signCertV1,
+  validateCertLogPageV1,
+  validateCertSubjectIndex,
+  validateSignedManifestV2,
+  verifyCertLogPage,
   type Bytes32Hex,
   type CertLogCursor,
+  type CertLogPageV1,
+  type CertV1,
   type EncryptionPubkey,
   type Hex0x,
   type HolderPubkey,
-  type IssuerPubkeyV1,
-  type PodCertLogPageV1,
-  type PodCertV1,
-  type SeriesManifestBlob,
-  type SignedManifestV1,
+  type IssuerAddress,
+  type SignedManifestV2,
 } from "@woco/shared";
 import {
   readBandedContentFeed,
@@ -55,16 +61,17 @@ import { contentFeedSignerFromPrivKey } from "../swarm/content-feed";
 /**
  * The issuer's two keys. Neither is ever sent anywhere.
  *
- * NOTE WHAT IS ABSENT: there is no `issuerPubkey`. The badge's issuer key is
+ * NOTE WHAT IS ABSENT: there is no issuer address. The badge's issuer is
  * resolved from its MANIFEST, which binds it to the badge by digest — so this
  * call cannot be handed the wrong one, because it does not take one. Same move
- * as `podCertHoldingFromManifest`, and for the same reason: an issuer key that
- * merely type-checks is exactly what `PodDirectoryEntry.issuer` is, and that
- * field is an unverified display mirror sitting one import away.
+ * as `certHoldingFromManifest`, and for the same reason: an issuer identity
+ * that merely type-checks is exactly what `PodDirectoryEntry.issuer` is, and
+ * that field is an unverified display mirror sitting one import away.
  */
 export interface CertIssuerKeys {
-  /** ed25519 POD private key. Its public half MUST be the manifest's `issuerPubkey`. */
-  podPrivKey: Uint8Array;
+  /** Derived secp256k1 ISSUING key (`ensureIssuingKey`). Its address MUST be
+   *  the manifest's `issuer`. */
+  issuingPrivKey: Uint8Array;
   /** secp256k1 content-feed signer (sign-to-derive), and its address. */
   feedPrivKey: string;
   feedAddress: string;
@@ -82,8 +89,8 @@ export type CertLogReadResult =
   | ({ ok: true } & CertLogState)
   | { ok: false; error: string };
 
-const salt = podCertPublicSalt();
-const topicFor = (badge: Bytes32Hex) => (band: number) => podCertLogTopic(salt, badge, band);
+const salt = certPublicSalt();
+const topicFor = (badge: Bytes32Hex) => (band: number) => certLogTopic(salt, badge, band);
 
 /**
  * Per-holder extras, looked up CASE-INSENSITIVELY.
@@ -124,38 +131,38 @@ export async function readCertLog(
   ownerAddress: string,
   badge: Bytes32Hex,
   /**
-   * The badge's signed manifest — NOT an issuer key. `resolvePodCertIssuer`
-   * recomputes `keccak256(dagCbor(body))` and returns the issuer key only if it
-   * equals `badge`, so the key used to verify this log is bound to the badge by
-   * a digest rather than by whoever passed it.
+   * The badge's signed manifest — NOT an issuer address. `resolveCertIssuer`
+   * recomputes `keccak256(dagCbor(body))` and returns the issuer address only
+   * if it equals `badge`, so the identity used to verify this log is bound to
+   * the badge by a digest rather than by whoever passed it.
    *
-   * A wrong key here is not a read error, it is a SILENT one: every certificate
-   * on the log fails verification, the log reads as holding nobody, and the
-   * caller then plans to re-issue every holder it already has.
+   * A wrong issuer here is not a read error, it is a SILENT one: every
+   * certificate on the log fails verification, the log reads as holding
+   * nobody, and the caller then plans to re-issue every holder it already has.
    */
-  manifest: SignedManifestV1,
+  manifest: SignedManifestV2,
 ): Promise<CertLogReadResult> {
-  const issuerPubkey = resolvePodCertIssuer(manifest, badge);
-  if (!issuerPubkey) {
+  const issuer = resolveCertIssuer(manifest, badge);
+  if (!issuer) {
     return {
       ok: false,
       error: "This manifest is not this badge's — refusing to read its log against an unbound issuer key.",
     };
   }
   const topic = topicFor(badge);
-  const head = await readBandedContentFeed<PodCertLogPageV1>(ownerAddress, topic, { thorough: true });
+  const head = await readBandedContentFeed<CertLogPageV1>(ownerAddress, topic, { thorough: true });
 
   if (head.status === "unavailable" || !head.bandClean) {
     return { ok: false, error: "Could not read this badge's certificate log — try again." };
   }
   if (head.status === "absent") return { ok: true, holders: [], head: null, pagesRead: 0 };
 
-  const pages: PodCertV1[][] = [];
+  const pages: CertV1[][] = [];
   let pagesRead = 0;
   for (let band = 0; band <= head.band; band++) {
     const lastVersion = band < head.band ? LAST_VERSION_IN_BAND : head.version;
     for (let version = 0; version <= lastVersion; version++) {
-      const page = await readContentFeedAtVersion<PodCertLogPageV1>(
+      const page = await readContentFeedAtVersion<CertLogPageV1>(
         ownerAddress,
         topic(band),
         version,
@@ -183,7 +190,7 @@ export async function readCertLog(
       // Same contradiction class: a page in our own log below our own head that
       // does not even parse as a page. Folding it to "no certificates here"
       // under-counts exactly as silently.
-      if (!validatePodCertLogPageV1(page.value)) {
+      if (!validateCertLogPageV1(page.value)) {
         return {
           ok: false,
           error: `The log page at band ${band} version ${version} is not readable — refusing to issue against a partial list.`,
@@ -192,7 +199,7 @@ export async function readCertLog(
       pagesRead++;
       // Per-CERTIFICATE signature failures are still dropped individually: one
       // bad certificate must not hide the holders alongside it.
-      pages.push(verifyPodCertLogPage(page.value, issuerPubkey));
+      pages.push(verifyCertLogPage(page.value, issuer));
     }
   }
 
@@ -241,13 +248,13 @@ export interface IssuancePrecheckArgs {
   badge: Bytes32Hex;
   keys: CertIssuerKeys;
   holders: readonly HolderPubkey[];
-  manifest: SignedManifestV1;
+  manifest: SignedManifestV2;
   expectedLogOwner: Hex0x;
   extras?: Record<string, { encPubKey?: EncryptionPubkey; evidence?: string[] }>;
 }
 
 export type IssuancePrecheck =
-  | { ok: true; issuerPubkey: IssuerPubkeyV1 }
+  | { ok: true; issuer: IssuerAddress }
   | { ok: false; error: string };
 
 /**
@@ -259,20 +266,20 @@ export type IssuancePrecheck =
  * exception, not a bad status, but a run that looks like it worked while
  * writing permanent bytes to the wrong address or under the wrong key.
  *
- * Returns the resolved issuer key on success, so the caller cannot go on to use
- * a different one than the one just proved.
+ * Returns the resolved issuer address on success, so the caller cannot go on
+ * to use a different one than the one just proved.
  */
 export async function precheckIssuance(args: IssuancePrecheckArgs): Promise<IssuancePrecheck> {
-  // The issuer key comes from the MANIFEST, bound to the badge by digest. This
-  // catches the nastiest case on this path: a POD keypair that agrees with
-  // ITSELF but is not this badge's issuer. `signPodCert` would happily sign —
-  // its own check only compares the private key against the public half it was
-  // handed — the log read would drop every existing certificate as
+  // The issuer comes from the MANIFEST, bound to the badge by digest. This
+  // catches the nastiest case on this path: an issuing key that agrees with
+  // ITSELF but is not this badge's issuer. `signCertV1` would happily sign —
+  // its own check only compares the private key against the expected issuer it
+  // was handed — the log read would drop every existing certificate as
   // unverifiable, the plan would re-issue every holder already certified, and
   // the duplicates would land permanently against the cap, signed by a key that
   // verifies against nothing at any door.
-  const issuerPubkey = resolvePodCertIssuer(args.manifest, args.badge);
-  if (!issuerPubkey) {
+  const issuer = resolveCertIssuer(args.manifest, args.badge);
+  if (!issuer) {
     return { ok: false, error: "This manifest is not this badge's — refusing to issue against an unbound issuer key." };
   }
 
@@ -307,7 +314,7 @@ export async function precheckIssuance(args: IssuancePrecheckArgs): Promise<Issu
     }
   }
 
-  return { ok: true, issuerPubkey };
+  return { ok: true, issuer };
 }
 
 /**
@@ -336,7 +343,7 @@ export async function issueCertificates(args: {
    *    is mutable display state;
    * 3. proof that 1 and 2 belong to the same badge as everything else here.
    */
-  manifest: SignedManifestV1;
+  manifest: SignedManifestV2;
   /**
    * Where the directory says this badge's log lives — `PodDirectoryEntry.certLogOwner`.
    *
@@ -359,7 +366,7 @@ export async function issueCertificates(args: {
 
   const pre = await precheckIssuance(args);
   if (!pre.ok) return refuse(pre.error);
-  const { issuerPubkey } = pre;
+  const { issuer } = pre;
 
   const log = await readCertLog(keys.feedAddress, badge, args.manifest);
   if (!log.ok) return { ok: false, ...empty, error: log.error, stop: "refused" };
@@ -376,23 +383,23 @@ export async function issueCertificates(args: {
   }
 
   const issuedAt = args.issuedAt ?? new Date().toISOString().slice(0, 10);
-  let certs: PodCertV1[];
+  let certs: CertV1[];
   try {
     certs = plan.toIssue.map((holder) => {
       // Matched the same way the orphan check above matched, or a
       // case-mismatched key would pass validation and still be dropped here.
       const extra = extrasFor(args.extras, holder);
-      return signPodCert(
+      return signCertV1(
         {
-          format: "woco.pod-cert.v1",
+          format: "woco.cert.v1",
           badge,
           holder,
           issuedAt,
           ...(extra.encPubKey ? { encPubKey: extra.encPubKey } : {}),
           ...(extra.evidence?.length ? { evidence: extra.evidence } : {}),
         },
-        keys.podPrivKey,
-        issuerPubkey,
+        keys.issuingPrivKey,
+        issuer,
       );
     });
   } catch (e) {
@@ -405,7 +412,7 @@ export async function issueCertificates(args: {
     };
   }
 
-  const pages = packPodCertLogPages(certs);
+  const pages = packCertLogPages(certs);
   const topic = topicFor(badge);
   const landed: HolderPubkey[] = [];
   let pagesWritten = 0;
@@ -520,7 +527,7 @@ async function upsertCertifiedBadge(
   badge: Bytes32Hex,
   band: number,
 ): Promise<boolean> {
-  const indexTopic = (b: number) => podCertSubjectIndexTopic(salt, b);
+  const indexTopic = (b: number) => certSubjectIndexTopic(salt, b);
   const existing = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopic, { thorough: true });
   if (existing.status === "unavailable" || !existing.bandClean) return false;
 
@@ -528,9 +535,9 @@ async function upsertCertifiedBadge(
   // it: falling through to an empty list would write a fresh index containing
   // only this badge and ERASE every prior entry. Reachable via a future format
   // bump read by an older client.
-  if (existing.status === "found" && !validatePodCertSubjectIndex(existing.value)) return false;
+  if (existing.status === "found" && !validateCertSubjectIndex(existing.value)) return false;
   const current =
-    existing.status === "found" && validatePodCertSubjectIndex(existing.value)
+    existing.status === "found" && validateCertSubjectIndex(existing.value)
       ? existing.value.entries
       : [];
   const found = current.find((e) => e.subject.toLowerCase() === badge.toLowerCase());
@@ -553,7 +560,7 @@ async function upsertCertifiedBadge(
     signerPrivKey: keys.feedPrivKey,
     ownerAddress: keys.feedAddress,
     topic: indexTopic(targetBand),
-    data: { format: POD_CERT_SUBJECT_INDEX_FORMAT, entries: merged },
+    data: { format: CERT_SUBJECT_INDEX_FORMAT, entries: merged },
   });
   return written.status === "verified";
 }
@@ -564,7 +571,7 @@ async function upsertCertifiedBadge(
 // ---------------------------------------------------------------------------
 
 export type BadgeManifestResult =
-  | { ok: true; manifest: SignedManifestV1 }
+  | { ok: true; manifest: SignedManifestV2 }
   | { ok: false; error: string };
 
 /**
@@ -580,7 +587,10 @@ export async function loadBadgeManifest(
   badge: Bytes32Hex,
   gatewayUrl: string = WOCO_GATEWAY_URL,
 ): Promise<BadgeManifestResult> {
-  let blob: SeriesManifestBlob;
+  // The blob shape is `SeriesManifestBlob`, but the manifest inside is parsed
+  // as UNKNOWN and closed-schema validated — network bytes get a type only by
+  // passing `validateSignedManifestV2`, never by a cast.
+  let blob: { signedManifest?: unknown };
   try {
     const res = await fetch(`${gatewayUrl}/bytes/${swarmManifestRef}`);
     if (!res.ok) {
@@ -599,18 +609,19 @@ export async function loadBadgeManifest(
       }
       return { ok: false, error: "Could not read this badge's manifest — try again." };
     }
-    blob = (await res.json()) as SeriesManifestBlob;
+    blob = (await res.json()) as { signedManifest?: unknown };
   } catch {
     return { ok: false, error: "Could not read this badge's manifest — try again." };
   }
 
   const manifest = blob?.signedManifest;
-  if (!manifest) {
+  if (!manifest || !validateSignedManifestV2(manifest)) {
     return { ok: false, error: "Could not read this badge's manifest — try again." };
   }
   // The binding, re-proved: digest must equal the badge, and the signature must
-  // be the issuer's. Permanent failure, not a retry.
-  if (!resolvePodCertIssuer(manifest, badge)) {
+  // be the issuer's. Permanent failure, not a retry. A legacy v1 manifest fails
+  // the closed validation above — the v1 cutoff, enforced structurally.
+  if (!resolveCertIssuer(manifest, badge)) {
     return {
       ok: false,
       error: "The stored manifest does not match this badge — it cannot be used to award it.",
@@ -620,4 +631,4 @@ export async function loadBadgeManifest(
 }
 
 /** Re-exported so callers do not reach past this module for the log format. */
-export { POD_CERT_LOG_FORMAT };
+export { CERT_LOG_FORMAT };

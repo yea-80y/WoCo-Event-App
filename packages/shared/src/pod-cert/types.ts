@@ -36,7 +36,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { Hex0x } from "../types.js";
 import type { Bytes32Hex } from "../pod/types.js";
-import type { EncryptionPubkey, HolderPubkey, IssuerPubkeyV1 } from "../crypto/brands.js";
+import type { EncryptionPubkey, HolderPubkey } from "../crypto/brands.js";
 import {
   STATEMENT_SIGNING_PREFIXES,
   publicTopicSalt,
@@ -424,7 +424,7 @@ export function podCertChallengeDigest(unsigned: UnsignedPodCertChallengeV1): Ui
 export function signPodCert(
   unsigned: UnsignedPodCertV1,
   issuerPrivKey: Uint8Array,
-  expectedIssuerPubkey: IssuerPubkeyV1,
+  expectedIssuerPubkey: string,
 ): PodCertV1 {
   const digest = podCertDigest(unsigned);
   const pub = bytesToHex(ed25519.getPublicKey(issuerPrivKey));
@@ -477,7 +477,7 @@ export function signPodCertChallenge(
  * else (a directory entry, a gate config, a URL) checks a signature against a
  * key nothing binds to the badge, which is not a check at all.
  */
-export function verifyPodCert(value: unknown, issuerPubkey: IssuerPubkeyV1): value is PodCertV1 {
+export function verifyPodCert(value: unknown, issuerPubkey: string): value is PodCertV1 {
   try {
     if (!ED25519_PUB_RE.test(issuerPubkey)) return false;
     if (!validatePodCertV1(value)) return false;

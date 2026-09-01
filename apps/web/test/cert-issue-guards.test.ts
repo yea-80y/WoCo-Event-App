@@ -16,12 +16,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Wallet } from "ethers";
-import { precheckIssuance } from "../src/lib/pod-cert/issue.js";
+import { precheckIssuance } from "../src/lib/cert/issue.js";
 import { buildCertBadgeManifest } from "../src/lib/pod/cert-builder.js";
-import { verifySignedManifest, type Hex0x } from "@woco/shared";
+import { issuingAddress, verifyManifestV2, type Hex0x } from "@woco/shared";
 
+/** The badge's issuing key (secp256k1) — its ADDRESS is the issuer identity. */
 const ISSUER_PRIV = new Uint8Array(32).fill(7);
-const ISSUER_PUB = Buffer.from(ed25519.getPublicKey(ISSUER_PRIV)).toString("hex");
+const ISSUER = issuingAddress(ISSUER_PRIV);
 const OTHER_PRIV = new Uint8Array(32).fill(11);
 const HOLDER = Buffer.from(ed25519.getPublicKey(new Uint8Array(32).fill(9))).toString("hex");
 
@@ -31,9 +32,7 @@ const FEED_ADDR = new Wallet(FEED_PRIV).address.toLowerCase() as Hex0x;
 
 function badge(over: Record<string, unknown> = {}) {
   return buildCertBadgeManifest({
-    organiserAddress: "0x1111111111111111111111111111111111111111",
-    creatorPodPrivateKey: ISSUER_PRIV,
-    creatorPodPublicKeyHex: ISSUER_PUB,
+    issuingPrivKey: ISSUER_PRIV,
     name: "Founding Member",
     description: "",
     cap: 10,
@@ -49,7 +48,7 @@ function run(over: Record<string, unknown> = {}) {
     badge: b.manifestDigestHex,
     manifest: b.signedManifest,
     expectedLogOwner: FEED_ADDR,
-    keys: { podPrivKey: ISSUER_PRIV, feedPrivKey: FEED_PRIV, feedAddress: FEED_ADDR },
+    keys: { issuingPrivKey: ISSUER_PRIV, feedPrivKey: FEED_PRIV, feedAddress: FEED_ADDR },
     holders: [HOLDER],
     ...over,
   } as Parameters<typeof precheckIssuance>[0]);
@@ -59,7 +58,7 @@ function run(over: Record<string, unknown> = {}) {
 const why = (r: Awaited<ReturnType<typeof precheckIssuance>>) => (r.ok ? "" : r.error);
 
 test("a manifest that is not this badge's is REFUSED", async () => {
-  // The nastiest case on this path: a POD keypair that agrees with itself but
+  // The nastiest case on this path: an issuing key that agrees with itself but
   // is not the badge's issuer. Signing would succeed, the log read would drop
   // every existing certificate as unverifiable, and every holder would be
   // re-issued — permanently, against the cap, signed by a key no door accepts.
@@ -73,9 +72,7 @@ test("a manifest that is not this badge's is REFUSED", async () => {
 test("a manifest signed by a DIFFERENT issuer is refused too", async () => {
   const mine = badge();
   const forged = buildCertBadgeManifest({
-    organiserAddress: "0x1111111111111111111111111111111111111111",
-    creatorPodPrivateKey: OTHER_PRIV,
-    creatorPodPublicKeyHex: Buffer.from(ed25519.getPublicKey(OTHER_PRIV)).toString("hex"),
+    issuingPrivKey: OTHER_PRIV,
     name: "Founding Member",
     description: "",
     cap: 10,
@@ -83,7 +80,7 @@ test("a manifest signed by a DIFFERENT issuer is refused too", async () => {
     mintedAt: "2026-08-21T00:00:00.000Z",
   });
   const r = await run({ badge: mine.manifestDigestHex, manifest: forged.signedManifest });
-  assert.equal(r.ok, false, "a manifest naming someone else's issuerPubkey has a different digest");
+  assert.equal(r.ok, false, "a manifest naming someone else's issuer has a different digest");
 });
 
 test("writing under an address the directory does not name is REFUSED", async () => {
@@ -105,7 +102,7 @@ test("a feed key that disagrees with its own address is REFUSED", async () => {
   // Surfaces otherwise as `unconfirmed`, late and mislabelled as a gateway fault:
   // the read-back would be verifying a feed we did not write.
   const r = await run({
-    keys: { podPrivKey: ISSUER_PRIV, feedPrivKey: `0x${"44".repeat(32)}`, feedAddress: FEED_ADDR },
+    keys: { issuingPrivKey: ISSUER_PRIV, feedPrivKey: `0x${"44".repeat(32)}`, feedAddress: FEED_ADDR },
   });
   assert.equal(r.ok, false);
   assert.match(why(r), /disagree/i);
@@ -142,7 +139,7 @@ test("the cap comes from the SIGNED MANIFEST, not from a caller-supplied number"
     body: { ...b.signedManifest.body, totalSupply: 999 },
   };
   assert.ok(
-    !verifySignedManifest(tampered),
+    !verifyManifestV2(tampered),
     "raising the cap must break the issuer signature — the cap is signed, not asserted",
   );
 });
@@ -150,5 +147,5 @@ test("the cap comes from the SIGNED MANIFEST, not from a caller-supplied number"
 test("a well-formed run passes every precheck", async () => {
   const r = await run();
   assert.equal(r.ok, true, why(r));
-  if (r.ok) assert.equal(r.issuerPubkey, ISSUER_PUB, "the resolved key is the badge's own issuer");
+  if (r.ok) assert.equal(r.issuer, ISSUER, "the resolved issuer is the badge's own");
 });

@@ -27,7 +27,6 @@ import {
 } from "../../src/edition/types.js";
 import { signManifestV2, verifyManifestV2 } from "../../src/edition/merkle.js";
 import { signManifest } from "../../src/pod/merkle.js";
-import { asIssuerPubkeyV1 } from "../../src/crypto/brands.js";
 import type { ManifestV1Body } from "../../src/pod/types.js";
 
 const SEED = "0x" + "ab".repeat(32);
@@ -127,7 +126,7 @@ test("verifyManifestV2 REFUSES a valid v1 manifest at dispatch", () => {
     format: "woco.manifest.v1",
     eventId: "0x" + "00".repeat(32),
     totalSupply: 3,
-    issuerPubkey: asIssuerPubkeyV1(edPub),
+    issuerPubkey: edPub,
     metadataRoot: "0x" + "11".repeat(32),
     encoding: "cbor-v1",
     treeScheme: "oz-simple-v1",

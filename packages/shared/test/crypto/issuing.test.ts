@@ -12,7 +12,9 @@ import assert from "node:assert/strict";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import {
+  ISSUER_BINDING_SIGNING_DOMAIN,
   ISSUING_INFO_PREFIX,
+  buildIssuerBindingMessage,
   deriveIssuingKey,
   issuingAddress,
   issuingScalarFromOkm,
@@ -132,4 +134,42 @@ test("personalSignDigest declares the UTF-8 byte length, not the char length", a
     concatBytes(utf8ToBytes("\x19Ethereum Signed Message:\n2"), utf8ToBytes("é")),
   );
   assert.equal(bytesToHex(personalSignDigest("é")), bytesToHex(expected));
+});
+
+// ---------------------------------------------------------------------------
+// The issuer-binding proof-of-possession message (PR 4)
+// ---------------------------------------------------------------------------
+
+test("issuer-binding message: exact bytes, parent + gen bound, never 32 bytes", () => {
+  const parent = "0x" + "ab".repeat(20);
+  const msg = buildIssuerBindingMessage(parent, 0);
+  assert.equal(msg, `woco-issuer-binding-v1\n${parent}\n0`);
+  assert.equal(ISSUER_BINDING_SIGNING_DOMAIN, "woco-issuer-binding-v1");
+  // Shortest possible form clears 32 bytes by a wide margin — the SOC domain
+  // (raw 32 bytes) stays disjoint by length alone.
+  assert.equal(new TextEncoder().encode(msg).length, 67);
+});
+
+test("issuer-binding message REFUSES a non-canonical parent — signed bytes the server never rebuilds", () => {
+  const parent = "0x" + "ab".repeat(20);
+  // The server (5a) rebuilds this message from its LOWERCASED verified
+  // parentAddress; any other input form here would sign a message that can
+  // never verify. Refuse at build, where the producer bug is visible.
+  assert.throws(() => buildIssuerBindingMessage(parent.toUpperCase(), 0), /parent/);
+  assert.throws(() => buildIssuerBindingMessage(parent.slice(2), 0), /parent/);
+  assert.throws(() => buildIssuerBindingMessage(parent + "00", 0), /parent/);
+  assert.throws(() => buildIssuerBindingMessage(parent, -1), /generation/);
+  assert.throws(() => buildIssuerBindingMessage(parent, 1.5), /generation/);
+});
+
+test("issuer-binding sign → recover yields the issuing address, and binds parent AND gen", () => {
+  const { privateKey, address } = deriveIssuingKey(SEED, 0);
+  const parent = "0x" + "11".repeat(20);
+  const sig = signPersonalMessage(buildIssuerBindingMessage(parent, 0), privateKey);
+  assert.equal(recoverPersonalSigner(buildIssuerBindingMessage(parent, 0), sig), address);
+  // A different parent or generation recovers to a DIFFERENT address — the
+  // replayed-manifest attack (bind a foreign issuer to your own parent) fails.
+  const other = "0x" + "22".repeat(20);
+  assert.notEqual(recoverPersonalSigner(buildIssuerBindingMessage(other, 0), sig), address);
+  assert.notEqual(recoverPersonalSigner(buildIssuerBindingMessage(parent, 1), sig), address);
 });

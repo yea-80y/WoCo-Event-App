@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
-const ISSUE = strip(read("../src/lib/pod-cert/issue.ts"));
+const ISSUE = strip(read("../src/lib/cert/issue.ts"));
 const MODAL_RAW = read("../src/lib/components/pod/CertIssueModal.svelte");
 const MODAL = strip(MODAL_RAW);
 const DRAWER = read("../src/lib/components/pod/PodEditDrawer.svelte");
@@ -106,18 +106,18 @@ test("a whitelist refusal is a permanent condition, not a retry", () => {
 // ---------------------------------------------------------------------------
 
 test("the signing ceremonies are INSIDE the try, not one line above it", () => {
-  // `getContentFeedSigner` is documented fail-loud, and the likeliest trigger is
-  // the most ordinary user action there is: rejecting the wallet prompt on a
-  // first award. Outside the try, that throw escapes `run()` with `phase` stuck
-  // at "running" — and `close()` refuses mid-run, so the X is disabled and
-  // Escape is refused. Reload is the only way out. This is the same
-  // undismissable-dialog defect the write-throw fix targeted.
+  // `ensureIssuingKey` and `getContentFeedSigner` are documented fail-loud, and
+  // the likeliest trigger is the most ordinary user action there is: rejecting
+  // the wallet prompt on a first award. Outside the try, that throw escapes
+  // `run()` with `phase` stuck at "running" — and `close()` refuses mid-run, so
+  // the X is disabled and Escape is refused. Reload is the only way out. This
+  // is the same undismissable-dialog defect the write-throw fix targeted.
   const runAt = MODAL.indexOf("async function run(");
   const tryAt = MODAL.indexOf("try {", runAt);
-  const keypairAt = MODAL.indexOf("getPodKeypair()", runAt);
+  const issuingAt = MODAL.indexOf("ensureIssuingKey()", runAt);
   const signerAt = MODAL.indexOf("getContentFeedSigner()", runAt);
-  assert.ok(tryAt > 0 && keypairAt > 0 && signerAt > 0);
-  assert.ok(tryAt < keypairAt, "getPodKeypair must be inside the try");
+  assert.ok(tryAt > 0 && issuingAt > 0 && signerAt > 0);
+  assert.ok(tryAt < issuingAt, "ensureIssuingKey must be inside the try");
   assert.ok(tryAt < signerAt, "getContentFeedSigner must be inside the try");
 });
 

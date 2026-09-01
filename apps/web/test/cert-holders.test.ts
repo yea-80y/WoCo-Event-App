@@ -16,7 +16,7 @@ import {
   holderRejectLabel,
   uncertifiableLabel,
   type AttendeeCandidate,
-} from "../src/lib/pod-cert/holders.js";
+} from "../src/lib/cert/holders.js";
 
 /** Distinct 64-hex keys for fixtures. */
 const keyFor = (i: number) => (i + 1).toString(16).padStart(2, "0").repeat(32);
