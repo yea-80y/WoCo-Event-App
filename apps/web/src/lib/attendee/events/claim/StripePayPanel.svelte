@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BuyerFees } from "./fees.js";
+  import type { BuyerFees } from "@woco/shared";
 
   interface Props {
     buyerFees: BuyerFees | null;

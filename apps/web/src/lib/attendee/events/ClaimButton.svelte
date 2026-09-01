@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { OrderField, SealedBox, PaymentConfig } from "@woco/shared";
-  import { sealJson } from "@woco/shared";
+  import { sealJson, CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getClaimStatus } from "../../api/events.js";
@@ -9,11 +9,9 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
   import {
-    CURRENCY_SYMBOLS,
     getEmailFromForm as getEmailFromFormPure,
     buildOrderSnapshot as buildOrderSnapshotPure,
   } from "./claim/helpers.js";
-  import { calculateBuyerFees } from "./claim/fees.js";
   import StripeSuccessCard from "./claim/StripeSuccessCard.svelte";
   import ReservationPill from "./claim/ReservationPill.svelte";
   import StripePayPanel from "./claim/StripePayPanel.svelte";

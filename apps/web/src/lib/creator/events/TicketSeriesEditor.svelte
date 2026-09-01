@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x, PodGate, PodGateGroup } from "@woco/shared";
   import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
-  import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT } from "@woco/shared";
+  import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import ConnectWalletModal from "../../components/profile/ConnectWalletModal.svelte";
@@ -379,8 +379,6 @@
     );
     series = built;
   });
-
-  const CURRENCY_SYMBOLS: Record<string, string> = { GBP: "£", USD: "$", EUR: "€" };
 
   const STRIPE_PERCENT = 0.03;   // 3% of ticket price
   const PLATFORM_PERCENT = PLATFORM_FEE_BP / 10_000; // 1.5%
