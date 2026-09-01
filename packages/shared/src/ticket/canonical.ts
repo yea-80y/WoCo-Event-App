@@ -41,37 +41,11 @@ export function buildTicketCanonicalMessage(params: {
   return `${TICKET_CANONICAL_VERSION}\n${eventId}\n${params.seriesId}\n${params.edition}\n`;
 }
 
-/**
- * Canonical owner-binding message for `woco.ticket.claimed.v2` — LOCKED FORMAT.
- *
- * Signed EIP-191 by the PLATFORM feed signer at claim time when the buyer
- * already has a WoCo account: it attests "this edition was issued to this
- * attendee ed25519 identity". Verifiers recover the address and compare it to
- * the platform signer (the address that owns the platform Swarm feeds).
- * `eventId` is the WoCo event ULID (NOT the on-chain id — v1 feed events have
- * no on-chain id and must still be bindable). `claimedAt` is the ISO string
- * stored in the ClaimedTicket, verbatim.
- */
-export const CLAIMED_OWNER_CANONICAL_VERSION = "woco-claimed-owner-v2" as const;
-
-export function buildClaimedOwnerV2Message(params: {
-  eventId: string;
-  seriesId: string;
-  /** 1-indexed edition number. */
-  edition: number;
-  /** Attendee ed25519 POD public key, hex, lowercase, no 0x prefix. */
-  owner: string;
-  /** ISO timestamp — must match ClaimedTicket.claimedAt byte-for-byte. */
-  claimedAt: string;
-}): string {
-  if (!params.eventId || !params.seriesId) throw new Error("eventId and seriesId are required");
-  if (!Number.isInteger(params.edition) || params.edition < 1) {
-    throw new Error(`Invalid edition: ${params.edition}`);
-  }
-  const owner = params.owner.toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(owner)) {
-    throw new Error("owner must be a 32-byte hex ed25519 public key (no 0x prefix)");
-  }
-  if (!params.claimedAt) throw new Error("claimedAt is required");
-  return `${CLAIMED_OWNER_CANONICAL_VERSION}\n${params.eventId}\n${params.seriesId}\n${params.edition}\n${owner}\n${params.claimedAt}\n`;
-}
+// The `woco-claimed-owner-v2` owner-binding message and its platform signer
+// were DELETED with #448: the attestation was produced by nothing and verified
+// by nothing (the PR 1 audit found zero callers end to end), and an unverified
+// signature field in a public blob invites someone to trust it later without
+// noticing nothing ever checked it. Ownership that is enforced lives on chain
+// (`slotOwner`) and in the attendee-gate binding store. If issued-to-identity
+// attestation is ever wanted for real, mint it fresh under a new domain with a
+// verifier in the same PR.

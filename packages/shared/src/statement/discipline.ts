@@ -70,6 +70,12 @@ export const STATEMENT_SIGNING_PREFIXES = Object.freeze({
   // let a certificate's bytes be replayed as a challenge answer, or the reverse.
   "woco.pod-cert.v1": statementSigningPrefix("pod-cert", 1),
   "woco.pod-cert-challenge.v1": statementSigningPrefix("pod-cert-challenge", 1),
+  // The v2 cert rail (issuer-curve migration PR 3). Same two-prefix rule. The
+  // cert's ISSUER signature is secp256k1 personal_sign, but its digest is this
+  // same registry recipe — the prefix claim below is what keeps the domain
+  // unique; the challenge stays holder-ed25519 over its own prefix.
+  "woco.cert.v1": statementSigningPrefix("cert", 1),
+  "woco.cert-challenge.v1": statementSigningPrefix("cert-challenge", 1),
 } as const);
 
 // ---------------------------------------------------------------------------
