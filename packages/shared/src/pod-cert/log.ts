@@ -123,8 +123,14 @@ export function verifyPodCertLogPage(value: unknown, issuerPubkey: IssuerPubkeyV
  * DEDUPED BY HOLDER, because certificate count is not supply: an issuer
  * re-signs when a holder rotates keys or a date was wrong, and counting
  * certificates would inflate. Presence, not quantity, all the way through.
+ *
+ * Typed structurally (`{ holder }`) rather than to `PodCertV1`: the function —
+ * like the cursor arithmetic below — is log-format-agnostic and serves the v2
+ * `woco.cert-log.v1` pages too, until the v1 module's deletion relocates them.
  */
-export function holdersFromLogPages(pages: readonly PodCertV1[][]): HolderPubkey[] {
+export function holdersFromLogPages(
+  pages: ReadonlyArray<ReadonlyArray<{ holder: HolderPubkey }>>,
+): HolderPubkey[] {
   const seen = new Set<string>();
   const out: HolderPubkey[] = [];
   for (const page of pages) {

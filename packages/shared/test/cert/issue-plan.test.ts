@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planCertIssuance } from "../../src/pod-cert/issue-plan.js";
+import { planCertIssuance } from "../../src/cert/issue-plan.js";
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);

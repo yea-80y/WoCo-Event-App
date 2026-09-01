@@ -393,26 +393,6 @@ export interface EventDirectoryEntry {
   creatorFeedSigner?: Hex0x;
 }
 
-/** Ticket data fields (before signing) */
-export interface TicketData {
-  podType: "woco.ticket.v1";
-  eventId: string;
-  seriesId: string;
-  seriesName: string;
-  edition: number;
-  totalSupply: number;
-  imageHash: string;
-  creator: string;
-  mintedAt: string;
-}
-
-/** Signed ticket (ticket data + ed25519 signature) */
-export interface SignedTicket {
-  data: TicketData;
-  signature: string;
-  publicKey: string;
-}
-
 /** Body of POST /api/events/:id/update-meta — edits event-LEVEL metadata only.
  *  Series data (supply, names, prices) is committed by the signed manifest whose
  *  digest is anchored on-chain, and is deliberately NOT editable here. */
@@ -456,10 +436,10 @@ export interface CreateEventResponse {
 // ---------------------------------------------------------------------------
 
 /** A claimed ticket (original ticket data + claim metadata).
- *  v2 = issued-to-identity: `owner` is set at claim time and `ownerSig` (the
- *  platform's EIP-191 sig over `buildClaimedOwnerV2Message`) covers the
- *  binding. v1 = bearer; `owner` may be stamped retroactively via the
- *  attendee gate (no ownerSig — the gate binding store is the record). */
+ *  v2 = issued-to-identity: `owner` is set at claim time. v1 = bearer; `owner`
+ *  may be stamped retroactively via the attendee gate (the gate binding store
+ *  is the record). Ownership that is ENFORCED lives on chain (`slotOwner`) —
+ *  this object is the display record. */
 export interface ClaimedTicket {
   podType: "woco.ticket.claimed.v1" | "woco.ticket.claimed.v2";
   eventId: string;
@@ -473,10 +453,6 @@ export interface ClaimedTicket {
   /** Attendee ed25519 POD public key — the owner-of-record. Set at claim time
    *  (v2) or stamped retroactively by the attendee gate (v1). */
   owner?: string;
-  /** v2 only: platform EIP-191 sig over `buildClaimedOwnerV2Message` — the
-   *  issued-to-identity attestation covering (eventId, seriesId, edition,
-   *  owner, claimedAt). */
-  ownerSig?: Hex0x;
   /** LEGACY (pre-2026-08-01) — raw wallet address. Ticket blobs are publicly
    *  reachable via the claims feed, so new tickets carry ownerAddressHash
    *  instead. Readers must accept both. */

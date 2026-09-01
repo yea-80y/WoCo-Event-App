@@ -19,8 +19,6 @@
  * a test update. (Pre-launch this is survivable via purge + re-publish — the
  * whole point is to make it impossible to do by accident.)
  *
- * PR 3 NOTE: when `crypto/issuing.ts` lands, add the gen-0 issuing ADDRESS
- * pin for PINNED.seed right next to PINNED.x25519Pub below.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,6 +30,7 @@ import {
   FEED_SIGNER_DERIVE_TYPES,
   FEED_SIGNER_DERIVE_NONCE,
   deriveEncryptionKeypairFromPodSeed,
+  deriveIssuingKey,
   type EIP712Signer,
 } from "@woco/shared";
 
@@ -82,6 +81,7 @@ const PINNED = {
   seed: "0x72e9100a95f0a342992d0729b88e2afcca0151c3bb2029d0c3867e66435a4651",
   ed25519Pub: "0x618c7c53baa1d7d8f82effd44e08d14d273f04015afd84c8f98f22a8893a1fe2",
   x25519Pub: "9db15133070753b2302ae50ec75d00e312e1859aa3a1550d38829ecf2955d14d",
+  issuingAddress: "0x55204517dfade726f04e52cc75be64e75736012d",
   feedSignerAddress: "0xd31fb22214ec3684f64c53a26edc1d9235059f3f",
 } as const;
 
@@ -106,6 +106,15 @@ test("seed → X25519 encryption pubkey pin (the sibling that decrypts sealed or
     enc.publicKeyHex,
     PINNED.x25519Pub,
     "X25519 derivation moved — every sealed order/list becomes undecryptable",
+  );
+});
+
+test("seed → gen-0 issuing address pin (the secp sibling that signs manifests + certs)", () => {
+  const { address } = deriveIssuingKey(PINNED.seed, 0);
+  assert.equal(
+    address,
+    PINNED.issuingAddress,
+    "issuing-key derivation moved — every organiser's issuer identity just changed",
   );
 });
 
