@@ -4,6 +4,47 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## The issuer curve moved: ed25519 "POD" signing is gone, a derived secp256k1 issuing key signs everything organiser-side (#443/#444, PRs #447–#453, 2026-09-01)
+
+The original ed25519 issuer choice was made believing WoCo tickets were 0xPARC/Zupass
+PODs; they never were, so the curve was revisited and the whole issuer identity migrated
+in six PRs (design record: `HANDOVER-pod-curve-migration.md`, seven session addenda).
+
+What stands now:
+- **Issuing key**: HKDF(sha256, podSeed, "woco/issuing/v1/{gen}") → secp256k1; identity
+  of record is its 20-byte ADDRESS. Recovery restores the escrowed seed, so the key
+  re-derives byte-identical — the recovered-account issuer fork is eliminated
+  structurally. All signatures are EIP-191 personal-sign over domain-prefixed ASCII
+  messages, length-disjoint from bee-js's 32-byte SOC signing (matrix pinned in
+  `test/crypto/cross-protocol.test.ts`).
+- **Formats**: `woco.manifest.v2` + `woco.edition.v1` (one shape for tickets and
+  badges), `woco.cert.v1` / `woco.cert-challenge.v1` (holder side unchanged ed25519).
+  v1 formats DELETED; every verifier dispatch-refuses them; digest/leaf/tree/encoder
+  byte-identical to v1 so the #444 anchor seams needed no changes.
+- **Proof of possession**: every create payload carries `issuerBinding` — the issuing
+  key signs `woco-issuer-binding-v1\n{parent}\n{gen}` — because public manifests are
+  replayable and possession alone binds nothing. The server verifies (recovered ==
+  claimed == every manifest's issuer, parent lowercased) and pins one gen-0 issuer per
+  parent (`.data/issuer-bindings.json`); a divergent issuer refuses loudly, doubling as
+  the seed-divergence tripwire.
+- **Issuer registry** (`woco/issuer/{parent}`): parent-signed EIP-712 statements
+  (+ the PoP, + optional previous-gen rotation co-signature — absence is a flagged
+  break-glass) make the binding client-verifiable with zero server trust and rotation a
+  public gen bump with no new secret at rest. The statement carries `certLogOwner`,
+  closing the directory hint's split-view gap. Gate write boundary refuses badges whose
+  issuer was rotated away (leaked-key containment).
+- **Naming**: "POD" retired — docs say "object data"; code says editions / certs /
+  holder identity. Frozen signed literals keep their bytes.
+
+Discipline note for the next migration: every PR ran a delete-each-guard mutation pass
+(15 + 12 + 13 + 13 guards, each caught by a named test or, once, proven an equivalent
+mutant and made a compile error); golden vectors were recomputed exactly once, at the
+format bump, deliberately. Ops after deploy: purge/re-publish test events + badges
+(v1 events refuse at checkout; v1 cert logs are invisible to v2 topics), re-run the
+Gate B supervised sequence, re-review the guardian-escrow threat model.
+
+---
+
 ## Recovery onto an email sign-in scans the chain for every account that sign-in owns — the cross-device collision is closed (#234, 2026-08-23)
 
 `recovery-owner-collision.ts` refused to hand an account to a credential that already had

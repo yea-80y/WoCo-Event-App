@@ -27,8 +27,11 @@
  * v1 = 1-of-1 (single backup-EOA guardian). M-of-N via verifiable secret sharing
  * over the DEK is a later envelope version (§11.6 step 2) — the DEK indirection
  * here is exactly what makes that a content change, not a redesign. The bundle is
- * generic (`secrets: Record<name,secret>`) so the feed-signer slot is reserved at
- * zero cost (§11.6 step 3) — v1 ships `{ podSeed }` only.
+ * generic (`secrets: Record<name,secret>`) so slots cost nothing to add (§11.6
+ * step 3) — the bundle ships `{ podSeed, feedSignerPrivKey }` (gathered in
+ * recovery-finalize.ts; an earlier version of this header said podSeed-only and
+ * that stale claim derailed a design pass — issuer-curve handover, 2026-09-01).
+ * The ISSUING key needs no slot ever: it re-derives from podSeed (crypto/issuing.ts).
  *
  * Confidentiality of the escrow equals the recovery-threshold strength, NOT
  * device-bound secrecy — inherent to all recovery (§11.4). A timelock guards
