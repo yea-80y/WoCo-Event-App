@@ -125,3 +125,92 @@ test("malformed bindings are refused, never thrown on", () => {
     assert.equal(v.ok, false, `accepted: ${JSON.stringify(bad)}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Route enforcement ratchets — the module above is only worth anything if the
+// two create routes actually call it and stop on refusal. Neither route has a
+// harness-level test (auth middleware + streaming), so the wiring is pinned at
+// the source, the same pattern as the web payload ratchets.
+// ---------------------------------------------------------------------------
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const readSrc = (p: string) =>
+  readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+
+test("both create routes verify the binding and stop on refusal", () => {
+  for (const [name, path] of [
+    ["events", "../src/routes/events.ts"],
+    ["pod", "../src/routes/pod.ts"],
+  ] as const) {
+    const src = readSrc(path);
+    const at = src.indexOf("verifyAndPinIssuerBinding(");
+    assert.ok(at > 0, `${name}: the route must call verifyAndPinIssuerBinding`);
+    const after = src.slice(at, at + 400);
+    assert.match(after, /if \(!verdict\.ok\)/, `${name}: the verdict must be checked`);
+    assert.match(after, /400/, `${name}: a refused binding must refuse the request`);
+  }
+});
+
+test("the binding is checked against the VERIFIED parent, never a body value", () => {
+  for (const path of ["../src/routes/events.ts", "../src/routes/pod.ts"]) {
+    const src = readSrc(path);
+    const at = src.indexOf("verifyAndPinIssuerBinding(");
+    const call = src.slice(at, at + 200);
+    assert.match(call, /parentAddress/, "the session-verified parent is the first argument");
+    assert.doesNotMatch(call, /body\.creatorAddress|b\.creatorAddress/, "never the body's address");
+  }
+});
+
+test("a legacy v1 blob yields no digest on the checkout path", async () => {
+  const { digestOfManifestBlob } = await import("../src/lib/event/onchain-binding.js");
+  const v1Blob = {
+    v: 2,
+    signedManifest: {
+      body: {
+        format: "woco.manifest.v1",
+        eventId: `0x${"11".repeat(32)}`,
+        totalSupply: 3,
+        issuerPubkey: "ab".repeat(32),
+        metadataRoot: `0x${"22".repeat(32)}`,
+        encoding: "cbor-v1",
+        treeScheme: "oz-simple-v1",
+      },
+      signature: "cd".repeat(64),
+    },
+    podRefs: [],
+    manifestDigestHex: `0x${"33".repeat(32)}`,
+  };
+  assert.equal(digestOfManifestBlob(v1Blob), null, "a v1 blob must not digest — the sale refuses");
+  assert.equal(digestOfManifestBlob(null), null);
+  assert.equal(digestOfManifestBlob({}), null);
+
+  // Positive control — without it, a guard mutated to refuse EVERYTHING would
+  // pass this test while stopping every sale.
+  const { buildEditionTree, signManifestV2, manifestV2Digest, bytesToHex0x } = await import("@woco/shared");
+  const body = {
+    format: "woco.edition.v1" as const,
+    seriesId: "ga",
+    edition: 1,
+    metadata: { name: "GA" },
+    issuer: ISSUER,
+  };
+  const { root } = buildEditionTree([body]);
+  const manifest = {
+    format: "woco.manifest.v2" as const,
+    totalSupply: 1,
+    issuer: ISSUER,
+    metadataRoot: root,
+    encoding: "cbor-v1" as const,
+    treeScheme: "oz-simple-v1" as const,
+  };
+  const v2Blob = { v: 2, signedManifest: signManifestV2(manifest, KEY), podRefs: [], manifestDigestHex: "" };
+  assert.equal(
+    digestOfManifestBlob(v2Blob),
+    bytesToHex0x(manifestV2Digest(manifest)).toLowerCase(),
+    "a valid v2 blob must digest to its manifestRef",
+  );
+});

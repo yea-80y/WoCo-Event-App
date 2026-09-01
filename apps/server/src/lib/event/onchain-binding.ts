@@ -1,4 +1,3 @@
-import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
 import { downloadFromBytes } from "../swarm/bytes.js";
 
@@ -195,6 +194,29 @@ export function checkSeriesOnChainBinding(input: BindingInput): BindingVerdict {
  */
 const _digestByRef = new Map<string, string>();
 
+/**
+ * The digest of a fetched manifest blob, or null — the PURE half of
+ * `resolveManifestDigest`, split out so the refusal can be tested without I/O.
+ *
+ * Closed v2 validation FIRST: a legacy v1 blob (or garbage) yields null → the
+ * binding check refuses the sale, which is the v1 cutoff doing its job on the
+ * money path. This is the digest recomputation `confirm-chain` used to perform
+ * before that route was deleted (#433) — now the only place it happens.
+ */
+export function digestOfManifestBlob(blob: unknown): string | null {
+  try {
+    if (blob === null || typeof blob !== "object") return null;
+    // No cast: the closed validator is the ONLY way these bytes get a type.
+    // (manifestV2Digest validates again and would throw regardless — the
+    // refusal is double-enforced, which the mutation pass records.)
+    const m = (blob as { signedManifest?: unknown }).signedManifest;
+    if (!validateSignedManifestV2(m)) return null;
+    return bytesToHex0x(manifestV2Digest(m.body)).toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveManifestDigest(swarmManifestRef: string): Promise<string | null> {
   const key = swarmManifestRef.toLowerCase();
   const hit = _digestByRef.get(key);
@@ -202,16 +224,10 @@ export async function resolveManifestDigest(swarmManifestRef: string): Promise<s
 
   try {
     const raw = await downloadFromBytes(swarmManifestRef);
-    const blob = JSON.parse(raw) as SeriesManifestBlob;
-    // The digest recomputation that `confirm-chain` used to perform before that
-    // route was deleted (#433). This is now the only place it happens.
-    // Closed v2 validation FIRST: a legacy v1 blob (or garbage) resolves to
-    // null → the binding check refuses the sale, which is the v1 cutoff doing
-    // its job on the money path. Negative results are not cached (below), so a
-    // re-published v2 blob at a new ref heals it.
-    if (!validateSignedManifestV2(blob?.signedManifest)) return null;
-    const digest = bytesToHex0x(manifestV2Digest(blob.signedManifest.body)).toLowerCase();
-    _digestByRef.set(key, digest);
+    // Negative results are not cached (see above), so a re-published v2 blob
+    // at a new ref heals a refusal.
+    const digest = digestOfManifestBlob(JSON.parse(raw));
+    if (digest) _digestByRef.set(key, digest);
     return digest;
   } catch {
     return null;
