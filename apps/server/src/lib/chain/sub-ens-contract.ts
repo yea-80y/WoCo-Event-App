@@ -34,7 +34,7 @@ const REGISTRY_ABI = [
 ];
 
 // Override either with env. Chain defaults to Arb Sepolia during buildathon.
-function getSubEnsChainId(): number {
+export function getSubEnsChainId(): number {
   return parseInt(process.env.SUB_ENS_CHAIN_ID ?? "421614");
 }
 
@@ -44,7 +44,7 @@ function getRegistrarAddress(chainId: number): string {
   return addr;
 }
 
-function getRegistryAddress(chainId: number): string {
+export function getRegistryAddress(chainId: number): string {
   const addr = process.env.SUB_ENS_REGISTRY_ADDRESS ?? REGISTRY_ADDRESSES[chainId];
   if (!addr) throw new Error(`No L2Registry address for chain ${chainId}`);
   return addr;

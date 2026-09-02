@@ -263,15 +263,16 @@ profiles and event pages; the custom-domain worker must proxy, never redirect).
 |---|---|---|---|
 | 1 | **Edge proxy (Cloudflare Worker)** — `packages/edge-proxy/` was planned in `docs/CUSTOM_DOMAINS_PLAN.md` and **never built**. Blocks the whole DNS-first strategy. Server half (registry, public `/api/domains/resolve/:hostname`, poller, `DomainLinker`) already exists | Opus | #67 — not started |
 | 2 | **One CNAME path** — drop the 7-day-trial / NS-migration funnel. Cloudflare for SaaS is 100 hostnames free then $0.10/mo; the funnel dodges a cost that doesn't exist | Sonnet | #68 |
-| 3 | **Drop sub-ENS from the website builder** — keep it on profiles (identity/EAS) and event pages (USP) | Sonnet | #69 |
+| 3 | **Sub-ENS STAYS in the website builder** (owner, reaffirmed 2026-09-02) — Shopify-parity default `{label}.woco.eth` per site, custom domain on top; ships WITH canonical injection (#70). Mainnet resolution path: `docs/SUB_ENS_ARBITRUM_PLAN.md` "MAINNET READINESS" | — | #69 reopened; #419/#440 |
 | 4 | **Deploy-time `<title>` + canonical** — sites currently ship `<title>Site</title>`; nothing emits canonical anywhere | Sonnet | #70 |
 | 5 | **schema.org/Event JSON-LD** — highest value-per-effort, independent of the worker | Sonnet | #55 |
 | 6 | **Real per-page URLs** (static pre-render) — hash routing makes an N-page site ONE indexable URL. Largest piece | Opus | #71 |
 | 7 | **SEO guidance panel** in builder — live checks + wires up the orphaned `Page.metaDescription` | Sonnet | #72 |
 | 8 | **sitemap.xml + robots.txt** at deploy | Sonnet | #73 |
 
-Address ladder: organiser's own DNS (recommended) → organiser's own ENS → WoCo-issued ENS
-equivalent (future). **No WoCo-issued free subdomain tier** — rejected, see SEO_PLAN D2.
+Address ladder: WoCo-issued `{label}.woco.eth` (default per site, #69) → organiser's own DNS
+(recommended canonical for SEO) → organiser's own ENS. **No WoCo-issued free subdomain on
+`woco-net.com`** — that is a different question and stays rejected, see SEO_PLAN D2.
 
 ## Deferred / v2
 
