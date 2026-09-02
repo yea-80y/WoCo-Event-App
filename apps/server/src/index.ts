@@ -39,6 +39,7 @@ import { sesWebhook } from "./routes/ses-webhook.js";
 import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
+import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
 import { likesRoutes } from "./routes/likes.js";
 import { socialRoutes } from "./routes/social.js";
@@ -262,6 +263,10 @@ app.get("/api/health", (c) =>
     // refused writes with 503 — either an attack on the postage batch or a
     // client stuck in a write loop. Per-bucket refusal counts are statistics.
     swarmRelay: socRelayHealth(),
+    // The self-hosted CCIP-Read gateway (#419). `signer` must equal
+    // L1Resolver.signer() on L1 — if this address changes and the resolver is
+    // not updated, every *.woco.eth name stops resolving.
+    ensGateway: ensGatewayStatus(),
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
@@ -524,6 +529,9 @@ app.route("/api/etherna", ethernaRoutes);
 
 // Sub-ENS on Arbitrum — check/claim/update label.woco.eth names
 app.route("/api/sub-ens", subEnsRoutes);
+
+// EIP-3668 CCIP-Read gateway — what the L1 resolver calls to resolve *.woco.eth
+app.route("/api/ens-gateway", ensGatewayRoutes);
 
 // Attendee gate — ticket-purchase-gated account unlock (docs/ATTENDEE_GATE_RESALE_PLAN.md)
 app.route("/api/attendee-gate", attendeeGate);
