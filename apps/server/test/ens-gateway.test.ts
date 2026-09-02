@@ -17,6 +17,7 @@ import {
   Wallet,
   concat,
   dnsEncode,
+  getAddress,
   getBytes,
   keccak256,
   namehash,
@@ -33,7 +34,11 @@ import {
   type CcipHandlerConfig,
 } from "../src/lib/ens-gateway/ccip.js";
 import { loadEnsGatewayConfig } from "../src/lib/ens-gateway/config.js";
-import { createEnsGatewayRoutes } from "../src/routes/ens-gateway.js";
+import { createL2Reader, redactRpcUrl } from "../src/lib/ens-gateway/l2-reader.js";
+import { ResponseMemo, memoTtlMsFor } from "../src/lib/ens-gateway/memo.js";
+import { createEnsGatewayRoutes, ENS_GATEWAY_RATE_WINDOWS } from "../src/routes/ens-gateway.js";
+import { SlidingWindowLimiter } from "../src/lib/http/rate-limit.js";
+import { getSubEnsChainId } from "../src/lib/chain/sub-ens-contract.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -48,6 +53,8 @@ const OTHER_RESOLVER = "0x2222222222222222222222222222222222222222";
 const REGISTRY = "0x41Fb196Ae7D65E06880A240c8d1B91245Fb84807";
 const OTHER_REGISTRY = "0x3333333333333333333333333333333333333333";
 const CHAIN_ID = 421614;
+/** What the loader itself will compute, so the env-var name in config tests matches. */
+const DEFAULT_CHAIN = getSubEnsChainId();
 const TTL = 600;
 const NOW = 1_800_000_000;
 
@@ -474,4 +481,494 @@ test("route: a disabled gateway answers 503 on every path, uncached", async () =
     assert.match(body.message, /no signer key/);
     assert.ok(!("data" in body));
   }
+});
+
+// ---------------------------------------------------------------------------
+// (m) #465 §1 — two-RPC cross-check
+//
+// The reader is the gateway's whole notion of truth. Every case here is a way
+// the signing key could be made to sign something the L2 never said.
+// ---------------------------------------------------------------------------
+
+const REGISTRY_CALL_RESULT = AbiCoder.defaultAbiCoder().encode(["bytes"], [L2_RESULT]);
+const OTHER_CALL_RESULT = AbiCoder.defaultAbiCoder().encode(
+  ["bytes"],
+  [AbiCoder.defaultAbiCoder().encode(["address"], ["0x00000000000000000000000000000000000000aa"])],
+);
+
+const RPC_A = "https://rpc-a.example/v2/KEY_A";
+const RPC_B = "https://rpc-b.example/v2/KEY_B";
+
+/** Builds a reader over fake endpoints; `answers` maps a URL to what it returns (or throws). */
+function reader(urls: string[], answers: Record<string, string | Error>, calls?: string[]) {
+  return createL2Reader(CHAIN_ID, urls, {
+    makeCall: (url) => async () => {
+      calls?.push(url);
+      const a = answers[url];
+      if (a instanceof Error) throw a;
+      if (a === undefined) throw new Error(`no fake answer for ${url}`);
+      return a;
+    },
+  });
+}
+
+const NAME_BYTES = getBytes(dnsEncode("alice.woco.eth"));
+
+test("cross-check: two agreeing endpoints produce the answer, and BOTH are read", async () => {
+  const calls: string[] = [];
+  const read = reader([RPC_A, RPC_B], { [RPC_A]: REGISTRY_CALL_RESULT, [RPC_B]: REGISTRY_CALL_RESULT }, calls);
+  const out = await read(REGISTRY, NAME_BYTES, addrCall(namehash("alice.woco.eth")));
+  assert.equal(out.toLowerCase(), L2_RESULT.toLowerCase());
+  assert.deepEqual(calls.sort(), [RPC_A, RPC_B].sort(), "both endpoints must be consulted");
+});
+
+test("cross-check: DISAGREEMENT refuses — nothing is returned to be signed", async () => {
+  const read = reader([RPC_A, RPC_B], { [RPC_A]: REGISTRY_CALL_RESULT, [RPC_B]: OTHER_CALL_RESULT });
+  await assert.rejects(
+    () => read(REGISTRY, NAME_BYTES, addrCall(namehash("alice.woco.eth"))),
+    /disagree/,
+    "a disagreeing pair must never resolve to one of the two answers",
+  );
+});
+
+test("cross-check: the disagreement names both endpoints and both values, credentials stripped", async () => {
+  const read = reader([RPC_A, RPC_B], { [RPC_A]: REGISTRY_CALL_RESULT, [RPC_B]: OTHER_CALL_RESULT });
+  const err = await read(REGISTRY, NAME_BYTES, addrCall(namehash("alice.woco.eth"))).then(
+    () => null,
+    (e: Error) => e,
+  );
+  assert.ok(err, "expected a rejection");
+  assert.match(err.message, /rpc-a\.example/);
+  assert.match(err.message, /rpc-b\.example/);
+  assert.ok(err.message.includes("ff"), "the differing values must be in the log line");
+  assert.ok(!err.message.includes("KEY_A"), "an API key must never reach a log line");
+  assert.ok(!err.message.includes("KEY_B"), "an API key must never reach a log line");
+});
+
+test("cross-check: one endpoint failing is a REFUSAL, not a fallback to the survivor", async () => {
+  // The attack this closes: knock one provider over, then lie on the other.
+  const read = reader([RPC_A, RPC_B], { [RPC_A]: new Error("boom"), [RPC_B]: OTHER_CALL_RESULT });
+  await assert.rejects(
+    () => read(REGISTRY, NAME_BYTES, addrCall(namehash("alice.woco.eth"))),
+    /L2 read failed/,
+    "a single surviving endpoint must not become the answer",
+  );
+});
+
+test("cross-check: both endpoints failing still refuses", async () => {
+  const read = reader([RPC_A, RPC_B], { [RPC_A]: new Error("a down"), [RPC_B]: new Error("b down") });
+  await assert.rejects(() => read(REGISTRY, NAME_BYTES, addrCall(namehash("alice.woco.eth"))), /2\/2/);
+});
+
+test("cross-check: a single endpoint still works (the pre-#465 posture)", async () => {
+  const read = reader([RPC_A], { [RPC_A]: REGISTRY_CALL_RESULT });
+  assert.equal(
+    (await read(REGISTRY, NAME_BYTES, addrCall(namehash("alice.woco.eth")))).toLowerCase(),
+    L2_RESULT.toLowerCase(),
+  );
+});
+
+test("cross-check: the reader refuses to be built against the same URL twice", () => {
+  assert.throws(() => createL2Reader(CHAIN_ID, [RPC_A, RPC_A]), /duplicate/i);
+});
+
+test("cross-check: the ABI decoder normalises case, so two spellings are one value", async () => {
+  // PINS THE PREMISE, not the guard. Comparing endpoint answers is only sound
+  // if a value has ONE spelling by the time it is compared; today that holds
+  // because ethers' decoder lowercases its output, which is why the explicit
+  // normalisation in the reader has no reachable failure mode. If an ethers
+  // upgrade ever stops normalising, THIS test breaks first and tells us the
+  // reader's `toLowerCase` has become load-bearing rather than belt.
+  const upper = `0x${REGISTRY_CALL_RESULT.slice(2).toUpperCase()}`;
+  assert.notEqual(upper, REGISTRY_CALL_RESULT, "fixture must differ in spelling");
+  const decoded = new Interface(["function resolve(bytes name, bytes data) view returns (bytes)"])
+    .decodeFunctionResult("resolve", upper)[0] as string;
+  assert.equal(decoded, decoded.toLowerCase(), "the decoder must emit one canonical spelling");
+
+  const read = reader([RPC_A, RPC_B], { [RPC_A]: REGISTRY_CALL_RESULT, [RPC_B]: upper });
+  const out = await read(REGISTRY, NAME_BYTES, addrCall(namehash("alice.woco.eth")));
+  assert.equal(out.toLowerCase(), L2_RESULT.toLowerCase(), "case alone is not a disagreement");
+});
+
+test("redactRpcUrl keeps the origin and drops path, query and credentials", () => {
+  assert.equal(redactRpcUrl("https://x.example/v2/SECRET?apikey=ALSO_SECRET"), "https://x.example");
+  assert.equal(redactRpcUrl("https://user:pw@x.example/v2/SECRET"), "https://x.example");
+  assert.equal(redactRpcUrl("not a url"), "<unparseable rpc url>");
+});
+
+test("config: a second endpoint on a different origin turns the cross-check on", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    [`RPC_URL_${DEFAULT_CHAIN}`]: RPC_A,
+    ENS_GATEWAY_RPC_URL_2: RPC_B,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.rpcUrls, [RPC_A, RPC_B]);
+});
+
+test("config: a second endpoint at the SAME origin disables rather than faking a cross-check", () => {
+  // Two API keys at one provider are one provider — it would agree with itself.
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    [`RPC_URL_${DEFAULT_CHAIN}`]: "https://same.example/v2/KEY_ONE",
+    ENS_GATEWAY_RPC_URL_2: "https://same.example/v2/KEY_TWO",
+  });
+  assert.ok("disabled" in loaded, "same-origin endpoints must not boot a green cross-check");
+  assert.match(loaded.disabled, /shares an origin/);
+});
+
+test("config: no second endpoint is allowed, and leaves exactly one URL", () => {
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV, [`RPC_URL_${DEFAULT_CHAIN}`]: RPC_A });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.rpcUrls, [RPC_A]);
+});
+
+test("config: a non-http second endpoint disables", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    [`RPC_URL_${DEFAULT_CHAIN}`]: RPC_A,
+    ENS_GATEWAY_RPC_URL_2: "ws://rpc-b.example",
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /ENS_GATEWAY_RPC_URL_2 is not an http/);
+});
+
+// ---------------------------------------------------------------------------
+// (n) #465 §2 — the memo
+// ---------------------------------------------------------------------------
+
+/** A handler with a memo attached, plus a counter of how often the L2 was actually read. */
+function memoHandler(opts: { memo?: ResponseMemo<{ data: string }>; now?: () => number } = {}) {
+  const state = { reads: 0 };
+  const memo = opts.memo ?? new ResponseMemo<{ data: string }>(30_000);
+  const handler = createCcipHandler(CONFIG, {
+    readL2: async () => {
+      state.reads += 1;
+      return L2_RESULT;
+    },
+    now: opts.now ?? (() => NOW),
+    memo,
+  });
+  return { handler, state, memo };
+}
+
+test("memo: a repeat of the same request costs no second L2 read and returns identical bytes", async () => {
+  const { handler, state } = memoHandler();
+  const calldata = stuff();
+  const first = await handler(RESOLVER, calldata);
+  const second = await handler(RESOLVER, calldata);
+  assert.equal(state.reads, 1, "the second request must not touch the L2");
+  assert.equal(second.status, 200);
+  assert.equal(second.cacheable, true);
+  assert.deepEqual(second.body, first.body, "a memo hit must be byte-identical, signature included");
+});
+
+test("memo: CALLDATA hex case cannot be varied to miss the memo", async () => {
+  // Without lowercasing the key this is the whole bypass: the signature covers
+  // the request BYTES, so a case-flipped spelling is the same request, and a
+  // flood could vary it per request to put every one back on the RPC.
+  const { handler, state } = memoHandler();
+  const calldata = stuff();
+  const first = await handler(RESOLVER, calldata);
+  const upper = `0x${calldata.slice(2).toUpperCase()}`;
+  assert.notEqual(upper, calldata, "fixture must actually differ in spelling");
+  const out = await handler(RESOLVER, upper);
+  // Status first: a refusal would leave `reads` at 1 too, and pass vacuously.
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.body, first.body, "the same bytes must yield the same signed answer");
+  assert.equal(state.reads, 1, "a case-flipped spelling of the same request must hit the memo");
+});
+
+test("memo: SENDER case cannot be varied to miss the memo", async () => {
+  // Same argument on the other half of the key: `makeSignatureHash` checksums
+  // the target, so two spellings of one address are one request.
+  const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+  let reads = 0;
+  const handler = createCcipHandler(
+    { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
+    {
+      readL2: async () => {
+        reads += 1;
+        return L2_RESULT;
+      },
+      now: () => NOW,
+      memo: new ResponseMemo<{ data: string }>(30_000),
+    },
+  );
+  const calldata = stuff();
+  const first = await handler(mixed, calldata);
+  assert.equal(first.status, 200);
+  const second = await handler(mixed.toLowerCase(), calldata);
+  assert.equal(second.status, 200);
+  assert.deepEqual(second.body, first.body);
+  assert.equal(reads, 1, "one address spelled two ways is one request");
+});
+
+test("a pinned sender in NON-EIP-55 mixed case is answered, not thrown", async () => {
+  // Regression for a defect in #466 as merged: the raw spelling reached
+  // `getAddress` at the signing step, which throws on a bad checksum — so this
+  // request became an unhandled 500 AFTER paying for the L2 read, and never
+  // reached the memo write. `0xAbCdEf01…` below is deliberately not valid EIP-55.
+  const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+  assert.throws(() => getAddress(mixed), /checksum/, "fixture must be a BAD checksum");
+  const out = await createCcipHandler(
+    { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
+    { readL2: async () => L2_RESULT, now: () => NOW },
+  )(mixed, stuff());
+  assert.equal(out.status, 200);
+});
+
+test("the signature is identical however the sender is spelled", async () => {
+  // The normalisation must not move the signed bytes: `getAddress` emits the
+  // same 20 bytes for every spelling, so both must recover to the same signer
+  // over the same hash.
+  const lower = RESOLVER.toLowerCase();
+  const checksummed = getAddress(RESOLVER);
+  const calldata = stuff();
+  const a = await handler()(lower, calldata);
+  const b = await handler()(checksummed, calldata);
+  assert.deepEqual(a.body, b.body);
+  const { result, expires, sig } = decodeResponse((a.body as { data: string }).data);
+  assert.equal(
+    recoverAddress(makeSignatureHash(checksummed, expires, getBytes(calldata), result), sig),
+    SIGNER_ADDRESS,
+    "a verifier using the checksummed target must still verify",
+  );
+});
+
+test("memo: the SENDER is part of the key — one resolver's answer is never served to another", async () => {
+  const config = { ...CONFIG, allowedSenders: [RESOLVER.toLowerCase(), OTHER_RESOLVER.toLowerCase()] };
+  let reads = 0;
+  const handler = createCcipHandler(config, {
+    readL2: async () => {
+      reads += 1;
+      return L2_RESULT;
+    },
+    now: () => NOW,
+    memo: new ResponseMemo<{ data: string }>(30_000),
+  });
+  const calldata = stuff();
+  const a = await handler(RESOLVER, calldata);
+  const b = await handler(OTHER_RESOLVER, calldata);
+  assert.equal(reads, 2, "a different sender is a different request");
+  assert.notDeepEqual(a.body, b.body, "the signature is bound to the sender and must differ");
+  // And the proof that matters: b's signature verifies against OTHER_RESOLVER.
+  const { result, expires, sig } = decodeResponse((b.body as { data: string }).data);
+  assert.equal(
+    recoverAddress(makeSignatureHash(OTHER_RESOLVER, expires, getBytes(calldata), result), sig),
+    SIGNER_ADDRESS,
+  );
+});
+
+test("memo: a REFUSAL is never stored — a transient RPC failure is not pinned", async () => {
+  let reads = 0;
+  const handler = createCcipHandler(CONFIG, {
+    readL2: async () => {
+      reads += 1;
+      if (reads === 1) throw new Error("transient");
+      return L2_RESULT;
+    },
+    now: () => NOW,
+    memo: new ResponseMemo<{ data: string }>(30_000),
+    logError: () => {},
+  });
+  const calldata = stuff();
+  assert.equal((await handler(RESOLVER, calldata)).status, 502);
+  const second = await handler(RESOLVER, calldata);
+  assert.equal(second.status, 200, "one bad second at a provider must not become a memo-long outage");
+  assert.equal(reads, 2);
+});
+
+test("memo: an entry stops being served once it goes stale", async () => {
+  let clock = NOW;
+  let reads = 0;
+  const handler = createCcipHandler(CONFIG, {
+    readL2: async () => {
+      reads += 1;
+      return L2_RESULT;
+    },
+    now: () => clock,
+    memo: new ResponseMemo<{ data: string }>(30_000),
+  });
+  const calldata = stuff();
+  await handler(RESOLVER, calldata);
+  assert.equal(reads, 1);
+  clock = NOW + 29;
+  await handler(RESOLVER, calldata);
+  assert.equal(reads, 1, "still fresh");
+  clock = NOW + 31;
+  await handler(RESOLVER, calldata);
+  assert.equal(reads, 2, "a stale entry must fall through to a fresh read");
+});
+
+test("memo: freshness is judged on the handler's clock, not the wall clock", async () => {
+  // The two are the same instant by construction; if they ever drift, a memo hit
+  // can outlive the signature it is holding.
+  let clock = NOW;
+  let reads = 0;
+  const handler = createCcipHandler(
+    { ...CONFIG, ttlSeconds: 60 },
+    {
+      readL2: async () => {
+        reads += 1;
+        return L2_RESULT;
+      },
+      now: () => clock,
+      memo: new ResponseMemo<{ data: string }>(memoTtlMsFor(60)),
+    },
+  );
+  const calldata = stuff();
+  await handler(RESOLVER, calldata);
+  clock = NOW + 31;
+  await handler(RESOLVER, calldata);
+  assert.equal(reads, 2, "a 60s signature must not be memoised past 30s");
+});
+
+test("memo: never serves an entry past the SIGNATURE's own deadline", () => {
+  // Belt to the clamp's braces: even a memo window longer than the signature's
+  // life cannot hand back something the resolver would reject.
+  const memo = new ResponseMemo<{ data: string }>(10 * 60_000);
+  const t0 = 1_000_000;
+  memo.set("k", { data: "0xdead" }, BigInt(Math.floor(t0 / 1000) + 5), t0);
+  assert.deepEqual(memo.get("k", t0 + 1_000), { data: "0xdead" }, "still valid");
+  assert.equal(memo.get("k", t0 + 6_000), null, "past `expires` — must not be served");
+});
+
+test("memo: capacity is bounded and eviction is least-recently-stored", () => {
+  const memo = new ResponseMemo<{ data: string }>(60_000, 3);
+  const far = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  for (const k of ["a", "b", "c", "d"]) memo.set(k, { data: `0x${k}` }, far);
+  assert.equal(memo.size(), 3, "an unbounded memo is the #163 defect on the route that bounds callers");
+  assert.equal(memo.get("a"), null, "the stalest entry is the one evicted");
+  assert.deepEqual(memo.get("d"), { data: "0xd" });
+});
+
+test("memo: the TTL is clamped to half the signature's life", () => {
+  assert.equal(memoTtlMsFor(600), 30_000);
+  assert.equal(memoTtlMsFor(60), 30_000);
+  // A future TTL below the memo window must shrink the window, not outlive it.
+  assert.equal(memoTtlMsFor(40), 20_000);
+  assert.ok(memoTtlMsFor(10) < 10_000);
+});
+
+test("memo: a handler with NO memo behaves exactly as before", async () => {
+  let reads = 0;
+  const handler = createCcipHandler(CONFIG, {
+    readL2: async () => {
+      reads += 1;
+      return L2_RESULT;
+    },
+    now: () => NOW,
+  });
+  const calldata = stuff();
+  await handler(RESOLVER, calldata);
+  await handler(RESOLVER, calldata);
+  assert.equal(reads, 2);
+});
+
+test("memo: an unpinned sender is refused whatever the memo holds", async () => {
+  const { handler } = memoHandler();
+  await handler(RESOLVER, stuff());
+  const out = await handler(OTHER_RESOLVER, stuff());
+  assert.equal(out.status, 403);
+  assert.ok(!("data" in out.body));
+});
+
+// ---------------------------------------------------------------------------
+// (o) #465 §2 — the per-IP limiter
+// ---------------------------------------------------------------------------
+
+const IP_A = { "cf-connecting-ip": "203.0.113.7" };
+const IP_B = { "cf-connecting-ip": "198.51.100.9" };
+
+test("rate limit: a caller over the burst window gets 429, uncached", async () => {
+  const limiter = new SlidingWindowLimiter([{ limit: 2, windowMs: 10_000 }]);
+  const app = createEnsGatewayRoutes(handler(), { limiter });
+  const url = `/v1/${RESOLVER}/${stuff()}`;
+  for (let i = 0; i < 2; i++) {
+    assert.equal((await app.request(url, { headers: IP_A })).status, 200, `request ${i}`);
+  }
+  const refused = await app.request(url, { headers: IP_A });
+  assert.equal(refused.status, 429);
+  assert.equal(refused.headers.get("cache-control"), "no-store");
+  const body = (await refused.json()) as Record<string, unknown>;
+  assert.ok(!("data" in body), "a refused request must never carry a signature");
+});
+
+test("rate limit: buckets are per IP — one flooder does not take everyone down", async () => {
+  const limiter = new SlidingWindowLimiter([{ limit: 1, windowMs: 10_000 }]);
+  const app = createEnsGatewayRoutes(handler(), { limiter });
+  const url = `/v1/${RESOLVER}/${stuff()}`;
+  assert.equal((await app.request(url, { headers: IP_A })).status, 200);
+  assert.equal((await app.request(url, { headers: IP_A })).status, 429);
+  assert.equal((await app.request(url, { headers: IP_B })).status, 200, "a second caller is unaffected");
+});
+
+test("rate limit: applies to the DISABLED gateway too", async () => {
+  const limiter = new SlidingWindowLimiter([{ limit: 1, windowMs: 10_000 }]);
+  const app = createEnsGatewayRoutes({ disabled: "no signer key" }, { limiter });
+  assert.equal((await app.request("/v1/x/0x00", { headers: IP_A })).status, 503);
+  assert.equal((await app.request("/v1/x/0x00", { headers: IP_A })).status, 429);
+});
+
+test("rate limit: the limiter runs BEFORE the handler, so a refused request costs no L2 read", async () => {
+  let reads = 0;
+  const counting = createCcipHandler(CONFIG, {
+    readL2: async () => {
+      reads += 1;
+      return L2_RESULT;
+    },
+    now: () => NOW,
+  });
+  const limiter = new SlidingWindowLimiter([{ limit: 1, windowMs: 10_000 }]);
+  const app = createEnsGatewayRoutes(counting, { limiter });
+  const url = `/v1/${RESOLVER}/${stuff()}`;
+  await app.request(url, { headers: IP_A });
+  await app.request(url, { headers: IP_A });
+  assert.equal(reads, 1, "the 429 must be decided without reaching the L2");
+});
+
+test("rate limit: the shipped windows allow a real page load and cap a sustained flood", () => {
+  // A guard on the NUMBERS, not the mechanism: shared resolution front-ends
+  // (.limo and friends) put many users behind one address, so a limit sized for
+  // one human here would stop every *.woco.eth name resolving for all of them.
+  const limiter = new SlidingWindowLimiter(ENS_GATEWAY_RATE_WINDOWS);
+  const t = Date.now();
+  for (let i = 0; i < 60; i++) {
+    assert.ok(limiter.allow("ip:x", t), `a 60-record burst must pass (${i})`);
+  }
+  let allowed = 0;
+  for (let i = 0; i < 5_000; i++) if (limiter.allow("ip:x", t + 30_000)) allowed++;
+  assert.ok(allowed < 600, `a sustained flood must be capped, allowed ${allowed}`);
+});
+
+// ---------------------------------------------------------------------------
+// (p) #465 §3 — refusal logging is injectable, so the suite stays readable
+// ---------------------------------------------------------------------------
+
+test("an L2 failure logs through the injected logger and not to the console", async () => {
+  const logged: string[] = [];
+  const out = await createCcipHandler(CONFIG, {
+    readL2: async () => {
+      throw new Error("RPC exploded");
+    },
+    now: () => NOW,
+    logError: (message, err) => logged.push(`${message} ${(err as Error).message}`),
+  })(RESOLVER, stuff());
+  assert.equal(out.status, 502);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0]!, /alice\.woco\.eth/);
+  assert.match(logged[0]!, /RPC exploded/);
+});
+
+test("the 502 body never carries the read failure's detail", async () => {
+  const out = await createCcipHandler(CONFIG, {
+    readL2: async () => {
+      throw new Error("disagree: https://rpc-a.example => 0xaaa | https://rpc-b.example => 0xbbb");
+    },
+    now: () => NOW,
+    logError: () => {},
+  })(RESOLVER, stuff());
+  assert.equal(out.status, 502);
+  assert.equal(JSON.stringify(out.body).includes("rpc-a.example"), false);
 });
