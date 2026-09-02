@@ -40,12 +40,16 @@ therefore to whoever currently owns it).
 
 | Contract | Address | Notes |
 |---|---|---|
-| WoCo Registrar | `0x7c0DE55a1713e6C1a53Db50314C7CB608179aAf1` | `register` / `registerWithPermit` / `setContenthash` |
-| L2Registry (Durin clone) | `0x41Fb196Ae7D65E06880A240c8d1B91245Fb84807` | ERC-721 `ownerOf`, contenthash resolver |
+| WoCo Registrar | `0xD33C93E2E73A0C9C7683aaf6f4508F558A277816` | `register` / `registerWithPermit` / `setContenthash`, per-recipient mint cap |
+| L2Registry (our impl, EIP-1167 clone) | `0x6a5290df9B810d85Da3B97EE160C2B1f05eB9b22` | ERC-721 `ownerOf`, contenthash resolver, `release` |
 
-The registrar address is configured identically on the client and the server, and confirmed live
-on-chain (the registrar holds the `register`/permit logic; the registry is a Durin-factory clone).
-Both contracts are **source-verified on Arbiscan**.
+Redeployed 2026-09-02 (#440) from **our own** `L2Registry` implementation
+(`0xa3f9Bf8f1919Ac0F1Cb56597c7095aDA6FE447ee`) rather than a NameStone factory clone, because
+NameStone ceased operations and the permanent layer must run code we control. The registrar
+address is configured identically on the client and the server, and confirmed live on-chain.
+Implementation and registrar are **source-verified on Arbiscan**; the registry is the 45-byte
+clone of the verified implementation. The previous pair (`0x7c0D…aAf1` / `0x41Fb…4807`) is
+abandoned along with its 23 pre-launch test names.
 
 ## Honest state
 

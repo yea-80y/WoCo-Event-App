@@ -270,6 +270,8 @@ profiles and event pages; the custom-domain worker must proxy, never redirect).
 | 7 | **SEO guidance panel** in builder — live checks + wires up the orphaned `Page.metaDescription` | Sonnet | #72 |
 | 8 | **sitemap.xml + robots.txt** at deploy | Sonnet | #73 |
 
+**Sub-ENS contracts moved 2026-09-02 (#440):** registry `0x6a5290df…9b22`, registrar `0xD33C93E2…7816` — our own implementation; the old pair and its test names are abandoned.
+
 Address ladder: WoCo-issued `{label}.woco.eth` (default per site, #69) → organiser's own DNS
 (recommended canonical for SEO) → organiser's own ENS. **No WoCo-issued free subdomain on
 `woco-net.com`** — that is a different question and stays rejected, see SEO_PLAN D2.

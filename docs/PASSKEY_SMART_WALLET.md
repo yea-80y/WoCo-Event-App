@@ -160,8 +160,8 @@ because it needs a WebAuthn passkey server and a carefully-designed separate PRF
 | What | Value |
 |---|---|
 | Kernel version / EntryPoint | `KERNEL_V3_1` (stable) · EntryPoint **0.7** |
-| Sub-ENS `WoCoRegistrar` (session-key call target) | `0x7c0DE55a1713e6C1a53Db50314C7CB608179aAf1` |
-| Sub-ENS L2Registry (Durin) | `0x41Fb196Ae7D65E06880A240c8d1B91245Fb84807` |
+| Sub-ENS `WoCoRegistrar` (session-key call target) | `0xD33C93E2E73A0C9C7683aaf6f4508F558A277816` (redeployed 2026-09-02, #440) |
+| Sub-ENS L2Registry (our impl, clone) | `0x6a5290df9B810d85Da3B97EE160C2B1f05eB9b22` |
 | EAS (likes/follows call target) | `0x2521021fc8BF070473E1e1801D3c7B4aB701E1dE` |
 | Recovery action (ERC-7579 fallback module, singleton) | `0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E` |
 | Recovery caller hook (singleton) | `0x990a9FC8189D96d59E3cE98bd87F42135a24a30E` |
