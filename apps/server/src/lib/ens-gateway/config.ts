@@ -9,9 +9,17 @@
  */
 import { SigningKey, Wallet, computeAddress } from "ethers";
 import { getSubEnsChainId, getRegistryAddress } from "../chain/sub-ens-contract.js";
+import { getChainRpcUrl } from "../chain/event-contract.js";
 import type { CcipHandlerConfig } from "./ccip.js";
 
-export type EnsGatewayConfig = CcipHandlerConfig;
+export type EnsGatewayConfig = CcipHandlerConfig & {
+  /**
+   * One or two endpoints for `chainId`. Two enables the #465 cross-check.
+   * SECRET-BEARING — provider URLs routinely carry the API key in the path or
+   * query, so these must never reach a log line or /api/health unredacted.
+   */
+  rpcUrls: string[];
+};
 
 export type EnsGatewayLoad = EnsGatewayConfig | { disabled: string };
 
@@ -90,6 +98,42 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
     return { disabled: `SUB_ENS_REGISTRY_ADDRESS is not an address: ${registryAddress}` };
   }
 
+  // The second endpoint is OPTIONAL: without it the gateway keeps its pre-#465
+  // single-provider posture rather than refusing to boot, because a hard
+  // requirement here would block the Sepolia rehearsal for a hardening step
+  // that explicitly does not gate it. What is NOT optional is that the operator
+  // can see which posture is in force — hence `crossCheck` on /api/health.
+  // `env` first so the loader stays injectable end-to-end; in production `env`
+  // IS process.env and getChainRpcUrl consults the same name, so this is the
+  // identical value by either route.
+  const primaryRpc = (env[`RPC_URL_${chainId}`] ?? getChainRpcUrl(chainId))?.trim();
+  if (!primaryRpc) return { disabled: `no RPC URL for chain ${chainId}` };
+  if (!isHttpUrl(primaryRpc)) return { disabled: `RPC_URL_${chainId} is not an http(s) URL` };
+
+  const rpcUrls = [primaryRpc];
+  const secondRpc = env.ENS_GATEWAY_RPC_URL_2?.trim();
+  if (secondRpc) {
+    if (!isHttpUrl(secondRpc)) {
+      return { disabled: "ENS_GATEWAY_RPC_URL_2 is not an http(s) URL" };
+    }
+    // INDEPENDENCE, tested on the ORIGIN rather than the whole URL. The claim
+    // the cross-check buys is "two unrelated providers do not collude on the
+    // same lie"; two API keys at one provider are one provider, and would agree
+    // with themselves about anything that provider chose to say. Same origin is
+    // therefore the honest test, and it also catches the realistic operator
+    // slip of pasting one URL into both variables. A refusal to boot, not a
+    // downgrade: green-and-worthless is worse than absent, because an operator
+    // acts on green.
+    if (originOf(secondRpc) === originOf(primaryRpc)) {
+      return {
+        disabled:
+          `ENS_GATEWAY_RPC_URL_2 shares an origin with RPC_URL_${chainId} — a cross-check against the ` +
+          "same provider proves nothing. Use a second, unrelated provider (a distinct host).",
+      };
+    }
+    rpcUrls.push(secondRpc);
+  }
+
   return {
     signerPrivateKey,
     allowedSenders,
@@ -97,7 +141,22 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
     registryAddress,
     parentName,
     ttlSeconds,
+    rpcUrls,
   };
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Scheme + host + port, with credentials and path dropped. Callers have already checked `isHttpUrl`. */
+function originOf(value: string): string {
+  return new URL(value).origin.toLowerCase();
 }
 
 /** Public address of the configured gateway signer — this is what `L1Resolver.signer()` must be set to. */

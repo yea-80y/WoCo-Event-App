@@ -23,6 +23,7 @@ import {
   namehash,
   toBeHex,
 } from "ethers";
+import type { ResponseMemo } from "./memo.js";
 
 // ---------------------------------------------------------------------------
 // ABI surface
@@ -207,6 +208,14 @@ export interface CcipHandlerDeps {
   readL2: ReadL2;
   /** UNIX seconds. Injectable so tests can pin the expiry window. */
   now?: () => number;
+  /**
+   * Collapses repeat lookups so a flood costs one L2 read, not one per request
+   * (#465 §2). Omit to disable memoisation entirely — the handler is correct
+   * either way; the memo only changes how often the RPC is touched.
+   */
+  memo?: ResponseMemo<{ data: string }>;
+  /** Injectable so the suite can assert on refusal logging instead of printing stacks. */
+  logError?: (message: string, err: unknown) => void;
 }
 
 export interface CcipResult {
@@ -235,6 +244,12 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
   const allowedSenders = new Set(config.allowedSenders.map((s) => s.toLowerCase()));
   const registry = config.registryAddress.toLowerCase();
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
+  const memo = deps.memo;
+  // ONE clock for both. The memo's freshness and the signature's deadline are
+  // statements about the same instant, and letting them drift apart is how a
+  // memo hit could outlive the signature it holds.
+  const nowMs = () => now() * 1000;
+  const logError = deps.logError ?? ((message, err) => console.error(message, err));
 
   return async (senderParam, dataParam) => {
     // 1. Shape.
@@ -248,6 +263,28 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     if (!allowedSenders.has(senderParam.toLowerCase())) {
       return refuse(403, "sender not served");
     }
+
+    // 2b. Memo, consulted only now — after the two checks above, so the key is
+    //     built from values the regexes have already constrained (which is what
+    //     makes `|` a safe separator: neither side can contain it, so two
+    //     different requests cannot spell the same key) and so an unpinned
+    //     sender gets its 403 whatever the memo holds.
+    //
+    //     A HIT IS SOUND BY CONSTRUCTION: entries are written only on a signed
+    //     200, so the exact bytes of this request from this exact sender have
+    //     already passed every remaining check, and every one of those checks is
+    //     a pure function of (sender, data) and process-immutable config. The
+    //     one thing that does move is the signature's deadline, and the memo
+    //     re-tests that on every read.
+    //
+    //     LOWERCASED, and that is load-bearing rather than tidy: the signature
+    //     covers the request BYTES, so `0xAB…` and `0xab…` are the same request
+    //     and must share an entry. Keying on the raw spelling would let a flood
+    //     vary hex case to miss the memo on every request and put the RPC back
+    //     in the firing line — the exact thing the memo exists to prevent.
+    const memoKey = `${senderParam.toLowerCase()}|${dataParam.toLowerCase()}`;
+    const memoed = memo?.get(memoKey, nowMs());
+    if (memoed) return { status: 200, body: memoed, cacheable: true };
 
     // 3. Outer calldata.
     let call: StuffedResolveCall;
@@ -302,7 +339,10 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     try {
       result = await deps.readL2(call.targetRegistryAddress, call.name, call.data);
     } catch (err) {
-      console.error(`[ens-gateway] L2 read failed for ${name}:`, err);
+      // The message carries the cross-check detail (which endpoints, what they
+      // each said) and may name our providers, so it goes to the log and NEVER
+      // into the response — the caller learns only that the read failed.
+      logError(`[ens-gateway] L2 read failed for ${name}:`, err);
       return refuse(502, "could not read the L2 registry");
     }
 
@@ -313,10 +353,13 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     const hash = makeSignatureHash(senderParam, expires, getBytes(dataParam), result);
     const sig = signingKey.sign(hash).serialized;
 
-    return {
-      status: 200,
-      body: { data: encodeGatewayResponse(result, expires, sig) },
-      cacheable: true,
-    };
+    const body = { data: encodeGatewayResponse(result, expires, sig) };
+    // Only a SIGNED 200 is ever stored. Memoising a refusal would pin a
+    // transient RPC failure for the whole memo window — turning one bad second
+    // at a provider into a guaranteed outage — and refusals cost no RPC call
+    // anyway, so there is nothing to collapse.
+    memo?.set(memoKey, body, expires, nowMs());
+
+    return { status: 200, body, cacheable: true };
   };
 }
