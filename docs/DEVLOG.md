@@ -4,6 +4,25 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Self-hosted ENS CCIP-Read gateway for `*.woco.eth` (#419, 2026-09-02)
+
+NameStone, Durin's authors, ceased operations on 2026-08-03, and their `gateway.durin.dev` was the
+only thing that could answer for our L2 names. `GET /api/ens-gateway/v1/:sender/:data` now serves
+EIP-3668 from the Hono server: it decodes `stuffedResolveCall`, reads the pinned L2 registry through
+the registry's own ENSIP-10 `resolve`, and signs with a NEW key (`ENS_GATEWAY_SIGNER_PRIVATE_KEY`,
+refused at boot if it derives the sponsor wallet's address). Every refusal is unsigned: sender not
+in `ENS_GATEWAY_RESOLVER_ADDRESSES`, chain or registry not ours, name not strictly under the parent
+(the apex is never served — its records stay on L1), inner selector outside the five record reads,
+inner node ≠ `namehash(name)`, or an L2 read failure (502, never a signed "unset"). The decision
+logic is pure (`lib/ens-gateway/ccip.ts`), so a Cloudflare Worker port later is a wrapper plus one
+`setURL` tx. 42 tests; every guard was mutation-tested. `/api/health` reports `ensGateway.signer`,
+which must equal `L1Resolver.signer()`.
+
+NOT live yet: nothing calls this until our own L1Resolver exists with `url()` and `signer()` set.
+The full mainnet sequence — #420 custody first, #440 own registry implementation, the apex
+fallback resolver, Sepolia rehearsal, mainnet throwaway, then woco.eth — is in the local
+`docs/SUB_ENS_ARBITRUM_PLAN.md` under "MAINNET READINESS — DECISIONS 2026-09-02".
+
 ## The issuer curve moved: ed25519 "POD" signing is gone, a derived secp256k1 issuing key signs everything organiser-side (#443/#444, PRs #447–#453, 2026-09-01)
 
 The original ed25519 issuer choice was made believing WoCo tickets were 0xPARC/Zupass
