@@ -260,7 +260,18 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     // 2. Which L1 resolver is asking. The signature is bound to `target == sender`,
     //    so an unpinned sender means signing a resolution usable by a resolver we
     //    do not control — i.e. handing someone else our signer.
-    if (!allowedSenders.has(senderParam.toLowerCase())) {
+    //
+    //    NORMALISED ONCE, here, and every later use reads `sender` rather than
+    //    the raw parameter. `ADDRESS_RE` admits mixed case, and `getAddress` at
+    //    the signing step THROWS on a spelling that is mixed-case but not valid
+    //    EIP-55 — so passing the raw parameter through made a caller able to
+    //    turn a pinned-resolver request into an unhandled 500, having already
+    //    paid for the L2 read, and to sidestep the memo write on the way out.
+    //    Discarding the spelling is sound because it carries no information: the
+    //    allowlist pins the address by VALUE, and `getAddress` emits the same 20
+    //    bytes for every spelling of one address, so the signature is unchanged.
+    const sender = senderParam.toLowerCase();
+    if (!allowedSenders.has(sender)) {
       return refuse(403, "sender not served");
     }
 
@@ -282,7 +293,7 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     //     and must share an entry. Keying on the raw spelling would let a flood
     //     vary hex case to miss the memo on every request and put the RPC back
     //     in the firing line — the exact thing the memo exists to prevent.
-    const memoKey = `${senderParam.toLowerCase()}|${dataParam.toLowerCase()}`;
+    const memoKey = `${sender}|${dataParam.toLowerCase()}`;
     const memoed = memo?.get(memoKey, nowMs());
     if (memoed) return { status: 200, body: memoed, cacheable: true };
 
@@ -350,7 +361,7 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     //    resolver passes `callData` as `extraData` (L1Resolver.sol:242-248) and
     //    the verifier hashes `extraData` as `request` (L1Resolver.sol:186-189).
     const expires = BigInt(now() + config.ttlSeconds);
-    const hash = makeSignatureHash(senderParam, expires, getBytes(dataParam), result);
+    const hash = makeSignatureHash(sender, expires, getBytes(dataParam), result);
     const sig = signingKey.sign(hash).serialized;
 
     const body = { data: encodeGatewayResponse(result, expires, sig) };

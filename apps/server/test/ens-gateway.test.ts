@@ -17,6 +17,7 @@ import {
   Wallet,
   concat,
   dnsEncode,
+  getAddress,
   getBytes,
   keccak256,
   namehash,
@@ -676,6 +677,63 @@ test("memo: CALLDATA hex case cannot be varied to miss the memo", async () => {
   assert.equal(out.status, 200);
   assert.deepEqual(out.body, first.body, "the same bytes must yield the same signed answer");
   assert.equal(state.reads, 1, "a case-flipped spelling of the same request must hit the memo");
+});
+
+test("memo: SENDER case cannot be varied to miss the memo", async () => {
+  // Same argument on the other half of the key: `makeSignatureHash` checksums
+  // the target, so two spellings of one address are one request.
+  const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+  let reads = 0;
+  const handler = createCcipHandler(
+    { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
+    {
+      readL2: async () => {
+        reads += 1;
+        return L2_RESULT;
+      },
+      now: () => NOW,
+      memo: new ResponseMemo<{ data: string }>(30_000),
+    },
+  );
+  const calldata = stuff();
+  const first = await handler(mixed, calldata);
+  assert.equal(first.status, 200);
+  const second = await handler(mixed.toLowerCase(), calldata);
+  assert.equal(second.status, 200);
+  assert.deepEqual(second.body, first.body);
+  assert.equal(reads, 1, "one address spelled two ways is one request");
+});
+
+test("a pinned sender in NON-EIP-55 mixed case is answered, not thrown", async () => {
+  // Regression for a defect in #466 as merged: the raw spelling reached
+  // `getAddress` at the signing step, which throws on a bad checksum — so this
+  // request became an unhandled 500 AFTER paying for the L2 read, and never
+  // reached the memo write. `0xAbCdEf01…` below is deliberately not valid EIP-55.
+  const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+  assert.throws(() => getAddress(mixed), /checksum/, "fixture must be a BAD checksum");
+  const out = await createCcipHandler(
+    { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
+    { readL2: async () => L2_RESULT, now: () => NOW },
+  )(mixed, stuff());
+  assert.equal(out.status, 200);
+});
+
+test("the signature is identical however the sender is spelled", async () => {
+  // The normalisation must not move the signed bytes: `getAddress` emits the
+  // same 20 bytes for every spelling, so both must recover to the same signer
+  // over the same hash.
+  const lower = RESOLVER.toLowerCase();
+  const checksummed = getAddress(RESOLVER);
+  const calldata = stuff();
+  const a = await handler()(lower, calldata);
+  const b = await handler()(checksummed, calldata);
+  assert.deepEqual(a.body, b.body);
+  const { result, expires, sig } = decodeResponse((a.body as { data: string }).data);
+  assert.equal(
+    recoverAddress(makeSignatureHash(checksummed, expires, getBytes(calldata), result), sig),
+    SIGNER_ADDRESS,
+    "a verifier using the checksummed target must still verify",
+  );
 });
 
 test("memo: the SENDER is part of the key — one resolver's answer is never served to another", async () => {
