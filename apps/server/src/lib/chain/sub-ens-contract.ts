@@ -6,15 +6,20 @@ import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import { getSponsorAddress } from "./sponsor-wallet.js";
 
-// Arbitrum Sepolia (421614) — deployed 2026-05-29, verified
+// Arbitrum Sepolia (421614) — redeployed 2026-09-02 from OUR L2Registry
+//   implementation (#440), so the registry carries #422 `adminTransfer` and #464
+//   `release`. The previous pair (registry 0x41Fb…4807, registrars 0x206e…BEd3 and
+//   0x7c0D…aAf1) were NameStone factory clones running code we do not control, and
+//   are abandoned along with the 23 test names on them.
+//   Deployment record: contracts/deployments/421614-subens.json.
 // Arbitrum One (42161)      — pending mainnet deploy
 const REGISTRAR_ADDRESSES: Record<number, string> = {
-  421614: "0x206e5e2fBF813b5E8A2c2D6ae54106165975BEd3",
+  421614: "0xD33C93E2E73A0C9C7683aaf6f4508F558A277816",
 };
 
-// L2Registry addresses (Durin factory-deployed clones)
+// L2Registry addresses (EIP-1167 clones of our own implementation)
 const REGISTRY_ADDRESSES: Record<number, string> = {
-  421614: "0x41Fb196Ae7D65E06880A240c8d1B91245Fb84807",
+  421614: "0x6a5290df9B810d85Da3B97EE160C2B1f05eB9b22",
 };
 
 // namehash("woco.eth") — the base node of our L2Registry.
@@ -31,6 +36,15 @@ const REGISTRY_ABI = [
   "function decodeName(bytes name) view returns (string)",
   // Resolver record — current Swarm pointer for a name (EIP-1577 contenthash)
   "function contenthash(bytes32 node) view returns (bytes)",
+  // #464 rename rail. `release` is holder-or-approvee only and never passes
+  // through the registrar, so the server can only ever encode this calldata for
+  // the holder's own wallet to send — it can never release a name itself.
+  "function release(bytes32 node)",
+  // Written by every release and read by nothing on-chain: the frozen layer
+  // keeps who let a name go and when, so a future registrar can enforce a
+  // re-mint hold that `release` would otherwise have made impossible.
+  "function lastRelease(bytes32 node) view returns (address previousOwner, uint64 releasedAt)",
+  "event Released(bytes32 indexed node, address indexed previousOwner, address indexed operator)",
 ];
 
 // Override either with env. Chain defaults to Arb Sepolia during buildathon.
@@ -38,7 +52,7 @@ export function getSubEnsChainId(): number {
   return parseInt(process.env.SUB_ENS_CHAIN_ID ?? "421614");
 }
 
-function getRegistrarAddress(chainId: number): string {
+export function getRegistrarAddress(chainId: number): string {
   const addr = process.env.SUB_ENS_REGISTRAR_ADDRESS ?? REGISTRAR_ADDRESSES[chainId];
   if (!addr) throw new Error(`No WoCoRegistrar address for chain ${chainId}`);
   return addr;
@@ -69,6 +83,12 @@ const REGISTRAR_ABI = [
   // was never called from here, so it was standing authority over holders'
   // profile records with no operational benefit. Do not re-add the fragment.
   "function setContenthash(string label, bytes contenthash)",
+  // #464 mint rate cap — per RECIPIENT, 30 mints / 30 days at deploy. Read it
+  // before promising a mint: exceeding it reverts, on the sponsor path and the
+  // permit path alike. `setMintRateCap` is owner-only (the multisig on mainnet),
+  // here so the fragment exists, never callable by the sponsor key.
+  "function mintAllowance(address recipient) view returns (uint32 remaining, uint64 windowResetsAt)",
+  "function setMintRateCap(uint32 max, uint64 windowSeconds)",
   // Permit write — organiser submits tx, server only signs off-chain
   "function registerWithPermit(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues, uint256 expiry, bytes sig) returns (bytes32 node)",
   // Custom errors — required for ethers v6 to decode reverts by name
@@ -80,6 +100,7 @@ const REGISTRAR_ABI = [
   "error PermitExpired()",
   "error PermitAlreadyUsed()",
   "error PermitInvalid()",
+  "error MintRateCapExceeded(address recipient, uint64 windowResetsAt)",
 ];
 
 // ENS contenthash encoding for a Swarm BZZ hash (EIP-1577 / ENSIP-7).

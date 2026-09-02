@@ -8,6 +8,8 @@ import {
   mintSubEnsName,
   updateSubEnsContenthash,
   signSubEnsPermit,
+  getRegistrarAddress,
+  getSubEnsChainId,
 } from "../lib/chain/sub-ens-contract.js";
 import { stampEventSubEns } from "../lib/event/service.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
@@ -216,8 +218,16 @@ subEnsRoutes.post("/permit", requireAuth, async (c) => {
         ensName: `${label}.woco.eth`,
         sig,
         expiry,
-        chainId: parseInt(process.env.SUB_ENS_CHAIN_ID ?? "421614"),
-        registrarAddress: process.env.SUB_ENS_REGISTRAR_ADDRESS,
+        // Both from the same accessors signSubEnsPermit just used, NOT from the
+        // raw env vars: the permit's EIP-712 domain binds the registrar address,
+        // so a response naming a different one is a permit the client would
+        // submit to a contract that must reject it. Reading env directly also
+        // returned `undefined` whenever SUB_ENS_REGISTRAR_ADDRESS was unset —
+        // the server signed with the built-in default and told the client
+        // nothing, and the client's mismatch guard threw a TypeError instead of
+        // refusing cleanly.
+        chainId: getSubEnsChainId(),
+        registrarAddress: getRegistrarAddress(getSubEnsChainId()),
       },
     });
   } catch (err) {

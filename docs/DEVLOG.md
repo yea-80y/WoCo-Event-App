@@ -4,6 +4,15 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Sub-ENS points at our own registry (#440, 2026-09-02)
+
+The Arb Sepolia sub-ENS pair was redeployed from our own `L2Registry` implementation (registry
+`0x6a5290df…9b22`, registrar `0xD33C93E2…7816`); server defaults, the session key's call target in
+`kernel-account.ts` and the gateway's registry pin now all name it, and the registry/registrar ABIs
+gained `release` + `lastRelease` and the per-recipient mint cap. The old NameStone-clone pair and
+its 23 test names are abandoned by decision — every pre-launch profile, site or event bound to one
+of those names now reads as unowned.
+
 ## Self-hosted ENS CCIP-Read gateway for `*.woco.eth` (#419, 2026-09-02)
 
 NameStone, Durin's authors, ceased operations on 2026-08-03, and their `gateway.durin.dev` was the

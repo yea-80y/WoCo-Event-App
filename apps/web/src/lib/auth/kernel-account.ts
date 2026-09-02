@@ -56,14 +56,24 @@ export const KERNEL_CHAIN_ID = 421614;
 
 /**
  * WoCoRegistrar (Arb Sepolia) — the ONLY contract the scoped session key may
- * call. Matches production `server.env` SUB_ENS_REGISTRAR_ADDRESS and the
- * `registrarAddress` returned by POST /api/sub-ens/permit. (The `0x206e5e2f…`
- * default baked into the server source is a STALE fallback, overridden by env
- * in production — see plan flag A.) Phase 4 cross-checks this against the live
- * permit response before sending the userOp.
+ * call. Must equal the server's SUB_ENS_REGISTRAR_ADDRESS and the
+ * `registrarAddress` returned by POST /api/sub-ens/permit; the mint path
+ * cross-checks it against that live response before sending the userOp, so a
+ * drift between the two fails closed instead of scoping a key at a registrar
+ * the platform no longer mints through.
+ *
+ * Redeployed 2026-09-02 (#440, our own L2Registry implementation). Moving this
+ * constant does NOT re-issue keys already on a device, and the guard below does
+ * not catch them: it compares the permit against this constant, and both moved.
+ * `hasWocoSessionKey` only checks which Kernel a stored blob belongs to, never
+ * its CallPolicy target. Such a key is still scoped to the old registrar, so the
+ * userOp is rejected by the permission validator and `claimSubEnsViaPermit`
+ * falls back to the server-sponsored mint — same name, same owner, our gas.
+ * Pre-launch that is test Kernels only; #470 makes the stored key target-aware
+ * and must land before the mainnet move.
  */
 export const WOCO_REGISTRAR_ADDRESS =
-  "0x7c0DE55a1713e6C1a53Db50314C7CB608179aAf1" as const;
+  "0xD33C93E2E73A0C9C7683aaf6f4508F558A277816" as const;
 
 /** Scoped session-key lifetime — mirrors the 30-day HTTP session window. */
 const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
