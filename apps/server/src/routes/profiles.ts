@@ -125,10 +125,10 @@ profiles.post("/", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Bio too long (max 280)" }, 400);
   }
 
-  // Binding a sub-ENS name to the profile makes it a like-subject (its namehash).
   // Only persist a label the caller actually owns on-chain — a profile must not
-  // advertise a name it doesn't control. (The likes themselves stay safe either
-  // way: the subject is the namehash and the owner is resolved live from chain.)
+  // advertise a name it doesn't control. The name is DISPLAY: followers key to
+  // the account's ADDRESS, so binding, changing or losing a name moves no
+  // audience (see packages/shared/src/social/subject.ts).
   let bindWarning: "points_at_site" | undefined;
   let bindStatus: { nextChangeAllowedAt: number | null; freeCorrectionUsed: boolean } | undefined;
   if (body.subEnsLabel === null) {
@@ -165,8 +165,8 @@ profiles.post("/", requireAuth, async (c) => {
 // client-owned profile signs its own data feed SOC, so the server no longer
 // gates the write — but the sub-ENS binding stays server-verified here so a
 // profile cannot advertise a name it doesn't control. The client includes the
-// returned label in the feed it signs. (Likes stay safe regardless: the subject
-// is the namehash and the owner is resolved live from chain.)
+// returned label in the feed it signs. (Follows are unaffected either way: they
+// key to the account's ADDRESS, never to the name.)
 profiles.post("/verify-label", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress") as string;
   const body = c.get("body") as Record<string, unknown>;

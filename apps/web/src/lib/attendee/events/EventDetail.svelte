@@ -79,20 +79,12 @@
   // the cache so a name the viewer has seen before paints without a round trip;
   // an unverified or unchecked name renders as nothing at all.
   let eventNameVerified = $state(false);
-  let creatorNameVerified = $state(false);
   $effect(() => {
     const label = event?.subEnsLabel;
     const creator = event?.creatorAddress;
     if (!label || !creator) { eventNameVerified = false; return; }
     eventNameVerified = nameIsVerified(label, creator);
     void verifyName(label, creator).then((ok) => { eventNameVerified = ok; });
-  });
-  $effect(() => {
-    const label = creatorProfile?.subEnsLabel;
-    const creator = event?.creatorAddress;
-    if (!label || !creator) { creatorNameVerified = false; return; }
-    creatorNameVerified = nameIsVerified(label, creator);
-    void verifyName(label, creator).then((ok) => { creatorNameVerified = ok; });
   });
   let ticketQty = $state<Record<string, number>>({});
   let now = $state(Date.now());
