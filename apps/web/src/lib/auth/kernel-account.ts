@@ -26,7 +26,7 @@ import type { Address, Hex } from "viem";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
-import { StorageKeys, EAS_ADDRESS } from "@woco/shared";
+import { StorageKeys, EAS_ADDRESS, SUB_ENS_DEPLOYMENTS } from "@woco/shared";
 import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
@@ -51,21 +51,25 @@ import {
   type RouteHookKind,
 } from "./guardian-hook.js";
 
-/** Arbitrum Sepolia — the buildathon chain. */
-export const KERNEL_CHAIN_ID = 421614;
+/**
+ * Arbitrum Sepolia — the buildathon chain. Declared `as const` so it indexes
+ * SUB_ENS_DEPLOYMENTS below as a literal: moving the Kernel to a chain with no
+ * sub-ENS deployment is then a type error here, not an `undefined` registrar
+ * reaching a call policy at runtime.
+ */
+export const KERNEL_CHAIN_ID = 421614 as const;
 
 /**
- * WoCoRegistrar (Arb Sepolia) — the ONLY contract the scoped session key may
- * call. Must equal the server's SUB_ENS_REGISTRAR_ADDRESS and the
- * `registrarAddress` returned by POST /api/sub-ens/permit; the mint path
- * cross-checks it against that live response before sending the userOp, so a
- * drift between the two fails closed instead of scoping a key at a registrar
- * the platform no longer mints through.
+ * WoCoRegistrar — the ONLY contract the scoped session key may call. Taken from
+ * the shared per-chain map (#472) rather than restated here, so it CANNOT drift
+ * from the address the server signs permits for; the registrar's EIP-712 domain
+ * binds its own address, so a drift would make every gasless mint unverifiable.
+ * The mint path additionally cross-checks the `registrarAddress` returned by
+ * POST /api/sub-ens/permit, which is what catches a server-side env override.
  *
- * Redeployed 2026-09-03 (registry gained #464 `releaseWithSignature`; 2026-09-02
- * was the move to our own implementation, #440). Moving this
- * constant does NOT re-issue keys already on a device, and the guard below does
- * not catch them: it compares the permit against this constant, and both moved.
+ * Moving the shared map does NOT re-issue keys already on a device, and the
+ * guard below does not catch them: it compares the permit against this value,
+ * and both moved together.
  * `hasWocoSessionKey` only checks which Kernel a stored blob belongs to, never
  * its CallPolicy target. Such a key is still scoped to the old registrar, so the
  * userOp is rejected by the permission validator and `claimSubEnsViaPermit`
@@ -73,8 +77,15 @@ export const KERNEL_CHAIN_ID = 421614;
  * Pre-launch that is test Kernels only; #470 makes the stored key target-aware
  * and must land before the mainnet move.
  */
-export const WOCO_REGISTRAR_ADDRESS =
-  "0x42c6464d65e79C4735A0b346d1c1b4690586d6F9" as const;
+export const WOCO_REGISTRAR_ADDRESS = SUB_ENS_DEPLOYMENTS[KERNEL_CHAIN_ID].registrar;
+
+/**
+ * L2Registry on the same chain — the permanent layer that holds the names. The
+ * scoped session key may NOT call it (the policy below is registrar-only, by
+ * invariant); it is exported because the release path reads a digest from the
+ * registry and submits `release` from the user's own sudo signer or wallet.
+ */
+export const WOCO_REGISTRY_ADDRESS = SUB_ENS_DEPLOYMENTS[KERNEL_CHAIN_ID].registry;
 
 /** Scoped session-key lifetime — mirrors the 30-day HTTP session window. */
 const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
