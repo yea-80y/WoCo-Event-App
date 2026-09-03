@@ -107,16 +107,29 @@ function sourceOf(rel: string): string {
     .join("\n");
 }
 
+/** One route handler's body, so a check in a NEIGHBOURING route cannot satisfy
+ *  an assertion about this one — the failure mode a whole-file grep misses. */
+function routeBody(src: string, marker: string): string {
+  const start = src.indexOf(marker);
+  assert.ok(start > 0, `${marker} not found`);
+  const next = src.indexOf("subEnsRoutes.", start + marker.length);
+  return src.slice(start, next > 0 ? next : undefined);
+}
+
 test("every route that points a name at content consults isProfileName", () => {
   const subEns = sourceOf("../src/routes/sub-ens.ts");
-  // Point A (stamp-event) and point C (set-contenthash) are the two writers in
-  // this file; both must refuse the caller's own profile name.
-  assert.equal(
-    (subEns.match(/isProfileName\(/g) ?? []).length,
-    2,
-    "stamp-event and set-contenthash must each check isProfileName",
-  );
-  assert.match(subEns, /"profile_name"/);
+  // Asserted PER ROUTE rather than by counting calls in the file: a count
+  // breaks the moment a new route legitimately adds one (relay-release did),
+  // and it never proved the calls were in the right handlers anyway.
+  for (const marker of [
+    'subEnsRoutes.post("/stamp-event"',      // point A
+    'subEnsRoutes.post("/set-contenthash"',  // point C
+    'subEnsRoutes.post("/relay-release"',    // the burn — an accident guard
+  ]) {
+    const body = routeBody(subEns, marker);
+    assert.match(body, /isProfileName\(/, `${marker} must check isProfileName`);
+    assert.match(body, /"profile_name"/, `${marker} must refuse with profile_name`);
+  }
 
   // Point B — the site deploy hook.
   const sites = sourceOf("../src/routes/sites.ts");
