@@ -506,8 +506,18 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
       if (name === "ReleaseUnregistered") return c.json({ ok: false, error: "label not found" }, 404);
       if (name === "ReleaseBaseNode")     return c.json({ ok: false, error: "cannot release the base name" }, 400);
     }
-    // No body, no signature: this is a bearer authorisation for a burn.
-    console.error(`[sub-ens] relay-release failed label=${label}:`, err instanceof Error ? err.message : err);
+    // NEVER `err.message` here. ethers builds that string by appending every
+    // `info` key it was given, and for a CALL_EXCEPTION / INSUFFICIENT_FUNDS /
+    // nonce error that includes `transaction={"data":"0x…"}` — the whole
+    // `releaseWithSignature` calldata, holder signature inside. A sponsor
+    // wallet short of ETH would then park a bearer burn authorisation in
+    // `docker logs` for the life of its expiry. `shortMessage` is the same
+    // diagnosis with none of the payload.
+    const diag = (err as { shortMessage?: string; code?: string }) ?? {};
+    console.error(
+      `[sub-ens] relay-release failed label=${label} code=${diag.code ?? "none"}:`,
+      diag.shortMessage ?? "unspecified error",
+    );
     return c.json({ ok: false, error: "release failed" }, 500);
   } finally {
     releasesInFlight.delete(node);

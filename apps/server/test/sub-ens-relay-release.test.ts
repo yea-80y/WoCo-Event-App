@@ -144,11 +144,41 @@ test("contract refusals are named, not 500s", () => {
 test("the signature never reaches a log line", () => {
   // It is a bearer authorisation for a burn until it is mined or the record
   // version moves.
-  const logs = [...RELAY.matchAll(/console\.(log|warn|error)\(([^\n]*)/g)].map((m) => m[2]);
+  //
+  // Grepping for the token `signature` is NOT enough and this test used to do
+  // exactly that, passing while the code leaked. ethers composes `err.message`
+  // by appending every `info` key, so a CALL_EXCEPTION / INSUFFICIENT_FUNDS /
+  // nonce error carries `transaction={"data":"0x…"}` — the full calldata, with
+  // the holder's signature in it. So the ban is on the CARRIER, not the word.
+  const body = RELAY.slice(0, RELAY.indexOf("\n});"));
+  const logs = [...body.matchAll(/console\.(log|warn|error)\(([\s\S]*?)\);/g)].map((m) => m[2]);
+  assert.ok(logs.length > 0, "expected at least one log line to check");
   for (const line of logs) {
     assert.doesNotMatch(line, /signature/, `log line leaks the signature: ${line}`);
     assert.doesNotMatch(line, /\bbody\b/, `log line dumps the body: ${line}`);
+    assert.doesNotMatch(
+      line,
+      /\.message\b/,
+      `log line uses err.message, which ethers fills with the calldata: ${line}`,
+    );
   }
+});
+
+test("shortMessage carries the diagnosis without the payload", async () => {
+  // Pins the property the fix relies on, against the real ethers in use: the
+  // short form must NOT contain the calldata that `message` does.
+  const { makeError } = await import("ethers");
+  const calldata = `0x${"ab".repeat(200)}`;
+  const err = makeError("missing revert data", "CALL_EXCEPTION", {
+    action: "sendTransaction",
+    data: null,
+    reason: null,
+    transaction: { to: "0x" + "1".repeat(40), from: "0x" + "2".repeat(40), data: calldata },
+    invocation: null,
+    revert: null,
+  }) as Error & { shortMessage?: string };
+  assert.ok(err.message.includes(calldata), "precondition: ethers still embeds calldata in .message");
+  assert.ok(!(err.shortMessage ?? "").includes(calldata), "shortMessage must not carry the calldata");
 });
 
 // ---------------------------------------------------------------------------
