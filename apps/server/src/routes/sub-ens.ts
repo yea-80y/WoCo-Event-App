@@ -12,6 +12,8 @@ import {
   getSubEnsChainId,
   getMintAllowance,
   mintRateCapVerdict,
+  labelNode,
+  relayReleaseWithSignature,
 } from "../lib/chain/sub-ens-contract.js";
 import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
 import { stampEventSubEns } from "../lib/event/service.js";
@@ -62,6 +64,33 @@ async function readMintAllowance(recipient: string) {
     return null;
   }
 }
+
+/**
+ * Release relay budgets. The sponsor pays gas for a burn the HOLDER authorised,
+ * so the drain is already bounded by the mint side (to release you must hold;
+ * to hold you must pass the attendee gate and the 30/30d per-recipient cap).
+ * These bound the two things that are not: how much of the shared sponsor nonce
+ * queue one account can occupy, and how much of it everyone can occupy at once.
+ * That queue is shared with ticket fulfilment, so a burst must not sit in front
+ * of it.
+ */
+const releaseLimiter = new SlidingWindowLimiter([
+  { limit: 5, windowMs: 60 * 60_000 },
+  { limit: 20, windowMs: 24 * 60 * 60_000 },
+]);
+const releaseGlobalLimiter = new SlidingWindowLimiter([{ limit: 20, windowMs: 60_000 }]);
+const RELEASE_GLOBAL_KEY = "all";
+
+/** Nodes with a release in flight. Two concurrent posts of ONE signature both
+ *  pass simulation; the second would revert on-chain at the sponsor's expense. */
+const releasesInFlight = new Set<string>();
+
+/** A release signature is valid for a window the CLIENT proposes. Bounded both
+ *  ways: too short and the tx reverts after the queue delay plus block-timestamp
+ *  skew, at our expense; too long and the signature is a bearer burn token
+ *  sitting in logs and proxies, which the holder cannot cleanly cancel. */
+const RELEASE_EXPIRY_MIN_SECS = 60;
+const RELEASE_EXPIRY_MAX_SECS = 15 * 60;
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -388,5 +417,109 @@ subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
     }
     console.error("[sub-ens] set-contenthash failed:", err);
     return c.json({ ok: false, error: "update failed" }, 500);
+  }
+});
+
+/**
+ * POST /api/sub-ens/relay-release
+ * Auth required. Submits a release the HOLDER signed, paying the gas.
+ *
+ * Body: { label, expiration, signature }
+ *
+ * The signature is the authority: `L2Registry.releaseWithSignature` checks that
+ * `signer` is the holder or an ERC-721 approvee BEFORE it consults the
+ * signature, so the sponsor can only ever relay what the holder authorised —
+ * never forge one. Refusing to relay traps nobody either: a holder can always
+ * submit `release` from their own wallet.
+ *
+ * `signer` and `node` are derived server-side from the VERIFIED parent address
+ * and the VALIDATED label. Neither is a body field — a body-supplied node would
+ * aim the signature at a name the ownership check never saw.
+ *
+ * The on-chain check accepts an approvee or an operator-for-all; this route
+ * narrows that to the caller's OWN name, so the sponsor never pays to burn a
+ * name on someone else's behalf. That narrowing is a GAS POLICY, not the
+ * security boundary.
+ */
+subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = await c.req.json<{ label?: string; expiration?: number; signature?: string }>();
+
+  const label = body.label?.toLowerCase()?.trim() ?? "";
+  if (!label) return c.json({ ok: false, error: "label is required" }, 400);
+  const validationError = validateLabel(label);
+  if (validationError) return c.json({ ok: false, error: validationError }, 400);
+
+  const signature = typeof body.signature === "string" ? body.signature : "";
+  if (!/^0x[0-9a-fA-F]+$/.test(signature)) {
+    return c.json({ ok: false, error: "signature is required" }, 400);
+  }
+
+  const expiration = Number(body.expiration);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  if (!Number.isInteger(expiration)) {
+    return c.json({ ok: false, error: "expiration must be an integer" }, 400);
+  }
+  const ttl = expiration - nowSecs;
+  if (ttl < RELEASE_EXPIRY_MIN_SECS || ttl > RELEASE_EXPIRY_MAX_SECS) {
+    return c.json({ ok: false, error: "expiration_out_of_range" }, 400);
+  }
+
+  // Gas policy: the sponsor pays only for the caller's own name.
+  const owner = await getLabelOwner(label);
+  if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
+  if (owner !== parentAddress) {
+    return c.json({ ok: false, error: "not authorised for this label" }, 403);
+  }
+
+  // Accident guard, not a security one: releasing the name you are currently
+  // known by is a one-click route to being nameless for the whole cooldown.
+  // The holder can still burn it from their own wallet — we simply do not
+  // sponsor it, which keeps "release is ungated" true on-chain.
+  if (isProfileName(parentAddress, label)) {
+    return c.json({ ok: false, error: "profile_name" }, 409);
+  }
+
+  if (!releaseLimiter.peek(parentAddress) || !releaseGlobalLimiter.peek(RELEASE_GLOBAL_KEY)) {
+    return c.json({ ok: false, error: "rate_limited" }, 429);
+  }
+
+  const node = labelNode(label);
+  if (releasesInFlight.has(node)) {
+    return c.json({ ok: false, error: "release_in_flight" }, 409);
+  }
+
+  // Both budgets are peeked before either is charged, so a request refused on
+  // the global limit is not charged against the caller's own.
+  releaseLimiter.record(parentAddress);
+  releaseGlobalLimiter.record(RELEASE_GLOBAL_KEY);
+  releasesInFlight.add(node);
+  try {
+    const { txHash } = await relayReleaseWithSignature(node, expiration, parentAddress, signature);
+    return c.json({ ok: true, data: { label, txHash } });
+  } catch (err: unknown) {
+    if (isError(err, "CALL_EXCEPTION")) {
+      const name = (err as { revert?: { name?: string } }).revert?.name;
+      // Named refusals, so the client can say what happened rather than "failed".
+      if (name === "Unauthorized")        return c.json({ ok: false, error: "signature_not_authorised" }, 403);
+      if (name === "SignatureExpired")    return c.json({ ok: false, error: "signature_expired" }, 400);
+      if (name === "ReleaseUnregistered") return c.json({ ok: false, error: "label not found" }, 404);
+      if (name === "ReleaseBaseNode")     return c.json({ ok: false, error: "cannot release the base name" }, 400);
+    }
+    // NEVER `err.message` here. ethers builds that string by appending every
+    // `info` key it was given, and for a CALL_EXCEPTION / INSUFFICIENT_FUNDS /
+    // nonce error that includes `transaction={"data":"0x…"}` — the whole
+    // `releaseWithSignature` calldata, holder signature inside. A sponsor
+    // wallet short of ETH would then park a bearer burn authorisation in
+    // `docker logs` for the life of its expiry. `shortMessage` is the same
+    // diagnosis with none of the payload.
+    const diag = (err as { shortMessage?: string; code?: string }) ?? {};
+    console.error(
+      `[sub-ens] relay-release failed label=${label} code=${diag.code ?? "none"}:`,
+      diag.shortMessage ?? "unspecified error",
+    );
+    return c.json({ ok: false, error: "release failed" }, 500);
+  } finally {
+    releasesInFlight.delete(node);
   }
 });

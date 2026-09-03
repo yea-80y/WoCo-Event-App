@@ -174,6 +174,63 @@ export async function isLabelAvailable(label: string): Promise<boolean> {
  * if the label is not yet registered. Used to authorise mutation calls — the
  * caller's parentAddress must match before the sponsor wallet fires any tx.
  */
+/**
+ * The 32-byte node for `label`, as hex.
+ *
+ * Exported so the release relay derives the node it submits from a VALIDATED
+ * label rather than accepting one in the request body — a body-supplied node
+ * would let a caller aim a signature at a name the ownership check never saw.
+ */
+export function labelNode(label: string): string {
+  return "0x" + computeLabelNode(label).toString(16).padStart(64, "0");
+}
+
+/**
+ * Submit a holder-signed release. The SIGNATURE is the authority — the contract
+ * checks `signer` is the holder or an ERC-721 approvee before it looks at the
+ * signature at all — so the sponsor here is only paying the gas. It cannot
+ * forge a release, and refusing to relay one never traps a holder, who can
+ * always submit `release` themselves.
+ *
+ * Uses a REGISTRY-bound writer: `writeContract` binds the REGISTRAR ABI, and
+ * `releaseWithSignature` lives on the registry.
+ */
+export async function relayReleaseWithSignature(
+  node: string,
+  expiration: number,
+  signer: string,
+  signature: string,
+): Promise<{ txHash: string }> {
+  const chainId = getSubEnsChainId();
+  const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+  if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+  const provider = getProvider(chainId);
+  const registry = new Contract(
+    getRegistryAddress(chainId),
+    REGISTRY_ABI,
+    new Wallet(pk, provider),
+  );
+
+  // SIMULATE FIRST, and outside the sponsor nonce queue. A reverting tx still
+  // occupies that queue for several RPC round trips while it is populated,
+  // estimated and signed — and the queue is shared with ticket fulfilment. A
+  // refused release must never get that far.
+  await registry.releaseWithSignature.staticCall(node, expiration, signer, signature);
+
+  const tx = await sendSponsorTx(
+    { chainId, address: getSponsorAddress(), provider, label: "sub-ens.release" },
+    (o) => registry.releaseWithSignature(node, expiration, signer, signature, o),
+  );
+  // Awaited OUTSIDE sendSponsorTx, like the mint: holding the nonce lock across
+  // a block confirmation would serialise every sponsor tx behind this one.
+  const receipt = await tx.wait(1);
+  if (!receipt) throw new Error("No receipt from releaseWithSignature tx");
+  // Deliberately no signature in the log line — it is a bearer authorisation
+  // for a burn until it is mined or the record version moves.
+  console.log(`[sub-ens] released node=${node.slice(0, 10)}… txHash=${receipt.hash}`);
+  return { txHash: receipt.hash as string };
+}
+
 export interface MintAllowance {
   /** Mints this recipient may still make in the current window. */
   remaining: number;
