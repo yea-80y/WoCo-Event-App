@@ -2,26 +2,10 @@ import {
   JsonRpcProvider, Contract, Wallet, keccak256, toUtf8Bytes, concat, namehash,
   AbiCoder, solidityPackedKeccak256, getBytes,
 } from "ethers";
+import { SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment } from "@woco/shared";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import { getSponsorAddress } from "./sponsor-wallet.js";
-
-// Arbitrum Sepolia (421614) — redeployed 2026-09-03 from OUR L2Registry
-//   implementation, so the registry carries #422 `adminTransfer` and #464
-//   `release` + `releaseWithSignature` (a holder-signed release anyone may relay,
-//   which is how a plain-wallet holder releases without paying gas). The
-//   2026-09-02 pair (0x6a52…9b22 / 0xD33C…7816, no user names) and the NameStone
-//   factory clones before it (0x41Fb…4807 / 0x206e…BEd3 / 0x7c0D…aAf1, 23 test
-//   names) are abandoned. Deployment record: contracts/deployments/421614-subens.json.
-// Arbitrum One (42161)      — pending mainnet deploy
-const REGISTRAR_ADDRESSES: Record<number, string> = {
-  421614: "0x42c6464d65e79C4735A0b346d1c1b4690586d6F9",
-};
-
-// L2Registry addresses (EIP-1167 clones of our own implementation)
-const REGISTRY_ADDRESSES: Record<number, string> = {
-  421614: "0xC38e08CB5a21B083F63149ea7597Ea8D05017cf8",
-};
 
 // namehash("woco.eth") — the base node of our L2Registry.
 // Computed once at module load; namehash() is a pure function (no provider).
@@ -62,21 +46,42 @@ const REGISTRY_ABI = [
   "error ReleaseUnregistered(bytes32 node)",
 ];
 
-// Override either with env. Chain defaults to Arb Sepolia during buildathon.
+// Addresses live in `@woco/shared` (#472) so the client cannot drift from them.
+// Env still overrides, per address, for a redeploy that lands before a release.
 export function getSubEnsChainId(): number {
-  return parseInt(process.env.SUB_ENS_CHAIN_ID ?? "421614");
+  return parseInt(process.env.SUB_ENS_CHAIN_ID ?? String(SUB_ENS_DEFAULT_CHAIN_ID));
+}
+
+/**
+ * An env override wins over the shared map — but an EMPTY override is a
+ * misconfiguration, not "unset". A bare `SUB_ENS_REGISTRAR_ADDRESS=` reaches
+ * the process as `""` from both dotenv and a Docker `env_file`, and `??` keeps
+ * it, which would hand an empty address to a contract call. Refusing is also
+ * why `.env.example` declares these keys COMMENTED rather than bare: falling
+ * back to the built-in default here would mask the misconfiguration on the one
+ * path where the operator explicitly asked for something else.
+ */
+function resolveOverride(raw: string | undefined, name: string, fallback: () => string): string {
+  if (raw === undefined) return fallback();
+  const trimmed = raw.trim();
+  if (!trimmed) throw new Error(`${name} is set but empty — unset it to use the built-in default`);
+  return trimmed;
 }
 
 export function getRegistrarAddress(chainId: number): string {
-  const addr = process.env.SUB_ENS_REGISTRAR_ADDRESS ?? REGISTRAR_ADDRESSES[chainId];
-  if (!addr) throw new Error(`No WoCoRegistrar address for chain ${chainId}`);
-  return addr;
+  return resolveOverride(
+    process.env.SUB_ENS_REGISTRAR_ADDRESS,
+    "SUB_ENS_REGISTRAR_ADDRESS",
+    () => getSubEnsDeployment(chainId).registrar,
+  );
 }
 
 export function getRegistryAddress(chainId: number): string {
-  const addr = process.env.SUB_ENS_REGISTRY_ADDRESS ?? REGISTRY_ADDRESSES[chainId];
-  if (!addr) throw new Error(`No L2Registry address for chain ${chainId}`);
-  return addr;
+  return resolveOverride(
+    process.env.SUB_ENS_REGISTRY_ADDRESS,
+    "SUB_ENS_REGISTRY_ADDRESS",
+    () => getSubEnsDeployment(chainId).registry,
+  );
 }
 
 // Mirrors WoCoRegistrar._validLabel and L2Registry.makeNode:
