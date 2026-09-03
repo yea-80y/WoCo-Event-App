@@ -130,13 +130,22 @@ export async function releaseName(
     kernelRelease?: (node: Hex0x) => Promise<{ txHash: string }>;
     /** Present for wallet logins — own-gas fallback. */
     walletRelease?: (node: Hex0x) => Promise<{ txHash: string }>;
-    /** Signs the 32 raw bytes as an EIP-191 personal-sign message. */
-    signInnerHash: (innerHash: Hex0x) => Promise<string>;
+    /**
+     * Signs the 32 RAW BYTES as an EIP-191 personal-sign message.
+     *
+     * `Uint8Array`, not a hex string, and that is the whole point: handed the
+     * 0x-string, ethers' `signMessage` and viem's `{ message }` both sign the
+     * 66-character TEXT rather than the 32 bytes it spells, `verifyMessage`
+     * recovers a stranger, and the release reverts `Unauthorized` on-chain
+     * with nothing local to catch it. The type makes that mistake unspellable:
+     * ethers takes the bytes directly, viem wants `{ raw: bytes }`.
+     */
+    signInnerHash: (inner: Uint8Array) => Promise<string>;
   },
 ): Promise<ReleaseResult> {
   const { node, innerHash, expiration } = await prepareRelease(label);
 
-  const signature = await opts.signInnerHash(innerHash);
+  const signature = await opts.signInnerHash(getBytes32(innerHash));
   const relayed = await authPost<{ label: string; txHash: string }>(
     "/api/sub-ens/relay-release",
     { label, expiration, signature },
