@@ -19,7 +19,7 @@
  * holding the phone rather than about the world.
  */
 
-import type { LikeSubject, Hex0x } from "@woco/shared";
+import type { Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
 import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
@@ -75,8 +75,8 @@ async function fetchCount(kind: SocialKind, subject: Hex0x): Promise<number | nu
  * Age is not reported alongside it because the caller has nowhere honest to put
  * it — the value is either fresh enough to show or evicted (`TTL.SOCIAL_COUNT`).
  */
-export function lastKnownCount(kind: SocialKind, subject: LikeSubject): number | null {
-  return readCachedCount(kind, subject.id as Hex0x);
+export function lastKnownCount(kind: SocialKind, subject: Hex0x): number | null {
+  return readCachedCount(kind, subject);
 }
 
 /**
@@ -88,8 +88,8 @@ export function lastKnownCount(kind: SocialKind, subject: LikeSubject): number |
  * Never throws — a display path that cannot read should show "not liked", not
  * an error, and the next visit re-reads.
  */
-export async function getSocialState(kind: SocialKind, subject: LikeSubject): Promise<SocialState> {
-  const id = subject.id as Hex0x;
+export async function getSocialState(kind: SocialKind, subject: Hex0x): Promise<SocialState> {
+  const id = subject;
   const [liked, count] = await Promise.all([
     readMyStatement(kind, id).catch(() => null),
     fetchCount(kind, id),
@@ -104,14 +104,14 @@ export async function getSocialState(kind: SocialKind, subject: LikeSubject): Pr
  */
 export async function toggleSocial(
   kind: SocialKind,
-  subject: LikeSubject,
+  subject: Hex0x,
   prevLiked: boolean,
 ): Promise<SocialState | null> {
   const ready = await requireAccountForAction({ context: "attendee" });
   if (!ready) return null;
 
   const next = !prevLiked;
-  const res = await writeMyStatement(kind, subject.id as Hex0x, next);
+  const res = await writeMyStatement(kind, subject, next);
   if (!res.ok) throw new Error(res.error);
 
   // Deliberately no count refetch. The statement has only just been relayed and

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { EventFeed, Hex0x } from "@woco/shared";
-  import { SubjectType, profileLikeSubject, socialEventSubject } from "@woco/shared";
+  import { socialEventSubject, socialProfileSubject } from "@woco/shared";
   import { rememberLabel } from "../../likes/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { getEvent } from "../../api/events.js";
@@ -79,20 +79,12 @@
   // the cache so a name the viewer has seen before paints without a round trip;
   // an unverified or unchecked name renders as nothing at all.
   let eventNameVerified = $state(false);
-  let creatorNameVerified = $state(false);
   $effect(() => {
     const label = event?.subEnsLabel;
     const creator = event?.creatorAddress;
     if (!label || !creator) { eventNameVerified = false; return; }
     eventNameVerified = nameIsVerified(label, creator);
     void verifyName(label, creator).then((ok) => { eventNameVerified = ok; });
-  });
-  $effect(() => {
-    const label = creatorProfile?.subEnsLabel;
-    const creator = event?.creatorAddress;
-    if (!label || !creator) { creatorNameVerified = false; return; }
-    creatorNameVerified = nameIsVerified(label, creator);
-    void verifyName(label, creator).then((ok) => { creatorNameVerified = ok; });
   });
   let ticketQty = $state<Record<string, number>>({});
   let now = $state(Date.now());
@@ -107,7 +99,7 @@
     // trims and rejects anything that is not a bytes32. A wrong-width id used
     // to become a plausible-looking topic nobody would ever read back.
     try {
-      return { type: SubjectType.Event, id: socialEventSubject(eid) };
+      return socialEventSubject(eid);
     } catch {
       return null;
     }
@@ -242,13 +234,14 @@
           {creatorProfile?.displayName || `${event.creatorAddress.slice(0, 6)}...${event.creatorAddress.slice(-4)}`}
         </span>
       </div>
-      <!-- Follow the organiser by NAME (sub-ENS namehash) — only when they've
-           claimed one (a name is what a follow attaches to). Your own event
-           shows the follower count read-only instead of an actionable follow. -->
-      {#if creatorProfile?.subEnsLabel && creatorNameVerified}
+      <!-- Follow the ORGANISER'S ACCOUNT, not their name: the audience belongs
+           to the person, so it survives a rename, a sale and a release. Your own
+           event shows the follower count read-only instead of an actionable
+           follow. -->
+      {#if event.creatorAddress}
         <div class="creator-follow">
           <LikeButton
-            subject={profileLikeSubject(creatorProfile.subEnsLabel)}
+            subject={socialProfileSubject(event.creatorAddress)}
             variant="follow"
             readonly={auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
           />

@@ -3,10 +3,12 @@
  * Swarm-native social statements (docs/SWARM_SOCIAL_PLAN.md; design record in
  * docs/COASTER_CREDITS_PLAN.md "FROZEN AT P0"). This module deliberately does
  * NOT extend `../likes/` — that is the SUPERSEDED on-chain EAS projection,
- * kept for its abuse model; social carries no chain dependency. The
- * identity-level profile-subject derivation in `likes/subject.ts`
- * (`profileSubject`, the real L2Registry namehash) survives the EAS
- * retirement and remains the intended bytes32 for profile subjects.
+ * kept for its abuse model; social carries no chain dependency. NOTHING here
+ * imports from `likes/`, and nothing should: profile subjects are derived in
+ * `social/subject.ts` from the account's ADDRESS (owner decision, 2026-09-03).
+ * They were briefly the L2Registry namehash of the holder's name, which keyed
+ * an audience to something WoCo governance, a re-minter and the parent name's
+ * custody could each move.
  *
  * Why these payloads have NO holder, NO holderSig and NO seq, where a credit
  * has all three: here the author IS the feed owner, so the SOC signature
@@ -53,8 +55,8 @@ const SOCIAL_VERSION = 1;
  */
 export interface LikeStatementV1 {
   format: typeof LIKE_STATEMENT_FORMAT;
-  /** bytes32, 0x-prefixed lowercase. Per-subject-kind derivation is #172's
-   *  build (profiles: `profileSubject` in likes/subject.ts). */
+  /** bytes32, 0x-prefixed lowercase. Derived in `social/subject.ts`: a profile
+   *  is its account ADDRESS left-padded; an event is its on-chain event id. */
   subject: Hex0x;
   value: boolean;
 }

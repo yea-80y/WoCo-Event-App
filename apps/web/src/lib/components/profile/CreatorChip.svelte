@@ -1,9 +1,8 @@
 <script lang="ts">
   import type { UserProfile } from "@woco/shared";
-  import { profileLikeSubject } from "@woco/shared";
+  import { socialProfileSubject } from "@woco/shared";
   import { getProfile } from "../../api/profiles.js";
   import { rememberLabel } from "../../likes/label-cache.js";
-  import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { navigate } from "../../router/router.svelte.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import UserAvatar from "./UserAvatar.svelte";
@@ -28,24 +27,12 @@
     profile?.displayName || `${address.slice(0, 6)}...${address.slice(-4)}`,
   );
 
-  // Follow attaches to a NAME — only followable once they've claimed a sub-ENS,
-  // and never on your own identity.
-  // Point F: a profile feed is client-signed, so its label is the author's own
-  // claim. Follow attaches to a NAME, so following an unverified one would key
-  // the follow to someone else's identity.
-  let nameVerified = $state(false);
-  $effect(() => {
-    const label = profile?.subEnsLabel;
-    if (!label) { nameVerified = false; return; }
-    nameVerified = nameIsVerified(label, address);
-    void verifyName(label, address).then((ok) => { nameVerified = ok; });
-  });
-
+  // A follow targets the ACCOUNT, so anyone with a profile is followable — the
+  // sub-ENS name is display, not identity. Previously this required a claimed
+  // name, which keyed the audience to something three parties other than the
+  // holder could move.
   const canFollow = $derived(
-    showFollow &&
-      !!profile?.subEnsLabel &&
-      nameVerified &&
-      auth.parent?.toLowerCase() !== address.toLowerCase(),
+    showFollow && auth.parent?.toLowerCase() !== address.toLowerCase(),
   );
 
   function handleClick(e: Event) {
@@ -71,7 +58,7 @@
     {/if}
   </div>
   {#if canFollow}
-    <LikeButton subject={profileLikeSubject(profile!.subEnsLabel!)} variant="follow" />
+    <LikeButton subject={socialProfileSubject(address)} variant="follow" />
   {/if}
 </div>
 
