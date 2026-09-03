@@ -142,6 +142,7 @@ export async function claimSubEnsViaPermit(opts: {
     const { txHash } = await registerSubEnsViaPermit({
       kernelAddress: opts.kernelAddress,
       registrarAddress: permit.data.registrarAddress,
+      chainId: permit.data.chainId,
       label: permit.data.label,
       expiry: permit.data.expiry,
       sig: permit.data.sig,

@@ -87,6 +87,45 @@ export const WOCO_REGISTRAR_ADDRESS = SUB_ENS_DEPLOYMENTS[KERNEL_CHAIN_ID].regis
  */
 export const WOCO_REGISTRY_ADDRESS = SUB_ENS_DEPLOYMENTS[KERNEL_CHAIN_ID].registry;
 
+/**
+ * What is persisted for a scoped session key.
+ *
+ * v1 blobs held the bare `serializePermissionAccount` string with no record of
+ * what the key was SCOPED TO, which is what made #470 invisible. A v1 blob is
+ * still readable — it is simply treated as scoped to nothing we can verify, so
+ * it is discarded and re-minted rather than trusted.
+ */
+interface StoredSessionKey {
+  v: 2;
+  serialized: string;
+  /** The CallPolicy target this key was minted against, lowercased. */
+  registrar: string;
+  chainId: number;
+}
+const SESSION_BLOB_VERSION = 2 as const;
+
+/** Parse a stored blob, returning null for the unscoped v1 shape. */
+function parseStoredSessionKey(raw: string): StoredSessionKey | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredSessionKey>;
+    if (parsed?.v !== SESSION_BLOB_VERSION) return null;
+    if (typeof parsed.serialized !== "string" || typeof parsed.registrar !== "string") return null;
+    if (typeof parsed.chainId !== "number") return null;
+    return parsed as StoredSessionKey;
+  } catch {
+    return null; // v1: a bare serialized string, not JSON we wrote
+  }
+}
+
+/** Is a stored key still scoped to the registrar and chain we mint through? */
+function sessionKeyScopeMatches(stored: StoredSessionKey | null): boolean {
+  if (!stored) return false;
+  return (
+    stored.registrar === WOCO_REGISTRAR_ADDRESS.toLowerCase() &&
+    stored.chainId === KERNEL_CHAIN_ID
+  );
+}
+
 /** Scoped session-key lifetime — mirrors the 30-day HTTP session window. */
 const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -528,7 +567,24 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
   const serialized = await d.serializePermissionAccount(sessionAccount, sessionPk);
 
   const deviceKey = await ensureDeviceKey();
-  const blob = await encrypt(deviceKey, AAD.WOCO_AA_SESSION(builtKernel.address), serialized);
+  // Store the SCOPE beside the key (#470). A session key is scoped to one
+  // registrar on one chain by its CallPolicy; when that address moves, a key
+  // already on a device is silently scoped to the old one. Nothing noticed:
+  // `hasWocoSessionKey` only compared which Kernel the blob belonged to, and
+  // the permit-vs-constant guard compares two values that moved together. The
+  // userOp was then rejected by the permission validator and the mint quietly
+  // fell back to the server-sponsored path — right name, right owner, our gas,
+  // gasless rail dead on that device until someone noticed.
+  const blob = await encrypt(
+    deviceKey,
+    AAD.WOCO_AA_SESSION(builtKernel.address),
+    JSON.stringify({
+      v: SESSION_BLOB_VERSION,
+      serialized,
+      registrar: WOCO_REGISTRAR_ADDRESS.toLowerCase(),
+      chainId: KERNEL_CHAIN_ID,
+    } satisfies StoredSessionKey),
+  );
   await putKV(StorageKeys.WOCO_AA_SESSION, blob);
 
   return sessionAccount.address.toLowerCase();
@@ -541,15 +597,8 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
  * The serialized format is @zerodev/permissions' base64(JSON) with
  * `accountParams.accountAddress` (the userOp sender the blob will act as).
  */
-async function storedSessionKeyAddress(
-  storageKey: string,
-  aad: string,
-): Promise<string | null> {
-  const blob = await getKV<import("@woco/shared").EncryptedBlob>(storageKey);
-  if (!blob) return null;
+function extractSessionAccountAddress(serialized: string): string | null {
   try {
-    const deviceKey = await ensureDeviceKey();
-    const serialized = await decrypt<string>(deviceKey, aad, blob);
     const bytes = Uint8Array.from(atob(serialized), (c) => c.codePointAt(0) ?? 0);
     const params = JSON.parse(new TextDecoder().decode(bytes)) as {
       accountParams?: { accountAddress?: string };
@@ -560,15 +609,43 @@ async function storedSessionKeyAddress(
   }
 }
 
+async function storedSessionKeyAddress(
+  storageKey: string,
+  aad: string,
+): Promise<string | null> {
+  const blob = await getKV<import("@woco/shared").EncryptedBlob>(storageKey);
+  if (!blob) return null;
+  try {
+    const deviceKey = await ensureDeviceKey();
+    return extractSessionAccountAddress(await decrypt<string>(deviceKey, aad, blob));
+  } catch {
+    return null;
+  }
+}
+
 /** True if a session key usable by THIS Kernel is persisted on this device.
  *  A blob for a different Kernel (pre-pinning recovered-account mint, or an
  *  account switch) reports false so the caller re-mints instead of wedging. */
 export async function hasWocoSessionKey(kernelAddress: string): Promise<boolean> {
-  const stored = await storedSessionKeyAddress(
-    StorageKeys.WOCO_AA_SESSION,
-    AAD.WOCO_AA_SESSION(kernelAddress),
-  );
-  return stored === kernelAddress.toLowerCase();
+  const blob = await getKV<import("@woco/shared").EncryptedBlob>(StorageKeys.WOCO_AA_SESSION);
+  if (!blob) return false;
+  let raw: string;
+  try {
+    const deviceKey = await ensureDeviceKey();
+    raw = await decrypt<string>(deviceKey, AAD.WOCO_AA_SESSION(kernelAddress), blob);
+  } catch {
+    return false; // AAD mismatch — belongs to a different Kernel
+  }
+
+  // #470: a key still scoped to a registrar we no longer mint through is WORSE
+  // than no key. It is not rejected here — it is rejected by the permission
+  // validator, deep in a userOp, where the caller reads the failure as an
+  // account-abstraction problem and falls back to the sponsor path. Reporting
+  // "no key" instead makes the caller mint a correctly-scoped one.
+  const stored = parseStoredSessionKey(raw);
+  if (!stored || !sessionKeyScopeMatches(stored)) return false;
+
+  return extractSessionAccountAddress(stored.serialized) === kernelAddress.toLowerCase();
 }
 
 /** Drop the persisted session key (logout / identity switch). */
@@ -591,15 +668,28 @@ export async function getWocoSessionClient(
   const d = await loadSessionDeps();
 
   const deviceKey = await ensureDeviceKey();
-  let serialized: string;
+  let raw: string;
   try {
-    serialized = await decrypt<string>(deviceKey, AAD.WOCO_AA_SESSION(kernelAddress), blob);
+    raw = await decrypt<string>(deviceKey, AAD.WOCO_AA_SESSION(kernelAddress), blob);
   } catch {
     // AAD mismatch — the blob belongs to a different Kernel (account switch
     // without logout). Unusable for this identity; wipe so the caller re-mints.
     await clearWocoSessionKey();
     return null;
   }
+
+  // #470: discard a key scoped to a registrar or chain we no longer mint
+  // through, and any pre-#470 blob that cannot say what it was scoped to.
+  // Re-minting costs one passkey prompt; keeping it costs the gasless rail
+  // silently, because the failure surfaces as an AA error and the caller falls
+  // back to the sponsor path.
+  const stored = parseStoredSessionKey(raw);
+  if (!sessionKeyScopeMatches(stored)) {
+    console.warn("[kernel] stored sub-ENS session key is scoped to a different registrar/chain — discarding");
+    await clearWocoSessionKey();
+    return null;
+  }
+  const serialized = stored!.serialized;
 
   const sessionAccount = await d.deserializePermissionAccount(
     d.publicClient,
@@ -889,6 +979,12 @@ export interface SubEnsPermitArgs {
   kernelAddress: string;
   /** Registrar address returned by /api/sub-ens/permit (cross-checked here). */
   registrarAddress: string;
+  /** Chain the permit was signed for, from the same response. Cross-checked
+   *  here (#470): a same-deployer, same-nonce deploy can put an identical
+   *  registrar address on another chain, so the address check alone passes
+   *  while the chain differs — failing only on-chain, after a sponsored userOp
+   *  has been spent. */
+  chainId?: number;
   label: string;
   expiry: number;
   /** 0x 65-byte permit signature from the server (sponsor key). */
@@ -915,6 +1011,14 @@ export async function registerSubEnsViaPermit(
   if (args.registrarAddress.toLowerCase() !== WOCO_REGISTRAR_ADDRESS.toLowerCase()) {
     throw new Error(
       `Registrar mismatch: permit=${args.registrarAddress} policy=${WOCO_REGISTRAR_ADDRESS}. Refusing to submit.`,
+    );
+  }
+  // The address alone is not the identity of a contract — the same address can
+  // exist on another chain from the same deployer and nonce (#470). Checked
+  // only when the server supplied it, so an older server response still works.
+  if (args.chainId !== undefined && args.chainId !== KERNEL_CHAIN_ID) {
+    throw new Error(
+      `Chain mismatch: permit=${args.chainId} kernel=${KERNEL_CHAIN_ID}. Refusing to submit.`,
     );
   }
 
