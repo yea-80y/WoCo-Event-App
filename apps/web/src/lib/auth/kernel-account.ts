@@ -62,7 +62,8 @@ export const KERNEL_CHAIN_ID = 421614;
  * drift between the two fails closed instead of scoping a key at a registrar
  * the platform no longer mints through.
  *
- * Redeployed 2026-09-02 (#440, our own L2Registry implementation). Moving this
+ * Redeployed 2026-09-03 (registry gained #464 `releaseWithSignature`; 2026-09-02
+ * was the move to our own implementation, #440). Moving this
  * constant does NOT re-issue keys already on a device, and the guard below does
  * not catch them: it compares the permit against this constant, and both moved.
  * `hasWocoSessionKey` only checks which Kernel a stored blob belongs to, never
@@ -73,7 +74,7 @@ export const KERNEL_CHAIN_ID = 421614;
  * and must land before the mainnet move.
  */
 export const WOCO_REGISTRAR_ADDRESS =
-  "0xD33C93E2E73A0C9C7683aaf6f4508F558A277816" as const;
+  "0x42c6464d65e79C4735A0b346d1c1b4690586d6F9" as const;
 
 /** Scoped session-key lifetime — mirrors the 30-day HTTP session window. */
 const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
