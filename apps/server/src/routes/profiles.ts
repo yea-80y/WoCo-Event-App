@@ -2,11 +2,25 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getProfile, updateProfile, uploadAvatar } from "../lib/profile/service.js";
-import { getLabelOwner } from "../lib/chain/sub-ens-contract.js";
+import { getLabelOwner, getLabelContenthash } from "../lib/chain/sub-ens-contract.js";
+import { bindProfileName, nameChangeStatus } from "../lib/profile/name-ledger.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import type { UpdateProfileRequest } from "@woco/shared";
 
 export const profiles = new Hono<AppEnv>();
+
+// GET /api/profile/name-status — authenticated. When may this account change
+// its profile name, and has the one free early correction been spent? The UI
+// asks before offering a rename so it can refuse with a date instead of letting
+// the user mint a name they then cannot bind.
+//
+// MUST stay above `/:address`: Hono matches in registration order, so a
+// parameter route registered first would swallow "name-status" and answer
+// "Invalid address" (same trap as GET /api/sites/mine vs /:id).
+profiles.get("/name-status", requireAuth, (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  return c.json({ ok: true, data: nameChangeStatus(parentAddress) });
+});
 
 // GET /api/profile/:address — public, returns profile data
 profiles.get("/:address", async (c) => {
@@ -26,6 +40,61 @@ profiles.get("/:address", async (c) => {
     return c.json({ ok: false, error: "Failed to load profile" }, 500);
   }
 });
+
+/**
+ * Verify + record a profile-name bind. Shared by the two paths that can set one
+ * (Phase B `/verify-label`, legacy `POST /api/profile`) so the ownership check,
+ * the cooldown and the ledger write cannot drift apart between them.
+ *
+ * Order matters: ownership FIRST (chain is the authority and the ledger must
+ * never record a name the caller does not hold), then the cooldown, then the
+ * write. A refused bind writes nothing at all.
+ */
+type BindOutcome =
+  | { ok: true; label: string; nextChangeAllowedAt: number | null; freeCorrectionUsed: boolean; warning?: "points_at_site" }
+  | { ok: false; status: 403 | 409 | 502; body: Record<string, unknown> };
+
+async function verifyAndBindProfileName(parentAddress: string, rawLabel: string): Promise<BindOutcome> {
+  const label = rawLabel.toLowerCase().trim();
+  const parent = parentAddress.toLowerCase();
+
+  let owner: string | null;
+  try {
+    owner = await getLabelOwner(label);
+  } catch (err) {
+    console.error("[api] profile name ownership check failed:", err);
+    return { ok: false, status: 502, body: { error: "Could not verify name ownership — try again" } };
+  }
+  if (owner !== parent) {
+    return { ok: false, status: 403, body: { error: "You do not own that name" } };
+  }
+
+  const result = bindProfileName(parent, label);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: 409,
+      body: {
+        error: "name_change_cooldown",
+        nextChangeAllowedAt: result.status.nextChangeAllowedAt,
+        label: result.status.label,
+      },
+    };
+  }
+
+  // Allowed, but worth saying out loud: this name is already a live URL. It
+  // keeps resolving to that site — the binding points protect it from being
+  // repointed from here on, and clearing it on-chain is a holder action we do
+  // not offer yet.
+  const contenthash = await getLabelContenthash(label);
+  return {
+    ok: true,
+    label,
+    nextChangeAllowedAt: result.status.nextChangeAllowedAt,
+    freeCorrectionUsed: result.status.freeCorrectionUsed,
+    ...(contenthash ? { warning: "points_at_site" as const } : {}),
+  };
+}
 
 // POST /api/profile — authenticated, updates display name/bio/links
 profiles.post("/", requireAuth, async (c) => {
@@ -60,27 +129,25 @@ profiles.post("/", requireAuth, async (c) => {
   // Only persist a label the caller actually owns on-chain — a profile must not
   // advertise a name it doesn't control. (The likes themselves stay safe either
   // way: the subject is the namehash and the owner is resolved live from chain.)
+  let bindWarning: "points_at_site" | undefined;
+  let bindStatus: { nextChangeAllowedAt: number | null; freeCorrectionUsed: boolean } | undefined;
   if (body.subEnsLabel !== undefined && body.subEnsLabel !== null) {
     const label = String(body.subEnsLabel).toLowerCase().trim();
     if (label) {
-      let owner: string | null;
-      try {
-        owner = await getLabelOwner(label);
-      } catch (err) {
-        console.error("[api] profile subEnsLabel ownership check failed:", err);
-        return c.json({ ok: false, error: "Could not verify name ownership — try again" }, 502);
-      }
-      console.log(`[api] profile subEnsLabel check label=${label} owner=${owner} parent=${parentAddress.toLowerCase()} match=${owner === parentAddress.toLowerCase()}`);
-      if (owner !== parentAddress.toLowerCase()) {
-        return c.json({ ok: false, error: "You do not own that name" }, 403);
-      }
-      updates.subEnsLabel = label;
+      const outcome = await verifyAndBindProfileName(parentAddress, label);
+      if (!outcome.ok) return c.json({ ok: false, ...outcome.body }, outcome.status);
+      updates.subEnsLabel = outcome.label;
+      bindWarning = outcome.warning;
+      bindStatus = {
+        nextChangeAllowedAt: outcome.nextChangeAllowedAt,
+        freeCorrectionUsed: outcome.freeCorrectionUsed,
+      };
     }
   }
 
   try {
     const profile = await updateProfile(parentAddress, updates);
-    return c.json({ ok: true, data: profile });
+    return c.json({ ok: true, data: profile, ...(bindWarning ? { warning: bindWarning } : {}), ...(bindStatus ?? {}) });
   } catch (err) {
     console.error("[api] updateProfile error:", err);
     const msg = err instanceof Error ? err.message : String(err);
@@ -102,17 +169,17 @@ profiles.post("/verify-label", requireAuth, async (c) => {
   const label = String(body.subEnsLabel ?? "").toLowerCase().trim();
   if (!label) return c.json({ ok: false, error: "Missing label" }, 400);
 
-  let owner: string | null;
-  try {
-    owner = await getLabelOwner(label);
-  } catch (err) {
-    console.error("[api] verify-label ownership check failed:", err);
-    return c.json({ ok: false, error: "Could not verify name ownership — try again" }, 502);
-  }
-  if (owner !== parentAddress.toLowerCase()) {
-    return c.json({ ok: false, error: "You do not own that name" }, 403);
-  }
-  return c.json({ ok: true, data: { label } });
+  const outcome = await verifyAndBindProfileName(parentAddress, label);
+  if (!outcome.ok) return c.json({ ok: false, ...outcome.body }, outcome.status);
+  return c.json({
+    ok: true,
+    data: {
+      label: outcome.label,
+      nextChangeAllowedAt: outcome.nextChangeAllowedAt,
+      freeCorrectionUsed: outcome.freeCorrectionUsed,
+      ...(outcome.warning ? { warning: outcome.warning } : {}),
+    },
+  });
 });
 
 // POST /api/profile/avatar — authenticated, uploads avatar image. Phase B: when

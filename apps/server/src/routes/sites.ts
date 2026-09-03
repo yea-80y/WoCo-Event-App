@@ -51,6 +51,7 @@ import { sendEmail } from "../lib/email/send.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { getLabelOwner, updateSubEnsContenthash } from "../lib/chain/sub-ens-contract.js";
+import { isProfileName } from "../lib/profile/name-ledger.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { clientIp } from "../lib/http/client-ip.js";
 
@@ -1052,20 +1053,35 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
     const siteUrl = `${gatewayUrl}/bzz/${contentHash}/`;
 
-    // Auto-update sub-ENS contenthash if the site has a claimed label (fire-and-forget).
+    // Point B. The two CHECKS run synchronously — they are single eth_calls and
+    // a local map read — so the deploy response can say what happened to the
+    // name. Only the TRANSACTION stays fire-and-forget, as before: a name
+    // update must never hold up or fail a site deploy.
+    //
+    // Before this, every refusal was SILENT: a site bound to a name the
+    // organiser had transferred away simply stopped updating, with nothing in
+    // the response and a line in a log nobody reads.
+    let subEns: { label: string; status: "updating" | "skipped"; reason?: "not_owner" | "profile_name" } | undefined;
     if (site.subEnsLabel) {
       const label = site.subEnsLabel;
-      (async () => {
-        try {
-          const owner = await getLabelOwner(label);
-          if (owner && owner === parentAddress.toLowerCase()) {
-            await updateSubEnsContenthash(label, contentHash);
-            console.log(`[sites/deploy] sub-ens ${label}.woco.eth → ${contentHash.slice(0, 10)}…`);
-          }
-        } catch (e) {
-          console.warn("[sites/deploy] sub-ens contenthash update failed:", e);
-        }
-      })();
+      let owner: string | null = null;
+      try {
+        owner = await getLabelOwner(label);
+      } catch (e) {
+        console.warn("[sites/deploy] sub-ens ownership check failed:", e);
+      }
+      if (owner !== parentAddress.toLowerCase()) {
+        subEns = { label, status: "skipped", reason: "not_owner" };
+      } else if (isProfileName(parentAddress, label)) {
+        // The identity name must not become a site pointer: every later
+        // redeploy would silently repoint the organiser's identity.
+        subEns = { label, status: "skipped", reason: "profile_name" };
+      } else {
+        subEns = { label, status: "updating" };
+        void updateSubEnsContenthash(label, contentHash)
+          .then(() => console.log(`[sites/deploy] sub-ens ${label}.woco.eth → ${contentHash.slice(0, 10)}…`))
+          .catch((e) => console.warn("[sites/deploy] sub-ens contenthash update failed:", e));
+      }
     }
 
     // Auto-update any custom domains registered for this site (fire-and-forget).
@@ -1095,6 +1111,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         // Present only when the pointer feed is client-owned: the caller signs
         // the sequence-feed update SOC (beeFeedUpdateIdentifier) with this.
         ...(multisiteFeed ? { multisiteFeed } : {}),
+        // What happened to the site's sub-ENS name, when it has one.
+        ...(subEns ? { subEns } : {}),
       },
     });
 
