@@ -77,7 +77,7 @@
   function buildUpdates() {
     const updates: Pick<
       import("@woco/shared").UpdateEventMetaRequest,
-      "title" | "tagline" | "description" | "startDate" | "endDate" | "location" | "geo" | "tags"
+      "title" | "tagline" | "description" | "startDate" | "endDate" | "location" | "geo" | "tags" | "subEnsLabel"
     > = {};
     if (title.trim() !== event.title) updates.title = title.trim();
     if (tagline.trim() !== (event.tagline ?? "")) updates.tagline = tagline.trim();
@@ -89,8 +89,17 @@
     if (location.trim() !== event.location) updates.location = location.trim();
     if (!geoEqual(geo, event.geo)) updates.geo = geo ?? {};
     if (!tagsEqual(tags, event.tags ?? [])) updates.tags = tags;
+    // Clear-only: the route refuses a string here, because SETTING a name needs
+    // the on-chain ownership proof that only stamp-event performs.
+    if (removeName && event.subEnsLabel) updates.subEnsLabel = null;
     return updates;
   }
+
+  // Removing the event's sub-ENS name. The ORGANISER may do this; the platform
+  // never does (owner decision, "OWNER ANSWERS 5b" item 7). It clears the
+  // event's claim to the name — it does not release the name, and it cannot
+  // blank the on-chain pointer, which keeps resolving until it is re-pointed.
+  let removeName = $state(false);
 
   async function save() {
     if (!canSave) return;
@@ -202,6 +211,25 @@
 
   <LocationPicker bind:geo bind:location />
   <GenreTagPicker bind:tags />
+
+  {#if event.subEnsLabel}
+    <!-- Removing the name is the ORGANISER's call and only theirs — the platform
+         never takes a name off an event. It clears this event's claim to the
+         address; it does not release the name, which stays in the account. -->
+    <div class="name-row">
+      <label class="name-toggle">
+        <input type="checkbox" bind:checked={removeName} />
+        <span>Remove <strong>{event.subEnsLabel}.woco.eth</strong> from this event</span>
+      </label>
+      {#if removeName}
+        <p class="name-hint">
+          You keep the name. The web address itself can't be blanked — it goes on
+          resolving to whatever it points at now until you point it somewhere
+          else, so posters and links already sharing it will not change.
+        </p>
+      {/if}
+    </div>
+  {/if}
 
   {#if dateError}
     <p class="field-error">{dateError}</p>
@@ -321,6 +349,26 @@
   .save-btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;
+  }
+
+  .name-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .name-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  .name-toggle input { cursor: pointer; }
+  .name-hint {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.45;
   }
 
   .danger-zone {

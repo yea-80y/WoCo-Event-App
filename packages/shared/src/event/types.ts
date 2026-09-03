@@ -442,6 +442,11 @@ export interface UpdateEventMetaRequest {
   /** Replacement structured location. Present ⇒ overwrite (empty object clears);
    *  absent ⇒ leave unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
   geo?: EventGeo;
+  /** Remove the event's sub-ENS name. `null` clears it; a string is REFUSED —
+   *  setting one goes through POST /api/sub-ens/stamp-event, which proves
+   *  on-chain that the caller owns the label. Organiser-only, like every other
+   *  field here; the platform never removes a name from an event. */
+  subEnsLabel?: null;
   /** The event's storage gateway — routes the replacement-image stamp to the same
    *  batch the event content lives on (Etherna user batch vs WoCo). */
   gatewayUrl?: string;

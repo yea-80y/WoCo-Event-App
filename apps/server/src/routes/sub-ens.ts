@@ -16,6 +16,8 @@ import {
 import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
 import { stampEventSubEns } from "../lib/event/service.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
+import { clientIp } from "../lib/http/client-ip.js";
 import type { AppEnv } from "../types.js";
 
 // Preview links resolve through the WoCo gateway (eth.limo .woco.eth resolution is
@@ -37,6 +39,18 @@ function validateLabel(label: string): string | null {
   if (label.includes("--"))                   return "label cannot contain consecutive hyphens";
   return null;
 }
+
+/**
+ * `/check` is the only sub-ENS read with no auth and no limit, and every render
+ * of a name now goes through it (display verification, plan doc §3 point F). It
+ * costs an RPC call, and the display rule is FAIL-CLOSED — so an attacker who
+ * can exhaust the RPC quota can make names stop rendering. Sized for a human
+ * typing in the claim field plus a page full of cards, not for a scraper.
+ */
+const checkLimiter = new SlidingWindowLimiter([
+  { limit: 60, windowMs: 60_000 },
+  { limit: 600, windowMs: 60 * 60_000 },
+]);
 
 /** Read the mint allowance, or null when the chain is unreachable — see
  *  `mintRateCapVerdict`, which treats null as "proceed", not "refuse". */
@@ -65,11 +79,24 @@ subEnsRoutes.get("/check/:label", async (c) => {
     return c.json({ ok: true, data: { available: false, reason: validationError } });
   }
 
+  // Validation first: a malformed label is answered without a chain read, so it
+  // should not spend the caller's budget either.
+  const ip = clientIp(c);
+  if (!checkLimiter.peek(ip)) {
+    return c.json({ ok: false, error: "rate_limited" }, 429);
+  }
+  checkLimiter.record(ip);
+
   try {
     const available = await isLabelAvailable(label);
     if (available) return c.json({ ok: true, data: { available: true } });
     // Return the owner so the client can detect "taken by me" and offer re-link.
     const owner = await getLabelOwner(label);
+    // A TAKEN name changes hands rarely, so the edge may answer this for a
+    // minute. Deliberately not set on the "available" branch: that one is the
+    // claim-field typeahead, where a stale "still free" sends a user into a
+    // mint that then fails.
+    c.header("Cache-Control", "public, max-age=60");
     return c.json({ ok: true, data: { available: false, owner: owner ?? undefined } });
   } catch (err) {
     console.error("[sub-ens] availability check failed:", err);

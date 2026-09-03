@@ -12,6 +12,9 @@
     claimedLabel?: string;
     deployedHash?: string;
     onclaim?: (label: string) => void;
+    /** Unlink the name from THIS site. The name is not released — it stays in
+     *  the organiser's account and can be pointed at something else. */
+    onunlink?: () => void;
     /** Parent can pre-fetch and pass; if undefined, picker self-checks. */
     stripeConnected?: boolean;
     /** If parent manages the Stripe modal lifecycle, provide this callback. */
@@ -24,7 +27,7 @@
     singleName?: boolean;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, stripeConnected, onstripesetup, singleName = false }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false }: Props = $props();
 
   // ── Stripe gate ──────────────────────────────────────────────────────────────
   // null = loading/unknown, false = not connected, true = connected+complete
@@ -345,6 +348,15 @@
         <button class="action-btn action-btn--copy" onclick={copyUrl}>
           {copied ? '✓ Copied' : 'Copy'}
         </button>
+        {#if onunlink}
+          <button
+            class="action-btn action-btn--unlink"
+            title="Stop using this name for this site. You keep the name."
+            onclick={() => { claimedLabel = undefined; onunlink?.(); }}
+          >
+            Unlink
+          </button>
+        {/if}
         <span class="action-btn action-btn--soon" title="Goes live once woco.eth's mainnet ENS resolver points to the Arbitrum registry">
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
             <circle cx="5.5" cy="5.5" r="4.2" stroke="currentColor" stroke-width="1.2"/>
@@ -362,6 +374,13 @@
           </svg>
           Linked to your site — updates automatically when you publish.
         </p>
+        {#if onunlink}
+          <p class="claimed-note claimed-note--muted">
+            Unlinking stops future publishes updating this address. It keeps
+            pointing at your last published site until you point it somewhere
+            else — the address itself can't be blanked.
+          </p>
+        {/if}
       {:else}
         <p class="claimed-note">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="flex-shrink:0">
@@ -1036,6 +1055,20 @@
     color: #22c55e;
   }
   .action-btn--copy:hover { background: color-mix(in srgb, #22c55e 10%, transparent); }
+
+  /* Unlink is destructive-ish but recoverable (the name stays in the account),
+     so it reads as a quiet secondary action rather than a red one. */
+  .action-btn--unlink {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .action-btn--unlink:hover {
+    border-color: color-mix(in srgb, #ef4444 40%, var(--border));
+    color: #ef4444;
+  }
+
+  .claimed-note--muted { color: var(--text-muted); opacity: 0.85; }
 
   /* Non-clickable pending state: the .woco.eth.limo web address activates once
      woco.eth's mainnet resolver points to the Arbitrum registry (the resolver

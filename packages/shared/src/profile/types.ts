@@ -25,8 +25,14 @@ export interface UpdateProfileRequest {
   twitterHandle?: string;
   farcasterHandle?: string;
   /** Sub-ENS label to bind to this profile. The server verifies the caller
-   *  owns `{label}.woco.eth` on-chain before persisting (see profiles route). */
-  subEnsLabel?: string;
+   *  owns `{label}.woco.eth` on-chain before persisting (see profiles route),
+   *  then records the bind in the name ledger so the rename cooldown and the
+   *  profile-name refusal at the binding points both know about it.
+   *
+   *  `null` UNBINDS. Distinct from `undefined`, which leaves the current name
+   *  alone — a display-name edit must not wipe a bound name. An unbind does not
+   *  touch the rename clock: it is not a change, the next different bind is. */
+  subEnsLabel?: string | null;
 }
 
 /** Request body for POST /api/profile/avatar */

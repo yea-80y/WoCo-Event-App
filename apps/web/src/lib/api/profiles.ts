@@ -186,6 +186,15 @@ export async function updateProfile(updates: UpdateProfileRequest): Promise<User
   const addr = parent as UserProfile["address"];
 
   // Bind a sub-ENS label only after the server confirms on-chain ownership.
+  // An explicit `null` is an UNBIND: tell the server so the name ledger stops
+  // treating the label as this account's profile name, then write the feed
+  // without it. Distinct from `undefined`, which carries the current name
+  // forward — that distinction is why a bound name could not be removed before.
+  const unbinding = updates.subEnsLabel === null;
+  if (unbinding) {
+    const res = await authPost<{ ok: boolean }>("/api/profile/unbind-name", {});
+    if (!res.ok) throw new Error(res.error ?? "Failed to remove the name");
+  }
   let verifiedLabel: string | undefined;
   if (updates.subEnsLabel !== undefined && updates.subEnsLabel !== null && updates.subEnsLabel !== "") {
     const res = await authPost<{ label: string }>("/api/profile/verify-label", {
@@ -231,8 +240,9 @@ export async function updateProfile(updates: UpdateProfileRequest): Promise<User
     website: updates.website ?? existing?.website,
     twitterHandle: updates.twitterHandle ?? existing?.twitterHandle,
     farcasterHandle: updates.farcasterHandle ?? existing?.farcasterHandle,
-    // Carry forward the bound name unless this call set a freshly-verified one.
-    subEnsLabel: verifiedLabel ?? existing?.subEnsLabel,
+    // Carry forward the bound name unless this call set a freshly-verified one
+    // — or explicitly removed it, which `??` alone cannot express.
+    subEnsLabel: unbinding ? undefined : (verifiedLabel ?? existing?.subEnsLabel),
     updatedAt: new Date().toISOString(),
   };
 

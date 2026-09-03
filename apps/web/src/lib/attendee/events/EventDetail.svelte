@@ -2,6 +2,7 @@
   import type { EventFeed, Hex0x } from "@woco/shared";
   import { SubjectType, profileLikeSubject, socialEventSubject } from "@woco/shared";
   import { rememberLabel } from "../../likes/label-cache.js";
+  import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { getEvent } from "../../api/events.js";
   import ClaimButton from "./ClaimButton.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -73,6 +74,26 @@
   let loading = $state(_cached === null);
   let error = $state<string | null>(null);
   let creatorProfile = $state<UserProfile | null>(null);
+  // Point F. A feed's claimed name is rendered only once its on-chain owner is
+  // confirmed to be the address the feed belongs to. Seeded synchronously from
+  // the cache so a name the viewer has seen before paints without a round trip;
+  // an unverified or unchecked name renders as nothing at all.
+  let eventNameVerified = $state(false);
+  let creatorNameVerified = $state(false);
+  $effect(() => {
+    const label = event?.subEnsLabel;
+    const creator = event?.creatorAddress;
+    if (!label || !creator) { eventNameVerified = false; return; }
+    eventNameVerified = nameIsVerified(label, creator);
+    void verifyName(label, creator).then((ok) => { eventNameVerified = ok; });
+  });
+  $effect(() => {
+    const label = creatorProfile?.subEnsLabel;
+    const creator = event?.creatorAddress;
+    if (!label || !creator) { creatorNameVerified = false; return; }
+    creatorNameVerified = nameIsVerified(label, creator);
+    void verifyName(label, creator).then((ok) => { creatorNameVerified = ok; });
+  });
   let ticketQty = $state<Record<string, number>>({});
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
@@ -224,7 +245,7 @@
       <!-- Follow the organiser by NAME (sub-ENS namehash) — only when they've
            claimed one (a name is what a follow attaches to). Your own event
            shows the follower count read-only instead of an actionable follow. -->
-      {#if creatorProfile?.subEnsLabel}
+      {#if creatorProfile?.subEnsLabel && creatorNameVerified}
         <div class="creator-follow">
           <LikeButton
             subject={profileLikeSubject(creatorProfile.subEnsLabel)}
@@ -235,12 +256,12 @@
       {/if}
     </div>
 
-    {#if eventSubject || event.subEnsLabel}
+    {#if eventSubject || (event.subEnsLabel && eventNameVerified)}
       <!-- Social row: the event's .woco.eth identity (display — ownership lives
            on-chain) + like on the HAPPENING (keyed to the immutable on-chain
            event id, so likes survive a name repoint). -->
       <div class="social-actions">
-        {#if event.subEnsLabel}
+        {#if event.subEnsLabel && eventNameVerified}
           <span class="ens-plate" title="This event's permanent web3 address">
             <svg class="ens-mark" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
               <path d="M6 0.5L7.6 4.4L11.5 6L7.6 7.6L6 11.5L4.4 7.6L0.5 6L4.4 4.4Z"

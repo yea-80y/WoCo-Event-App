@@ -49,6 +49,26 @@ export async function getProfile(address: string): Promise<UserProfile | null> {
 // Update profile display data
 // ---------------------------------------------------------------------------
 
+/**
+ * Merge a `subEnsLabel` patch, distinguishing the three inputs.
+ *
+ *   undefined → leave the bound name alone (a display-name edit must not wipe it)
+ *   null      → UNBIND
+ *   string    → bind it
+ *
+ * Extracted because `updates.subEnsLabel ?? existing?.subEnsLabel` — the shape
+ * every other field here uses — cannot express the middle case: it keeps the
+ * existing label for `null` exactly as it does for `undefined`, so once a name
+ * was bound there was no way to remove it. Pure, so all three cases are tested.
+ */
+export function resolveSubEnsLabelUpdate(
+  patch: string | null | undefined,
+  existing: string | undefined,
+): string | undefined {
+  if (patch === null) return undefined;
+  return patch ?? existing;
+}
+
 export async function updateProfile(
   address: string,
   updates: UpdateProfileRequest,
@@ -70,8 +90,7 @@ export async function updateProfile(
     website: updates.website ?? existing?.website,
     twitterHandle: updates.twitterHandle ?? existing?.twitterHandle,
     farcasterHandle: updates.farcasterHandle ?? existing?.farcasterHandle,
-    // Carry forward so a later display-name edit doesn't wipe the bound name.
-    subEnsLabel: updates.subEnsLabel ?? existing?.subEnsLabel,
+    subEnsLabel: resolveSubEnsLabelUpdate(updates.subEnsLabel, existing?.subEnsLabel),
     updatedAt: new Date().toISOString(),
   };
 

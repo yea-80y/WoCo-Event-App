@@ -762,6 +762,7 @@
           bind:claimedLabel={site.subEnsLabel}
           deployedHash={deployedHash}
           onclaim={(label) => { site.subEnsLabel = label; }}
+          onunlink={() => { site.subEnsLabel = undefined; }}
           stripeConnected={stripeConnected}
           onstripesetup={() => { stripeModalOpen = true; }}
         />

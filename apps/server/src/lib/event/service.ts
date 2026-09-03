@@ -429,6 +429,17 @@ export interface EventMetaUpdates {
   /** Replacement structured location — present ⇒ overwrite (empty object clears);
    *  absent ⇒ leave. */
   geo?: import("@woco/shared").EventGeo;
+  /**
+   * CLEAR-ONLY. `null` removes the event's sub-ENS name; a string is REFUSED.
+   *
+   * Setting one stays with `POST /api/sub-ens/stamp-event`, which verifies
+   * on-chain that the caller owns the label — the check that stops an event
+   * advertising a name it does not control. Accepting a string here would be a
+   * second way in without that check, on a route whose whole shape is "patch
+   * whitelisted display fields". Removing needs no such proof: it can only ever
+   * make the event claim LESS.
+   */
+  subEnsLabel?: null;
 }
 
 /**
@@ -531,6 +542,10 @@ export async function updateEventMetadata(opts: {
     // An empty/unusable geo clears it; otherwise store raw (snapshot normalises).
     if (updates.geo && Object.keys(updates.geo).length) updated.geo = updates.geo;
     else delete updated.geo;
+  }
+  if (updates.subEnsLabel !== undefined) {
+    // Typed `null`-only, so this branch cannot set. See EventMetaUpdates.
+    delete updated.subEnsLabel;
   }
 
   // Validate the MERGED dates — a single-field update must not invert the range.
