@@ -392,6 +392,14 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
+  profile-names.json (#464 — which sub-ENS name is an account's PROFILE name, and
+    its rename clock. The role is unknowable from chain: a registry says who HOLDS
+    a name, never what it is FOR, and the profile feed is client-signed. Losing it
+    FAILS OPEN by design — cooldowns reset and the profile-name refusal at the
+    binding points stops firing until each user re-binds; nothing is lost that a
+    user cannot redo. Note the clock deliberately OUTLIVES the name it refers to:
+    nothing deletes a record, or `release old -> mint new -> bind` would read as
+    a first bind and skip the cooldown)
   event-attendees.json (#387 — eventId → attendee email hashes, appended at fulfilment;
     the ONLY server-visible proof a broadcast recipient holds a ticket. Losing it means no
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the

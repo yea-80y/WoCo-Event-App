@@ -174,6 +174,47 @@ export async function isLabelAvailable(label: string): Promise<boolean> {
  * if the label is not yet registered. Used to authorise mutation calls — the
  * caller's parentAddress must match before the sponsor wallet fires any tx.
  */
+export interface MintAllowance {
+  /** Mints this recipient may still make in the current window. */
+  remaining: number;
+  /** Unix seconds at which the window resets. */
+  windowResetsAt: number;
+}
+
+/**
+ * How many more names `recipient` may mint before the registrar's per-recipient
+ * rate cap (#464, 30 per 30 days at deploy) refuses.
+ *
+ * Read BEFORE promising a mint on either rail. The sponsor rail would otherwise
+ * revert after we have paid for gas estimation, and the permit rail is worse:
+ * the server signs a permit the organiser's wallet then submits and watches
+ * revert, which the client reads as an account-abstraction failure and quietly
+ * retries on the sponsor path — where it reverts again (#471).
+ */
+/**
+ * Turn a mint-allowance read into a refusal, or null to proceed.
+ *
+ * `null` allowance means the READ FAILED, and that is deliberately NOT a
+ * refusal: the cap is an abuse brake, not a security boundary, and the contract
+ * enforces it regardless of what we managed to read. Blocking every mint
+ * because an RPC blipped would be a worse outage than the one this prevents.
+ *
+ * Pure, so the fail-open direction is testable without a chain.
+ */
+export function mintRateCapVerdict(
+  allowance: MintAllowance | null,
+): { error: "mint_rate_cap"; windowResetsAt: number } | null {
+  if (!allowance) return null;
+  if (allowance.remaining > 0) return null;
+  return { error: "mint_rate_cap", windowResetsAt: allowance.windowResetsAt };
+}
+
+export async function getMintAllowance(recipient: string): Promise<MintAllowance> {
+  const [remaining, windowResetsAt] = await readContract(getSubEnsChainId())
+    .mintAllowance(recipient) as [bigint, bigint];
+  return { remaining: Number(remaining), windowResetsAt: Number(windowResetsAt) };
+}
+
 export async function getLabelOwner(label: string): Promise<string | null> {
   const chainId = getSubEnsChainId();
   const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
@@ -182,6 +223,26 @@ export async function getLabelOwner(label: string): Promise<string | null> {
     return owner.toLowerCase();
   } catch {
     // ERC-721 reverts when the tokenId doesn't exist (unregistered label)
+    return null;
+  }
+}
+
+/**
+ * The raw contenthash record for a label, or null when unset / unreadable.
+ *
+ * Used at the profile bind to WARN — never to refuse — when the name being
+ * adopted as an identity currently points at a site: the pointer keeps working
+ * and the binding points protect it from then on, but the user should know the
+ * name they are making their identity is already a live URL.
+ */
+export async function getLabelContenthash(label: string): Promise<string | null> {
+  const chainId = getSubEnsChainId();
+  const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
+  const node = "0x" + computeLabelNode(label).toString(16).padStart(64, "0");
+  try {
+    const raw = await registry.contenthash(node) as string;
+    return raw && raw !== "0x" ? raw : null;
+  } catch {
     return null;
   }
 }

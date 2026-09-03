@@ -10,7 +10,10 @@ import {
   signSubEnsPermit,
   getRegistrarAddress,
   getSubEnsChainId,
+  getMintAllowance,
+  mintRateCapVerdict,
 } from "../lib/chain/sub-ens-contract.js";
+import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
 import { stampEventSubEns } from "../lib/event/service.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import type { AppEnv } from "../types.js";
@@ -33,6 +36,17 @@ function validateLabel(label: string): string | null {
   if (!/^[a-z0-9-]+$/.test(label))           return "label may only contain a–z, 0–9, and hyphens";
   if (label.includes("--"))                   return "label cannot contain consecutive hyphens";
   return null;
+}
+
+/** Read the mint allowance, or null when the chain is unreachable — see
+ *  `mintRateCapVerdict`, which treats null as "proceed", not "refuse". */
+async function readMintAllowance(recipient: string) {
+  try {
+    return await getMintAllowance(recipient);
+  } catch (err) {
+    console.warn("[sub-ens] mintAllowance pre-flight unavailable:", err);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -76,9 +90,15 @@ subEnsRoutes.get("/owned", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   try {
     const owned = await getOwnedLabels(parentAddress);
+    const profileName = profileNameOf(parentAddress);
     const names = owned.map(({ label, contentHash }) => ({
       label,
       ensName: `${label}.woco.eth`,
+      // Point E: what this name is FOR, so the event and site pickers can hide
+      // the identity name instead of offering it and being refused at 409.
+      // "url" means it already points somewhere; "free" means it points nowhere
+      // yet — both are bindable, the distinction is only for display.
+      role: label === profileName ? "profile" : contentHash ? "url" : "free",
       ...(contentHash ? { contentHash, previewUrl: `${PREVIEW_GATEWAY}/bzz/${contentHash}/` } : {}),
     }));
     return c.json({ ok: true, data: { names } });
@@ -143,6 +163,9 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
     return c.json({ ok: false, error: "availability check failed" }, 500);
   }
 
+  const capped = mintRateCapVerdict(await readMintAllowance(parentAddress as string));
+  if (capped) return c.json({ ok: false, ...capped }, 429);
+
   try {
     const txHash = await mintSubEnsName(
       label,
@@ -164,6 +187,14 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
       if (name === "NotAuthorisedSponsor") {
         console.error("[sub-ens] sponsor wallet not authorised on registrar");
         return c.json({ ok: false, error: "name registration temporarily unavailable" }, 503);
+      }
+      // #464 per-recipient cap. Reachable despite the pre-flight above: the
+      // read can race a concurrent mint, and it is skipped when the RPC is
+      // unavailable. Report the window rather than a generic failure (#471).
+      if (name === "MintRateCapExceeded") {
+        const args = (err as { revert?: { args?: unknown[] } }).revert?.args;
+        const windowResetsAt = Number(args?.[1] ?? 0);
+        return c.json({ ok: false, error: "mint_rate_cap", windowResetsAt }, 429);
       }
     }
     // Race condition: another request registered the label between our check and the tx
@@ -208,6 +239,11 @@ subEnsRoutes.post("/permit", requireAuth, async (c) => {
     console.error("[sub-ens] permit pre-flight check failed:", err);
     return c.json({ ok: false, error: "availability check failed" }, 500);
   }
+
+  // Refuse before signing: a permit for a capped recipient is a signature the
+  // organiser pays to submit and watch revert (#471).
+  const capped = mintRateCapVerdict(await readMintAllowance(parentAddress as string));
+  if (capped) return c.json({ ok: false, ...capped }, 429);
 
   try {
     const { sig, expiry } = await signSubEnsPermit(label, parentAddress);
@@ -262,6 +298,10 @@ subEnsRoutes.post("/stamp-event", requireAuth, async (c) => {
   if (owner !== parentAddress) {
     return c.json({ ok: false, error: "not authorised for this label" }, 403);
   }
+  // Point A: the caller's own identity name is not a URL to hand to an event.
+  if (isProfileName(parentAddress, label)) {
+    return c.json({ ok: false, error: "profile_name" }, 409);
+  }
 
   try {
     const updated = await stampEventSubEns(eventId, label, parentAddress);
@@ -304,6 +344,11 @@ subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
   if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
   if (owner !== parentAddress.toLowerCase()) {
     return c.json({ ok: false, error: "not authorised for this label" }, 403);
+  }
+  // Point C: pointing the identity name at a site would make every later
+  // redeploy of that site silently repoint the organiser's identity.
+  if (isProfileName(parentAddress as string, label)) {
+    return c.json({ ok: false, error: "profile_name" }, 409);
   }
 
   try {
