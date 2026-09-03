@@ -4,6 +4,16 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Sub-ENS registry gains a holder-signed release; app re-pointed (#464, 2026-09-03)
+
+`L2Registry.releaseWithSignature` + `releaseDigest` landed in the contracts repo (WoCo-Contracts
+PR #6) and the Arb Sepolia pair was redeployed once more: registry `0xC38e08CB…7cf8`, registrar
+`0x42c6464d…d6F9`. A holder signs the digest the registry itself reports and anyone — the sponsor
+wallet — may submit the release and pay, for every login kind: plain wallets via `personal_sign`,
+Kernel accounts via ERC-1271. Server defaults, the session key's call target and the gateway pin now
+name the new pair; the registry ABI gained the two functions, the typehash and the registry's custom
+errors. The 2026-09-02 pair held no user names. The relay route and the rename UI are step 5c.
+
 ## Sub-ENS points at our own registry (#440, 2026-09-02)
 
 The Arb Sepolia sub-ENS pair was redeployed from our own `L2Registry` implementation (registry

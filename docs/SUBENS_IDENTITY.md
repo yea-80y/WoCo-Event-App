@@ -40,11 +40,11 @@ therefore to whoever currently owns it).
 
 | Contract | Address | Notes |
 |---|---|---|
-| WoCo Registrar | `0xD33C93E2E73A0C9C7683aaf6f4508F558A277816` | `register` / `registerWithPermit` / `setContenthash`, per-recipient mint cap |
-| L2Registry (our impl, EIP-1167 clone) | `0x6a5290df9B810d85Da3B97EE160C2B1f05eB9b22` | ERC-721 `ownerOf`, contenthash resolver, `release` |
+| WoCo Registrar | `0x42c6464d65e79C4735A0b346d1c1b4690586d6F9` | `register` / `registerWithPermit` / `setContenthash`, per-recipient mint cap |
+| L2Registry (our impl, EIP-1167 clone) | `0xC38e08CB5a21B083F63149ea7597Ea8D05017cf8` | ERC-721 `ownerOf`, contenthash resolver, `release` + `releaseWithSignature` |
 
-Redeployed 2026-09-02 (#440) from **our own** `L2Registry` implementation
-(`0xa3f9Bf8f1919Ac0F1Cb56597c7095aDA6FE447ee`) rather than a NameStone factory clone, because
+Redeployed 2026-09-03 (adding #464 `releaseWithSignature`; first moved 2026-09-02, #440) from **our own** `L2Registry` implementation
+(`0xc12aA209927e73d24fd0c664DBB2d401D9612c7a`) rather than a NameStone factory clone, because
 NameStone ceased operations and the permanent layer must run code we control. The registrar
 address is configured identically on the client and the server, and confirmed live on-chain.
 Implementation and registrar are **source-verified on Arbiscan**; the registry is the 45-byte

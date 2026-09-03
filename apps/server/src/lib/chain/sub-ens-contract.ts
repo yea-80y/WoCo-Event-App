@@ -6,20 +6,21 @@ import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import { getSponsorAddress } from "./sponsor-wallet.js";
 
-// Arbitrum Sepolia (421614) — redeployed 2026-09-02 from OUR L2Registry
-//   implementation (#440), so the registry carries #422 `adminTransfer` and #464
-//   `release`. The previous pair (registry 0x41Fb…4807, registrars 0x206e…BEd3 and
-//   0x7c0D…aAf1) were NameStone factory clones running code we do not control, and
-//   are abandoned along with the 23 test names on them.
-//   Deployment record: contracts/deployments/421614-subens.json.
+// Arbitrum Sepolia (421614) — redeployed 2026-09-03 from OUR L2Registry
+//   implementation, so the registry carries #422 `adminTransfer` and #464
+//   `release` + `releaseWithSignature` (a holder-signed release anyone may relay,
+//   which is how a plain-wallet holder releases without paying gas). The
+//   2026-09-02 pair (0x6a52…9b22 / 0xD33C…7816, no user names) and the NameStone
+//   factory clones before it (0x41Fb…4807 / 0x206e…BEd3 / 0x7c0D…aAf1, 23 test
+//   names) are abandoned. Deployment record: contracts/deployments/421614-subens.json.
 // Arbitrum One (42161)      — pending mainnet deploy
 const REGISTRAR_ADDRESSES: Record<number, string> = {
-  421614: "0xD33C93E2E73A0C9C7683aaf6f4508F558A277816",
+  421614: "0x42c6464d65e79C4735A0b346d1c1b4690586d6F9",
 };
 
 // L2Registry addresses (EIP-1167 clones of our own implementation)
 const REGISTRY_ADDRESSES: Record<number, string> = {
-  421614: "0x6a5290df9B810d85Da3B97EE160C2B1f05eB9b22",
+  421614: "0xC38e08CB5a21B083F63149ea7597Ea8D05017cf8",
 };
 
 // namehash("woco.eth") — the base node of our L2Registry.
@@ -45,6 +46,20 @@ const REGISTRY_ABI = [
   // re-mint hold that `release` would otherwise have made impossible.
   "function lastRelease(bytes32 node) view returns (address previousOwner, uint64 releasedAt)",
   "event Released(bytes32 indexed node, address indexed previousOwner, address indexed operator)",
+  // #464 signature rail (2026-09-03): the holder signs `releaseDigest(node, expiration)`
+  // — read from the chain, never re-derived here — and ANYONE may submit it. This is
+  // the one release path the sponsor wallet can relay, and it can only relay what
+  // the holder signed: `signer` must be the holder or an ERC-721 approvee, checked
+  // on-chain before the signature is examined. The digest carries the registry,
+  // chain, node, record version and deadline, so a signature is single-use.
+  "function releaseWithSignature(bytes32 node, uint256 expiration, address signer, bytes signature)",
+  "function releaseDigest(bytes32 node, uint256 expiration) view returns (bytes32)",
+  "function RELEASE_TYPEHASH() view returns (bytes32)",
+  // Registry custom errors, so a relay route can name the refusal instead of 500ing.
+  "error Unauthorized(bytes32 node)",
+  "error SignatureExpired()",
+  "error ReleaseBaseNode()",
+  "error ReleaseUnregistered(bytes32 node)",
 ];
 
 // Override either with env. Chain defaults to Arb Sepolia during buildathon.

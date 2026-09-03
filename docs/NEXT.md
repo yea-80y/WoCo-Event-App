@@ -272,6 +272,8 @@ profiles and event pages; the custom-domain worker must proxy, never redirect).
 
 **Sub-ENS contracts moved 2026-09-02 (#440):** registry `0x6a5290df…9b22`, registrar `0xD33C93E2…7816` — our own implementation; the old pair and its test names are abandoned.
 
+**…and again 2026-09-03 (#464 signature rail):** registry `0xC38e08CB…7cf8`, registrar `0x42c6464d…d6F9`. The registry gained `releaseWithSignature` + `releaseDigest` so a holder-signed release can be relayed (sponsor-paid) for every login kind. Fresh registry; nothing carried.
+
 Address ladder: WoCo-issued `{label}.woco.eth` (default per site, #69) → organiser's own DNS
 (recommended canonical for SEO) → organiser's own ENS. **No WoCo-issued free subdomain on
 `woco-net.com`** — that is a different question and stays rejected, see SEO_PLAN D2.
