@@ -171,7 +171,7 @@ export async function createEventStreaming(
  */
 export async function updateEventMeta(
   eventId: string,
-  updates: Pick<UpdateEventMetaRequest, "title" | "tagline" | "description" | "startDate" | "endDate" | "location" | "tags" | "geo">,
+  updates: Pick<UpdateEventMetaRequest, "title" | "tagline" | "description" | "startDate" | "endDate" | "location" | "tags" | "geo" | "subEnsLabel">,
   opts: { image?: string; gatewayUrl?: string; feedSigner?: ContentFeedSigner | null } = {},
 ): Promise<EventFeed | null> {
   const resp = await authPost<{ eventId: string; eventFeed?: EventFeed }>(

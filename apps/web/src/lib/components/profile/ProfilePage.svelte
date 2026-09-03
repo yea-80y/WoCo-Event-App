@@ -11,6 +11,7 @@
   import { authPost, authGet } from "../../api/client.js";
   import { getFollowing, getTrending } from "../../api/likes.js";
   import { rememberLabel, nameForSubject } from "../../likes/label-cache.js";
+  import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
   import ReferralShareCard from "../campaign/ReferralShareCard.svelte";
@@ -35,6 +36,18 @@
   let { address: propAddress }: Props = $props();
 
   const viewAddress = $derived(propAddress?.toLowerCase() || auth.parent?.toLowerCase() || "");
+
+  // Point F. The profile feed is client-signed under Phase B, so `subEnsLabel`
+  // is the profile author's own claim — rendering it unverified is what would
+  // let a modified client wear a name it does not own. The owner's own view is
+  // not exempted: seeing your own unowned name disappear is the correct signal.
+  let nameVerified = $state(false);
+  $effect(() => {
+    const label = profile?.subEnsLabel;
+    if (!label || !viewAddress) { nameVerified = false; return; }
+    nameVerified = nameIsVerified(label, viewAddress);
+    void verifyName(label, viewAddress).then((ok) => { nameVerified = ok; });
+  });
   const isOwner = $derived(
     auth.isConnected && !!viewAddress && auth.parent?.toLowerCase() === viewAddress,
   );
@@ -482,12 +495,12 @@
               style="--dot:{authKindColor[auth.kind] ?? 'var(--text-muted)'}"
             >{authKindLabel[auth.kind] ?? auth.kind}</span>
           {/if}
-          {#if !isOwner && profile?.subEnsLabel}
+          {#if !isOwner && profile?.subEnsLabel && nameVerified}
             <LikeButton subject={profileLikeSubject(profile.subEnsLabel)} variant="follow" />
           {/if}
         </div>
 
-        {#if profile?.subEnsLabel}
+        {#if profile?.subEnsLabel && nameVerified}
           <span class="ens-chip" title="{profile.subEnsLabel}.woco.eth — on-chain identity">
             <svg width="11" height="11" viewBox="0 0 15 15" fill="none" aria-hidden="true">
               <path d="M7.5 1L9.5 5.5H14.5L10.5 8.5L12 13.5L7.5 10.5L3 13.5L4.5 8.5L0.5 5.5H5.5L7.5 1Z"

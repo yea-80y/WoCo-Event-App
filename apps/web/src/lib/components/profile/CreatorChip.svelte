@@ -3,6 +3,7 @@
   import { profileLikeSubject } from "@woco/shared";
   import { getProfile } from "../../api/profiles.js";
   import { rememberLabel } from "../../likes/label-cache.js";
+  import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { navigate } from "../../router/router.svelte.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import UserAvatar from "./UserAvatar.svelte";
@@ -29,9 +30,21 @@
 
   // Follow attaches to a NAME — only followable once they've claimed a sub-ENS,
   // and never on your own identity.
+  // Point F: a profile feed is client-signed, so its label is the author's own
+  // claim. Follow attaches to a NAME, so following an unverified one would key
+  // the follow to someone else's identity.
+  let nameVerified = $state(false);
+  $effect(() => {
+    const label = profile?.subEnsLabel;
+    if (!label) { nameVerified = false; return; }
+    nameVerified = nameIsVerified(label, address);
+    void verifyName(label, address).then((ok) => { nameVerified = ok; });
+  });
+
   const canFollow = $derived(
     showFollow &&
       !!profile?.subEnsLabel &&
+      nameVerified &&
       auth.parent?.toLowerCase() !== address.toLowerCase(),
   );
 

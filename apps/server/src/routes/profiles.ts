@@ -3,7 +3,7 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getProfile, updateProfile, uploadAvatar } from "../lib/profile/service.js";
 import { getLabelOwner, getLabelContenthash } from "../lib/chain/sub-ens-contract.js";
-import { bindProfileName, nameChangeStatus } from "../lib/profile/name-ledger.js";
+import { bindProfileName, nameChangeStatus, unbindProfileName } from "../lib/profile/name-ledger.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import type { UpdateProfileRequest } from "@woco/shared";
 
@@ -131,7 +131,12 @@ profiles.post("/", requireAuth, async (c) => {
   // way: the subject is the namehash and the owner is resolved live from chain.)
   let bindWarning: "points_at_site" | undefined;
   let bindStatus: { nextChangeAllowedAt: number | null; freeCorrectionUsed: boolean } | undefined;
-  if (body.subEnsLabel !== undefined && body.subEnsLabel !== null) {
+  if (body.subEnsLabel === null) {
+    // Explicit unbind. Needs no ownership proof — it can only make the profile
+    // claim less — and deliberately does not touch the rename clock.
+    unbindProfileName(parentAddress);
+    updates.subEnsLabel = null;
+  } else if (body.subEnsLabel !== undefined) {
     const label = String(body.subEnsLabel).toLowerCase().trim();
     if (label) {
       const outcome = await verifyAndBindProfileName(parentAddress, label);
@@ -180,6 +185,17 @@ profiles.post("/verify-label", requireAuth, async (c) => {
       ...(outcome.warning ? { warning: outcome.warning } : {}),
     },
   });
+});
+
+// POST /api/profile/unbind-name — authenticated. Stop treating this account's
+// sub-ENS name as its profile name. Needs no ownership proof: it can only ever
+// make the account claim LESS. Deliberately does not touch the rename clock —
+// an unbind is not a change, the next different bind is, or unbind-then-bind
+// would be a free rename for anyone who noticed.
+profiles.post("/unbind-name", requireAuth, (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  unbindProfileName(parentAddress);
+  return c.json({ ok: true, data: nameChangeStatus(parentAddress) });
 });
 
 // POST /api/profile/avatar — authenticated, uploads avatar image. Phase B: when

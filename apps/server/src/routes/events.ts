@@ -499,6 +499,19 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
     updates.geo = body.geo;
   }
 
+  // Sub-ENS name: REMOVE only. `null` clears; anything else is refused with the
+  // route that can actually authorise a set, because setting one requires an
+  // on-chain ownership proof this route does not perform. The organiser is the
+  // only one who can clear — the PLATFORM never removes a name from an event
+  // (owner, "OWNER ANSWERS 5b" item 7) and `requireAuth` + the creator check in
+  // `resolveEventForOwner` are what make that true.
+  if (body.subEnsLabel !== undefined) {
+    if (body.subEnsLabel !== null) {
+      return c.json({ ok: false, error: "use stamp-event to set a name" }, 400);
+    }
+    updates.subEnsLabel = null;
+  }
+
   if (Object.keys(updates).length === 0) {
     return c.json({ ok: false, error: "No editable fields provided" }, 400);
   }
