@@ -1,63 +1,22 @@
 /**
- * Subject derivation is the one place likes can fragment silently — two call
- * sites hashing the same profile differently split its followers with no error
- * on either side. These vectors are the spec; a change here is a change to
- * every statement already written.
+ * Subject derivation is the one place likes and follows can fragment silently —
+ * two call sites deriving the same subject differently split its audience with
+ * no error on either side. These vectors are the spec; a change here is a
+ * change to every statement already written.
  *
- * The profile vectors are computed INDEPENDENTLY (plain EIP-137 namehash below)
- * rather than snapshotted from our own output. A self-snapshot would happily
- * lock in a derivation that had already drifted away from the node the
- * L2Registry actually mints, which is the only thing that makes the live owner
- * resolvable from chain.
+ * PROFILE keying moved to the account ADDRESS on 2026-09-03 and is owned by
+ * `subject-keying.test.ts`. The namehash vectors that used to live here were
+ * removed with the derivation they pinned — a name is display now, and an
+ * audience keyed to one could be moved by WoCo governance, by whoever re-mints
+ * a released name, and by the custody of `woco.eth` itself.
+ *
+ * What remains here is the EVENT derivation, which did not change.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { keccak_256 } from "@noble/hashes/sha3.js";
-import { bytesToHex, utf8ToBytes, concatBytes } from "@noble/hashes/utils.js";
-import {
-  socialProfileSubject,
-  socialEventSubject,
-  followProfileSubject,
-} from "../../src/social/subject.js";
-import { profileSubject } from "../../src/likes/subject.js";
-
-/** EIP-137 namehash, written out longhand so the vectors do not depend on us. */
-function namehash(name: string): string {
-  let node: ReturnType<typeof keccak_256> = new Uint8Array(32);
-  const labels = name.split(".");
-  for (let i = labels.length - 1; i >= 0; i--) {
-    node = keccak_256(concatBytes(node, keccak_256(utf8ToBytes(labels[i]!))));
-  }
-  return `0x${bytesToHex(node)}`;
-}
-
-test("profile subject is the real ENS node under woco.eth", () => {
-  assert.equal(
-    socialProfileSubject("rita"),
-    "0x2886e2427f6d8f2ca2358f5c3af6e5d22ca481fda415a010033d63e10067894e",
-  );
-  assert.equal(socialProfileSubject("rita"), namehash("rita.woco.eth"));
-  assert.equal(
-    socialProfileSubject("altontowers"),
-    "0x98755af2fb19956264cd73745fc27b49aec0fa747b113440a7080b6a964490f7",
-  );
-});
-
-test("profile subject delegates rather than reimplementing", () => {
-  // A second copy of this derivation is the fragmentation failure itself.
-  assert.equal(socialProfileSubject("rita"), profileSubject("rita"));
-});
-
-test("profile subject is case- and whitespace-stable", () => {
-  const canonical = socialProfileSubject("altontowers");
-  assert.equal(socialProfileSubject("AltonTowers"), canonical);
-  assert.equal(socialProfileSubject("  altontowers  "), canonical);
-});
-
-test("follow targets an identity, reusing the identity derivation", () => {
-  assert.equal(followProfileSubject("rita"), socialProfileSubject("rita"));
-});
+import { readFileSync } from "node:fs";
+import { socialEventSubject } from "../../src/social/subject.js";
 
 test("event subject normalises case rather than fragmenting on it", () => {
   const lower = `0x${"ab".repeat(32)}`;
@@ -71,4 +30,16 @@ test("event subject rejects anything that is not a bytes32", () => {
   assert.throws(() => socialEventSubject("0xdeadbeef"), /bytes32/);
   assert.throws(() => socialEventSubject("ab".repeat(32)), /bytes32/); // missing 0x
   assert.throws(() => socialEventSubject(""), /bytes32/);
+});
+
+test("the social rail imports nothing from the retired EAS likes module", () => {
+  // `social/subject.ts` used to borrow `profileSubject` from `likes/`, which was
+  // the last edge from live social code into a rail being deleted. A future
+  // deleter must be able to remove `likes/` without discovering that the live
+  // follow derivation depended on it.
+  const src = readFileSync(new URL("../../src/social/subject.js".replace(".js", ".ts"), import.meta.url), "utf-8");
+  const imports = [...src.matchAll(/^import .*from "([^"]+)";$/gm)].map((m) => m[1]);
+  for (const spec of imports) {
+    assert.doesNotMatch(spec, /likes/, `social/subject.ts must not import from ${spec}`);
+  }
 });

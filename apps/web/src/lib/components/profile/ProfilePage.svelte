@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { UserProfile, EventDirectoryEntry, LikeSubject } from "@woco/shared";
-  import { SubjectType, profileLikeSubject } from "@woco/shared";
+  import { SubjectType, socialProfileSubject } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar } from "../../api/profiles.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
@@ -225,8 +225,8 @@
   }
 
   // The picker mints `{label}.woco.eth` on-chain before firing this, so the
-  // server's ownership check passes. Binding it to the profile makes the
-  // profile a followable like-subject (its namehash — see profileLikeSubject).
+  // server's ownership check passes. The name is DISPLAY: followers key to the
+  // account's address, so binding or changing a name does not move an audience.
   async function handleSubEnsClaim(label: string) {
     ensBindError = '';
     try {
@@ -495,8 +495,9 @@
               style="--dot:{authKindColor[auth.kind] ?? 'var(--text-muted)'}"
             >{authKindLabel[auth.kind] ?? auth.kind}</span>
           {/if}
-          {#if !isOwner && profile?.subEnsLabel && nameVerified}
-            <LikeButton subject={profileLikeSubject(profile.subEnsLabel)} variant="follow" />
+          {#if !isOwner && viewAddress}
+            <!-- A follow targets the ACCOUNT, so it needs no claimed name. -->
+            <LikeButton subject={socialProfileSubject(viewAddress)} variant="follow" />
           {/if}
         </div>
 
@@ -740,8 +741,9 @@
           {/if}
         </section>
 
-        <!-- Web3 identity (sub-ENS) — claiming a name makes this profile a
-             followable on-chain subject. -->
+        <!-- Web3 identity (sub-ENS) — a human-readable name for this account
+             and a web address for its sites. Following is keyed to the account
+             itself, so a name is not required to be followed. -->
         <section class="settings-card">
           <h2 class="card-title">Web3 identity</h2>
           <p class="card-hint">

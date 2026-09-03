@@ -1,16 +1,16 @@
 <script lang="ts">
-  import type { LikeSubject } from "@woco/shared";
+  import type { Hex0x } from "@woco/shared";
   import { getSocialState, toggleSocial, kindForVariant, lastKnownCount } from "../../api/social.js";
   import { auth } from "../../auth/auth-store.svelte.js";
 
   interface Props {
-    subject: LikeSubject;
+    subject: Hex0x;
     /**
      * "heart" (default) = like a happening (event onChainEventId): heart + count.
-     * "follow" = follow a name (sub-ENS namehash): "Follow"/"Following" pill.
+     * "follow" = follow an ACCOUNT (its address as bytes32): "Follow"/"Following".
      * Both write a signed statement to the user's own Swarm feed; the variant
      * selects the statement KIND (woco.like.v1 / woco.follow.v1), which are
-     * separate topics, so a like and a follow of the same name never collide.
+     * separate topics, so a like and a follow of one subject never collide.
      */
     variant?: "heart" | "follow";
     /** Names WHAT is being liked (e.g. "event") — shown as a muted mono caption
@@ -63,7 +63,7 @@
     // Read auth so the effect re-runs on sign-in: own state is unreadable until
     // there is an account whose feed to read it from.
     void auth.parent;
-    const { id } = subject;
+    const id = subject;
     if (inFlight) return; // re-runs when the toggle settles (inFlight is a dep)
     if (skipRefetchFor === id) {
       skipRefetchFor = null;
@@ -121,7 +121,7 @@
     // `subject.id` reads afterwards, and stamping the skip with the NEW id would
     // suppress the new subject's only fetch — leaving it displaying the old
     // subject's state, marked loaded, until some other dependency moved.
-    const togglingFor = subject.id;
+    const togglingFor = subject;
 
     const prevLiked = liked;
     const prevCount = count;
