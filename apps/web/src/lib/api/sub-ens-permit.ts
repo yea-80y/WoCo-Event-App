@@ -10,6 +10,7 @@
  */
 
 import type { SubEnsPermitArgs } from "../auth/kernel-account.js";
+import { isGaslessRailUnavailable } from "../auth/gasless-rail.js";
 
 export interface SubEnsClaimResult {
   label: string;
@@ -71,9 +72,19 @@ export function isAccountAbstractionFailure(err: unknown): boolean {
 }
 
 /**
+ * The two ways the gasless rail can fail without the CLAIM being at fault: the
+ * userOp failed for an account-abstraction reason, or the rail refused the
+ * permit up front because its pinned registrar/chain is not the one the permit
+ * was signed for (#493). Anything else is the user's error and is reported.
+ */
+export function shouldFallBackToSponsor(err: unknown): boolean {
+  return isAccountAbstractionFailure(err) || isGaslessRailUnavailable(err);
+}
+
+/**
  * Fetch an EIP-712 permit, submit `registerWithPermit` as a gasless userOp, and
- * fall back to the server-sponsored mint if — and only if — that failed for an
- * account-abstraction reason.
+ * fall back to the server-sponsored mint if — and only if — the gasless rail
+ * (not the claim) is what failed.
  */
 export async function claimSubEnsViaPermitWith(
   opts: SubEnsPermitClaimOpts,
@@ -103,7 +114,7 @@ export async function claimSubEnsViaPermitWith(
     });
     return { ok: true, data: { label: permit.data.label, ensName: permit.data.ensName, txHash } };
   } catch (err) {
-    if (isAccountAbstractionFailure(err)) {
+    if (shouldFallBackToSponsor(err)) {
       // Deliberate stopgap while the Kernel session-key paymaster rail is down:
       // the server-sponsored path mints the SAME name to the SAME owner
       // (parentAddress), so ownership is identical — only the gas payer/sender
@@ -113,9 +124,17 @@ export async function claimSubEnsViaPermitWith(
       // field added to the claim cannot be silently lost on this path.
       // `kernelAddress` is the one field removed on purpose — it is the gasless
       // sender, and the sponsor mints to the verified parent instead. Gasless
-      // stays the primary path and runs first; this only fires on a paymaster/AA
-      // failure. Remove once the paymaster is confirmed fixed.
-      console.warn("[sub-ens] gasless claim failed; falling back to server-sponsored claim:", err);
+      // stays the primary path and runs first.
+      // It now also covers the rail REFUSING the permit because its pinned
+      // registrar/chain is not the one the permit was signed for: that refusal
+      // is right, but it is a property of the rail, not of the claim, and
+      // without this every passkey mint dies at it while #489 is open — and
+      // again for the window around any future registrar redeploy.
+      console.warn(
+        "[sub-ens] gasless claim unavailable, falling back to server-sponsored claim:",
+        isGaslessRailUnavailable(err) ? err.reason : "account-abstraction failure",
+        err,
+      );
       const { kernelAddress: _kernel, ...sponsorArgs } = opts;
       return deps.sponsorClaim(sponsorArgs);
     }

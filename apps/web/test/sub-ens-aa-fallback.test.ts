@@ -1,8 +1,8 @@
 /**
- * The gasless name claim's sponsor fallback (#487).
+ * The gasless name claim's sponsor fallback (#487, #493).
  *
- * Two properties, both about a path that fires only when something else has
- * already gone wrong — which is why neither defect was visible in use:
+ * Three properties, all about a path that fires only when something else has
+ * already gone wrong — which is why none of the defects was visible in use:
  *
  *   1. The fallback mints the SAME NAME WITH THE SAME CONTENT. It listed its
  *      arguments by hand and left out `swarmHash`, so a passkey organiser's
@@ -13,6 +13,9 @@
  *      lowercased the needle "AA" and substring-matched it, so any message
  *      carrying a tx hash or an address ("0x…aa91…") matched by chance and a
  *      non-AA failure was quietly retried on the sponsor rail.
+ *   3. It fires for a rail that REFUSES a permit it cannot serve, too. That
+ *      refusal is not an AA failure and is not the claim's fault, so it reached
+ *      the user raw and no passkey user could claim a name at all (#493).
  *
  * Imported from `sub-ens-permit.ts` rather than `sub-ens.ts`: the latter
  * statically imports the API client, which reaches the runes auth store and
@@ -22,11 +25,17 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   claimSubEnsViaPermitWith,
   isAccountAbstractionFailure,
+  shouldFallBackToSponsor,
   type SubEnsPermitDeps,
 } from "../src/lib/api/sub-ens-permit.js";
+import {
+  GaslessRailUnavailable,
+  isGaslessRailUnavailable,
+} from "../src/lib/auth/gasless-rail.js";
 
 const SWARM = "ab".repeat(32);
 
@@ -146,4 +155,102 @@ test("a refused permit stops before either rail", async () => {
   const res = await claimSubEnsViaPermitWith(OPTS, d);
   assert.deepEqual(res, { ok: false, error: "ticket_required" });
   assert.deepEqual(d.sponsorCalls, []);
+});
+
+// ---------------------------------------------------------------------------
+// The rail refusing a permit it cannot serve (#493)
+// ---------------------------------------------------------------------------
+//
+// The gasless rail is pinned to one registrar on one chain; the server signs a
+// permit for whatever IT is deployed against. When those differ — as they do
+// today, server on Arbitrum One and the Kernel still on Sepolia (#489) — the
+// rail refuses up front, correctly. That refusal used to be a plain Error, so
+// the classifier above (correctly) did not match it, it escaped raw to the user
+// and NO passkey user could claim a name at all.
+
+test("a rail that cannot serve the permit falls back to the sponsor, not to the user", async () => {
+  for (const reason of ["registrar_mismatch", "chain_mismatch"] as const) {
+    const d = deps({
+      register: async () => {
+        throw new GaslessRailUnavailable(
+          "Registrar mismatch: permit=0xA policy=0xB. Refusing to submit.",
+          reason,
+        );
+      },
+    });
+    const res = await claimSubEnsViaPermitWith(OPTS, d);
+
+    assert.equal(d.sponsorCalls.length, 1, `${reason}: the sponsor path runs exactly once`);
+    assert.deepEqual(
+      d.sponsorCalls[0],
+      { label: "nabil", description: "d", avatar: "a", swarmHash: SWARM },
+      `${reason}: the fallback mints the same name with the same content`,
+    );
+    assert.equal(res.ok, true, `${reason}: the user gets their name`);
+  }
+});
+
+test("the contract is the TYPE, never the text", async () => {
+  // Same message, plain Error. Matching on wording is how #491 fired the
+  // fallback for the wrong reason; an unrelated failure that happens to say
+  // "Refusing to submit." must still be reported, not paid for.
+  const d = deps({
+    register: async () => {
+      throw new Error("Registrar mismatch: permit=0xA policy=0xB. Refusing to submit.");
+    },
+  });
+  const res = await claimSubEnsViaPermitWith(OPTS, d);
+
+  assert.deepEqual(d.sponsorCalls, [], "the sponsor wallet must not pay on a text match");
+  assert.deepEqual(res, {
+    ok: false,
+    error: "Registrar mismatch: permit=0xA policy=0xB. Refusing to submit.",
+  });
+});
+
+test("shouldFallBackToSponsor covers both rail failures and nothing else", () => {
+  assert.equal(
+    shouldFallBackToSponsor(new GaslessRailUnavailable("no", "registrar_mismatch")),
+    true,
+  );
+  assert.equal(shouldFallBackToSponsor(new Error("AA21 didn't pay prefund")), true);
+  assert.equal(shouldFallBackToSponsor(new Error("label already taken")), false);
+});
+
+test("the rail refusal is recognised by NAME, across a module boundary", () => {
+  // `instanceof` fails when the module is loaded twice (the whole rail sits
+  // behind dynamic imports), so the check is the `name` field.
+  assert.equal(isGaslessRailUnavailable(new GaslessRailUnavailable("x", "chain_mismatch")), true);
+
+  const cloned = new Error("x");
+  cloned.name = "GaslessRailUnavailable";
+  assert.equal(isGaslessRailUnavailable(cloned), true, "a second copy of the class still matches");
+
+  assert.equal(isGaslessRailUnavailable(new Error("Refusing to submit.")), false);
+  assert.equal(isGaslessRailUnavailable("GaslessRailUnavailable"), false);
+  assert.equal(isGaslessRailUnavailable(undefined), false);
+});
+
+test("the guards in kernel-account.ts throw the TYPED error, not a plain one", () => {
+  // Pinned at the source because the guards themselves cannot be reached under
+  // node — the module they live in pulls in ZeroDev, viem and IndexedDB.
+  const CODE = readFileSync(new URL("../src/lib/auth/kernel-account.ts", import.meta.url), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("//"))
+    .join("\n");
+
+  const typed = CODE.match(/new GaslessRailUnavailable\(/g) ?? [];
+  assert.ok(typed.length >= 2, `both guards throw the typed error (found ${typed.length})`);
+
+  for (let i = CODE.indexOf("Refusing to submit."); i > 0; i = CODE.indexOf("Refusing to submit.", i + 1)) {
+    const before = CODE.slice(Math.max(0, i - 200), i);
+    const nearest = before.lastIndexOf("new ");
+    assert.ok(nearest >= 0, "a refusal is always thrown");
+    assert.equal(
+      before.slice(nearest).startsWith("new GaslessRailUnavailable("),
+      true,
+      `a refusal at ${i} is thrown as a plain Error: ${before.slice(nearest)}`,
+    );
+  }
 });
