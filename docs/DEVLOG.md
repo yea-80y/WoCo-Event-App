@@ -4,6 +4,17 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## `woco.eth` cut over to our own resolver + Arbitrum One registry (step 8, 2026-09-05)
+
+The mainnet sub-ENS system is live: L2Registry clone `0x8630…A2B6` + WoCoRegistrar `0xACfe…03a2` on Arbitrum One (admin =
+the #420 Safe), L1Resolver `0x1720…Ed8A` on mainnet (owner = the Safe, CCIP gateway on events-api), `woco.eth` moved from the
+sponsor hot key into the Safe, and the three Safe txs (`setL2Registry`, `setFallbackResolver`, `setResolver`) executed after a
+pre-swap gate proved our resolver answers the apex identically. Post-swap: UR, ethers, viem and `woco.eth.limo` all unchanged.
+Server env flipped to 42161 (health cross-check green). Same day, the #486 full-system ultrareview's five app-side findings
+shipped as #490–#492, and a live-found passkey defect (#493: the registrar pin refused the permit as a plain error, so the
+sponsor fallback never fired) got a typed refusal + fallback. Closed #422, #419; filed #489. Detail + the step-9 prompt:
+`docs/SUB_ENS_ARBITRUM_PLAN.md` "STEP 8 DONE 2026-09-05".
+
 ## Sub-ENS registry gains a holder-signed release; app re-pointed (#464, 2026-09-03)
 
 `L2Registry.releaseWithSignature` + `releaseDigest` landed in the contracts repo (WoCo-Contracts
