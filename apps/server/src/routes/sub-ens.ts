@@ -15,6 +15,7 @@ import {
   labelNode,
   relayReleaseWithSignature,
 } from "../lib/chain/sub-ens-contract.js";
+import { validateLabel } from "@woco/shared";
 import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
 import { stampEventSubEns } from "../lib/event/service.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
@@ -32,15 +33,10 @@ export const subEnsRoutes = new Hono<AppEnv>();
 // Validation
 // ---------------------------------------------------------------------------
 
-/** Mirror of WoCoRegistrar._validLabel — server-side fast path before hitting the chain. */
-function validateLabel(label: string): string | null {
-  if (label.length < 3 || label.length > 63) return "label must be 3–63 characters";
-  if (!/^[a-z0-9]/.test(label))              return "label must start with a letter or digit";
-  if (!/[a-z0-9]$/.test(label))              return "label must end with a letter or digit";
-  if (!/^[a-z0-9-]+$/.test(label))           return "label may only contain a–z, 0–9, and hyphens";
-  if (label.includes("--"))                   return "label cannot contain consecutive hyphens";
-  return null;
-}
+// `validateLabel` (the mirror of WoCoRegistrar._validLabel) now lives in
+// @woco/shared so the client prefilter cannot be looser than this one. It stays
+// the server-side fast path: a label the registrar could never mint is refused
+// without spending a chain read, or the caller's rate budget.
 
 /**
  * `/check` is the only sub-ENS read with no auth and no limit, and every render
@@ -284,7 +280,7 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
       if (name === "MintRateCapExceeded") {
         const args = (err as { revert?: { args?: unknown[] } }).revert?.args;
         const windowResetsAt = Number(args?.[1] ?? 0);
-        return c.json({ ok: false, error: "mint_rate_cap", windowResetsAt }, 429);
+        return c.json({ ok: false, error: "mint_rate_cap", data: { windowResetsAt } }, 429);
       }
     }
     // Race condition: another request registered the label between our check and the tx

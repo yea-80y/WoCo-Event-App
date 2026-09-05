@@ -85,7 +85,19 @@ test("allowance remaining means proceed", () => {
 
 test("no allowance left is refused, and reports when the window resets", () => {
   const v = mintRateCapVerdict({ remaining: 0, windowResetsAt: 1234 });
-  assert.deepEqual(v, { error: "mint_rate_cap", windowResetsAt: 1234 });
+  // The detail rides in `data`, so spreading the verdict into `{ ok: false, ... }`
+  // still produces the `{ ok, data?, error? }` envelope every other route returns.
+  assert.deepEqual(v, { error: "mint_rate_cap", data: { windowResetsAt: 1234 } });
+});
+
+test("no rate-cap response escapes the envelope", () => {
+  // The CALL_EXCEPTION branch built its 429 by hand and put `windowResetsAt` at
+  // the top level — the one body in this file outside `{ ok, data?, error? }`.
+  const route = readFileSync(new URL("../src/routes/sub-ens.ts", import.meta.url), "utf-8");
+  assert.ok(
+    !route.includes('error: "mint_rate_cap", windowResetsAt'),
+    "the rate-cap 429 must carry windowResetsAt inside `data`",
+  );
 });
 
 test("an UNREADABLE allowance proceeds — the cap is an abuse brake, not a gate", () => {

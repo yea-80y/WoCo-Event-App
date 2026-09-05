@@ -262,10 +262,13 @@ export interface MintAllowance {
  */
 export function mintRateCapVerdict(
   allowance: MintAllowance | null,
-): { error: "mint_rate_cap"; windowResetsAt: number } | null {
+): { error: "mint_rate_cap"; data: { windowResetsAt: number } } | null {
   if (!allowance) return null;
   if (allowance.remaining > 0) return null;
-  return { error: "mint_rate_cap", windowResetsAt: allowance.windowResetsAt };
+  // Spread into `{ ok: false, ... }` at the route, so the detail rides in `data`
+  // rather than as a third top-level key — this was the one response in the
+  // sub-ENS surface outside the `{ ok, data?, error? }` envelope.
+  return { error: "mint_rate_cap", data: { windowResetsAt: allowance.windowResetsAt } };
 }
 
 export async function getMintAllowance(recipient: string): Promise<MintAllowance> {
