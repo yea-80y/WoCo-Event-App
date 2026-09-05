@@ -11,6 +11,8 @@
  * recovery is impossible.
  */
 
+import { validateLabel } from "@woco/shared";
+
 /** The shape `checkSubEnsLabel` resolves with — declared here so this module
  *  needs nothing from the fetch layer. */
 export interface SubEnsCheckResponse {
@@ -29,7 +31,12 @@ export async function resolveSubEnsWith(
   input: string,
 ): Promise<SubEnsResolve> {
   const label = input.trim().toLowerCase().replace(/\.woco\.eth$/, "");
-  if (!/^[a-z0-9-]{1,63}$/.test(label)) return { status: "none" };
+  // The registrar's own rules (shared with the server, which enforces the same
+  // ones before its chain read). A label it could never have minted is a
+  // DEFINITIVE absence, so "none" is right by this file's header rule — the
+  // looser prefilter this replaces sent `ab` to the server, got back a
+  // no-owner answer, and reported "registered but its owner could not be read".
+  if (validateLabel(label) !== null) return { status: "none" };
   let res: SubEnsCheckResponse;
   try {
     res = await check(label);

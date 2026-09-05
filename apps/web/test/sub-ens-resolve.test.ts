@@ -71,3 +71,18 @@ test("a REGISTERED name whose owner did not come back readable is 'error' — it
     assert.equal(r.status, "error", `owner=${String(owner)} read as ${r.status}`);
   }
 });
+
+test("the prefilter is the REGISTRAR's rule set, not a looser one", () => {
+  // A label the registrar could never have minted is a definitive absence, and
+  // must never reach the server: `ab` used to, and came back "registered" with
+  // no owner, which the classifier below reports as "its owner could not be
+  // read" — an error message about a name that cannot exist.
+  const cases = ["ab", "-abc", "abc-", "a--b"];
+  let calls = 0;
+  const check = async () => { calls += 1; return { ok: true, data: { available: true } }; };
+  return Promise.all(cases.map(async (input) => {
+    assert.deepEqual(await resolveSubEnsAddress(input, check), { status: "none" }, input);
+  })).then(() => {
+    assert.equal(calls, 0, "a label the registrar would refuse must not cost a lookup");
+  });
+});
