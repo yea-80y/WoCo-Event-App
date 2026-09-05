@@ -91,6 +91,8 @@ test("the permit path checks the CHAIN, not just the registrar address", () => {
 });
 
 test("the client forwards the chain the server signed for", () => {
-  const api = readFileSync(new URL("../src/lib/api/sub-ens.ts", import.meta.url), "utf-8");
+  // The permit orchestration moved to sub-ens-permit.ts (#487) so it could be
+  // tested under node; what this pins is unchanged.
+  const api = readFileSync(new URL("../src/lib/api/sub-ens-permit.ts", import.meta.url), "utf-8");
   assert.match(api, /chainId: permit\.data\.chainId/);
 });
