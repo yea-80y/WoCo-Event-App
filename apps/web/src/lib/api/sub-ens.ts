@@ -23,7 +23,7 @@ export interface SubEnsCheckResult {
 /** The permit path's orchestration lives in `sub-ens-permit.ts` — runes-free and
  *  fetch-free so it can be tested under node, like `sub-ens-resolve.ts`. */
 export type { SubEnsClaimResult } from "./sub-ens-permit.js";
-export { isAccountAbstractionFailure } from "./sub-ens-permit.js";
+export { isAccountAbstractionFailure, shouldFallBackToSponsor } from "./sub-ens-permit.js";
 
 export async function checkSubEnsLabel(label: string) {
   const resp = await fetch(`${BASE}/api/sub-ens/check/${encodeURIComponent(label)}`);
