@@ -1061,16 +1061,24 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // Before this, every refusal was SILENT: a site bound to a name the
     // organiser had transferred away simply stopped updating, with nothing in
     // the response and a line in a log nobody reads.
-    let subEns: { label: string; status: "updating" | "skipped"; reason?: "not_owner" | "profile_name" } | undefined;
+    let subEns: { label: string; status: "updating" | "skipped"; reason?: "not_owner" | "profile_name" | "unverified" } | undefined;
     if (site.subEnsLabel) {
       const label = site.subEnsLabel;
       let owner: string | null = null;
+      let unverified = false;
       try {
         owner = await getLabelOwner(label);
       } catch (e) {
         console.warn("[sites/deploy] sub-ens ownership check failed:", e);
+        unverified = true;
       }
-      if (owner !== parentAddress.toLowerCase()) {
+      if (owner === null && unverified) {
+        // A chain read that did not answer is not evidence the organiser lost
+        // the name. Saying "not_owner" here accuses them of something the
+        // platform never established, and hides an outage as a permissions
+        // problem.
+        subEns = { label, status: "skipped", reason: "unverified" };
+      } else if (owner !== parentAddress.toLowerCase()) {
         subEns = { label, status: "skipped", reason: "not_owner" };
       } else if (isProfileName(parentAddress, label)) {
         // The identity name must not become a site pointer: every later

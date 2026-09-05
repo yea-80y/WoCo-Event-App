@@ -40,6 +40,13 @@ const REGISTRY_ABI = [
   "function releaseDigest(bytes32 node, uint256 expiration) view returns (bytes32)",
   "function RELEASE_TYPEHASH() view returns (bytes32)",
   // Registry custom errors, so a relay route can name the refusal instead of 500ing.
+  // ERC721NonexistentToken is the one OpenZeppelin raises for a token that was
+  // never minted or has been burned, and it is load-bearing here: ethers v6
+  // decodes a custom error by NAME only when its fragment is in the ABI (same
+  // reason as the REGISTRAR_ABI error block below). Without it the one revert
+  // that means "unregistered" arrives indistinguishable from an RPC failure,
+  // and an ownership read cannot tell absence from an outage.
+  "error ERC721NonexistentToken(uint256 tokenId)",
   "error Unauthorized(bytes32 node)",
   "error SignatureExpired()",
   "error ReleaseBaseNode()",
@@ -170,11 +177,6 @@ export async function isLabelAvailable(label: string): Promise<boolean> {
 }
 
 /**
- * Returns the current on-chain owner of label.woco.eth (lowercased), or null
- * if the label is not yet registered. Used to authorise mutation calls — the
- * caller's parentAddress must match before the sponsor wallet fires any tx.
- */
-/**
  * The 32-byte node for `label`, as hex.
  *
  * Exported so the release relay derives the node it submits from a VALIDATED
@@ -272,16 +274,49 @@ export async function getMintAllowance(recipient: string): Promise<MintAllowance
   return { remaining: Number(remaining), windowResetsAt: Number(windowResetsAt) };
 }
 
+/**
+ * Is this failure the registry saying "no such token", and nothing else?
+ *
+ * True ONLY for a decoded ERC721NonexistentToken revert. A CALL_EXCEPTION whose
+ * `revert` is null is deliberately FALSE: that is what a provider returns when
+ * it stripped the revert data, or when there is no code at the address we are
+ * calling — and an undecodable revert is not proof of absence. Treating it as
+ * absence is exactly how an outage came to read as "you do not own this name".
+ */
+export function isNonexistentTokenRevert(err: unknown): boolean {
+  const e = err as { code?: unknown; revert?: { name?: unknown } | null } | null | undefined;
+  return e?.code === "CALL_EXCEPTION" && e?.revert?.name === "ERC721NonexistentToken";
+}
+
+/**
+ * Runs an ownerOf-shaped read and converts ONLY the nonexistent-token revert
+ * into null. Every other failure — timeout, 429, connection reset, an
+ * undecodable revert — propagates, because the caller must be able to answer
+ * "unverified" rather than "not yours".
+ */
+export async function ownerOrNull(read: () => Promise<string>): Promise<string | null> {
+  try {
+    return (await read()).toLowerCase();
+  } catch (err) {
+    if (isNonexistentTokenRevert(err)) return null;
+    throw err;
+  }
+}
+
+/**
+ * The current on-chain owner of label.woco.eth (lowercased). Used to authorise
+ * mutation calls — the caller's parentAddress must match before the sponsor
+ * wallet fires any tx.
+ *
+ * `null` is DEFINITIVE: the chain answered, and the label is not registered.
+ * Anything else THROWS, and the caller owes the user "we could not check",
+ * never "not yours" — a swallowed RPC failure hands a real holder a 404/403 on
+ * their own name, and hands a site deploy a "not_owner" that never happened.
+ */
 export async function getLabelOwner(label: string): Promise<string | null> {
   const chainId = getSubEnsChainId();
   const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
-  try {
-    const owner = await registry.ownerOf(computeLabelNode(label)) as string;
-    return owner.toLowerCase();
-  } catch {
-    // ERC-721 reverts when the tokenId doesn't exist (unregistered label)
-    return null;
-  }
+  return ownerOrNull(() => registry.ownerOf(computeLabelNode(label)) as Promise<string>);
 }
 
 /**
@@ -331,7 +366,14 @@ export async function getOwnedLabels(address: string): Promise<OwnedLabel[]> {
   for (const tid of tokenIds) {
     const node = "0x" + BigInt(tid).toString(16).padStart(64, "0");
     let owner: string;
-    try { owner = (await registry.ownerOf(tid) as string).toLowerCase(); } catch { continue; }
+    // A released/burned name IS nonexistent, so skipping it is right; anything
+    // else would drop a name the caller does own out of their own list.
+    try {
+      owner = (await registry.ownerOf(tid) as string).toLowerCase();
+    } catch (err) {
+      if (isNonexistentTokenRevert(err)) continue;
+      throw err;
+    }
     if (owner !== addr) continue; // transferred away since the mint/transfer-in
 
     let name: string;
