@@ -29,6 +29,7 @@ import type { EIP712Signer } from "@woco/shared";
 import { StorageKeys, EAS_ADDRESS, SUB_ENS_DEPLOYMENTS } from "@woco/shared";
 import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
+import { GaslessRailUnavailable } from "./gasless-rail.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import {
   KERNEL_SELECTOR_CONFIG_ABI,
@@ -1008,17 +1009,21 @@ export interface SubEnsPermitArgs {
 export async function registerSubEnsViaPermit(
   args: SubEnsPermitArgs,
 ): Promise<{ userOpHash: string; txHash: string }> {
+  // Typed, not a plain Error: a rail that cannot serve THIS permit is a reason
+  // to use the sponsor rail, not to fail the user's claim (#493).
   if (args.registrarAddress.toLowerCase() !== WOCO_REGISTRAR_ADDRESS.toLowerCase()) {
-    throw new Error(
+    throw new GaslessRailUnavailable(
       `Registrar mismatch: permit=${args.registrarAddress} policy=${WOCO_REGISTRAR_ADDRESS}. Refusing to submit.`,
+      "registrar_mismatch",
     );
   }
   // The address alone is not the identity of a contract — the same address can
   // exist on another chain from the same deployer and nonce (#470). Checked
   // only when the server supplied it, so an older server response still works.
   if (args.chainId !== undefined && args.chainId !== KERNEL_CHAIN_ID) {
-    throw new Error(
+    throw new GaslessRailUnavailable(
       `Chain mismatch: permit=${args.chainId} kernel=${KERNEL_CHAIN_ID}. Refusing to submit.`,
+      "chain_mismatch",
     );
   }
 
