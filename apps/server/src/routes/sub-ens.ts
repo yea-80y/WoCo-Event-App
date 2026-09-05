@@ -88,6 +88,40 @@ const releasesInFlight = new Set<string>();
 const RELEASE_EXPIRY_MIN_SECS = 60;
 const RELEASE_EXPIRY_MAX_SECS = 15 * 60;
 
+/**
+ * The ownership gate every mutation route shares. Returns null when the caller
+ * may proceed; otherwise the refusal to return.
+ *
+ * Chain ownership is the only authority here, and a read that did not answer is
+ * NOT evidence the caller lost the name — so a failed read is its own refusal
+ * (502 "unverified"), never the 404/403 that tells a real holder their name is
+ * gone or not theirs. Centralised because the three call sites drifted apart on
+ * exactly that point, and because there is no Hono `onError` in this server: a
+ * throw out of a route becomes a plain-text 500 that the client's `resp.json()`
+ * cannot parse.
+ *
+ * `read` is injected so the refusal ladder is testable without a chain.
+ */
+export async function refuseUnlessOwner(
+  c: { json: (body: unknown, status: number) => Response },
+  label: string,
+  parentAddress: string,
+  read: (label: string) => Promise<string | null> = getLabelOwner,
+): Promise<Response | null> {
+  let owner: string | null;
+  try {
+    owner = await read(label);
+  } catch (err) {
+    console.error("[sub-ens] ownership check failed:", err);
+    return c.json({ ok: false, error: "ownership_unverified" }, 502);
+  }
+  if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
+  if (owner !== parentAddress.toLowerCase()) {
+    return c.json({ ok: false, error: "not authorised for this label" }, 403);
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -345,11 +379,8 @@ subEnsRoutes.post("/stamp-event", requireAuth, async (c) => {
   if (validationError) return c.json({ ok: false, error: validationError }, 400);
 
   // Same IDOR guard as set-contenthash: chain ownership is the authority.
-  const owner = await getLabelOwner(label);
-  if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
-  if (owner !== parentAddress) {
-    return c.json({ ok: false, error: "not authorised for this label" }, 403);
-  }
+  const refused = await refuseUnlessOwner(c, label, parentAddress);
+  if (refused) return refused;
   // Point A: the caller's own identity name is not a URL to hand to an event.
   if (isProfileName(parentAddress, label)) {
     return c.json({ ok: false, error: "profile_name" }, 409);
@@ -392,11 +423,8 @@ subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
   // Ownership check — verify the authenticated organiser owns this label on-chain.
   // The sponsor wallet is authorised to update ANY label's contenthash, so this
   // server-side guard is the only thing preventing cross-organiser overwrite (IDOR).
-  const owner = await getLabelOwner(label);
-  if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
-  if (owner !== parentAddress.toLowerCase()) {
-    return c.json({ ok: false, error: "not authorised for this label" }, 403);
-  }
+  const refused = await refuseUnlessOwner(c, label, parentAddress as string);
+  if (refused) return refused;
   // Point C: pointing the identity name at a site would make every later
   // redeploy of that site silently repoint the organiser's identity.
   if (isProfileName(parentAddress as string, label)) {
@@ -462,11 +490,8 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
   }
 
   // Gas policy: the sponsor pays only for the caller's own name.
-  const owner = await getLabelOwner(label);
-  if (!owner) return c.json({ ok: false, error: "label not found" }, 404);
-  if (owner !== parentAddress) {
-    return c.json({ ok: false, error: "not authorised for this label" }, 403);
-  }
+  const refused = await refuseUnlessOwner(c, label, parentAddress);
+  if (refused) return refused;
 
   // Accident guard, not a security one: releasing the name you are currently
   // known by is a one-click route to being nameless for the whole cooldown.

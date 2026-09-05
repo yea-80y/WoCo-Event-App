@@ -109,7 +109,10 @@ test("the bounds are the ones the client's TTL sits inside", () => {
 });
 
 test("ownership is checked before anything is spent", () => {
-  const ownerIdx = RELAY.indexOf("getLabelOwner(label)");
+  // The read itself moved into `refuseUnlessOwner` (#488) so a failed read
+  // answers 502 rather than the 404/403 that would accuse a real holder; what
+  // this pins is unchanged — it still runs before any budget is charged.
+  const ownerIdx = RELAY.indexOf("refuseUnlessOwner(c, label");
   const recordIdx = RELAY.indexOf("releaseLimiter.record");
   const relayIdx = RELAY.indexOf("relayReleaseWithSignature(");
   assert.ok(ownerIdx > 0 && ownerIdx < recordIdx && ownerIdx < relayIdx);
