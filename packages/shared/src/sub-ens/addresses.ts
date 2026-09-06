@@ -75,11 +75,12 @@ export type SubEnsChainId = keyof typeof SUB_ENS_DEPLOYMENTS;
  * unknown chain is a type error rather than an `undefined` address reaching a
  * contract call.
  *
- * NOT the chain the passkey Kernel runs on. That is `KERNEL_CHAIN_ID`
- * (apps/web/src/lib/auth/kernel-account.ts), still Arbitrum Sepolia because
- * moving it is a ZeroDev project + paymaster change, not a constant (#489). The
- * two are independent and must be read as such: an address indexed by the wrong
- * one is a valid-looking address on a chain the caller is not on.
+ * The passkey Kernel runs on `KERNEL_CHAIN_ID` (./kernel/chain.ts), and since
+ * #489 that is the SAME chain — a holder has to answer ERC-1271 from the chain
+ * the registry asks on, so a split made every smart-account name release
+ * unverifiable. They are still two constants with two jobs, and
+ * test/kernel/chain.test.ts is what keeps them equal; an address indexed by the
+ * wrong one is a valid-looking address on a chain the caller is not on.
  */
 export const SUB_ENS_DEFAULT_CHAIN_ID = 42161 satisfies SubEnsChainId;
 

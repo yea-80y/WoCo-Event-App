@@ -26,6 +26,7 @@
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
+  import { describeRecoveryError } from "../../auth/recovery-errors.js";
 
   type Phase =
     | "intro" | "choosing" | "connecting" | "confirming" | "working" | "done"
@@ -210,7 +211,8 @@
       pendingBackup = backup;
       phase = "confirming";
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : "Couldn't connect — please try again";
+      console.warn("[recovery] connect failed:", e);
+      errorMsg = describeRecoveryError(e, "setup", "Couldn't connect — please try again");
       phase = "error";
     }
   }
@@ -231,7 +233,8 @@
       protectionSource = "chain";
       phase = "done";
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : "Something went wrong — please try again";
+      console.warn("[recovery] backup install failed:", e);
+      errorMsg = describeRecoveryError(e, "setup", "Something went wrong — please try again");
       phase = "error";
     }
   }

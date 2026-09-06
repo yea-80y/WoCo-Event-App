@@ -35,6 +35,7 @@ export * from "./statement/index.js";
 export * from "./credit/index.js";
 export * from "./cert/index.js";
 export * from "./social/index.js";
+export * from "./kernel/chain.js";
 export * from "./sub-ens/addresses.js";
 export * from "./sub-ens/label.js";
 export * from "./sub-ens/web.js";

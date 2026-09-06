@@ -30,6 +30,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { KERNEL_CHAIN_ID } from "@woco/shared";
 
 const cwd = process.cwd();
 let dir: string;
@@ -56,6 +57,8 @@ async function freshStore() {
 }
 
 const KERNEL = "0x1111111111111111111111111111111111111111";
+/** Records are keyed per chain since #489 — see kernel-deployed-chain.test.ts. */
+const KEY = `${KERNEL_CHAIN_ID}:${KERNEL}`;
 const OTHER = "0x2222222222222222222222222222222222222222";
 const OWNER_EOA = "0xaaaa000000000000000000000000000000000001";
 const OTHER_EOA = "0xbbbb000000000000000000000000000000000002";
@@ -110,15 +113,19 @@ test("re-recording keeps the first-observed timestamp and advances owner/block",
   const first = JSON.parse(readFileSync(join(dir, ".data", "kernel-deployed.json"), "utf-8"));
   s.recordKernelOwner(KERNEL, OTHER_EOA, 200);
   const second = JSON.parse(readFileSync(join(dir, ".data", "kernel-deployed.json"), "utf-8"));
-  assert.equal(second.kernels[KERNEL].firstSeen, first.kernels[KERNEL].firstSeen, "first-observed timestamp was rewritten");
-  assert.equal(second.kernels[KERNEL].owner, OTHER_EOA);
-  assert.equal(second.kernels[KERNEL].block, 200);
-  assert.equal(second.version, 2);
+  assert.equal(second.kernels[KEY].firstSeen, first.kernels[KEY].firstSeen, "first-observed timestamp was rewritten");
+  assert.equal(second.kernels[KEY].owner, OTHER_EOA);
+  assert.equal(second.kernels[KEY].block, 200);
+  assert.equal(second.kernels[KEY].chainId, KERNEL_CHAIN_ID);
+  assert.equal(second.version, 3);
 });
 
-test("a v1 file (#208 shape) loads as known-deployed with no ordered record, and is not CRITICAL", async () => {
-  // The VM carries v1 entries. They must keep refusing the counterfactual
-  // fallback for those accounts, and they must not land in the quarantine branch.
+test("a v1 file (#208 shape) loads and is not CRITICAL, but is an ARB SEPOLIA record", async () => {
+  // The VM carries v1 entries. They must load without landing in the quarantine
+  // branch — and, since #489, they must NOT count on the current Kernel chain:
+  // a v1 record could only ever have been observed on Arb Sepolia, where these
+  // accounts were deployed and where, on Arbitrum One, they are not.
+  // kernel-deployed-chain.test.ts is where that rule is argued in full.
   mkdirSync(join(dir, ".data"), { recursive: true });
   writeFileSync(
     join(dir, ".data", "kernel-deployed.json"),
@@ -126,13 +133,15 @@ test("a v1 file (#208 shape) loads as known-deployed with no ordered record, and
   );
   const s = await freshStore();
   assert.equal(s.kernelDeployedLoadFailed(), false);
-  assert.equal(s.isKernelKnownDeployed(KERNEL), true);
+  assert.equal(s.isKernelKnownDeployed(KERNEL), false, "a pre-move sighting counted on the new chain");
   assert.equal(s.getKernelOwnerRecord(KERNEL), undefined, "v1 knew no owner/block — must not invent one");
-  // The next fresh read fills in the order; firstSeen carries over.
+  // The next fresh read records the account on THIS chain, alongside — never
+  // over — what the old one said.
   s.recordKernelOwner(KERNEL, OWNER_EOA, 100);
   const after = JSON.parse(readFileSync(join(dir, ".data", "kernel-deployed.json"), "utf-8"));
-  assert.equal(after.version, 2);
-  assert.equal(after.kernels[KERNEL].firstSeen, "2026-08-09T14:47:03.976Z");
+  assert.equal(after.version, 3);
+  assert.equal(after.kernels[KERNEL].firstSeen, "2026-08-09T14:47:03.976Z", "the v1 record was rewritten");
+  assert.equal(after.kernels[KEY].chainId, KERNEL_CHAIN_ID);
   assert.deepEqual(s.getKernelOwnerRecord(KERNEL), { owner: OWNER_EOA, block: 100 });
 });
 

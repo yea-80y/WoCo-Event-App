@@ -125,7 +125,8 @@ export const APP_POLICY: Policy = {
     "https://gateway.woco-net.com", // Swarm reads (bytes/chunks/feeds)
     "https://gateway.etherna.io",
     "https://rpc.zerodev.app", // Kernel bundler/paymaster RPC (VITE_ZERODEV_RPC)
-    "https://sepolia-rollup.arbitrum.io", // owned-accounts scan fallback RPC
+    "https://arb1.arbitrum.io", // owned-accounts scan fallback RPC + sub-ENS registry reads
+    "https://sepolia-rollup.arbitrum.io", // …the same, on the chain #489 moved off
     "https://api.web3auth.io", // project config, passwordless, session services
     "https://session.web3auth.io", // socket.io https polling fallback…
     "wss://session.web3auth.io", // …and its websocket upgrade

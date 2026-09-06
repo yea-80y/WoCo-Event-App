@@ -9,7 +9,9 @@
  *  1. Deterministic (no RPC): the Kernel v3.1 counterfactual CREATE2 address of
  *     the EOA equals the parent. Covers every non-recovered account, deployed
  *     or not — verified byte-equivalent to the client's createKernelAccount
- *     addresses on Arb Sepolia (kernel-addr-equivalence check, 2026-07-10).
+ *     addresses on Arb Sepolia (kernel-addr-equivalence check, 2026-07-10), and
+ *     chain-independent: nothing in the CREATE2 derivation reads a chain id, so
+ *     the #489 move to Arbitrum One left every address unchanged.
  *  2. On-chain fallback: the deployed Kernel's live ECDSA sudo owner equals the
  *     EOA (`ecdsaValidatorStorage` on the validator singleton). Covers RECOVERED
  *     accounts, whose owner was rotated so their counterfactual diverges — the
@@ -53,14 +55,24 @@
 
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
 import { getKernelAddressFromECDSA, getValidatorAddress } from "@zerodev/ecdsa-validator";
-import { createPublicClient, http, zeroAddress, type Address, type PublicClient } from "viem";
-import { arbitrumSepolia } from "viem/chains";
+import { createPublicClient, http, zeroAddress, type Address, type Chain, type PublicClient } from "viem";
+import { arbitrum, arbitrumSepolia } from "viem/chains";
+import { KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
 import { isKernelKnownDeployed, getKernelOwnerRecord, recordKernelOwner } from "./kernel-deployed.js";
 import { observeOwnerRead, type OwnerRead } from "./kernel-owner-ordering.js";
 
-/** Kernel deployments live on Arbitrum Sepolia (KERNEL_CHAIN_ID client-side). */
-const KERNEL_CHAIN_ID = 421614;
+/**
+ * The viem chain object for the Kernel chain. The ID itself is the SHARED
+ * constant (#489): this pin and the client's used to be independent literals,
+ * and a server reading one chain while the client signs for another authorizes
+ * against an account that does not exist there.
+ */
+const KERNEL_CHAINS = {
+  42161: arbitrum,
+  421614: arbitrumSepolia,
+} as const satisfies Record<number, Chain>;
+const KERNEL_CHAIN: Chain = KERNEL_CHAINS[KERNEL_CHAIN_ID satisfies KernelChainId];
 
 const entryPoint = getEntryPoint("0.7");
 const kernelVersion = KERNEL_V3_1;
@@ -69,7 +81,7 @@ let _client: PublicClient | null = null;
 function client(): PublicClient {
   if (!_client) {
     _client = createPublicClient({
-      chain: arbitrumSepolia,
+      chain: KERNEL_CHAIN,
       transport: http(getChainRpcUrl(KERNEL_CHAIN_ID)),
     });
   }

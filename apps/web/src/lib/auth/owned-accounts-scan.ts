@@ -65,6 +65,7 @@
  */
 
 import type { Address } from "viem";
+import { KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 
 /**
  * `keccak256("OwnerRegistered(address,address)")`. Pinned by test against viem's
@@ -76,7 +77,14 @@ export const OWNER_REGISTERED_TOPIC =
 /**
  * Scan floor, Arbitrum Sepolia. Provenance (#234 review): first `OwnerRegistered`
  * from this validator observed at block 56,020,341; zero events in 40–50M. No
- * WoCo account predates it. PER-CHAIN — resets for Arbitrum One.
+ * WoCo account predates it.
+ *
+ * ⚠️ PER-CHAIN, AND NOT YET RESET FOR ARBITRUM ONE (#489). On Arb One this value
+ * is far BELOW the first WoCo account rather than above it, so the scan stays
+ * CORRECT (it can only over-scan) and gets slower — ~35 pages instead of a
+ * handful. The right floor is the block the move went live at, which is not
+ * knowable until it does; raising it before then would be the one change that
+ * could make the scan miss an account.
  */
 export const OWNER_SCAN_FLOOR_BLOCK = 56_000_000n;
 
@@ -189,6 +197,18 @@ export async function scanOwnedAccounts(args: {
 // ---------------------------------------------------------------------------
 
 /**
+ * The public endpoint used when nothing overrides it — keyed by the Kernel chain,
+ * because a fallback pointed at the wrong chain does not fail loudly: it answers
+ * "no logs", and no logs is what a CLEAN scan looks like. Both rows are kept so
+ * a rollback of #489 needs no edit here. Any origin added must also be in the
+ * CSP `connect-src` list (apps/web/vite-plugins/csp.ts) or the browser blocks it.
+ */
+const DEFAULT_SCAN_FALLBACK_RPC = {
+  42161: "https://arb1.arbitrum.io/rpc",
+  421614: "https://sepolia-rollup.arbitrum.io/rpc",
+} as const satisfies Record<number, string>;
+
+/**
  * RPC endpoints for the log scan, in order. The primary is the same RPC every
  * owner read already trusts (`VITE_ZERODEV_RPC`); the fallback list covers the
  * spec's "≥2 endpoints" and is overridable for an indexer-grade provider. A page
@@ -197,7 +217,7 @@ export async function scanOwnedAccounts(args: {
 export function ownerScanRpcUrls(): string[] {
   const env = import.meta.env as Record<string, string | undefined>;
   const primary = env.VITE_ZERODEV_RPC;
-  const extra = (env.VITE_OWNER_SCAN_FALLBACK_RPCS ?? "https://sepolia-rollup.arbitrum.io/rpc")
+  const extra = (env.VITE_OWNER_SCAN_FALLBACK_RPCS ?? DEFAULT_SCAN_FALLBACK_RPC[KERNEL_CHAIN_ID satisfies KernelChainId])
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -208,10 +228,9 @@ export function ownerScanRpcUrls(): string[] {
 
 /** Wire the scan to viem + the validator the owner reads use, bound to ONE credential. */
 export async function buildOwnedAccountsScanIO(eoa: string): Promise<OwnedAccountsScanIO> {
-  const [{ createPublicClient, http, parseAbiItem }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }, { readKernelEcdsaOwnerStrict }] =
+  const [{ createPublicClient, http, parseAbiItem }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }, { readKernelEcdsaOwnerStrict, KERNEL_CHAIN }] =
     await Promise.all([
       import("viem"),
-      import("viem/chains"),
       import("@zerodev/sdk/constants"),
       import("@zerodev/ecdsa-validator"),
       import("./kernel-account.js"),
@@ -223,7 +242,7 @@ export async function buildOwnedAccountsScanIO(eoa: string): Promise<OwnedAccoun
   const event = parseAbiItem("event OwnerRegistered(address indexed kernel, address indexed owner)");
   const owner = eoa as Address;
   const clients = ownerScanRpcUrls().map((url) =>
-    createPublicClient({ chain: arbitrumSepolia, transport: http(url, { timeout: 60_000 }) }),
+    createPublicClient({ chain: KERNEL_CHAIN, transport: http(url, { timeout: 60_000 }) }),
   );
   return {
     head: () => clients[0]!.getBlockNumber(),

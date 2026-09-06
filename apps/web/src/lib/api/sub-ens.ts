@@ -93,6 +93,10 @@ export async function stampEventSubEns(label: string, eventId: string, signer?: 
 }
 
 /**
+ * UNUSED SINCE THE KERNEL MOVE — removal tracked separately (#489). Every mint,
+ * every login kind, now goes through `claimSubEnsLabel` (the WoCo sponsor
+ * wallet). Kept exported only so the removal is its own reviewable PR.
+ *
  * Passkey/Kernel path: fetch an EIP-712 permit from the server, then submit
  * `registerWithPermit` as a gasless userOp signed by the scoped ZeroDev session
  * key — the user pays no gas and the name is owned by their smart account.
