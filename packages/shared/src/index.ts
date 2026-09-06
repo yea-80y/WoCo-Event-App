@@ -37,6 +37,7 @@ export * from "./cert/index.js";
 export * from "./social/index.js";
 export * from "./sub-ens/addresses.js";
 export * from "./sub-ens/label.js";
+export * from "./sub-ens/web.js";
 export * from "./campaign/index.js";
 export * from "./marketing/index.js";
 export * from "./legal/consent.js";

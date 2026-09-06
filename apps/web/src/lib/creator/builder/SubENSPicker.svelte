@@ -7,6 +7,7 @@
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import OwnedNamesList from "./OwnedNamesList.svelte";
+  import { subEnsName as buildSubEnsName, subEnsWebUrl } from "@woco/shared";
 
   interface Props {
     claimedLabel?: string;
@@ -117,12 +118,12 @@
 
   // Success state — either already had a label or just claimed one
   let claimed = $derived(!!claimedLabel);
-  let ensName = $derived(claimedLabel ? `${claimedLabel}.woco.eth` : '');
-  let ensUrl  = $derived(claimedLabel ? `https://${claimedLabel}.woco.eth.limo` : '');
+  let ensName = $derived(claimedLabel ? buildSubEnsName(claimedLabel) : '');
+  let ensUrl  = $derived(claimedLabel ? subEnsWebUrl(claimedLabel) : '');
 
   // Live preview as user types (before claim)
   let previewLabel = $derived(rawInput.toLowerCase().trim());
-  let previewEns   = $derived(previewLabel ? `${previewLabel}.woco.eth.limo` : '');
+  let previewEns   = $derived(previewLabel ? buildSubEnsName(previewLabel) : '');
 
   // ── Availability check (debounced) ───────────────────────────────────────────
   let _timer: ReturnType<typeof setTimeout> | null = null;
@@ -357,13 +358,9 @@
             Unlink
           </button>
         {/if}
-        <span class="action-btn action-btn--soon" title="Goes live once woco.eth's mainnet ENS resolver points to the Arbitrum registry">
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-            <circle cx="5.5" cy="5.5" r="4.2" stroke="currentColor" stroke-width="1.2"/>
-            <path d="M5.5 3.4V5.5l1.5 .9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Live soon
-        </span>
+        <a class="action-btn action-btn--open" href={ensUrl} target="_blank" rel="noopener" title="Live on ENS — open this address">
+          Open ↗
+        </a>
       </div>
 
       {#if deployedHash}
@@ -1070,15 +1067,12 @@
 
   .claimed-note--muted { color: var(--text-muted); opacity: 0.85; }
 
-  /* Non-clickable pending state: the .woco.eth.limo web address activates once
-     woco.eth's mainnet resolver points to the Arbitrum registry (the resolver
-     cutover is parked post-buildathon — see SUB_ENS_ARBITRUM_PLAN.md). */
-  .action-btn--soon {
-    background: color-mix(in srgb, var(--text-muted) 8%, transparent);
-    border: 1px dashed var(--border);
-    color: var(--text-muted);
-    cursor: default;
+  .action-btn--open {
+    background: transparent;
+    border: 1px solid color-mix(in srgb, #C7F23A 35%, var(--border));
+    color: #C7F23A;
   }
+  .action-btn--open:hover { background: color-mix(in srgb, #C7F23A 10%, transparent); }
 
   .claimed-note {
     margin: 0;

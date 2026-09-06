@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { OwnedSubEnsName } from "../../api/sub-ens.js";
+  import { subEnsWebUrl } from "@woco/shared";
 
   type LoadState = "loading" | "ready" | "empty" | "error";
 
@@ -44,11 +45,19 @@
             </span>
           </span>
         {/if}
+        <!-- The web link is gated on previewUrl, not shown beside it for symmetry:
+             a name with no contenthash resolves to a gateway error page, so
+             offering it would advertise a broken address. -->
         {#if n.previewUrl}
-          <a class="preview-link" href={n.previewUrl} target="_blank" rel="noopener" title="Preview current content">
-            Preview
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 1h6v6M9 1L3.5 6.5M4 2H1v7h7V6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </a>
+          <span class="name-actions">
+            <a class="preview-link" href={n.previewUrl} target="_blank" rel="noopener" title="Preview current content">
+              Preview
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 1h6v6M9 1L3.5 6.5M4 2H1v7h7V6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </a>
+            <a class="preview-link preview-link--open" href={subEnsWebUrl(n.label)} target="_blank" rel="noopener" title="Live on ENS — open this address">
+              Open ↗
+            </a>
+          </span>
         {/if}
       </div>
     {/each}
@@ -81,13 +90,15 @@
   .name-ens { font-family: monospace; font-size: 0.8125rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
   .name-status { font-size: 0.6875rem; color: var(--text-muted); }
 
+  .name-actions { display: inline-flex; align-items: center; gap: 0.35rem; flex-shrink: 0; margin-right: 0.5rem; }
   .preview-link {
     display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0;
-    margin-right: 0.5rem; padding: 0.3rem 0.5rem; font-size: 0.6875rem; font-weight: 700;
+    padding: 0.3rem 0.5rem; font-size: 0.6875rem; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
     color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; transition: all 120ms;
   }
   .preview-link:hover { color: #C7F23A; border-color: color-mix(in srgb, #C7F23A 45%, var(--border)); }
+  .preview-link--open { color: #C7F23A; border-color: color-mix(in srgb, #C7F23A 35%, var(--border)); }
 
   .msg { margin: 0; display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; line-height: 1.4; }
   .msg--warn { color: #f59e0b; }
