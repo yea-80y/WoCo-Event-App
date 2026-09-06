@@ -1,6 +1,7 @@
 import { authPost, authGet } from "./client.js";
 import type { EventFeed } from "@woco/shared";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
+import type { SubEnsNameRole } from "../sub-ens/roles.js";
 import {
   claimSubEnsViaPermitWith,
   type SubEnsClaimResult,
@@ -58,6 +59,14 @@ export async function claimSubEnsLabel(opts: {
 export interface OwnedSubEnsName {
   label: string;
   ensName: string;
+  /**
+   * What the name is FOR. `profile` is the account's identity name and the
+   * binding routes refuse it with 409 `profile_name`, so pickers must not offer
+   * it (`bindableNames` in `../sub-ens/roles.ts`). `url` vs `free` is display
+   * only — both are bindable. Optional because a response cached from a server
+   * older than #484 carries no role.
+   */
+  role?: SubEnsNameRole;
   /** 64-hex Swarm hash the name currently points at (absent if unset). */
   contentHash?: string;
   /** Gateway URL to preview the name's current content (absent if it points nowhere). */

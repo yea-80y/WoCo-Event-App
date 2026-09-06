@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { OwnedSubEnsName } from "../../api/sub-ens.js";
   import { subEnsWebUrl } from "@woco/shared";
+  import { roleLabel } from "../../sub-ens/roles.js";
 
   type LoadState = "loading" | "ready" | "empty" | "error";
 
@@ -13,10 +14,23 @@
     onretry?: () => void;
     /** Copy shown when the user owns no names. */
     emptyText?: string;
+    /**
+     * Offer "Discard" per row. Omit for a picker — burning a name is a
+     * deliberate act that belongs where names are MANAGED, not where one is
+     * being chosen.
+     */
+    ondiscard?: (label: string) => void;
   }
 
-  let { state, names, selected = "", onselect, onretry, emptyText }: Props = $props();
+  let { state, names, selected = "", onselect, onretry, emptyText, ondiscard }: Props = $props();
   let selectable = $derived(typeof onselect === "function");
+
+  // The role the server sent, falling back to what the old list inferred from
+  // the contenthash. A response cached from a server older than #484 carries no
+  // role, and a blank status line reads as a bug.
+  function statusText(n: OwnedSubEnsName): string {
+    return roleLabel(n.role) ?? (n.previewUrl ? "points at a site" : "not pointed anywhere yet");
+  }
 </script>
 
 {#if state === "loading"}
@@ -28,35 +42,52 @@
 {:else if state === "ready"}
   <div class="name-list">
     {#each names as n (n.label)}
-      <div class="name-row" class:name-row--active={selectable && selected === n.label} class:name-row--static={!selectable}>
+      <div
+        class="name-row"
+        class:name-row--active={selectable && selected === n.label}
+        class:name-row--static={!selectable}
+        title={ondiscard && n.role === "profile"
+          ? "This is your profile name — change it from your profile first"
+          : undefined}
+      >
         {#if selectable}
           <button type="button" class="name-select" onclick={() => onselect!(n.label)}>
             <span class="name-mark" aria-hidden="true"></span>
             <span class="name-text">
               <span class="name-ens">{n.ensName}</span>
-              <span class="name-status">{n.previewUrl ? "points at a site" : "not pointed anywhere yet"}</span>
+              <span class="name-status">{statusText(n)}</span>
             </span>
           </button>
         {:else}
           <span class="name-select name-select--static">
             <span class="name-text">
               <span class="name-ens">{n.ensName}</span>
-              <span class="name-status">{n.previewUrl ? "points at a site" : "not pointed anywhere yet"}</span>
+              <span class="name-status">{statusText(n)}</span>
             </span>
           </span>
         {/if}
         <!-- The web link is gated on previewUrl, not shown beside it for symmetry:
              a name with no contenthash resolves to a gateway error page, so
              offering it would advertise a broken address. -->
-        {#if n.previewUrl}
+        {#if n.previewUrl || ondiscard}
           <span class="name-actions">
-            <a class="preview-link" href={n.previewUrl} target="_blank" rel="noopener" title="Preview current content">
-              Preview
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 1h6v6M9 1L3.5 6.5M4 2H1v7h7V6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </a>
-            <a class="preview-link preview-link--open" href={subEnsWebUrl(n.label)} target="_blank" rel="noopener" title="Live on ENS — open this address">
-              Open ↗
-            </a>
+            {#if n.previewUrl}
+              <a class="preview-link" href={n.previewUrl} target="_blank" rel="noopener" title="Preview current content">
+                Preview
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 1h6v6M9 1L3.5 6.5M4 2H1v7h7V6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </a>
+              <a class="preview-link preview-link--open" href={subEnsWebUrl(n.label)} target="_blank" rel="noopener" title="Live on ENS — open this address">
+                Open ↗
+              </a>
+            {/if}
+            <!-- No Discard on the profile name: the relay refuses it (409
+                 profile_name) and the way out is to change the profile name
+                 first, which the row's tooltip says. -->
+            {#if ondiscard && n.role !== "profile"}
+              <button type="button" class="discard-btn" onclick={() => ondiscard(n.label)} title="Give up this name for good">
+                Discard
+              </button>
+            {/if}
           </span>
         {/if}
       </div>
@@ -99,6 +130,14 @@
   }
   .preview-link:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
   .preview-link--open { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+
+  .discard-btn {
+    flex-shrink: 0; padding: 0.3rem 0.5rem; font-size: 0.6875rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; font-family: inherit;
+    color: var(--text-muted); background: none;
+    border: 1px solid var(--border); border-radius: 4px; cursor: pointer; transition: all 120ms;
+  }
+  .discard-btn:hover { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--border)); }
 
   .msg { margin: 0; display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; line-height: 1.4; }
   .msg--warn { color: #f59e0b; }
