@@ -1225,8 +1225,8 @@
   /* The site is live either way — a skipped name is a caveat, not a failure. */
   .subens-notice--warn {
     color: var(--text);
-    border-color: color-mix(in srgb, #f59e0b 45%, var(--border));
-    background: color-mix(in srgb, #f59e0b 8%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
   }
 
   /* Error bar */
