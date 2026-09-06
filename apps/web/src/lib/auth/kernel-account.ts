@@ -57,6 +57,13 @@ import {
  * SUB_ENS_DEPLOYMENTS below as a literal: moving the Kernel to a chain with no
  * sub-ENS deployment is then a type error here, not an `undefined` registrar
  * reaching a call policy at runtime.
+ *
+ * DELIBERATELY NOT `SUB_ENS_DEFAULT_CHAIN_ID`, which is Arbitrum One. Names are
+ * a constant; a Kernel is not — moving it needs a ZeroDev project on the new
+ * chain, a funded paymaster policy, and per-chain `kernel-deployed.json` state
+ * that makes every existing account counterfactual again on day one. That flip
+ * is #489. Until it lands the two chains differ, and anything reading an address
+ * must say which of them it means.
  */
 export const KERNEL_CHAIN_ID = 421614 as const;
 
@@ -79,14 +86,6 @@ export const KERNEL_CHAIN_ID = 421614 as const;
  * and must land before the mainnet move.
  */
 export const WOCO_REGISTRAR_ADDRESS = SUB_ENS_DEPLOYMENTS[KERNEL_CHAIN_ID].registrar;
-
-/**
- * L2Registry on the same chain — the permanent layer that holds the names. The
- * scoped session key may NOT call it (the policy below is registrar-only, by
- * invariant); it is exported because the release path reads a digest from the
- * registry and submits `release` from the user's own sudo signer or wallet.
- */
-export const WOCO_REGISTRY_ADDRESS = SUB_ENS_DEPLOYMENTS[KERNEL_CHAIN_ID].registry;
 
 /**
  * What is persisted for a scoped session key.

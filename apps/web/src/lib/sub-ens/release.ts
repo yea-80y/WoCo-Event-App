@@ -22,8 +22,8 @@
  * The digest subtlety that makes or breaks all of this is in `release-digest.ts`.
  */
 
-import { SUB_ENS_DEPLOYMENTS } from "@woco/shared";
-import type { Hex0x } from "@woco/shared";
+import { SUB_ENS_DEFAULT_CHAIN_ID, SUB_ENS_DEPLOYMENTS } from "@woco/shared";
+import type { Hex0x, SubEnsChainId } from "@woco/shared";
 import { authPost } from "../api/client.js";
 import {
   RELEASE_DIGEST_ABI,
@@ -32,15 +32,36 @@ import {
 } from "./release-digest.js";
 import { rememberOwner } from "./verify-name.js";
 
-/** The chain the registry lives on — the same one the Kernel runs on. */
-const CHAIN_ID = 421614 as const;
-const REGISTRY = SUB_ENS_DEPLOYMENTS[CHAIN_ID].registry;
+/**
+ * The chain the REGISTRY lives on — which is no longer the chain the Kernel runs
+ * on. The names moved to Arbitrum One while `KERNEL_CHAIN_ID` stayed on Arbitrum
+ * Sepolia (#489), so reading the digest from the Kernel's chain would query a
+ * registry where the holder owns nothing and hand them a signature bound to the
+ * wrong EIP-712 domain — one the real registry rejects.
+ */
+const CHAIN_ID: SubEnsChainId = SUB_ENS_DEFAULT_CHAIN_ID;
+const REGISTRY = SUB_ENS_DEPLOYMENTS[SUB_ENS_DEFAULT_CHAIN_ID].registry;
 
 const RELEASE_ABI = [...RELEASE_DIGEST_ABI, "function release(bytes32 node)"];
 
+/**
+ * NEVER `VITE_ZERODEV_RPC`: that is the Kernel's bundler RPC on the Kernel's
+ * chain, and pointing a registry read at it answers "nobody owns this" for names
+ * that plainly exist. Keyed by {@link SubEnsChainId} so adding a deployment
+ * without an RPC fails the build rather than at a holder's release.
+ */
+const PUBLIC_RPC: Record<SubEnsChainId, string> = {
+  42161: "https://arb1.arbitrum.io/rpc",
+  421614: "https://sepolia-rollup.arbitrum.io/rpc",
+};
+
 function rpcUrl(): string {
   const env = import.meta.env as Record<string, string | undefined>;
-  return env.VITE_ZERODEV_RPC || "https://sepolia-rollup.arbitrum.io/rpc";
+  const override = env.VITE_SUB_ENS_RPC?.trim();
+  if (override) return override;
+  const url: string | undefined = PUBLIC_RPC[CHAIN_ID];
+  if (!url) throw new Error(`No sub-ENS RPC for chain ${CHAIN_ID}`);
+  return url;
 }
 
 /**
