@@ -40,6 +40,7 @@ import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
+import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
 import { likesRoutes } from "./routes/likes.js";
 import { socialRoutes } from "./routes/social.js";
@@ -267,6 +268,12 @@ app.get("/api/health", (c) =>
     // L1Resolver.signer() on L1 — if this address changes and the resolver is
     // not updated, every *.woco.eth name stops resolving.
     ensGateway: ensGatewayStatus(),
+    // Sub-ENS names. `apexConfigured: false` means a bound PROFILE name is no
+    // longer being pointed at the app, so the name resolves to nothing for
+    // anyone who types it — a silent loss of a feature, which is why it is
+    // reported rather than left to a log line. An `apexError` alongside it is
+    // worse than unset: someone configured a value and it is being ignored.
+    subEns: subEnsApexHealth(),
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
