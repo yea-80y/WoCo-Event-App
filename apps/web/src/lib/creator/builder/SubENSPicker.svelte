@@ -312,8 +312,8 @@
       <div class="profile-name-row">
         <span class="claimed-icon" aria-hidden="true">
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M9 1L11.5 6.5H17L12.5 10L14.5 16L9 12.5L3.5 16L5.5 10L1 6.5H6.5L9 1Z" fill="#C7F23A" opacity="0.18" stroke="#C7F23A" stroke-width="1.4" stroke-linejoin="round"/>
-            <path d="M6.5 9l1.8 1.8L12 7" stroke="#C7F23A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M9 1L11.5 6.5H17L12.5 10L14.5 16L9 12.5L3.5 16L5.5 10L1 6.5H6.5L9 1Z" fill="var(--accent)" opacity="0.18" stroke="var(--accent)" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M6.5 9l1.8 1.8L12 7" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </span>
         <div class="profile-name-text">
@@ -334,8 +334,8 @@
       <div class="claimed-header">
         <span class="claimed-icon" aria-hidden="true">
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M9 1L11.5 6.5H17L12.5 10L14.5 16L9 12.5L3.5 16L5.5 10L1 6.5H6.5L9 1Z" fill="#C7F23A" opacity="0.18" stroke="#C7F23A" stroke-width="1.4" stroke-linejoin="round"/>
-            <path d="M6.5 9l1.8 1.8L12 7" stroke="#C7F23A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M9 1L11.5 6.5H17L12.5 10L14.5 16L9 12.5L3.5 16L5.5 10L1 6.5H6.5L9 1Z" fill="var(--accent)" opacity="0.18" stroke="var(--accent)" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M6.5 9l1.8 1.8L12 7" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </span>
         <div class="claimed-title">
@@ -398,7 +398,7 @@
       <span class="ens-badge" aria-hidden="true">
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
           <path d="M7.5 1L9.5 5.5H14.5L10.5 8.5L12 13.5L7.5 10.5L3 13.5L4.5 8.5L0.5 5.5H5.5L7.5 1Z"
-                fill="#C7F23A" opacity="0.12" stroke="#C7F23A" stroke-width="1.2" stroke-linejoin="round"/>
+                fill="var(--accent)" opacity="0.12" stroke="var(--accent)" stroke-width="1.2" stroke-linejoin="round"/>
         </svg>
         ENS
       </span>
@@ -477,7 +477,7 @@
     {:else if checkPhase === 'owned'}
       <p class="avail-msg avail-msg--ok">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-          <path d="M2 6.2l2.8 2.8L10 4" stroke="#C7F23A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2 6.2l2.8 2.8L10 4" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
         You own this name — re-link it to your profile
       </p>
@@ -560,15 +560,15 @@
     {#if !claimed}
       <ul class="feature-list" aria-label="Benefits">
         <li>
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="#C7F23A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Works as a payment address — receive ETH to <code class="inline-code">{previewLabel || 'yourname'}.woco.eth</code>
         </li>
         <li>
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="#C7F23A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Permanent — registered on Arbitrum, not a WoCo database
         </li>
         <li>
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="#C7F23A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Auto-links to your site on every publish
         </li>
       </ul>
@@ -660,8 +660,8 @@
   }
 
   .setup-btn:hover {
-    border-color: #C7F23A;
-    color: #C7F23A;
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .feature-list--muted svg { color: var(--text-muted); opacity: 0.5; }
@@ -669,7 +669,7 @@
 
   .picker {
     border: 1px solid var(--border);
-    border-left: 3px solid #C7F23A;
+    border-left: 3px solid var(--accent);
     border-radius: 6px;
     background: var(--bg-elevated);
     padding: 1.25rem 1.375rem;
@@ -699,9 +699,9 @@
     font-size: 0.6875rem;
     font-weight: 800;
     letter-spacing: 0.08em;
-    color: #C7F23A;
-    background: color-mix(in srgb, #C7F23A 8%, transparent);
-    border: 1px solid color-mix(in srgb, #C7F23A 22%, transparent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
     border-radius: 3px;
     white-space: nowrap;
     margin-top: 0.125rem;
@@ -732,8 +732,8 @@
     font-family: monospace;
     font-size: 0.85em;
     color: var(--text);
-    background: color-mix(in srgb, #C7F23A 7%, var(--bg));
-    border: 1px solid color-mix(in srgb, #C7F23A 14%, transparent);
+    background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+    border: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
     border-radius: 3px;
     padding: 0.1em 0.3em;
   }
@@ -750,7 +750,7 @@
   }
   .mode-btn:hover { color: var(--text); }
   .mode-btn--active {
-    color: #0d0d0d; background: #C7F23A;
+    color: #0d0d0d; background: var(--accent);
   }
 
   .reuse-hint { margin: 0; font-size: 0.75rem; color: var(--text-muted); opacity: 0.75; line-height: 1.45; }
@@ -769,7 +769,7 @@
     transition: border-color 140ms;
   }
 
-  .input-wrap:focus-within { border-color: #C7F23A; }
+  .input-wrap:focus-within { border-color: var(--accent); }
   .input-wrap--ok  { border-color: color-mix(in srgb, #22c55e 60%, var(--border)); }
   .input-wrap--bad { border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
 
@@ -838,8 +838,8 @@
     display: inline-block;
     width: 13px;
     height: 13px;
-    border: 1.5px solid color-mix(in srgb, #C7F23A 30%, var(--border));
-    border-top-color: #C7F23A;
+    border: 1.5px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+    border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.55s linear infinite;
   }
@@ -852,8 +852,8 @@
     flex-direction: column;
     gap: 0.75rem;
     padding: 0.875rem;
-    background: color-mix(in srgb, #C7F23A 3%, var(--bg));
-    border: 1px solid color-mix(in srgb, #C7F23A 12%, var(--border));
+    background: color-mix(in srgb, var(--accent) 3%, var(--bg));
+    border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
     border-radius: 4px;
   }
 
@@ -883,7 +883,7 @@
     font-family: inherit;
   }
 
-  .field-input:focus { border-color: #C7F23A; }
+  .field-input:focus { border-color: var(--accent); }
 
   .field-textarea { resize: vertical; min-height: 4rem; line-height: 1.5; }
 
@@ -918,7 +918,7 @@
     font-weight: 700;
     letter-spacing: -0.01em;
     color: #0d0d0d;
-    background: #C7F23A;
+    background: var(--accent);
     border-radius: 5px;
     transition: background 120ms, transform 100ms;
   }
@@ -1069,10 +1069,10 @@
 
   .action-btn--open {
     background: transparent;
-    border: 1px solid color-mix(in srgb, #C7F23A 35%, var(--border));
-    color: #C7F23A;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    color: var(--accent);
   }
-  .action-btn--open:hover { background: color-mix(in srgb, #C7F23A 10%, transparent); }
+  .action-btn--open:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
   .claimed-note {
     margin: 0;

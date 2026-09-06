@@ -74,8 +74,8 @@
     background: var(--bg-elevated); border: 1.5px solid var(--border);
     border-radius: 6px; transition: border-color 130ms, background 130ms; overflow: hidden;
   }
-  .name-row:not(.name-row--static):hover { border-color: color-mix(in srgb, #C7F23A 40%, var(--border)); }
-  .name-row--active { border-color: #C7F23A; background: color-mix(in srgb, #C7F23A 6%, var(--bg)); }
+  .name-row:not(.name-row--static):hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+  .name-row--active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
 
   .name-select {
     flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem;
@@ -83,8 +83,8 @@
   }
   .name-select--static { cursor: default; }
   .name-mark { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--border); position: relative; flex-shrink: 0; transition: border-color 130ms; }
-  .name-row--active .name-mark { border-color: #C7F23A; }
-  .name-row--active .name-mark::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: #C7F23A; }
+  .name-row--active .name-mark { border-color: var(--accent); }
+  .name-row--active .name-mark::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: var(--accent); }
 
   .name-text { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
   .name-ens { font-family: monospace; font-size: 0.8125rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
@@ -97,17 +97,17 @@
     text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
     color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; transition: all 120ms;
   }
-  .preview-link:hover { color: #C7F23A; border-color: color-mix(in srgb, #C7F23A 45%, var(--border)); }
-  .preview-link--open { color: #C7F23A; border-color: color-mix(in srgb, #C7F23A 35%, var(--border)); }
+  .preview-link:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+  .preview-link--open { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
 
   .msg { margin: 0; display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; line-height: 1.4; }
   .msg--warn { color: #f59e0b; }
-  .link-btn { color: #C7F23A; text-decoration: underline; cursor: pointer; background: none; border: none; padding: 0; font: inherit; }
+  .link-btn { color: var(--accent); text-decoration: underline; cursor: pointer; background: none; border: none; padding: 0; font: inherit; }
 
   .spinner {
     display: inline-block; width: 13px; height: 13px;
-    border: 1.5px solid color-mix(in srgb, #C7F23A 30%, var(--border));
-    border-top-color: #C7F23A; border-radius: 50%; animation: spin 0.55s linear infinite;
+    border: 1.5px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 0.55s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>

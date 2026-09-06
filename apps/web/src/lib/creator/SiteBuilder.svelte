@@ -879,8 +879,8 @@
 
   /* ── Sub-ENS result ──────────────────────────────────────────────────────── */
   .subens-section.subens-done {
-    border-left: 3px solid #C7F23A;
-    background: color-mix(in srgb, #C7F23A 4%, transparent);
+    border-left: 3px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
   }
   .subens-claimed { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .subens-name { font-family: var(--font-mono, monospace); font-size: 0.9375rem; font-weight: 800; color: var(--text); letter-spacing: -0.01em; }
@@ -888,10 +888,10 @@
   .subens-open {
     display: inline-flex; align-items: center; gap: 0.25rem;
     padding: 0.2rem 0.5rem; font-size: 0.6875rem; font-weight: 700;
-    color: #C7F23A; text-decoration: none;
-    border: 1px solid color-mix(in srgb, #C7F23A 35%, var(--border)); border-radius: 4px;
+    color: var(--accent); text-decoration: none;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 4px;
   }
-  .subens-open:hover { background: color-mix(in srgb, #C7F23A 10%, transparent); }
+  .subens-open:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
   /* ── Custom domain ───────────────────────────────────────────────────────── */
   .domain-verified-banner {
