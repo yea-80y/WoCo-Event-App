@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { EventFeed, Hex0x } from "@woco/shared";
-  import { socialEventSubject, socialProfileSubject } from "@woco/shared";
+  import { socialEventSubject, socialProfileSubject, subEnsWebUrl } from "@woco/shared";
   import { rememberLabel } from "../../likes/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { getEvent } from "../../api/events.js";
@@ -255,13 +255,21 @@
            event id, so likes survive a name repoint). -->
       <div class="social-actions">
         {#if event.subEnsLabel && eventNameVerified}
-          <span class="ens-plate" title="This event's permanent web3 address">
+          <!-- The name's contenthash IS this event page (set by `runSubEnsTask`),
+               so the plate is the address itself — a link, not a label. -->
+          <a
+            class="ens-plate"
+            href={subEnsWebUrl(event.subEnsLabel)}
+            target="_blank"
+            rel="noopener"
+            title="This event's permanent web3 address — open it"
+          >
             <svg class="ens-mark" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
               <path d="M6 0.5L7.6 4.4L11.5 6L7.6 7.6L6 11.5L4.4 7.6L0.5 6L4.4 4.4Z"
                     fill="currentColor" opacity="0.85"/>
             </svg>
             <span class="ens-label">{event.subEnsLabel}</span><span class="ens-tld">.woco.eth</span>
-          </span>
+          </a>
         {/if}
         {#if eventSubject}
           <LikeButton subject={eventSubject} caption="event" />
@@ -510,6 +518,7 @@
   /* The event's claimed .woco.eth name — a mono plate with an acid spark.
      Display only: the like alongside it is keyed to the on-chain event id. */
   .ens-plate {
+    text-decoration: none;
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
@@ -524,7 +533,9 @@
     border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
     border-radius: var(--radius-sm);
     white-space: nowrap;
+    transition: border-color 120ms;
   }
+  .ens-plate:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 
   .ens-mark { color: var(--accent); flex-shrink: 0; }
 

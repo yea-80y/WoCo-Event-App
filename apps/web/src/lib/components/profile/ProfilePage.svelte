@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { UserProfile, EventDirectoryEntry, LikeSubject } from "@woco/shared";
   import { SubjectType, socialProfileSubject } from "@woco/shared";
-  import { getProfile, updateProfile, uploadAvatar } from "../../api/profiles.js";
+  import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -12,7 +12,10 @@
   import { getFollowing, getTrending } from "../../api/likes.js";
   import { rememberLabel, nameForSubject } from "../../likes/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
-  import { subEnsErrorFrom, subEnsErrorDetail } from "../../sub-ens/errors.js";
+  import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
+  import { canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
+  import { discardPlanFor } from "../../sub-ens/discard-availability.js";
+  import { subEnsName } from "@woco/shared";
   import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
   import ReferralShareCard from "../campaign/ReferralShareCard.svelte";
@@ -21,6 +24,7 @@
   import type { BadgeRecord } from "@woco/shared";
   import WalletTab from "./WalletTab.svelte";
   import SubENSPicker from "../../creator/builder/SubENSPicker.svelte";
+  import DiscardNameDialog from "../../creator/builder/DiscardNameDialog.svelte";
   import LikeButton from "../likes/LikeButton.svelte";
   import SpendingWallet from "../../attendee/shop/SpendingWallet.svelte";
   import EventCard from "../../attendee/events/EventCard.svelte";
@@ -71,6 +75,12 @@
   let ensBindDetail = $state('');
   /** A bind that worked but has a caveat — rendered as a note, never as red. */
   let ensBindWarning = $state('');
+  /** Cooldown refusal, shown INSTEAD of opening the name picker. */
+  let renameBlocked = $state('');
+  /** The name this account was known by before the rename that just succeeded. */
+  let discardOffer = $state<string | null>(null);
+  let discardOpen = $state(false);
+  const discardPlan = $derived(discardPlanFor(auth.kind));
   let uploadingAvatar = $state(false);
   let avatarPreviewUrl = $state<string | null>(null);
   // A picked-but-not-yet-saved avatar (resized data URL). Staged on file-select,
@@ -228,6 +238,32 @@
     }
   }
 
+  /**
+   * Ask the server whether a rename is allowed BEFORE the picker opens.
+   *
+   * The cooldown bites at BIND time, so without this the user mints a new name
+   * on-chain — irreversible, and it spends their mint allowance — and only then
+   * reads "name_change_cooldown". A read that fails opens the picker: the
+   * server refuses the bind for real, and a flaky GET must not lock anyone out
+   * of their own name.
+   */
+  async function guardRename(): Promise<boolean> {
+    renameBlocked = '';
+    let status: ProfileNameStatus | null = null;
+    try {
+      status = await getProfileNameStatus();
+      if (!status) console.warn("[profile] name-status unavailable — opening the picker anyway");
+    } catch (err) {
+      console.warn("[profile] name-status failed — opening the picker anyway:", err);
+    }
+    const gate = canOpenRename(status);
+    if (gate.open) return true;
+    renameBlocked = gate.retryAt
+      ? `You can change your name again ${formatRetryAt(gate.retryAt)}.`
+      : "You can't change your name again yet.";
+    return false;
+  }
+
   // The picker mints `{label}.woco.eth` on-chain before firing this, so the
   // server's ownership check passes. The name is DISPLAY: followers key to the
   // account's address, so binding or changing a name does not move an audience.
@@ -235,6 +271,10 @@
     ensBindError = '';
     ensBindDetail = '';
     ensBindWarning = '';
+    renameBlocked = '';
+    // Captured BEFORE the bind: after it, the ledger no longer calls this the
+    // profile name, which is exactly why the relay will now accept releasing it.
+    const previous = profile?.subEnsLabel;
     try {
       const updated = await updateProfile(
         { subEnsLabel: label },
@@ -244,6 +284,9 @@
         profile = updated;
         // updateProfile already wrote the fresh profile to cache — don't
         // invalidate here or the next Swarm read races against feed propagation.
+        // The old name is still owned and now points at nothing in particular.
+        // Offer to let it go; never do it silently — it is a burn.
+        if (previous && previous.toLowerCase() !== label.toLowerCase()) discardOffer = previous;
       }
     } catch (err) {
       if (isTicketRequired(err)) {
@@ -767,7 +810,18 @@
             claimedLabel={profile?.subEnsLabel}
             onclaim={handleSubEnsClaim}
             singleName={true}
+            onbeforerename={guardRename}
           />
+          {#if renameBlocked}
+            <p class="ens-bind-warning">{renameBlocked}</p>
+          {/if}
+          {#if discardOffer && discardPlan.available}
+            <p class="ens-discard-offer">
+              You still own <code>{subEnsName(discardOffer)}</code>.
+              <button class="ens-discard-btn" onclick={() => discardOpen = true}>Discard it?</button>
+              <button class="ens-discard-btn" onclick={() => discardOffer = null}>Keep it</button>
+            </p>
+          {/if}
           {#if ensBindError}
             <p class="ens-bind-error">
               {ensBindError}
@@ -1046,6 +1100,14 @@
   {/if}
 
 </div>
+
+{#if discardOpen && discardOffer}
+  <DiscardNameDialog
+    label={discardOffer}
+    onclose={() => discardOpen = false}
+    ondiscarded={() => { discardOffer = null; discardOpen = false; }}
+  />
+{/if}
 
 <style>
   /* ── Page shell ──────────────────────────────────────────── */
@@ -1393,6 +1455,24 @@
     font-size: 0.8125rem;
     color: var(--text-muted);
     line-height: 1.45;
+  }
+
+  .ens-discard-offer {
+    margin: 0.5rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.55;
+  }
+  .ens-discard-offer code { font-family: var(--font-mono); color: var(--text); }
+  .ens-discard-btn {
+    margin-left: 0.35rem;
+    font: inherit;
+    color: var(--accent);
+    background: none;
+    border: none;
+    padding: 0;
+    text-decoration: underline;
+    cursor: pointer;
   }
 
   .save-error {

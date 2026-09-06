@@ -1,12 +1,13 @@
 import type { UserProfile, UpdateProfileRequest } from "@woco/shared";
 import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared";
-import { authPost, get } from "./client.js";
+import { authPost, authGet, get } from "./client.js";
 import { apiError } from "./errors.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import { writeContentFeed, readContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
+import type { ProfileNameStatus } from "../sub-ens/rename.js";
 
 // ---------------------------------------------------------------------------
 // In-memory cache — profile data changes rarely
@@ -159,6 +160,20 @@ async function fetchProfileUncached(addr: string, signerHint?: string): Promise<
   } catch {
     return null;
   }
+}
+
+/**
+ * When may this account change its profile name?
+ *
+ * Asked BEFORE the name picker opens: the cooldown is enforced at BIND time, so
+ * without this the user mints a name on-chain and only then learns they cannot
+ * bind it. Returns null when the read itself failed — the caller treats that as
+ * "allow" (`canOpenRename`), because the server refuses the bind for real and a
+ * flaky read must not strand anyone.
+ */
+export async function getProfileNameStatus(): Promise<ProfileNameStatus | null> {
+  const resp = await authGet<ProfileNameStatus>("/api/profile/name-status");
+  return resp.ok && resp.data ? resp.data : null;
 }
 
 /**

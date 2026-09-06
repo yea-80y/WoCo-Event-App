@@ -13,6 +13,7 @@
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import OwnedNamesList from "./OwnedNamesList.svelte";
+  import { bindableNames, hidesProfileName } from "../../sub-ens/roles.js";
 
   interface Props {
     intent?: EventDomainIntent;
@@ -86,14 +87,23 @@
   let ownedNames = $state<OwnedSubEnsName[]>([]);
   let selectedExisting = $state<string>("");
 
+  // The profile name is not on offer: `stamp-event` refuses it with 409
+  // `profile_name`, so listing it is listing a click that cannot work (#484).
+  // Everything downstream — empty state, auto-select, the overwrite warning —
+  // reads the FILTERED list, or the picker would auto-select a name the server
+  // is about to refuse.
+  let offerNames = $derived(bindableNames(ownedNames));
+  let profileHidden = $derived(hidesProfileName(ownedNames));
+
   async function loadOwned() {
     if (ownedState === "loading" || ownedState === "ready") return;
     ownedState = "loading";
     const res = await getOwnedSubEns();
     if (res.ok && res.data) {
       ownedNames = res.data.names;
-      ownedState = ownedNames.length === 0 ? "empty" : "ready";
-      if (ownedNames.length === 1) selectedExisting = ownedNames[0]!.label;
+      const offerable = bindableNames(ownedNames);
+      ownedState = offerable.length === 0 ? "empty" : "ready";
+      if (offerable.length === 1) selectedExisting = offerable[0]!.label;
     } else {
       ownedState = "error";
     }
@@ -240,14 +250,19 @@
         <div class="opt-body">
           <OwnedNamesList
             state={ownedState === "idle" ? "loading" : ownedState}
-            names={ownedNames}
+            names={offerNames}
             selected={selectedExisting}
             onselect={(label) => selectedExisting = label}
             onretry={() => { ownedState = "idle"; loadOwned(); }}
             emptyText="You don't own any .woco.eth names yet — choose “Claim a new name” above."
           />
+          <!-- Also shown over the empty state: an organiser whose ONLY name is
+               their profile name would otherwise read "you don't own any names". -->
+          {#if profileHidden && (ownedState === "ready" || ownedState === "empty")}
+            <p class="hidden-hint">Your profile name can't be a site or event address.</p>
+          {/if}
           {#if selectedExisting}
-            {@const sel = ownedNames.find((n) => n.label === selectedExisting)}
+            {@const sel = offerNames.find((n) => n.label === selectedExisting)}
             {#if sel?.previewUrl}
               <p class="msg msg--warn">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -262,6 +277,8 @@
 {/if}
 
 <style>
+  .hidden-hint { margin: 0.4rem 0 0; font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; }
+
   .dp {
     border: 1px solid var(--border);
     border-left: 3px solid #C7F23A;

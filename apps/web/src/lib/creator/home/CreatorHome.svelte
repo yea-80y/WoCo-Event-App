@@ -14,6 +14,8 @@
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import OwnedNamesList from "../builder/OwnedNamesList.svelte";
+  import DiscardNameDialog from "../builder/DiscardNameDialog.svelte";
+  import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { onboarding } from "./onboarding.svelte.js";
   import WelcomeModal from "./WelcomeModal.svelte";
   import GettingStartedCard from "./GettingStartedCard.svelte";
@@ -58,6 +60,11 @@
   let shopsFailed = $state(false);
   let ownedNames = $state<OwnedSubEnsName[]>([]);
   let loadingNames = $state(true);
+  // Discarding is offered only where it can actually work: the registry checks
+  // the holder's signature, and a smart-account holder cannot answer for itself
+  // on a chain it does not exist on yet (#489). `releaseRails` owns that rule.
+  const discardPlan = $derived(discardPlanFor(auth.kind));
+  let discarding = $state<string | null>(null);
   let backupInventory = $state<BackupInventoryEntry[]>([]);
   // The read couldn't answer (#166 item 4) — the panel must say "couldn't
   // check", never claim "No backup yet" over a fault.
@@ -635,7 +642,14 @@
               </button>
             </div>
           {:else}
-            <OwnedNamesList state="ready" names={ownedNames} />
+            <OwnedNamesList
+              state="ready"
+              names={ownedNames}
+              ondiscard={discardPlan.available ? (label) => discarding = label : undefined}
+            />
+            {#if !discardPlan.available && discardPlan.reason}
+              <p class="panel-note">{discardPlan.reason}</p>
+            {/if}
           {/if}
         </div>
       </div>
@@ -736,6 +750,14 @@
     </ul>
   </section>
 </div>
+
+{#if discarding}
+  <DiscardNameDialog
+    label={discarding}
+    onclose={() => discarding = null}
+    ondiscarded={(label) => { ownedNames = ownedNames.filter((n) => n.label !== label); }}
+  />
+{/if}
 
 <style>
   /* ── Layout ─────────────────────────────────────────────────────── */
@@ -1016,6 +1038,13 @@
     color: var(--text-muted);
     letter-spacing: 0.05em;
     text-transform: uppercase;
+  }
+
+  .panel-note {
+    margin: 0.5rem 0 0;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--text-muted);
   }
 
   .panel-empty {
