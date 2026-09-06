@@ -2,7 +2,13 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getProfile, updateProfile, uploadAvatar } from "../lib/profile/service.js";
-import { getLabelOwner, getLabelContenthash } from "../lib/chain/sub-ens-contract.js";
+import {
+  getLabelOwner,
+  getLabelContenthash,
+  updateSubEnsContenthash,
+  decodeSwarmContenthash,
+} from "../lib/chain/sub-ens-contract.js";
+import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
 import { bindProfileName, nameChangeStatus, unbindProfileName } from "../lib/profile/name-ledger.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import type { UpdateProfileRequest } from "@woco/shared";
@@ -54,13 +60,35 @@ type BindOutcome =
   | { ok: true; label: string; nextChangeAllowedAt: number | null; freeCorrectionUsed: boolean; warning?: "points_at_site" }
   | { ok: false; status: 403 | 409 | 502; body: Record<string, unknown> };
 
-async function verifyAndBindProfileName(parentAddress: string, rawLabel: string): Promise<BindOutcome> {
+/**
+ * The chain edges, injectable — the same default-parameter shape
+ * `refuseUnlessOwner` uses, because `mock.module` is unavailable under the tsx
+ * loader and these decisions are worth testing for real rather than by grep.
+ */
+export interface ProfileBindDeps {
+  readOwner: (label: string) => Promise<string | null>;
+  readContenthash: (label: string) => Promise<string | null>;
+  writeContenthash: (label: string, swarmHash: string) => Promise<string>;
+  apexContenthash: () => string | null;
+}
+
+export async function verifyAndBindProfileName(
+  parentAddress: string,
+  rawLabel: string,
+  deps: Partial<ProfileBindDeps> = {},
+): Promise<BindOutcome> {
+  const {
+    readOwner = getLabelOwner,
+    readContenthash = getLabelContenthash,
+    writeContenthash = updateSubEnsContenthash,
+    apexContenthash = getApexContenthash,
+  } = deps;
   const label = rawLabel.toLowerCase().trim();
   const parent = parentAddress.toLowerCase();
 
   let owner: string | null;
   try {
-    owner = await getLabelOwner(label);
+    owner = await readOwner(label);
   } catch (err) {
     console.error("[api] profile name ownership check failed:", err);
     return { ok: false, status: 502, body: { error: "Could not verify name ownership — try again" } };
@@ -82,18 +110,39 @@ async function verifyAndBindProfileName(parentAddress: string, rawLabel: string)
     };
   }
 
-  // Allowed, but worth saying out loud: this name is already a live URL. It
-  // keeps resolving to that site — the binding points protect it from being
-  // repointed from here on, and clearing it on-chain is a holder action we do
-  // not offer yet.
-  const contenthash = await getLabelContenthash(label);
-  return {
-    ok: true,
+  const bound = {
+    ok: true as const,
     label,
     nextChangeAllowedAt: result.status.nextChangeAllowedAt,
     freeCorrectionUsed: result.status.freeCorrectionUsed,
-    ...(contenthash ? { warning: "points_at_site" as const } : {}),
   };
+
+  // Point the name at the app, so typing it into a browser opens this profile.
+  // On-chain rather than a gateway special case: every resolver path then agrees,
+  // and it survives a profile-names.json loss.
+  const contenthash = await readContenthash(label);
+  const apex = apexContenthash();
+
+  if (!contenthash) {
+    // Fire-and-forget, like the site-deploy hook: the bind is already recorded
+    // and a courtesy write must never fail or delay it.
+    if (apex) {
+      void writeContenthash(label, apex)
+        .then(() => console.log(`[api] profile name ${label}.woco.eth → app ${apex.slice(0, 10)}…`))
+        .catch((e) => console.warn("[api] profile name contenthash update failed:", e));
+    }
+    return bound;
+  }
+
+  // Already the app — nothing to write, and nothing to warn about either.
+  if (apex && decodeSwarmContenthash(contenthash) === apex) return bound;
+
+  // Allowed, but worth saying out loud: this name is already a live URL. It
+  // keeps resolving to that site — the binding points protect it from being
+  // repointed from here on, and clearing it on-chain is a holder action we do
+  // not offer yet. Deliberately NOT overwritten with the apex: a contenthash
+  // that is not ours is somewhere the holder pointed the name on purpose.
+  return { ...bound, warning: "points_at_site" as const };
 }
 
 // POST /api/profile — authenticated, updates display name/bio/links
