@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ClaimMode, OrderField, PaymentConfig } from "@woco/shared";
+  import { subEnsWebUrl, type ClaimMode, type OrderField, type PaymentConfig } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { authPost } from "../api/client.js";
@@ -566,12 +566,11 @@
             <div class="subens-claimed">
               <span class="subens-name">{subEnsName}</span>
               <span class="subens-arrow">→ this event</span>
-              <span class="subens-soon" title="Goes live once woco.eth's mainnet ENS resolver points to the Arbitrum registry">
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><circle cx="5.5" cy="5.5" r="4.2" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 3.4V5.5l1.5 .9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Live soon
-              </span>
+              <a class="subens-open" href={subEnsWebUrl(subEnsLabel)} target="_blank" rel="noopener" title="Live on ENS — open this address">
+                Open ↗
+              </a>
             </div>
-            <p class="output-hint">Registered on Arbitrum — view the record on Arbiscan. The web address activates once woco.eth's resolver points to the L2 registry.</p>
+            <p class="output-hint">Registered on Arbitrum and live on ENS — view the record on Arbiscan.</p>
           {:else if subEnsPhase === "error"}
             <div class="create-error" style="margin: 0;">{subEnsError}</div>
             {#if !(domainIntent.mode === "new" && !domainIntent.label)}
@@ -880,18 +879,19 @@
 
   /* ── Sub-ENS result ──────────────────────────────────────────────────────── */
   .subens-section.subens-done {
-    border-left: 3px solid #C7F23A;
-    background: color-mix(in srgb, #C7F23A 4%, transparent);
+    border-left: 3px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
   }
   .subens-claimed { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .subens-name { font-family: var(--font-mono, monospace); font-size: 0.9375rem; font-weight: 800; color: var(--text); letter-spacing: -0.01em; }
   .subens-arrow { font-size: 0.8125rem; color: var(--text-muted); }
-  .subens-soon {
+  .subens-open {
     display: inline-flex; align-items: center; gap: 0.25rem;
-    padding: 0.2rem 0.5rem; font-size: 0.6875rem; font-weight: 600;
-    color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 8%, transparent);
-    border: 1px dashed var(--border); border-radius: 4px;
+    padding: 0.2rem 0.5rem; font-size: 0.6875rem; font-weight: 700;
+    color: var(--accent); text-decoration: none;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 4px;
   }
+  .subens-open:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
   /* ── Custom domain ───────────────────────────────────────────────────────── */
   .domain-verified-banner {
