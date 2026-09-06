@@ -10,6 +10,7 @@
   // From its own module: importing this key from envelope-reprobe.ts would hoist
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
+  import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -26,6 +27,20 @@
 
   // Modal is visible if either prop-driven or store-driven
   const visible = $derived(open || loginRequest.pending);
+
+  // THE choke point for every sign-in CTA in this app: they all end at
+  // loginRequest.request(), which only this modal can answer. On a WoCo name
+  // host the server will refuse the session — `ALLOWED_HOSTS` excludes
+  // `*.woco.eth.<tld>` on purpose, because a SITE name serves holder-chosen
+  // content under that same suffix — so offer the canonical host instead of a
+  // picker that is guaranteed to fail. Read once: the hostname cannot change
+  // without a page load.
+  const nameHostLabel = typeof window !== "undefined" ? hostLabel(window.location.hostname) : null;
+
+  // Recomputed on each open rather than once: this instance outlives its
+  // openings, and the hash it should carry across is the route the user is on
+  // NOW, not the one they were on the first time the modal mounted.
+  const signInHereUrl = $derived(visible ? canonicalUrl(window.location.hash) : "");
 
   // Which method is mid-flight — swaps the picker for the authenticating scene.
   // The picker stays MOUNTED (hidden) underneath so children keep their state
@@ -139,6 +154,13 @@
         </button>
       </header>
 
+      {#if nameHostLabel}
+        <p class="notice" role="status">
+          Accounts live on WoCo's main address — sign in there and this page opens with you.
+        </p>
+        <a class="btn btn--primary signin-elsewhere" href={signInHereUrl}>Sign in on woco.eth.limo</a>
+      {/if}
+
       {#if notice && !authing}
         <p class="notice" role="status">{notice}</p>
       {/if}
@@ -178,6 +200,10 @@
         </div>
       {/if}
 
+      <!-- Not rendered on a name host: every method here ends at a session the
+           server will refuse from this origin, so the redirect above is the
+           only sign-in this page can honestly offer. -->
+      {#if !nameHostLabel}
       <div class="options" class:offstage={authing !== null}>
         <PasskeyLogin oncomplete={handleComplete} onstart={() => start("passkey")} onsettle={settle} />
 
@@ -195,6 +221,7 @@
 
         <ZupassLogin />
       </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -277,6 +304,12 @@
     font-size: 0.8125rem;
     line-height: 1.45;
     color: var(--text-secondary);
+  }
+
+  /* Layout only — .btn/.btn--primary carry the appearance, from app.css. */
+  .signin-elsewhere {
+    display: flex;
+    width: 100%;
   }
 
   .close-btn {

@@ -6,11 +6,37 @@
   import TicketGateModal from "./lib/attendee/gate/TicketGateModal.svelte";
   import Splitter from "./lib/landing/Splitter.svelte";
   import AttendeeApp from "./AttendeeApp.svelte";
+  import { bootRedirectFor } from "./lib/sub-ens/host-label.js";
   import { onMount } from "svelte";
 
   onMount(() => {
     auth.init();
+    openProfileForNameHost();
   });
+
+  // A WoCo name (`nabil.woco.eth.link`) resolves to this app's own content, so
+  // the app itself has to notice which name it was reached by and open that
+  // profile. Deliberately AFTER mount and never awaited: the label→address hop
+  // is a network read, and the home page must paint whether or not it answers.
+  function openProfileForNameHost() {
+    const label = bootRedirectFor(window.location.hostname, window.location.hash);
+    if (!label) return;
+    // Lazy so the resolver's graph is only fetched on a name host — the vast
+    // majority of loads are the canonical host and pay nothing for this.
+    void import("./lib/api/sub-ens.js").then(async (m) => {
+      const res = await m.resolveSubEnsAddress(label).catch(() => null);
+      if (res?.status !== "found") {
+        // Warn once and stay on the home page. An unregistered or unreadable
+        // name is not worth an error screen — the app is still the app.
+        console.warn(`[woco] ${label}.woco.eth did not resolve to a profile — showing the home page`);
+        return;
+      }
+      // Re-check the route: the user may have navigated during the lookup, and
+      // yanking them off the page they chose would be worse than not redirecting.
+      if (!bootRedirectFor(window.location.hostname, window.location.hash)) return;
+      router.navigate(`/profile/${res.address}`);
+    });
+  }
 
   // Referral attribution: a captured #/ref/{address} waits in localStorage
   // until the account's first authenticated moment (a session already exists,
