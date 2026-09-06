@@ -34,7 +34,10 @@
       // Re-check the route: the user may have navigated during the lookup, and
       // yanking them off the page they chose would be worse than not redirecting.
       if (!bootRedirectFor(window.location.hostname, window.location.hash)) return;
-      router.navigate(`/profile/${res.address}`);
+      // replace, not navigate: this redirect is automatic, so a history entry
+      // for it would make Back land on the name host's bare home page — a
+      // dead end nobody chose. Same precedent as the router's #/ref/ handler.
+      window.location.replace(`${window.location.pathname}#/profile/${res.address}`);
     });
   }
 
