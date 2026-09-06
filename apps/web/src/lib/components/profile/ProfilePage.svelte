@@ -12,6 +12,7 @@
   import { getFollowing, getTrending } from "../../api/likes.js";
   import { rememberLabel, nameForSubject } from "../../likes/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
+  import { subEnsErrorFrom, subEnsErrorDetail } from "../../sub-ens/errors.js";
   import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
   import ReferralShareCard from "../campaign/ReferralShareCard.svelte";
@@ -67,6 +68,9 @@
   });
   let saveError = $state('');
   let ensBindError = $state('');
+  let ensBindDetail = $state('');
+  /** A bind that worked but has a caveat — rendered as a note, never as red. */
+  let ensBindWarning = $state('');
   let uploadingAvatar = $state(false);
   let avatarPreviewUrl = $state<string | null>(null);
   // A picked-but-not-yet-saved avatar (resized data URL). Staged on file-select,
@@ -229,8 +233,13 @@
   // account's address, so binding or changing a name does not move an audience.
   async function handleSubEnsClaim(label: string) {
     ensBindError = '';
+    ensBindDetail = '';
+    ensBindWarning = '';
     try {
-      const updated = await updateProfile({ subEnsLabel: label });
+      const updated = await updateProfile(
+        { subEnsLabel: label },
+        () => { ensBindWarning = 'This name already points at a site, and keeps doing so.'; },
+      );
       if (updated) {
         profile = updated;
         // updateProfile already wrote the fresh profile to cache — don't
@@ -243,8 +252,12 @@
         ensBindError = 'Link a ticket to unlock your account first';
         return;
       }
-      const msg = err instanceof Error ? err.message : 'Failed to save name to profile';
-      ensBindError = msg;
+      const described = subEnsErrorFrom(err, 'Failed to save name to profile');
+      ensBindError = described.title;
+      // The old blanket suffix is only true when the mint succeeded and the
+      // BIND failed, which is exactly the case a known code does not describe.
+      ensBindDetail = subEnsErrorDetail(described)
+        ?? 'The name is registered on-chain — try again to link it to your profile.';
       console.error("Failed to bind sub-ENS to profile:", err);
     }
   }
@@ -756,7 +769,13 @@
             singleName={true}
           />
           {#if ensBindError}
-            <p class="ens-bind-error">{ensBindError} — name is registered on-chain, try again to link it to your profile.</p>
+            <p class="ens-bind-error">
+              {ensBindError}
+              {#if ensBindDetail}<span class="ens-bind-detail">{ensBindDetail}</span>{/if}
+            </p>
+          {/if}
+          {#if ensBindWarning}
+            <p class="ens-bind-warning">{ensBindWarning}</p>
           {/if}
         </section>
 
@@ -1361,6 +1380,18 @@
     margin: 0.5rem 0 0;
     font-size: 0.8125rem;
     color: #ef4444;
+    line-height: 1.45;
+  }
+
+  .ens-bind-detail {
+    display: block;
+    color: var(--text-muted);
+  }
+
+  .ens-bind-warning {
+    margin: 0.5rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
     line-height: 1.45;
   }
 

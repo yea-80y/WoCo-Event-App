@@ -50,6 +50,18 @@ export interface DeploySiteResult {
   siteUrl: string;
   /** Present when the pointer feed is client-owned — the update we must sign. */
   multisiteFeed?: { nextIndex: number; rootChunkPayloadB64: string };
+  /**
+   * What the deploy did with the site's sub-ENS name, when it has one. The
+   * two CHECKS run synchronously so the response can say this; only the
+   * transaction is fire-and-forget, so `updating` is a start, not a finish.
+   * Before this reached the UI every refusal was silent — a site bound to a
+   * name the organiser had transferred away just stopped updating.
+   */
+  subEns?: {
+    label: string;
+    status: "updating" | "skipped";
+    reason?: "not_owner" | "profile_name" | "unverified";
+  };
 }
 
 /**
