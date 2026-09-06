@@ -50,7 +50,7 @@ test("filtering does not mutate the list it was given", () => {
 test("each role reads as a person would say it", () => {
   assert.equal(roleLabel("profile"), "profile name");
   assert.equal(roleLabel("url"), "site address");
-  assert.equal(roleLabel("free"), "free");
+  assert.equal(roleLabel("free"), "not pointed anywhere yet");
 });
 
 test("an absent role has no label, so the caller keeps its old text", () => {

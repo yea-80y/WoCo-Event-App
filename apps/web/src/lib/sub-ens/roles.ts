@@ -48,7 +48,7 @@ export function roleLabel(role: SubEnsNameRole | undefined): string | undefined 
   switch (role) {
     case "profile": return "profile name";
     case "url":     return "site address";
-    case "free":    return "free";
+    case "free":    return "not pointed anywhere yet";
     default:        return undefined;
   }
 }
