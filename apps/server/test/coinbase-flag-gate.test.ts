@@ -55,7 +55,7 @@ test("a smart-wallet delegation is refused, and the would-accept verifier is nev
   const calls = { verify: 0, ownerReads: 0, deployedChecks: 0 };
 
   const result = await verifyDelegation(delegation as never, session.address, [HOST], {
-    isKernelKnownDeployed: () => {
+    isKernelKnownDeployedOnAnyChain: () => {
       calls.deployedChecks++;
       return false;
     },
@@ -104,7 +104,7 @@ test("the EOA / Kernel-owner ecrecover path is untouched by the flag", async () 
   );
 
   const result = await verifyDelegation({ message, parentSig } as never, session.address, [HOST], {
-    isKernelKnownDeployed: () => false,
+    isKernelKnownDeployedOnAnyChain: () => false,
     readKernelOwner: async () => null,
     verifySmartWalletTypedData: async () => {
       throw new Error("must not be reached for an ecrecover-able delegation");

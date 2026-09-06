@@ -59,7 +59,12 @@ import { createPublicClient, http, zeroAddress, type Address, type Chain, type P
 import { arbitrum, arbitrumSepolia } from "viem/chains";
 import { KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
-import { isKernelKnownDeployed, getKernelOwnerRecord, recordKernelOwner } from "./kernel-deployed.js";
+import {
+  isKernelKnownDeployed,
+  knownOwnerDisagreesOnAnyChain,
+  getKernelOwnerRecord,
+  recordKernelOwner,
+} from "./kernel-deployed.js";
 import { observeOwnerRead, type OwnerRead } from "./kernel-owner-ordering.js";
 
 /**
@@ -331,10 +336,16 @@ export function decideKernelOwnership(args: {
   ownerRead: string | null | "error";
   eoa: string;
   counterfactualMatches: boolean;
-  /** Has this Kernel ever been observed WITH an on-chain owner? */
+  /** Has this Kernel ever been observed WITH an on-chain owner ON THIS CHAIN? */
   knownDeployed: boolean;
+  /**
+   * Has any record for this Kernel — on ANY chain — named an owner OTHER than
+   * this EOA? A fact about the account, not about a chain: see
+   * `knownOwnerDisagreesOnAnyChain`.
+   */
+  knownRotatedAway: boolean;
 }): boolean {
-  const { ownerRead, eoa, counterfactualMatches, knownDeployed } = args;
+  const { ownerRead, eoa, counterfactualMatches, knownDeployed, knownRotatedAway } = args;
 
   // A definitive owner settles it outright, in both directions.
   if (ownerRead !== null && ownerRead !== "error") return ownerRead === eoa;
@@ -352,7 +363,15 @@ export function decideKernelOwnership(args: {
   //
   // The record says this account HAS an owner. A read saying otherwise contradicts
   // it, and a contradiction is not evidence of control.
-  if (knownDeployed) return false;
+  //
+  // `knownRotatedAway` is the same refusal reached from the other direction, and
+  // it is what survives a CHAIN MOVE (#489). After the move a recovered account
+  // is genuinely counterfactual on the new chain, so `knownDeployed` is correctly
+  // false and the read correctly returns `null` — and the counterfactual, which
+  // is derived from the ORIGINAL owner's init data on every chain at once, would
+  // hand the retired key its access back. A key the account has been seen to move
+  // away from anywhere is not evidence of control here.
+  if (knownDeployed || knownRotatedAway) return false;
 
   // Never seen with an owner: the counterfactual is the only evidence there is, and
   // for a genuinely undeployed account it is sound — only the key whose init data
@@ -395,15 +414,26 @@ async function _decideFromRead(
   eoa: string,
   parent: string,
 ): Promise<boolean> {
-  const knownDeployed =
-    ownerRead === null || ownerRead === "error" ? isKernelKnownDeployed(parent) : false;
+  const unreadable = ownerRead === null || ownerRead === "error";
+  const knownDeployed = unreadable ? isKernelKnownDeployed(parent) : false;
+  const knownRotatedAway = unreadable ? knownOwnerDisagreesOnAnyChain(parent, eoa) : false;
 
-  if (knownDeployed) {
+  if (knownDeployed || knownRotatedAway) {
+    // Distinguished in the log because the two say different things to an
+    // operator: the first is "the chain disagrees with our memory", the second is
+    // "this key was retired" — and only the second is expected traffic after a
+    // chain move. Opaque 403s are the diagnosability problem #107 exists to fix.
     console.warn(
       `[kernel-owner] ${ownerRead === "error" ? "owner read failed" : "owner read returned none"} ` +
-        `for known-deployed ${parent.slice(0, 10)}… — refusing`,
+        `for ${knownDeployed ? "known-deployed" : "rotated-away"} ${parent.slice(0, 10)}… — refusing`,
     );
-    return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches: false, knownDeployed });
+    return decideKernelOwnership({
+      ownerRead,
+      eoa,
+      counterfactualMatches: false,
+      knownDeployed,
+      knownRotatedAway,
+    });
   }
 
   // Only computed when it can still matter — it is a local CREATE2 derivation, but
@@ -413,5 +443,5 @@ async function _decideFromRead(
       ? (await kernelAddressOfOwner(eoa)) === parent
       : false;
 
-  return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches, knownDeployed });
+  return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches, knownDeployed, knownRotatedAway });
 }

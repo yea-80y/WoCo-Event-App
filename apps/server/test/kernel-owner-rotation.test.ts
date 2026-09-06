@@ -174,24 +174,24 @@ test("a readable owner settles it, both ways, regardless of anything else", asyn
   const d = await decide();
   // Even a counterfactual match and a known-deployed record cannot override a
   // definitive read — that is what "authoritative" means.
-  assert.equal(d({ ownerRead: OWNER_EOA, eoa: OWNER_EOA, counterfactualMatches: false, knownDeployed: true }), true);
-  assert.equal(d({ ownerRead: OTHER_EOA, eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: false }), false);
+  assert.equal(d({ ownerRead: OWNER_EOA, eoa: OWNER_EOA, counterfactualMatches: false, knownDeployed: true, knownRotatedAway: false }), true);
+  assert.equal(d({ ownerRead: OTHER_EOA, eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: false, knownRotatedAway: false }), false);
 });
 
 test("never seen deployed + no owner on chain → the counterfactual decides", async () => {
   const d = await decide();
-  assert.equal(d({ ownerRead: null, eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: false }), true);
-  assert.equal(d({ ownerRead: null, eoa: OWNER_EOA, counterfactualMatches: false, knownDeployed: false }), false);
+  assert.equal(d({ ownerRead: null, eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: false, knownRotatedAway: false }), true);
+  assert.equal(d({ ownerRead: null, eoa: OWNER_EOA, counterfactualMatches: false, knownDeployed: false, knownRotatedAway: false }), false);
 });
 
 test("never seen deployed + read error → the counterfactual still decides", async () => {
   const d = await decide();
-  assert.equal(d({ ownerRead: "error", eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: false }), true);
+  assert.equal(d({ ownerRead: "error", eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: false, knownRotatedAway: false }), true);
 });
 
 test("KNOWN DEPLOYED + read error → refuse, counterfactual or not", async () => {
   const d = await decide();
-  assert.equal(d({ ownerRead: "error", eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: true }), false);
+  assert.equal(d({ ownerRead: "error", eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: true, knownRotatedAway: false }), false);
 });
 
 test("KNOWN DEPLOYED + a read returning NO owner → refuse, counterfactual or not", async () => {
@@ -201,7 +201,7 @@ test("KNOWN DEPLOYED + a read returning NO owner → refuse, counterfactual or n
   // to fall straight through to the counterfactual, readmitting the retired key.
   // A validator-address change or an uninstalled ECDSA validator reads the same.
   const d = await decide();
-  assert.equal(d({ ownerRead: null, eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: true }), false);
+  assert.equal(d({ ownerRead: null, eoa: OWNER_EOA, counterfactualMatches: true, knownDeployed: true, knownRotatedAway: false }), false);
 });
 
 test("the record cannot manufacture access, only withhold it", async () => {
@@ -210,8 +210,8 @@ test("the record cannot manufacture access, only withhold it", async () => {
   const d = await decide();
   for (const ownerRead of [null, "error"] as const) {
     for (const counterfactualMatches of [true, false]) {
-      const withRecord = d({ ownerRead, eoa: OWNER_EOA, counterfactualMatches, knownDeployed: true });
-      const without = d({ ownerRead, eoa: OWNER_EOA, counterfactualMatches, knownDeployed: false });
+      const withRecord = d({ ownerRead, eoa: OWNER_EOA, counterfactualMatches, knownDeployed: true, knownRotatedAway: false });
+      const without = d({ ownerRead, eoa: OWNER_EOA, counterfactualMatches, knownDeployed: false, knownRotatedAway: false });
       assert.ok(!(withRecord && !without), `record granted access it should not: ${ownerRead}/${counterfactualMatches}`);
     }
   }

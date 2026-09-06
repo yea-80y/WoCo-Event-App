@@ -122,6 +122,29 @@ let state: DeployedState = { version: 3, kernels: {} };
 let loaded = false;
 let loadFailed = false;
 
+/**
+ * address (lowercase) → every record held for it, ON ANY CHAIN.
+ *
+ * Derived, never persisted, rebuilt on load and after each write. It exists so
+ * the two any-chain predicates below stay O(1): they run BEFORE authorization on
+ * a caller-chosen address, and a scan of the whole map there would hand a caller
+ * an O(accounts) cost per request — the class of thing #163 caps everywhere else
+ * in this path. Rebuilding on write is strictly cheaper than the `persist()` that
+ * accompanies it, which already serialises the entire map.
+ */
+let byAddress = new Map<string, KernelRecord[]>();
+
+function reindex(): void {
+  byAddress = new Map();
+  for (const [key, rec] of Object.entries(state.kernels)) {
+    // Keys are either a bare address (pre-#489) or `${chainId}:${address}`.
+    const addr = key.slice(key.lastIndexOf(":") + 1);
+    const list = byAddress.get(addr);
+    if (list) list.push(rec);
+    else byAddress.set(addr, [rec]);
+  }
+}
+
 function load(): void {
   if (loaded) return;
   loaded = true;
@@ -147,6 +170,7 @@ function load(): void {
         // a keyless, chainless record means.
         state = { version: 3, kernels: parsed.kernels };
       }
+      reindex();
       console.log(`[kernel-deployed] loaded ${Object.keys(state.kernels).length} observed Kernels`);
       return;
     }
@@ -227,6 +251,7 @@ export function recordKernelOwner(kernelAddress: string, owner: string, block: n
     block,
     ownerSeenAt: now,
   };
+  reindex();
   persist();
 }
 
@@ -258,9 +283,54 @@ export function getKernelOwnerRecord(
   return { owner: rec.owner, block: rec.block };
 }
 
+/**
+ * Does ANY record for this Kernel — on ANY chain — name an owner other than this
+ * EOA?
+ *
+ * THE CHAIN FILTER MUST NOT REACH THIS QUESTION, and the difference is the whole
+ * point of having two predicates. "Is this account deployed?" is a fact about a
+ * chain, and a Sepolia sighting says nothing about Arbitrum One. "Has this
+ * account's owner moved away from this key?" is a fact about the ACCOUNT, and it
+ * is just as true on a chain the observation was not made on: the Kernel address
+ * is CREATE2-derived from the ORIGINAL owner's init data, so a retired key
+ * matches the counterfactual forever, on every chain at once.
+ *
+ * Without this, the #489 move re-opened #200 by the back door: on Arbitrum One a
+ * recovered account has no code, so the live read returns `null`, the deployment
+ * record is (correctly) ignored as foreign, and the counterfactual fallback
+ * re-admits exactly the key the recovery was performed to retire.
+ *
+ * A record with no `owner` (the v1 shape) is not evidence of disagreement — it
+ * knew only that an owner existed — and does not fire this.
+ */
+export function knownOwnerDisagreesOnAnyChain(kernelAddress: string, eoa: string): boolean {
+  load();
+  const want = eoa.toLowerCase();
+  const records = byAddress.get(kernelAddress.toLowerCase());
+  if (!records) return false;
+  return records.some((rec) => typeof rec.owner === "string" && rec.owner !== want);
+}
+
+/**
+ * Has this Kernel been observed with an on-chain owner on ANY chain?
+ *
+ * For the smart-wallet gate (#209), which asks a question the chain filter must
+ * not narrow either: a 6492 wrapper carries the account's original factory init
+ * data, so a chain serving pre-deployment state validates it against the
+ * ORIGINAL owner. Every chain the account is not deployed on serves exactly that
+ * — the Kernel's own chain included, the day after a move. So the gate turns on
+ * "is this an account whose owner the chain decides", which one sighting
+ * anywhere settles, not on "is it deployed here".
+ */
+export function isKernelKnownDeployedOnAnyChain(kernelAddress: string): boolean {
+  load();
+  return (byAddress.get(kernelAddress.toLowerCase())?.length ?? 0) > 0;
+}
+
 /** Test seam — drops the in-memory set and forces a reload on next access. */
 export function _resetKernelDeployedForTests(): void {
   state = { version: 3, kernels: {} };
+  byAddress = new Map();
   loaded = false;
   loadFailed = false;
 }

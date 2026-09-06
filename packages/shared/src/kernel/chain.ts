@@ -21,7 +21,7 @@
  * matching `/chain/42161` segment, the paymaster policy must exist on that
  * project, and `kernel-deployed.json` sightings from the old chain must stop
  * counting — every Kernel is counterfactual again on day one (#200). See
- * docs/SUB_ENS_ARBITRUM_PLAN.md "KERNEL MOVE (#489)".
+ * issue #489 for the full checklist.
  */
 export const KERNEL_CHAIN_ID = 42161 as const;
 
