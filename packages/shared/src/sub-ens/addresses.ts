@@ -32,6 +32,17 @@ export interface SubEnsDeployment {
 }
 
 /**
+ * Arbitrum One (42161) — LIVE since 2026-09-05, and therefore where every real
+ * name lives: woco.eth's L1 resolver answers from this registry. Deployed from
+ * OUR L2Registry implementation (`0x172031e6a8428617b05f2002e0e278bb8fb3ed8a`)
+ * under baseNode
+ * `0x616c19dee44e200629c0e4918ca0fe2f6e85100ea0b354c4f888e11c07a9006f`, with the
+ * registry and registrar admin roles held by the #420 Safe rather than an EOA —
+ * so a compromised deployer key cannot move names here.
+ *
+ * Deployment record: `contracts/deployments/42161-subens.json` in the
+ * WoCo-Contracts repo.
+ *
  * Arbitrum Sepolia (421614) — redeployed 2026-09-03 from OUR L2Registry
  * implementation (`0xc12aA209…2c7a`), so the registry carries #422
  * `adminTransfer` and #464 `release` + `releaseWithSignature`. The 2026-09-02
@@ -42,11 +53,12 @@ export interface SubEnsDeployment {
  *
  * Deployment record: `contracts/deployments/421614-subens.json` in the
  * WoCo-Contracts repo.
- *
- * Arbitrum One (42161) — pending the mainnet deploy (plan steps 7–9). Adding
- * that row is the whole change on this side; nothing else hardcodes an address.
  */
 export const SUB_ENS_DEPLOYMENTS = {
+  42161: {
+    registry: "0x8630000177d44ec12e4752Ae0C8b26390d30A2B6",
+    registrar: "0xACfe7c02909a5c1eB64aE5aA10D18618323403a2",
+  },
   421614: {
     registry: "0xC38e08CB5a21B083F63149ea7597Ea8D05017cf8",
     registrar: "0x42c6464d65e79C4735A0b346d1c1b4690586d6F9",
@@ -57,12 +69,19 @@ export const SUB_ENS_DEPLOYMENTS = {
 export type SubEnsChainId = keyof typeof SUB_ENS_DEPLOYMENTS;
 
 /**
- * The chain sub-ENS runs on unless the server's `SUB_ENS_CHAIN_ID` says
- * otherwise. The client has no env of its own here: it indexes
- * {@link SUB_ENS_DEPLOYMENTS} by a literal chain id, so an unknown chain is a
- * type error rather than an `undefined` address reaching a contract call.
+ * Where the names live absent env — the chain sub-ENS runs on unless the
+ * server's `SUB_ENS_CHAIN_ID` says otherwise. The client has no env of its own
+ * here: it indexes {@link SUB_ENS_DEPLOYMENTS} by a literal chain id, so an
+ * unknown chain is a type error rather than an `undefined` address reaching a
+ * contract call.
+ *
+ * NOT the chain the passkey Kernel runs on. That is `KERNEL_CHAIN_ID`
+ * (apps/web/src/lib/auth/kernel-account.ts), still Arbitrum Sepolia because
+ * moving it is a ZeroDev project + paymaster change, not a constant (#489). The
+ * two are independent and must be read as such: an address indexed by the wrong
+ * one is a valid-looking address on a chain the caller is not on.
  */
-export const SUB_ENS_DEFAULT_CHAIN_ID = 421614 satisfies SubEnsChainId;
+export const SUB_ENS_DEFAULT_CHAIN_ID = 42161 satisfies SubEnsChainId;
 
 /**
  * Runtime lookup for the server, whose chain id arrives as a plain number from

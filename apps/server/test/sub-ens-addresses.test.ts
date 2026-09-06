@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import { SUB_ENS_DEPLOYMENTS, SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment } from "@woco/shared";
 import {
   getRegistrarAddress,
@@ -102,4 +103,70 @@ test("a chain with no deployment and no override throws rather than returning un
     assert.throws(() => getRegistryAddress(1), /No sub-ENS deployment for chain 1/);
     assert.throws(() => getSubEnsDeployment(1), /No sub-ENS deployment for chain 1/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The map against the deployment records.
+//
+// The map is what every caller uses; the JSON under contracts/deployments is
+// what was actually broadcast. Nothing links them but a human retyping 40 hex
+// characters, and a single wrong nibble is an address that exists, parses, and
+// resolves nothing — every name read answers "unowned" and every permit is
+// signed for a contract nobody deployed.
+//
+// contracts/ is a separate repo and gitignored here (.gitignore:53), so CI has
+// no records to read and this SKIPS there. It is a local pre-merge check by
+// design — hence a visible skip rather than a quiet pass, which would make the
+// absence look like agreement.
+
+const DEPLOYMENTS_DIR = new URL("../../../contracts/deployments/", import.meta.url);
+
+interface DeploymentRecord {
+  l2Registry?: string;
+  wocoRegistrar?: string;
+}
+
+test("every map row matches its deployment record", (t) => {
+  if (!existsSync(DEPLOYMENTS_DIR)) {
+    t.skip("contracts/ not checked out — record equality not verified here");
+    return;
+  }
+
+  let verified = 0;
+  for (const [chainId, d] of Object.entries(SUB_ENS_DEPLOYMENTS)) {
+    const file = new URL(`${chainId}-subens.json`, DEPLOYMENTS_DIR);
+    if (!existsSync(file)) continue;
+
+    const record = JSON.parse(readFileSync(file, "utf-8")) as DeploymentRecord;
+    assert.equal(
+      record.l2Registry?.toLowerCase(),
+      d.registry.toLowerCase(),
+      `registry for chain ${chainId} disagrees with ${chainId}-subens.json`,
+    );
+    assert.equal(
+      record.wocoRegistrar?.toLowerCase(),
+      d.registrar.toLowerCase(),
+      `registrar for chain ${chainId} disagrees with ${chainId}-subens.json`,
+    );
+    verified++;
+  }
+
+  // A checked-out contracts/ that happens to hold no record for any row would
+  // otherwise pass while asserting nothing at all.
+  if (verified === 0) t.skip("no deployment record found for any mapped chain");
+});
+
+test("the default chain is a real row, and not the Kernel's chain", () => {
+  // KERNEL_CHAIN_ID stayed on Arbitrum Sepolia when the names moved to Arbitrum
+  // One (#489). A default that slipped back would produce permits signed for the
+  // Sepolia registrar's EIP-712 domain — well-formed, verifiable, and refused by
+  // the mainnet registrar the frontend actually calls. Distinct registrar
+  // addresses are what make that mistake detectable at all.
+  const d = SUB_ENS_DEPLOYMENTS[SUB_ENS_DEFAULT_CHAIN_ID];
+  assert.ok(d, `no deployment row for the default chain ${SUB_ENS_DEFAULT_CHAIN_ID}`);
+  assert.notEqual(
+    d.registrar.toLowerCase(),
+    SUB_ENS_DEPLOYMENTS[421614].registrar.toLowerCase(),
+    "the default sub-ENS chain is the Kernel's testnet chain — a mainnet permit would be signed for the wrong registrar",
+  );
 });
