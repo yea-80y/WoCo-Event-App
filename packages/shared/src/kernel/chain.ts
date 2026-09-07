@@ -18,8 +18,9 @@
  *
  * WHY THIS IS NOT THE WHOLE FLIP. Moving the Kernel is a ZeroDev PROJECT
  * change, not a constant: `ZERODEV_RPC` / `VITE_ZERODEV_RPC` must carry the
- * matching `/chain/42161` segment, the paymaster policy must exist on that
- * project, and `kernel-deployed.json` sightings from the old chain must stop
+ * matching `/chain/42161` segment AND `?selfFunded=true` (managed sponsorship
+ * is testnet-only on the free plan; the query routes to WoCo's own deposited
+ * paymaster), and `kernel-deployed.json` sightings from the old chain must stop
  * counting — every Kernel is counterfactual again on day one (#200). See
  * issue #489 for the full checklist.
  */

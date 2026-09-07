@@ -75,18 +75,15 @@ export const OWNER_REGISTERED_TOPIC =
   "0xa5e1f8b4009110f5525798d04ae2125421a12d0590aa52c13682ff1bd3c492ca" as const;
 
 /**
- * Scan floor, Arbitrum Sepolia. Provenance (#234 review): first `OwnerRegistered`
- * from this validator observed at block 56,020,341; zero events in 40–50M. No
- * WoCo account predates it.
- *
- * ⚠️ PER-CHAIN, AND NOT YET RESET FOR ARBITRUM ONE (#489). On Arb One this value
- * is far BELOW the first WoCo account rather than above it, so the scan stays
- * CORRECT (it can only over-scan) and gets slower — ~35 pages instead of a
- * handful. The right floor is the block the move went live at, which is not
- * knowable until it does; raising it before then would be the one change that
- * could make the scan miss an account.
+ * Scan floor, Arbitrum One (#489 cutover). Set from the chain head at merge —
+ * 502,828,154 on 2026-09-07 — rounded DOWN: no WoCo Kernel existed on 42161
+ * before the move, so any floor below the first one is correct, and a lower
+ * floor can only over-scan, never miss. PER-CHAIN: the Sepolia floor was
+ * 56,000,000 (#234: first `OwnerRegistered` at 56,020,341). Raising this above
+ * a block where a WoCo account already exists is the one change that could
+ * make the scan miss an account.
  */
-export const OWNER_SCAN_FLOOR_BLOCK = 56_000_000n;
+export const OWNER_SCAN_FLOOR_BLOCK = 502_800_000n;
 
 /**
  * Page width. Measured: the ZeroDev RPC answers a 10M-block page in ~1.4 s
