@@ -5,8 +5,8 @@
  * Pure: byte transforms and decisions, no I/O. `kernel-account.ts` is the only
  * place that sends or reads them. Contract source + Foundry tests live in the
  * nested `contracts/` repo (`src/recovery/WoCoGuardianHook.sol`, github.com/
- * yea-80y/WoCo-Contracts); deployment record in `contracts/deployments/
- * 421614-guardian-hook.json`.
+ * yea-80y/WoCo-Contracts); deployment records in `contracts/deployments/
+ * {42161,421614}-guardian-hook.json`.
  *
  * WHAT CHANGED AND WHY (the #148 / #164 defect). The ZeroDev caller hook stored
  * `allowed[guardian][kernel]` and only ever ORed `true` in — no revoke, and the
@@ -28,7 +28,9 @@ import type { Address, Hex } from "viem";
  * WoCoGuardianHook singleton — CREATE2 via the canonical deterministic deployer,
  * so this is its address on EVERY chain with the proxy, Arbitrum One included
  * (#489 moved the Kernel; the hook address did not move). First deployed to Arb
- * Sepolia 2026-08-22, tx 0x89e65a63…c883f3, source verified on Arbiscan.
+ * Sepolia 2026-08-22, tx 0x89e65a63…c883f3; the Arbitrum One twin landed
+ * 2026-09-07, tx 0xcb5d5bfd…2051 at block 502,832,530, runtime codehash read
+ * back identical on both chains. Both verified on Arbiscan.
  *
  * The Arb Sepolia deploy BLOCK used to be exported next to this. It had no
  * caller, and as a log floor on another chain it would be a silently wrong
