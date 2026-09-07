@@ -385,9 +385,11 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
     stops ALL sales until restored. It was a pure cache before #424 — it is not
     one now)
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
-    owner, and at which L2 block — losing it reopens the #200 windows, silently, on
-    the next deploy: the counterfactual fallback returns and a lagging RPC replica
-    can roll the owner back to a retired key)
+    owner, at which L2 block, and — since #489 — on which CHAIN: records are keyed
+    `{chainId}:{address}` and a record from another chain is ignored, never deleted.
+    Losing it reopens the #200 windows, silently, on the next deploy: the
+    counterfactual fallback returns and a lagging RPC replica can roll the owner
+    back to a retired key)
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)

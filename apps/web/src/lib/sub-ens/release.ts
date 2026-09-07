@@ -33,11 +33,13 @@ import {
 import { rememberOwner } from "./verify-name.js";
 
 /**
- * The chain the REGISTRY lives on — which is no longer the chain the Kernel runs
- * on. The names moved to Arbitrum One while `KERNEL_CHAIN_ID` stayed on Arbitrum
- * Sepolia (#489), so reading the digest from the Kernel's chain would query a
- * registry where the holder owns nothing and hand them a signature bound to the
- * wrong EIP-712 domain — one the real registry rejects.
+ * The chain the REGISTRY lives on. The Kernel now runs on the same one (#489),
+ * which is what makes a smart-account release verifiable at all — but this is
+ * still read from the sub-ENS constant, not the Kernel's. They were apart for a
+ * release cycle, and reading the digest from the Kernel's chain then queried a
+ * registry where the holder owns nothing and handed them a signature bound to
+ * the wrong EIP-712 domain. The equality is asserted in
+ * packages/shared/test/kernel/chain.test.ts, not assumed here.
  */
 const CHAIN_ID: SubEnsChainId = SUB_ENS_DEFAULT_CHAIN_ID;
 const REGISTRY = SUB_ENS_DEPLOYMENTS[SUB_ENS_DEFAULT_CHAIN_ID].registry;

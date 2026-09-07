@@ -156,17 +156,20 @@ test("every map row matches its deployment record", (t) => {
   if (verified === 0) t.skip("no deployment record found for any mapped chain");
 });
 
-test("the default chain is a real row, and not the Kernel's chain", () => {
-  // KERNEL_CHAIN_ID stayed on Arbitrum Sepolia when the names moved to Arbitrum
-  // One (#489). A default that slipped back would produce permits signed for the
-  // Sepolia registrar's EIP-712 domain — well-formed, verifiable, and refused by
-  // the mainnet registrar the frontend actually calls. Distinct registrar
-  // addresses are what make that mistake detectable at all.
+test("the default chain is a real row, and is not the retired testnet", () => {
+  // The names moved to Arbitrum One first and the Kernel followed (#489), so
+  // "not the Kernel's chain" is no longer the invariant — that agreement is
+  // asserted in packages/shared/test/kernel/chain.test.ts. What still matters
+  // here is that the default is not the RETIRED testnet row: a default that
+  // slipped back would produce permits signed for the Sepolia registrar's
+  // EIP-712 domain — well-formed, verifiable, and refused by the mainnet
+  // registrar the frontend actually calls. Distinct registrar addresses are
+  // what make that mistake detectable at all.
   const d = SUB_ENS_DEPLOYMENTS[SUB_ENS_DEFAULT_CHAIN_ID];
   assert.ok(d, `no deployment row for the default chain ${SUB_ENS_DEFAULT_CHAIN_ID}`);
   assert.notEqual(
     d.registrar.toLowerCase(),
     SUB_ENS_DEPLOYMENTS[421614].registrar.toLowerCase(),
-    "the default sub-ENS chain is the Kernel's testnet chain — a mainnet permit would be signed for the wrong registrar",
+    "the default sub-ENS chain is the retired testnet — a mainnet permit would be signed for the wrong registrar",
   );
 });

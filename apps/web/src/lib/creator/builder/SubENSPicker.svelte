@@ -1,7 +1,7 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { checkSubEnsLabel, claimSubEnsLabel, claimSubEnsViaPermit, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
+  import { checkSubEnsLabel, claimSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
@@ -214,20 +214,15 @@
     const label = rawInput.toLowerCase().trim();
 
     try {
-      // Passkey users own a ZeroDev Kernel → claim client-side via permit +
-      // scoped session key (gasless, name owned by their smart account). Every
-      // other login kind uses the server-sponsored path.
+      // The WoCo sponsor wallet mints for EVERY login kind (#489). Passkey users
+      // used to mint themselves through a permit + scoped session key; that rail
+      // is one more thing to keep working on a chain move, and it bought the user
+      // nothing the sponsor path does not already give them.
       const attempt = async () =>
-        auth.kind === 'passkey'
-          ? claimSubEnsViaPermit({
-              label,
-              kernelAddress: await auth.ensureWocoSessionKey(),
-              description: profileBio.trim() || undefined,
-            })
-          : claimSubEnsLabel({
-              label,
-              description: profileBio.trim() || undefined,
-            });
+        claimSubEnsLabel({
+          label,
+          description: profileBio.trim() || undefined,
+        });
       let res = await attempt();
       // Attendee gate: names need a ticket-unlocked account (organisers pass
       // automatically). Open the unlock flow and retry once.

@@ -14,7 +14,7 @@
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
   import BackupNudge from "../components/recovery/BackupNudge.svelte";
   import { addSiteEvent } from "../api/sites.js";
-  import { claimSubEnsLabel, claimSubEnsViaPermit, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
+  import { claimSubEnsLabel, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
   import { describeSubEnsError, subEnsErrorDetail } from "../sub-ens/errors.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
@@ -200,9 +200,10 @@
   }
 
   // Route the chosen sub-ENS at the freshly deployed event page. Runs after deploy
-  // because it needs the contentHash. "new" mints (gasless permit for passkey logins,
-  // sponsor mint otherwise) with the contenthash set in the same tx; "existing"
-  // repoints an owned label via the ownership-checked set-contenthash endpoint.
+  // because it needs the contentHash. "new" mints through the WoCo sponsor wallet —
+  // EVERY login kind, no exceptions (#489) — with the contenthash set in the same tx;
+  // "existing" repoints an owned label via the ownership-checked set-contenthash
+  // endpoint.
   async function runSubEnsTask(contentHash: string) {
     const intent = domainIntent;
     if (intent.mode === "none") return;
@@ -218,18 +219,11 @@
     subEnsLabel = intent.label;
     try {
       if (intent.mode === "new") {
-        const res = auth.kind === "passkey"
-          ? await claimSubEnsViaPermit({
-              label: intent.label,
-              kernelAddress: await auth.ensureWocoSessionKey(),
-              swarmHash: contentHash,
-              description: intent.description,
-            })
-          : await claimSubEnsLabel({
-              label: intent.label,
-              swarmHash: contentHash,
-              description: intent.description,
-            });
+        const res = await claimSubEnsLabel({
+          label: intent.label,
+          swarmHash: contentHash,
+          description: intent.description,
+        });
         if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not claim the name"; return; }
       } else {
         const res = await setSubEnsContenthash(intent.label, contentHash);

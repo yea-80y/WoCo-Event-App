@@ -9,7 +9,9 @@
  *  1. Deterministic (no RPC): the Kernel v3.1 counterfactual CREATE2 address of
  *     the EOA equals the parent. Covers every non-recovered account, deployed
  *     or not — verified byte-equivalent to the client's createKernelAccount
- *     addresses on Arb Sepolia (kernel-addr-equivalence check, 2026-07-10).
+ *     addresses on Arb Sepolia (kernel-addr-equivalence check, 2026-07-10), and
+ *     chain-independent: nothing in the CREATE2 derivation reads a chain id, so
+ *     the #489 move to Arbitrum One left every address unchanged.
  *  2. On-chain fallback: the deployed Kernel's live ECDSA sudo owner equals the
  *     EOA (`ecdsaValidatorStorage` on the validator singleton). Covers RECOVERED
  *     accounts, whose owner was rotated so their counterfactual diverges — the
@@ -53,14 +55,29 @@
 
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
 import { getKernelAddressFromECDSA, getValidatorAddress } from "@zerodev/ecdsa-validator";
-import { createPublicClient, http, zeroAddress, type Address, type PublicClient } from "viem";
-import { arbitrumSepolia } from "viem/chains";
+import { createPublicClient, http, zeroAddress, type Address, type Chain, type PublicClient } from "viem";
+import { arbitrum, arbitrumSepolia } from "viem/chains";
+import { KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
-import { isKernelKnownDeployed, getKernelOwnerRecord, recordKernelOwner } from "./kernel-deployed.js";
+import {
+  isKernelKnownDeployed,
+  knownOwnerDisagreesOnAnyChain,
+  getKernelOwnerRecord,
+  recordKernelOwner,
+} from "./kernel-deployed.js";
 import { observeOwnerRead, type OwnerRead } from "./kernel-owner-ordering.js";
 
-/** Kernel deployments live on Arbitrum Sepolia (KERNEL_CHAIN_ID client-side). */
-const KERNEL_CHAIN_ID = 421614;
+/**
+ * The viem chain object for the Kernel chain. The ID itself is the SHARED
+ * constant (#489): this pin and the client's used to be independent literals,
+ * and a server reading one chain while the client signs for another authorizes
+ * against an account that does not exist there.
+ */
+const KERNEL_CHAINS = {
+  42161: arbitrum,
+  421614: arbitrumSepolia,
+} as const satisfies Record<number, Chain>;
+const KERNEL_CHAIN: Chain = KERNEL_CHAINS[KERNEL_CHAIN_ID satisfies KernelChainId];
 
 const entryPoint = getEntryPoint("0.7");
 const kernelVersion = KERNEL_V3_1;
@@ -69,7 +86,7 @@ let _client: PublicClient | null = null;
 function client(): PublicClient {
   if (!_client) {
     _client = createPublicClient({
-      chain: arbitrumSepolia,
+      chain: KERNEL_CHAIN,
       transport: http(getChainRpcUrl(KERNEL_CHAIN_ID)),
     });
   }
@@ -319,10 +336,16 @@ export function decideKernelOwnership(args: {
   ownerRead: string | null | "error";
   eoa: string;
   counterfactualMatches: boolean;
-  /** Has this Kernel ever been observed WITH an on-chain owner? */
+  /** Has this Kernel ever been observed WITH an on-chain owner ON THIS CHAIN? */
   knownDeployed: boolean;
+  /**
+   * Has any record for this Kernel — on ANY chain — named an owner OTHER than
+   * this EOA? A fact about the account, not about a chain: see
+   * `knownOwnerDisagreesOnAnyChain`.
+   */
+  knownRotatedAway: boolean;
 }): boolean {
-  const { ownerRead, eoa, counterfactualMatches, knownDeployed } = args;
+  const { ownerRead, eoa, counterfactualMatches, knownDeployed, knownRotatedAway } = args;
 
   // A definitive owner settles it outright, in both directions.
   if (ownerRead !== null && ownerRead !== "error") return ownerRead === eoa;
@@ -340,7 +363,15 @@ export function decideKernelOwnership(args: {
   //
   // The record says this account HAS an owner. A read saying otherwise contradicts
   // it, and a contradiction is not evidence of control.
-  if (knownDeployed) return false;
+  //
+  // `knownRotatedAway` is the same refusal reached from the other direction, and
+  // it is what survives a CHAIN MOVE (#489). After the move a recovered account
+  // is genuinely counterfactual on the new chain, so `knownDeployed` is correctly
+  // false and the read correctly returns `null` — and the counterfactual, which
+  // is derived from the ORIGINAL owner's init data on every chain at once, would
+  // hand the retired key its access back. A key the account has been seen to move
+  // away from anywhere is not evidence of control here.
+  if (knownDeployed || knownRotatedAway) return false;
 
   // Never seen with an owner: the counterfactual is the only evidence there is, and
   // for a genuinely undeployed account it is sound — only the key whose init data
@@ -383,15 +414,26 @@ async function _decideFromRead(
   eoa: string,
   parent: string,
 ): Promise<boolean> {
-  const knownDeployed =
-    ownerRead === null || ownerRead === "error" ? isKernelKnownDeployed(parent) : false;
+  const unreadable = ownerRead === null || ownerRead === "error";
+  const knownDeployed = unreadable ? isKernelKnownDeployed(parent) : false;
+  const knownRotatedAway = unreadable ? knownOwnerDisagreesOnAnyChain(parent, eoa) : false;
 
-  if (knownDeployed) {
+  if (knownDeployed || knownRotatedAway) {
+    // Distinguished in the log because the two say different things to an
+    // operator: the first is "the chain disagrees with our memory", the second is
+    // "this key was retired" — and only the second is expected traffic after a
+    // chain move. Opaque 403s are the diagnosability problem #107 exists to fix.
     console.warn(
       `[kernel-owner] ${ownerRead === "error" ? "owner read failed" : "owner read returned none"} ` +
-        `for known-deployed ${parent.slice(0, 10)}… — refusing`,
+        `for ${knownDeployed ? "known-deployed" : "rotated-away"} ${parent.slice(0, 10)}… — refusing`,
     );
-    return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches: false, knownDeployed });
+    return decideKernelOwnership({
+      ownerRead,
+      eoa,
+      counterfactualMatches: false,
+      knownDeployed,
+      knownRotatedAway,
+    });
   }
 
   // Only computed when it can still matter — it is a local CREATE2 derivation, but
@@ -401,5 +443,5 @@ async function _decideFromRead(
       ? (await kernelAddressOfOwner(eoa)) === parent
       : false;
 
-  return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches, knownDeployed });
+  return decideKernelOwnership({ ownerRead, eoa, counterfactualMatches, knownDeployed, knownRotatedAway });
 }

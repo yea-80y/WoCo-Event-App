@@ -32,10 +32,22 @@
  * become undeployed, and an owner change only ever moves the record forward to a
  * later block. Losing an entry fails OPEN (the fallback resumes), which is why it
  * is persisted rather than derived on demand.
+ *
+ * IT IS PER-CHAIN (#489). "Deployed" is a fact about an account ON A CHAIN, and
+ * the Kernel moved from Arbitrum Sepolia to Arbitrum One. The addresses are
+ * identical on both (CREATE2 reads no chain id), so a Sepolia sighting replayed
+ * on Arbitrum One would refuse the counterfactual for an account that is
+ * genuinely counterfactual there — locking out every existing passkey user on
+ * day one, exactly the accounts for which the fallback IS the mechanism.
+ * Records therefore carry the chain they were observed on, and a record from
+ * another chain is IGNORED — never deleted and never overwritten, because the
+ * move is reversible and a rollback that found the Sepolia sightings erased
+ * would reopen the #200 window with nothing left to notice it.
  */
 
 import { readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { KERNEL_CHAIN_ID } from "@woco/shared";
 // Generic atomic-JSON writer. It lives under lib/marketing/ for historical
 // reasons rather than because it belongs to marketing; auth importing from there
 // is a smell worth fixing by relocating it, not by hand-rolling a second writer.
@@ -45,6 +57,10 @@ const DATA_DIR = join(process.cwd(), ".data");
 const DEPLOYED_FILE = join(DATA_DIR, "kernel-deployed.json");
 
 interface KernelRecord {
+  /** The chain this account was observed deployed on. Absent on records written
+   *  before #489, when Arbitrum Sepolia was the only chain a Kernel could be on
+   *  — see LEGACY_RECORD_CHAIN_ID. */
+  chainId?: number;
   /** ISO timestamp of the first observation with an on-chain owner. */
   firstSeen: string;
   /** The owner (lowercase) last accepted as current, and the L2 block at which
@@ -56,9 +72,44 @@ interface KernelRecord {
 }
 
 interface DeployedState {
-  version: 2;
-  /** kernel address (lowercase) → record. */
+  version: 3;
+  /** `${chainId}:${kernel address}` (lowercase) → record, for anything written
+   *  since #489. Pre-#489 entries keep their bare-address key and are read
+   *  through the fallback in {@link currentChainRecord}; nothing rewrites them. */
   kernels: Record<string, KernelRecord>;
+}
+
+/** v2 (#200) was keyed by bare address and knew nothing about chains. */
+interface DeployedStateV2 {
+  version: 2;
+  kernels: Record<string, KernelRecord>;
+}
+
+/**
+ * The chain a record with no `chainId` was observed on. There is only one
+ * possible answer: Arbitrum Sepolia was the only chain WoCo Kernels ever ran on
+ * before #489, so this is a fact about the past, not a default.
+ */
+const LEGACY_RECORD_CHAIN_ID = 421614;
+
+/** Where a record observed on the CURRENT Kernel chain is written. */
+function recordKey(kernelAddress: string): string {
+  return `${KERNEL_CHAIN_ID}:${kernelAddress.toLowerCase()}`;
+}
+
+/**
+ * The record for this Kernel ON THE CURRENT CHAIN, or undefined.
+ *
+ * THE `chainId` COMPARISON IS THE WHOLE GUARD. The bare-address lookup below
+ * deliberately finds pre-#489 records — they are still the right answer when the
+ * current chain is the one they were written on (a rollback), and the wrong one
+ * otherwise. Deleting the comparison would silently readmit every Sepolia
+ * sighting on Arbitrum One.
+ */
+function currentChainRecord(kernelAddress: string): KernelRecord | undefined {
+  const rec = state.kernels[recordKey(kernelAddress)] ?? state.kernels[kernelAddress.toLowerCase()];
+  if (!rec) return undefined;
+  return (rec.chainId ?? LEGACY_RECORD_CHAIN_ID) === KERNEL_CHAIN_ID ? rec : undefined;
 }
 
 /** v1 (#208) stored only the first-observation timestamp per Kernel. */
@@ -67,15 +118,41 @@ interface DeployedStateV1 {
   kernels: Record<string, string>;
 }
 
-let state: DeployedState = { version: 2, kernels: {} };
+let state: DeployedState = { version: 3, kernels: {} };
 let loaded = false;
 let loadFailed = false;
+
+/**
+ * address (lowercase) → every record held for it, ON ANY CHAIN.
+ *
+ * Derived, never persisted, rebuilt on load and after each write. It exists so
+ * the two any-chain predicates below stay O(1): they run BEFORE authorization on
+ * a caller-chosen address, and a scan of the whole map there would hand a caller
+ * an O(accounts) cost per request — the class of thing #163 caps everywhere else
+ * in this path. Rebuilding on write is strictly cheaper than the `persist()` that
+ * accompanies it, which already serialises the entire map.
+ */
+let byAddress = new Map<string, KernelRecord[]>();
+
+function reindex(): void {
+  byAddress = new Map();
+  for (const [key, rec] of Object.entries(state.kernels)) {
+    // Keys are either a bare address (pre-#489) or `${chainId}:${address}`.
+    const addr = key.slice(key.lastIndexOf(":") + 1);
+    const list = byAddress.get(addr);
+    if (list) list.push(rec);
+    else byAddress.set(addr, [rec]);
+  }
+}
 
 function load(): void {
   if (loaded) return;
   loaded = true;
   try {
-    const parsed = JSON.parse(readFileSync(DEPLOYED_FILE, "utf-8")) as DeployedState | DeployedStateV1;
+    const parsed = JSON.parse(readFileSync(DEPLOYED_FILE, "utf-8")) as
+      | DeployedState
+      | DeployedStateV2
+      | DeployedStateV1;
     if (parsed?.kernels && typeof parsed.kernels === "object") {
       if (parsed.version === 1) {
         // The set of known-deployed Kernels carries over as-is; the owner/block
@@ -85,10 +162,15 @@ function load(): void {
         for (const [kernel, firstSeen] of Object.entries(parsed.kernels)) {
           if (typeof firstSeen === "string") kernels[kernel] = { firstSeen };
         }
-        state = { version: 2, kernels };
+        state = { version: 3, kernels };
       } else {
-        state = { version: 2, kernels: parsed.kernels };
+        // v2 entries keep their bare-address keys and their absent `chainId`.
+        // Relabelling them here would be a rewrite of exactly the evidence a
+        // rollback needs, and it buys nothing: the read path already knows what
+        // a keyless, chainless record means.
+        state = { version: 3, kernels: parsed.kernels };
       }
+      reindex();
       console.log(`[kernel-deployed] loaded ${Object.keys(state.kernels).length} observed Kernels`);
       return;
     }
@@ -157,46 +239,98 @@ function persist(): void {
  */
 export function recordKernelOwner(kernelAddress: string, owner: string, block: number): void {
   load();
-  const key = kernelAddress.toLowerCase();
   const now = new Date().toISOString();
-  const existing = state.kernels[key];
+  const existing = currentChainRecord(kernelAddress);
   if (existing && existing.owner === owner.toLowerCase() && existing.block === block) return;
-  state.kernels[key] = {
+  // Always under the current chain's key: a foreign-chain record for this same
+  // address keeps its own key and its own contents.
+  state.kernels[recordKey(kernelAddress)] = {
+    chainId: KERNEL_CHAIN_ID,
     firstSeen: existing?.firstSeen ?? now,
     owner: owner.toLowerCase(),
     block,
     ownerSeenAt: now,
   };
+  reindex();
   persist();
 }
 
 /**
- * Has this Kernel ever been observed with an on-chain owner?
+ * Has this Kernel ever been observed with an on-chain owner ON THE CURRENT
+ * KERNEL CHAIN?
  *
  * True means a counterfactual match is no longer sufficient evidence of control.
+ * A sighting from another chain says nothing here: the same address can be
+ * deployed on one chain and counterfactual on the next.
  */
 export function isKernelKnownDeployed(kernelAddress: string): boolean {
   load();
-  return Boolean(state.kernels[kernelAddress.toLowerCase()]);
+  return Boolean(currentChainRecord(kernelAddress));
 }
 
 /**
- * The owner last accepted as current for this Kernel and the block it was first
- * seen at — or undefined when nothing ordered is known (never observed, or a v1
+ * The owner last accepted as current for this Kernel on the current Kernel
+ * chain, and the block it was first seen at — or undefined when nothing ordered
+ * is known (never observed on this chain, observed only on another one, or a v1
  * record that predates the block field).
  */
 export function getKernelOwnerRecord(
   kernelAddress: string,
 ): { owner: string; block: number } | undefined {
   load();
-  const rec = state.kernels[kernelAddress.toLowerCase()];
+  const rec = currentChainRecord(kernelAddress);
   if (!rec || typeof rec.owner !== "string" || typeof rec.block !== "number") return undefined;
   return { owner: rec.owner, block: rec.block };
 }
 
+/**
+ * Does ANY record for this Kernel — on ANY chain — name an owner other than this
+ * EOA?
+ *
+ * THE CHAIN FILTER MUST NOT REACH THIS QUESTION, and the difference is the whole
+ * point of having two predicates. "Is this account deployed?" is a fact about a
+ * chain, and a Sepolia sighting says nothing about Arbitrum One. "Has this
+ * account's owner moved away from this key?" is a fact about the ACCOUNT, and it
+ * is just as true on a chain the observation was not made on: the Kernel address
+ * is CREATE2-derived from the ORIGINAL owner's init data, so a retired key
+ * matches the counterfactual forever, on every chain at once.
+ *
+ * Without this, the #489 move re-opened #200 by the back door: on Arbitrum One a
+ * recovered account has no code, so the live read returns `null`, the deployment
+ * record is (correctly) ignored as foreign, and the counterfactual fallback
+ * re-admits exactly the key the recovery was performed to retire.
+ *
+ * A record with no `owner` (the v1 shape) is not evidence of disagreement — it
+ * knew only that an owner existed — and does not fire this.
+ */
+export function knownOwnerDisagreesOnAnyChain(kernelAddress: string, eoa: string): boolean {
+  load();
+  const want = eoa.toLowerCase();
+  const records = byAddress.get(kernelAddress.toLowerCase());
+  if (!records) return false;
+  return records.some((rec) => typeof rec.owner === "string" && rec.owner !== want);
+}
+
+/**
+ * Has this Kernel been observed with an on-chain owner on ANY chain?
+ *
+ * For the smart-wallet gate (#209), which asks a question the chain filter must
+ * not narrow either: a 6492 wrapper carries the account's original factory init
+ * data, so a chain serving pre-deployment state validates it against the
+ * ORIGINAL owner. Every chain the account is not deployed on serves exactly that
+ * — the Kernel's own chain included, the day after a move. So the gate turns on
+ * "is this an account whose owner the chain decides", which one sighting
+ * anywhere settles, not on "is it deployed here".
+ */
+export function isKernelKnownDeployedOnAnyChain(kernelAddress: string): boolean {
+  load();
+  return (byAddress.get(kernelAddress.toLowerCase())?.length ?? 0) > 0;
+}
+
 /** Test seam — drops the in-memory set and forces a reload on next access. */
 export function _resetKernelDeployedForTests(): void {
-  state = { version: 2, kernels: {} };
+  state = { version: 3, kernels: {} };
+  byAddress = new Map();
   loaded = false;
   loadFailed = false;
 }

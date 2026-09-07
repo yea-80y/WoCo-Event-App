@@ -15,11 +15,20 @@
  * simulates the original deployment and validates against the ORIGINAL owner —
  * an owner Path 1 would refuse once the account has rotated.
  *
- * That is not a lagging-node edge case. WoCo Kernels are deployed on Arbitrum
- * Sepolia only, so every OTHER candidate chain serves permanent, honest
- * pre-deployment state for the same address, and the factories deploy
- * deterministically cross-chain. Path 2 must therefore be skipped entirely for
+ * That is not a lagging-node edge case. A Kernel is deployed on ONE chain and
+ * counterfactual on every other, and the factories deploy deterministically
+ * cross-chain — so every chain the account is not deployed on serves permanent,
+ * honest pre-deployment state for the same address, and validates a 6492 wrapper
+ * against the ORIGINAL owner. Path 2 must therefore be skipped entirely for
  * accounts we can identify, not merely narrowed to fewer chains.
+ *
+ * WHICH CHAIN IS NOT THE QUESTION (#489). The Kernel moved from Arbitrum Sepolia
+ * to Arbitrum One, and on the day of the move every existing account became
+ * counterfactual on the new chain — i.e. the new chain became one more that
+ * would validate a superseded deployment. So the gate asks whether this account
+ * is one whose owner the CHAIN decides, which a single sighting anywhere
+ * settles; narrowing it to "deployed on the current chain" would have opened the
+ * gate for exactly the accounts a move puts at risk.
  *
  * Two residuals are accepted deliberately:
  *
@@ -45,7 +54,7 @@ export type SmartWalletPathDecision =
  * the suite still green.
  *
  * @param knownDeployed  the store's memory: this account HAS been observed with
- *                       an on-chain owner at some point.
+ *                       an on-chain owner at some point, ON ANY CHAIN.
  * @param liveOwner      the authority itself, tri-state: an address means it has
  *                       an owner now; `null` means provably none; `"error"`
  *                       means the read failed and decides nothing.
@@ -56,6 +65,13 @@ export function decideSmartWalletPath(args: {
 }): SmartWalletPathDecision {
   // The store's memory is enough on its own. Consulted first so the common case
   // costs no chain read.
+  //
+  // `knownDeployed` here means observed on ANY chain — the caller supplies
+  // `isKernelKnownDeployedOnAnyChain`, not the current-chain predicate. There is
+  // no candidate EOA on this path (the signature is not ecrecover-able), so the
+  // owner-disagreement test that guards `decideKernelOwnership` has nothing to
+  // compare against; the sighting itself is the fact that applies, for the reason
+  // in the header.
   if (args.knownDeployed) {
     return { attempt: false, reason: "account has been observed with an on-chain owner" };
   }
