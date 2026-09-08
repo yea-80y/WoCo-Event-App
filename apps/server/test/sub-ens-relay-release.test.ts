@@ -28,6 +28,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { labelNode } from "../src/lib/chain/sub-ens-contract.js";
+import { isWholeBytesHex } from "../src/routes/sub-ens.js";
 
 function sourceOf(rel: string): string {
   return readFileSync(new URL(rel, import.meta.url), "utf-8")
@@ -88,6 +89,58 @@ test("the node is computed from the validated label, never read from the body", 
 test("the signer is the VERIFIED parent, never a body field", () => {
   assert.match(RELAY, /relayReleaseWithSignature\(node, expiration, parentAddress, signature\)/);
   assert.doesNotMatch(RELAY, /body\.signer/);
+});
+
+test("an ODD-LENGTH signature is refused here, not 500'd by ethers", () => {
+  // `0x` + an odd number of hex characters is not a byte string, but it passes
+  // a `[0-9a-fA-F]+` test. It used to travel into `getBytes` inside the relay
+  // and throw INVALID_ARGUMENT, which this route answers as a 500 — the server
+  // blaming itself for a malformed field and telling the caller nothing.
+  assert.equal(isWholeBytesHex("0xabc"), false);
+  assert.equal(isWholeBytesHex(`0x${"ab".repeat(64)}c`), false, "65.5 bytes is not 65 bytes");
+});
+
+test("a real EOA signature is accepted", () => {
+  assert.equal(isWholeBytesHex(`0x${"ab".repeat(65)}`), true);
+});
+
+test("a VARIABLE-LENGTH contract signature is accepted — 65 bytes is not the rule", () => {
+  // `releaseWithSignature` verifies through the ERC-6492 universal validator, so
+  // a Kernel or Coinbase Smart Wallet holder's signature is an arbitrary-length
+  // wrapped blob (release-rails.ts). Pinning 65 would refuse every smart-account
+  // release the moment those rails switch on.
+  for (const bytes of [1, 64, 65, 66, 200, 517]) {
+    assert.equal(isWholeBytesHex(`0x${"ab".repeat(bytes)}`), true, `${bytes} bytes must pass`);
+  }
+});
+
+test("everything that is not 0x-prefixed whole-byte hex is refused", () => {
+  for (const bad of [
+    "0x",                                  // prefix only — no bytes at all
+    "abab",                                // unprefixed
+    "0xzz",                                // not hex
+    `0x${"ab".repeat(64)} `,               // trailing space
+    " 0xabab",                             // leading space
+    "0Xabab",                              // wrong prefix case: ethers is strict too
+    undefined,
+    null,
+    12345,
+    { signature: "0xabab" },
+  ]) {
+    assert.equal(isWholeBytesHex(bad), false, `accepted: ${JSON.stringify(bad)}`);
+  }
+});
+
+test("the route refuses a malformed signature with a 400, before any chain work", () => {
+  assert.match(
+    RELAY,
+    /if \(!isWholeBytesHex\(signature\)\) \{\s*return c\.json\(\{ ok: false, error: "[^"]+" \}, 400\);/,
+    "the check must answer 400 in the route's own envelope",
+  );
+  assert.doesNotMatch(RELAY, /\[0-9a-fA-F\]\+/, "the loose any-length hex test must be gone");
+  const checkIdx = RELAY.indexOf("isWholeBytesHex(signature)");
+  const relayIdx = RELAY.indexOf("relayReleaseWithSignature(");
+  assert.ok(checkIdx > 0 && checkIdx < relayIdx, "validation must precede the relay call");
 });
 
 test("expiration is bounded at BOTH ends", () => {
