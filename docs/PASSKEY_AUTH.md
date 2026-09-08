@@ -1,3 +1,7 @@
+> **HISTORICAL — February 2026.** Passkey login is now a ZeroDev Kernel smart account on
+> Arbitrum One. Current: [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md) and
+> [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md).
+
 # Passkey Authentication — Technical Overview
 
 WoCo supports passkey-based authentication using the **WebAuthn PRF extension**

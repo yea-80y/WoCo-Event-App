@@ -1,3 +1,9 @@
+> **PARTLY HISTORICAL — June 2026, written for the Arbitrum Buildathon.**
+> The `WoCoEventV2` contract description below is still accurate and the address is still the
+> live one. The surrounding flow is not: the v1 claim rail has been deleted, `claimFor` is driven
+> by Stripe fulfilment to ephemeral burner addresses, and `WoCoTicketLedger` supersedes V2 but is
+> not deployed. Current: [TICKETING.md](./TICKETING.md).
+
 # On-Chain Ticketing + Smart Wallets
 
 How WoCo issues event tickets on-chain on **Arbitrum Sepolia (`421614`)**, and the two

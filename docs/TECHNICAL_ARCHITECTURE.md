@@ -1,3 +1,10 @@
+> **HISTORICAL — February 2026. Do not build from this document.**
+> It predates client-owned feeds, the issuer-curve migration (#443), the v1 claim-rail
+> retirement (#207), on-chain ticketing and the move of likes/follows off EAS. Its claim to
+> reflect "the actual implementation" was true when written and is no longer.
+> Current: [ARCHITECTURE.md](./ARCHITECTURE.md) · [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md)
+> · [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md) · [TICKETING.md](./TICKETING.md)
+
 # WoCo Technical Architecture
 
 A complete technical reference for the WoCo decentralized event platform.
