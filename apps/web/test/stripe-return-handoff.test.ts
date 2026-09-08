@@ -4,7 +4,8 @@
  * Properties pinned: the message is a NUDGE and never the answer (a message
  * claiming completion cannot end the wait — only a successful server read can);
  * the listener actually delivers, and stops delivering once the modal closes;
- * and a foreign message on a same-origin channel is ignored.
+ * a foreign message on a same-origin channel is ignored; and a script-opened
+ * return tab is offered CLOSE, never a second copy of the app.
  */
 
 import { test } from "node:test";
@@ -15,6 +16,7 @@ import {
   postStripeReturn,
   shouldStopWaiting,
   stripeReturnMessage,
+  stripeReturnVariant,
   subscribeStripeReturn,
   type StripeHandoffChannel,
   type StripeHandoffChannelFactory,
@@ -132,4 +134,10 @@ test("a browser with no BroadcastChannel degrades silently — the modal keeps i
   assert.equal(postStripeReturn(true, null), false);
   const stop = subscribeStripeReturn(() => assert.fail("nothing can arrive"), null);
   stop();
+});
+
+test("a script-opened return tab is offered CLOSE; a tab that is the user's own session keeps the dashboard", () => {
+  assert.equal(stripeReturnVariant({} as unknown), "close");
+  assert.equal(stripeReturnVariant(null), "dashboard");
+  assert.equal(stripeReturnVariant(undefined), "dashboard");
 });

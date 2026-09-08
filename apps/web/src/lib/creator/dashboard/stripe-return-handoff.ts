@@ -101,3 +101,15 @@ export function shouldStopWaiting(
 ): boolean {
   return status?.ok === true && status.onboardingComplete === true;
 }
+
+/**
+ * What the return page should offer. A tab this app SCRIPT-OPENED has an opener,
+ * and its only useful ending is closing itself so the user is back in the tab
+ * holding their unsaved work; "Back to dashboard" there just builds a second copy
+ * of the app in a tab nobody wanted. Without an opener the tab IS the user's
+ * session (same-tab flow, or a link opened by hand) and keeps the dashboard exit.
+ */
+export type StripeReturnVariant = "close" | "dashboard";
+export function stripeReturnVariant(opener: unknown): StripeReturnVariant {
+  return opener ? "close" : "dashboard";
+}
