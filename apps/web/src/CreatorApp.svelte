@@ -132,8 +132,8 @@
   {:else if router.route === "stripe-refresh"}
     <div class="stripe-return-page">
       <h2>Link Expired</h2>
-      <p>Your onboarding link has expired. Go back to the dashboard to get a new one.</p>
-      <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
+      <p>Your onboarding link has expired. {returnVariant === "close" ? "Close this tab and start again from where you were." : "Go back to the dashboard to get a new one."}</p>
+      {@render stripeReturnExit()}
     </div>
   {/if}
 </CreatorShell>
