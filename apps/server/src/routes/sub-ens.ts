@@ -7,9 +7,6 @@ import {
   getOwnedLabels,
   mintSubEnsName,
   updateSubEnsContenthash,
-  signSubEnsPermit,
-  getRegistrarAddress,
-  getSubEnsChainId,
   getMintAllowance,
   mintRateCapVerdict,
   labelNode,
@@ -312,77 +309,11 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
 });
 
 /**
- * POST /api/sub-ens/permit
- * Auth required. Verifies the authenticated organiser can claim this label, then returns
- * an EIP-712 signed permit. The organiser's wallet submits registerWithPermit() directly
- * (gas covered by ZeroDev paymaster) — no on-chain tx from the server on this path.
- *
- * Body: { label: string }
- * Response: { label, ensName, sig, expiry, registrarAddress, chainId }
- */
-subEnsRoutes.post("/permit", requireAuth, async (c) => {
-  const parentAddress = c.get("parentAddress");
-  const body = await c.req.json<{ label: string }>();
-
-  // Same gate as /claim — the permit path is how passkey users mint, so
-  // leaving it open would bypass the attendee gate for the main login kind.
-  const gate = await checkAttendeeGate(parentAddress as string);
-  if (!gate.gated) {
-    return c.json({ ok: false, error: "ticket_required" }, 403);
-  }
-
-  const label = body.label?.toLowerCase()?.trim();
-  if (!label) return c.json({ ok: false, error: "label is required" }, 400);
-
-  const validationError = validateLabel(label);
-  if (validationError) return c.json({ ok: false, error: validationError }, 400);
-
-  try {
-    const available = await isLabelAvailable(label);
-    if (!available) return c.json({ ok: false, error: "label already taken" }, 409);
-  } catch (err) {
-    console.error("[sub-ens] permit pre-flight check failed:", err);
-    return c.json({ ok: false, error: "availability check failed" }, 500);
-  }
-
-  // Refuse before signing: a permit for a capped recipient is a signature the
-  // organiser pays to submit and watch revert (#471).
-  const capped = mintRateCapVerdict(await readMintAllowance(parentAddress as string));
-  if (capped) return c.json({ ok: false, ...capped }, 429);
-
-  try {
-    const { sig, expiry } = await signSubEnsPermit(label, parentAddress);
-    return c.json({
-      ok: true,
-      data: {
-        label,
-        ensName: `${label}.woco.eth`,
-        sig,
-        expiry,
-        // Both from the same accessors signSubEnsPermit just used, NOT from the
-        // raw env vars: the permit's EIP-712 domain binds the registrar address,
-        // so a response naming a different one is a permit the client would
-        // submit to a contract that must reject it. Reading env directly also
-        // returned `undefined` whenever SUB_ENS_REGISTRAR_ADDRESS was unset —
-        // the server signed with the built-in default and told the client
-        // nothing, and the client's mismatch guard threw a TypeError instead of
-        // refusing cleanly.
-        chainId: getSubEnsChainId(),
-        registrarAddress: getRegistrarAddress(getSubEnsChainId()),
-      },
-    });
-  } catch (err) {
-    console.error("[sub-ens] permit signing failed:", err);
-    return c.json({ ok: false, error: "permit signing failed" }, 500);
-  }
-});
-
-/**
  * POST /api/sub-ens/stamp-event
  * Auth required. Records label.woco.eth on an event feed as a display hint,
  * after verifying ON-CHAIN that the authenticated organiser owns the label.
- * One endpoint covers every claim path (server mint, gasless permit, repoint) —
- * the client calls it once its claim/repoint has succeeded.
+ * One endpoint covers every claim path (mint, repoint) — the client calls it
+ * once its claim/repoint has succeeded.
  *
  * Body: { label: string, eventId: string }
  */

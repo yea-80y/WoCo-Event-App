@@ -4,6 +4,27 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## The gasless sub-ENS permit rail is deleted — the sponsor wallet is the only mint (#501, 2026-09-08)
+
+Since the Kernel move (#489) every name, on every login kind, has been minted by the WoCo sponsor
+wallet through `claimSubEnsLabel`; the owner made that permanent on 2026-09-06. The permit rail
+stayed exported but unreachable, so it went: client `claimSubEnsViaPermit` + the #493
+`GaslessRailUnavailable` fallback, the scoped session key whose CallPolicy pinned
+`registerWithPermit` (creation, the #470 target-aware blob, `getWocoSessionClient`, the fourth
+kernel client), `registerSubEnsViaPermit`, and server-side `POST /api/sub-ens/permit` +
+`signSubEnsPermit` + the ABI fragments only it used. An unused signing rail is attack surface with
+no user, and this one had the sponsor key signing (label, owner, expiry) behind two gates that had
+to keep being right.
+
+Kept, and why: `isAccountAbstractionFailure` moved to `auth/aa-failure.ts` (the recovery screens
+still classify a ZeroDev refusal with it); `StorageKeys.WOCO_AA_SESSION` stays as a slot logout
+DELETES, because devices from before this hold a serialized permission account in it. Found in
+passing: `requireAccountForAction({ onChain })` pre-minted the sub-ENS key for `toggleLike`, which
+signs its attestation with the EAS key — the ceremony ran for a key nothing used and the EAS key was
+minted mid-attest anyway; it now pre-mints `ensureEasSessionKey`. The registrar keeps
+`registerWithPermit` on-chain (harmless, replaceable layer) — revisit at the next redeploy with #469
+/ WoCo-Contracts #9.
+
 ## Sub-ENS web addresses go back to `.limo`, with a certificate warm-up (2026-09-06)
 
 `SUB_ENS_WEB_SUFFIX` is `woco.eth.limo` again. The earlier "eth.limo refuses a certificate for our two-label

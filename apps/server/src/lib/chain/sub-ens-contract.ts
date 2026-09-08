@@ -1,6 +1,5 @@
 import {
   JsonRpcProvider, Contract, Wallet, keccak256, toUtf8Bytes, concat, namehash,
-  AbiCoder, solidityPackedKeccak256, getBytes,
 } from "ethers";
 import { SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment } from "@woco/shared";
 import { getChainRpcUrl } from "./event-contract.js";
@@ -103,7 +102,6 @@ const REGISTRAR_ABI = [
   // Views
   "function available(string label) view returns (bool)",
   "function DOMAIN_SEPARATOR() view returns (bytes32)",
-  "function PERMIT_TYPEHASH() view returns (bytes32)",
   // Sponsor writes
   "function register(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues) returns (bytes32 node)",
   // setContenthash is the ONLY post-mint record write the platform retains.
@@ -112,22 +110,21 @@ const REGISTRAR_ABI = [
   // profile records with no operational benefit. Do not re-add the fragment.
   "function setContenthash(string label, bytes contenthash)",
   // #464 mint rate cap — per RECIPIENT, 30 mints / 30 days at deploy. Read it
-  // before promising a mint: exceeding it reverts, on the sponsor path and the
-  // permit path alike. `setMintRateCap` is owner-only (the multisig on mainnet),
-  // here so the fragment exists, never callable by the sponsor key.
+  // before promising a mint: exceeding it reverts. `setMintRateCap` is
+  // owner-only (the multisig on mainnet), here so the fragment exists, never
+  // callable by the sponsor key.
   "function mintAllowance(address recipient) view returns (uint32 remaining, uint64 windowResetsAt)",
   "function setMintRateCap(uint32 max, uint64 windowSeconds)",
-  // Permit write — organiser submits tx, server only signs off-chain
-  "function registerWithPermit(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues, uint256 expiry, bytes sig) returns (bytes32 node)",
+  // `registerWithPermit` is NOT here. The registrar still exposes it, but the
+  // gasless mint rail that used it is gone (#501) — every name is minted by
+  // the sponsor through `register`. A fragment for a call nothing makes is a
+  // call site waiting to be written by accident.
   // Custom errors — required for ethers v6 to decode reverts by name
   "error NotAuthorisedSponsor(address caller)",
   "error LabelIsReserved(string label)",
   "error InvalidLabel(string label)",
   "error EmptyContenthash()",
   "error ArrayLengthMismatch()",
-  "error PermitExpired()",
-  "error PermitAlreadyUsed()",
-  "error PermitInvalid()",
   "error MintRateCapExceeded(address recipient, uint64 windowResetsAt)",
 ];
 
@@ -245,11 +242,9 @@ export interface MintAllowance {
  * How many more names `recipient` may mint before the registrar's per-recipient
  * rate cap (#464, 30 per 30 days at deploy) refuses.
  *
- * Read BEFORE promising a mint on either rail. The sponsor rail would otherwise
- * revert after we have paid for gas estimation, and the permit rail is worse:
- * the server signs a permit the organiser's wallet then submits and watches
- * revert, which the client reads as an account-abstraction failure and quietly
- * retries on the sponsor path — where it reverts again (#471).
+ * Read BEFORE promising a mint: without it the mint reverts after we have
+ * already paid for gas estimation, and the organiser is told nothing useful
+ * about why (#471).
  */
 /**
  * Turn a mint-allowance read into a refusal, or null to proceed.
@@ -351,7 +346,8 @@ export interface OwnedLabel {
 
 /**
  * Enumerates every label.woco.eth currently owned by `address`, authoritatively
- * from chain (covers names claimed via any path — sponsor mint or ZeroDev permit).
+ * from chain — including names minted before this server existed, or moved to
+ * the address by a transfer.
  *
  * The L2Registry is a small ERC-721, so a full-range Transfer scan is cheap (a
  * handful of logs). For each token minted/transferred TO the address we confirm
@@ -413,67 +409,6 @@ export async function mintSubEnsName(
   if (!receipt) throw new Error("No receipt from register tx");
   console.log(`[sub-ens] registered label=${label} txHash=${receipt.hash} gasUsed=${receipt.gasUsed}`);
   return receipt.hash as string;
-}
-
-/**
- * Signs an EIP-712 RegisterPermit for the given (label, ownerAddress).
- * The permit authorises the organiser's wallet to call registerWithPermit() directly,
- * covering gas via ZeroDev paymaster — the server never submits a tx on this path.
- *
- * Expiry = now + PERMIT_TTL (15 min). Returned sig is 65 bytes (r + s + v).
- *
- * Matches WoCoRegistrar's EIP-712 domain: name="WoCoRegistrar", version="1",
- * chainId from the deployment, verifyingContract = registrar address.
- */
-export async function signSubEnsPermit(
-  label: string,
-  ownerAddress: string,
-): Promise<{ sig: string; expiry: number }> {
-  const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
-  if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
-
-  const chainId = getSubEnsChainId();
-  const registrarAddress = getRegistrarAddress(chainId);
-
-  // Must exactly match the PERMIT_TYPEHASH in WoCoRegistrar.sol
-  const PERMIT_TYPEHASH = "0xa899c01319c2d96c76d865f0fa8e4533f1bf4f65cd5814a1564eff695487a2df";
-
-  const DOMAIN_TYPEHASH = keccak256(
-    toUtf8Bytes("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-  );
-
-  const domainSeparator = keccak256(AbiCoder.defaultAbiCoder().encode(
-    ["bytes32", "bytes32", "bytes32", "uint256", "address"],
-    [
-      DOMAIN_TYPEHASH,
-      keccak256(toUtf8Bytes("WoCoRegistrar")),
-      keccak256(toUtf8Bytes("1")),
-      chainId,
-      registrarAddress,
-    ],
-  ));
-
-  const PERMIT_TTL_SECS = 15 * 60;
-  const expiry = Math.floor(Date.now() / 1000) + PERMIT_TTL_SECS;
-
-  const structHash = keccak256(AbiCoder.defaultAbiCoder().encode(
-    ["bytes32", "bytes32", "address", "uint256"],
-    [PERMIT_TYPEHASH, keccak256(toUtf8Bytes(label)), ownerAddress, expiry],
-  ));
-
-  // EIP-712 final digest: "\x19\x01" + domainSeparator + structHash
-  const digest = solidityPackedKeccak256(
-    ["string", "bytes32", "bytes32"],
-    ["\x19\x01", domainSeparator, structHash],
-  );
-
-  const wallet = new Wallet(pk);
-  // Sign the raw digest (already EIP-712 structured — do NOT add personal_sign prefix)
-  const sig = await wallet.signingKey.sign(getBytes(digest));
-  const sigBytes = sig.serialized; // compact 65-byte sig
-
-  console.log(`[sub-ens] signed permit label=${label} owner=${ownerAddress} expiry=${expiry} chain=${chainId}`);
-  return { sig: sigBytes, expiry };
 }
 
 export async function updateSubEnsContenthash(label: string, swarmHash: string): Promise<string> {

@@ -30,10 +30,9 @@ import { arbitrum, arbitrumSepolia } from "viem/chains";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
-import { StorageKeys, EAS_ADDRESS, SUB_ENS_DEPLOYMENTS, KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
+import { StorageKeys, EAS_ADDRESS, KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
-import { GaslessRailUnavailable } from "./gasless-rail.js";
 import { sponsoredPaymasterHooks } from "./sponsored-paymaster.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import {
@@ -83,65 +82,6 @@ const KERNEL_CHAINS = {
 
 export const KERNEL_CHAIN: Chain = KERNEL_CHAINS[KERNEL_CHAIN_ID satisfies KernelChainId];
 
-/**
- * WoCoRegistrar — the ONLY contract the scoped session key may call. Taken from
- * the shared per-chain map (#472) rather than restated here, so it CANNOT drift
- * from the address the server signs permits for; the registrar's EIP-712 domain
- * binds its own address, so a drift would make every gasless mint unverifiable.
- * The mint path additionally cross-checks the `registrarAddress` returned by
- * POST /api/sub-ens/permit, which is what catches a server-side env override.
- *
- * Moving the shared map does NOT re-issue keys already on a device, and the
- * guard below does not catch them: it compares the permit against this value,
- * and both moved together.
- * `hasWocoSessionKey` only checks which Kernel a stored blob belongs to, never
- * its CallPolicy target. Such a key is still scoped to the old registrar, so the
- * userOp is rejected by the permission validator and `claimSubEnsViaPermit`
- * falls back to the server-sponsored mint — same name, same owner, our gas.
- * Pre-launch that is test Kernels only; #470 makes the stored key target-aware
- * and must land before the mainnet move.
- */
-export const WOCO_REGISTRAR_ADDRESS = SUB_ENS_DEPLOYMENTS[KERNEL_CHAIN_ID].registrar;
-
-/**
- * What is persisted for a scoped session key.
- *
- * v1 blobs held the bare `serializePermissionAccount` string with no record of
- * what the key was SCOPED TO, which is what made #470 invisible. A v1 blob is
- * still readable — it is simply treated as scoped to nothing we can verify, so
- * it is discarded and re-minted rather than trusted.
- */
-interface StoredSessionKey {
-  v: 2;
-  serialized: string;
-  /** The CallPolicy target this key was minted against, lowercased. */
-  registrar: string;
-  chainId: number;
-}
-const SESSION_BLOB_VERSION = 2 as const;
-
-/** Parse a stored blob, returning null for the unscoped v1 shape. */
-function parseStoredSessionKey(raw: string): StoredSessionKey | null {
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredSessionKey>;
-    if (parsed?.v !== SESSION_BLOB_VERSION) return null;
-    if (typeof parsed.serialized !== "string" || typeof parsed.registrar !== "string") return null;
-    if (typeof parsed.chainId !== "number") return null;
-    return parsed as StoredSessionKey;
-  } catch {
-    return null; // v1: a bare serialized string, not JSON we wrote
-  }
-}
-
-/** Is a stored key still scoped to the registrar and chain we mint through? */
-function sessionKeyScopeMatches(stored: StoredSessionKey | null): boolean {
-  if (!stored) return false;
-  return (
-    stored.registrar === WOCO_REGISTRAR_ADDRESS.toLowerCase() &&
-    stored.chainId === KERNEL_CHAIN_ID
-  );
-}
-
 /** Scoped session-key lifetime — mirrors the 30-day HTTP session window. */
 const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -152,36 +92,6 @@ const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
  * leaked key can't burn the sponsor tank without bound.
  */
 const SESSION_GAS_ALLOWANCE_WEI = 200000000000000000n; // 0.2 ETH
-
-/**
- * Minimal ABI fragment so the call policy pins the session key to exactly
- * `registerWithPermit` on the registrar (function-selector scoped, not merely
- * target-scoped). Mirrors REGISTRAR_ABI in apps/server/src/lib/chain/sub-ens-contract.ts.
- */
-const REGISTRAR_PERMIT_ABI = [
-  {
-    type: "function",
-    name: "registerWithPermit",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "label", type: "string" },
-      { name: "owner", type: "address" },
-      { name: "contenthash", type: "bytes" },
-      { name: "textKeys", type: "string[]" },
-      { name: "textValues", type: "string[]" },
-      { name: "expiry", type: "uint256" },
-      { name: "sig", type: "bytes" },
-    ],
-    outputs: [{ name: "node", type: "bytes32" }],
-  },
-] as const;
-
-/**
- * EIP-1577 / ENSIP-7 contenthash prefix for a Swarm BZZ hash. Mirrors
- * SWARM_ENS_PREFIX in apps/server/.../sub-ens-contract.ts:
- * swarm-manifest codec | version 1 | swarm network | keccak-256 | len 0x20.
- */
-const SWARM_CONTENTHASH_PREFIX = "e40101fa011b20";
 
 /** EntryPoint 0.7 + stable Kernel v3.1, fixed for this whole layer. */
 type KernelAccount = CreateKernelAccountReturnType<"0.7">;
@@ -315,14 +225,17 @@ export function createKernelTypedDataSigner(account: KernelAccount): EIP712Signe
 // Phase 3 — scoped on-chain ZeroDev session keys (@zerodev/permissions)
 //
 // A session key is a fresh secp256k1 key whose authority on the Kernel is
-// constrained by policies: it may ONLY call registerWithPermit on the
-// WoCoRegistrar (call policy), it may NEVER spend the Kernel's own ETH
-// (gas policy: allowed=0 + enforcePaymaster), and it expires (timestamp
+// constrained by policies: which contract and function it may call (call
+// policy), a finite total gas budget (gas policy) and an expiry (timestamp
 // policy). The serialized permission account — which embeds the session
 // private key — is encrypted at rest (AAD bound to the Kernel address) so a
 // leaked IndexedDB blob is useless to another identity and, even for the same
-// identity, can do nothing but fire gasless registerWithPermit calls until it
-// expires. This is invariant #3: scoped, never sudo.
+// identity, can do nothing but the one call it was scoped to until it expires.
+// This is invariant #3: scoped, never sudo.
+//
+// ONE such key survives: the EAS likes/following key below. The sub-ENS
+// registerWithPermit key was deleted with the gasless mint rail (#501) — every
+// name is minted by the WoCo sponsor wallet, for every login kind.
 // ---------------------------------------------------------------------------
 
 /** Shared ZeroDev/viem runtime bits for the session-key path (lazy-loaded). */
@@ -422,7 +335,7 @@ export interface ShopSpendGrantArgs {
 /**
  * Build + sudo-sign a spend-permission approval for the venue spender and return
  * the serialized blob (no private key). ONE passkey ceremony — the sudo signer
- * is the already-unlocked PRF Kernel, same as createWocoSessionKey.
+ * is the already-unlocked PRF Kernel, same as createEasSessionKey.
  *
  * On-chain constraints embedded in the approval (the trustless backstop):
  *  - call policy: target = USDC, fn = transfer, arg `to` EQUAL merchant,
@@ -490,9 +403,8 @@ export async function grantShopSpendPermission(args: ShopSpendGrantArgs): Promis
     },
     entryPoint: d.entryPoint,
     kernelVersion: d.kernelVersion,
-    // Pin to the built Kernel's address (see createWocoSessionKey) — a
-    // recovered attendee's approval must draw from the preserved account, not
-    // the rotated sudo key's counterfactual.
+    // Pin to the built Kernel's address — a recovered attendee's approval must
+    // draw from the preserved account, not the rotated sudo key's counterfactual.
     address: args.builtKernel.address as Address,
   });
 
@@ -500,103 +412,6 @@ export async function grantShopSpendPermission(args: ShopSpendGrantArgs): Promis
   // enable data) the venue spender combines with its own key. The attendee
   // never hands out a spendable key.
   return d.serializePermissionAccount(sessionAccount);
-}
-
-/**
- * Mint a fresh scoped session key for the given Kernel, serialize it (the
- * serialized blob includes the session private key + the sudo-signed enable
- * data), encrypt it under the Kernel address, and persist it to IndexedDB.
- *
- * The sudo validator (ECDSA over the in-memory PRF key) signs the enable data
- * synchronously — no additional passkey prompt beyond the one that already
- * unlocked the PRF key for this session. Returns the session-account address.
- */
-export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<string> {
-  const d = await loadSessionDeps();
-
-  const sessionPk = d.generatePrivateKey();
-  const sessionSigner = await d.toECDSASigner({
-    signer: d.privateKeyToAccount(sessionPk),
-  });
-
-  const validUntil = Math.floor(Date.now() / 1000) + SESSION_KEY_TTL_SECONDS;
-
-  const policies = [
-    d.toCallPolicy({
-      policyVersion: d.CallPolicyVersion.V0_0_5,
-      permissions: [
-        {
-          target: WOCO_REGISTRAR_ADDRESS as Address,
-          abi: REGISTRAR_PERMIT_ABI,
-          functionName: "registerWithPermit",
-        },
-        // INVARIANT: this key is registerWithPermit-ONLY. EAS attest/revoke
-        // were briefly added here (#4 likes); their deeply-nested-tuple ABI,
-        // baked into this key's enable-data, made the paymaster fail to estimate
-        // the account (verificationGas=0 → AA34 / bundler reject) and poisoned
-        // sub-ENS claims too. EAS likes now have their OWN key with selector-only
-        // pinning — see createEasSessionKey below. Never re-add EAS perms here.
-      ],
-    }),
-    // `allowed` is the TOTAL gas budget (wei) this session key may consume —
-    // NOT "self-paid only". 0n = zero budget → every op fails PolicyFailed(1),
-    // so it must be a real cap. Generous at Arbitrum One gas (~0.02 gwei).
-    // `enforcePaymaster` is intentionally NOT set: ZeroDev's sponsor call
-    // simulates validation BEFORE attaching its paymaster, so enforcing one
-    // there trips the same PolicyFailed. Scope stays tight via the call policy
-    // (registerWithPermit only, no ETH value) + the 30-day timestamp policy.
-    // TODO(post-buildathon): restore enforcePaymaster once the sponsor-then-send
-    // ordering is confirmed (so a leaked key can't burn Kernel ETH on gas).
-    d.toGasPolicy({ allowed: SESSION_GAS_ALLOWANCE_WEI }),
-    d.toTimestampPolicy({ validUntil }),
-  ];
-
-  const permissionPlugin = await d.toPermissionValidator(d.publicClient, {
-    signer: sessionSigner,
-    policies,
-    entryPoint: d.entryPoint,
-    kernelVersion: d.kernelVersion,
-  });
-
-  const sessionAccount = await d.createKernelAccount(d.publicClient, {
-    plugins: {
-      sudo: builtKernel.sudo.validator,
-      regular: permissionPlugin,
-    },
-    entryPoint: d.entryPoint,
-    kernelVersion: d.kernelVersion,
-    // Pin to the built Kernel's address. Without this the session account is
-    // recomputed as the sudo key's counterfactual CREATE2 address — which for a
-    // RECOVERED account (owner rotated, address preserved) is a DIFFERENT,
-    // fresh Kernel: the userOp would deploy + act from the wrong address while
-    // every server check authenticates the preserved one (split-brain).
-    address: builtKernel.address as Address,
-  });
-
-  const serialized = await d.serializePermissionAccount(sessionAccount, sessionPk);
-
-  const deviceKey = await ensureDeviceKey();
-  // Store the SCOPE beside the key (#470). A session key is scoped to one
-  // registrar on one chain by its CallPolicy; when that address moves, a key
-  // already on a device is silently scoped to the old one. Nothing noticed:
-  // `hasWocoSessionKey` only compared which Kernel the blob belonged to, and
-  // the permit-vs-constant guard compares two values that moved together. The
-  // userOp was then rejected by the permission validator and the mint quietly
-  // fell back to the server-sponsored path — right name, right owner, our gas,
-  // gasless rail dead on that device until someone noticed.
-  const blob = await encrypt(
-    deviceKey,
-    AAD.WOCO_AA_SESSION(builtKernel.address),
-    JSON.stringify({
-      v: SESSION_BLOB_VERSION,
-      serialized,
-      registrar: WOCO_REGISTRAR_ADDRESS.toLowerCase(),
-      chainId: KERNEL_CHAIN_ID,
-    } satisfies StoredSessionKey),
-  );
-  await putKV(StorageKeys.WOCO_AA_SESSION, blob);
-
-  return sessionAccount.address.toLowerCase();
 }
 
 /**
@@ -632,118 +447,13 @@ async function storedSessionKeyAddress(
   }
 }
 
-/** True if a session key usable by THIS Kernel is persisted on this device.
- *  A blob for a different Kernel (pre-pinning recovered-account mint, or an
- *  account switch) reports false so the caller re-mints instead of wedging. */
-export async function hasWocoSessionKey(kernelAddress: string): Promise<boolean> {
-  const blob = await getKV<import("@woco/shared").EncryptedBlob>(StorageKeys.WOCO_AA_SESSION);
-  if (!blob) return false;
-  let raw: string;
-  try {
-    const deviceKey = await ensureDeviceKey();
-    raw = await decrypt<string>(deviceKey, AAD.WOCO_AA_SESSION(kernelAddress), blob);
-  } catch {
-    return false; // AAD mismatch — belongs to a different Kernel
-  }
-
-  // #470: a key still scoped to a registrar we no longer mint through is WORSE
-  // than no key. It is not rejected here — it is rejected by the permission
-  // validator, deep in a userOp, where the caller reads the failure as an
-  // account-abstraction problem and falls back to the sponsor path. Reporting
-  // "no key" instead makes the caller mint a correctly-scoped one.
-  const stored = parseStoredSessionKey(raw);
-  if (!stored || !sessionKeyScopeMatches(stored)) return false;
-
-  return extractSessionAccountAddress(stored.serialized) === kernelAddress.toLowerCase();
-}
-
-/** Drop the persisted session key (logout / identity switch). */
-export async function clearWocoSessionKey(): Promise<void> {
-  await delKV(StorageKeys.WOCO_AA_SESSION);
-}
-
-/**
- * Rebuild a gasless Kernel client backed by the stored session key — no passkey
- * prompt. Returns null when no session key is stored (caller falls back to
- * createWocoSessionKey or the sponsor path). Decryption is AAD-bound to
- * `kernelAddress`, so a session minted by a different Kernel will not open.
- */
-export async function getWocoSessionClient(
-  kernelAddress: string,
-): Promise<KernelAccountClient | null> {
-  const blob = await getKV<import("@woco/shared").EncryptedBlob>(StorageKeys.WOCO_AA_SESSION);
-  if (!blob) return null;
-
-  const d = await loadSessionDeps();
-
-  const deviceKey = await ensureDeviceKey();
-  let raw: string;
-  try {
-    raw = await decrypt<string>(deviceKey, AAD.WOCO_AA_SESSION(kernelAddress), blob);
-  } catch {
-    // AAD mismatch — the blob belongs to a different Kernel (account switch
-    // without logout). Unusable for this identity; wipe so the caller re-mints.
-    await clearWocoSessionKey();
-    return null;
-  }
-
-  // #470: discard a key scoped to a registrar or chain we no longer mint
-  // through, and any pre-#470 blob that cannot say what it was scoped to.
-  // Re-minting costs one passkey prompt; keeping it costs the gasless rail
-  // silently, because the failure surfaces as an AA error and the caller falls
-  // back to the sponsor path.
-  const stored = parseStoredSessionKey(raw);
-  if (!sessionKeyScopeMatches(stored)) {
-    console.warn("[kernel] stored sub-ENS session key is scoped to a different registrar/chain — discarding");
-    await clearWocoSessionKey();
-    return null;
-  }
-  const serialized = stored!.serialized;
-
-  const sessionAccount = await d.deserializePermissionAccount(
-    d.publicClient,
-    d.entryPoint,
-    d.kernelVersion,
-    serialized,
-  );
-
-  // Heal: blobs minted before address-pinning embed the sudo key's
-  // counterfactual as sender — for a recovered account that is the WRONG
-  // Kernel. Wipe so the caller re-mints a correctly-pinned key.
-  if (sessionAccount.address.toLowerCase() !== kernelAddress.toLowerCase()) {
-    console.warn(
-      "[kernel] stored sub-ENS session key is for",
-      sessionAccount.address,
-      "not the active Kernel",
-      kernelAddress,
-      "— discarding",
-    );
-    await clearWocoSessionKey();
-    return null;
-  }
-
-  const paymaster = d.createZeroDevPaymasterClient({
-    chain: KERNEL_CHAIN,
-    transport: d.http(d.rpcUrl),
-  });
-
-  return d.createKernelAccountClient({
-    account: sessionAccount,
-    chain: KERNEL_CHAIN,
-    bundlerTransport: d.http(d.rpcUrl),
-    client: d.publicClient,
-    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
-  });
-}
-
 // ---------------------------------------------------------------------------
-// EAS likes/following session key (#4) — a SECOND scoped session key, fully
-// independent of the sub-ENS key above. Pinned to EAS attest + revoke by
-// 4-byte SELECTOR (not the deeply-nested AttestationRequest ABI) — the nested
-// tuple in enable-data is exactly what broke paymaster gas estimation and
-// poisoned the shared key. Selector-only keeps the enable-data flat. Stored in
-// its own slot (WOCO_AA_EAS_SESSION) with its own AAD so the two keys can never
-// interfere with each other's estimation again.
+// EAS likes/following session key (#4) — the only scoped session key left.
+// Pinned to EAS attest + revoke by 4-byte SELECTOR, not the deeply-nested
+// AttestationRequest ABI: that nested tuple in enable-data is what broke
+// paymaster gas estimation, and while these permissions shared a key with the
+// sub-ENS mint it poisoned that too. Selector-only keeps the enable-data flat.
+// It keeps its own slot (WOCO_AA_EAS_SESSION) and its own AAD.
 // ---------------------------------------------------------------------------
 
 /** 4-byte selectors for EAS attest/revoke, derived from the canonical ABI. */
@@ -761,8 +471,8 @@ async function easSelectors(): Promise<{ attest: Hex; revoke: Hex }> {
 /**
  * Mint a fresh EAS session key for the Kernel — selector-scoped to EAS
  * attest+revoke only — serialize, encrypt (AAD-bound to the Kernel), and persist
- * to its own IndexedDB slot. Same single-passkey-ceremony model as
- * createWocoSessionKey (the in-memory PRF sudo signs the enable data).
+ * to its own IndexedDB slot. One passkey ceremony: the in-memory PRF sudo
+ * signs the enable data, so no extra prompt beyond the one that unlocked it.
  */
 export async function createEasSessionKey(builtKernel: BuiltKernel): Promise<string> {
   const d = await loadSessionDeps();
@@ -797,7 +507,7 @@ export async function createEasSessionKey(builtKernel: BuiltKernel): Promise<str
     plugins: { sudo: builtKernel.sudo.validator, regular: permissionPlugin },
     entryPoint: d.entryPoint,
     kernelVersion: d.kernelVersion,
-    // Pin to the built Kernel's address (see createWocoSessionKey) — a recovered
+    // Pin to the built Kernel's address — a recovered
     // account's attester must be the preserved Kernel, not the rotated sudo
     // key's counterfactual. This was the 2026-07-10 likes split-brain: the
     // attestation landed from a freshly-deployed wrong-address Kernel while the
@@ -814,7 +524,8 @@ export async function createEasSessionKey(builtKernel: BuiltKernel): Promise<str
 }
 
 /** True if an EAS session key usable by THIS Kernel is persisted on this
- *  device (same wrong-Kernel semantics as hasWocoSessionKey). */
+ *  device. A blob for a DIFFERENT Kernel (an account switch, or a pre-pinning
+ *  recovered-account blob) reports false so the caller re-mints. */
 export async function hasEasSessionKey(kernelAddress: string): Promise<boolean> {
   const stored = await storedSessionKeyAddress(
     StorageKeys.WOCO_AA_EAS_SESSION,
@@ -831,7 +542,7 @@ export async function clearEasSessionKey(): Promise<void> {
 /**
  * Rebuild a gasless Kernel client backed by the stored EAS session key — no
  * passkey prompt. Returns null when none is stored. Decryption is AAD-bound to
- * `kernelAddress` (same guard as getWocoSessionClient).
+ * `kernelAddress`, so a key minted by a different Kernel will not open.
  */
 export async function getEasSessionClient(
   kernelAddress: string,
@@ -845,7 +556,8 @@ export async function getEasSessionClient(
   try {
     serialized = await decrypt<string>(deviceKey, AAD.WOCO_AA_EAS_SESSION(kernelAddress), blob);
   } catch {
-    // AAD mismatch — blob belongs to a different Kernel (see getWocoSessionClient).
+    // AAD mismatch — the blob belongs to a different Kernel (account switch
+    // without logout). Unusable for this identity; wipe so the caller re-mints.
     await clearEasSessionKey();
     return null;
   }
@@ -857,7 +569,7 @@ export async function getEasSessionClient(
     serialized,
   );
 
-  // Heal (same as getWocoSessionClient): a pre-pinning blob for a recovered
+  // Heal: a pre-pinning blob for a recovered
   // account would attest from the wrong Kernel — discard so the caller
   // re-mints against the active address.
   if (sessionAccount.address.toLowerCase() !== kernelAddress.toLowerCase()) {
@@ -888,7 +600,7 @@ export async function getEasSessionClient(
 
 /**
  * Send a gasless userOp through a WoCo session-key Kernel client — the single
- * choke point every session-key action shares (sub-ENS claim, EAS like/follow),
+ * choke point every session-key action goes through (today: EAS like/follow),
  * so send + receipt handling lives in one place. Returns the userOp hash + full
  * receipt (callers read txHash; EAS reads logs for the attestation UID).
  */
@@ -977,89 +689,6 @@ export async function sendSessionUserOp(
   const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
   assertUserOpSucceeded(userOpHash, receipt);
   return { userOpHash, receipt };
-}
-
-export interface SubEnsPermitArgs {
-  /** Kernel address that owns the session key AND is the permit's `owner`. */
-  kernelAddress: string;
-  /** Registrar address returned by /api/sub-ens/permit (cross-checked here). */
-  registrarAddress: string;
-  /** Chain the permit was signed for, from the same response. Cross-checked
-   *  here (#470): a same-deployer, same-nonce deploy can put an identical
-   *  registrar address on another chain, so the address check alone passes
-   *  while the chain differs — failing only on-chain, after a sponsored userOp
-   *  has been spent. */
-  chainId?: number;
-  label: string;
-  expiry: number;
-  /** 0x 65-byte permit signature from the server (sponsor key). */
-  sig: string;
-  /** 64-char hex Swarm BZZ hash (no 0x) → ENS contenthash; omit for empty. */
-  swarmHash?: string;
-  textKeys?: string[];
-  textValues?: string[];
-}
-
-/**
- * Submit `registerWithPermit` as a gasless userOp signed by the scoped session
- * key. The permit binds only (label, owner, expiry); owner MUST be the Kernel
- * address (= the parentAddress the server authenticated when issuing the
- * permit), so the new name is owned by the user's smart account.
- *
- * Hard guard (plan flag A): the session key's call policy is pinned to
- * WOCO_REGISTRAR_ADDRESS. If the permit points at a different registrar the
- * policy would silently reject the userOp — we fail loudly up front instead.
- */
-export async function registerSubEnsViaPermit(
-  args: SubEnsPermitArgs,
-): Promise<{ userOpHash: string; txHash: string }> {
-  // Typed, not a plain Error: a rail that cannot serve THIS permit is a reason
-  // to use the sponsor rail, not to fail the user's claim (#493).
-  if (args.registrarAddress.toLowerCase() !== WOCO_REGISTRAR_ADDRESS.toLowerCase()) {
-    throw new GaslessRailUnavailable(
-      `Registrar mismatch: permit=${args.registrarAddress} policy=${WOCO_REGISTRAR_ADDRESS}. Refusing to submit.`,
-      "registrar_mismatch",
-    );
-  }
-  // The address alone is not the identity of a contract — the same address can
-  // exist on another chain from the same deployer and nonce (#470). Checked
-  // only when the server supplied it, so an older server response still works.
-  if (args.chainId !== undefined && args.chainId !== KERNEL_CHAIN_ID) {
-    throw new GaslessRailUnavailable(
-      `Chain mismatch: permit=${args.chainId} kernel=${KERNEL_CHAIN_ID}. Refusing to submit.`,
-      "chain_mismatch",
-    );
-  }
-
-  const client = await getWocoSessionClient(args.kernelAddress);
-  if (!client) {
-    throw new Error("No WoCo session key on this device — call createWocoSessionKey first.");
-  }
-
-  const { encodeFunctionData } = await import("viem");
-
-  const contenthash: Hex = args.swarmHash
-    ? (`0x${SWARM_CONTENTHASH_PREFIX}${args.swarmHash.replace(/^0x/, "")}` as Hex)
-    : "0x";
-
-  const data = encodeFunctionData({
-    abi: REGISTRAR_PERMIT_ABI,
-    functionName: "registerWithPermit",
-    args: [
-      args.label,
-      args.kernelAddress as Address,
-      contenthash,
-      args.textKeys ?? [],
-      args.textValues ?? [],
-      BigInt(args.expiry),
-      args.sig as Hex,
-    ],
-  });
-
-  const { userOpHash, receipt } = await sendSessionUserOp(client, [
-    { to: WOCO_REGISTRAR_ADDRESS as Address, data },
-  ]);
-  return { userOpHash, txHash: receipt.receipt.transactionHash };
 }
 
 // ---------------------------------------------------------------------------

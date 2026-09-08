@@ -23,7 +23,7 @@
  * site, because that is where a developer looks and a user never does.
  */
 
-import { isAccountAbstractionFailure } from "../api/sub-ens-permit.js";
+import { isAccountAbstractionFailure } from "./aa-failure.js";
 
 export type RecoveryErrorMode = "setup" | "recover";
 

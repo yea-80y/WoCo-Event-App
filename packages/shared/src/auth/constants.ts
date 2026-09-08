@@ -29,18 +29,19 @@ export const StorageKeys = {
   // Legacy single-object blobs are migrated to the map shape on first read.
   RECOVERED_KERNEL_BINDING: "woco:auth:recovered-kernel",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
-  // ZeroDev on-chain session key: the scoped, serialized permission account
-  // (contains the session private key) encrypted at rest. DISTINCT from
-  // SESSION_KEY, which is the EIP-712 HTTP session-delegation key — these are
-  // two unrelated "session" concepts (see ZERODEV_PASSKEY_INTEGRATION_PLAN.md).
-  // :v3 — invalidates any session key minted with EAS attest/revoke baked into
-  // its call policy (the nested-tuple ABI broke paymaster gas estimation and
-  // poisoned sub-ENS claims). This key is now registerWithPermit-only; a fresh
-  // one mints on next use. EAS likes get their own key (WOCO_AA_EAS_SESSION).
+  // RETIRED (#501): the sub-ENS `registerWithPermit` session key's slot. Nothing
+  // writes it any more — every name is minted by the WoCo sponsor wallet — but
+  // devices that used the gasless rail still hold a serialized permission
+  // account here, so logout keeps DELETING this key. Do not reuse the name for
+  // anything else: an old blob would then be read as the new thing.
   WOCO_AA_SESSION: "woco:auth:aa-session:v3",
-  // EAS likes/following session key — scoped to EAS attest/revoke (selector-only,
-  // no nested-tuple ABI in enable-data). Kept SEPARATE from WOCO_AA_SESSION so a
-  // change to one can never poison the other's gas estimation.
+  // ZeroDev on-chain session key for EAS likes/following: the scoped, serialized
+  // permission account (contains the session private key) encrypted at rest, and
+  // scoped to EAS attest/revoke by selector only — no nested-tuple ABI in
+  // enable-data, which is what broke paymaster gas estimation when these
+  // permissions shared a key with the sub-ENS mint. DISTINCT from SESSION_KEY,
+  // which is the EIP-712 HTTP session-delegation key — two unrelated "session"
+  // concepts (see ZERODEV_PASSKEY_INTEGRATION_PLAN.md).
   WOCO_AA_EAS_SESSION: "woco:auth:aa-eas-session:v1",
   // Phase B content-feed signer ADDRESS (public — the SOC owner of the user's
   // own content feeds). Cached so self-reads (e.g. their own profile/avatar)
