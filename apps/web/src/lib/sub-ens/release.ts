@@ -13,9 +13,9 @@
  *     op deploys it as a side effect and the paymaster pays.
  *  3. Own-gas `release()` from the wallet. The floor: it needs nothing from us.
  *
- * NEVER the scoped session key. Its CallPolicy is `registerWithPermit` on the
- * registrar ONLY, by documented invariant — and that is deliberate: a 30-day
- * device key must not be able to silently burn a name. A stolen phone would
+ * NEVER a scoped session key. The one that remains is pinned to EAS
+ * attest/revoke, and that is the standing invariant: a 30-day device key that
+ * signs without a prompt must not be able to burn a name. A stolen phone would
  * otherwise cost the holder every name they own. The deliberate action gets the
  * deliberate gesture (a passkey prompt, or a wallet confirmation).
  *

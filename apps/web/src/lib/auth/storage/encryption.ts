@@ -45,13 +45,11 @@ export const AAD = {
     `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
   POD_SEED: (parent: string) =>
     `woco/device/pod-seed/v1:${parent.toLowerCase()}`,
-  // ZeroDev scoped session key, bound to the Kernel (smart-account) address that
-  // owns it. A serialized permission account written under one Kernel cannot be
-  // decrypted by a different Kernel on the same device.
-  WOCO_AA_SESSION: (kernel: string) =>
-    `woco/device/aa-session/v1:${kernel.toLowerCase()}`,
-  // EAS likes session key, bound to the same Kernel address. Separate AAD from
-  // WOCO_AA_SESSION so the two scoped keys are cryptographically distinct blobs.
+  // ZeroDev scoped EAS session key, bound to the Kernel (smart-account) address
+  // that owns it. A serialized permission account written under one Kernel
+  // cannot be decrypted by a different Kernel on the same device. (The sub-ENS
+  // mint key had its own AAD beside this one until #501 deleted that rail; its
+  // stored blobs are now only ever DELETED, which needs no AAD.)
   WOCO_AA_EAS_SESSION: (kernel: string) =>
     `woco/device/aa-eas-session/v1:${kernel.toLowerCase()}`,
   // Content-feed signer private key, bound to the account's PARENT address

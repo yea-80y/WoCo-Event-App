@@ -1,6 +1,6 @@
 /**
  * Sign-in-to-act gate. Composes the inline pattern repeated across the app
- * (loginRequest.request() → ensureSession() [→ ensureWocoSessionKey()]) into a
+ * (loginRequest.request() → ensureSession() [→ ensureEasSessionKey()]) into a
  * single awaitable guard a component can call before a privileged action.
  *
  * ADDITIVE only — this moves no component state and changes no existing call
@@ -19,10 +19,16 @@ export interface RequireAccountOptions {
   /** Subtitle context for the login modal. */
   context?: "attendee" | "creator";
   /**
-   * Also ensure the passkey on-chain session key (gasless Kernel rail) is
-   * minted up front — for deliberate on-chain actions like an EAS like, so the
-   * passkey ceremony happens at the click, not mid-attest. No-op for non-passkey
-   * kinds (web3 signs on-chain with the parent EOA directly).
+   * Also ensure the scoped EAS session key (the gasless Kernel rail) is minted
+   * up front — for deliberate on-chain actions like an EAS like, so the passkey
+   * ceremony happens at the click, not mid-attest. No-op for non-passkey kinds
+   * (web3 signs on-chain with the parent EOA directly).
+   *
+   * It used to pre-mint the sub-ENS `registerWithPermit` key, which is not the
+   * key an attestation is signed with — so the ceremony happened at the click
+   * for a key nothing then used, and the EAS key was still minted mid-attest.
+   * That key is gone with the permit rail (#501); this now names the one the
+   * attest actually needs.
    */
   onChain?: boolean;
 }
@@ -43,10 +49,10 @@ export async function requireAccountForAction(
     if (!ok) return false;
   }
 
-  // 3. Passkey-only: pre-mint the scoped on-chain session key for gasless ops.
+  // 3. Passkey-only: pre-mint the scoped EAS session key for gasless ops.
   if (opts.onChain && auth.kind === "passkey") {
     try {
-      await auth.ensureWocoSessionKey();
+      await auth.ensureEasSessionKey();
     } catch {
       return false;
     }

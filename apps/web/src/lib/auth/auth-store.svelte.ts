@@ -2078,34 +2078,12 @@ async function ensurePodIdentity(): Promise<string | null> {
 }
 
 /**
- * Ensure a scoped on-chain ZeroDev session key exists for the passkey Kernel,
- * minting one (one PRF ceremony, via _ensureKernel) on first use. Returns the
- * Kernel address that owns the session key, for the caller to feed into the
- * permit userOp. Passkey-only — every other login kind uses the sponsor path.
- */
-async function ensureWocoSessionKey(): Promise<string> {
-  if (_kind !== "passkey") {
-    throw new Error("ensureWocoSessionKey: only available for passkey logins");
-  }
-  await _ensureKernel();
-  if (!_kernel) throw new Error("Kernel unavailable — cannot mint session key");
-  const { hasWocoSessionKey, createWocoSessionKey } = await import("./kernel-account.js");
-  // Kernel-address-aware check: a stored key minted for a DIFFERENT Kernel
-  // (pre-pinning recovered-account blob, or an account switch) reports false
-  // and is overwritten with a fresh, correctly-pinned key — the heal path for
-  // the 2026-07-10 split-brain.
-  if (!(await hasWocoSessionKey(_kernel.address))) {
-    await createWocoSessionKey(_kernel);
-  }
-  return _kernel.address;
-}
-
-/**
  * Ensure a scoped EAS session key exists for the Kernel, minting one on first
- * use. Independent of ensureWocoSessionKey: EAS likes get their OWN key
- * (selector-scoped to attest/revoke) so they can never poison the sub-ENS key's
- * gas estimation. Returns the Kernel address that owns the key. Available to both
- * Kernel-backed kinds (passkey + web3auth) — email users like/follow gaslessly.
+ * use. Selector-scoped to attest/revoke and nothing else — the deeply-nested
+ * AttestationRequest ABI in a shared key's enable-data is what broke paymaster
+ * gas estimation, so these permissions get a key of their own. Returns the
+ * Kernel address that owns the key. Available to both Kernel-backed kinds
+ * (passkey + web3auth) — email users like/follow gaslessly.
  */
 async function ensureEasSessionKey(): Promise<string> {
   if (_kind !== "passkey" && _kind !== "web3auth") {
@@ -2114,8 +2092,10 @@ async function ensureEasSessionKey(): Promise<string> {
   await _ensureKernelForKind();
   if (!_kernel) throw new Error("Kernel unavailable — cannot mint EAS session key");
   const { hasEasSessionKey, createEasSessionKey } = await import("./kernel-account.js");
-  // Kernel-address-aware check (see ensureWocoSessionKey) — wrong-Kernel blobs
-  // are replaced instead of silently attesting from a divergent account.
+  // Kernel-address-aware check: a stored key minted for a DIFFERENT Kernel
+  // (a pre-pinning recovered-account blob, or an account switch) reports false
+  // and is replaced instead of silently attesting from a divergent account —
+  // the heal path for the 2026-07-10 split-brain.
   if (!(await hasEasSessionKey(_kernel.address))) {
     await createEasSessionKey(_kernel);
   }
@@ -3096,7 +3076,10 @@ async function clearAllAuth(): Promise<void> {
   // account's signer into the next login's self-reads — the live resolver now
   // uses only the AAD-bound key blob + an in-memory memo.
   await step("legacy-feed-signer-address", () => delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS));
-  // Drop both scoped ZeroDev session keys (sub-ENS + EAS). Re-login mints fresh.
+  // Drop the scoped ZeroDev session key. Re-login mints fresh. WOCO_AA_SESSION
+  // is the RETIRED sub-ENS mint key's slot (#501): nothing writes it any more,
+  // but devices from before the deletion still hold one and a serialized
+  // permission account is not something to leave lying in IndexedDB.
   await step("aa-sessions", () =>
     Promise.all([delKV(StorageKeys.WOCO_AA_SESSION), delKV(StorageKeys.WOCO_AA_EAS_SESSION)]),
   );
@@ -3182,7 +3165,6 @@ export const auth = {
   resetSession,
   logout,
   ensurePodIdentity,
-  ensureWocoSessionKey,
   ensureEasSessionKey,
   grantSpendPermission,
   setupAccountRecovery,
