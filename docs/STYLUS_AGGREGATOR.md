@@ -1,3 +1,7 @@
+> **SUPERSEDED.** The Stylus trending aggregator computed over EAS like attestations, and likes
+> left EAS for Swarm. Nothing replaces it on chain — counting is now an indexer reading public
+> feeds ([SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md)). Kept as the record of the contract.
+
 # Stylus Trending Aggregator (#5)
 
 A trustless trending/ranking engine for the [EAS social graph](./EAS_SOCIAL_GRAPH.md), written in

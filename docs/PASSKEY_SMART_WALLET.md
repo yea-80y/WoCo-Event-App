@@ -1,10 +1,16 @@
+> **Chain updated 2026-09-08.** Kernel smart accounts now run on **Arbitrum One (`42161`)** —
+> `KERNEL_CHAIN_ID` in `packages/shared/src/kernel/chain.ts`, moved so a name holder can answer
+> ERC-1271 on the same chain the sub-ENS registry asks on. The design below is otherwise current;
+> ignore the buildathon framing and the Arbitrum Sepolia references.
+> Overview: [ARCHITECTURE.md](./ARCHITECTURE.md) · Keys: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md)
+
 # Passkey Smart Wallet — ZeroDev Kernel on Arbitrum
 
 A seedless, gasless **ERC-4337 smart account** that a user gets just by logging in with a **passkey**.
 Built on a **ZeroDev Kernel** on **Arbitrum Sepolia (`421614`)**. Companion to
 [`BUILDATHON_SUBMISSION.md`](./BUILDATHON_SUBMISSION.md) (component **#1b**); it is the
 account-abstraction layer underneath gasless [sub-ENS claims](./SUBENS_IDENTITY.md), gasless
-[EAS likes/follows](./EAS_SOCIAL_GRAPH.md), and the bounded
+[likes/follows](./SWARM_SOCIAL_PLAN.md) (no longer EAS), and the bounded
 [agent-commerce draw](./WOCO_AGENT_ARCHITECTURE.md).
 
 ---
@@ -136,7 +142,7 @@ test by the owner**. Design detail: [`PASSKEY_RECOVERY_PLAN.md`](./PASSKEY_RECOV
 ## Evidence it works end-to-end
 
 - **Gasless, on-chain (Arbitrum Sepolia).** The same Kernel + scoped-session-key rail attests
-  [EAS likes/follows](./EAS_SOCIAL_GRAPH.md) with **the user's own Kernel as the attester** — attest +
+  [likes/follows](./SWARM_SOCIAL_PLAN.md) (no longer EAS) with **the user's own Kernel as the attester** — attest +
   revoke verified on-chain on 2026-06-11 (tx hashes in that doc) — and settles the bounded,
   non-custodial [agent-commerce USDC draw](./WOCO_AGENT_ARCHITECTURE.md)
   ([draw tx](https://sepolia.arbiscan.io/tx/0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1)).

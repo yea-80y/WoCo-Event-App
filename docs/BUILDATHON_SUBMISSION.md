@@ -1,3 +1,8 @@
+> **HISTORICAL — the Arbitrum Buildathon entry as submitted, June 2026.**
+> Kept for provenance. Several components have since changed or been retired (EAS social graph,
+> Stylus aggregator, agent commerce, the v1 claim rail). Start at the
+> [repository README](../README.md) for the current system.
+
 # WoCo × Arbitrum Buildathon — Submission
 
 **WoCo** is a decentralised event + commerce platform: Swarm-hosted frontends and data feeds (no

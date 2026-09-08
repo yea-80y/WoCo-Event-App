@@ -11,6 +11,14 @@ in `docs/` and gets read on demand. If a section grows past a screen, move it ou
 WHERE THE DEPTH LIVES
 ============================================================================
 
+  README.md                       # public front door (rewritten 2026-09-08)
+  docs/README.md                  # INDEX of all docs, sorted by how far to trust each
+  docs/ARCHITECTURE.md            # the map: layers, trust boundaries, one ticket traced
+  docs/IDENTITY_AND_KEYS.md       # all five keys, sign-to-derive, sealed envelopes, API auth
+  docs/SWARM_DATA_MODEL.md        # SOC/CAC addressing, versioned feeds, topics, bands
+  docs/TICKETING.md               # issuance -> sale -> mint -> door
+  docs/SITE_BUILDER.md            # sites: publish/deploy, feeds, quota
+  docs/CONTRIBUTING.md            # setup, tests, CI gates, conventions
   docs/DEVLOG.md                  # running history of completed work + roadmap
   docs/NEXT.md                    # current working order
   docs/PAYMENTS_INTEGRATION.md    # Stripe mechanics, crypto rail (off), reservations, ticket card
@@ -18,8 +26,9 @@ WHERE THE DEPTH LIVES
   docs/PRICING_AND_EMAIL.md       # ALL fee arithmetic (§7, §15–§17). Never restate rates elsewhere.
   docs/EMAIL_NEXT_HANDOVER.md     # email subsystem state + what is next (start here for email work)
   docs/MARKETING_COMPLIANCE.md    # marketing lists, suppression, RFC 8058, abuse gate
-  docs/EAS_LIKES_HANDOVER.md      # EAS likes / social graph design + abuse model
-  docs/STYLUS_AGGREGATOR.md       # Stylus like-aggregator contract
+  docs/SWARM_SOCIAL_PLAN.md       # AUTHORITY on likes/follows (Swarm-native, not EAS)
+  docs/EAS_LIKES_HANDOVER.md      # SUPERSEDED rail — kept for its abuse model only
+  docs/STYLUS_AGGREGATOR.md       # SUPERSEDED — went with EAS
   docs/MULTI_PAGE_SITE_BUILDER.md # site builder background
   docs/SEO_PLAN.md                # SEO + custom domains
   docs/legal/                     # DATA_INVENTORY, PRIVACY_POLICY, ORGANISER_TERMS, DPA
@@ -90,7 +99,8 @@ DEV COMMANDS:
 AUTH ARCHITECTURE
 ============================================================================
 
-Four identity layers (issuer-curve migration #443, PRs #447–#453, 2026-09-01):
+Five keys per account (issuer-curve migration #443, PRs #447–#453, 2026-09-01).
+Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
 3. Holder identity (ed25519, deterministic — the "POD seed") — attendee side: owns
@@ -100,6 +110,11 @@ Four identity layers (issuer-curve migration #443, PRs #447–#453, 2026-09-01):
    Identity of record = its 20-byte ADDRESS, bound to the parent by proof-of-possession
    at every create and by the issuer registry (`woco/issuer/{parent}`, parent-signed
    EIP-712 statements; rotation = a gen bump, no new secret at rest)
+5. Content-feed signer (secp256k1, sign-to-derive under `FEED_SIGNER_DERIVE_DOMAIN` —
+   a DISTINCT salt from POD) — its address OWNS the user's content SOCs. Derivation only
+   SEEDS it: the key is then persisted + escrowed and the stored copy WINS, because a
+   rotated passkey credential re-derives a divergent key and would orphan every feed.
+   External wallets sign TWICE and throw on mismatch; never falls back to platform signing
 
 NAMING (owner decision, 2026-09-01): "POD" is retired from docs and code names — the
 standard is "object data"; code speaks editions / certs / holder identity. FROZEN signed
@@ -182,25 +197,57 @@ TICKETS:
 - Always-on encryption: every claim encrypts `seriesId + claimerAddress/Email` for the
   organiser dashboard, even without order form fields
 
-CLAIMS:
-- Wallet: requires session delegation + per-request canonical sig
-- Email:  unauthenticated, rate-limited 3/15min per IP; email stored as HMAC-SHA256
-- Passkey / wallet-signed: EIP-191 signed message, no session delegation needed
+BUYING — THERE IS NO CLAIM ENDPOINT (corrected 2026-09-08). The v1 rail's per-kind claim
+paths (wallet / email / passkey, the 3-per-15min email limit, the in-flight lock + per-series
+write queue) went with #207 and are NOT in the tree. `routes/claims.ts` serves only
+`GET /:eventId/series/:seriesId/claim-status`. The one live path is:
+
+  reserve (10-min hold, atomic) → Stripe checkout → webhook → fulfilment:
+  seal order to the organiser's X25519 key → one EPHEMERAL BURNER keypair per
+  ticket → `batchClaimFor` as the sponsor → burner signs its ticket message,
+  key DISCARDED → email the ticket
+
+- Ticket trust root = the on-chain `slotOwner`. A ticket verifies when EIP-191 recover of
+  `buildTicketCanonicalMessage` equals it. `unverified` (chain unreachable) is a DISTINCT
+  verdict from `invalid` — never collapse them
+- Which on-chain event to mint against comes from SERVER state (the id validated into the
+  Stripe session, else `onchain-events.json`) — NEVER re-read from the event feed at mint
+  time (#426: for a Phase B event that feed is the creator's own SOC, so re-signing it after
+  checkout re-pointed the mint with the money already taken)
+- Inventory is bounded by reservations + the per-network seat cap (`seat-cap.ts`, #223) plus
+  the contract's own `nextSlot` — not by a server-side write lock
 - Server uses the VERIFIED parentAddress, never an address from the request body
-- Double-spend prevention: in-flight lock + per-series async queue serialises writes
+- Email addresses are HMAC-SHA256 (`hashEmail`); `EMAIL_HASH_SECRET` is MANDATORY and the
+  legacy unsalted path is deleted. Still used by marketing + bounce suppression
+- No free-ticket path exists (no v2 mint path for one) — `freeEventsAllowed = false`
+- Full lifecycle: `docs/TICKETING.md`
 
 APPROVAL FLOW — REMOVED with the v1 claim-rail retirement (#207): routes, flags and
 UI are all gone. Do not reintroduce from old docs; #202 tracks its return on the v2
 contract rail.
 
 ============================================================================
-EAS LIKES / SOCIAL GRAPH (#4)
+SOCIAL GRAPH — SWARM-NATIVE, NOT EAS (#4)
 ============================================================================
 
-Full design + abuse model: `docs/EAS_LIKES_HANDOVER.md`. Contract: `docs/STYLUS_AGGREGATOR.md`.
+LIKES AND FOLLOWS LEFT THE CHAIN. Live rail = `woco.like.v1` / `woco.follow.v1`,
+chain-free Swarm statements written to the USER'S OWN feed (`packages/shared/src/social/`,
+`apps/web/src/lib/social/`, `routes/social.ts`). Authority: `docs/SWARM_SOCIAL_PLAN.md`.
+Frozen rules every statement type shares: `packages/shared/src/statement/discipline.ts`.
 
-A "like" is an EAS attestation on Arb Sepolia — NOT an NFT, NOT a POD. Three tools, three
-jobs: NFT = identity/name, EAS = likes/follows/attendance, POD = tickets/gates.
+- Author IS the feed owner, so the SOC signature already binds authorship and the version
+  sequence already orders — hence NO holder, NO holderSig, NO seq on these payloads
+- Retraction is `value: false`, never a deletion (a SOC cannot be deleted, and absent is
+  indistinguishable from never-existed)
+- Statement feeds are PINNED to band 0 (latest-wins ⇒ no growth axis). NEVER band-walk them
+- Subjects are keyed by ACCOUNT ADDRESS (owner decision 2026-09-03), not a name namehash —
+  a namehash keyed an audience to something governance/custody could move
+- Counting is an INDEXER's job, not the platform's; it can publish evidence reports
+  (`statement/evidence-report.ts`, #312)
+
+SUPERSEDED EAS RAIL (below) — `packages/shared/src/likes/` + `apps/web/src/lib/eas/` are its
+remains, kept for the abuse model. ProfilePage's Following/Trending still read it (#475) and
+referral badges still sit on it (#476). Do NOT build new social on it.
 
 - Attester = the user's own account (user-attested). Parent IS the attester here, unlike
   feeds: web3 = parent EOA signs own-gas; passkey = Kernel attests gasless via scoped
@@ -352,9 +399,10 @@ BUILD / DEPLOY:
   separately from the monorepo; `git status` at the root will not show its changes
 
 SECURITY / AUTH:
-- `EMAIL_HASH_SECRET` must be set before deploying — without it, emails are unsalted SHA-256
-  hashed (vulnerable to rainbow tables on public Swarm feeds). Rotating it also invalidates
-  every outstanding unsubscribe link
+- `EMAIL_HASH_SECRET`: the server REFUSES TO BOOT without it (`index.ts`, no dev fallback
+  since 2026-04-09) and the legacy unsalted-SHA-256 path is deleted — so the old "falls back
+  to unsalted" warning no longer applies. Rotating it still invalidates every outstanding
+  unsubscribe link AND orphans every existing email hash
 - `POD_IDENTITY_DOMAIN` now includes a salt — changes the derived ed25519 key for any user who
   already published an event. Deploy `SESSION_DOMAIN` salt first; only deploy the POD salt
   after confirming no active POD identities, or build a migration path
