@@ -74,7 +74,16 @@ export async function awaitWeb3AuthRehydration(w: Web3AuthSessionInstance): Prom
  * that failure, because connect() would resolve as the survivor.
  */
 export async function endSurvivingWeb3AuthSession(w: Web3AuthSessionInstance): Promise<void> {
-  if (await awaitWeb3AuthRehydration(w)) {
+  if (!(await awaitWeb3AuthRehydration(w))) return;
+  try {
     await w.logout({ cleanup: true });
+  } catch (e) {
+    // #507: a STALE cached session ("Session Expired or Invalid public key") is
+    // discarded by the SDK during its own rehydration, so logout() throws with
+    // nothing left to log out of — the goal state, reached by another route.
+    // Only the instance can say which happened, so re-read it: no connection and
+    // no cached connector means no survivor can answer connect(), which is the
+    // whole invariant. Re-throw only while a session still stands.
+    if (w.connected || w.cachedConnector) throw e;
   }
 }

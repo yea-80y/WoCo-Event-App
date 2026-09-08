@@ -27,6 +27,32 @@ import { isAccountAbstractionFailure } from "../api/sub-ens-permit.js";
 
 export type RecoveryErrorMode = "setup" | "recover";
 
+/**
+ * Refusing to write because the chain contradicted what the user was just shown
+ * (#505) — the add-a-backup preflight in `guardian-hook.checkAddAgainstPriorProtection`.
+ *
+ * Typed rather than a bare `Error` so the sentence is decided HERE, once, and can
+ * never be reworded by a caller or matched by accident: `describeRecoveryError`
+ * answers it before the account-abstraction check, because a refusal that never
+ * reached a bundler must not be explained as a sponsorship problem. The machine
+ * detail rides along in `detail` for the console and stays out of the sentence.
+ */
+export const STALE_BACKUP_READ_SENTENCE =
+  "Couldn't confirm your current backups, so nothing was changed. Try again in a moment.";
+
+export class StaleBackupReadError extends Error {
+  readonly detail: string;
+  constructor(detail: string) {
+    super(STALE_BACKUP_READ_SENTENCE);
+    this.name = "StaleBackupReadError";
+    this.detail = detail;
+  }
+}
+
+export function isStaleBackupRead(e: unknown): e is StaleBackupReadError {
+  return e instanceof StaleBackupReadError;
+}
+
 const AA_SENTENCE: Record<RecoveryErrorMode, string> = {
   // Setup: nothing has changed on-chain, and saying so is the point — a user who
   // thinks the attempt half-worked will not try again.
@@ -45,6 +71,7 @@ export function describeRecoveryError(
   mode: RecoveryErrorMode,
   fallback = "Something went wrong — please try again",
 ): string {
+  if (isStaleBackupRead(e)) return e.message;
   if (isAccountAbstractionFailure(e)) return AA_SENTENCE[mode];
   return e instanceof Error ? e.message : fallback;
 }

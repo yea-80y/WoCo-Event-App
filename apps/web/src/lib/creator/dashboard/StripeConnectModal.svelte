@@ -7,6 +7,7 @@
   } from "../../api/stripe.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { shouldStopWaiting, subscribeStripeReturn } from "./stripe-return-handoff.js";
 
   interface Props {
     open?: boolean;
@@ -95,7 +96,13 @@
         return;
       }
       if (link.url) {
-        // Open in new tab so the event creation form is preserved
+        // Open in new tab so the event creation form is preserved.
+        // DELIBERATELY WITHOUT `noopener` (#508): the return tab needs
+        // `window.opener` to know it was script-opened, and a tab opened with
+        // noopener cannot close itself after Stripe's redirects — the "Close
+        // this tab" button would silently do nothing. The destination is
+        // Stripe's own onboarding link, so the opener reference is not a risk
+        // worth a broken exit. Do not "harden" this.
         window.open(link.url, "_blank");
         waitingForStripe = true;
       }
@@ -120,6 +127,7 @@
         return;
       }
       if (link.url) {
+        // No `noopener` here either — same reason as handleConnect above (#508).
         window.open(link.url, "_blank");
         waitingForStripe = true;
       }
@@ -137,7 +145,7 @@
       const resp = await getStripeAccountStatus();
       if (resp.ok) {
         status = resp;
-        if (resp.onboardingComplete) {
+        if (shouldStopWaiting(resp)) {
           waitingForStripe = false;
           onconnected?.();
         }
@@ -148,6 +156,23 @@
       refreshing = false;
     }
   }
+
+  // While this tab waits, Stripe's redirect is landing in the OTHER tab (#508).
+  // Let that tab say so, and re-check on the way back into this one for a browser
+  // with no BroadcastChannel. Either way the SERVER read decides — the message is
+  // only a nudge to look. Cleanup runs on close and on destroy.
+  $effect(() => {
+    if (!open || !waitingForStripe) return;
+    const unsubscribe = subscribeStripeReturn(() => void handleRefreshStatus());
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void handleRefreshStatus();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      unsubscribe();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />

@@ -18,6 +18,10 @@
   import AudienceScreen from "./lib/creator/audience/AudienceScreen.svelte";
   import PayoutsScreen from "./lib/creator/payouts/PayoutsScreen.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";
+  import {
+    postStripeReturn,
+    stripeReturnVariant,
+  } from "./lib/creator/dashboard/stripe-return-handoff.js";
 
   $effect(() => {
     if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
@@ -28,6 +32,18 @@
   let stripeStatus = $state<StripeAccountStatus | null>(null);
   let stripeStatusError = $state(false);
   let stripeStatusLoading = $state(false);
+
+  // Read ONCE, at load: `window.opener` is not reactive, and it is at its most
+  // truthful before the opener tab can go away (#508).
+  const returnVariant = stripeReturnVariant(typeof window === "undefined" ? null : window.opener);
+  // A tab this app script-opened has done its job once the read lands — the
+  // user's session, and their unsaved form, is in the tab behind it. An
+  // unverifiable read is not "all done", so it keeps the neutral heading.
+  const stripeReturnHeading = $derived(
+    returnVariant === "close" && stripeStatus
+      ? "All done — you can close this tab and carry on where you were"
+      : "Stripe Setup",
+  );
 
   $effect(() => {
     if (router.route !== "stripe-return") {
@@ -47,6 +63,11 @@
       if (s.ok) stripeStatus = s;
       else stripeStatusError = true;
       stripeStatusLoading = false;
+      // Tell the tab that opened onboarding, which is still sitting on a manual
+      // "I've finished setup" button with nothing to tell it otherwise (#508).
+      // Only off a read that succeeded — an unverifiable one has no answer to
+      // send, and the waiting tab re-checks on focus anyway.
+      if (s.ok) postStripeReturn(s.onboardingComplete === true);
     }).catch(() => {
       stripeStatusError = true;
       stripeStatusLoading = false;
@@ -89,21 +110,21 @@
     <ProfilePage address={router.params.address} />
   {:else if router.route === "stripe-return"}
     <div class="stripe-return-page">
-      <h2>Stripe Setup</h2>
+      <h2>{stripeReturnHeading}</h2>
       {#if !auth.ready || (!auth.isConnected && !stripeStatusError)}
         <p>Reconnecting your account…</p>
       {:else if stripeStatusLoading}
         <p>Checking your onboarding status…</p>
       {:else if stripeStatusError}
         <p>Could not check status. Please try again.</p>
-        <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
+        {@render stripeReturnExit()}
       {:else if stripeStatus}
         {#if stripeStatus.onboardingComplete}
           <p class="stripe-success">Your Stripe account is connected and ready to accept payments!</p>
         {:else}
           <p>Your onboarding is not yet complete. Some information may still be required.</p>
         {/if}
-        <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
+        {@render stripeReturnExit()}
       {:else}
         <p>Checking your onboarding status…</p>
       {/if}
@@ -111,11 +132,19 @@
   {:else if router.route === "stripe-refresh"}
     <div class="stripe-return-page">
       <h2>Link Expired</h2>
-      <p>Your onboarding link has expired. Go back to the dashboard to get a new one.</p>
-      <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
+      <p>Your onboarding link has expired. {returnVariant === "close" ? "Close this tab and start again from where you were." : "Go back to the dashboard to get a new one."}</p>
+      {@render stripeReturnExit()}
     </div>
   {/if}
 </CreatorShell>
+
+{#snippet stripeReturnExit()}
+  {#if returnVariant === "close"}
+    <button class="stripe-dashboard-link" onclick={() => window.close()}>Close this tab</button>
+  {:else}
+    <button class="stripe-dashboard-link" onclick={() => navigate("/creator/events")}>Back to dashboard</button>
+  {/if}
+{/snippet}
 
 <style>
   .stripe-return-page {
