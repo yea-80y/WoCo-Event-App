@@ -18,6 +18,7 @@
   import AudienceScreen from "./lib/creator/audience/AudienceScreen.svelte";
   import PayoutsScreen from "./lib/creator/payouts/PayoutsScreen.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";
+  import { postStripeReturn } from "./lib/creator/dashboard/stripe-return-handoff.js";
 
   $effect(() => {
     if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
@@ -47,6 +48,11 @@
       if (s.ok) stripeStatus = s;
       else stripeStatusError = true;
       stripeStatusLoading = false;
+      // Tell the tab that opened onboarding, which is still sitting on a manual
+      // "I've finished setup" button with nothing to tell it otherwise (#508).
+      // Only off a read that succeeded — an unverifiable one has no answer to
+      // send, and the waiting tab re-checks on focus anyway.
+      if (s.ok) postStripeReturn(s.onboardingComplete === true);
     }).catch(() => {
       stripeStatusError = true;
       stripeStatusLoading = false;
