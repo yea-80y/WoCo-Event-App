@@ -34,6 +34,7 @@ import { StorageKeys, EAS_ADDRESS, SUB_ENS_DEPLOYMENTS, KERNEL_CHAIN_ID, type Ke
 import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { GaslessRailUnavailable } from "./gasless-rail.js";
+import { sponsoredPaymasterHooks } from "./sponsored-paymaster.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import {
   KERNEL_SELECTOR_CONFIG_ABI,
@@ -278,9 +279,7 @@ export async function buildKernelFromPrivateKey(
     chain: KERNEL_CHAIN,
     bundlerTransport: http(rpcUrl),
     client: publicClient,
-    paymaster: {
-      getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
-    },
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
   });
 
   return {
@@ -733,9 +732,7 @@ export async function getWocoSessionClient(
     chain: KERNEL_CHAIN,
     bundlerTransport: d.http(d.rpcUrl),
     client: d.publicClient,
-    paymaster: {
-      getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
-    },
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
   });
 }
 
@@ -885,9 +882,7 @@ export async function getEasSessionClient(
     chain: KERNEL_CHAIN,
     bundlerTransport: d.http(d.rpcUrl),
     client: d.publicClient,
-    paymaster: {
-      getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
-    },
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
   });
 }
 
@@ -1135,10 +1130,7 @@ type RecoveryDeps = Awaited<ReturnType<typeof loadRecoveryDeps>>;
 
 function recoverySponsor(d: RecoveryDeps) {
   const paymaster = d.createZeroDevPaymasterClient({ chain: KERNEL_CHAIN, transport: d.http(d.rpcUrl) });
-  return {
-    getPaymasterData: (userOperation: Parameters<typeof paymaster.sponsorUserOperation>[0]["userOperation"]) =>
-      paymaster.sponsorUserOperation({ userOperation }),
-  };
+  return sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args));
 }
 
 /**
