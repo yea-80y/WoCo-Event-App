@@ -355,3 +355,40 @@ export function diffGuardianSets(expected: string[], actual: string[]): Guardian
   const unexpected = [...a].filter((x) => !e.has(x));
   return { ok: missing.length === 0 && unexpected.length === 0, missing, unexpected };
 }
+
+/**
+ * The post-write verdict, decided HERE so it is unit-testable: `kernel-account`
+ * cannot be loaded by the test runner, so a throw that lives only there is a
+ * guard no test can see fall silent. The wrapper reads the set at the landing
+ * block, asks this, and throws `message` — nothing else.
+ */
+export type AfterWriteVerdict = { ok: true } | { ok: false; message: string; diff: GuardianSetDiff | null };
+
+export function guardianSetAfterWriteVerdict(
+  expected: string[],
+  after: GuardianSetRead,
+  txHash: string,
+): AfterWriteVerdict {
+  if (after.state !== "read") {
+    return {
+      ok: false,
+      diff: null,
+      message:
+        `Couldn't confirm your backups on-chain yet (tx ${txHash}). The change may well have ` +
+        "worked — reopen this screen in a moment to check before assuming either way.",
+    };
+  }
+  const diff = diffGuardianSets(expected, after.guardians);
+  if (diff.ok) return { ok: true };
+  // The write DID happen — saying "it failed" would be as wrong as saying it
+  // succeeded. What the user needs is that the list on chain is not the list we
+  // meant to leave, and where to go and look at it.
+  return {
+    ok: false,
+    diff,
+    message:
+      `The change went through (tx ${txHash}) but your backups don't read back as expected: ` +
+      `${diff.missing.length} missing, ${diff.unexpected.length} unexpected. Reopen this screen ` +
+      "to see the backups this account actually has now.",
+  };
+}

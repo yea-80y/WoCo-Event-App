@@ -23,6 +23,7 @@ import {
   checkAddAgainstPriorProtection,
   diffGuardianSets,
   expectedGuardiansAfterAdd,
+  guardianSetAfterWriteVerdict,
   type PriorProtection,
 } from "../src/lib/auth/guardian-hook.js";
 import {
@@ -188,14 +189,47 @@ test("the refusal reaches the user as one sentence, and never as a sponsorship f
 const KERNEL_ACCOUNT = readFileSync(new URL("../src/lib/auth/kernel-account.ts", import.meta.url), "utf8");
 const AUTH_STORE = readFileSync(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url), "utf8");
 
-/** The body of a top-level `export async function name(` — up to the closing brace in column 0. */
+/** The body of a top-level `async function name(` (exported or module-private) — up to the closing brace in column 0. */
 function fnBody(source: string, name: string): string {
-  const start = source.indexOf(`export async function ${name}(`);
+  let start = source.indexOf(`export async function ${name}(`);
+  if (start === -1) start = source.indexOf(`\nasync function ${name}(`);
   assert.notEqual(start, -1, `${name} not found`);
   const end = source.indexOf("\n}\n", start);
   assert.notEqual(end, -1, `${name} body not terminated`);
   return source.slice(start, end);
 }
+
+test("post-write verdict: an unreadable set is 'couldn't confirm', never success", () => {
+  const v = guardianSetAfterWriteVerdict([A, B], { state: "unknown" }, "0xtx");
+  assert.equal(v.ok, false);
+  if (!v.ok) {
+    assert.match(v.message, /Couldn't confirm/);
+    assert.match(v.message, /0xtx/);
+    assert.equal(v.diff, null);
+  }
+});
+
+test("post-write verdict: [B] alone after adding B to [A] says the write happened AND the set differs", () => {
+  const v = guardianSetAfterWriteVerdict([A, B], { state: "read", guardians: [B] }, "0xtx");
+  assert.equal(v.ok, false);
+  if (!v.ok) {
+    assert.match(v.message, /went through/);
+    assert.match(v.message, /1 missing, 0 unexpected/);
+    assert.deepEqual(v.diff?.missing, [A]);
+  }
+});
+
+test("post-write verdict: the expected set, in any order and case, is ok", () => {
+  const v = guardianSetAfterWriteVerdict([A, B], { state: "read", guardians: [B.toUpperCase().replace("0X", "0x"), A] }, "0xtx");
+  assert.equal(v.ok, true);
+});
+
+test("the read-back wrapper throws the verdict's message and decides nothing itself", () => {
+  const body = fnBody(KERNEL_ACCOUNT, "assertGuardianSetAfterWrite");
+  assert.match(body, /guardianSetAfterWriteVerdict\(/, "the wrapper must ask the pure verdict");
+  assert.match(body, /throw new Error\(verdict\.message\)/, "the wrapper must throw the verdict's message");
+  assert.doesNotMatch(body, /diffGuardianSets\(/, "the comparison must not be re-implemented in the untestable module");
+});
 
 test("both add-a-backup writes read the FULL set back, not just the new guardian", () => {
   for (const fn of ["setupRecovery", "addGuardianOnChain"]) {

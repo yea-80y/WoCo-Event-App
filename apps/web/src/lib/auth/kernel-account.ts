@@ -52,7 +52,7 @@ import {
   buildAddGuardianCall,
   buildRevokeGuardianCall,
   classifyRouteHook,
-  diffGuardianSets,
+  guardianSetAfterWriteVerdict,
   type GuardianSetRead,
   type RouteHookKind,
 } from "./guardian-hook.js";
@@ -1276,26 +1276,14 @@ async function assertGuardianSetAfterWrite(
   txHash: string,
 ): Promise<void> {
   const after = await readGuardianSet(kernelAddress, blockNumber);
-  if (after.state !== "read") {
-    throw new Error(
-      `Couldn't confirm your backups on-chain yet (tx ${txHash}). The change may well have ` +
-        "worked — reopen this screen in a moment to check before assuming either way.",
-    );
-  }
-  const diff = diffGuardianSets(expected, after.guardians);
-  if (!diff.ok) {
+  const verdict = guardianSetAfterWriteVerdict(expected, after, txHash);
+  if (verdict.ok) return;
+  if (verdict.diff) {
     console.error("[kernel] guardian set after write did not match", {
-      txHash, expected, actual: after.guardians, missing: diff.missing, unexpected: diff.unexpected,
+      txHash, expected, actual: after.state === "read" ? after.guardians : null, ...verdict.diff,
     });
-    // The write DID happen — saying "it failed" would be as wrong as saying it
-    // succeeded. What the user needs is that the list on chain is not the list we
-    // meant to leave, and where to go and look at it.
-    throw new Error(
-      `The change went through (tx ${txHash}) but your backups don't read back as expected: ` +
-        `${diff.missing.length} missing, ${diff.unexpected.length} unexpected. Reopen this screen ` +
-        "to see the backups this account actually has now.",
-    );
   }
+  throw new Error(verdict.message);
 }
 
 // --- Editing the guardian set on the WoCo hook (#164) ----------------------
