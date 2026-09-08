@@ -1,12 +1,14 @@
 /**
  * A `.woco.eth` name's web suffix is ONE constant, and this is what keeps it one.
  *
- * eth.limo refuses to issue a TLS certificate for our two-label subnames, so a
- * stray `<label>.woco.eth.limo` literal is not a cosmetic duplicate of the
- * constant — it is a link that dies in the browser before any resolver is asked,
- * which reads to the organiser as "my name doesn't work". A text walk catches it
- * because the failure lives in whichever file spelled the suffix out, not in the
- * one place a reviewer would look.
+ * The suffix is a property of the gateway we point people at, not of the name,
+ * and it has already been flipped twice. A spelled-out `<label>.woco.eth.limo`
+ * or `<label>.woco.eth.link` is therefore not a cosmetic duplicate of
+ * SUB_ENS_WEB_SUFFIX — it is one link silently pinned to one gateway, which
+ * keeps working right up until the constant moves and then sends organisers
+ * somewhere the rest of the app no longer uses. A text walk catches it because
+ * the stale link lives in whichever file spelled the suffix out, not in the one
+ * place a reviewer would look.
  */
 
 import { test } from "node:test";
@@ -18,7 +20,7 @@ import { subEnsName, subEnsWebUrl } from "@woco/shared";
 
 test("the helpers build the name and the browsable address", () => {
   assert.equal(subEnsName("nabil"), "nabil.woco.eth");
-  assert.equal(subEnsWebUrl("nabil"), "https://nabil.woco.eth.link");
+  assert.equal(subEnsWebUrl("nabil"), "https://nabil.woco.eth.limo");
 });
 
 const SRC = new URL("../src/", import.meta.url).pathname;
@@ -28,9 +30,12 @@ const SRC = new URL("../src/", import.meta.url).pathname;
  * dead code besides (VITE_SCANNER_URL is set in .env and .env.production, so the
  * fallback is never reached). Left alone deliberately: repointing it is a
  * behaviour change to the scanner, and whether `scan.woco.eth` is registered at
- * all is unverified. It carries the same broken-certificate defect.
+ * all is unverified.
  */
 const ALLOWED = new Set(["lib/creator/dashboard/CheckinPanel.svelte"]);
+
+/** Both spellings of the same eth.limo stack — either one pins a link. */
+const SPELLED_OUT = [".woco.eth.limo", ".woco.eth.link"];
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -46,11 +51,14 @@ test("no sub-ENS web address is spelled out under apps/web/src", () => {
   for (const path of walk(SRC)) {
     const rel = relative(SRC, path);
     if (ALLOWED.has(rel)) continue;
-    assert.ok(
-      !readFileSync(path, "utf8").includes(".woco.eth.limo"),
-      `${rel} spells out a .woco.eth.limo address — eth.limo has no certificate ` +
-        `for our subnames, so that link cannot load. Build it with subEnsWebUrl() ` +
-        `from @woco/shared, where the suffix flips in one line.`,
-    );
+    const text = readFileSync(path, "utf8");
+    for (const suffix of SPELLED_OUT) {
+      assert.ok(
+        !text.includes(suffix),
+        `${rel} spells out a ${suffix} address — that link stays pinned to one ` +
+          `gateway when SUB_ENS_WEB_SUFFIX moves. Build it with subEnsWebUrl() ` +
+          `from @woco/shared, where the suffix flips in one line.`,
+      );
+    }
   }
 });

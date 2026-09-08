@@ -19,10 +19,13 @@ Because the name is an NFT rather than a database row:
 - **Ownership is read live from chain** (`ownerOf`), never cached at a parent. A transfer is
   visible immediately with no re-indexing.
 
-Names are browsable at `<label>.woco.eth.link`. That suffix is `SUB_ENS_WEB_SUFFIX` in
+Names are browsable at `<label>.woco.eth.limo`. That suffix is `SUB_ENS_WEB_SUFFIX` in
 `packages/shared/src/sub-ens/web.ts` and appears **nowhere else** — a test fails if a literal
-reappears under `apps/web/src`. It has moved before (eth.limo refused certificates for two-label
-subnames at one point), which is exactly why it is a single constant.
+reappears under `apps/web/src`. It has moved before (a day on `.link` over a misread of eth.limo's
+on-demand certificates), which is exactly why it is a single constant. eth.limo issues a
+subname's certificate at its first TLS handshake, only once the name resolves to a contenthash,
+and rate-limits the ask per hostname — so the server warms it once after every contenthash
+receipt, and nothing should link to a name before that.
 
 ---
 
