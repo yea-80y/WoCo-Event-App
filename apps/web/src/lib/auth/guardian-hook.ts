@@ -237,3 +237,121 @@ export function decideAddPath(args: {
       };
   }
 }
+
+/**
+ * What the panel was showing the user when they pressed "add a backup" — the
+ * reading the add must be checked against before it writes (#505).
+ *
+ * WHY THIS EXISTS. `decideAddPath` reads the route at "latest" from ONE
+ * load-balanced RPC. A replica that has not yet seen the install of backup A
+ * answers "no code" or a zero `selectorConfig`, which `readRecoveryRoute`
+ * honestly reports as `absent` — and `absent` maps to `install`, which pins the
+ * hook's set to EXACTLY the new guardian. A stale `absent` therefore silently
+ * drops A while telling the user the add succeeded. That is the SAME hole
+ * `removeAllBackups`' `expectInstalled` covers from the other side: when the
+ * caller was showing "you are protected", a reading that contradicts it is a
+ * contradiction to report, never a state to act on.
+ */
+export interface PriorProtection {
+  /** The panel told the user this account is protected (`isProtected === true`). */
+  expectInstalled: boolean;
+  /**
+   * The guardian set the panel LISTED, lowercased — chain truth it had already
+   * read. `"unknown"` = a WoCo-hook route whose set could not be read (the panel
+   * shows "couldn't load", and a set it could not enumerate is still a set it
+   * must not lose). `null` = no WoCo set was in play at all: an unprotected
+   * account, or a legacy/foreign route, which has no WoCo-hook set to drop.
+   */
+  expectedGuardians: string[] | "unknown" | null;
+}
+
+/** Whether the fresh pre-write read may be acted on. `detail` is for the console, never the user. */
+export type AddPreflight = { ok: true } | { ok: false; detail: string };
+
+/**
+ * May "add a backup" write at all, given what the panel had already read?
+ *
+ * The rule is one-directional: a fresh read may only ever CONFIRM the protection
+ * the user was shown, never quietly retract it. So when the panel listed live
+ * WoCo-hook backups, the pre-write read must come back as an installed WoCo
+ * route whose set still contains every one of them; `absent`, `unknown`, another
+ * hook, an unreadable set, or a set that has lost a guardian all refuse without
+ * writing. When the panel had nothing to lose (no protection, or a route with no
+ * WoCo set) this is silent and the first-backup path is untouched.
+ *
+ * Pure — the I/O layer supplies both readings and does the refusing.
+ */
+export function checkAddAgainstPriorProtection(args: {
+  prior: PriorProtection;
+  routeState: "installed" | "absent" | "unknown";
+  hookKind: RouteHookKind;
+  set: GuardianSetRead | null;
+}): AddPreflight {
+  const expected = args.prior.expectInstalled ? args.prior.expectedGuardians : null;
+  // Nothing was shown that a replace could destroy: an unprotected account (the
+  // first backup), or a route with no WoCo-hook set behind it. A legacy route IS
+  // replaced on purpose, and `decideAddPath` still refuses `unknown` and `other`.
+  if (expected === null) return { ok: true };
+  if (Array.isArray(expected) && expected.length === 0) return { ok: true };
+
+  if (args.routeState !== "installed") {
+    return {
+      ok: false,
+      detail: `panel listed WoCo-hook backups but the route read back "${args.routeState}" — a stale or unreadable replica, not a removal`,
+    };
+  }
+  if (args.hookKind !== "woco") {
+    return {
+      ok: false,
+      detail: `panel listed WoCo-hook backups but the route now reads hook kind "${args.hookKind}"`,
+    };
+  }
+  if (!args.set || args.set.state !== "read") {
+    return { ok: false, detail: "panel listed WoCo-hook backups but the current guardian set could not be read" };
+  }
+  // The route is confirmed and its set is readable, so `decideAddPath` will APPEND
+  // — non-destructive — and an unenumerable prior list has nothing left to check.
+  if (expected === "unknown") return { ok: true };
+
+  const actual = new Set(args.set.guardians.map((a) => a.toLowerCase()));
+  const missing = expected.map((a) => a.toLowerCase()).filter((a) => !actual.has(a));
+  if (missing.length > 0) {
+    return { ok: false, detail: `the current guardian set no longer lists ${missing.join(", ")}` };
+  }
+  return { ok: true };
+}
+
+/**
+ * The set the hook MUST hold once this add has landed — the value the pinned
+ * post-write read-back is compared against (#505).
+ *
+ * The two writes differ, and that is the whole point: an `install` REPLACES the
+ * set with exactly the new guardian, an `append` adds to the ones already there.
+ * Checking only "the new guardian is registered" passes in both cases and so
+ * cannot see a replace that ate the others.
+ */
+export function expectedGuardiansAfterAdd(
+  plan: { path: "install" } | { path: "append"; currentGuardians: string[] },
+  guardian: string,
+): string[] {
+  const g = guardian.toLowerCase();
+  if (plan.path === "install") return [g];
+  return [...new Set([...plan.currentGuardians.map((a) => a.toLowerCase()), g])];
+}
+
+/** Set difference, both sides lowercased and de-duplicated. Order carries no meaning on chain. */
+export interface GuardianSetDiff {
+  ok: boolean;
+  /** Expected but not present — the silent-loss case. */
+  missing: string[];
+  /** Present but not expected — someone else wrote, or we composed the wrong set. */
+  unexpected: string[];
+}
+
+export function diffGuardianSets(expected: string[], actual: string[]): GuardianSetDiff {
+  const e = new Set(expected.map((a) => a.toLowerCase()));
+  const a = new Set(actual.map((x) => x.toLowerCase()));
+  const missing = [...e].filter((x) => !a.has(x));
+  const unexpected = [...a].filter((x) => !e.has(x));
+  return { ok: missing.length === 0 && unexpected.length === 0, missing, unexpected };
+}
