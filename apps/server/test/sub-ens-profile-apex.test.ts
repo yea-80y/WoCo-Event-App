@@ -19,13 +19,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.chdir(mkdtempSync(join(tmpdir(), "woco-profile-apex-")));
 
 const { verifyAndBindProfileName } = await import("../src/routes/profiles.js");
+const { profileNameOf } = await import("../src/lib/profile/name-ledger.js");
 const { parseApexContenthash, subEnsApexHealth } = await import(
   "../src/lib/chain/sub-ens-apex.js"
 );
@@ -149,7 +150,8 @@ test("a NON-Swarm contenthash is still someone's pointer: warn, do not overwrite
 
 test("a name the caller does not own is refused, and no contenthash is written", async () => {
   const written: Written = { calls: [] };
-  const outcome = await verifyAndBindProfileName(acct(), "punkpub", {
+  const account = acct();
+  const outcome = await verifyAndBindProfileName(account, "punkpub", {
     readOwner: async () => "0x" + "9".repeat(40),
     readContenthash: async () => null,
     writeContenthash: async (label, hash) => {
@@ -160,6 +162,66 @@ test("a name the caller does not own is refused, and no contenthash is written",
   });
   assert.equal(outcome.ok, false);
   assert.deepEqual(written.calls, []);
+  // The LEDGER is the part that outlives the request: a record written here
+  // would spend the rename cooldown on a name the caller does not hold, and no
+  // path deletes a record, so the account would carry it for 30 days.
+  assert.equal(profileNameOf(account), null, "a refused bind must write no ledger record");
+});
+
+test("a chain read that FAILS refuses too, and still writes nothing", async () => {
+  // 502, not 403: an unanswered read is not proof the caller is not the owner
+  // (#488). What matters here is that neither answer reaches the ledger.
+  const account = acct();
+  const outcome = await verifyAndBindProfileName(account, "punkpub", {
+    readOwner: async () => { throw Object.assign(new Error("timeout"), { code: "TIMEOUT" }); },
+    readContenthash: async () => null,
+    writeContenthash: async () => "0xtx",
+    apexContenthash: () => APEX,
+  });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.ok === false && outcome.status, 502);
+  assert.equal(profileNameOf(account), null);
+});
+
+// ---------------------------------------------------------------------------
+// Ordering — ownership BEFORE the ledger, pinned in the source
+// ---------------------------------------------------------------------------
+
+test("ownership is checked before the ledger is written", async () => {
+  // The behavioural tests above catch the swap for the cases they drive; this
+  // pins the ORDER itself, the same device `sub-ens-relay-release.test.ts` uses
+  // for "ownership is checked before anything is spent". The regression is a
+  // reordering during an edit, not a wrong comparison — and it would be
+  // invisible, because the happy path is identical either way.
+  const src = readFileSync(new URL("../src/routes/profiles.ts", import.meta.url), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("//"))
+    .join("\n");
+  const start = src.indexOf("export async function verifyAndBindProfileName");
+  assert.ok(start > 0, "verifyAndBindProfileName not found");
+  // Bounded at the next top-level statement. An `indexOf` that missed would
+  // return -1 and `slice` would silently run to end-of-file, quietly widening
+  // the window these assertions look through — the exact looseness #485's last
+  // item flags elsewhere.
+  const end = src.indexOf("\nprofiles.", start);
+  assert.ok(end > start, "the end of the function was not found — the slice would run to EOF");
+  const body = src.slice(start, end);
+
+  // The chain read is the default of the injectable seam, so the read is
+  // `readOwner(` and its authority is `getLabelOwner`. Both are pinned: a
+  // default swapped for something that is not the chain would pass an
+  // order-only assertion.
+  assert.match(body, /readOwner = getLabelOwner/, "the ownership read must default to the chain");
+  const readIdx = body.indexOf("await readOwner(");
+  const refuseIdx = body.indexOf("owner !== parent");
+  const bindIdx = body.indexOf("bindProfileName(");
+  assert.ok(readIdx > 0 && refuseIdx > 0 && bindIdx > 0, "the three steps must all be present");
+  assert.ok(readIdx < refuseIdx, "the owner must be read before it is compared");
+  assert.ok(
+    refuseIdx < bindIdx,
+    "the ledger must never record a name whose ownership has not been confirmed",
+  );
 });
 
 // ---------------------------------------------------------------------------
