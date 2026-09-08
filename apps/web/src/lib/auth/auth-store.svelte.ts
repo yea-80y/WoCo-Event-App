@@ -2263,7 +2263,9 @@ async function setupAccountRecovery(
   // is no reason to write it for an add that will not happen).
   const { deriveGuardianAddress, setupRecovery, addGuardianOnChain, readRecoveryRoute, readGuardianSet } =
     await import("./kernel-account.js");
-  const { decideAddPath, checkAddAgainstPriorProtection } = await import("./guardian-hook.js");
+  const { decideAddPath, checkAddAgainstPriorProtection, expectedGuardiansAfterAdd } = await import(
+    "./guardian-hook.js"
+  );
   // ONE definition of the guardian set (#161): every other path derives the
   // guardian address from the same helper, so setup and recovery cannot drift.
   // `deriveGuardianAddress` is the committing derivation — it cross-checks the
@@ -2306,6 +2308,9 @@ async function setupAccountRecovery(
     guardian: guardianAddress,
   });
   if (plan.path === "refuse") throw new Error(plan.reason);
+  // What the hook must hold once this lands — the value both writes read back in
+  // full, so a replace that ate the other backups cannot pass as a success.
+  const expectedGuardiansAfter = expectedGuardiansAfterAdd(plan, guardianAddress);
 
   // Persist the escrow as a GUARDIAN-owned SOC (§13) — client-signed, the platform
   // only stamps postage, so it can no longer forge or withhold it. FATAL: this IS
@@ -2322,9 +2327,9 @@ async function setupAccountRecovery(
   // Escrow persisted + proven recoverable → now the irreversible on-chain write.
   let txHash: string;
   if (plan.path === "append") {
-    ({ txHash } = await addGuardianOnChain(_kernel, guardianAddress));
+    ({ txHash } = await addGuardianOnChain(_kernel, guardianAddress, { expectedGuardiansAfter }));
   } else {
-    ({ txHash } = await setupRecovery(_kernel, guardianAddress));
+    ({ txHash } = await setupRecovery(_kernel, guardianAddress, { expectedGuardiansAfter }));
     if (plan.replacesLegacy && feedSigner) {
       // The ZeroDev hook's guardians are unreachable from now on (the route no
       // longer consults it). Retire their manifest rows so the panel stops listing

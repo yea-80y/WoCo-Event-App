@@ -185,7 +185,27 @@ test("the refusal reaches the user as one sentence, and never as a sponsorship f
 // device as `auth-header-boundary.test.ts` and `apps/server/test/data-store-modes.test.ts`:
 // assert on the source, so deleting a call is a red test rather than a review miss.
 
+const KERNEL_ACCOUNT = readFileSync(new URL("../src/lib/auth/kernel-account.ts", import.meta.url), "utf8");
 const AUTH_STORE = readFileSync(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url), "utf8");
+
+/** The body of a top-level `export async function name(` — up to the closing brace in column 0. */
+function fnBody(source: string, name: string): string {
+  const start = source.indexOf(`export async function ${name}(`);
+  assert.notEqual(start, -1, `${name} not found`);
+  const end = source.indexOf("\n}\n", start);
+  assert.notEqual(end, -1, `${name} body not terminated`);
+  return source.slice(start, end);
+}
+
+test("both add-a-backup writes read the FULL set back, not just the new guardian", () => {
+  for (const fn of ["setupRecovery", "addGuardianOnChain"]) {
+    assert.match(
+      fnBody(KERNEL_ACCOUNT, fn),
+      /await assertGuardianSetAfterWrite\(/,
+      `${fn} must prove the whole set landed — "the new guardian is registered" is true of a replace too`,
+    );
+  }
+});
 
 test("the store refuses on a contradicting read BEFORE it writes anything", () => {
   const preflight = AUTH_STORE.indexOf("checkAddAgainstPriorProtection({");

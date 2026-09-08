@@ -52,6 +52,7 @@ import {
   buildAddGuardianCall,
   buildRevokeGuardianCall,
   classifyRouteHook,
+  diffGuardianSets,
   type GuardianSetRead,
   type RouteHookKind,
 } from "./guardian-hook.js";
@@ -1225,6 +1226,7 @@ async function sendSudoUserOp(
 export async function setupRecovery(
   builtKernel: BuiltKernel,
   guardianAddress: string,
+  opts: { expectedGuardiansAfter: string[] },
 ): Promise<{ userOpHash: string; txHash: string }> {
   const d = await loadRecoveryDeps();
   const callData = buildRegisterGuardianCallData(d, guardianAddress as Address);
@@ -1248,7 +1250,52 @@ export async function setupRecovery(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
+  await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
   return { userOpHash, txHash };
+}
+
+/**
+ * Prove the add landed on the WHOLE set, at the block it landed in (#505).
+ *
+ * "The new guardian is registered" is true of BOTH writes and so cannot tell them
+ * apart — and they are not the same: a route install REPLACES the hook's set. An
+ * install sent against an account that already had backups (a stale `absent` from
+ * a lagging replica is enough) registers the new guardian perfectly while dropping
+ * every other one, and a per-guardian read-back reports that as success. Comparing
+ * the FULL set is what makes the difference visible.
+ *
+ * The read is pinned to the landing block for the same reason `removeAllBackups`
+ * pins its re-read: at "latest" a replica that has not caught up answers about a
+ * chain state that predates the write. A node without the block errors, which
+ * surfaces as the honest "couldn't confirm" rather than as a fabricated mismatch.
+ */
+async function assertGuardianSetAfterWrite(
+  kernelAddress: string,
+  expected: string[],
+  blockNumber: bigint | undefined,
+  txHash: string,
+): Promise<void> {
+  const after = await readGuardianSet(kernelAddress, blockNumber);
+  if (after.state !== "read") {
+    throw new Error(
+      `Couldn't confirm your backups on-chain yet (tx ${txHash}). The change may well have ` +
+        "worked — reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  const diff = diffGuardianSets(expected, after.guardians);
+  if (!diff.ok) {
+    console.error("[kernel] guardian set after write did not match", {
+      txHash, expected, actual: after.guardians, missing: diff.missing, unexpected: diff.unexpected,
+    });
+    // The write DID happen — saying "it failed" would be as wrong as saying it
+    // succeeded. What the user needs is that the list on chain is not the list we
+    // meant to leave, and where to go and look at it.
+    throw new Error(
+      `The change went through (tx ${txHash}) but your backups don't read back as expected: ` +
+        `${diff.missing.length} missing, ${diff.unexpected.length} unexpected. Reopen this screen ` +
+        "to see the backups this account actually has now.",
+    );
+  }
 }
 
 // --- Editing the guardian set on the WoCo hook (#164) ----------------------
@@ -1268,6 +1315,7 @@ export async function setupRecovery(
 export async function addGuardianOnChain(
   builtKernel: BuiltKernel,
   guardianAddress: string,
+  opts: { expectedGuardiansAfter: string[] },
 ): Promise<{ userOpHash: string; txHash: string }> {
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
@@ -1286,6 +1334,7 @@ export async function addGuardianOnChain(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
+  await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
   return { userOpHash, txHash };
 }
 
