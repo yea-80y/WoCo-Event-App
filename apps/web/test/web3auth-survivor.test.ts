@@ -49,3 +49,26 @@ test("a survivor that cannot be ended REJECTS — the caller must refuse, never 
   });
   await assert.rejects(endSurvivingWeb3AuthSession(w), /network down/);
 });
+
+test("a STALE session the SDK already discarded resolves — logout throwing over nothing is the goal state (#507)", async () => {
+  // What the owner hit: Web3Auth answers "Session Expired or Invalid public key"
+  // during rehydration and drops the session itself, so logout() throws with
+  // nothing connected. Refusing here told the user a network story and blocked a
+  // first guardian sign-in that was already safe.
+  const w = fakeInstance({ connected: true, cachedConnector: "auth" });
+  w.logout = async () => {
+    w.connected = false;
+    w.cachedConnector = null;
+    throw new Error("Session Expired or Invalid public key");
+  };
+  await endSurvivingWeb3AuthSession(w);
+});
+
+test("logout failing with a cached connector STILL stored rejects — that session can answer connect()", async () => {
+  const w = fakeInstance({ connected: true, cachedConnector: "auth" });
+  w.logout = async () => {
+    w.connected = false;
+    throw new Error("network down");
+  };
+  await assert.rejects(endSurvivingWeb3AuthSession(w), /network down/);
+});
