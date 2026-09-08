@@ -1,5 +1,6 @@
 import { createPublicClient, http, type Chain } from "viem";
 import { arbitrum, arbitrumSepolia, base, baseSepolia, mainnet, optimism } from "viem/chains";
+import { KERNEL_CHAIN_ID } from "@woco/shared";
 
 /**
  * viem public client(s) for verifying ERC-1271 / ERC-6492 signatures from
@@ -13,14 +14,19 @@ import { arbitrum, arbitrumSepolia, base, baseSepolia, mainnet, optimism } from 
  *     the digest with the wallet contract's `block.chainid`; empirically
  *     (2026-05-26) with `appChainIds=[421614,42161]` the 6492 sig still only
  *     verifies on Base Sepolia (84532).
- *   - ZeroDev Kernel (passkey) → Arbitrum Sepolia (421614). Its 6492 wrapper
- *     embeds the Arbitrum factory + deploy data, so it ONLY validates on Arb.
+ *   - ZeroDev Kernel (passkey) → whatever `KERNEL_CHAIN_ID` says (Arbitrum One
+ *     since #489; Arb Sepolia before it). Its 6492 wrapper embeds the Arbitrum
+ *     factory + deploy data, so it ONLY validates on the Kernel's own chain —
+ *     which is why the default set below is DERIVED from that constant rather
+ *     than naming a chain that a move would silently leave behind.
  *
  * Because both are in use, we verify against EVERY candidate chain and accept if
- * ANY validates (see verifySmartWalletTypedData). Defaults cover both testnet
- * homes; extra chains can be added via SMART_WALLET_VERIFY_CHAINS (comma list)
- * or the legacy singular SMART_WALLET_VERIFY_CHAIN — both are merged into the
- * defaults rather than replacing them.
+ * ANY validates (see verifySmartWalletTypedData). Defaults cover CSW's testnet
+ * home and the Kernel's current chain; extra chains can be added via
+ * SMART_WALLET_VERIFY_CHAINS (comma list) or the legacy singular
+ * SMART_WALLET_VERIFY_CHAIN — both are merged into the defaults rather than
+ * replacing them. Arb Sepolia is one env var away if a pre-#489 delegation ever
+ * needs verifying.
  *
  * EOA signatures never need any chain: viem's verifyTypedData short-circuits to
  * local ecrecover for plain-EOA sigs, so the very first client returns true
@@ -44,8 +50,21 @@ const RPC_BY_NAME: Record<string, string | undefined> = {
   "arbitrum-sepolia": process.env.ARBITRUM_SEPOLIA_RPC_URL,
 };
 
+/**
+ * The Kernel's home chain, named. Derived from the shared pin, not restated: a
+ * Kernel 6492 signature validates on exactly one chain, so a default set that
+ * did not follow the pin would reject every Kernel delegation with a signature
+ * error — a failure that looks like a bad signature, not a config mistake.
+ * Throws at load rather than dropping the chain silently.
+ */
+const KERNEL_CHAIN_NAME: string = (() => {
+  const name = Object.entries(CHAINS_BY_NAME).find(([, c]) => c.id === KERNEL_CHAIN_ID)?.[0];
+  if (!name) throw new Error(`smart-wallet-client: no viem chain named for KERNEL_CHAIN_ID ${KERNEL_CHAIN_ID}`);
+  return name;
+})();
+
 function resolveChainNames(): string[] {
-  const names = new Set<string>(["base-sepolia", "arbitrum-sepolia"]);
+  const names = new Set<string>(["base-sepolia", KERNEL_CHAIN_NAME]);
   const raw = `${process.env.SMART_WALLET_VERIFY_CHAINS ?? ""},${process.env.SMART_WALLET_VERIFY_CHAIN ?? ""}`;
   for (const n of raw.split(",").map((s) => s.trim().toLowerCase())) {
     if (n && CHAINS_BY_NAME[n]) names.add(n);

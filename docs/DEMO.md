@@ -1,3 +1,6 @@
+> **HISTORICAL — the Arbitrum Buildathon demo, June 2026.** The agent-commerce rail it shows is
+> now switched off (`agentCommerceAllowed = false`) and the v1 mint path it used is deleted.
+
 # Demo — Autonomous Agent Commerce
 
 A ~1-minute screen recording of an AI agent **buying an event ticket on its own**, paying in USDC on

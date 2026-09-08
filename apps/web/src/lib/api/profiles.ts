@@ -1,11 +1,13 @@
 import type { UserProfile, UpdateProfileRequest } from "@woco/shared";
 import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared";
-import { authPost, get } from "./client.js";
+import { authPost, authGet, get } from "./client.js";
+import { apiError } from "./errors.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import { writeContentFeed, readContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
+import type { ProfileNameStatus } from "../sub-ens/rename.js";
 
 // ---------------------------------------------------------------------------
 // In-memory cache — profile data changes rarely
@@ -161,6 +163,27 @@ async function fetchProfileUncached(addr: string, signerHint?: string): Promise<
 }
 
 /**
+ * When may this account change its profile name?
+ *
+ * Asked BEFORE the name picker opens: the cooldown is enforced at BIND time, so
+ * without this the user mints a name on-chain and only then learns they cannot
+ * bind it. Returns null when the read itself failed — the caller treats that as
+ * "allow" (`canOpenRename`), because the server refuses the bind for real and a
+ * flaky read must not strand anyone.
+ */
+export async function getProfileNameStatus(): Promise<ProfileNameStatus | null> {
+  const resp = await authGet<ProfileNameStatus>("/api/profile/name-status");
+  return resp.ok && resp.data ? resp.data : null;
+}
+
+/**
+ * A bind that SUCCEEDED but is worth saying out loud. `points_at_site` means
+ * the name already resolves to a site of the holder's and keeps doing so — not
+ * a failure, so it must not render as one.
+ */
+export type ProfileBindWarning = "points_at_site";
+
+/**
  * Update the authenticated user's profile.
  *
  * Phase B: when the user owns a content-feed signer, the profile data feed is a
@@ -170,17 +193,25 @@ async function fetchProfileUncached(addr: string, signerHint?: string): Promise<
  * before it is bound. Legacy users (external wallet, no client signer) keep the
  * old server-write path.
  */
-export async function updateProfile(updates: UpdateProfileRequest): Promise<UserProfile | null> {
+export async function updateProfile(
+  updates: UpdateProfileRequest,
+  onBindWarning?: (warning: ProfileBindWarning) => void,
+): Promise<UserProfile | null> {
   const signer = await auth.getContentFeedSigner();
   const parent = auth.parent?.toLowerCase();
 
   if (!signer || !parent) {
     const resp = await authPost<UserProfile>("/api/profile", updates as Record<string, unknown>);
     if (resp.ok && resp.data) {
+      // This route puts `warning` at the TOP LEVEL of the envelope; the Phase B
+      // route below nests it under `data`. Both reach us — `safeJson` spreads
+      // the whole body — so read it where each one actually sends it.
+      const warning = (resp as { warning?: string }).warning;
+      if (warning === "points_at_site") onBindWarning?.("points_at_site");
       cacheStore(resp.data.address, resp.data);
       return resp.data;
     }
-    throw new Error(resp.error ?? "Failed to update profile");
+    throw apiError(resp, "Failed to update profile");
   }
 
   const addr = parent as UserProfile["address"];
@@ -193,15 +224,16 @@ export async function updateProfile(updates: UpdateProfileRequest): Promise<User
   const unbinding = updates.subEnsLabel === null;
   if (unbinding) {
     const res = await authPost<{ ok: boolean }>("/api/profile/unbind-name", {});
-    if (!res.ok) throw new Error(res.error ?? "Failed to remove the name");
+    if (!res.ok) throw apiError(res, "Failed to remove the name");
   }
   let verifiedLabel: string | undefined;
   if (updates.subEnsLabel !== undefined && updates.subEnsLabel !== null && updates.subEnsLabel !== "") {
-    const res = await authPost<{ label: string }>("/api/profile/verify-label", {
+    const res = await authPost<{ label: string; warning?: ProfileBindWarning }>("/api/profile/verify-label", {
       subEnsLabel: updates.subEnsLabel,
     });
-    if (!res.ok || !res.data) throw new Error(res.error ?? "You do not own that name");
+    if (!res.ok || !res.data) throw apiError(res, "You do not own that name");
     verifiedLabel = res.data.label;
+    if (res.data.warning === "points_at_site") onBindWarning?.("points_at_site");
   }
 
   // Self-read the existing data feed to carry forward unedited fields.

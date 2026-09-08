@@ -22,8 +22,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createPublicClient, custom } from "viem";
-import { arbitrumSepolia } from "viem/chains";
+import { createPublicClient, custom, numberToHex } from "viem";
+import { KERNEL_CHAIN_ID } from "@woco/shared";
+import { KERNEL_CHAIN } from "../src/lib/auth/kernel-account.js";
 import { constants as sdkConstants, addressToEmptyAccount } from "@zerodev/sdk";
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
 import { createWeightedECDSAValidator, getValidatorAddress } from "@zerodev/weighted-ecdsa-validator";
@@ -133,13 +134,23 @@ test("the SDK still resolves the weighted-validator singleton the pure derivatio
   );
 });
 
-/** Offline viem client: answers the chain id the SDK asks for at plugin creation, refuses all else. */
+/**
+ * Offline viem client: answers the chain id the SDK asks for at plugin creation,
+ * refuses all else.
+ *
+ * The id is THE KERNEL CHAIN, taken from the shared pin rather than written out
+ * — this is the chain the guardian install would actually run on, and a test
+ * that kept answering the old one after a move would be checking the SDK's
+ * behaviour somewhere the product no longer goes. (The derivation itself is
+ * CREATE2 and chain-independent, which is exactly why a stale literal here would
+ * never fail on its own.)
+ */
 function offlineClient() {
   return createPublicClient({
-    chain: arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     transport: custom({
       request: async ({ method }: { method: string }) => {
-        if (method === "eth_chainId") return "0x66eee"; // 421614
+        if (method === "eth_chainId") return numberToHex(KERNEL_CHAIN_ID);
         throw new Error(`offline test client refused ${method}`);
       },
     }),

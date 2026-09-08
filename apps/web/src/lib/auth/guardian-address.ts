@@ -34,8 +34,9 @@
  *    the two committing moments (before the install userOp, before the recovery
  *    userOp) and refuses on disagreement with nothing irreversible done.
  *
- * Pure, synchronous, no I/O. Constants are Arb Sepolia / Kernel v3.1 (the only
- * chain and version this layer supports — see `KERNEL_CHAIN_ID`).
+ * Pure, synchronous, no I/O. The constants are CREATE2 singletons — the same on
+ * every chain — pinned to Kernel v3.1, the only version this layer supports; the
+ * chain it runs on is `KERNEL_CHAIN_ID` (@woco/shared).
  */
 import {
   concatHex,

@@ -1,6 +1,7 @@
 /**
  * ZeroDev Kernel (ERC-4337) smart-account layer — item #1b, Option 1
- * (ECDSA-over-PRF Kernel) on Arbitrum Sepolia (421614).
+ * (ECDSA-over-PRF Kernel) on Arbitrum One (42161, `KERNEL_CHAIN_ID` in
+ * @woco/shared — moved off Arb Sepolia by #489).
  *
  * The Kernel's sudo signer is the user's PRF-derived secp256k1 key (from
  * passkey-account.ts), wrapped by @zerodev/ecdsa-validator. The Kernel becomes
@@ -22,14 +23,18 @@
  * coinbase-account.ts).
  */
 
-import type { Address, Hex } from "viem";
+import type { Address, Chain, Hex } from "viem";
+// Named imports, not `await import("viem/chains")`: the whole-module dynamic
+// form pulled EVERY chain definition into this chunk. Two are enough.
+import { arbitrum, arbitrumSepolia } from "viem/chains";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
-import { StorageKeys, EAS_ADDRESS, SUB_ENS_DEPLOYMENTS } from "@woco/shared";
+import { StorageKeys, EAS_ADDRESS, SUB_ENS_DEPLOYMENTS, KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { GaslessRailUnavailable } from "./gasless-rail.js";
+import { sponsoredPaymasterHooks } from "./sponsored-paymaster.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import {
   KERNEL_SELECTOR_CONFIG_ABI,
@@ -48,24 +53,35 @@ import {
   buildAddGuardianCall,
   buildRevokeGuardianCall,
   classifyRouteHook,
+  guardianSetAfterWriteVerdict,
   type GuardianSetRead,
   type RouteHookKind,
 } from "./guardian-hook.js";
 
 /**
- * Arbitrum Sepolia — the buildathon chain. Declared `as const` so it indexes
- * SUB_ENS_DEPLOYMENTS below as a literal: moving the Kernel to a chain with no
- * sub-ENS deployment is then a type error here, not an `undefined` registrar
- * reaching a call policy at runtime.
- *
- * DELIBERATELY NOT `SUB_ENS_DEFAULT_CHAIN_ID`, which is Arbitrum One. Names are
- * a constant; a Kernel is not — moving it needs a ZeroDev project on the new
- * chain, a funded paymaster policy, and per-chain `kernel-deployed.json` state
- * that makes every existing account counterfactual again on day one. That flip
- * is #489. Until it lands the two chains differ, and anything reading an address
- * must say which of them it means.
+ * The Kernel's chain, re-exported so this file reads as the pin it used to be.
+ * The VALUE now lives in @woco/shared (#489) because the server pins it too and
+ * the two must agree by the compiler, not by comment — `kernel-owner.ts` builds
+ * its owner-read client from the same constant.
  */
-export const KERNEL_CHAIN_ID = 421614 as const;
+export { KERNEL_CHAIN_ID };
+
+/**
+ * The viem chain object for {@link KERNEL_CHAIN_ID} — ONE module-level value,
+ * used by every client, paymaster and bundler below.
+ *
+ * It used to be `arbitrumSepolia` written out at ~28 call sites, which is the
+ * shape that makes a chain move a 28-way find-and-replace with no compiler
+ * behind it. Indexing a map by the literal id means a chain with no row here is
+ * a type error at build time rather than an `undefined` reaching viem, and it
+ * keeps the Sepolia row one line away should the move have to be rolled back.
+ */
+const KERNEL_CHAINS = {
+  42161: arbitrum,
+  421614: arbitrumSepolia,
+} as const satisfies Record<number, Chain>;
+
+export const KERNEL_CHAIN: Chain = KERNEL_CHAINS[KERNEL_CHAIN_ID satisfies KernelChainId];
 
 /**
  * WoCoRegistrar — the ONLY contract the scoped session key may call. Taken from
@@ -132,7 +148,7 @@ const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
 /**
  * Total gas budget (wei) the scoped session key may consume across all its
  * userOps (the GasPolicy `allowed` cap). 0.2 ETH-equivalent — effectively
- * unlimited on Arb Sepolia where gas is ~free, but still a finite cap so a
+ * unlimited at Arbitrum One gas (~0.02 gwei), but still a finite cap so a
  * leaked key can't burn the sponsor tank without bound.
  */
 const SESSION_GAS_ALLOWANCE_WEI = 200000000000000000n; // 0.2 ETH
@@ -217,14 +233,12 @@ export async function buildKernelFromPrivateKey(
   const [
     { createPublicClient, http },
     { privateKeyToAccount },
-    { arbitrumSepolia },
     { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient },
     { signerToEcdsaValidator },
     { getEntryPoint, KERNEL_V3_1 },
   ] = await Promise.all([
     import("viem"),
     import("viem/accounts"),
-    import("viem/chains"),
     import("@zerodev/sdk"),
     import("@zerodev/ecdsa-validator"),
     import("@zerodev/sdk/constants"),
@@ -235,7 +249,7 @@ export async function buildKernelFromPrivateKey(
   const kernelVersion = KERNEL_V3_1;
 
   const publicClient = createPublicClient({
-    chain: arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     transport: http(rpcUrl),
   });
 
@@ -256,18 +270,16 @@ export async function buildKernelFromPrivateKey(
   });
 
   const paymaster = createZeroDevPaymasterClient({
-    chain: arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     transport: http(rpcUrl),
   });
 
   const kernelClient = createKernelAccountClient({
     account,
-    chain: arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     bundlerTransport: http(rpcUrl),
     client: publicClient,
-    paymaster: {
-      getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
-    },
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
   });
 
   return {
@@ -318,7 +330,6 @@ async function loadSessionDeps() {
   const [
     { createPublicClient, http },
     { generatePrivateKey, privateKeyToAccount },
-    { arbitrumSepolia },
     { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient, addressToEmptyAccount },
     { getEntryPoint, KERNEL_V3_1 },
     { toPermissionValidator, serializePermissionAccount, deserializePermissionAccount },
@@ -327,7 +338,6 @@ async function loadSessionDeps() {
   ] = await Promise.all([
     import("viem"),
     import("viem/accounts"),
-    import("viem/chains"),
     import("@zerodev/sdk"),
     import("@zerodev/sdk/constants"),
     import("@zerodev/permissions"),
@@ -339,7 +349,7 @@ async function loadSessionDeps() {
   const entryPoint = getEntryPoint("0.7");
   const kernelVersion = KERNEL_V3_1;
   const publicClient = createPublicClient({
-    chain: arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     transport: http(rpcUrl),
   });
 
@@ -348,7 +358,6 @@ async function loadSessionDeps() {
     entryPoint,
     kernelVersion,
     publicClient,
-    arbitrumSepolia,
     http,
     generatePrivateKey,
     privateKeyToAccount,
@@ -420,7 +429,7 @@ export interface ShopSpendGrantArgs {
  *    arg `value` LESS_THAN_OR_EQUAL perDrawCeiling
  *  - timestamp policy: validUntil (the window)
  *  - rate-limit policy: at most maxDraws calls (lifetime)
- *  - gas policy: finite gasless budget (paymaster-sponsored on Arb Sepolia)
+ *  - gas policy: finite gasless budget (paymaster-sponsored on the Kernel chain)
  *
  * The cumulative cap is NOT an on-chain policy (this ZeroDev version has no
  * spending-limit policy) — it travels in the register request and is enforced
@@ -531,7 +540,7 @@ export async function createWocoSessionKey(builtKernel: BuiltKernel): Promise<st
     }),
     // `allowed` is the TOTAL gas budget (wei) this session key may consume —
     // NOT "self-paid only". 0n = zero budget → every op fails PolicyFailed(1),
-    // so it must be a real cap. Generous on Arb Sepolia (gas is ~free).
+    // so it must be a real cap. Generous at Arbitrum One gas (~0.02 gwei).
     // `enforcePaymaster` is intentionally NOT set: ZeroDev's sponsor call
     // simulates validation BEFORE attaching its paymaster, so enforcing one
     // there trips the same PolicyFailed. Scope stays tight via the call policy
@@ -714,18 +723,16 @@ export async function getWocoSessionClient(
   }
 
   const paymaster = d.createZeroDevPaymasterClient({
-    chain: d.arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     transport: d.http(d.rpcUrl),
   });
 
   return d.createKernelAccountClient({
     account: sessionAccount,
-    chain: d.arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     bundlerTransport: d.http(d.rpcUrl),
     client: d.publicClient,
-    paymaster: {
-      getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
-    },
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
   });
 }
 
@@ -866,18 +873,16 @@ export async function getEasSessionClient(
   }
 
   const paymaster = d.createZeroDevPaymasterClient({
-    chain: d.arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     transport: d.http(d.rpcUrl),
   });
 
   return d.createKernelAccountClient({
     account: sessionAccount,
-    chain: d.arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     bundlerTransport: d.http(d.rpcUrl),
     client: d.publicClient,
-    paymaster: {
-      getPaymasterData: (userOperation) => paymaster.sponsorUserOperation({ userOperation }),
-    },
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
   });
 }
 
@@ -1063,7 +1068,8 @@ export async function registerSubEnsViaPermit(
 // over PRF) is unchanged for daily use; recovery is a SEPARATE escape path.
 //
 // DEPLOYED-account model (the realistic WoCo case — sub-ENS / likes already
-// deploy these Kernels), verified end-to-end on Arb Sepolia by
+// deploy these Kernels), verified end-to-end on Arb Sepolia (the chain the
+// Kernel ran on before #489) by
 // scripts/recovery-spike-caller-hook.ts (recovery tx 0x17f0622…, address
 // preserved, old key dead): install the recovery ACTION as a fallback module
 // (type 3) + a CALLER HOOK that pins the permitted guardian account address; a
@@ -1077,7 +1083,8 @@ export async function registerSubEnsViaPermit(
 // mechanism with more signers. So who can recover is set entirely by the
 // guardian account's config, not by this install.
 //
-// Both action + hook are cross-chain singletons live on Arb Sepolia.
+// Both action + hook are CREATE2 cross-chain singletons — the same addresses on
+// Arbitrum One as on the Sepolia they were first deployed to.
 // Client-first: install + rotation are sponsored userOps, no server secret.
 // ---------------------------------------------------------------------------
 
@@ -1094,14 +1101,12 @@ export type { GuardianConfig } from "./guardian-config.js";
 async function loadRecoveryDeps() {
   const [
     { createPublicClient, http, encodeFunctionData, toFunctionSelector, parseAbi, parseAbiParameters, encodeAbiParameters, concat, erc20Abi },
-    { arbitrumSepolia },
     { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient, addressToEmptyAccount },
     { getEntryPoint, KERNEL_V3_1 },
     { getValidatorAddress },
     { createWeightedECDSAValidator },
   ] = await Promise.all([
     import("viem"),
-    import("viem/chains"),
     import("@zerodev/sdk"),
     import("@zerodev/sdk/constants"),
     import("@zerodev/ecdsa-validator"),
@@ -1111,10 +1116,10 @@ async function loadRecoveryDeps() {
   const rpcUrl = getRpcUrl();
   const entryPoint = getEntryPoint("0.7");
   const kernelVersion = KERNEL_V3_1;
-  const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(rpcUrl) });
+  const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(rpcUrl) });
 
   return {
-    rpcUrl, entryPoint, kernelVersion, publicClient, arbitrumSepolia, http,
+    rpcUrl, entryPoint, kernelVersion, publicClient, http,
     encodeFunctionData, toFunctionSelector, parseAbi, parseAbiParameters, encodeAbiParameters, concat, erc20Abi,
     createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient, addressToEmptyAccount,
     getValidatorAddress, createWeightedECDSAValidator,
@@ -1124,11 +1129,8 @@ async function loadRecoveryDeps() {
 type RecoveryDeps = Awaited<ReturnType<typeof loadRecoveryDeps>>;
 
 function recoverySponsor(d: RecoveryDeps) {
-  const paymaster = d.createZeroDevPaymasterClient({ chain: d.arbitrumSepolia, transport: d.http(d.rpcUrl) });
-  return {
-    getPaymasterData: (userOperation: Parameters<typeof paymaster.sponsorUserOperation>[0]["userOperation"]) =>
-      paymaster.sponsorUserOperation({ userOperation }),
-  };
+  const paymaster = d.createZeroDevPaymasterClient({ chain: KERNEL_CHAIN, transport: d.http(d.rpcUrl) });
+  return sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args));
 }
 
 /**
@@ -1216,6 +1218,7 @@ async function sendSudoUserOp(
 export async function setupRecovery(
   builtKernel: BuiltKernel,
   guardianAddress: string,
+  opts: { expectedGuardiansAfter: string[] },
 ): Promise<{ userOpHash: string; txHash: string }> {
   const d = await loadRecoveryDeps();
   const callData = buildRegisterGuardianCallData(d, guardianAddress as Address);
@@ -1239,7 +1242,40 @@ export async function setupRecovery(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
+  await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
   return { userOpHash, txHash };
+}
+
+/**
+ * Prove the add landed on the WHOLE set, at the block it landed in (#505).
+ *
+ * "The new guardian is registered" is true of BOTH writes and so cannot tell them
+ * apart — and they are not the same: a route install REPLACES the hook's set. An
+ * install sent against an account that already had backups (a stale `absent` from
+ * a lagging replica is enough) registers the new guardian perfectly while dropping
+ * every other one, and a per-guardian read-back reports that as success. Comparing
+ * the FULL set is what makes the difference visible.
+ *
+ * The read is pinned to the landing block for the same reason `removeAllBackups`
+ * pins its re-read: at "latest" a replica that has not caught up answers about a
+ * chain state that predates the write. A node without the block errors, which
+ * surfaces as the honest "couldn't confirm" rather than as a fabricated mismatch.
+ */
+async function assertGuardianSetAfterWrite(
+  kernelAddress: string,
+  expected: string[],
+  blockNumber: bigint | undefined,
+  txHash: string,
+): Promise<void> {
+  const after = await readGuardianSet(kernelAddress, blockNumber);
+  const verdict = guardianSetAfterWriteVerdict(expected, after, txHash);
+  if (verdict.ok) return;
+  if (verdict.diff) {
+    console.error("[kernel] guardian set after write did not match", {
+      txHash, expected, actual: after.state === "read" ? after.guardians : null, ...verdict.diff,
+    });
+  }
+  throw new Error(verdict.message);
 }
 
 // --- Editing the guardian set on the WoCo hook (#164) ----------------------
@@ -1259,6 +1295,7 @@ export async function setupRecovery(
 export async function addGuardianOnChain(
   builtKernel: BuiltKernel,
   guardianAddress: string,
+  opts: { expectedGuardiansAfter: string[] },
 ): Promise<{ userOpHash: string; txHash: string }> {
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
@@ -1277,6 +1314,7 @@ export async function addGuardianOnChain(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
+  await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
   return { userOpHash, txHash };
 }
 
@@ -1334,7 +1372,7 @@ export async function revokeGuardianOnChain(
 //    secrets a backup was already given.
 
 /**
- * Session-memoised "is the configured RPC really Arbitrum Sepolia?". `null` while
+ * Session-memoised "is the configured RPC really the Kernel's chain?". `null` while
  * unknown, so a failed check is retried rather than cached as a refusal.
  */
 let _rpcChainVerified: boolean | null = null;
@@ -1404,10 +1442,9 @@ export async function readRecoveryRoute(
   kernelAddress: string,
   atBlock?: bigint,
 ): Promise<RecoveryRouteStatus> {
-  const [{ createPublicClient, http, toFunctionSelector, parseAbi, zeroAddress }, { arbitrumSepolia }] =
-    await Promise.all([import("viem"), import("viem/chains")]);
+  const { createPublicClient, http, toFunctionSelector, parseAbi, zeroAddress } = await import("viem");
   try {
-    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
 
     // viem does NOT check that the endpoint serves the chain named in `chain`, and
     // this function is the one place a definitive NEGATIVE is minted. A wrong-chain
@@ -1565,7 +1602,7 @@ export async function recoverAccount(
   assertGuardianAddressAgrees(args.guardianConfig, guardianAccount.address);
   const guardianClient = d.createKernelAccountClient({
     account: guardianAccount,
-    chain: d.arbitrumSepolia,
+    chain: KERNEL_CHAIN,
     bundlerTransport: d.http(d.rpcUrl),
     client: d.publicClient,
     paymaster: recoverySponsor(d),
@@ -1623,12 +1660,9 @@ export async function isGuardianRegistered(
   const route = await readRecoveryRoute(targetAddress, atBlock);
   if (route.state === "unknown") return null;
   if (route.state === "absent") return false;
-  const [{ createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([
-    import("viem"),
-    import("viem/chains"),
-  ]);
+  const { createPublicClient, http } = await import("viem");
   try {
-    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
     const at = atBlock === undefined ? {} : { blockNumber: atBlock };
     switch (route.hookKind) {
       case "woco":
@@ -1663,12 +1697,9 @@ export async function isGuardianRegistered(
  * whose `hookKind` is `woco`; the legacy hook has no enumeration.
  */
 export async function readGuardianSet(kernelAddress: string, atBlock?: bigint): Promise<GuardianSetRead> {
-  const [{ createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([
-    import("viem"),
-    import("viem/chains"),
-  ]);
+  const { createPublicClient, http } = await import("viem");
   try {
-    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
     if (!(await isConfiguredChain(publicClient))) return { state: "unknown" };
     const at = atBlock === undefined ? {} : { blockNumber: atBlock };
     const guardians = (await publicClient.readContract({
@@ -1726,14 +1757,13 @@ const ECDSA_VALIDATOR_STORAGE_ABI = [
  */
 export async function counterfactualKernelOf(eoaAddress: string): Promise<string | null> {
   try {
-    const [{ createPublicClient, http }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getKernelAddressFromECDSA }] =
+    const [{ createPublicClient, http }, { getEntryPoint, KERNEL_V3_1 }, { getKernelAddressFromECDSA }] =
       await Promise.all([
         import("viem"),
-        import("viem/chains"),
         import("@zerodev/sdk/constants"),
         import("@zerodev/ecdsa-validator"),
       ]);
-    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
     const addr = await getKernelAddressFromECDSA({
       entryPoint: getEntryPoint("0.7"),
       kernelVersion: KERNEL_V3_1,
@@ -1752,14 +1782,13 @@ export async function readCounterfactualOwner(
   eoaAddress: string,
 ): Promise<string | null | "error"> {
   try {
-    const [{ createPublicClient, http }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getKernelAddressFromECDSA }] =
+    const [{ createPublicClient, http }, { getEntryPoint, KERNEL_V3_1 }, { getKernelAddressFromECDSA }] =
       await Promise.all([
         import("viem"),
-        import("viem/chains"),
         import("@zerodev/sdk/constants"),
         import("@zerodev/ecdsa-validator"),
       ]);
-    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
     const counterfactual = await getKernelAddressFromECDSA({
       entryPoint: getEntryPoint("0.7"),
       kernelVersion: KERNEL_V3_1,
@@ -1833,15 +1862,14 @@ export async function readKernelEcdsaOwnerStrict(
   blockNumber?: bigint,
 ): Promise<string | null | "error"> {
   try {
-    const [{ createPublicClient, http, zeroAddress }, { arbitrumSepolia }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }] =
+    const [{ createPublicClient, http, zeroAddress }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }] =
       await Promise.all([
         import("viem"),
-        import("viem/chains"),
         import("@zerodev/sdk/constants"),
         import("@zerodev/ecdsa-validator"),
       ]);
     const validatorAddress = getValidatorAddress(getEntryPoint("0.7"), KERNEL_V3_1);
-    const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(getRpcUrl()) });
+    const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
     const owner = (await publicClient.readContract({
       address: validatorAddress as Address,
       abi: ECDSA_VALIDATOR_STORAGE_ABI,

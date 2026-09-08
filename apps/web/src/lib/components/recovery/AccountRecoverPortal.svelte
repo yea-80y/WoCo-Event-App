@@ -18,6 +18,7 @@
   import { readBackupProtection } from "../../auth/backup-management.js";
   import type { GuardianKeys } from "../../auth/recovery-escrow.js";
   import { resolveSubEnsAddress } from "../../api/sub-ens.js";
+  import { describeRecoveryError } from "../../auth/recovery-errors.js";
 
   type Phase =
     | "intro"
@@ -248,7 +249,8 @@
         guardianKeys: guardianKeys ?? undefined,
       });
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : "Recovery couldn't be completed — please try again";
+      console.warn("[recovery] recoverAndRekey failed:", e);
+      errorMsg = describeRecoveryError(e, "recover", "Recovery couldn't be completed — please try again");
       phase = "error";
       return;
     }

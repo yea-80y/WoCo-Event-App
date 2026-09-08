@@ -14,7 +14,8 @@
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
   import BackupNudge from "../components/recovery/BackupNudge.svelte";
   import { addSiteEvent } from "../api/sites.js";
-  import { claimSubEnsLabel, claimSubEnsViaPermit, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
+  import { claimSubEnsLabel, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
+  import { describeSubEnsError, subEnsErrorDetail } from "../sub-ens/errors.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
@@ -81,6 +82,8 @@
   let subEnsPhase = $state<"idle" | "pending" | "done" | "error">("idle");
   let subEnsLabel = $state("");
   let subEnsError = $state<string | null>(null);
+  /** A name that registered fine but did not make it onto the event feed. */
+  let subEnsStampWarning = $state<{ title: string; detail?: string } | null>(null);
 
   // Step 3 — live + domain (deploy state)
   let deploying = $state(false);
@@ -197,9 +200,10 @@
   }
 
   // Route the chosen sub-ENS at the freshly deployed event page. Runs after deploy
-  // because it needs the contentHash. "new" mints (gasless permit for passkey logins,
-  // sponsor mint otherwise) with the contenthash set in the same tx; "existing"
-  // repoints an owned label via the ownership-checked set-contenthash endpoint.
+  // because it needs the contentHash. "new" mints through the WoCo sponsor wallet —
+  // EVERY login kind, no exceptions (#489) — with the contenthash set in the same tx;
+  // "existing" repoints an owned label via the ownership-checked set-contenthash
+  // endpoint.
   async function runSubEnsTask(contentHash: string) {
     const intent = domainIntent;
     if (intent.mode === "none") return;
@@ -211,42 +215,59 @@
 
     subEnsPhase = "pending";
     subEnsError = null;
+    subEnsStampWarning = null;
     subEnsLabel = intent.label;
     try {
       if (intent.mode === "new") {
-        const res = auth.kind === "passkey"
-          ? await claimSubEnsViaPermit({
-              label: intent.label,
-              kernelAddress: await auth.ensureWocoSessionKey(),
-              swarmHash: contentHash,
-              description: intent.description,
-            })
-          : await claimSubEnsLabel({
-              label: intent.label,
-              swarmHash: contentHash,
-              description: intent.description,
-            });
+        const res = await claimSubEnsLabel({
+          label: intent.label,
+          swarmHash: contentHash,
+          description: intent.description,
+        });
         if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not claim the name"; return; }
       } else {
         const res = await setSubEnsContenthash(intent.label, contentHash);
         if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not update the name"; return; }
       }
       // Display hint on the event feed (event pages show the name + social row).
-      // Non-fatal: chain ownership is authoritative; a missed stamp just hides the badge.
-      if (createdEventId) {
-        // Pass the content-feed signer so a client-owned event feed can re-sign
-        // the SOC with the label (the server can't write the user's feed).
-        auth.getContentFeedSigner().then((signer) =>
-          stampEventSubEns(intent.label, createdEventId!, signer),
-        ).catch((err) =>
-          console.warn("[sub-ens] stamp-event failed (non-fatal):", err),
-        );
-      }
+      // Non-fatal — chain ownership is authoritative — but not silent: a missed
+      // stamp means the event page shows no name, and only the organiser can
+      // decide whether that is worth retrying (#484).
+      if (createdEventId) void stampEventLabel(intent.label, createdEventId);
       subEnsPhase = "done";
     } catch (e) {
       subEnsPhase = "error";
       subEnsError = e instanceof Error ? e.message : "Sub-ENS update failed";
     }
+  }
+
+  /**
+   * Write the name onto the event feed as a display hint. Two failure shapes
+   * to catch, not one: `stampEventSubEns` resolves `{ ok: false }` for a server
+   * refusal and THROWS when the owner's SOC re-signature fails.
+   */
+  async function stampEventLabel(label: string, eventId: string) {
+    subEnsStampWarning = null;
+    const warn = (reason: string | undefined) => {
+      const described = describeSubEnsError({ error: reason });
+      subEnsStampWarning = {
+        title: "Registered, but the event page can't show the name yet.",
+        detail: subEnsErrorDetail(described) ?? described.title,
+      };
+    };
+    try {
+      // Pass the content-feed signer so a client-owned event feed can re-sign
+      // the SOC with the label (the server can't write the user's feed).
+      const signer = await auth.getContentFeedSigner();
+      const res = await stampEventSubEns(label, eventId, signer);
+      if (!res.ok) warn(res.error);
+    } catch (e) {
+      warn(e instanceof Error ? e.message : undefined);
+    }
+  }
+
+  function retryStamp() {
+    if (subEnsLabel && createdEventId) void stampEventLabel(subEnsLabel, createdEventId);
   }
 
   // Background post-deploy work. The deployed site is live the moment
@@ -577,6 +598,13 @@
               <button class="btn-primary" style="margin-top: 0.75rem;" onclick={retrySubEns}>Retry</button>
             {/if}
           {/if}
+          {#if subEnsStampWarning}
+            <p class="subens-stamp-warning">
+              {subEnsStampWarning.title}
+              {#if subEnsStampWarning.detail}<span class="subens-stamp-reason">{subEnsStampWarning.detail}</span>{/if}
+              <button class="subens-stamp-retry" onclick={retryStamp}>Retry</button>
+            </p>
+          {/if}
         </div>
       {/if}
 
@@ -892,6 +920,13 @@
     border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 4px;
   }
   .subens-open:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  /* A caveat on a success, not a failure — muted, never the error red. */
+  .subens-stamp-warning { margin: 0.5rem 0 0; font-size: 0.8125rem; color: var(--text-muted); line-height: 1.55; }
+  .subens-stamp-reason { display: block; }
+  .subens-stamp-retry {
+    margin-top: 0.25rem; padding: 0; background: none; border: none;
+    font: inherit; font-weight: 700; color: var(--accent); cursor: pointer;
+  }
 
   /* ── Custom domain ───────────────────────────────────────────────────────── */
   .domain-verified-banner {

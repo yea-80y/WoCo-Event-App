@@ -1,12 +1,13 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { checkSubEnsLabel, claimSubEnsLabel, claimSubEnsViaPermit, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
+  import { checkSubEnsLabel, claimSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import OwnedNamesList from "./OwnedNamesList.svelte";
+  import { bindableNames, hidesProfileName } from "../../sub-ens/roles.js";
   import { subEnsName as buildSubEnsName, subEnsWebUrl } from "@woco/shared";
 
   interface Props {
@@ -26,9 +27,15 @@
      * EventForm + MultiSiteBuilder must NOT set this — they stay unlimited.
      */
     singleName?: boolean;
+    /**
+     * Asked before the `singleName` Change button opens the claim form. Return
+     * false to refuse — the rename cooldown is enforced at BIND time, so the
+     * refusal has to land before the user mints a name they cannot bind (#484).
+     */
+    onbeforerename?: () => Promise<boolean> | boolean;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
 
   // ── Stripe gate ──────────────────────────────────────────────────────────────
   // null = loading/unknown, false = not connected, true = connected+complete
@@ -77,13 +84,22 @@
   let ownedState = $state<OwnedState>('idle');
   let ownedNames = $state<OwnedSubEnsName[]>([]);
 
+  // SITE mode hides the profile name — the deploy hook refuses to point it at a
+  // site (409 `profile_name`). PROFILE mode (`singleName`) does NOT: this list
+  // is how a user picks which of their names IS their profile name, and the
+  // current one re-binds idempotently. Filtering there would hide the one name
+  // the screen exists to manage.
+  let offerNames = $derived(singleName ? ownedNames : bindableNames(ownedNames));
+  let profileHidden = $derived(!singleName && hidesProfileName(ownedNames));
+
   async function loadOwned() {
     if (ownedState === 'loading' || ownedState === 'ready') return;
     ownedState = 'loading';
     const res = await getOwnedSubEns();
     if (res.ok && res.data) {
       ownedNames = res.data.names;
-      ownedState = ownedNames.length === 0 ? 'empty' : 'ready';
+      const offerable = singleName ? ownedNames : bindableNames(ownedNames);
+      ownedState = offerable.length === 0 ? 'empty' : 'ready';
     } else {
       ownedState = 'error';
     }
@@ -115,6 +131,23 @@
   let claimError = $state('');
   // Rename mode (singleName only): hides claimed view, re-shows claim form
   let renaming   = $state(false);
+  let checkingRename = $state(false);
+
+  async function startRename() {
+    if (checkingRename) return;
+    if (onbeforerename) {
+      checkingRename = true;
+      try {
+        if (!(await onbeforerename())) return;
+      } finally {
+        checkingRename = false;
+      }
+    }
+    renaming = true;
+    rawInput = '';
+    checkPhase = 'idle';
+    claimError = '';
+  }
 
   // Success state — either already had a label or just claimed one
   let claimed = $derived(!!claimedLabel);
@@ -181,20 +214,15 @@
     const label = rawInput.toLowerCase().trim();
 
     try {
-      // Passkey users own a ZeroDev Kernel → claim client-side via permit +
-      // scoped session key (gasless, name owned by their smart account). Every
-      // other login kind uses the server-sponsored path.
+      // The WoCo sponsor wallet mints for EVERY login kind (#489). Passkey users
+      // used to mint themselves through a permit + scoped session key; that rail
+      // is one more thing to keep working on a chain move, and it bought the user
+      // nothing the sponsor path does not already give them.
       const attempt = async () =>
-        auth.kind === 'passkey'
-          ? claimSubEnsViaPermit({
-              label,
-              kernelAddress: await auth.ensureWocoSessionKey(),
-              description: profileBio.trim() || undefined,
-            })
-          : claimSubEnsLabel({
-              label,
-              description: profileBio.trim() || undefined,
-            });
+        claimSubEnsLabel({
+          label,
+          description: profileBio.trim() || undefined,
+        });
       let res = await attempt();
       // Attendee gate: names need a ticket-unlocked account (organisers pass
       // automatically). Open the unlock flow and retry once.
@@ -322,9 +350,10 @@
         </div>
         <button
           class="action-btn action-btn--change"
-          onclick={() => { renaming = true; rawInput = ''; checkPhase = 'idle'; claimError = ''; }}
+          disabled={checkingRename}
+          onclick={startRename}
         >
-          Change
+          {checkingRename ? 'Checking…' : 'Change'}
         </button>
       </div>
     </div>
@@ -421,11 +450,14 @@
     {#if claimMode === 'existing'}
       <OwnedNamesList
         state={ownedState === 'idle' ? 'loading' : ownedState}
-        names={ownedNames}
+        names={offerNames}
         onselect={useExisting}
         onretry={() => { ownedState = 'idle'; loadOwned(); }}
         emptyText="You haven't claimed any .woco.eth names yet — switch to “Claim a new name”."
       />
+      {#if profileHidden && (ownedState === 'ready' || ownedState === 'empty')}
+        <p class="reuse-hint">Your profile name can't be a site or event address.</p>
+      {/if}
       <p class="reuse-hint">Linking a name you own points it at this site on your next publish — replacing wherever it points now.</p>
     {:else}
     <!-- Label input row -->

@@ -106,7 +106,7 @@ async function delegationFor(parent: string) {
 function deps(over: Partial<DelegationVerifyDeps> = {}): DelegationVerifyDeps & { calls: number } {
   const state = {
     calls: 0,
-    isKernelKnownDeployed: () => false,
+    isKernelKnownDeployedOnAnyChain: () => false,
     readKernelOwner: async () => null as string | null | "error",
     // Would accept ANYTHING. If the gate leaks, these tests pass wrongly — which
     // is the point: they can only pass for the right reason.
@@ -121,7 +121,7 @@ function deps(over: Partial<DelegationVerifyDeps> = {}): DelegationVerifyDeps & 
 
 test("a remembered account is refused even by a verifier that accepts everything", async () => {
   const { delegation, session } = await delegationFor(PARENT);
-  const d = deps({ isKernelKnownDeployed: () => true });
+  const d = deps({ isKernelKnownDeployedOnAnyChain: () => true });
 
   const res = await verifyDelegation(delegation as never, session, ["gateway.woco-net.com"], d);
 
@@ -135,7 +135,7 @@ test("a remembered account is refused even by a verifier that accepts everything
 test("an account whose owner reads live is refused the same way", async () => {
   const { delegation, session } = await delegationFor(PARENT);
   const d = deps({
-    isKernelKnownDeployed: () => false,
+    isKernelKnownDeployedOnAnyChain: () => false,
     readKernelOwner: async () => "0x3333333333333333333333333333333333333333",
   });
 

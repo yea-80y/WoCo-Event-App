@@ -10,7 +10,7 @@ import {
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
 import { isKernelOwner, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
-import { isKernelKnownDeployed } from "./kernel-deployed.js";
+import { isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
 
 /**
@@ -22,7 +22,13 @@ import { decideSmartWalletPath } from "./smart-wallet-gate.js";
  * account. Production passes nothing and gets the real implementations.
  */
 export interface DelegationVerifyDeps {
-  isKernelKnownDeployed: (address: string) => boolean;
+  /**
+   * ANY chain, deliberately — the smart-wallet gate is the one consumer, and a
+   * 6492 wrapper replays against the original deployment on every chain the
+   * account is not deployed on, the Kernel's own chain included the day after a
+   * move (#489). The current-chain predicate would open the gate exactly then.
+   */
+  isKernelKnownDeployedOnAnyChain: (address: string) => boolean;
   readKernelOwner: (address: string, opts?: OwnerReadOptions) => Promise<string | null | "error">;
   verifySmartWalletTypedData: typeof verifySmartWalletTypedData;
   /**
@@ -35,7 +41,7 @@ export interface DelegationVerifyDeps {
 }
 
 const DEFAULT_DEPS: DelegationVerifyDeps = {
-  isKernelKnownDeployed,
+  isKernelKnownDeployedOnAnyChain,
   readKernelOwner,
   verifySmartWalletTypedData,
 };
@@ -163,7 +169,7 @@ export async function verifyDelegation(
       // simulating a deployment that has since been superseded. Once we can
       // identify the account as one with an on-chain owner, that owner is the
       // only authority that applies, so this path is not offered at all (#209).
-      const knownDeployed = deps.isKernelKnownDeployed(message.parent);
+      const knownDeployed = deps.isKernelKnownDeployedOnAnyChain(message.parent);
       // Short-circuit: the store's memory alone settles it, at no chain cost.
       const liveOwner = knownDeployed ? null : await deps.readKernelOwner(message.parent, readOpts);
       const gate = decideSmartWalletPath({ knownDeployed, liveOwner });

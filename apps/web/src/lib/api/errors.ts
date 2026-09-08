@@ -39,16 +39,55 @@ export class MarketingSenderUnavailable extends Error {
 }
 
 /**
+ * A failed response body as it reaches the client, kept OPEN: routes send
+ * structured detail alongside the code — when a rate cap resets, when a
+ * cooldown ends, which label was refused — and `safeJson` spreads the whole
+ * body, so it all arrives. Readers type-check each field they pull out.
+ */
+export type ApiErrorBody = Readonly<Record<string, unknown>>;
+
+/** The declared part of any failure envelope. */
+export interface ApiFailure {
+  error?: string;
+  code?: string;
+  status?: number;
+}
+
+/**
+ * A failed API call with its envelope intact.
+ *
+ * `throw new Error(resp.error)` is lossy, and the loss is not academic: it is
+ * why the rename cooldown could only ever render as the literal string
+ * "name_change_cooldown" — the field saying WHEN it ends was already on the
+ * object and was dropped at the throw (#484).
+ */
+export class ApiError extends Error {
+  readonly status?: number;
+  /** Machine-readable code. Routes older than `ApiResponse.code` put theirs in
+   *  `error` (every sub-ENS route does), so that is the fallback. */
+  readonly code?: string;
+  readonly body: ApiErrorBody;
+  constructor(message: string, body: ApiErrorBody) {
+    super(message);
+    this.name = "ApiError";
+    this.body = body;
+    this.status = typeof body.status === "number" ? body.status : undefined;
+    const code = typeof body.code === "string" ? body.code : undefined;
+    this.code = code ?? (typeof body.error === "string" ? body.error : undefined);
+  }
+}
+
+/**
  * Turn a failed `ApiResponse` into the right Error to throw. Callers keep their
  * own fallback message for the codeless case.
  */
-export function apiError(
-  resp: { error?: string; code?: string },
-  fallback: string,
-): Error {
+export function apiError(resp: ApiFailure, fallback: string): Error {
   const message = resp.error || fallback;
   if (resp.code === MarketingSenderUnavailable.CODE) {
     return new MarketingSenderUnavailable(message);
   }
-  return new Error(message);
+  // TypeScript will not widen an interface to an index-signature type on its
+  // own; the widening is safe because nothing reads a field without checking
+  // its type first.
+  return new ApiError(message, resp as unknown as ApiErrorBody);
 }

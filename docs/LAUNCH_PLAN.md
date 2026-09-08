@@ -1,3 +1,6 @@
+> **SUPERSEDED — June 2026.** The living launch plan is GitHub issue #353, which is re-ordered
+> as work lands. Read it there rather than trusting a snapshot.
+
 # WoCo Launch Plan — single source of truth (sequenced)
 
 Created 2026-06-21 by merging two in-flight handovers:
