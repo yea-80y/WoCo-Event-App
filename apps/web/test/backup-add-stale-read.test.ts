@@ -227,7 +227,14 @@ test("post-write verdict: the expected set, in any order and case, is ok", () =>
 test("the read-back wrapper throws the verdict's message and decides nothing itself", () => {
   const body = fnBody(KERNEL_ACCOUNT, "assertGuardianSetAfterWrite");
   assert.match(body, /guardianSetAfterWriteVerdict\(/, "the wrapper must ask the pure verdict");
-  assert.match(body, /throw new Error\(verdict\.message\)/, "the wrapper must throw the verdict's message");
+  const okReturn = "if (verdict.ok) return;";
+  const at = body.indexOf(okReturn);
+  assert.notEqual(at, -1, "the wrapper must return only on an ok verdict");
+  const tail = body.slice(at + okReturn.length);
+  // A commented-out throw, or a `return` slipped in before it, is the same silent
+  // guard — so the throw must be a live statement and the ONLY way out after the ok-return.
+  assert.match(tail, /^\s*throw new Error\(verdict\.message\);/m, "the wrapper must throw the verdict's message");
+  assert.doesNotMatch(tail, /^\s*return\b/m, "nothing but the throw may end the wrapper after the ok-return");
   assert.doesNotMatch(body, /diffGuardianSets\(/, "the comparison must not be re-implemented in the untestable module");
 });
 
