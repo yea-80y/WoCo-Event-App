@@ -4,6 +4,14 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Sub-ENS web addresses go back to `.limo`, with a certificate warm-up (2026-09-06)
+
+`SUB_ENS_WEB_SUFFIX` is `woco.eth.limo` again. The earlier "eth.limo refuses a certificate for our two-label
+subnames" finding was wrong: `.limo` and `.link` are the same stack, and per `ethlimo/dweb-proxy-api` a subname's cert is
+issued on demand at the first handshake, only once the name resolves to a contenthash, with the ask rate-limited per
+hostname and resolution — negatives included — cached 300 s. A name visited too early locks itself out for the window, so
+the server now warms the cert exactly once after each contenthash receipt. Client gating of "Open ↗" is tracked in #500.
+
 ## `woco.eth` cut over to our own resolver + Arbitrum One registry (step 8, 2026-09-05)
 
 The mainnet sub-ENS system is live: L2Registry clone `0x8630…A2B6` + WoCoRegistrar `0xACfe…03a2` on Arbitrum One (admin =

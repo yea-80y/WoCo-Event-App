@@ -1,6 +1,6 @@
 /**
  * A WoCo name resolves, through our CCIP gateway, to the WoCo app's own Swarm
- * content — so a browser at `nabil.woco.eth.link` loads THIS app. Two things
+ * content — so a browser at `nabil.woco.eth.<tld>` loads THIS app. Two things
  * follow, and both are decided here as pure functions so they can be tested
  * without a DOM:
  *
@@ -12,7 +12,7 @@
  *     canonical app host, where login is allowed.
  */
 
-/** Matches `<label>.woco.eth.<gateway-tld>` — one label only. `x.y.woco.eth.link`
+/** Matches `<label>.woco.eth.<gateway-tld>` — one label only. `x.y.woco.eth.<tld>`
  *  is NOT a name host: `[a-z0-9-]+` cannot span the dot, so a deeper subdomain
  *  (which nothing in the registrar can mint) falls through to the normal app. */
 const NAME_HOST = /^([a-z0-9-]+)\.woco\.eth\.[a-z]+$/;

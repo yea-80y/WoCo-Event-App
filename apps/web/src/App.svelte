@@ -14,7 +14,7 @@
     openProfileForNameHost();
   });
 
-  // A WoCo name (`nabil.woco.eth.link`) resolves to this app's own content, so
+  // A WoCo name (`nabil.woco.eth.<tld>`) resolves to this app's own content, so
   // the app itself has to notice which name it was reached by and open that
   // profile. Deliberately AFTER mount and never awaited: the label→address hop
   // is a network read, and the home page must paint whether or not it answers.

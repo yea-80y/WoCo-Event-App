@@ -151,7 +151,7 @@ Addressing options, in ascending order of niceness:
 
 ```
 gateway.woco-net.com/bzz/<contentHash>/     the raw collection
-<label>.woco.eth.link                       an ENS name via contenthash
+<label>.woco.eth.limo                       an ENS name via contenthash
 a custom domain                              see SEO_PLAN.md
 ```
 
