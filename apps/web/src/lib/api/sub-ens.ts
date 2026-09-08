@@ -2,13 +2,6 @@ import { authPost, authGet } from "./client.js";
 import type { EventFeed } from "@woco/shared";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import type { SubEnsNameRole } from "../sub-ens/roles.js";
-import {
-  claimSubEnsViaPermitWith,
-  type SubEnsClaimResult,
-  type SubEnsPermitClaimOpts,
-  type SubEnsPermitDeps,
-  type SubEnsPermitResponse,
-} from "./sub-ens-permit.js";
 
 const BASE =
   (typeof window !== "undefined" && (window as unknown as { SITE_CONFIG?: { apiUrl?: string } }).SITE_CONFIG?.apiUrl) ||
@@ -21,10 +14,13 @@ export interface SubEnsCheckResult {
   owner?: string;
 }
 
-/** The permit path's orchestration lives in `sub-ens-permit.ts` — runes-free and
- *  fetch-free so it can be tested under node, like `sub-ens-resolve.ts`. */
-export type { SubEnsClaimResult } from "./sub-ens-permit.js";
-export { isAccountAbstractionFailure, shouldFallBackToSponsor } from "./sub-ens-permit.js";
+/** What a successful mint answers with, on every login kind — the sponsor wallet
+ *  submits the tx, so `txHash` is an ordinary L2 transaction. */
+export interface SubEnsClaimResult {
+  label: string;
+  ensName: string;
+  txHash: string;
+}
 
 export async function checkSubEnsLabel(label: string) {
   const resp = await fetch(`${BASE}/api/sub-ens/check/${encodeURIComponent(label)}`);
@@ -99,31 +95,4 @@ export async function stampEventSubEns(label: string, eventId: string, signer?: 
     await signEventFeedSoc(resp.data.eventFeed, signer);
   }
   return resp;
-}
-
-/**
- * UNUSED SINCE THE KERNEL MOVE — removal tracked separately (#489). Every mint,
- * every login kind, now goes through `claimSubEnsLabel` (the WoCo sponsor
- * wallet). Kept exported only so the removal is its own reviewable PR.
- *
- * Passkey/Kernel path: fetch an EIP-712 permit from the server, then submit
- * `registerWithPermit` as a gasless userOp signed by the scoped ZeroDev session
- * key — the user pays no gas and the name is owned by their smart account.
- *
- * `kernelAddress` MUST come from `auth.ensureWocoSessionKey()` (it is the
- * permit's `owner` and the session-key owner). Falls back to the sponsor path
- * (`claimSubEnsLabel`) for non-passkey organisers.
- */
-export async function claimSubEnsViaPermit(
-  opts: SubEnsPermitClaimOpts,
-  deps: Partial<SubEnsPermitDeps> = {},
-): Promise<{ ok: boolean; data?: SubEnsClaimResult; error?: string }> {
-  return claimSubEnsViaPermitWith(opts, {
-    fetchPermit: (label) => authPost<SubEnsPermitResponse>("/api/sub-ens/permit", { label }),
-    // Imported HERE, not at module load: the Kernel module is large and only
-    // passkey organisers ever reach it.
-    register: async (args) => (await import("../auth/kernel-account.js")).registerSubEnsViaPermit(args),
-    sponsorClaim: claimSubEnsLabel,
-    ...deps,
-  });
 }
