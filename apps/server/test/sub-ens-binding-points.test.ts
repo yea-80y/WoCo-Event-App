@@ -149,12 +149,13 @@ test("every route that points a name at content consults isProfileName", () => {
   assert.match(sites, /profile_name/);
 });
 
-test("both mint rails pre-flight the rate cap", () => {
+test("the mint rail pre-flights the rate cap", () => {
   const subEns = sourceOf("../src/routes/sub-ens.ts");
   assert.equal(
     (subEns.match(/mintRateCapVerdict\(/g) ?? []).length,
-    2,
-    "/claim and /permit must each pre-flight the mint rate cap (#471)",
+    1,
+    "/claim must pre-flight the mint rate cap (#471). It was 2 while the gasless "
+      + "rail had its own mint route; #501 deleted that route, not the pre-flight.",
   );
   // …and the sponsor rail also maps the revert, because the pre-flight read can
   // race a concurrent mint and is skipped when the RPC is down.
