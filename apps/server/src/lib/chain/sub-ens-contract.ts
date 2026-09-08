@@ -5,6 +5,7 @@ import { SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment } from "@woco/shared";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import { getSponsorAddress } from "./sponsor-wallet.js";
+import { warmSubEnsWebCert } from "../sub-ens/cert-warmup.js";
 
 // namehash("woco.eth") — the base node of our L2Registry.
 // Computed once at module load; namehash() is a pure function (no provider).
@@ -423,5 +424,7 @@ export async function updateSubEnsContenthash(label: string, swarmHash: string):
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from setContenthash tx");
   console.log(`[sub-ens] contenthash updated label=${label} txHash=${receipt.hash}`);
+  // Fire-and-forget: the receipt is the fact callers wait for; the warm-up is a courtesy.
+  void warmSubEnsWebCert(label);
   return receipt.hash as string;
 }
