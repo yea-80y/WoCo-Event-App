@@ -119,6 +119,25 @@ export async function refuseUnlessOwner(
   return null;
 }
 
+/**
+ * Is `signature` a hex string of WHOLE BYTES?
+ *
+ * `0x…` plus an odd number of hex characters is not a byte string, but it
+ * satisfies a `[0-9a-fA-F]+` test, so it used to travel all the way into ethers
+ * and throw `INVALID_ARGUMENT` inside the relay — answered as a 500. That is the
+ * server reporting its own fault for a malformed request, and it hides the one
+ * thing the caller needs to be told: fix the field.
+ *
+ * Length beyond "whole bytes" is deliberately NOT checked. A plain EOA
+ * signature is 65 bytes, but `releaseWithSignature` verifies through the
+ * ERC-6492 universal validator, so a contract holder's ERC-1271/6492 signature
+ * is variable-length (see `release-rails.ts`). Pinning 65 here would refuse
+ * every smart-account release the moment those rails switch on.
+ */
+export function isWholeBytesHex(signature: unknown): signature is string {
+  return typeof signature === "string" && /^0x([0-9a-fA-F]{2})+$/.test(signature);
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -406,8 +425,9 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
   if (validationError) return c.json({ ok: false, error: validationError }, 400);
 
   const signature = typeof body.signature === "string" ? body.signature : "";
-  if (!/^0x[0-9a-fA-F]+$/.test(signature)) {
-    return c.json({ ok: false, error: "signature is required" }, 400);
+  if (!signature) return c.json({ ok: false, error: "signature is required" }, 400);
+  if (!isWholeBytesHex(signature)) {
+    return c.json({ ok: false, error: "signature must be hex of whole bytes" }, 400);
   }
 
   const expiration = Number(body.expiration);

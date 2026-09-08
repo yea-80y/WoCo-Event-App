@@ -41,6 +41,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
+import { profileNamesHealth } from "./lib/profile/name-ledger.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
 import { likesRoutes } from "./routes/likes.js";
 import { socialRoutes } from "./routes/social.js";
@@ -274,6 +275,13 @@ app.get("/api/health", (c) =>
     // reported rather than left to a log line. An `apexError` alongside it is
     // worse than unset: someone configured a value and it is being ignored.
     subEns: subEnsApexHealth(),
+    // The profile-name ledger (#464). `loadFailed` means the file on
+    // disk would not parse: the ledger is EMPTY, so every rename cooldown has
+    // reset and the profile-name refusal at the binding points is off until each
+    // account re-binds. It fails open deliberately — the alternative locks every
+    // organiser out of stamping any name — which is exactly why the condition
+    // has to be visible rather than inferred from one boot log line.
+    profileNames: profileNamesHealth(),
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),

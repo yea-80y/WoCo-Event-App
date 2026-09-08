@@ -41,7 +41,7 @@
  * closed, would lock every organiser out of stamping any name after a disk loss.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 
@@ -75,6 +75,8 @@ type Store = Record<string, NameRecord>;
 /** lowercase parent address → record. */
 const byAccount = new Map<string, NameRecord>();
 let loaded = false;
+/** Set when the file EXISTED and could not be read. Surfaced on /api/health. */
+let loadError: string | null = null;
 
 function ensureLoaded(): void {
   if (loaded) return;
@@ -92,12 +94,43 @@ function ensureLoaded(): void {
       });
     }
     console.log(`[profile-names] loaded ${byAccount.size} profile-name records`);
-  } catch {
-    // Absent on first boot. Not distinguished from unparseable: `writeJsonAtomic`
-    // makes a torn write impossible, so an unreadable file means something
-    // outside this process, and the loud path for that is the persistence
-    // counter on /api/health — not refusing to boot over admission policy.
+  } catch (err) {
+    // A missing file is the normal first boot and says nothing.
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
+
+    // Anything else means bytes exist that we cannot use, and the ledger comes
+    // back EMPTY — which fails open (see the header): every cooldown resets and
+    // the profile-name refusal stops firing until each user re-binds. That is
+    // still the right direction, but it must not be SILENT, and the evidence
+    // must not be destroyed: the very next bind would `persist()` the empty map
+    // straight over the damaged file, making the reset permanent and leaving
+    // nothing to diagnose. So: say so, quarantine, and report it on health.
+    loadError = (err as Error)?.message ?? String(err);
+    console.error(
+      `[name-ledger] CRITICAL: ${STORE_FILE} exists but could not be loaded — ` +
+        `every rename cooldown has reset and the profile-name refusal is off ` +
+        `until each account re-binds. Cause: ${loadError}`,
+    );
+    try {
+      const quarantine = `${STORE_FILE}.corrupt-${Date.now()}`;
+      renameSync(STORE_FILE, quarantine);
+      console.error(`[name-ledger] preserved the unreadable file at ${quarantine}`);
+    } catch (renameErr) {
+      console.error("[name-ledger] could not quarantine the unreadable file:", renameErr);
+    }
   }
+}
+
+/**
+ * For /api/health. `loadFailed` means the store existed and would not load, so
+ * the ledger is empty for reasons that are not "nobody has bound a name yet" —
+ * the one event that turns this module off without any request failing. A flag,
+ * not the message: health is a public endpoint and an EACCES-class failure
+ * carries a filesystem path; the cause is in the boot log.
+ */
+export function profileNamesHealth(): { loadFailed: boolean } {
+  ensureLoaded();
+  return { loadFailed: loadError !== null };
 }
 
 function persist(): void {
@@ -246,4 +279,5 @@ export function unbindProfileName(account: string): void {
 export function _resetProfileNamesForTests(): void {
   byAccount.clear();
   loaded = false;
+  loadError = null;
 }

@@ -25,7 +25,7 @@
  * `resolveSubEnsWith` (#177) rather than re-derived here.
  */
 
-import { resolveSubEnsWith } from "../api/sub-ens-resolve.js";
+import { resolveSubEnsWith, type SubEnsCheckResponse } from "../api/sub-ens-resolve.js";
 import { cacheGet, cacheSet } from "../cache/cache.js";
 import { verdictAllows, verdictIsFresh, type OwnerVerdict } from "./name-verdict.js";
 
@@ -58,19 +58,37 @@ export function nameIsVerified(label: string, expected: string | null | undefine
 const inFlight = new Map<string, Promise<OwnerVerdict | null>>();
 
 /**
+ * The owner lookup this module drives.
+ *
+ * A parameter rather than a hard import so the LAST-GOOD-VERDICT rule — the one
+ * thing here that is not in `name-verdict.ts` — can be tested against a reader
+ * that fails, which is the case the rule exists for. The default is the real
+ * endpoint, imported lazily exactly as before so nothing eager pulls in the API
+ * client.
+ */
+export type SubEnsCheck = (label: string) => Promise<SubEnsCheckResponse>;
+
+const defaultCheck: SubEnsCheck = async (label) => {
+  const { checkSubEnsLabel } = await import("../api/sub-ens.js");
+  return checkSubEnsLabel(label);
+};
+
+/**
  * Fetch and remember the owner of `label`.
  *
  * Returns the verdict, or null when nobody answered — in which case NOTHING is
  * written, so a previously cached verdict survives an outage untouched.
  */
-export async function refreshVerdict(label: string): Promise<OwnerVerdict | null> {
+export async function refreshVerdict(
+  label: string,
+  check: SubEnsCheck = defaultCheck,
+): Promise<OwnerVerdict | null> {
   const k = key(label);
   const existing = inFlight.get(k);
   if (existing) return existing;
 
   const run = (async (): Promise<OwnerVerdict | null> => {
-    const { checkSubEnsLabel } = await import("../api/sub-ens.js");
-    const res = await resolveSubEnsWith(checkSubEnsLabel, label);
+    const res = await resolveSubEnsWith(check, label);
     if (res.status === "error") return null; // not a verdict — keep what we have
     const verdict: OwnerVerdict = {
       owner: res.status === "found" ? res.address.toLowerCase() : null,
@@ -88,11 +106,15 @@ export async function refreshVerdict(label: string): Promise<OwnerVerdict | null
  * Verify `label` belongs to `expected`, using the cache and revalidating when
  * the entry is stale. The single call site for a component.
  */
-export async function verifyName(label: string, expected: string | null | undefined): Promise<boolean> {
+export async function verifyName(
+  label: string,
+  expected: string | null | undefined,
+  check: SubEnsCheck = defaultCheck,
+): Promise<boolean> {
   if (!label || !expected) return false;
   const cached = cachedVerdict(label);
   if (verdictIsFresh(cached)) return verdictAllows(cached, expected);
-  const fresh = await refreshVerdict(label);
+  const fresh = await refreshVerdict(label, check);
   // A failed lookup falls back to whatever we already believed, which may be
   // nothing — never to "show it anyway".
   return verdictAllows(fresh ?? cached, expected);
