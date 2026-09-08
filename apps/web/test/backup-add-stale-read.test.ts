@@ -18,6 +18,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   checkAddAgainstPriorProtection,
   diffGuardianSets,
@@ -174,4 +175,27 @@ test("the refusal reaches the user as one sentence, and never as a sponsorship f
   assert.equal(describeRecoveryError(e, "setup"), STALE_BACKUP_READ_SENTENCE);
   // The machine detail stays off the screen.
   assert.ok(!describeRecoveryError(e, "setup").includes("absent"));
+});
+
+// --- The wiring, as a text check --------------------------------------------
+//
+// Both guards are pure and tested above, but a pure function nobody calls guards
+// nothing — and the two call sites live in modules this tsx suite cannot execute
+// (a Svelte runes store, and a module that loads viem + the ZeroDev SDK). Same
+// device as `auth-header-boundary.test.ts` and `apps/server/test/data-store-modes.test.ts`:
+// assert on the source, so deleting a call is a red test rather than a review miss.
+
+const AUTH_STORE = readFileSync(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url), "utf8");
+
+test("the store refuses on a contradicting read BEFORE it writes anything", () => {
+  const preflight = AUTH_STORE.indexOf("checkAddAgainstPriorProtection({");
+  const escrowWrite = AUTH_STORE.indexOf("await uploadRecoveryEnvelopeSoc({");
+  const appendWrite = AUTH_STORE.indexOf("await addGuardianOnChain(");
+  const installWrite = AUTH_STORE.indexOf("await setupRecovery(");
+  assert.notEqual(preflight, -1, "the add path must run the preflight");
+  for (const [name, at] of [["escrow SOC", escrowWrite], ["append", appendWrite], ["install", installWrite]] as const) {
+    assert.notEqual(at, -1, `${name} write not found`);
+    assert.ok(preflight < at, `the preflight must come before the ${name} write`);
+  }
+  assert.match(AUTH_STORE, /throw new StaleBackupReadError\(/, "the refusal must be the typed error");
 });
