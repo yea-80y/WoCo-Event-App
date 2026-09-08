@@ -2175,17 +2175,26 @@ async function grantSpendPermission(args: {
  * user already controls). It only ever SIGNS here — it never sends a tx. We hide
  * all of this behind "add a backup" in the UI.
  */
-async function setupAccountRecovery(backup: {
-  address: string;
-  signTypedData: import("@woco/shared").EIP712Signer;
-  recoveryReady?: boolean;
+async function setupAccountRecovery(
+  backup: {
+    address: string;
+    signTypedData: import("@woco/shared").EIP712Signer;
+    recoveryReady?: boolean;
+    /**
+     * Self-describing labels for the backup-inventory manifest (Increment 3a) — the
+     * signer knows only address+signer, so the UI supplies HOW the user added this
+     * backup. Non-PII memory-jogs only; never a secret.
+     */
+    meta?: { method?: import("@woco/shared").BackupMethod; providerLabel?: string; maskedEmail?: string };
+  },
   /**
-   * Self-describing labels for the backup-inventory manifest (Increment 3a) — the
-   * signer knows only address+signer, so the UI supplies HOW the user added this
-   * backup. Non-PII memory-jogs only; never a secret.
+   * What the panel had ALREADY read and shown the user (#505). Required, not
+   * optional: the caller is the only one who knows what claim the user is acting
+   * on, and a forgotten argument would silently reopen the silent-drop window
+   * this guards — see `checkAddAgainstPriorProtection`.
    */
-  meta?: { method?: import("@woco/shared").BackupMethod; providerLabel?: string; maskedEmail?: string };
-}): Promise<{ guardianAddress: string; txHash: string }> {
+  prior: import("./guardian-hook.js").PriorProtection,
+): Promise<{ guardianAddress: string; txHash: string }> {
   if (_kind !== "passkey" && _kind !== "web3auth") {
     throw new Error("Account recovery is only available for passkey or email/social accounts");
   }
@@ -2254,7 +2263,9 @@ async function setupAccountRecovery(backup: {
   // is no reason to write it for an add that will not happen).
   const { deriveGuardianAddress, setupRecovery, addGuardianOnChain, readRecoveryRoute, readGuardianSet } =
     await import("./kernel-account.js");
-  const { decideAddPath } = await import("./guardian-hook.js");
+  const { decideAddPath, checkAddAgainstPriorProtection, expectedGuardiansAfterAdd } = await import(
+    "./guardian-hook.js"
+  );
   // ONE definition of the guardian set (#161): every other path derives the
   // guardian address from the same helper, so setup and recovery cannot drift.
   // `deriveGuardianAddress` is the committing derivation — it cross-checks the
@@ -2272,6 +2283,24 @@ async function setupAccountRecovery(backup: {
   // that is the upgrade, and the UI has warned that its old guardians stop working.
   const route = await readRecoveryRoute(kernelAddress);
   const set = route.state === "installed" && route.hookKind === "woco" ? await readGuardianSet(kernelAddress) : null;
+  // ... and the fresh read must also AGREE with what the panel already showed the
+  // user (#505). `absent` is the dangerous answer here: it maps to `install`, which
+  // pins the hook's set to exactly this guardian, and one lagging replica is enough
+  // to produce it seconds after a first backup landed. A reading that retracts the
+  // protection the user was just shown is a contradiction, so it refuses before any
+  // write — the same stance `removeAllBackups` takes with `expectInstalled`.
+  const preflight = checkAddAgainstPriorProtection({
+    prior,
+    routeState: route.state,
+    hookKind: route.hookKind ?? "none",
+    set,
+  });
+  if (!preflight.ok) {
+    console.warn("[recovery] refusing to add a backup — chain read contradicts the panel:", preflight.detail);
+    const { StaleBackupReadError } = await import("./recovery-errors.js");
+    throw new StaleBackupReadError(preflight.detail);
+  }
+
   const plan = decideAddPath({
     routeState: route.state,
     hookKind: route.hookKind ?? "none",
@@ -2279,6 +2308,9 @@ async function setupAccountRecovery(backup: {
     guardian: guardianAddress,
   });
   if (plan.path === "refuse") throw new Error(plan.reason);
+  // What the hook must hold once this lands — the value both writes read back in
+  // full, so a replace that ate the other backups cannot pass as a success.
+  const expectedGuardiansAfter = expectedGuardiansAfterAdd(plan, guardianAddress);
 
   // Persist the escrow as a GUARDIAN-owned SOC (§13) — client-signed, the platform
   // only stamps postage, so it can no longer forge or withhold it. FATAL: this IS
@@ -2295,9 +2327,9 @@ async function setupAccountRecovery(backup: {
   // Escrow persisted + proven recoverable → now the irreversible on-chain write.
   let txHash: string;
   if (plan.path === "append") {
-    ({ txHash } = await addGuardianOnChain(_kernel, guardianAddress));
+    ({ txHash } = await addGuardianOnChain(_kernel, guardianAddress, { expectedGuardiansAfter }));
   } else {
-    ({ txHash } = await setupRecovery(_kernel, guardianAddress));
+    ({ txHash } = await setupRecovery(_kernel, guardianAddress, { expectedGuardiansAfter }));
     if (plan.replacesLegacy && feedSigner) {
       // The ZeroDev hook's guardians are unreachable from now on (the route no
       // longer consults it). Retire their manifest rows so the panel stops listing

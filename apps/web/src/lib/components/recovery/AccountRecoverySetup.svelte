@@ -222,12 +222,24 @@
     phase = "working";
     errorMsg = "";
     try {
-      await auth.setupAccountRecovery({
-        ...pendingBackup,
-        // Record HOW this backup was added in the user's encrypted-to-self manifest
-        // (non-PII memory-jog). connectingMethod is set at connect and persists here.
-        meta: { method: connectingMethod ?? "wallet", providerLabel: pendingBackup.providerLabel },
-      });
+      await auth.setupAccountRecovery(
+        {
+          ...pendingBackup,
+          // Record HOW this backup was added in the user's encrypted-to-self manifest
+          // (non-PII memory-jog). connectingMethod is set at connect and persists here.
+          meta: { method: connectingMethod ?? "wallet", providerLabel: pendingBackup.providerLabel },
+        },
+        // What THIS screen already read and told the user (#505). The store refuses
+        // to write if its own fresh read retracts it — a lagging replica answering
+        // "absent" would otherwise take the install path, which REPLACES the set and
+        // would drop every backup listed above while reporting success.
+        {
+          expectInstalled: isProtected === true,
+          // Same tri-state the panel renders: a list, "unknown" (a WoCo route whose
+          // set would not load — still a set that must not be dropped), or null.
+          expectedGuardians: onChainGuardians,
+        },
+      );
       backupAddress = pendingBackup.address;
       isProtected = true; // the install succeeded, so the route is on-chain
       protectionSource = "chain";
