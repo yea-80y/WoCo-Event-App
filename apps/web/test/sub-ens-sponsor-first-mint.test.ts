@@ -1,18 +1,18 @@
 /**
  * Every sub-ENS mint goes through the WoCo SPONSOR wallet, for every login kind
- * (#489). No screen may route a passkey user back to the permit rail.
+ * (#489) — the owner's permanent decision, not a stopgap.
  *
  * A ratchet on the two mint call sites rather than a unit test, for the reason
  * `cert-mint-binding.test.ts` gives: the choice is made inside a Svelte
- * component, by an `auth.kind` branch, and there is no seam to inject. The
- * failure it guards is silent — a permit mint still SUCCEEDS on the chain the
- * scoped session key was minted for, so a leftover branch would look like a
- * working feature right up until the Kernel chain and the registrar chain
- * disagree, and then it would fail at a user's deploy with a bundler error.
+ * component, by an `auth.kind` branch, and there is no seam to inject.
  *
- * Comments are stripped before matching: they name the retired rail on purpose,
- * to say why it is gone. A ratchet that read prose would fire on the
- * explanation and be silenced by deleting it, which is backwards.
+ * It used to also assert that neither screen reached for the gasless permit
+ * rail. #501 deleted that rail outright, so those two assertions now guard
+ * against calling functions that do not exist — which the compiler does, and
+ * better. What is left is the positive half: a mint screen must still mint.
+ *
+ * Comments are stripped before matching, so prose about a retired rail cannot
+ * trip a ratchet that reads source.
  */
 
 import { test } from "node:test";
@@ -37,18 +37,4 @@ for (const rel of MINT_SITES) {
     assert.match(code(rel), /claimSubEnsLabel\(/, "no sponsor mint call left in this screen");
   });
 
-  test(`${name} never routes a mint through the permit rail`, () => {
-    assert.doesNotMatch(
-      code(rel),
-      /claimSubEnsViaPermit/,
-      "a passkey mint is back on the gasless permit rail — every kind mints via the sponsor (#489)",
-    );
-  });
-
-  test(`${name} does not mint a scoped session key to claim a name`, () => {
-    // `ensureWocoSessionKey` is what makes the permit rail possible: it is the
-    // key the userOp is signed with. Its presence at a MINT site means the
-    // permit branch came back even if the call was renamed.
-    assert.doesNotMatch(code(rel), /ensureWocoSessionKey/);
-  });
 }
