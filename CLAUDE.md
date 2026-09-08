@@ -103,8 +103,19 @@ Five keys per account (issuer-curve migration #443, PRs #447–#453, 2026-09-01)
 Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
-3. Holder identity (ed25519, deterministic — the "POD seed") — attendee side: owns
-   tickets, answers cert challenges; the same seed derives the X25519 encryption key
+3. Holder identity (ed25519, deterministic) — attendee side. CORRECTED 2026-09-08: it does
+   NOT "own tickets" and signs NOTHING on any launch-scope path. A TICKET is signed by the
+   per-purchase BURNER key (secp256k1, `ticket/canonical.ts`) and verified against the
+   on-chain `slotOwner`; editions/manifests are signed by the ISSUING key (4 below) —
+   `edition/types.ts` states it outright: "no ed25519 anywhere on the issuer side".
+   What ed25519 still does: SIGNS cert-possession challenges + credit statements (both
+   OUT of launch scope), and its PUBLIC key rides along as a self-declared, unverified
+   owner-of-record identifier (`podPubKey` — fulfilment, attendee-gate store, the
+   cert-issuance surface). Removal tracked in #518.
+   ⚠️ THE SEED IS NOT THE ED25519 ACCOUNT. The seed is the 32-byte root
+   (keccak256 of ONE EIP-712 signature) that ALSO derives the X25519 encryption key and
+   the secp256k1 issuing key, by HKDF under different info strings. Dropping ed25519 keeps
+   the seed, keeps encryption, and costs NO extra user signature.
 4. Issuing key (secp256k1, HKDF from the same seed, generation-parameterised —
    `packages/shared/src/crypto/issuing.ts`) — organiser side: signs manifests + certs.
    Identity of record = its 20-byte ADDRESS, bound to the parent by proof-of-possession

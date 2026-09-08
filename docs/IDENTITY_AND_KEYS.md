@@ -47,11 +47,12 @@ defines it; that file is the authority, not this document.
         │ ed25519           │ │ X25519       │ │ secp256k1           │
         │ seed used VERBATIM│ │ HKDF         │ │ HKDF, generation-   │
         │                   │ │ "woco/       │ │ parameterised       │
-        │ Owns tickets,     │ │  encryption/ │ │                     │
-        │ answers cert      │ │  v1"         │ │ Signs manifests +   │
-        │ challenges,       │ │              │ │ certs. Identity of  │
-        │ signs credits     │ │ Opens sealed │ │ record = its 20-byte│
-        │                   │ │ orders       │ │ ADDRESS             │
+        │ SIGNS NOTHING on  │ │  encryption/ │ │                     │
+        │ any launch-scope  │ │  v1"         │ │ Signs editions +    │
+        │ path. Cert        │ │              │ │ manifests. Identity │
+        │ challenges +      │ │ Opens sealed │ │ of record = its     │
+        │ credits only.     │ │ orders       │ │ 20-byte ADDRESS     │
+        │ LEFTOVER → #518   │ │              │ │                     │
         └───────────────────┘ └──────────────┘ └─────────────────────┘
 ```
 
@@ -114,9 +115,36 @@ One 32-byte seed produces three keys on three curves, and their independence is 
 
 | Key | Curve | Derivation | Defined in |
 |---|---|---|---|
-| Holder identity | ed25519 | the seed **verbatim** | `apps/web/src/lib/pod/keys.ts` |
+| Holder identity | ed25519 | the seed **verbatim** | `apps/web/src/lib/pod/keys.ts` — **leftover, see §3a** |
 | Encryption | X25519 | `HKDF(sha256, seed, salt="", info="woco/encryption/v1", 32)` | `packages/shared/src/crypto/keys.ts` |
 | Issuing | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/issuing/v1/"+gen, 48)` → scalar | `packages/shared/src/crypto/issuing.ts` |
+
+### 3a. The ed25519 holder key is a leftover, and the seed is not it
+
+**Tickets are signed by the per-purchase burner key (secp256k1)**, verified against the on-chain
+`slotOwner` (`packages/shared/src/ticket/canonical.ts`). Editions and manifests are signed by the
+**issuing key**. `edition/types.ts` states it without qualification: *"no ed25519 anywhere on the
+issuer side."* The ed25519 holder key signs **no ticket and owns no ticket.**
+
+What it still does, in full:
+
+| Use | Kind | Status |
+|---|---|---|
+| `woco.cert-challenge.v1` possession signature | **signature** | Cert rail — **out of launch scope** |
+| `woco.credit.v1` `holderSig` | **signature** | Credits rail — out of launch scope |
+| `podPubKey` as owner-of-record | **identifier only** | Live, but *self-declared and never verified* (`routes/orders.ts:164`), and it feeds the cert-issuance surface |
+
+So on every launch-scope path it signs nothing. Removal is tracked in
+[#518](https://github.com/yea-80y/WoCo-Event-App/issues/518).
+
+**The distinction that matters, because the obvious reading is wrong:** the **seed is not the
+ed25519 account.** The seed is 32 bytes — `keccak256` of one EIP-712 signature — and it is the
+root for all three derivations above. ed25519 happens to use it *verbatim*; the encryption and
+issuing keys use it through HKDF. Deleting the ed25519 derivation therefore:
+
+- keeps the seed,
+- keeps the X25519 encryption key and the secp256k1 issuing key **byte-identical**,
+- and costs **no extra user signature** — it removes a local computation, not a prompt.
 
 HKDF's one-wayness is what makes this safe in the direction that matters: **a leaked issuing key
 cannot recover the seed**, and therefore cannot reach the holder identity or the encryption key.
@@ -396,8 +424,8 @@ Server side: `apps/server/src/middleware/auth.ts` and
 | Session key | Every authenticated API request (EIP-191 canonical challenge) | Anything durable |
 | Content-feed signer | The user's content chunks (profile, event, site, likes, follows) | Credentials |
 | Issuing key | `woco.manifest.v2`, `woco.cert.v1`, the issuer binding | Individual editions |
-| Holder identity | Cert possession challenges, credit statements | Anything an issuer signs |
-| Ticket burner | One per-ticket message, then discarded | Anything else, ever |
+| Holder identity (ed25519) | Cert possession challenges, credit statements — **both out of launch scope** | Tickets. Editions. Manifests. Anything on a live path (§3a) |
+| **Ticket burner (secp256k1)** | **The ticket.** One per-purchase key signs one canonical message, then is discarded. Its address is the on-chain `slotOwner` — the verifier's trust root | Anything else, ever |
 | Platform feed key | More than its name suggests: the directory pointer, the **site events index** (a deliberate trust carrier — see below), the creator site directory, the issuer-registry log relay, recovery status, the marketing-list pointer, shop config, the passport collection, **and any event or site feed whose client sent no feed signer** | Producing a signature for a key it does not hold — it cannot forge a user's signed object |
 | Sponsor wallet | Chain transactions: `registerEvent`, `batchClaimFor` | Anything a user authors |
 | ENS gateway key | CCIP-Read answers for `*.woco.eth` | Anything else |

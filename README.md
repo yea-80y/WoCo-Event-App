@@ -64,12 +64,24 @@ misdirect"** — not "the server is untrusted". See
 [ARCHITECTURE.md § Who trusts what](docs/ARCHITECTURE.md#13-who-trusts-what) and
 [SWARM_DATA_MODEL.md](docs/SWARM_DATA_MODEL.md).
 
-**3. There are five keys per account, not one — and the issuer is secp256k1 now.**
-Parent wallet → session key → and then three siblings derived from one "object data" seed:
-an **ed25519 holder** identity (owns tickets), an **X25519 encryption** key (opens sealed
-orders), and a **secp256k1 issuing** key (signs what an organiser issues). The issuer used to
-be ed25519; it moved to secp256k1 in the issuer-curve migration, and its identity of record is
-now a 20-byte **address**, not a public key. See [IDENTITY_AND_KEYS.md](docs/IDENTITY_AND_KEYS.md).
+**3. Signing is secp256k1 end to end. One seed derives several keys — the seed is not a key.**
+A parent wallet, a session key, and then a 32-byte **seed** established by a single EIP-712
+signature. Three independent keys derive from that seed, and only the derivation differs:
+
+| Derived | Curve | Signs |
+|---|---|---|
+| **Issuing key** | secp256k1 | editions + manifests — what an organiser issues |
+| **Encryption key** | X25519 | nothing; it *opens* sealed orders |
+| Holder identity | ed25519 | **nothing on any launch-scope path** — see below |
+
+**Tickets are signed by the per-purchase burner key (secp256k1)** and verified against the
+on-chain slot owner. `packages/shared/src/edition/types.ts` puts it plainly: *"no ed25519
+anywhere on the issuer side"*. The ed25519 holder key is a leftover — it still signs
+cert-possession challenges and credit statements, both **out of launch scope**, and its public
+key rides along as an unverified identifier. Removing it is tracked in
+[#518](https://github.com/yea-80y/WoCo-Event-App/issues/518), and it costs **no extra user
+signature**: the seed stays, so encryption and issuing are untouched.
+See [IDENTITY_AND_KEYS.md](docs/IDENTITY_AND_KEYS.md).
 
 **4. Nothing signs an individual ticket.**
 An organiser signs one **manifest** committing to a Merkle root over every edition in the
