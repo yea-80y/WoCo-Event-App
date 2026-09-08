@@ -46,7 +46,13 @@ npm run dev:server    # :3001
 > `BEE_URL_FALLBACK` is set to a gateway.
 
 Server configuration is `apps/server/.env`. `apps/server/.env.example` is 356 lines and documents
-every key with its rationale — read it rather than guessing. Frontend configuration is
+most keys with their rationale — read it rather than guessing, but **it is not complete**.
+
+> **Known gap that will bite you.** `WOCO_EVENT_CHAIN_ID` and `WOCO_EVENT_VERSION_{chainId}` are
+> **not in `.env.example`**. Production sets `421614` / `v2` (Arbitrum Sepolia, `WoCoEventV2`).
+> Unset, the server defaults to chain `84532` (Base Sepolia) and version `v1` — so a fresh local
+> server registers events on a different contract on a different chain, with no warning. Set both
+> before touching anything ticket-shaped. Frontend configuration is
 `apps/web/.env*` (`VITE_` prefix); `apps/web/.env.production.example` shows the production shape.
 **Never commit a populated `.env`.**
 
@@ -207,8 +213,9 @@ superseded along with the EAS social rail.
 - Hono's default 404 returns plain-text `404 Not Found`, so a client's `resp.json()` throws
   `Unexpected non-whitespace character at position 4`. If you see that error, you hit an
   unregistered route.
-- The canonical request challenge hashes **raw body bytes**. The server must call `c.req.text()`
-  *before* any parse, and the client must hash exactly the bytes it sends.
+- The canonical request challenge hashes **raw body bytes** — call `c.req.text()` before any
+  parse. Why, and what it breaks:
+  [IDENTITY_AND_KEYS.md § API authentication](./IDENTITY_AND_KEYS.md#9-api-authentication).
 
 ---
 

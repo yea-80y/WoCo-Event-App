@@ -120,7 +120,8 @@ woco/profile/data/{address}          profile
 woco/profile/avatar/{address}        avatar ref — a separate feed so it updates independently
 woco/issuer/{parentAddress}          issuer-registry statement log (parent-signed)
 woco/recovery/{kernelAddress}        recovery escrow envelope
-woco/site/config/{siteId}            site JSON
+woco/site/config/{siteId}            site JSON, or a platform-signed POINTER to a
+                                     client-owned Site chunk (see SITE_BUILDER.md)
 woco/site/{siteId}/events            site events index
 woco-multisite-{siteId}              per-site pointer → latest content hash (for ENS)
 woco/pod/collection/{address}        a user's collection
@@ -278,9 +279,18 @@ stored and escrowed. The reasoning is in
 [CLIENT_FEED_SIGNER_HANDOVER.md](./CLIENT_FEED_SIGNER_HANDOVER.md) and
 [FEED_SIGNER_REVIEW_2026-07-02.md](./FEED_SIGNER_REVIEW_2026-07-02.md).
 
-Reads resolve by **computed chunk address** and never through Bee's `/feeds` endpoint. That is
-not a preference — it is what keeps every feed readable through gateways that do not implement
-`/feeds`, Etherna included.
+**Client** reads of content feeds resolve by **computed chunk address** and never through Bee's
+`/feeds` endpoint. That is not a preference — it is what keeps every feed readable through
+gateways that do not implement `/feeds`, Etherna included. The **server** does use `/feeds` for
+the platform feeds it owns (`apps/server/src/lib/swarm/feeds.ts`), which is fine: it talks to a
+Bee node it runs.
+
+Two things this rule does **not** claim. It does not mean the app avoids the server on reads — the
+event directory, the per-creator catalogue and event detail pages all go through the API, with the
+server resolving the creator's chunk as a relay. And it does not mean the platform key signs only
+platform feeds; see
+[IDENTITY_AND_KEYS.md § Signing roles](./IDENTITY_AND_KEYS.md#10-signing-roles-in-one-table) for
+what it actually owns, and the signer-discovery limit underneath it.
 
 ---
 

@@ -50,11 +50,18 @@ disk under `.data/`, and a handful of them are *authoritative and not rebuildabl
 can email their attendees again. "No database" describes the data model, not the operational
 reality. See [ARCHITECTURE.md § What the server is for](docs/ARCHITECTURE.md#4-what-the-server-is-for).
 
-**2. Users sign their own storage; the server only stamps it.**
-A profile, an event or a site is a **Single-Owner Chunk** signed in the browser by a key the
-user owns. The server verifies the signature recovers to the claimed owner, pays for the storage
-with the platform postage batch, and uploads it. It cannot forge a user's content, and it is not
-in the read path — clients read by computed chunk address. See
+**2. Users sign their own storage — but the server is more involved than that sounds.**
+A profile, an event or a site is a **Single-Owner Chunk** signed in the browser by a key the user
+owns. The server verifies the signature recovers to the claimed owner, pays for the storage with
+the platform postage batch, and uploads it. It holds no user key, so it **cannot forge** a signed
+object.
+
+What it *can* do is worth knowing up front: most reads go **through** the API (the event
+directory, the per-creator catalogue and event detail pages, with the server resolving the
+creator's chunk as a relay), and a reader learns *which signer owns an event's chunk* from a
+platform-signed carrier. So the accurate line is **"the server cannot author, but it can
+misdirect"** — not "the server is untrusted". See
+[ARCHITECTURE.md § Who trusts what](docs/ARCHITECTURE.md#13-who-trusts-what) and
 [SWARM_DATA_MODEL.md](docs/SWARM_DATA_MODEL.md).
 
 **3. There are five keys per account, not one — and the issuer is secp256k1 now.**

@@ -58,7 +58,14 @@ Section = hero | rich-text | gallery | events-grid | featured-event
 
 ```
 POST /api/sites
-  · writes the Site + SiteEventsIndex feeds ATOMICALLY
+  · writes the config feed entry + SiteEventsIndex ATOMICALLY
+  · WITH a site feed signer: config holds a platform-signed POINTER
+    ({_woco_site_ptr, ownerAddress, siteFeedSigner}) and the CLIENT writes
+    the Site body as its own chunk
+  · WITHOUT one (legacy): the server writes the Site shell + pages itself,
+    split across two feeds to stay under 4096 bytes
+  · the events index stays PLATFORM-signed either way — it carries the
+    per-event creatorFeedSigner consumed on the claim/payment path
   · upserts a SiteDirectoryEntry into the creator's directory feed
 
 POST /api/sites/:id/deploy

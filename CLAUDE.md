@@ -157,7 +157,12 @@ SWARM
 - Frontend Bee gateway: https://gateway.woco-net.com (dev) / gateway.ethswarm.org (generated prod sites)
 - Backend Bee (in-cluster): http://bee-node:1633 (internal docker DNS, set as BEE_URL on the VM)
 - Postage batch: `POSTAGE_BATCH_ID` (server-only)
-- Feed private key: `FEED_PRIVATE_KEY` (server-only; platform signer owns all feeds)
+- Feed private key: `FEED_PRIVATE_KEY` (server-only). Owns PLATFORM feeds — directory pointer,
+  site events index, creator site directory, issuer-log relay, recovery status, marketing pointer,
+  shop config, passport collection — PLUS any event/site feed whose client sent no feed signer.
+  User content feeds are owned by the user's OWN signer (key 5 above). The site events index
+  stays platform-signed BY DESIGN: it carries `creatorFeedSigner` and is consumed on the
+  claim/payment path, so it is a server-written TRUST CARRIER (`routes/sites.ts`)
 
 PATTERNS:
 - Feed data = 4096-byte binary pages (128 slots × 32 bytes); JSON feeds pad with null bytes
@@ -239,7 +244,9 @@ Frozen rules every statement type shares: `packages/shared/src/statement/discipl
   sequence already orders — hence NO holder, NO holderSig, NO seq on these payloads
 - Retraction is `value: false`, never a deletion (a SOC cannot be deleted, and absent is
   indistinguishable from never-existed)
-- Statement feeds are PINNED to band 0 (latest-wins ⇒ no growth axis). NEVER band-walk them
+- Like/follow STATEMENT feeds are PINNED to band 0 (latest-wins ⇒ no growth axis) — NEVER
+  band-walk those. Their SUBJECT INDEX genuinely is banded and IS discovered by walking openers
+  (one version per new subject, never removed). Do not conflate the two
 - Subjects are keyed by ACCOUNT ADDRESS (owner decision 2026-09-03), not a name namehash —
   a namehash keyed an audience to something governance/custody could move
 - Counting is an INDEXER's job, not the platform's; it can publish evidence reports
@@ -290,7 +297,8 @@ EVENT LOADING (deployed site): `GET /api/sites/:id/events-full` — bundled, 5-m
 SEO: `siteDescription` injected at DEPLOY time (meta description, og:*, twitter:card;
 ogImage = logo Swarm ref); MultiSiteApp updates meta description per-page at runtime.
 
-TEMPLATE PRESET: pub-venue-v1 (only one so far). `newSiteFromTemplate()` in shared.
+TEMPLATE PRESETS: pub-venue-v1 · nightlife-v1 · clean-modern-v1 (`TemplateId` in
+site/types.ts is the list). `newSiteFromTemplate()` in shared.
 
 ============================================================================
 CONVENTIONS
@@ -327,10 +335,10 @@ AUTH (server):
   apps/server/src/lib/auth/revocation.ts             # nonce blacklist + revoke-all
 
 CLAIMS / EVENTS:
-  apps/server/src/routes/claims.ts                   # claim endpoint + wallet auth + email rate limit
+  apps/server/src/routes/claims.ts                   # claim-status ONLY (v1 claim rail deleted, #207)
   apps/server/src/routes/events.ts                   # create / discover / list / unlist
   apps/server/src/routes/tickets.ts                  # email send (composite PNG + /t link)
-  apps/server/src/lib/event/claim-service.ts         # core claim + approval logic
+  apps/server/src/lib/event/claim-service.ts         # email HMAC + passport collection feed (NOT claims)
   apps/server/src/lib/event/service.ts               # event creation
   apps/server/src/lib/swarm/topics.ts                # feed topic derivation
   packages/shared/src/edition/                       # woco.manifest.v2 + woco.edition.v1 (sign/verify)

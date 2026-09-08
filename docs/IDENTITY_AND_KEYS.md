@@ -16,13 +16,20 @@ defines it; that file is the authority, not this document.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────────┐
-  │  PARENT WALLET (secp256k1)                                             │
+  │  PARENT ACCOUNT (secp256k1)                                            │
   │  MetaMask EOA · or a ZeroDev Kernel (passkey / email login)            │
-  │  Permanent identity. Signs two EIP-712 messages, then gets out of      │
-  │  the way. Never signs a feed and never signs an API request.           │
+  │  Permanent identity. Signs AuthorizeSession, then gets out of the      │
+  │  way. Never signs a feed and never signs an API request.               │
+  │                                                                        │
+  │  A KERNEL NEVER SIGNS THE TWO DERIVATIONS (invariant #1). Those are    │
+  │  signed by the RAW secp256k1 key beneath it — the passkey's PRF key    │
+  │  or the Web3Auth key — because a smart account's 1271 signatures are   │
+  │  non-deterministic. The derivation's `address` field is that raw       │
+  │  key's address, NOT the Kernel's.                                      │
   └──┬──────────────────────────────────┬───────────────────────────────────┘
-     │ AuthorizeSession                 │ two deterministic derivations
-     │ (per session)                    │ (fixed nonce — same signature forever)
+     │ AuthorizeSession                 │ two deterministic derivations, signed
+     │ (per session, by the Kernel       │ by the RAW key (never the Kernel)
+     │  or the EOA)                     │ (fixed nonce — same signature forever)
      ▼                                  │
   ┌──────────────────────┐              ├──────────────────────────────┐
   │ SESSION KEY          │              ▼                              ▼
@@ -55,7 +62,18 @@ separated, not because a layer was convenient.
 
 ## 2. Sign-to-derive: the mechanism behind two of them
 
-Both the object-data seed and the content-feed signer are produced the same way:
+Both the object-data seed and the content-feed signer are produced the same way.
+
+**Who signs matters more than it looks.** For a passkey or email login the signer here is the
+**raw secp256k1 key beneath the Kernel** — the PRF-derived key, or the Web3Auth key — obtained
+via `_getPodSigner()`, never `_getSigner()`. This is "invariant #1" in
+`apps/web/src/lib/auth/auth-store.svelte.ts`: a Kernel's ERC-1271 signature is
+non-deterministic, so deriving from it would corrupt the user's encryption and ticket-signing
+identity on every login. It is also why the message's `address` field carries the raw key's
+address rather than the Kernel's, and why the "never sign-to-derive for a smart account" rule in
+§8 is consistent with this rather than contradicting it: we never do — we reach past the smart
+account to the deterministic key underneath. Coinbase Smart Wallet has no such key to reach,
+which is exactly why it is switched off.
 
 ```
 signature = wallet.signTypedData(DOMAIN, TYPES, { purpose, address, nonce: FIXED })
@@ -144,17 +162,21 @@ ed25519 left the system.
 
 ### The v2 issuer signing scheme, and why it is not raw ECDSA
 
-Every v2 issuer signature is EIP-191 `personal_sign` over an ASCII message of the form:
+Every v2 issuer signature is EIP-191 `personal_sign` over a **domain-prefixed ASCII message**.
+There are two shapes, not one:
 
 ```
-{domain}\n{0x + 64-hex digest}
+woco-manifest-v2\n{0x + 64-hex digest}              83 bytes   (manifests, certs)
+woco-issuer-binding-v1\n{parent}\n{gen}             ≥67 bytes  (the binding PoP)
 ```
 
 Never raw ECDSA over a bare 32-byte digest — and the reason is a real cross-protocol attack, not
 hygiene. The Swarm feed signer `personal_sign`s 32-byte chunk digests (bee-js wraps them
 `\x19Ethereum Signed Message:\n32`). An unprefixed issuer scheme would therefore be forgeable
-across the two protocols. Our messages are 79+ ASCII bytes and **can never be 32**, which is
-pinned by `packages/shared/test/crypto/cross-protocol.test.ts`.
+across the two protocols. What matters is that **no issuer message can ever be 32 bytes** — both
+shapes are comfortably longer — and that their domain lines keep them disjoint from each other,
+since the same key signs both. Pinned by
+`packages/shared/test/crypto/cross-protocol.test.ts`.
 
 Two further rules hold everywhere:
 
@@ -370,16 +392,33 @@ Server side: `apps/server/src/middleware/auth.ts` and
 
 | Signer | Signs | Never signs |
 |---|---|---|
-| Parent wallet | `AuthorizeSession`; the two derivation messages; issuer-registry rotation statements | API requests, feeds, tickets |
+| Parent account | `AuthorizeSession`; issuer-registry rotation statements (EIP-712) | API requests, feeds, tickets — **and, for a Kernel, the two derivations** (§2) |
 | Session key | Every authenticated API request (EIP-191 canonical challenge) | Anything durable |
 | Content-feed signer | The user's content chunks (profile, event, site, likes, follows) | Credentials |
 | Issuing key | `woco.manifest.v2`, `woco.cert.v1`, the issuer binding | Individual editions |
 | Holder identity | Cert possession challenges, credit statements | Anything an issuer signs |
 | Ticket burner | One per-ticket message, then discarded | Anything else, ever |
-| Platform feed key | Platform-owned feeds only (the directory pointer) | Any user content |
+| Platform feed key | More than its name suggests: the directory pointer, the **site events index** (a deliberate trust carrier — see below), the creator site directory, the issuer-registry log relay, recovery status, the marketing-list pointer, shop config, the passport collection, **and any event or site feed whose client sent no feed signer** | Producing a signature for a key it does not hold — it cannot forge a user's signed object |
 | Sponsor wallet | Chain transactions: `registerEvent`, `batchClaimFor` | Anything a user authors |
 | ENS gateway key | CCIP-Read answers for `*.woco.eth` | Anything else |
 
 The invariant behind the whole table: **the parent never signs feeds or requests, and no signer
 ever substitutes for another.** Substitution is the failure this design exists to prevent,
 because it produces credentials that look correct and verify against nothing.
+
+### The honest limit: signer discovery
+
+Read that platform-feed-key row carefully, because it marks the one place the server sits in the
+**trust** path rather than the convenience path. A reader verifying an event's chunk needs to know
+*which signer address should own it*, and today that answer comes from a platform-signed carrier —
+the directory entry, or the site events index, which `routes/sites.ts` calls "a server-written
+trust carrier ... consumed on the claim/payment path".
+
+So a compromised server cannot forge a signed object, but it **can point a reader at a different
+author**. Nothing in the bytes contradicts it.
+
+The repository already contains the fix for this shape of problem, applied to a different key:
+the **issuer registry** (`packages/shared/src/issuer/types.ts`) is parent-signed EIP-712
+statements in the parent's own feed, so any client verifies `parent → issuerAddress` from the
+bytes alone and the server "attests nothing a verifier needs to believe". The same pattern would
+close signer discovery. It has not been applied there yet.

@@ -119,7 +119,10 @@ That used to be re-read from the feed at mint time — and for a client-signed e
 the *creator's* chunk. So every check performed at checkout held at charge time and not at mint:
 re-signing the chunk in between re-pointed the mint, with the money already taken. The mint
 target is now the id validated into the Stripe session at checkout, falling back to this server's
-own registration record.
+own registration record — and **if both exist and disagree, the sale is refunded rather than
+minted against either.** The validated id is a registration the server no longer stands behind;
+the record may have moved under an in-flight session and could drain the wrong event's supply.
+Refund is the only outcome that does neither (`fulfilment.ts`, the #426 tripwire).
 
 Two more properties of that path:
 
@@ -257,6 +260,10 @@ exercised with the gate off.
 | **The organiser approval flow** | Routes, flags and UI all deleted with the v1 rail. Tracked for return on the v2 contract rail (#202). |
 | **Any free-ticket path** | An accepted consequence of the above: there is no v2 mint path for a free ticket yet. `freeEventsAllowed = false`, so nothing live changes. |
 | **`woco.manifest.v1` / `woco.ticket.v2` / `woco.pod-cert.v1`** | Deleted and dispatch-refused by every verifier. |
+
+> **Which contract you are on is env-selected.** Production sets `WOCO_EVENT_CHAIN_ID=421614`
+> and `WOCO_EVENT_VERSION_421614=v2`. Unset, the server defaults to chain `84532` (Base Sepolia)
+> and version `v1` — a different contract entirely. Neither variable is in `.env.example`.
 
 `WoCoTicketLedger` — a successor contract that stamps the **real organiser** as owner of record
 rather than `msg.sender` — is written, reviewed and merged in the contracts repo, and is **not

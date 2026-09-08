@@ -21,12 +21,18 @@ a flag, the file it came from is named — check there rather than trusting this
 WoCo is an event platform where **the user is the author of their own data**. The browser holds
 the keys and signs everything the user is the author of: their profile, their events, their
 websites, their likes, and the credentials an organiser issues. Those signed objects are stored
-as **chunks on Swarm**, addressed by a hash anyone can compute, readable by anyone without asking
-our server. Tickets settle **on chain**, because "who owns seat 12" needs a ledger with a single
-answer. The server exists to do the three things a browser cannot: **verify and pay** for
-storage, **hold secrets** (Stripe, email, the sponsor wallet), and **write to chain** on behalf
-of people who have no wallet. It is not the source of truth for anything a user authored, and
-clients do not read through it.
+as **chunks on Swarm**, addressed by a hash anyone can compute, so *anyone* can verify them
+without asking us. Tickets settle **on chain**, because "who owns seat 12" needs a ledger with a
+single answer. The server exists to do the things a browser cannot: **verify and pay** for
+storage, **hold secrets** (Stripe, email, the sponsor wallet), **write to chain** for people who
+have no wallet, and **tell a reader which signer owns a given event's chunk**.
+
+Be precise about the last one, because it is where the honest limit of the design sits. The
+server cannot **forge** a signed object — it holds no user key. But it does tell you *whose
+signature to expect*, through platform-signed carriers (the directory entry, the site events
+index), and most reads in the app go **through** the API rather than around it. So the accurate
+claim is not "the server is untrusted"; it is **"the server cannot author, but it can
+misdirect."** §1.3 spells out exactly where that line falls.
 
 ### 1.2 The five layers
 
@@ -68,12 +74,12 @@ This table is the fastest route to understanding why the code looks the way it d
 
 | Thing | Trusted for | Explicitly *not* trusted for | What would happen if you trusted it anyway |
 |---|---|---|---|
-| **The API server** | Verifying signatures, paying for storage, holding secrets, sending chain transactions | Authoring or vouching for user content | A compromised server could forge events, profiles and credentials |
+| **The API server** | Verifying signatures, paying for storage, holding secrets, sending chain transactions — **and pointing you at which signer owns an event's chunk** | *Authoring* user content: it holds no user key, so it cannot produce a valid signature | A compromised server cannot forge a signed object, but it **can re-point a reader at a different author** by serving a different `creatorFeedSigner`. Detecting that needs an out-of-band check of who the signer should be |
 | **A Swarm chunk's address** | Locating bytes | Making those bytes authentic | Anyone can upload anything; only the signature over it means something |
 | **A chunk's signature** | Proving *who wrote it* | Proving it is *current*, or that it is the object the chain registered | You would accept an old version, or a manifest the organiser never registered |
 | **The chain** | Who owns a ticket slot; who owns a name; what a manifest digest was at registration | Anything about content or display | The chain stores hashes and owners, nothing readable |
 | **The event feed at mint time** | Display fields — a title, a series name | *Which* on-chain event to mint against | An organiser could re-sign their own feed after checkout and re-point the mint, money already taken (this was a real defect) |
-| **A gateway 403** | "This chunk is not whitelisted" — but **only** when it carries our own tag | Any other 403 | A Cloudflare or proxy 403 means "couldn't ask", and caching that as "does not exist" has caused live incidents twice |
+| **A gateway 403** | "This chunk is not whitelisted" — but **only** when it carries our own tag | Any other 403 | A Cloudflare or proxy 403 means "couldn't ask", and caching that as "does not exist" has caused live incidents twice ([why](./SWARM_DATA_MODEL.md#6-reading-the-gateway-and-the-whitelist-that-is-not-a-cache)) |
 | **`.data/*.json` on the server** | Operational state | Being reconstructible — most are, a few are **not** | Losing `onchain-events.json` stops every sale, silently |
 | **Anything in a request body** | Nothing at all | Identity, especially | The server always acts on the parent address it *verified*, never one it was told |
 
@@ -88,10 +94,12 @@ Every layer, in one example. This is the shortest complete tour of the system.
  on publish, derives an ISSUING key from their seed       1
  builds N edition bodies, Merkle-roots them,
    signs ONE manifest over the root                       2
- server verifies a proof-of-possession, pins
-   parent → issuer, stores the signed chunk               3
- server registers the event on chain; the manifest
-   digest becomes `manifestRef`                           4
+ server verifies a proof-of-possession and pins
+   parent → issuer, then hands the assembled feed BACK    2
+ the CLIENT signs that feed and uploads it as its own
+   chunk — the server has no key for it                   3
+ a SEPARATE call per series registers on chain; the
+   manifest digest becomes `manifestRef`                   4
                                                           │
  BUYER                                                    │
  ─────────────────────────────────────────────────────    │
@@ -170,9 +178,24 @@ constant.
      └─────────┘ └────────┘ └──────┘        └──────────────────┘
 ```
 
-Note the two arrows out of the browser. Writes go **through** the server, because storage must be
-paid for. Reads go **around** it, straight to a gateway, by computed address. That asymmetry is
-the practical shape of "the server is not the source of truth".
+Note the two arrows out of the browser — but read the asymmetry carefully, because it is
+narrower than it looks.
+
+**Writes always go through the server**, because storage has to be paid for with the platform
+postage batch.
+
+**Reads are split, and the split is not "content goes direct".** Gateway-direct today: profiles
+when the caller already holds the signer, social statements, and recovery envelopes — all
+addressed by computed chunk address. Through the API: the **global event directory**, the
+**per-creator catalogue**, and **event detail pages**, where the server acts as a relay that
+resolves the creator's chunk on the caller's behalf (`GET /api/events/:id`, optionally with a
+`?signer=` carrier to skip a directory scan). Events are the most-read data in the app, so in
+practice most reads are relayed.
+
+What the direct-read path buys is not everyday performance — it is that the data **remains
+verifiable and reachable without us**. A third party holding a signer address and a topic can
+reconstruct any chunk address and check the signature themselves. That property is what the
+design protects; it is not a claim that the running app avoids the server.
 
 ### The four builds from one source tree
 
@@ -198,19 +221,25 @@ jobs.
 | Chain | What lives there | Defined in |
 |---|---|---|
 | **Arbitrum One** (`42161`) | Sub-ENS registry + registrar (`*.woco.eth` names as ERC-721), ZeroDev **Kernel** smart accounts for passkey and email logins, the guardian recovery hook | `packages/shared/src/sub-ens/addresses.ts`, `packages/shared/src/kernel/chain.ts` |
-| **Arbitrum Sepolia** (`421614`) | The **on-chain ticket ledger** — `WoCoEventV2`. Tickets are still on testnet. | `apps/server/src/lib/chain/event-contract.ts` + `WOCO_EVENT_CHAIN_ID` |
+| **Arbitrum Sepolia** (`421614`) | The **on-chain ticket ledger** — `WoCoEventV2`. Tickets are still on testnet, and this chain is selected by **env, not by code default** — see the warning below. | `apps/server/src/lib/chain/event-contract.ts` + `WOCO_EVENT_CHAIN_ID` |
 | **Ethereum mainnet** (`1`) | `woco.eth` itself, and the `L1Resolver` that answers for every subname by EIP-3668 CCIP-Read | `contracts/deployments/1-l1resolver.json` |
 
 So a live name is real mainnet ENS resolution, backed by a mainnet resolver that calls out to our
 gateway, which reads an Arbitrum One registry — while the tickets those names point at are minted
 on a testnet. That asymmetry is deliberate for pre-launch and is a launch-day item.
 
-```
-Arbitrum One   registry   0x8630000177d44ec12e4752Ae0C8b26390d30A2B6   (SubENSRegistry)
-               registrar  0xACfe7c02909a5c1eB64aE5aA10D18618323403a2   (WoCoRegistrar)
-Arb Sepolia    tickets    0x351070Aff6dECa449506a6eA6dC6cB84D13cAedf   (WoCoEventV2)
-Mainnet        resolver   0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63   (L1Resolver, woco.eth)
-```
+> **The ticket chain is env-selected, and the code default is something else.** Production sets
+> `WOCO_EVENT_CHAIN_ID=421614` and `WOCO_EVENT_VERSION_421614=v2`. With neither set the server
+> falls back to chain **`84532` (Base Sepolia)** and contract version **`v1`** — the old
+> `WoCoEvent` at `0x00824e22…`. **Neither variable appears in `.env.example`**, so a fresh local
+> server silently registers events on a different contract on a different chain than production.
+> Set both before touching anything ticket-shaped.
+
+**Addresses are deliberately not listed here.** They have exactly one owner each, so a stale
+copy cannot appear in two places: sub-ENS registry / registrar / L1Resolver →
+[SUBENS_IDENTITY.md § Where it lives](./SUBENS_IDENTITY.md#where-it-lives); the ticket contract →
+`apps/server/src/lib/chain/event-contract.ts`. The deployment records in
+`contracts/deployments/*.json` are the source of truth for all of them.
 
 Two constants have to stay equal — `KERNEL_CHAIN_ID` and `SUB_ENS_DEFAULT_CHAIN_ID` — because a
 name holder must answer ERC-1271 on the same chain the registry asks on. They are separate
@@ -317,11 +346,19 @@ ORGANISER PUBLISHES
                               silently falls back to another signer)
      · build one edition body per ticket, Merkle-root them, sign ONE manifest
      · sign an issuer-binding proof-of-possession over the parent address
-  3. POST /api/events
-     · server verifies the binding, pins parent → issuer in issuer-bindings.json
-     · server writes the event content as a client-signed chunk
-     · server calls registerEvent on the sponsor wallet and records the result
-       in onchain-events.json (see §4 — that record is truth, not cache)
+  3. POST /api/events  (streams progress; RETURNS the assembled feed)
+     · verifies the issuer binding, pins parent → issuer in issuer-bindings.json
+     · returns `eventFeed` — it does NOT write it. "The server has no key"
+       (routes/events.ts). The CLIENT signs that exact feed and uploads it as
+       its own SOC; a failure there fails the publish
+     · `creatorFeedSigner` is OPTIONAL here. Omit it and the event feed is
+       written PLATFORM-signed instead (the legacy path)
+  3b. POST /api/events/:id/register-on-chain — a SEPARATE authenticated call,
+      made once PER SERIES by the publish button
+     · sends registerEvent from the sponsor wallet, records the result in
+       onchain-events.json (see §4 — truth, not cache), and returns the updated
+       feed for the OWNER to re-sign, so onChainEventId lands inside the
+       client-signed SOC
   4. Directory: a debounced rebuild groups on-chain registrations, resolves each
      one's creator-signed content, and publishes an immutable snapshot blob
      behind a platform-signed pointer feed. The snapshot is a CACHE — a missed
@@ -438,11 +475,10 @@ Two gateway facts that are easy to get wrong:
 
 1. `Vite base` must be `'./'`. Absolute paths break under Swarm `/bzz/` URLs.
 2. **The bee-proxy whitelist is data-plane state, not a cache.** The proxy serves only addresses
-   it has been told about and tags its refusal `X-Chunk-Gate: not-whitelisted`; the client treats
-   that tagged 403 as "this chunk does not exist", which is what took a cold read from ~15s to
-   ~1.4s. The consequence: a **lost** whitelist entry makes real data read as *absent*, and
-   absent reads look clean to the erasure guards. Reads that feed a read-modify-write therefore
-   never trust the gate.
+   it has been told about, and a *tagged* refusal is treated by the client as "this chunk does
+   not exist" — so a **lost** whitelist entry makes real data read as absent. The mechanism, the
+   trust rule and the latency it bought are documented once, in
+   [SWARM_DATA_MODEL.md § Reading: the gateway](./SWARM_DATA_MODEL.md#6-reading-the-gateway-and-the-whitelist-that-is-not-a-cache).
 
 ---
 
