@@ -275,7 +275,7 @@ app.get("/api/health", (c) =>
     // reported rather than left to a log line. An `apexError` alongside it is
     // worse than unset: someone configured a value and it is being ignored.
     subEns: subEnsApexHealth(),
-    // The profile-name ledger (#464). `loadError` non-null means the file on
+    // The profile-name ledger (#464). `loadFailed` means the file on
     // disk would not parse: the ledger is EMPTY, so every rename cooldown has
     // reset and the profile-name refusal at the binding points is off until each
     // account re-binds. It fails open deliberately — the alternative locks every

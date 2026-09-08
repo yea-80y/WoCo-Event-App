@@ -122,13 +122,15 @@ function ensureLoaded(): void {
 }
 
 /**
- * For /api/health. Non-null means the store existed and would not load, so the
- * ledger is empty for reasons that are not "nobody has bound a name yet" — the
- * one event that turns this module off without any request failing.
+ * For /api/health. `loadFailed` means the store existed and would not load, so
+ * the ledger is empty for reasons that are not "nobody has bound a name yet" —
+ * the one event that turns this module off without any request failing. A flag,
+ * not the message: health is a public endpoint and an EACCES-class failure
+ * carries a filesystem path; the cause is in the boot log.
  */
-export function profileNamesHealth(): { loadError: string | null } {
+export function profileNamesHealth(): { loadFailed: boolean } {
   ensureLoaded();
-  return { loadError };
+  return { loadFailed: loadError !== null };
 }
 
 function persist(): void {

@@ -100,7 +100,7 @@ test("an unreadable store is loud, quarantined, and flagged on health", async ()
     errors.some((l) => l.includes("[name-ledger]")),
     `the load failure was silent; lines: ${JSON.stringify(errors)}`,
   );
-  assert.match(ledger.profileNamesHealth().loadError ?? "", /.+/, "health must carry the failure");
+  assert.equal(ledger.profileNamesHealth().loadFailed, true, "health must carry the failure");
 
   const kept = quarantined();
   assert.equal(kept.length, 1, "the unreadable file was not preserved");
@@ -144,7 +144,7 @@ test("a valid store loads, and reports no error", async () => {
   );
   const ledger = await freshLedger();
   assert.equal(ledger.profileNameOf(ACCOUNT), "punkpub");
-  assert.equal(ledger.profileNamesHealth().loadError, null);
+  assert.equal(ledger.profileNamesHealth().loadFailed, false);
   assert.deepEqual(quarantined(), [], "a readable file must never be moved aside");
 });
 
@@ -153,7 +153,7 @@ test("a MISSING store is silent — that is a normal first boot", async () => {
   const errors = await capturingErrors(async () => {
     assert.equal(ledger.profileNameOf(ACCOUNT), null);
   });
-  assert.equal(ledger.profileNamesHealth().loadError, null);
+  assert.equal(ledger.profileNamesHealth().loadFailed, false);
   assert.deepEqual(errors, [], "first boot must not alarm");
   assert.deepEqual(quarantined(), []);
 });
