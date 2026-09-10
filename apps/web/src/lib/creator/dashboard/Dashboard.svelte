@@ -393,14 +393,14 @@
     if (!podSeed) {
       const pk = await auth.ensurePodIdentity();
       if (!pk) {
-        decryptError = "POD identity derivation cancelled. Cannot decrypt orders.";
+        decryptError = "You cancelled the signature, so your orders stay locked.";
         decrypting = false;
         return;
       }
       podSeed = await restorePodSeed(auth.podAddress);
     }
     if (!podSeed) {
-      decryptError = "POD identity not found. Please re-derive your identity.";
+      decryptError = "No signing key on this device. Restore from recovery to read order details.";
       decrypting = false;
       return;
     }

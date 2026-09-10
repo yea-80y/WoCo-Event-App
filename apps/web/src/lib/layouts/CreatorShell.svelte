@@ -116,7 +116,7 @@
       onclick={() => navigate("/creator/pods")}
     >
       <span class="nav-icon"><Layers size={20} strokeWidth={2.25} /></span>
-      <span class="nav-label">PODs</span>
+      <span class="nav-label">Objects</span>
     </button>
     {#if auth.isConnected}
       <button
@@ -150,7 +150,7 @@
       </button>
       <button class="create-opt" role="menuitem" onclick={() => create("/creator/pods")}>
         <span class="opt-ic"><Layers size={16} strokeWidth={2.25} /></span>
-        <span class="opt-text"><strong>New POD</strong><small>Badge, drop, or collectible</small></span>
+        <span class="opt-text"><strong>New object</strong><small>Badge, drop, or access pass</small></span>
       </button>
     </div>
   {/if}

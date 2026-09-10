@@ -159,7 +159,7 @@ async function _getSigner(): Promise<EIP712Signer> {
 async function _getPodSigner(): Promise<EIP712Signer> {
   if (_kind === "passkey") {
     await _ensurePasskeyKey();
-    if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for POD signer");
+    if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for identity derivation");
     return createPasskeySigner(_passkeyPrivateKey, (info) =>
       signingRequest.request(info),
     );
@@ -168,7 +168,7 @@ async function _getPodSigner(): Promise<EIP712Signer> {
     // INVARIANT #1: POD derives from the raw Web3Auth secp256k1 key (ethers
     // Wallet → RFC-6979 deterministic), NOT the Kernel (`_getSigner` returns the
     // non-deterministic 1271 signer, which would corrupt the identity seed).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for POD signer");
+    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for identity derivation");
     return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
   }
   return _getSigner();
@@ -2062,7 +2062,7 @@ async function ensurePodIdentity(): Promise<boolean> {
       // that can never carry one (web3/coinbase/local) are unaffected.
       if (await _recoveryKernelFor(podAddr)) {
         console.error(
-          "[auth] recovered account POD seed missing — refusing to re-derive a divergent seed",
+          "[auth] recovered account identity seed missing — refusing to re-derive a divergent seed",
         );
         return false;
       }
@@ -2075,7 +2075,7 @@ async function ensurePodIdentity(): Promise<boolean> {
       _podSeedPresent = true;
       return true;
     } catch (e) {
-      console.error("[auth] POD identity derivation failed:", e);
+      console.error("[auth] holder identity derivation failed:", e);
       return false;
     } finally {
       _busy = false;
