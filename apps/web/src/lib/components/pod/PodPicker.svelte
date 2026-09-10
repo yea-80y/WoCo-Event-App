@@ -20,7 +20,7 @@
     label?: string;
   }
 
-  let { selected, multiple = false, kindFilter, onChange, label = "PODs" }: Props = $props();
+  let { selected, multiple = false, kindFilter, onChange, label = "Objects" }: Props = $props();
 
   type Phase = "loading" | "ready" | "error";
   let phase = $state<Phase>("loading");
@@ -45,7 +45,7 @@
       categories = m;
       phase = "ready";
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load PODs";
+      error = e instanceof Error ? e.message : "Failed to load objects";
       phase = "error";
     }
   }
@@ -103,7 +103,7 @@
     <div class="pick-empty">
       <span class="pick-kicker">No {label} yet</span>
       <p>
-        Create a POD first — <a class="pick-link" href="/creator/pods">go to POD manager</a>.
+        Create an object first — <a class="pick-link" href="/creator/pods">go to Objects</a>.
       </p>
     </div>
 

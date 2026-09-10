@@ -76,7 +76,7 @@
       blocked = split.blocked;
       phase = "ready";
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load PODs";
+      error = e instanceof Error ? e.message : "Failed to load objects";
       phase = "error";
     }
   }
@@ -142,24 +142,24 @@
 <div class="gate">
   <label class="gate-toggle">
     <input type="checkbox" checked={enabled} onchange={toggleEnabled} />
-    <span class="gate-label">Require holding a POD</span>
-    <span class="gate-hint">Buyers must be signed in with a wallet that holds the chosen POD(s) on-chain. They can still pay any way you accept — card or crypto.</span>
+    <span class="gate-label">Require holding an object</span>
+    <span class="gate-hint">Buyers must be signed in with a wallet that holds the chosen object(s) on-chain. They can still pay any way you accept — card or crypto.</span>
   </label>
 
   {#if enabled}
     <div class="gate-body">
       {#if phase === "loading"}
-        <p class="gate-msg">Loading your PODs…</p>
+        <p class="gate-msg">Loading your objects…</p>
       {:else if phase === "error"}
         <p class="gate-msg gate-msg--err">{error} <button type="button" class="retry" onclick={load}>Retry</button></p>
       {:else if gateable.length === 0 && blocked.length === 0}
         <p class="gate-msg">
-          No PODs yet. Create a badge or collectible in the
-          <a href="/creator/pods">POD manager</a> first.
+          No objects yet. Create one in the
+          <a href="/creator/pods">Objects</a> manager first.
         </p>
       {:else if gateable.length === 0}
         <p class="gate-msg">
-          None of your PODs can gate yet.
+          None of your objects can gate yet.
         </p>
         {@render blockedList()}
       {:else}
@@ -257,7 +257,7 @@
               />
             </label>
             <span class="firstn-hint">
-              tickets are POD-holder only; after {Math.max(1, Math.floor(winFirstN) || 1)} are
+              tickets are for holders of the chosen objects only; after {Math.max(1, Math.floor(winFirstN) || 1)} are
               claimed it opens to everyone (any payment method).
             </span>
           </div>

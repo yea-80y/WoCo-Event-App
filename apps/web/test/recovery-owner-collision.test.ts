@@ -69,10 +69,10 @@ test("a Kernel owned by SOMEONE ELSE does not block — it is not this credentia
   assert.equal(v.status, "allow");
 });
 
-test("a POD seed already stored under the credential is blocked", () => {
+test("an identity seed already stored under the credential is blocked", () => {
   const v = decideOwnerCollision(clean({ podSeedPresent: true }));
   assert.equal(v.status, "block");
-  assert.match(v.reason, /POD seed/);
+  assert.match(v.reason, /identity seed/);
 });
 
 test("a FAILED local seed read blocks, and is not read as an empty slot", () => {
