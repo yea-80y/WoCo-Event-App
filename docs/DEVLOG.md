@@ -4,6 +4,16 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Account setup explains itself, and the call sites stop counting (2026-09-10)
+
+`auth.ensureAccountSetup({ identity })` is now the single gate for "make this account ready to
+act" (`PublishButton`, `PodCreateModal`, `ProfilePage`), deciding via the pure
+`planAccountSetup()`; `SigningConfirmDialog` gained human copy keyed on the EIP-712 type names
+(`DeriveAccountKeys` / `AuthorizeSession`) with the raw domain + fields kept behind a closed
+disclosure, and external wallets get a pre-flight `AccountSetupSheet` whose rail ticks each
+signature as it lands. The hard-coded "(1 of 2)" / "(2 of 2)" labels are gone and ratcheted
+against: they were wrong for every Kernel-backed login, whose session signature is silent.
+
 ## "POD" leaves the interface — objects in the studio (#515/#458, 2026-09-10)
 
 Copy-only: every user-visible "POD"/"PODs" is now "object(s)" (badge or ticket where the thing is specifically one; the attendee display surface is "My collection"), the two dashboard decrypt errors say what happened instead of naming an internal key, and `apps/web/test/no-pod-copy.test.ts` walks the frontend source, strips comments, and fails if the word comes back — the sole allowlisted line is the EIP-712 `purpose` field in `pod-identity.ts`, whose bytes every user's seed is derived from; identifiers, routes, topics and storage keys are untouched.

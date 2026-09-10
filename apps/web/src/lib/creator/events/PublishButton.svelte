@@ -135,16 +135,12 @@
       }
       progress = 1;
 
-      if (!auth.hasSession) {
-        step = "Approve session (1 of 2)...";
-        const ok = await auth.ensureSession();
-        if (!ok) { error = "Session delegation cancelled"; return; }
-      }
-      progress = 2;
-
-      if (!auth.hasPodIdentity) {
-        step = "Approve identity (2 of 2)...";
-        if (!(await auth.ensurePodIdentity())) { error = "Identity setup cancelled"; return; }
+      // One gate: how many signatures this takes depends on the login kind and
+      // on what is already on this device, so the count is not ours to state.
+      step = "Setting up your account…";
+      if (!(await auth.ensureAccountSetup({ identity: true }))) {
+        error = "Account setup cancelled";
+        return;
       }
       progress = 4;
 

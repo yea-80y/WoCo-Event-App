@@ -187,7 +187,11 @@
     saving = true;
     saveError = '';
     try {
-      const ok = await auth.ensureSession();
+      // Saving writes the profile to the user's OWN content feed, which is
+      // signed by a key derived from the seed — so this needs the account keys,
+      // not just a session. Asking for both up front is what stops the seed
+      // prompt appearing mid-save with no explanation.
+      const ok = await auth.ensureAccountSetup({ identity: true });
       if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
       if (!(await ensureUnlocked())) {
         saveError = "Link a ticket to unlock your profile first.";
