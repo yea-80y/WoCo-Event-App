@@ -23,7 +23,6 @@ const PRESERVED = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as const;
 const PRF_EOA = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PRF_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111";
 const POD_SEED = "seed-restored-from-escrow";
-const FEED_KEY = "0x2222222222222222222222222222222222222222222222222222222222222222";
 
 /** Happy-path deps for a passkey recovery, with call recording. */
 function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
@@ -43,7 +42,6 @@ function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
     getPodAddress: () => PRF_EOA,
     recoveryKernelFor: async (pod) => (pod === PRF_EOA ? PRESERVED : undefined),
     restorePodSeed: async () => POD_SEED,
-    getContentFeedSigner: async () => ({ privKey: FEED_KEY }),
     backfill: async (args) => {
       calls.push("backfill");
       backfillArgs.push(args);
@@ -64,13 +62,11 @@ test("passkey happy path: session first, then the server probe, then the envelop
   assert.deepEqual(calls, ["ensureSession", "probeSession", "backfill"]);
   // The envelope must carry the preserved address + escrow-restored secrets —
   // resolving from the credential instead is the #245 defect itself.
+  // The SEED is the whole payload: the feed signer, the issuing key and the
+  // encryption key are all KDFs of it, so an envelope can no longer be written
+  // carrying half of what the account needs on its next device.
   assert.deepEqual(backfillArgs, [
-    {
-      passkeyPrivKey: PRF_KEY,
-      preservedKernelAddress: PRESERVED,
-      podSeed: POD_SEED,
-      feedSignerPrivKey: FEED_KEY,
-    },
+    { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, podSeed: POD_SEED },
   ]);
 });
 
@@ -82,12 +78,7 @@ test("#260: the gather helper is the ONE owner of the preamble — payload pinne
   const g = await gatherBackfillArgs(d);
   assert.deepEqual(g, {
     status: "ready",
-    args: {
-      passkeyPrivKey: PRF_KEY,
-      preservedKernelAddress: PRESERVED,
-      podSeed: POD_SEED,
-      feedSignerPrivKey: FEED_KEY,
-    },
+    args: { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, podSeed: POD_SEED },
   });
 });
 
@@ -110,30 +101,15 @@ test("a deferred backfill is a FAILURE — the envelope is not verifiably there"
   assert.equal((r as { retryable: boolean }).retryable, true);
 });
 
-test("the DETERMINISTIC feed-signer guard is reported as NOT retryable", async () => {
-  // An account whose escrow carried no feed signer re-throws this identically on
-  // every call. Calling it retryable is an infinite loop with encouraging copy.
-  const { d } = deps({
-    getContentFeedSigner: async () => {
-      throw new Error(
-        "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
-      );
-    },
-  });
+test("a DETERMINISTIC failure is reported as NOT retryable", async () => {
+  // An absent seed on a recovered device re-reads identically on every call — no
+  // amount of retrying produces one. Calling it retryable is an infinite loop with
+  // encouraging copy. (This used to be the feed-signer anti-divergence guard; the
+  // feed signer is now a KDF of this same seed, so the seed IS the terminal case.)
+  const { d } = deps({ restorePodSeed: async () => null });
   const r = await finalizeRecovery(d);
   assert.equal(r.status, "failed");
   assert.equal((r as { retryable: boolean }).retryable, false);
-});
-
-test("a transient feed-signer fault stays retryable — only the guard is terminal", async () => {
-  const { d } = deps({
-    getContentFeedSigner: async () => {
-      throw new Error("decrypt failed");
-    },
-  });
-  const r = await finalizeRecovery(d, { attempts: 1 });
-  assert.equal(r.status, "failed");
-  assert.equal((r as { retryable: boolean }).retryable, true);
 });
 
 test("expectPasskey refuses when the store's kind was torn down mid-recovery", async () => {
@@ -227,25 +203,6 @@ test("an unreadable POD seed fails — the envelope must carry the escrow-restor
   assert.ok(!calls.includes("backfill"));
 });
 
-test("a feed-signer read THROW fails the step — never write a signer-stripped envelope", async () => {
-  const { d, calls } = deps({
-    getContentFeedSigner: async () => {
-      throw new Error("decrypt failed");
-    },
-  });
-  const r = await finalizeRecovery(d, { attempts: 1 });
-  assert.equal(r.status, "failed");
-  assert.match((r as { reason: string }).reason, /feed signer/);
-  assert.ok(!calls.includes("backfill"));
-});
-
-test("a genuinely absent feed signer proceeds, envelope simply carries none", async () => {
-  const { d, backfillArgs } = deps({ getContentFeedSigner: async () => null });
-  const r = await finalizeRecovery(d);
-  assert.equal(r.status, "portable");
-  assert.equal(backfillArgs[0]?.feedSignerPrivKey, undefined);
-});
-
 test("a web3auth owner is session-only: no envelope, and the write path is never touched", async () => {
   const { d, calls } = deps({ kind: () => "web3auth" });
   const r = await finalizeRecovery(d);
@@ -306,15 +263,13 @@ test("#273: retries stop at the cap and surface the LAST failure", async () => {
   assert.deepEqual(slept, [1500, 3000], "backoff doubles between attempts");
 });
 
-test("#273: a NON-retryable failure is never retried — the guard would loop identically", async () => {
+test("#273: a NON-retryable failure is never retried — it would loop identically", async () => {
   let reads = 0;
   const slept: number[] = [];
   const { d } = deps({
-    getContentFeedSigner: async () => {
+    restorePodSeed: async () => {
       reads++;
-      throw new Error(
-        "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
-      );
+      return null;
     },
   });
   const r = await finalizeRecovery(d, {

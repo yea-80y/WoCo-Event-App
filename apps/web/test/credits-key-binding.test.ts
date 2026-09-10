@@ -106,10 +106,17 @@ test("the auth store exposes NO key accessor to reach past the seed", () => {
   assert.doesNotMatch(AUTH_STORE, /podPublicKeyHex/);
 });
 
-test("ensurePodIdentity stores under the same resolver the accessors read by", () => {
-  const body = AUTH_STORE.slice(
-    AUTH_STORE.indexOf("async function ensurePodIdentity"),
-  ).slice(0, 3000);
+test("the seed is stored under the same resolver the accessor reads by", () => {
+  // `ensurePodIdentity` is a one-line wrapper; `_ensureIdentitySeed` is where the
+  // address is resolved and the seed written, so that is what gets pinned.
+  const start = AUTH_STORE.indexOf("async function _ensureIdentitySeed");
+  assert.ok(start > 0, "_ensureIdentitySeed must exist — a rename would make this pass vacuously");
+  // To the function's own closing brace, not a byte budget: the body grew past a
+  // fixed slice once already, and a slice that falls short passes for the wrong
+  // reason (the text simply is not in it).
+  const end = AUTH_STORE.indexOf("\n}\n", start);
+  assert.ok(end > start, "could not find the end of _ensureIdentitySeed");
+  const body = AUTH_STORE.slice(start, end);
   assert.match(body, /const podAddr = _getPodAddress\(\)/);
   // And it is podAddr, never _parent, that the seed is written under.
   assert.match(body, /requestPodIdentity\(podAddr,/);

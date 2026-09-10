@@ -86,20 +86,18 @@ export async function derivePortabilityKeys(passkeyPrivKey: string): Promise<Por
 /**
  * Seal the preserved secrets to the passkey's PRF-derived HPKE key and write the
  * envelope as the fixed-identifier SOC (overwrite-in-place). `preservedKernelAddress`
- * is the recovered account's Kernel address; the bundle inside carries the POD
- * seed and the content-feed-signer key. Non-throwing failures are the
- * caller's to handle — this throws on any error.
+ * is the recovered account's Kernel address; the bundle inside carries the identity
+ * SEED — and only the seed, because the content-feed signer, the issuing key and
+ * the encryption key are all KDFs of it, so an envelope can no longer be written
+ * carrying half of what an account needs. Non-throwing failures are the caller's
+ * to handle — this throws on any error.
  */
 export async function writePortabilityEnvelope(args: {
   passkeyPrivKey: string;
   preservedKernelAddress: string;
   podSeed: string;
-  /** Content-feed signer key, carried so the account's further devices restore it
-   *  (same role the guardian escrow plays on the recovery device). Optional only
-   *  because external-wallet kinds have no feed signer to carry. */
-  feedSignerPrivKey?: string;
 }): Promise<void> {
-  const { passkeyPrivKey, preservedKernelAddress, podSeed, feedSignerPrivKey } = args;
+  const { passkeyPrivKey, preservedKernelAddress, podSeed } = args;
   const keys = await derivePortabilityKeys(passkeyPrivKey);
 
   // The preserved Kernel goes INSIDE the sealed bundle (v2 privacy fix) — never
@@ -108,7 +106,6 @@ export async function writePortabilityEnvelope(args: {
     preservedKernelAddress: preservedKernelAddress.toLowerCase(),
     podSeed,
   };
-  if (feedSignerPrivKey) secrets.feedSignerPrivKey = feedSignerPrivKey;
 
   // Bind the AAD + envelope.kernelAddress to the PRF-derived socOwnerAddress
   // pseudonym (already public — it IS the chunk owner), NOT the real Kernel. The
@@ -141,7 +138,6 @@ export async function writePortabilityEnvelope(args: {
 export interface OpenedPortability {
   preservedKernelAddress: string;
   podSeed: string;
-  feedSignerPrivKey?: string;
 }
 
 /**
@@ -237,7 +233,6 @@ export async function readPortabilityEnvelope(args: {
       value: {
         preservedKernelAddress: preservedKernelAddress.toLowerCase(),
         podSeed,
-        feedSignerPrivKey: bundle.secrets.feedSignerPrivKey,
       },
     };
   } catch (e) {
@@ -371,7 +366,6 @@ export interface PortabilityBackfillArgs {
   passkeyPrivKey: string;
   preservedKernelAddress: string;
   podSeed: string;
-  feedSignerPrivKey?: string;
 }
 
 export function backfillPortabilityEnvelope(
@@ -416,19 +410,15 @@ async function _backfillOnce(args: PortabilityBackfillArgs): Promise<Portability
 
   if (read.status === "found") {
     const cur = read.value;
-    const current =
+    // The seed is the whole bundle now, so "already current" is a two-field
+    // comparison and there is no longer a way to rewrite an envelope with LESS in
+    // it than it had. The guard that used to refuse stripping an escrowed feed
+    // signer is gone because the shape it guarded against cannot occur.
+    if (
       cur.preservedKernelAddress === args.preservedKernelAddress.toLowerCase() &&
-      cur.podSeed === args.podSeed;
-    if (current) {
-      const curSigner = normKey(cur.feedSignerPrivKey);
-      const newSigner = normKey(args.feedSignerPrivKey);
-      if (curSigner === newSigner) return { action: "skipped", reason: "envelope already current" };
-      // Never rewrite an envelope that carries a feed signer with one that does
-      // not — a session without the signer to hand would strip the escrowed key
-      // and orphan this account's content feeds on its future devices.
-      if (!newSigner) {
-        return { action: "skipped", reason: "no feed signer this session — refusing to strip the escrowed one" };
-      }
+      cur.podSeed === args.podSeed
+    ) {
+      return { action: "skipped", reason: "envelope already current" };
     }
   }
 

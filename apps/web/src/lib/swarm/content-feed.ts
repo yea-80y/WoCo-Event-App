@@ -99,31 +99,19 @@ export interface ContentFeedSigner {
 }
 
 /**
- * Build a `ContentFeedSigner` from a STORED/escrowed private key (the established
- * feed-signer secret). This performs NO derivation — the key is restored verbatim
- * from local storage or escrow (the stored key always wins over re-deriving); we
- * only recover its address.
+ * Build a `ContentFeedSigner` from a private key that already exists — an
+ * escrow-restored one, or one handed in by a caller that derived it. This
+ * performs NO derivation of its own; it only recovers the address.
+ *
+ * The live construction is `deriveFeedSignerKey(seed)` in
+ * `@woco/shared` (crypto/feed-signer.ts): the signer is an HKDF sibling of the
+ * account seed, so there is no separate secret to store and no "stored copy
+ * wins" rule to keep — same seed, same owner, every device.
  */
 export async function contentFeedSignerFromPrivKey(privKey: string): Promise<ContentFeedSigner> {
   const { Wallet } = await import("ethers");
   const key = privKey.startsWith("0x") ? privKey : `0x${privKey}`;
   return { privKey: key, address: new Wallet(key).address.toLowerCase() };
-}
-
-/**
- * Derive the content-feed signer from a deterministic, domain-separated EIP-712
- * signature — the SINGLE construction used for EVERY login kind that can own
- * client feeds (web3 wallet, web3auth, local, passkey). `keccak256(canonical
- * 65-byte signature)` → a uniform secp256k1 key, identical compression to the POD
- * seed (`pod-identity.ts`), the proven in-production pattern. Domain separation
- * lives in what was signed (`FEED_SIGNER_DERIVE_DOMAIN`, distinct salt from POD),
- * so this does not re-prefix a domain string. The signature MUST be the canonical
- * bytes, not the hex string.
- */
-export async function deriveContentFeedSignerFromSig(signature: string): Promise<ContentFeedSigner> {
-  const { keccak256, getBytes, Wallet } = await import("ethers");
-  const seed = keccak256(getBytes(signature));
-  return { privKey: seed, address: new Wallet(seed).address.toLowerCase() };
 }
 
 /**

@@ -61,9 +61,11 @@ identity derived from the seed; it is gone from every launch path (§3a).
 
 ---
 
-## 2. Sign-to-derive: the mechanism behind two of them
+## 2. Sign-to-derive: ONE signature, and everything hangs off it
 
-Both the object-data seed and the content-feed signer are produced the same way.
+There is exactly one sign-to-derive step left. The object-data seed is produced this way; the
+content-feed signer used to have a second signature of its own and no longer does — it is an
+HKDF sibling of this seed (§5).
 
 **Who signs matters more than it looks.** For a passkey or email login the signer here is the
 **raw secp256k1 key beneath the Kernel** — the PRF-derived key, or the Web3Auth key — obtained
@@ -88,13 +90,25 @@ with a *different* salt, so a signature phished for one purpose cannot be replay
 another.
 
 ```
-SESSION_DOMAIN            salt 0x6f4cd6d4…cbe3   (session delegation)
-POD_IDENTITY_DOMAIN       salt 0x8aee4359…085a   (the object-data seed)
-FEED_SIGNER_DERIVE_DOMAIN salt 0x589b7c35…ac0f   (the content-feed signer)
-RECOVERY_ENC_DOMAIN       salt 0x7647dc11…8a20   (a guardian's escrow key)
+SESSION_DOMAIN       salt 0x6f4cd6d4…cbe3   (session delegation)
+ACCOUNT_KEYS_DOMAIN  salt 0x8aee4359…085a   (the account seed — everything below it)
+RECOVERY_ENC_DOMAIN  salt 0x7647dc11…8a20   (a guardian's escrow key)
 ```
 
 — `packages/shared/src/auth/eip712.ts`
+
+**A fresh device therefore needs two signatures**, once: the session delegation, and this. Both
+are deferred to the first action that needs them, not taken at login.
+
+**These bytes are FROZEN from launch.** The domain name, version and salt, the primary type name
+`DeriveAccountKeys`, all three field names and types, the `purpose` string and the `nonce` are
+every one of them signed input. Change any of them and every account derives a different seed:
+sealed orders stop decrypting, issuer identities move, and every content chunk the user owns is
+stranded under an address nothing looks at. The `purpose` string is the trap — it reads like UI
+copy, wallets render it, and it is a key. `apps/web/test/identity-vectors.test.ts` fails on a
+one-byte change. (The message was renamed from `"WoCo POD Identity"` / `DerivePodIdentity` on
+2026-09-10 — a deliberate pre-launch break, made while there were no users to carry, so that the
+sheet a person signs says what it does. The salt was deliberately not churned.)
 
 Two details that took real defects to learn:
 
@@ -102,10 +116,13 @@ Two details that took real defects to learn:
   bytes; `keccak256(toUtf8Bytes(sig))` would hash 132 ASCII characters. The byte form is the
   ecosystem standard. Changing which one you hash changes every user's identity.
 - **External wallets get signed twice.** We control the nonce generation of our own signers
-  (ethers → RFC-6979, deterministic). We do not control MetaMask's. So the feed-signer derivation
-  signs twice and **throws on mismatch** — a non-deterministic wallet would make the feed
-  unrecoverable on the next device, and the failure has to happen at setup, loudly, not at the
-  door. It never falls back to platform signing as a consolation.
+  (ethers → RFC-6979, deterministic). We do not control MetaMask's. So for external-wallet kinds
+  the account-keys derivation signs twice and **throws on mismatch** — an irreproducible wallet
+  would leave that user with a different encryption key, a different issuer address and a
+  different feed signer on their next device, and the failure has to happen at setup, loudly,
+  not at the door. It never falls back to platform signing as a consolation. (The check used to
+  sit on the feed-signer signature; it moved up to the seed with everything else, and now covers
+  all three keys instead of one.)
 
 ---
 
@@ -255,26 +272,40 @@ folded: a checksummed parent signed here would verify against nothing.
 
 ---
 
-## 5. The content-feed signer, and why it is stored rather than derived
+## 5. The content-feed signer is a sibling of the seed, not a secret of its own
 
-The feed signer is a **secp256k1 key whose address owns the user's content chunks**. Derivation
-only *seeds* it. After that the key is persisted and escrowed, and the stored copy is
-authoritative.
+The feed signer is a **secp256k1 key whose address owns the user's content chunks**, derived
+`HKDF(sha256, seed, salt="", info="woco/feed-signer/v1", 48) → scalar`
+(`packages/shared/src/crypto/feed-signer.ts`) — the same construction as the issuing key, under
+a different `info`.
 
-That distinction is load-bearing. A passkey credential **rotates** on guardian recovery, so
-anything re-derived from it after a recovery diverges — and a divergent feed key silently
-orphans every feed the user owns. So:
+**It used to be an independent secret**, established by a second sign-to-derive signature under
+its own domain, then persisted and escrowed, with a rule that the stored copy always won. That
+rule existed for a real reason: a passkey credential **rotates** on guardian recovery, so
+anything re-derived from the credential after a recovery diverges, and a divergent feed key
+silently orphans every feed the user owns.
 
-- at rest: AES-256-GCM under a non-extractable device key in IndexedDB, with the parent address
-  bound as AEAD **additional data** (`apps/web/src/lib/auth/feed-signer-store.ts`);
-- across devices and after recovery: restored from the escrow bundle, same channel as the seed;
-- keyed **per account**. A single global slot let a second account on the same browser overwrite
-  — and, via the mismatch self-heal, *delete* — the first account's key.
+Folding it into the seed keeps that property and removes the machinery:
 
-An AAD mismatch on read drops only *this* account's slot, never the legacy shared slot, which
-may still belong to a different account that has yet to migrate it.
+- the seed is the single durable secret, in one AAD-bound slot (§7), so there is no second blob
+  to keep in step and no way to restore half an account;
+- a rotated credential still cannot fork the feeds, because it cannot change the **seed** — the
+  seed comes back verbatim from escrow, and the signer falls out of it;
+- the escrow bundle and the cross-device portability envelope both carry `podSeed` and nothing
+  else, so an envelope written by any path is complete by construction;
+- one signature, not two, on a fresh device.
 
-The object-data seed is stored the same way, under the same rules.
+**Coinbase Smart Wallet remains parked.** Its 1271/6492 signatures are non-deterministic, so it
+cannot establish a reproducible seed at all — the feed signer resolves to `null` and its content
+falls back to the platform-signed path. That is the one remaining exception.
+
+**External wallets are checked, not trusted.** We control the nonce generation of our own signers
+(ethers → RFC-6979); MetaMask's is not ours. So for external-wallet kinds the account-keys
+message is signed **twice** and a mismatch **throws** at setup — one wallet's irreproducible
+signature would otherwise cost that user their encryption key, their issuer address and every
+chunk they own, silently, on their next device. The check moved here from the old feed-signer
+derivation when the feed signer stopped having a signature of its own; it now protects strictly
+more.
 
 ---
 
@@ -324,9 +355,14 @@ Nothing is signed at login. Login only connects.
 | Trigger | What it establishes |
 |---|---|
 | First action needing the API | `ensureSession()` → the EIP-712 delegation |
-| Publish, or first dashboard decrypt | `ensurePodIdentity()` → the object-data seed |
-| Publish (issuance) | `ensureIssuingKey()` → derive from the seed |
-| First content write | the content-feed signer (silent for raw-key logins) |
+| Publish, or first dashboard decrypt | `ensurePodIdentity()` → the account seed (the only remaining derivation signature) |
+| Publish (issuance) | `ensureIssuingKey()` → HKDF from the seed, no prompt |
+| First content write | the content-feed signer → HKDF from the seed, no prompt of its own |
+
+Only two rows there cost a signature. The issuing key and the feed signer are computed from the
+seed, so once it exists they are free — and a web3auth login establishes the seed silently at
+login (its raw key is in memory and ethers signs it with RFC-6979), which is what makes a cold
+device render that user's own profile and avatar instead of a blank.
 
 `ensureIssuingKey()` (`apps/web/src/lib/auth/issuing-key.ts`) is a thin wrapper with one rule:
 **fail loud, never fall through.** With no seed available it throws. It must never quietly hand

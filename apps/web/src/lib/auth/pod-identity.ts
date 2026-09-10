@@ -1,7 +1,8 @@
 import {
-  POD_IDENTITY_DOMAIN,
-  POD_IDENTITY_TYPES,
-  POD_IDENTITY_NONCE,
+  ACCOUNT_KEYS_DOMAIN,
+  ACCOUNT_KEYS_TYPES,
+  ACCOUNT_KEYS_NONCE,
+  ACCOUNT_KEYS_PURPOSE,
   StorageKeys,
   type EncryptedBlob,
   type EIP712Signer,
@@ -28,28 +29,60 @@ function podSeedKey(address: string): string {
  * signature → same keccak256 hash → same seed, on any device.
  *
  * The seed is the ROOT, not an account: it is the HKDF input for the X25519
- * encryption key (`crypto/keys.ts`) and the secp256k1 issuing key
- * (`crypto/issuing.ts`). The ed25519 holder key it used to derive here is gone
- * from every launch path (#518) — the credit and cert-challenge rails derive
- * their own from this same seed, lazily, when they are reachable at all.
+ * encryption key (`crypto/keys.ts`), the secp256k1 issuing key
+ * (`crypto/issuing.ts`) and the content-feed signer (`crypto/feed-signer.ts`).
+ * The ed25519 holder key it used to derive here is gone from every launch path
+ * (#518) — the credit and cert-challenge rails derive their own from this same
+ * seed, lazily, when they are reachable at all.
+ *
+ * DETERMINISM IS THE WHOLE MECHANISM, and for one class of signer it has to be
+ * CHECKED rather than assumed. Our own signers go through ethers (RFC-6979) and
+ * are deterministic by construction. An external wallet's nonce generation is not
+ * ours, and a wallet that signs differently twice would give this user a
+ * different seed on their next device — a different encryption key (their sealed
+ * history stops opening), a different issuer address, and a different content-feed
+ * signer (every chunk they own becomes unreachable). None of that announces
+ * itself, and none of it is recoverable, so `verifyDeterminism` signs TWICE and
+ * throws at setup instead. Nothing falls back to a platform key as a consolation:
+ * a different signer is a different owner, not a degraded one.
  */
 export async function requestPodIdentity(
   parentAddress: string,
   signTypedData: EIP712Signer,
+  opts: {
+    /** Sign twice and refuse a wallet that disagrees with itself. Set for
+     *  EXTERNAL-wallet kinds only; raw-key kinds are deterministic already and a
+     *  second prompt would be pure friction. */
+    verifyDeterminism?: boolean;
+  } = {},
 ): Promise<{ seed: string }> {
   // Build deterministic EIP-712 message (fixed nonce!)
+  // Every field is FROZEN signed input — see ACCOUNT_KEYS_DOMAIN. The purpose
+  // string is imported rather than written here so it cannot be "improved".
   const message = {
-    purpose: "Derive deterministic POD signing identity",
+    purpose: ACCOUNT_KEYS_PURPOSE,
     address: parentAddress,
-    nonce: POD_IDENTITY_NONCE,
+    nonce: ACCOUNT_KEYS_NONCE,
   };
 
   // Sign via provided signer (web3 wallet or local account)
-  const signature = await signTypedData(
-    { ...POD_IDENTITY_DOMAIN },
-    POD_IDENTITY_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
-    message as unknown as Record<string, unknown>,
-  );
+  const sign = () =>
+    signTypedData(
+      { ...ACCOUNT_KEYS_DOMAIN },
+      ACCOUNT_KEYS_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+      message as unknown as Record<string, unknown>,
+    );
+  const signature = await sign();
+  if (opts.verifyDeterminism) {
+    // Compared on the SIGNATURE bytes, before anything is derived or stored: a
+    // wallet that disagrees with itself must not leave a seed behind for the next
+    // session to find and treat as established.
+    if ((await sign()) !== signature) {
+      throw new Error(
+        "Your wallet's signature isn't reproducible, so we can't set up your account keys with it. Try a different wallet.",
+      );
+    }
+  }
 
   // Deterministic: same wallet → same signature → same seed.
   // ethers imported lazily — this module is in auth-store's boot graph.

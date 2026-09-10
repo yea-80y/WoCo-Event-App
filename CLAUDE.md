@@ -14,7 +14,7 @@ WHERE THE DEPTH LIVES
   README.md                       # public front door (rewritten 2026-09-08)
   docs/README.md                  # INDEX of all docs, sorted by how far to trust each
   docs/ARCHITECTURE.md            # the map: layers, trust boundaries, one ticket traced
-  docs/IDENTITY_AND_KEYS.md       # all five keys, sign-to-derive, sealed envelopes, API auth
+  docs/IDENTITY_AND_KEYS.md       # all four keys, the one seed, sealed envelopes, API auth
   docs/SWARM_DATA_MODEL.md        # SOC/CAC addressing, versioned feeds, topics, bands
   docs/TICKETING.md               # issuance -> sale -> mint -> door
   docs/SITE_BUILDER.md            # sites: publish/deploy, feeds, quota
@@ -105,8 +105,10 @@ issuer-curve migration #443, PRs #447–#453, 2026-09-01).
 Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
-3. Identity SEED (32 bytes, keccak256 of ONE deterministic EIP-712 signature) — NOT a key:
-   the HKDF root for 4 and for the X25519 encryption key. `ensurePodIdentity()` returns a
+3. Identity SEED (32 bytes, keccak256 of ONE deterministic EIP-712 signature under
+   "WoCo Account Keys" / `DeriveAccountKeys`) — NOT a key: the HKDF root for 4, 5 and the
+   X25519 encryption key. A fresh device therefore needs TWO signatures total: the session
+   delegation and this. `ensurePodIdentity()` returns a
    BOOLEAN (is the seed available), never a public key. The ed25519 HOLDER key it used to
    derive is GONE from every launch path (#518): `creatorPodKey` and `podPubKey` are deleted
    end to end, and no auth surface holds an ed25519 key. Two OUT-OF-LAUNCH-SCOPE rails still
@@ -121,11 +123,13 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    Identity of record = its 20-byte ADDRESS, bound to the parent by proof-of-possession
    at every create and by the issuer registry (`woco/issuer/{parent}`, parent-signed
    EIP-712 statements; rotation = a gen bump, no new secret at rest)
-5. Content-feed signer (secp256k1, sign-to-derive under `FEED_SIGNER_DERIVE_DOMAIN` —
-   a DISTINCT salt from POD) — its address OWNS the user's content SOCs. Derivation only
-   SEEDS it: the key is then persisted + escrowed and the stored copy WINS, because a
-   rotated passkey credential re-derives a divergent key and would orphan every feed.
-   External wallets sign TWICE and throw on mismatch; never falls back to platform signing
+5. Content-feed signer (secp256k1, HKDF from the SAME seed as 4 — info "woco/feed-signer/v1",
+   `packages/shared/src/crypto/feed-signer.ts`) — its address OWNS the user's content SOCs.
+   NO signature of its own since 2026-09-10: it used to sign-to-derive under its own domain
+   and be stored + escrowed as an independent secret with a "stored copy wins" rule. The seed
+   IS that rule now — one AAD-bound slot, one escrow secret, and a rotated credential cannot
+   fork the feeds because it cannot change the seed. Never falls back to platform signing.
+   Coinbase Smart Wallet stays parked (non-deterministic 1271 ⇒ no reproducible seed).
 
 NAMING (owner decision, 2026-09-01): "POD" is retired from docs and code names — the
 standard is "object data"; code speaks editions / certs / holder identity. FROZEN signed
@@ -423,9 +427,14 @@ SECURITY / AUTH:
   since 2026-04-09) and the legacy unsalted-SHA-256 path is deleted — so the old "falls back
   to unsalted" warning no longer applies. Rotating it still invalidates every outstanding
   unsubscribe link AND orphans every existing email hash
-- `POD_IDENTITY_DOMAIN` now includes a salt — changes the derived SEED (and so every key) for any user who
-  already published an event. Deploy `SESSION_DOMAIN` salt first; only deploy the POD salt
-  after confirming no active POD identities, or build a migration path
+- 🔴 `ACCOUNT_KEYS_DOMAIN` / `ACCOUNT_KEYS_TYPES` / `ACCOUNT_KEYS_PURPOSE` / `ACCOUNT_KEYS_NONCE`
+  (`packages/shared/src/auth/`) are FROZEN FROM LAUNCH — the exact bytes of the one signature
+  that establishes an account. Change ANY of them (including the purpose string, which reads
+  like UI copy and is not) and every account derives a different seed: sealed orders stop
+  decrypting, issuer identities move, and every content SOC is orphaned under an address
+  nothing looks at. `apps/web/test/identity-vectors.test.ts` fails on a one-byte change.
+  They were renamed FROM `POD_IDENTITY_*` / "WoCo POD Identity" on 2026-09-10 — a deliberate
+  pre-launch break, salt deliberately unchanged
 - Canonical challenge relies on raw body bytes: server MUST use `c.req.text()` BEFORE any
   parse/re-stringify, and the client must hash the exact bytes it sends
 - SESSION_DOMAIN has NO chainId — ALLOWED_HOSTS is the host security guard

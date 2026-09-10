@@ -25,15 +25,9 @@ const SRC = fileURLToPath(new URL("../src", import.meta.url));
  * so a NEW "PODs" label added to an allowlisted file still fails here.
  */
 const ALLOWLIST: ReadonlyArray<{ file: string; line: string; why: string }> = [
-  {
-    file: "lib/auth/pod-identity.ts",
-    line: `purpose: "Derive deterministic POD signing identity",`,
-    why:
-      "An EIP-712 SIGNED field (DerivePodIdentity.purpose). The signature over " +
-      "these exact bytes is hashed into the seed every one of a user's keys is " +
-      "derived from — editing the copy would silently re-derive a different " +
-      "identity for every existing account and orphan their feeds.",
-  },
+  // Empty since the account-keys rename (#529): the one exemption was the old
+  // EIP-712 purpose literal in pod-identity.ts, which is now a shared constant
+  // with no POD in it. Add an entry only for SIGNED bytes, never for copy.
 ];
 
 const POD_WORD = /\bPODs?\b/;

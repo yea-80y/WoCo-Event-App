@@ -187,22 +187,13 @@ export function recoveryContentTopic(kernelAddress: string): string {
 // Client-owned content feeds (Phase B — CLIENT_FEED_SIGNER_HANDOVER.md Task 2)
 // ---------------------------------------------------------------------------
 
-/**
- * Domain for deriving a user's content-feed SIGNING key from their root login
- * secret (Web3Auth secp256k1 key / passkey PRF output). Domain-separated from the
- * POD seed and the recovery/portability keys so the feed signer is an INDEPENDENT
- * identity: rotating or leaking it never exposes POD, encryption, or funds.
- *
- * The derived secp256k1 key's ADDRESS is the OWNER of every content SOC the user
- * writes (`keccak256(identifier || ownerAddress)`), so the USER — not the platform
- * — owns the feed. The platform only lends postage (stamps) at write time; this is
- * a swappable transport (per-user batch / browser-Bee later) that does not touch
- * ownership. Derivation only SEEDS a new signer; the key is then persisted +
- * ESCROWED (`feed-signer-store.ts`, recovery + portability bundles) so a rotated
- * passkey credential — which would derive a divergent key — cannot orphan the
- * user's feeds. The stored/escrowed copy is authoritative, not re-derivation.
- */
-export const CONTENT_FEED_SIGNER_DOMAIN = "woco/feed-signer/v1";
+// The feed-signer derivation domain used to be declared here too, as
+// `CONTENT_FEED_SIGNER_DOMAIN = "woco/feed-signer/v1"`, describing a design that
+// was never wired up (the shipped one signed to derive under its own EIP-712
+// domain). It had no callers and, since the signer became an HKDF sibling of the
+// account seed, its value was a DUPLICATE of the live `FEED_SIGNER_INFO` in
+// `crypto/feed-signer.ts` — two constants, one value, one of them dead, which is
+// how a derivation quietly forks. The live one is the only one now.
 
 /**
  * SOC identifier for a content feed addressed by its stable topic string

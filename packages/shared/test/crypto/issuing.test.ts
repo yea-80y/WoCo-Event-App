@@ -17,11 +17,14 @@ import {
   buildIssuerBindingMessage,
   deriveIssuingKey,
   issuingAddress,
-  issuingScalarFromOkm,
   personalSignDigest,
   recoverPersonalSigner,
   signPersonalMessage,
 } from "../../src/crypto/issuing.js";
+// The scalar map moved to secp-hkdf.ts when the feed signer became a second
+// sibling off the same construction (#518 follow-up). Same algorithm, same
+// bytes — which is what the golden vectors above prove.
+import { scalarFromOkm48 } from "../../src/crypto/secp-hkdf.js";
 import { deriveEncryptionKeypairFromPodSeed } from "../../src/crypto/keys.js";
 
 const SEED = "0x" + "ab".repeat(32);
@@ -76,10 +79,10 @@ test("malformed seed and generation are refused loudly", () => {
 });
 
 test("scalar map: 48-byte OKM → [1, n-1], deterministically, never zero", () => {
-  assert.equal(issuingScalarFromOkm(new Uint8Array(48)), 1n, "all-zero OKM must map to 1");
-  const max = issuingScalarFromOkm(new Uint8Array(48).fill(0xff));
+  assert.equal(scalarFromOkm48(new Uint8Array(48)), 1n, "all-zero OKM must map to 1");
+  const max = scalarFromOkm48(new Uint8Array(48).fill(0xff));
   assert.ok(max >= 1n && max < N, "max OKM must stay inside [1, n-1]");
-  assert.throws(() => issuingScalarFromOkm(new Uint8Array(32)), /48 bytes/);
+  assert.throws(() => scalarFromOkm48(new Uint8Array(32)), /48 bytes/);
 });
 
 // --- personal-sign wrapper ---------------------------------------------------

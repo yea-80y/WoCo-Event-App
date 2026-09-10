@@ -28,7 +28,6 @@ export interface BackfillGatherDeps {
   /** The preserved Kernel address bound to this passkey at recovery time. */
   recoveryKernelFor: (podAddress: string) => Promise<`0x${string}` | undefined>;
   restorePodSeed: (podAddress: string) => Promise<string | null>;
-  getContentFeedSigner: () => Promise<{ privKey: string } | null>;
 }
 
 export interface RecoveryFinalizeDeps extends BackfillGatherDeps {
@@ -86,19 +85,15 @@ export type RecoveryFinalizeResult =
    *
    * `retryable` is the honest half. Some failures are transient (network, an
    * inconclusive probe) and a retry genuinely heals them; others re-throw
-   * identically forever — notably the anti-divergence guard for an account whose
-   * escrow carried no feed signer. Telling that second user "retrying is safe"
-   * is an infinite loop with encouraging copy, so the two are kept apart.
+   * identically forever — notably a recovered account with no seed on this
+   * device, which no amount of retrying produces. Telling that second user
+   * "retrying is safe" is an infinite loop with encouraging copy, so the two are
+   * kept apart.
    *
    * `stage` distinguishes "this device has no session either" from "only
    * cross-device portability is missing" — the warning copy differs.
    */
   | { status: "failed"; reason: string; retryable: boolean; stage: "session" | "envelope" };
-
-/** The guard fires whenever a recovery binding exists and no feed signer is stored. */
-function isDeterministicSignerFailure(message: string): boolean {
-  return message.includes("Recovered account feed signer unavailable");
-}
 
 export type BackfillGather =
   | { status: "ready"; args: PortabilityBackfillArgs }
@@ -118,13 +113,13 @@ export type BackfillGather =
  * Classification rules, all incident-proven:
  *  - a read that THREW is not evidence the record is absent (#226 class) — the
  *    reason always says which happened, and only faults are retryable;
- *  - a feed-signer THROW must fail the gather, not degrade it: `null` means
- *    "this account has no feed signer" and writes an envelope without one,
- *    which would strand the account's content feeds on its future devices if
- *    the signer exists but the read faulted;
- *  - the anti-divergence signer guard is DETERMINISTIC (an account whose escrow
- *    carried no feed signer re-throws identically forever) — calling it
- *    retryable is an infinite loop with encouraging copy.
+ *  - the SEED is the whole payload now (the feed signer, issuing key and
+ *    encryption key are all KDFs of it), so there is one secret to gather and no
+ *    way to write an envelope carrying half an account. The gather that used to
+ *    read the feed signer separately — and had to distinguish "no signer" from
+ *    "the signer read faulted", because writing an envelope without it would
+ *    strand the account's feeds on its future devices — is gone with the second
+ *    secret it existed to protect.
  */
 export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<BackfillGather> {
   const passkeyPrivKey = deps.getPasskeyPrivKey();
@@ -173,27 +168,9 @@ export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<Back
     return { status: "unavailable", reason: "identity seed absent", retryable: false, stage: "envelope" };
   }
 
-  let feedSigner: { privKey: string } | null;
-  try {
-    feedSigner = await deps.getContentFeedSigner();
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return {
-      status: "unavailable",
-      reason: `feed signer read failed: ${message}`,
-      retryable: !isDeterministicSignerFailure(message),
-      stage: "envelope",
-    };
-  }
-
   return {
     status: "ready",
-    args: {
-      passkeyPrivKey,
-      preservedKernelAddress: preserved,
-      podSeed,
-      feedSignerPrivKey: feedSigner?.privKey,
-    },
+    args: { passkeyPrivKey, preservedKernelAddress: preserved, podSeed },
   };
 }
 

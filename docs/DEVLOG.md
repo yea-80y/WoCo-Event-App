@@ -8,6 +8,32 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 Copy-only: every user-visible "POD"/"PODs" is now "object(s)" (badge or ticket where the thing is specifically one; the attendee display surface is "My collection"), the two dashboard decrypt errors say what happened instead of naming an internal key, and `apps/web/test/no-pod-copy.test.ts` walks the frontend source, strips comments, and fails if the word comes back — the sole allowlisted line is the EIP-712 `purpose` field in `pod-identity.ts`, whose bytes every user's seed is derived from; identifiers, routes, topics and storage keys are untouched.
 
+## "WoCo Account Keys": one signature, four keys, no ed25519 on any launch path (#518, 2026-09-10)
+
+The ed25519 holder key signed nothing on a launch path, so it went — with the three carriers that
+existed only to move its public key around: `creatorPodKey` (a REQUIRED create field nothing read
+back), `podPubKey` (client-declared, never verified — #345 — from checkout metadata into fulfilment
+and every gate binding), and the auth store's own copy. `ensurePodIdentity()` returns a boolean now:
+is the SEED available. The curve survives only for the frozen `woco.credit.v1` / `woco.cert-challenge.v1`
+formats, whose rail derives it from the same seed on demand (`credits/holder-key.ts`, `@noble/ed25519`
+imported dynamically so it leaves the eager bundle). Consequence, stated rather than hidden: the
+platform holds no holder identity, so `/attendee-keys` serves none and the cert-issuance surface
+reports every attendee un-certifiable until that rail migrates to secp256k1.
+
+Then, since the signature was being touched anyway and there are no users to carry: the EIP-712
+message was renamed to **"WoCo Account Keys" / `DeriveAccountKeys`** (salt deliberately unchanged),
+and the CONTENT-FEED SIGNER stopped being a second sign-to-derive signature with its own domain,
+its own at-rest blob, its own escrow slot and its own "stored copy wins" rule. It is now
+`HKDF(seed, "woco/feed-signer/v1")` — a sibling of the issuing key. The seed is the single durable
+secret: one AAD-bound slot, one escrow secret, one thing to wipe on logout, and a rotated
+credential still cannot fork a user's feeds because it cannot change the seed. A fresh device
+signs twice in total (session + account keys), down from three. The external-wallet double-sign
+determinism check moved up to the seed, where it now protects the encryption key and the issuer
+address as well as the feeds. `feed-signer-store.ts` is dead; Coinbase Smart Wallet stays parked.
+
+**These bytes are frozen from launch** — domain, type, field names, `purpose` and nonce — and
+`apps/web/test/identity-vectors.test.ts` fails on a one-byte change to any of them.
+
 ## The gasless sub-ENS permit rail is deleted — the sponsor wallet is the only mint (#501, 2026-09-08)
 
 Since the Kernel move (#489) every name, on every login kind, has been minted by the WoCo sponsor

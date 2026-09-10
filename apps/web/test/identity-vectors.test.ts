@@ -1,37 +1,59 @@
 /**
- * Full-chain identity canaries (PR 1 of the issuer-curve migration).
+ * Full-chain identity canaries.
  *
- * The `HOLDER_GOLDEN` vectors in credits-key-binding.test.ts pin seed → ed25519
- * public key, but nothing pinned the chain ABOVE the seed: a change to
- * POD_IDENTITY_DOMAIN (name/version/salt), POD_IDENTITY_TYPES, the fixed
- * nonce, the message shape, or the keccak256(getBytes(sig)) step would move
- * every user's seed while those still passed — the derivation below the seed is
- * unchanged, so both sides of that comparison move together.
+ * The `HOLDER_GOLDEN` vectors in credits-key-binding.test.ts and the feed-signer
+ * and issuing vectors in `packages/shared/test/crypto/` all pin derivations FROM
+ * a seed. Nothing there pins the chain ABOVE the seed: a change to
+ * `ACCOUNT_KEYS_DOMAIN` (name/version/salt), `ACCOUNT_KEYS_TYPES`, the purpose
+ * string, the fixed nonce, the message shape, or the `keccak256(getBytes(sig))`
+ * step would move every user's seed while every one of those still passed — the
+ * derivations below the seed are unchanged, so both sides of those comparisons
+ * move together.
  *
- * These tests sign the REAL EIP-712 payload with a fixed wallet key through
- * the REAL `requestPodIdentity`, and pin the resulting seed and every key
- * derived from it to fixed bytes. Any drift anywhere in wallet → sig → seed →
- * {ed25519 holder, X25519 encryption, secp256k1 issuing, feed signer} fails
- * loudly.
+ * These tests sign the REAL EIP-712 payload with a fixed wallet key through the
+ * REAL `requestPodIdentity`, and pin the resulting seed and every key derived
+ * from it to fixed bytes. Any drift anywhere in
+ * wallet → sig → seed → {ed25519 holder, X25519 encryption, secp256k1 issuing,
+ * content-feed signer} fails loudly.
+ *
+ * HOW THESE VECTORS WERE PRODUCED (2026-09-10, and this matters — a vector with
+ * no provenance is a number someone can "fix"):
+ *   1. `new Wallet("0x" + "ab".repeat(32))` — a fixed, throwaway secp256k1 key,
+ *      never used anywhere else. Its address is asserted first, so a change in
+ *      ethers' key handling is caught before anything downstream is blamed.
+ *   2. That wallet signs the EXACT production message — `ACCOUNT_KEYS_DOMAIN`,
+ *      `ACCOUNT_KEYS_TYPES`, `{ purpose: ACCOUNT_KEYS_PURPOSE, address, nonce:
+ *      ACCOUNT_KEYS_NONCE }` — via `signTypedData`. Deterministic (RFC-6979), so
+ *      any correct stack reproduces it.
+ *   3. `seed = keccak256(getBytes(signature))`.
+ *   4. Each key was then derived from that seed by the shipped functions and the
+ *      output pasted below.
+ *
+ * EVERY VALUE HERE CHANGED ON 2026-09-10, deliberately: the signed message was
+ * renamed to "WoCo Account Keys" / `DeriveAccountKeys` (a pre-launch break with
+ * no users to carry), and the content-feed signer stopped being its own
+ * sign-to-derive signature and became an HKDF sibling of this seed.
  *
  * Do NOT "fix" a failure here by pasting in new values. A mismatch means the
  * derived identity of every existing user just changed: sealed order data
- * becomes undecryptable and issued tickets orphan. That is a migration, not
- * a test update. (Pre-launch this is survivable via purge + re-publish — the
- * whole point is to make it impossible to do by accident.)
- *
+ * becomes undecryptable, issued tickets orphan, and every content chunk the user
+ * owns is stranded under an address nothing will look at. That is a migration,
+ * not a test update.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Wallet } from "ethers";
 import {
-  FEED_SIGNER_DERIVE_DOMAIN,
-  FEED_SIGNER_DERIVE_TYPES,
-  FEED_SIGNER_DERIVE_NONCE,
+  ACCOUNT_KEYS_DOMAIN,
+  ACCOUNT_KEYS_TYPES,
+  ACCOUNT_KEYS_NONCE,
+  ACCOUNT_KEYS_PURPOSE,
   deriveEncryptionKeypairFromPodSeed,
   deriveIssuingKey,
+  deriveFeedSignerKey,
   type EIP712Signer,
 } from "@woco/shared";
 
@@ -71,45 +93,36 @@ function installFakeIndexedDB() {
 installFakeIndexedDB();
 
 const { requestPodIdentity, clearPodIdentity } = await import("../src/lib/auth/pod-identity.ts");
-const { deriveContentFeedSignerFromSig } = await import("../src/lib/swarm/content-feed.ts");
 const { deriveHolderKeypair } = await import("../src/lib/credits/holder-key.ts");
 
-// A fixed, throwaway secp256k1 key. Everything below is derived from it via
-// deterministic (RFC-6979) signatures, so these values are reproducible on any
-// correct stack — and stop reproducing the moment any link in the chain moves.
 const WALLET_PRIV = "0x" + "ab".repeat(32);
 const PINNED = {
   address: "0xe239cdc5fbe977a8a141B72194D3CF8c41bC5BC6",
-  seed: "0x72e9100a95f0a342992d0729b88e2afcca0151c3bb2029d0c3867e66435a4651",
-  /** The HOLDER key — derived from the seed by the credits rail (#518), no
-   *  longer by `requestPodIdentity`, which returns the seed and nothing else. */
-  ed25519Pub: "0x618c7c53baa1d7d8f82effd44e08d14d273f04015afd84c8f98f22a8893a1fe2",
-  x25519Pub: "9db15133070753b2302ae50ec75d00e312e1859aa3a1550d38829ecf2955d14d",
-  issuingAddress: "0x55204517dfade726f04e52cc75be64e75736012d",
-  feedSignerAddress: "0xd31fb22214ec3684f64c53a26edc1d9235059f3f",
+  seed: "0xd5c14311ef004fa8015eb99bb6383e3b394ef7599b320fba05486a08cd04a48e",
+  /** The HOLDER key — derived by the credits/cert rails only (#518), the seed
+   *  used verbatim; `requestPodIdentity` returns the seed and nothing else. */
+  ed25519Pub: "0xc9f4939db19ea5291f24a924f5d4317970bf1810a27a3d4ae9816b958715c802",
+  x25519Pub: "7dfc3c60ac69453d720eed9c12d9255d5fddf7482ed9834898f8b6cf2fd0a263",
+  issuingAddress: "0x1fe9969b8ee844fcdb77beb2f19e731adab94882",
+  /** HKDF sibling of the seed, no longer a signature of its own. */
+  feedSignerAddress: "0x810ba04c96cf2b90fb14e4b146d4b392f5442860",
 } as const;
 
-test("wallet → EIP-712 sig → seed pin (the chain ABOVE the seed)", async () => {
-  await clearPodIdentity();
-  const wallet = new Wallet(WALLET_PRIV);
-  assert.equal(wallet.address, PINNED.address, "the fixed wallet key itself moved?");
-  const signer: EIP712Signer = (domain, types, message) =>
+function fixedWalletSigner(wallet: Wallet): EIP712Signer {
+  return (domain, types, message) =>
     wallet.signTypedData(
       domain as Parameters<Wallet["signTypedData"]>[0],
       types as Parameters<Wallet["signTypedData"]>[1],
       message as Parameters<Wallet["signTypedData"]>[2],
     );
-  const { seed } = await requestPodIdentity(wallet.address, signer);
-  assert.equal(seed, PINNED.seed, "identity seed moved — domain/types/nonce/hashing drift");
-});
+}
 
-test("seed → ed25519 holder pin (the credit/cert sibling, #518)", async () => {
-  const kp = await deriveHolderKeypair(PINNED.seed);
-  assert.equal(
-    kp.publicKeyHex,
-    PINNED.ed25519Pub,
-    "holder identity moved — every credit statement and cert challenge is orphaned",
-  );
+test("wallet → EIP-712 sig → seed pin (the chain ABOVE the seed)", async () => {
+  await clearPodIdentity();
+  const wallet = new Wallet(WALLET_PRIV);
+  assert.equal(wallet.address, PINNED.address, "the fixed wallet key itself moved?");
+  const { seed } = await requestPodIdentity(wallet.address, fixedWalletSigner(wallet));
+  assert.equal(seed, PINNED.seed, "identity seed moved — domain/types/purpose/nonce/hashing drift");
 });
 
 test("seed → X25519 encryption pubkey pin (the sibling that decrypts sealed orders)", () => {
@@ -130,36 +143,135 @@ test("seed → gen-0 issuing address pin (the secp sibling that signs manifests 
   );
 });
 
-test("feed-signer sign-to-derive pin: fixed wallet + domain → pinned address", async () => {
-  const wallet = new Wallet(WALLET_PRIV);
-  const sig = await wallet.signTypedData(
-    { ...FEED_SIGNER_DERIVE_DOMAIN },
-    FEED_SIGNER_DERIVE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
-    {
-      purpose: "Set up your WoCo content-feed signing key",
-      address: wallet.address,
-      nonce: FEED_SIGNER_DERIVE_NONCE,
-    },
+test("seed → content-feed signer address pin (the SOC owner of everything they write)", () => {
+  const { address } = deriveFeedSignerKey(PINNED.seed);
+  assert.equal(
+    address,
+    PINNED.feedSignerAddress,
+    "feed-signer derivation moved — every content chunk this account owns is orphaned",
   );
-  const signer = await deriveContentFeedSignerFromSig(sig);
-  assert.equal(signer.address, PINNED.feedSignerAddress, "feed-signer derivation moved");
 });
 
-test("the production feed-signer message literal matches the one pinned above", () => {
-  // `_deriveFeedSignerBySigning` is module-private in auth-store.svelte.ts
-  // (runes module — not importable under node:test), so the purpose literal is
-  // restated in the pin above. This tripwire fails if the production literal
-  // drifts away from the pinned one.
+test("seed → ed25519 holder pin (the credit/cert sibling, #518)", async () => {
+  const kp = await deriveHolderKeypair(PINNED.seed);
+  assert.equal(
+    kp.publicKeyHex,
+    PINNED.ed25519Pub,
+    "holder identity moved — every credit statement and cert challenge is orphaned",
+  );
+});
+
+test("the four siblings are all different keys", () => {
+  // Cheap, and it would have caught an info-string copy/paste: two of these
+  // collapsing onto one value means one key is quietly doing two jobs.
+  const addrs = new Set([
+    PINNED.issuingAddress,
+    PINNED.feedSignerAddress,
+    PINNED.x25519Pub,
+    PINNED.ed25519Pub.slice(2),
+    PINNED.seed.slice(2),
+  ]);
+  assert.equal(addrs.size, 5, "two derivations produced the same value");
+});
+
+// ---------------------------------------------------------------------------
+// FROZEN BYTES — the tripwire on the message itself
+// ---------------------------------------------------------------------------
+//
+// The pins above catch a byte change through its CONSEQUENCE (a moved seed).
+// This one catches it at the source and says what it is, because the failure mode
+// is a well-meaning copy edit: "Derive the keys that unlock your WoCo account"
+// reads like UI text, and it is signed input. A reviewer looking at a one-word
+// diff to a string constant has to be told that the word IS the key.
+//
+// Written so a ONE-BYTE change fails: every field name, every field type, the
+// exact strings, and the salt byte for byte.
+
+test("FROZEN: the account-keys EIP-712 message, byte for byte", () => {
+  assert.equal(ACCOUNT_KEYS_DOMAIN.name, "WoCo Account Keys");
+  assert.equal(ACCOUNT_KEYS_DOMAIN.version, "1");
+  assert.equal(
+    ACCOUNT_KEYS_DOMAIN.salt,
+    "0x8aee435983f8f356cb689567d575fe89bbd9f0d85e8e28c0d52c2fc340a9085a",
+  );
+  // No chainId, and that is deliberate — ALLOWED_HOSTS is the host guard (see
+  // CLAUDE.md). Adding one here would change every seed.
+  assert.deepEqual(Object.keys(ACCOUNT_KEYS_DOMAIN).sort(), ["name", "salt", "version"]);
+
+  assert.deepEqual(Object.keys(ACCOUNT_KEYS_TYPES), ["DeriveAccountKeys"]);
+  assert.deepEqual(ACCOUNT_KEYS_TYPES.DeriveAccountKeys, [
+    { name: "purpose", type: "string" },
+    { name: "address", type: "address" },
+    { name: "nonce", type: "string" },
+  ]);
+
+  assert.equal(ACCOUNT_KEYS_PURPOSE, "Derive the keys that unlock your WoCo account");
+  assert.equal(ACCOUNT_KEYS_NONCE, "WOCO-ACCOUNT-KEYS-V1");
+});
+
+test("the production message is built from the frozen constants, not a literal", () => {
+  // The pin above is worth nothing if `pod-identity.ts` writes its own copy of
+  // the purpose string: the two would drift and only the production one would
+  // matter. So the source is checked for the IMPORT, not for the text.
   const src = readFileSync(
-    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    fileURLToPath(new URL("../src/lib/auth/pod-identity.ts", import.meta.url)),
     "utf8",
   );
-  assert.ok(
-    src.includes('purpose: "Set up your WoCo content-feed signing key"'),
-    "auth-store's feed-signer purpose literal changed — the pinned vector no longer covers production",
-  );
-  assert.ok(
-    src.includes("FEED_SIGNER_DERIVE_NONCE") && src.includes("FEED_SIGNER_DERIVE_DOMAIN"),
-    "auth-store no longer derives the feed signer from the shared domain/nonce constants",
-  );
+  assert.match(src, /purpose:\s*ACCOUNT_KEYS_PURPOSE/, "the purpose must come from the constant");
+  assert.match(src, /nonce:\s*ACCOUNT_KEYS_NONCE/);
+  assert.match(src, /\.\.\.ACCOUNT_KEYS_DOMAIN/);
+  assert.match(src, /ACCOUNT_KEYS_TYPES\b/);
+  assert.doesNotMatch(src, /"Derive the keys/, "no second copy of the signed string");
+});
+
+function sourceFiles(root: string, out: Array<{ rel: string; text: string }> = [], base = root) {
+  for (const name of readdirSync(root)) {
+    const full = join(root, name);
+    if (statSync(full).isDirectory()) sourceFiles(full, out, base);
+    else if (/\.(ts|svelte)$/.test(name)) out.push({ rel: full.slice(base.length + 1), text: readFileSync(full, "utf-8") });
+  }
+  return out;
+}
+
+/**
+ * Comments stripped for the symbol scans below. The rename is DOCUMENTED in
+ * comments that name the retired constant on purpose — a scan that read prose
+ * would fire on the explanation and be silenced by deleting it, which is
+ * precisely backwards. Crude (it would also blank a `//` inside a string
+ * literal); acceptable, because over-stripping can only cost a false PASS on a
+ * line no such literal appears on, and a real symbol is never inside one.
+ */
+const stripComments = (t: string) =>
+  t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+const SCANNED = [
+  ...sourceFiles(fileURLToPath(new URL("../src", import.meta.url))),
+  ...sourceFiles(fileURLToPath(new URL("../../../packages/shared/src", import.meta.url))),
+].map((f) => ({ rel: f.rel, text: f.text, code: stripComments(f.text) }));
+
+test("the source scan below actually reaches the source", () => {
+  // Without this, a moved directory empties the scan and the assertion after it
+  // passes while guarding nothing.
+  assert.ok(SCANNED.length > 300, `scanned only ${SCANNED.length} files`);
+  assert.ok(SCANNED.some((f) => f.rel.endsWith("auth/pod-identity.ts")));
+  assert.ok(SCANNED.some((f) => f.rel.endsWith("crypto/feed-signer.ts")));
+});
+
+test("no FEED_SIGNER_DERIVE / DeriveFeedSigner symbol survives anywhere", () => {
+  // The feed signer's own EIP-712 message is gone — it is a KDF of this seed now.
+  // A leftover constant is an invitation to re-introduce a second signature and a
+  // second at-rest secret, which is exactly what this change removed.
+  const hits = SCANNED.filter((f) =>
+    /FEED_SIGNER_DERIVE|DeriveFeedSigner|deriveContentFeedSignerFromSig/.test(f.code),
+  ).map((f) => f.rel);
+  assert.deepEqual(hits, []);
+});
+
+test("no POD_IDENTITY_DOMAIN / DerivePodIdentity symbol survives either", () => {
+  // The rename IS the byte change made visible (2026-09-10). A surviving old
+  // constant name would let a reader believe the old message is still signed.
+  const hits = SCANNED.filter((f) =>
+    /POD_IDENTITY_(DOMAIN|TYPES|NONCE)|DerivePodIdentity/.test(f.code),
+  ).map((f) => f.rel);
+  assert.deepEqual(hits, []);
 });
