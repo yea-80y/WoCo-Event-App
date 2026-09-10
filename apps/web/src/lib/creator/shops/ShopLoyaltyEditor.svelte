@@ -49,7 +49,7 @@
       badges = dir.pods.filter((p) => p.eventId && p.chainId);
       podsPhase = "ready";
     } catch (e) {
-      error = e instanceof Error ? e.message : "Couldn't load your collectibles";
+      error = e instanceof Error ? e.message : "Couldn't load your objects";
       podsPhase = "error";
     }
   });
@@ -141,8 +141,8 @@
       <p class="err-box mono">{error}</p>
     {:else if badges.length === 0}
       <p class="hint">
-        No on-chain collectibles yet — create a badge in the <a href="/creator/pods">Collectibles</a> manager first.
-        Only on-chain collectibles can be minted as rewards.
+        No on-chain objects yet — create a badge in the <a href="/creator/pods">Objects</a> manager first.
+        Only on-chain objects can be minted as rewards.
       </p>
     {:else}
       {#each rows as row, i (i)}

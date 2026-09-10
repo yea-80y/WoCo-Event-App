@@ -4,9 +4,9 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
-## "POD" leaves the interface — collectibles in the studio (#515/#458, 2026-09-10)
+## "POD" leaves the interface — objects in the studio (#515/#458, 2026-09-10)
 
-Copy-only: every user-visible "POD"/"PODs" is now "collectible(s)" (badge or ticket where the thing is specifically one), the two dashboard decrypt errors say what happened instead of naming an internal key, and `apps/web/test/no-pod-copy.test.ts` walks the frontend source, strips comments, and fails if the word comes back — the sole allowlisted line is the EIP-712 `purpose` field in `pod-identity.ts`, whose bytes every user's seed is derived from; identifiers, routes, topics and storage keys are untouched.
+Copy-only: every user-visible "POD"/"PODs" is now "object(s)" (badge or ticket where the thing is specifically one; the attendee display surface is "My collection"), the two dashboard decrypt errors say what happened instead of naming an internal key, and `apps/web/test/no-pod-copy.test.ts` walks the frontend source, strips comments, and fails if the word comes back — the sole allowlisted line is the EIP-712 `purpose` field in `pod-identity.ts`, whose bytes every user's seed is derived from; identifiers, routes, topics and storage keys are untouched.
 
 ## The gasless sub-ENS permit rail is deleted — the sponsor wallet is the only mint (#501, 2026-09-08)
 

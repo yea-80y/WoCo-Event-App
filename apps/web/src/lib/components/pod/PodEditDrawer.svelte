@@ -126,7 +126,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="scrim" role="button" aria-label="Close" onclick={onclose} onkeydown={onScrimKey} tabindex="-1"></div>
 
-  <aside class="drawer" aria-label="Edit collectible">
+  <aside class="drawer" aria-label="Edit object">
     <header class="drawer-head">
       <div class="head-meta">
         <span class="kind-chip">{KIND_LABEL[pod.kind] ?? pod.kind}</span>
@@ -185,7 +185,7 @@
           type="text"
           bind:value={draftName}
           maxlength={120}
-          placeholder="Collectible display name"
+          placeholder="Object display name"
         />
 
         <label class="field-label" for="pod-desc">Description</label>
@@ -210,7 +210,7 @@
         <div class="artwork-row">
           {#if previewSrc}
             <div class="art-thumb">
-              <img src={previewSrc} alt="Collectible artwork" />
+              <img src={previewSrc} alt="Object artwork" />
             </div>
             <div class="art-actions">
               <label class="btn btn--ghost btn--sm">

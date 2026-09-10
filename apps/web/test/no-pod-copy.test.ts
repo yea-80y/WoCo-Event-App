@@ -1,6 +1,6 @@
 /**
  * "POD" is retired as a NAME (owner decision 2026-09-01, #515/#458). What a user
- * READS is now "collectible(s)" in the organiser studio and "collection" on the
+ * READS is now "object(s)" in the organiser studio and "collection" on the
  * attendee side. What the machine reads — identifiers (`PodCard`, `podSeed`,
  * `ensurePodIdentity`), routes (`/creator/pods`), feed topics (`woco/pod/*`),
  * storage keys (`StorageKeys.POD_SEED`) and the frozen signed literals — keeps
@@ -171,7 +171,7 @@ test("no user-visible string in apps/web/src says POD", () => {
   assert.deepEqual(
     hits,
     [],
-    "POD is retired as a user-facing name — say collectible(s) in the organiser " +
+    "POD is retired as a user-facing name — say object(s) in the organiser " +
       "studio, collection on the attendee side, ticket/badge where the thing is " +
       "specifically one of those:\n" +
       hits.map((h) => `  ${h.file}:${h.line}  ${h.text}`).join("\n"),
