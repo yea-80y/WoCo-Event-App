@@ -80,18 +80,26 @@ test("the type names the dialog keys on are the ones actually signed", () => {
   }
 });
 
-test("the raw material survives behind the friendly copy", () => {
+test("the raw material survives INSIDE the friendly copy's disclosure", () => {
   // Honesty about the bytes is a requirement, not decoration. A signature
   // request that hides what it signs is worse than an unreadable one.
+  //
+  // Scoped to the <details> body on purpose: the untranslated fallback branch
+  // renders the same fields, so a whole-file match would stay green with the
+  // human branch showing prose and nothing else — which is the exact regression
+  // worth catching.
   const src = read(DIALOG);
+  const disclosure = /<details[\s\S]*?<\/details>/.exec(src)?.[0];
+  assert.ok(disclosure, "the raw layer must be a real disclosure, closed by default");
+  assert.match(disclosure!, /Show what you're signing/, "the disclosure must be reachable");
+  assert.match(disclosure!, /pending\.fields/, "every raw EIP-712 field must stay in it");
+  assert.match(disclosure!, /pending\.domainName/, "the domain name must stay in it");
+  assert.doesNotMatch(disclosure!, /\bopen\b\s*(=|>)/, "it must be closed by default");
   assert.match(
     src,
-    /pending\.fields/,
-    "the dialog must still render the raw EIP-712 fields",
+    /The technical names are fixed and can't be renamed\./,
+    "the dialog must say why the raw names read the way they do",
   );
-  assert.match(src, /Show what you're signing/, "the disclosure must be reachable");
-  assert.match(src, /<details/, "the raw layer must be a real disclosure, closed by default");
-  assert.match(src, /pending\.domainName/, "the domain name must stay visible");
 });
 
 test("the primary button paints ink on the accent, not white", () => {

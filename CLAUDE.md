@@ -144,11 +144,14 @@ REMOVED — do not reintroduce from old docs: Para embedded wallet and the local
 account (secp256k1 in IndexedDB) were both deleted in `e127c97` to cut eager bundle size.
 `SiteLoginModal.svelte:3` and `backup-signer.ts:173` carry comments explaining why.
 
-Deferred signing: login just connects; EIP-712 `AuthorizeSession` is signed on first
-action that needs it (publish, claim, MyTickets). `ensureSession()` is the gate.
-`ensurePodIdentity()` runs on publish AND first dashboard decrypt;
-`ensureIssuingKey()` (`lib/auth/issuing-key.ts`) wraps it + derivation — FAIL LOUD when
-no seed, never another signer.
+Deferred signing: login just connects; the signatures are asked for on the first action
+that needs them, through ONE entry point — `auth.ensureAccountSetup({ identity })`, which
+plans the outstanding steps (`lib/auth/account-setup-plan.ts`) and, for external wallets
+only, explains them first via `AccountSetupSheet`. Never call `ensureSession()` +
+`ensurePodIdentity()` in sequence at a call site and never count the prompts: how many a
+person sees depends on the login kind (passkey/web3auth sign the session silently) and on
+what is already on the device. `ensureIssuingKey()` (`lib/auth/issuing-key.ts`) wraps the
+seed + derivation — FAIL LOUD when no seed, never another signer.
 
 Global login popup pattern: `loginRequest.request() → Promise<boolean>` — opens
 `LoginModal` from any component. Used by ClaimButton, PublishButton, MyTickets, nav.
