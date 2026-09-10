@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x, PodGate, PodGateGroup } from "@woco/shared";
-  import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
+  import PodGateEditor from "../../components/object/ObjectGateEditor.svelte";
   import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";

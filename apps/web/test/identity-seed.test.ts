@@ -70,7 +70,7 @@ installFakeIndexedDB();
 
 // Imported AFTER the shim is installed (functions resolve IndexedDB lazily).
 const { requestPodIdentity, storePodSeed, restorePodSeed, clearPodIdentity } =
-  await import("../src/lib/auth/pod-identity.ts");
+  await import("../src/lib/auth/identity-seed.ts");
 
 // A deterministic mock wallet: returns a fixed 65-byte signature, counts calls.
 function countingSigner(sigHex: string) {

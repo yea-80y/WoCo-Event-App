@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CertPodGate, ChainPodGate, PodGate } from "@woco/shared";
-import { validatePodGate } from "../src/lib/pod/gate-check.js";
+import { validatePodGate } from "../src/lib/object/gate-check.js";
 
 const BADGE = `0x${"ab".repeat(32)}`;
 const OTHER_BADGE = `0x${"cd".repeat(32)}`;

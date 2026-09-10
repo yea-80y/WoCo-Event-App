@@ -9,8 +9,8 @@
    * correctly from existing event/product data.
    */
   import type { PodDirectoryEntry, PodGate, PodGateGroup } from "@woco/shared";
-  import { getMyPods } from "../../api/pod.js";
-  import PodCard from "./PodCard.svelte";
+  import { getMyPods } from "../../api/objects.js";
+  import PodCard from "./ObjectCard.svelte";
   import { partitionGateable, buildChainGates, notGateableLabel, type GateablePartition } from "./gate-build.js";
 
   interface Props {

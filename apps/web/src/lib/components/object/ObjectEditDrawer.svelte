@@ -8,7 +8,7 @@
    * affordance on Save. Vermillion only on the destructive "Remove image" action.
    */
   import type { PodDirectoryEntry, PodCategory } from "@woco/shared";
-  import { updatePod } from "../../api/pod.js";
+  import { updatePod } from "../../api/objects.js";
   import { uploadSiteImage } from "../../api/sites.js";
   import CertIssueModal from "./CertIssueModal.svelte";
 

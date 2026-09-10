@@ -144,7 +144,7 @@ const readSrc = (p: string) =>
 test("both create routes verify the binding and stop on refusal", () => {
   for (const [name, path] of [
     ["events", "../src/routes/events.ts"],
-    ["pod", "../src/routes/pod.ts"],
+    ["pod", "../src/routes/objects.ts"],
   ] as const) {
     const src = readSrc(path);
     const at = src.indexOf("verifyAndPinIssuerBinding(");
@@ -156,7 +156,7 @@ test("both create routes verify the binding and stop on refusal", () => {
 });
 
 test("the binding is checked against the VERIFIED parent, never a body value", () => {
-  for (const path of ["../src/routes/events.ts", "../src/routes/pod.ts"]) {
+  for (const path of ["../src/routes/events.ts", "../src/routes/objects.ts"]) {
     const src = readSrc(path);
     const at = src.indexOf("verifyAndPinIssuerBinding(");
     const call = src.slice(at, at + 200);

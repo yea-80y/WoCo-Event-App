@@ -53,7 +53,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { Hex0x } from "../types.js";
-import type { Bytes32Hex } from "../pod/types.js";
+import type { Bytes32Hex } from "../object/types.js";
 import type { EncryptionPubkey, HolderPubkey, IssuerAddress } from "../crypto/brands.js";
 import { isIssuerAddress } from "../crypto/brands.js";
 import {

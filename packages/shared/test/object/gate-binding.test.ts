@@ -13,7 +13,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verifyPodGateBinding } from "../../src/pod/gate.js";
+import { verifyPodGateBinding } from "../../src/object/gate.js";
 
 const REF = "0x" + "ab".repeat(32);
 const OTHER = "0x" + "cd".repeat(32);

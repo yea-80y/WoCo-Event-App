@@ -14,7 +14,7 @@
   import MyShopsScreen from "./lib/creator/shops/MyShopsScreen.svelte";
   import ShopEditor from "./lib/creator/shops/ShopEditor.svelte";
   import ShopPosShell from "./lib/creator/shops/ShopPosShell.svelte";
-  import PodManager from "./lib/components/pod/PodManager.svelte";
+  import PodManager from "./lib/components/object/ObjectManager.svelte";
   import AudienceScreen from "./lib/creator/audience/AudienceScreen.svelte";
   import PayoutsScreen from "./lib/creator/payouts/PayoutsScreen.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";

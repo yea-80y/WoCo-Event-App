@@ -34,7 +34,7 @@ import {
   signPersonalMessage,
 } from "../../src/crypto/issuing.js";
 import { asHolderPubkey } from "../../src/crypto/brands.js";
-import { evaluatePodGate } from "../../src/pod/gate.js";
+import { evaluatePodGate } from "../../src/object/gate.js";
 import { bytesToHex0x } from "../../src/crypto/hex.js";
 import * as dagCbor from "@ipld/dag-cbor";
 import { keccak_256 } from "@noble/hashes/sha3.js";

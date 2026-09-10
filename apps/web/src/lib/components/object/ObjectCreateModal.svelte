@@ -18,10 +18,10 @@
   import { buildIssuerBindingMessage, signPersonalMessage } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
-  import { buildEventManifests } from "../../pod/event-builder.js";
-  import { buildCertBadgeManifest } from "../../pod/cert-builder.js";
+  import { buildEventManifests } from "../../object/event-builder.js";
+  import { buildCertBadgeManifest } from "../../object/cert-builder.js";
   import { uploadSiteImage } from "../../api/sites.js";
-  import { createPod } from "../../api/pod.js";
+  import { createPod } from "../../api/objects.js";
 
   interface Props {
     open: boolean;

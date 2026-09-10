@@ -29,7 +29,7 @@ import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-wi
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { chainEventEndMs } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
-import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
+import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";

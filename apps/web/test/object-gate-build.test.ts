@@ -22,7 +22,7 @@ import {
   partitionGateable,
   buildChainGates,
   notGateableLabel,
-} from "../src/lib/components/pod/gate-build.js";
+} from "../src/lib/components/object/gate-build.js";
 
 function pod(over: Partial<PodDirectoryEntry> = {}): PodDirectoryEntry {
   return {

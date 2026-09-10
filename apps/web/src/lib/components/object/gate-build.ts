@@ -1,7 +1,7 @@
 /**
  * Which PODs can gate, and what gate object a selection produces.
  *
- * Extracted from `PodGateEditor.svelte` because that editor is mounted on the
+ * Extracted from `ObjectGateEditor.svelte` because that editor is mounted on the
  * LIVE TICKET SALES path (`TicketSeriesEditor`) and on the shop catalogue, and
  * a component cannot be unit-tested here. The chain arm's behaviour must be
  * provable across this slice, not read.

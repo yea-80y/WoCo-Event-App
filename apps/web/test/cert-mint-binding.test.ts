@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const SOURCE = readFileSync(
-  fileURLToPath(new URL("../src/lib/components/pod/PodCreateModal.svelte", import.meta.url)),
+  fileURLToPath(new URL("../src/lib/components/object/ObjectCreateModal.svelte", import.meta.url)),
   "utf8",
 );
 

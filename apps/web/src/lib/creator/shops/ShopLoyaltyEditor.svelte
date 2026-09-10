@@ -12,7 +12,7 @@
    */
   import type { Shop, SpendThresholdReward, PodDirectoryEntry } from "@woco/shared";
   import { updateShop } from "../../api/shops.js";
-  import { getMyPods } from "../../api/pod.js";
+  import { getMyPods } from "../../api/objects.js";
   import { onMount } from "svelte";
 
   interface Props {

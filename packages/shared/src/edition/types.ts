@@ -29,7 +29,7 @@
 
 import { isIssuerAddress, type IssuerAddress } from "../crypto/brands.js";
 import { isJsonSafeStatementValue } from "../statement/discipline.js";
-import type { Bytes32Hex } from "../pod/types.js";
+import type { Bytes32Hex } from "../object/types.js";
 import type { Hex0x } from "../types.js";
 
 export const EDITION_FORMAT = "woco.edition.v1" as const;

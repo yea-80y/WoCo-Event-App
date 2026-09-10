@@ -32,7 +32,7 @@
  * one.
  */
 
-import type { PodHolding, Bytes32Hex } from "../pod/types.js";
+import type { PodHolding, Bytes32Hex } from "../object/types.js";
 import type { IssuerAddress } from "../crypto/brands.js";
 import { bytesToHex0x } from "../crypto/hex.js";
 import { manifestV2Digest } from "../edition/canonical.js";

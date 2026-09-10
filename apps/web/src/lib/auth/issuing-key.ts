@@ -17,7 +17,7 @@
 
 import { deriveIssuingKey, type IssuerAddress } from "@woco/shared";
 import { auth } from "./auth-store.svelte.js";
-import { restorePodSeed } from "./pod-identity.js";
+import { restorePodSeed } from "./identity-seed.js";
 
 export interface IssuingKey {
   privateKey: Uint8Array;

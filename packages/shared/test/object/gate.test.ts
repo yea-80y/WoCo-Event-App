@@ -11,8 +11,8 @@ import {
   evaluatePodGate,
   evaluatePodGateGroup,
   computeGatePhase,
-} from "../../src/pod/gate.js";
-import type { PodHolding, PodGateRule, PodGate, PodGateGroup } from "../../src/pod/types.js";
+} from "../../src/object/gate.js";
+import type { PodHolding, PodGateRule, PodGate, PodGateGroup } from "../../src/object/types.js";
 
 const REF = "0x" + "ab".repeat(32);
 const OTHER = "0x" + "cd".repeat(32);

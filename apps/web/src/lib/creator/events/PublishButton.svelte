@@ -4,9 +4,9 @@
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { restorePodSeed } from "../../auth/pod-identity.js";
+  import { restorePodSeed } from "../../auth/identity-seed.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
-  import { buildEventManifests } from "../../pod/event-builder.js";
+  import { buildEventManifests } from "../../object/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
   import { eventContentTopic } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";

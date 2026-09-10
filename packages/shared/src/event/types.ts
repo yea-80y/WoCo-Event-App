@@ -1,6 +1,6 @@
 import type { Hex64, Hex0x } from "../types.js";
 import type { OrderField, SealedBox } from "../crypto/types.js";
-import type { PodGate, PodGateGroup } from "../pod/types.js";
+import type { PodGate, PodGateGroup } from "../object/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
 

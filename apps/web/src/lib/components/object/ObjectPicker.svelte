@@ -7,8 +7,8 @@
    * toggle. The parent owns selection state and receives changes via `onChange`.
    */
   import type { PodDirectoryEntry, PodKind } from "@woco/shared";
-  import { getMyPods } from "../../api/pod.js";
-  import PodCard from "./PodCard.svelte";
+  import { getMyPods } from "../../api/objects.js";
+  import PodCard from "./ObjectCard.svelte";
 
   interface Props {
     /** Currently selected manifestRef(s). */

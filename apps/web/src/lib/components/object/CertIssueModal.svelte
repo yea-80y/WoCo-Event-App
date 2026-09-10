@@ -26,7 +26,7 @@
   import type { PodDirectoryEntry, SignedManifestV2, Hex0x, HolderPubkey } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
-  import { getAttendeeKeys, updatePod, type AttendeeKeyRow } from "../../api/pod.js";
+  import { getAttendeeKeys, updatePod, type AttendeeKeyRow } from "../../api/objects.js";
   import { getEventsByCreator, getEventOrders } from "../../api/events.js";
   import {
     readCertLog,

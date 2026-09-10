@@ -92,7 +92,7 @@ function installFakeIndexedDB() {
 }
 installFakeIndexedDB();
 
-const { requestPodIdentity, clearPodIdentity } = await import("../src/lib/auth/pod-identity.ts");
+const { requestPodIdentity, clearPodIdentity } = await import("../src/lib/auth/identity-seed.ts");
 const { deriveHolderKeypair } = await import("../src/lib/credits/holder-key.ts");
 
 const WALLET_PRIV = "0x" + "ab".repeat(32);
@@ -214,7 +214,7 @@ test("the production message is built from the frozen constants, not a literal",
   // the purpose string: the two would drift and only the production one would
   // matter. So the source is checked for the IMPORT, not for the text.
   const src = readFileSync(
-    fileURLToPath(new URL("../src/lib/auth/pod-identity.ts", import.meta.url)),
+    fileURLToPath(new URL("../src/lib/auth/identity-seed.ts", import.meta.url)),
     "utf8",
   );
   assert.match(src, /purpose:\s*ACCOUNT_KEYS_PURPOSE/, "the purpose must come from the constant");
@@ -253,7 +253,7 @@ test("the source scan below actually reaches the source", () => {
   // Without this, a moved directory empties the scan and the assertion after it
   // passes while guarding nothing.
   assert.ok(SCANNED.length > 300, `scanned only ${SCANNED.length} files`);
-  assert.ok(SCANNED.some((f) => f.rel.endsWith("auth/pod-identity.ts")));
+  assert.ok(SCANNED.some((f) => f.rel.endsWith("auth/identity-seed.ts")));
   assert.ok(SCANNED.some((f) => f.rel.endsWith("crypto/feed-signer.ts")));
 });
 

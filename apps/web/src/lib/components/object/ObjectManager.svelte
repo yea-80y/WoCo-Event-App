@@ -14,11 +14,11 @@
    */
   import type { PodDirectoryEntry, PodCategory, PodKind } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { getMyPods, setPodCategories } from "../../api/pod.js";
+  import { getMyPods, setPodCategories } from "../../api/objects.js";
   import { onMount } from "svelte";
-  import PodCard from "./PodCard.svelte";
-  import PodEditDrawer from "./PodEditDrawer.svelte";
-  import PodCreateModal from "./PodCreateModal.svelte";
+  import PodCard from "./ObjectCard.svelte";
+  import PodEditDrawer from "./ObjectEditDrawer.svelte";
+  import PodCreateModal from "./ObjectCreateModal.svelte";
 
   type Phase = "loading" | "ready" | "unauth" | "error";
   let phase = $state<Phase>("loading");

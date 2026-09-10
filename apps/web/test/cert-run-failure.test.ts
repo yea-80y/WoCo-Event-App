@@ -15,9 +15,9 @@ const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.ur
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
 const ISSUE = strip(read("../src/lib/cert/issue.ts"));
-const MODAL_RAW = read("../src/lib/components/pod/CertIssueModal.svelte");
+const MODAL_RAW = read("../src/lib/components/object/CertIssueModal.svelte");
 const MODAL = strip(MODAL_RAW);
-const DRAWER = read("../src/lib/components/pod/PodEditDrawer.svelte");
+const DRAWER = read("../src/lib/components/object/ObjectEditDrawer.svelte");
 
 // ---------------------------------------------------------------------------
 // #1 — an upload that THROWS must become a stop, not an escaping rejection

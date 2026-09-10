@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Wallet } from "ethers";
 import { precheckIssuance } from "../src/lib/cert/issue.js";
-import { buildCertBadgeManifest } from "../src/lib/pod/cert-builder.js";
+import { buildCertBadgeManifest } from "../src/lib/object/cert-builder.js";
 import { issuingAddress, verifyManifestV2, type Hex0x } from "@woco/shared";
 
 /** The badge's issuing key (secp256k1) — its ADDRESS is the issuer identity. */

@@ -13,7 +13,7 @@
 
 import type { Hex64, Hex0x } from "../types.js";
 import type { PaymentConfig, FiatCurrency, PaymentChainId } from "../event/types.js";
-import type { PodGate, PodGateGroup } from "../pod/types.js";
+import type { PodGate, PodGateGroup } from "../object/types.js";
 
 // ---------------------------------------------------------------------------
 // Shop + catalog

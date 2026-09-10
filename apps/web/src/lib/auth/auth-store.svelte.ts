@@ -28,7 +28,7 @@ import {
   restorePodSeed,
   storePodSeed,
   clearPodIdentity,
-} from "./pod-identity.js";
+} from "./identity-seed.js";
 import {
   connectWallet,
   getConnectedAddress,

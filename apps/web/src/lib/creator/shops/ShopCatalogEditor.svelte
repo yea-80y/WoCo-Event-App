@@ -19,7 +19,7 @@
   import { onMount } from "svelte";
   import { updateShop, upsertProduct, deleteProduct, getProducts } from "../../api/shops.js";
   import { uploadSiteImage } from "../../api/sites.js";
-  import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
+  import PodGateEditor from "../../components/object/ObjectGateEditor.svelte";
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 

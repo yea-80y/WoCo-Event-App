@@ -21,7 +21,7 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\
 
 const ISSUING = strip(read("../src/lib/auth/issuing-key.ts"));
 const PUBLISH = strip(read("../src/lib/creator/events/PublishButton.svelte"));
-const MINT = strip(read("../src/lib/components/pod/PodCreateModal.svelte"));
+const MINT = strip(read("../src/lib/components/object/ObjectCreateModal.svelte"));
 
 // ---------------------------------------------------------------------------
 // ensureIssuingKey — FAIL LOUD, never fall through to another signer

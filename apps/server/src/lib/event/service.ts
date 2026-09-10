@@ -10,8 +10,8 @@ import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
 import { assertNoOrders } from "./delete-safety.js";
-import { validatePodGate } from "../pod/gate-check.js";
-import { upsertCreatorPod } from "../pod/directory.js";
+import { validatePodGate } from "../object/gate-check.js";
+import { upsertCreatorPod } from "../object/directory.js";
 import { recordOnChainEventId, applyOnChainEventIds } from "./onchain-registry.js";
 import { setListed, setTombstoned } from "./listing-state.js";
 import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";

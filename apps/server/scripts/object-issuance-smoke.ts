@@ -12,7 +12,7 @@
  *
  * Run from repo root (tunnel running):
  *   WOCO_EVENT_CHAIN_ID=421614 node --import tsx \
- *     apps/server/scripts/pod-issuance-smoke.ts
+ *     apps/server/scripts/object-issuance-smoke.ts
  */
 import { config as loadEnv } from "dotenv";
 import { fileURLToPath } from "url";
@@ -24,7 +24,7 @@ loadEnv({ path: resolve(__dirname, "../.env") });
 
 const { buildPodTree, signManifest, bytesToHex0x } = await import("@woco/shared");
 type SharedTypes = typeof import("@woco/shared");
-const { issuePodType } = await import("../src/lib/pod/issuance.js");
+const { issuePodType } = await import("../src/lib/object/issuance.js");
 const { getActiveChainId, getEventContractVersion } = await import("../src/lib/chain/event-contract.js");
 
 // A fixed throwaway creator so re-runs upsert the same junk directory feed.

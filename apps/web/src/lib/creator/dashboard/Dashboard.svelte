@@ -14,7 +14,7 @@
     type ServiceNoticeType,
   } from "@woco/shared";
   import { getEventSWR, getEventOrdersSWR } from "../../api/creator-cache.js";
-  import { restorePodSeed } from "../../auth/pod-identity.js";
+  import { restorePodSeed } from "../../auth/identity-seed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";

@@ -19,7 +19,7 @@ import {
   upsertCreatorShop,
 } from "../lib/shop/service.js";
 import { signShopQuote, verifyShopQuote, consumeShopQuote } from "../lib/shop/quote.js";
-import { validatePodGate, checkProductGates, firstGatedProduct } from "../lib/pod/gate-check.js";
+import { validatePodGate, checkProductGates, firstGatedProduct } from "../lib/object/gate-check.js";
 import { awardSpendMilestones } from "../lib/shop/loyalty.js";
 import { getCryptoFeeConfig } from "../lib/shop/fees.js";
 import {

@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Hex0x } from "@woco/shared";
-import { validateIssuedCount } from "../src/lib/pod/issuance.js";
+import { validateIssuedCount } from "../src/lib/object/issuance.js";
 import { toAttendeeKeyRows, type GateBinding } from "../src/lib/gate/store.js";
 
 const LOG_OWNER = "0x2222222222222222222222222222222222222222" as Hex0x;

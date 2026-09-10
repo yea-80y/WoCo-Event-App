@@ -2,7 +2,7 @@
   import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
   import { deriveEncryptionKeypairFromPodSeed, sealJsonCompressed, openJsonAuto, contactConsentState } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
-  import { restorePodSeed } from "../../auth/pod-identity.js";
+  import { restorePodSeed } from "../../auth/identity-seed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import {

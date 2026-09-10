@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { EditionV1Body, Hex0x, ManifestV2Body } from "@woco/shared";
 import { buildEditionTree, issuingAddress, signManifestV2 } from "@woco/shared";
-import { issuePodType } from "../src/lib/pod/issuance.js";
+import { issuePodType } from "../src/lib/object/issuance.js";
 
 /** The issuing key (secp256k1) — its ADDRESS is the v2 issuer identity. */
 const ISSUER_PRIV = new Uint8Array(32).fill(7);

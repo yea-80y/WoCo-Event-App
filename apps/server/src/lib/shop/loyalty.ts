@@ -16,7 +16,7 @@ import { keccak256, toUtf8Bytes } from "ethers";
 import type { Shop, Order, Hex0x } from "@woco/shared";
 import { crossedThresholds, paidSpendMinor, moneyToMinor } from "@woco/shared";
 import { getOrders } from "./service.js";
-import { getOnChainHolding } from "../pod/holdings.js";
+import { getOnChainHolding } from "../object/holdings.js";
 import { claimForOnChain } from "../chain/sponsor-wallet.js";
 import { getActiveChainId } from "../chain/event-contract.js";
 

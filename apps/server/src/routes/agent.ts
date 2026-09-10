@@ -28,7 +28,7 @@ import type { Hex0x, PaymentChainId, SealedBox } from "@woco/shared";
 import { getEvent, listEvents } from "../lib/event/service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { fiatToUSD } from "../lib/payment/eth-price.js";
-import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/pod/gate-check.js";
+import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import type { PodGate, PodGateGroup } from "@woco/shared";
 import {
   agentBudgetParams,
