@@ -26,6 +26,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { keccak256, getBytes } from "ethers";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { EIP712Signer } from "@woco/shared";
 
 // --- minimal in-memory IndexedDB (single object store) for indexeddb.ts -------
@@ -99,6 +101,149 @@ test("a different signature is a different seed", async () => {
   const { seed: a } = await requestPodIdentity(addr, countingSigner(SIG_A).sign);
   const { seed: b } = await requestPodIdentity(addr, countingSigner(SIG_B).sign);
   assert.notEqual(a, b);
+});
+
+// ---------------------------------------------------------------------------
+// The external-wallet determinism guard
+// ---------------------------------------------------------------------------
+//
+// Our own signers go through ethers (RFC-6979) and are deterministic by
+// construction. An external wallet's nonce generation is not ours, and a wallet
+// that signs the same message differently twice gives this user a DIFFERENT seed
+// on their next device — a different encryption key (sealed history stops
+// opening), a different issuer address, and a different content-feed signer
+// (every chunk they own becomes unreachable). None of that announces itself and
+// none of it is recoverable, so the guard fails at setup instead.
+//
+// It moved here from the feed-signer derivation when the feed signer became a
+// KDF of this seed: there is one signature to check now, and it protects
+// strictly more than it used to.
+
+/** A signer that returns a DIFFERENT signature each call — a wallet whose nonce
+ *  generation is not reproducible. */
+function flakySigner() {
+  let calls = 0;
+  const sign: EIP712Signer = (async () => {
+    calls++;
+    return "0x" + calls.toString(16).padStart(2, "0").repeat(65);
+  }) as unknown as EIP712Signer;
+  return { sign, calls: () => calls };
+}
+
+test("an external wallet that signs differently twice is REFUSED", async () => {
+  await clearPodIdentity();
+  const addr = "0x1111111111111111111111111111111111111111";
+  const flaky = flakySigner();
+  await assert.rejects(
+    () => requestPodIdentity(addr, flaky.sign, { verifyDeterminism: true }),
+    /isn't reproducible/,
+  );
+  assert.equal(flaky.calls(), 2, "the check costs exactly one extra signature");
+});
+
+test("a refused wallet leaves NO seed behind", async () => {
+  // Load-bearing: a stored seed reads as "established" to every later caller,
+  // including the one that would then sign content under a key the wallet cannot
+  // reproduce on the next device.
+  //
+  // The address is passed to clearPodIdentity on purpose — the bare call drops
+  // only the LEGACY global slot, so a per-account seed written by an earlier test
+  // would still be there and this would pass for the wrong reason. (It did, on
+  // the first run of this test; that is the trap the file's own `clearBoth`
+  // helper documents.)
+  const addr = "0x9999999999999999999999999999999999999999";
+  await clearPodIdentity(addr);
+  assert.equal(await restorePodSeed(addr), null, "precondition: the slot starts empty");
+  await requestPodIdentity(addr, flakySigner().sign, { verifyDeterminism: true }).catch(() => {});
+  assert.equal(await restorePodSeed(addr), null);
+});
+
+test("a reproducible external wallet is signed TWICE and accepted", async () => {
+  await clearPodIdentity();
+  const addr = "0x1111111111111111111111111111111111111111";
+  const a = countingSigner(SIG_A);
+  const { seed } = await requestPodIdentity(addr, a.sign, { verifyDeterminism: true });
+  assert.equal(a.calls(), 2, "external wallets are checked, not trusted");
+  assert.equal(seed, seedFromSig(SIG_A), "the checked signature is the one that seeds");
+});
+
+test("a raw-key signer is signed ONCE — the second prompt would be pure friction", async () => {
+  await clearPodIdentity();
+  const addr = "0x1111111111111111111111111111111111111111";
+  const a = countingSigner(SIG_A);
+  await requestPodIdentity(addr, a.sign);
+  assert.equal(a.calls(), 1);
+
+  // And the default is OFF: a caller that forgets the flag must not silently
+  // start double-prompting every passkey user.
+  await clearPodIdentity();
+  const b = countingSigner(SIG_A);
+  await requestPodIdentity(addr, b.sign, {});
+  assert.equal(b.calls(), 1);
+});
+
+test("a flaky signer is ACCEPTED without the flag — the guard is opt-in, by kind", async () => {
+  // Not an endorsement: it documents that raw-key kinds are trusted on the
+  // strength of RFC-6979, so the flag is the ONLY thing standing between an
+  // external wallet and a silently forked account. Whoever removes the flag at
+  // the call site should see this test name.
+  await clearPodIdentity();
+  const addr = "0x1111111111111111111111111111111111111111";
+  const flaky = flakySigner();
+  const { seed } = await requestPodIdentity(addr, flaky.sign);
+  assert.equal(flaky.calls(), 1);
+  assert.match(seed, /^0x[0-9a-f]{64}$/);
+});
+
+test("the auth store OPTS EXTERNAL WALLETS IN — pinned at the call site", () => {
+  // The guard above is opt-in, so a test of the function alone proves nothing
+  // about production: dropping `verifyDeterminism` at the one call site turns
+  // every external wallet back into a silent fork, and every test in this file
+  // still passes. (It did — this pin was added because that mutation survived.)
+  //
+  // Source-level because `auth-store.svelte.ts` is a runes module the node test
+  // runner cannot load; the call is what gets pinned, not a comment.
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const call = src
+    .split("\n")
+    .find((l) => l.includes("requestPodIdentity(podAddr,"));
+  assert.ok(call, "the auth store must establish the seed through requestPodIdentity");
+  assert.match(
+    call,
+    /verifyDeterminism:\s*_kind === "web3"/,
+    "external-wallet kinds must be signed twice and checked",
+  );
+});
+
+test("the SILENT establish stays web3auth-only", () => {
+  // `silent` skips the confirm dialog. It is correct for web3auth — the raw key
+  // is already in memory and ethers signs it with RFC-6979, so there is no
+  // decision for the user to take and prompting on every page load would be
+  // friction for nothing. Widening it is a different claim: for passkey the PRF
+  // ceremony is the consent, and for web3 the wallet popup IS the wallet's own
+  // policy. Neither may be skipped by an eager path the user did not ask for.
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const gates = src
+    .split("\n")
+    .filter((l) => l.includes("opts.silent") || l.includes("{ silent: true }"));
+  assert.ok(gates.length >= 2, "the silent path must still exist to be constrained");
+  for (const line of gates) {
+    assert.match(
+      line,
+      /web3auth|_getContentFeedSigner|_ensureIdentitySeed/,
+      `a silent establish escaped the web3auth gate: ${line.trim()}`,
+    );
+  }
+  const gate = src.split("\n").find((l) => l.includes("const silentRawKey = opts.silent"));
+  assert.ok(gate, "the silent signer gate must exist");
+  assert.match(gate, /_kind === "web3auth"/, "only web3auth may establish a seed with no dialog");
+  assert.match(gate, /_web3authPrivateKey/, "and only from the web3auth raw key");
 });
 
 test("requestPodIdentity derives NO key — the seed is all it returns", async () => {

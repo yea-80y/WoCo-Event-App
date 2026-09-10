@@ -32,10 +32,9 @@
  */
 
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { hkdf } from "@noble/hashes/hkdf.js";
-import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { addressFromUncompressed as secpAddress, deriveSecpFromSeed } from "./secp-hkdf.js";
 import { asIssuerAddress, type IssuerAddress } from "./brands.js";
 import type { Hex0x } from "../types.js";
 
@@ -43,37 +42,12 @@ import type { Hex0x } from "../types.js";
  *  changing it re-derives every issuing key at every generation. */
 export const ISSUING_INFO_PREFIX = "woco/issuing/v1/";
 
-/** secp256k1 group order. */
-const SECP256K1_N = secp256k1.Point.Fn.ORDER;
-
 /** 65-byte r||s||v signature, 0x-prefixed lowercase hex (Ethereum wire form). */
 const PERSONAL_SIG_RE = /^0x[0-9a-f]{130}$/;
 
-/**
- * Map 48 bytes of HKDF output to a scalar in [1, n-1], deterministically.
- *
- * 48 bytes (384 bits) reduced mod (n-1) gives bias ~2^-128 — negligible — and
- * the +1 shift makes zero impossible by construction. No retry loop, no throw:
- * the ~2^-128 "invalid scalar" case of naive 32-byte derivation simply cannot
- * occur. Exported for the range tests; not part of the public derivation API.
- */
-export function issuingScalarFromOkm(okm: Uint8Array): bigint {
-  if (okm.length !== 48) {
-    throw new Error(`issuing-key OKM must be 48 bytes, got ${okm.length}`);
-  }
-  let x = 0n;
-  for (const b of okm) x = (x << 8n) | BigInt(b);
-  return (x % (SECP256K1_N - 1n)) + 1n;
-}
-
-function scalarToPrivateKey(scalar: bigint): Uint8Array {
-  return hexToBytes(scalar.toString(16).padStart(64, "0"));
-}
-
+/** The shared address computation, branded as an issuer identity. */
 function addressFromUncompressed(pub65: Uint8Array): IssuerAddress {
-  // Ethereum address = last 20 bytes of keccak256 over the 64-byte public key
-  // (uncompressed form minus its 0x04 tag byte).
-  return asIssuerAddress("0x" + bytesToHex(keccak_256(pub65.subarray(1)).subarray(12)));
+  return asIssuerAddress(secpAddress(pub65));
 }
 
 /** The issuing ADDRESS for a private key — the v2 issuer identity unit. */
@@ -82,12 +56,12 @@ export function issuingAddress(privateKey: Uint8Array): IssuerAddress {
 }
 
 /**
- * Derive the generation-`gen` issuing key from the POD seed.
+ * Derive the generation-`gen` issuing key from the account seed.
  *
  * Pure derivation — callers that may lack a seed (the web `ensureIssuingKey`
- * wrapper, PR 4) must FAIL LOUD before calling this, never fall through to
- * another signer. Throws on a malformed seed or generation; never on any
- * seed VALUE (see {@link issuingScalarFromOkm}).
+ * wrapper) must FAIL LOUD before calling this, never fall through to another
+ * signer. Throws on a malformed seed or generation; never on any seed VALUE
+ * (see {@link scalarFromOkm48}).
  */
 export function deriveIssuingKey(
   podSeedHex: string,
@@ -96,16 +70,7 @@ export function deriveIssuingKey(
   if (!Number.isInteger(gen) || gen < 0) {
     throw new Error(`invalid issuing-key generation: ${gen}`);
   }
-  const clean =
-    podSeedHex.startsWith("0x") || podSeedHex.startsWith("0X") ? podSeedHex.slice(2) : podSeedHex;
-  const seed = hexToBytes(clean);
-  if (seed.length !== 32) {
-    throw new Error(`invalid POD seed: expected 32 bytes, got ${seed.length}`);
-  }
-  // Salt pinned to the empty byte string, exactly as the X25519 sibling in
-  // keys.ts — the info string alone separates the domains.
-  const okm = hkdf(sha256, seed, new Uint8Array(0), utf8ToBytes(ISSUING_INFO_PREFIX + gen), 48);
-  const privateKey = scalarToPrivateKey(issuingScalarFromOkm(okm));
+  const { privateKey } = deriveSecpFromSeed(podSeedHex, ISSUING_INFO_PREFIX + gen, "POD seed");
   return { privateKey, address: issuingAddress(privateKey) };
 }
 

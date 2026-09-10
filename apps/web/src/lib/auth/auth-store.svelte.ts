@@ -3,9 +3,7 @@ import {
   type EIP712Signer,
   StorageKeys,
   type SessionDelegation,
-  FEED_SIGNER_DERIVE_DOMAIN,
-  FEED_SIGNER_DERIVE_TYPES,
-  FEED_SIGNER_DERIVE_NONCE,
+  deriveFeedSignerKey,
   FEATURES,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
@@ -97,9 +95,9 @@ let _feedSignerInFlight: Promise<ContentFeedSigner | null> | null = null;
 
 // In-memory memo of the feed-signer ADDRESS for passive self-reads, always
 // validated against the CURRENT parent before use. Never persisted: the only
-// durable copy of signer material is the AAD-bound encrypted key blob
-// (feed-signer-store), so there is no unauthenticated record that could survive
-// an account switch and leak the previous user's signer into this one's reads.
+// durable secret is the AAD-bound identity SEED, so there is no unauthenticated
+// record that could survive an account switch and leak the previous user's
+// signer into this one's reads.
 let _feedSignerAddressMemo: { parent: string; address: string } | null = null;
 
 // ---------------------------------------------------------------------------
@@ -193,65 +191,6 @@ function _getPodAddress(): string | null {
 }
 
 /**
- * Establish the user's content-feed signer by SIGN-TO-DERIVE — the single
- * construction for every kind that can own client feeds: keccak256 of a
- * deterministic, domain-separated EIP-712 signature. This is IDENTICAL to how the
- * POD seed is derived (`requestPodIdentity`); only the signed domain differs
- * (`FEED_SIGNER_DERIVE_DOMAIN`, distinct salt), so the feed key and POD key are
- * cryptographically independent.
- *
- * Signs with `_getPodSigner()` — the DETERMINISTIC raw-key/wallet signer (raw PRF
- * key for passkey, raw key for web3auth, the wallet for web3), NEVER the
- * Kernel 1271 signer, whose signatures are non-deterministic and would orphan the
- * feed across devices.
- *
- * DETERMINISM: raw-key kinds sign via ethers → RFC-6979, deterministic by
- * construction. External wallets (web3) are not under our control, so we sign
- * TWICE and THROW on mismatch — a non-deterministic wallet would make the feed
- * unrecoverable on the next device. Content is NEVER platform-signed as a
- * consolation: a failure here aborts the publish with a clear error instead.
- */
-async function _deriveFeedSignerBySigning(parent: string): Promise<ContentFeedSigner> {
-  // For kinds whose raw key is already in memory (web3auth), the feed-signer
-  // derivation is an INTERNAL key-stretch — ethers signs it silently (RFC-6979), so
-  // it needs no user confirm dialog. Deriving silently is also what lets us
-  // re-establish the signer eagerly on login/restore without popping a prompt on
-  // every page load. web3 (external wallet) must sign with the wallet itself (and
-  // gets the double-sign determinism check); passkey keeps its own _getPodSigner
-  // path (biometric + escrow-backed).
-  const silentRawKey = _kind === "web3auth" ? _web3authPrivateKey : null;
-  const signer712 = silentRawKey
-    ? createLocalSigner(silentRawKey, async () => true)
-    : await _getPodSigner();
-  const message = {
-    purpose: "Set up your WoCo content-feed signing key",
-    address: parent,
-    nonce: FEED_SIGNER_DERIVE_NONCE,
-  };
-  const sign = () =>
-    signer712(
-      { ...FEED_SIGNER_DERIVE_DOMAIN },
-      FEED_SIGNER_DERIVE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
-      message as unknown as Record<string, unknown>,
-    );
-
-  const { deriveContentFeedSignerFromSig } = await import("../swarm/content-feed.js");
-  const first = await deriveContentFeedSignerFromSig(await sign());
-  // Only EXTERNAL wallets need the reproducibility self-check: we don't control
-  // their nonce generation. Raw-key kinds sign with ethers (RFC-6979) → already
-  // deterministic, so a second prompt would be pure friction.
-  if (_kind === "web3") {
-    const second = await deriveContentFeedSignerFromSig(await sign());
-    if (first.address !== second.address) {
-      throw new Error(
-        "Your wallet's signature isn't reproducible, so we can't create a recoverable feed for your content. Try a different wallet.",
-      );
-    }
-  }
-  return first;
-}
-
-/**
  * The user's content-feed signer (Phase B), or null when this kind/state can't
  * own client-signed feeds. The address is the SOC owner + the registry value.
  *
@@ -260,100 +199,97 @@ async function _deriveFeedSignerBySigning(parent: string): Promise<ContentFeedSi
  * each fire a derive, and `signingRequest` auto-rejects an overlapping confirm
  * dialog — which surfaces as a signer failure with no visible prompt.
  */
-async function _getContentFeedSigner(): Promise<ContentFeedSigner | null> {
+async function _getContentFeedSigner(opts: { silent?: boolean } = {}): Promise<ContentFeedSigner | null> {
   if (_feedSignerInFlight) return _feedSignerInFlight;
-  const inFlight = _getContentFeedSignerInner().finally(() => {
+  const inFlight = _getContentFeedSignerInner(opts).finally(() => {
     _feedSignerInFlight = null;
   });
   _feedSignerInFlight = inFlight;
   return inFlight;
 }
 
-async function _getContentFeedSignerInner(): Promise<ContentFeedSigner | null> {
+async function _getContentFeedSignerInner(
+  opts: { silent?: boolean } = {},
+): Promise<ContentFeedSigner | null> {
   const parent = _parent;
-  const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
 
-  // (1) An established key wins: the feed signer is a STORED secret (escrowed for
-  // recovery on kinds whose credential rotates), never re-derived once set — a
-  // rotated passkey credential would derive a divergent key and orphan the user's
-  // feeds (CROSS_DEVICE_RECOVERY §4).
-  if (parent) {
-    const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
-    const stored = await restoreContentFeedSigner(parent);
-    if (stored) {
-      const signer = await contentFeedSignerFromPrivKey(stored);
-      _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
-      return signer;
-    }
-  }
+  // (1) Coinbase Smart Wallet: 1271/6492 signatures are non-deterministic, so it
+  // cannot establish a reproducible seed — client feeds stay PARKED for CSW
+  // (post-launch). Null here is the legacy platform-signed path, the ONLY
+  // remaining such exception.
+  if (!parent || _kind === "coinbase") return null;
+  if (_kind !== "web3" && _kind !== "web3auth" && _kind !== "passkey") return null;
 
-  // (2) No stored key yet → establish one by SIGN-TO-DERIVE, the single
-  // construction for every kind that can own client feeds (web3, web3auth,
-  // passkey), then PERSIST it; from here the stored key wins. On passkey it is
-  // additionally escrowed in the guardian bundle at publish time (recovery-escrow).
-  // FAIL-LOUD: these kinds MUST own client-signed content, so any failure THROWS
-  // (a non-deterministic wallet self-check, a missing key) — we NEVER fall through
-  // to a platform signer, which would silently split the user's feeds.
-  if (parent && (_kind === "web3" || _kind === "web3auth" || _kind === "passkey")) {
-    // Anti-divergence guard: a RECOVERED passkey's PRF credential has ROTATED, so
-    // sign-to-derive here would produce a DIFFERENT key than the one that owns the
-    // account's existing feeds — silently forking them. Its real signer only comes
-    // from escrow/portability restore (done at login). Reaching here means that
-    // restore didn't happen, so FAIL LOUD rather than fork. Non-recovered accounts
-    // (no binding) derive deterministically and are unaffected.
+  // (2) The signer IS a KDF of the account seed, so there is nothing separate to
+  // store, escrow or keep in step: same seed ⇒ same SOC owner, on every device
+  // and after every recovery. The "stored copy wins" rule that used to live in a
+  // second at-rest blob now lives in exactly one place — the seed's AAD-bound
+  // slot — which is what makes a rotated credential unable to fork the feeds.
+  const podAddr = _getPodAddress();
+  if (!podAddr) return null;
+  let seed = await restorePodSeed(podAddr);
+
+  if (!seed) {
+    // Anti-divergence guard: a RECOVERED account's credential has ROTATED, so
+    // establishing a seed here would produce a DIFFERENT one than the account's
+    // existing feeds (and encrypted history) were written under — silently
+    // forking them. Its real seed only comes from escrow/portability restore,
+    // done at login. Reaching here means that restore didn't happen, so FAIL
+    // LOUD rather than fork. `ensurePodIdentity` carries the twin guard; this one
+    // exists to throw a message that names the feeds, since a null return here
+    // would read as "no feed signer" and fall back to platform signing.
     //
-    // NOT passkey-only: `recoverAndRekey` also supports a WEB3AUTH new owner, which
-    // gets the same durable binding and the same un-re-derivable secrets — but has
-    // no PRF portability envelope, so its only restore channel is the guardian
-    // portal. Gating this on `_kind === "passkey"` meant a plain logout→login of a
-    // web3auth-recovered account silently minted a divergent feed signer and forked
-    // every feed it owns (#149). The binding itself is the correct signal.
+    // NOT passkey-only: `recoverAndRekey` also supports a WEB3AUTH new owner,
+    // which gets the same durable binding and the same un-re-derivable seed but
+    // has no PRF portability envelope. The binding is the correct signal (#149).
     //
     // `_getPodAddress()`, NOT `_podAddress` (#174): the bare field is only ever
-    // assigned on passkey paths, so for a web3auth session it is null, and
-    // `_recoveryKernelFor` returns undefined at its first line — the guard was inert
-    // for the exact population the paragraph above describes. The accessor resolves
-    // `_web3authPodAddress` for web3auth and `_parent` for kinds that can never carry
-    // a binding, which is the same form already used at `_ensureKernelForWeb3Auth`
-    // and in `ensurePodIdentity`'s twin guard.
+    // assigned on passkey paths, so for a web3auth session it is null and
+    // `_recoveryKernelFor` would return undefined at its first line — inert for
+    // exactly the population the paragraph above describes.
     if (await _recoveryKernelFor(_getPodAddress())) {
       throw new Error(
         "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
       );
     }
-    const signer = await _deriveFeedSignerBySigning(parent);
-    const { storeContentFeedSigner } = await import("./feed-signer-store.js");
-    await storeContentFeedSigner(parent, signer.privKey);
-    _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
-    return signer;
+    // FAIL-LOUD: these kinds MUST own client-signed content, so a refused or
+    // failed establish THROWS. We NEVER fall through to a platform signer, which
+    // would silently split the user's feeds across two owners.
+    if (!(await _ensureIdentitySeed(opts))) {
+      throw new Error("Could not unlock your account keys — your content can't be signed without them.");
+    }
+    seed = await restorePodSeed(podAddr);
+    if (!seed) throw new Error("Could not unlock your account keys — your content can't be signed without them.");
   }
 
-  // (3) Coinbase Smart Wallet: 1271/6492 signatures are non-deterministic, so it
-  // cannot sign-to-derive — client feeds are PARKED for CSW (random key + escrow,
-  // post-launch). Null here is the legacy platform-signed path, the ONLY remaining
-  // such exception.
-  return null;
+  const signer = deriveFeedSignerKey(seed);
+  _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
+  return signer;
 }
 
 /**
- * Eagerly (re-)establish the content-feed signer for kinds that can derive it
- * SILENTLY from an in-memory raw key (web3auth). This is what makes client
- * feeds actually work across sessions and devices for these kinds:
- *   - logout wipes the on-device signer blob (shared-device hygiene), so a plain
+ * Eagerly (re-)establish the account SEED — and with it the content-feed signer —
+ * for the one kind that can do it SILENTLY from an in-memory raw key (web3auth).
+ * This is what makes client feeds actually work across sessions and devices:
+ *   - logout wipes the on-device seed (shared-device hygiene), so a plain
  *     re-login would leave passive reads (avatar/profile) with no signer to resolve
  *     → they'd fall back to the empty legacy feed and show blank;
  *   - a COLD device has never stored it at all.
- * Because the derivation is deterministic (Web3Auth key × fixed domain), every
- * session and device re-derives the SAME signer → the same SOCs → the user sees
- * their own content. Runs after the raw key is in memory; silent (no dialog) and
- * NON-FATAL — a failure here must not block login/restore, it just defers to the
- * lazy establish on first write. No-op for web3 (wallet re-sign, would prompt),
- * passkey (biometric + escrow), and CSW (parked).
+ * Because the derivation is deterministic (Web3Auth key × the frozen account-keys
+ * message), every session and device re-derives the SAME seed → the SAME signer →
+ * the same SOCs → the user sees their own content. Runs after the raw key is in
+ * memory; silent (no dialog — ethers signs the raw key with RFC-6979, no user
+ * decision to take) and NON-FATAL: a failure here must not block login/restore, it
+ * just defers to the lazy establish on first write.
+ *
+ * NOT WIDENED, deliberately. web3 would pop a wallet prompt on every page load,
+ * passkey a biometric, and CSW cannot derive at all — so those three keep their
+ * lazy establish at the point where a prompt is something the user asked for.
  */
 async function _establishFeedSignerEagerly(): Promise<void> {
   if (_kind !== "web3auth") return;
   try {
-    await _getContentFeedSigner();
+    await _getContentFeedSigner({ silent: true });
   } catch (e) {
     console.warn("[auth] eager feed-signer establishment failed (non-fatal):", e);
   }
@@ -361,16 +297,15 @@ async function _establishFeedSignerEagerly(): Promise<void> {
 
 /**
  * The user's content-feed signer ADDRESS for self-reads, resolved WITHOUT a
- * prompt. Under the unified sign-to-derive construction the address can only be
- * computed from a signature (which prompts), so passive callers resolve it from
- * the STORED feed-signer key (a device-key decrypt, never a PRF/wallet prompt).
- * That blob is the SINGLE durable source of truth: AES-GCM AAD-bound to the
- * parent, so it cryptographically cannot resolve for the wrong identity — unlike
- * a plaintext address cache, which once leaked a previous account's signer into
- * the next login's self-reads. A parent-validated in-memory memo skips the
- * decrypt on repeat calls. Returns null for CSW (no client feed — parked) or when
- * the user has never established a feed signer on this device (no self-owned feed
- * to read yet). Never signs — safe to call from passive UI (e.g. rendering your
+ * prompt. It is a pure function of the account SEED, so a device that already
+ * holds the seed computes it with no signature and no network — a device-key
+ * decrypt and an HKDF. That blob is the SINGLE durable source of truth: AES-GCM
+ * AAD-bound to the account, so it cryptographically cannot resolve for the wrong
+ * identity — unlike a plaintext address cache, which once leaked a previous
+ * account's signer into the next login's self-reads. A parent-validated
+ * in-memory memo skips the decrypt on repeat calls. Returns null for CSW (no
+ * client feed — parked) or when this device has no seed yet (no self-owned feed
+ * to read). Never prompts — safe to call from passive UI (e.g. rendering your
  * own avatar).
  */
 async function _getContentFeedSignerAddress(): Promise<string | null> {
@@ -379,35 +314,28 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   if (!parent) return null;
   if (_feedSignerAddressMemo?.parent === parent) return _feedSignerAddressMemo.address;
 
-  // An established secret may already be stored for this parent (derived here on
-  // a prior session, or escrow/portability-restored on a recovered device).
-  // Recover its address from the stored key so a fresh session that hasn't
-  // published yet still resolves the user's own feeds (e.g. their avatar)
-  // instead of falling back to the legacy platform feed.
-  const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
-  const stored = await restoreContentFeedSigner(parent);
-  if (stored) {
-    const { contentFeedSignerFromPrivKey } = await import("../swarm/content-feed.js");
-    const address = (await contentFeedSignerFromPrivKey(stored)).address;
+  const podAddr = _getPodAddress();
+  const seed = podAddr ? await restorePodSeed(podAddr) : null;
+  if (seed) {
+    const address = deriveFeedSignerKey(seed).address;
     _feedSignerAddressMemo = { parent, address };
     return address;
   }
 
-  // No stored key yet, but for kinds whose feed signer is SILENTLY derivable from
-  // an in-memory raw key (web3auth) we ESTABLISH it on demand rather than
-  // returning null. This closes the cold-restore race: `init()` flips isConnected
-  // true (→ ProfilePage re-reads) the instant _kind/_parent are set, BEFORE the
-  // awaited eager establishment has persisted the signer. A null here would make
-  // the self-read fall back to the empty legacy feed AND cache that blank for 5min
+  // No seed yet, but for the kind whose seed is SILENTLY derivable from an
+  // in-memory raw key (web3auth) we ESTABLISH it on demand rather than returning
+  // null. This closes the cold-restore race: `init()` flips isConnected true
+  // (→ ProfilePage re-reads) the instant _kind/_parent are set, BEFORE the awaited
+  // eager establishment has persisted the seed. A null here would make the
+  // self-read fall back to the empty legacy feed AND cache that blank for 5min
   // (profiles.ts) — the exact cold-device symptom. Establishing coalesces onto the
-  // in-flight eager ceremony (_getContentFeedSigner) and pops NO dialog (ethers
-  // RFC-6979 over the in-memory key). Gated on the raw key actually being in memory
-  // so we never take the wrong (POD/passkey-prompt) derive path. Other kinds
-  // (passkey/web3) require a prompt to derive and MUST stay prompt-free here, so
-  // they return null and defer to lazy establish on first write.
+  // in-flight eager ceremony and pops NO dialog (ethers RFC-6979 over the
+  // in-memory key). Gated on the raw key actually being in memory so we never take
+  // a prompting path. Other kinds require a prompt to establish and MUST stay
+  // prompt-free here, so they return null and defer to lazy establish on first write.
   const silentRawKey = _kind === "web3auth" ? _web3authPrivateKey : null;
   if (silentRawKey) {
-    const signer = await _getContentFeedSigner().catch(() => null);
+    const signer = await _getContentFeedSigner({ silent: true }).catch(() => null);
     return signer?.address ?? null;
   }
   return null;
@@ -417,7 +345,7 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
  * The user's configured recovery backups from their encrypted-to-self manifest
  * (Increment 3a) — the LOGGED-IN comfort layer that lets the "Protect your
  * account" panel show what's already set up. Prompt-free: both the SOC owner
- * address and the seal key come from the STORED feed-signer blob (a device-key
+ * address and the seal key are derived from the STORED account seed (a device-key
  * decrypt, never a PRF/wallet signature), so passive UI can call it freely.
  * Returns [] when not signed in, no feed signer established, or no manifest yet.
  */
@@ -487,9 +415,10 @@ async function _readBackupInventoryUncached(parent: string): Promise<BackupInven
   // read, and "couldn't read" is not "no backups".
   const address = await _getContentFeedSignerAddress();
   if (!address) return { status: "unavailable", reason: "no feed signer on this device" };
-  const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
-  const privKey = await restoreContentFeedSigner(parent);
-  if (!privKey) return { status: "unavailable", reason: "no feed signer on this device" };
+  const podAddr = _getPodAddress();
+  const seed = podAddr ? await restorePodSeed(podAddr) : null;
+  if (!seed) return { status: "unavailable", reason: "no feed signer on this device" };
+  const { privKey } = deriveFeedSignerKey(seed);
   try {
     // Read the FULL history — the memo backs both the live-backups view and the
     // retired-guardian warning, and one read serves both.
@@ -730,7 +659,7 @@ async function _verifyPortabilityEnvelope(
   passkeyPrivKey: string,
   podAddress: string,
 ): Promise<
-  | { preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string }
+  | { preserved: `0x${string}`; podSeed: string }
   | { orphaned: { preserved: string; onChainOwner: string } }
   | null
   | "unavailable"
@@ -768,7 +697,6 @@ async function _verifyPortabilityEnvelope(
     return {
       preserved: opened.preservedKernelAddress as `0x${string}`,
       podSeed: opened.podSeed,
-      feedSignerPrivKey: opened.feedSignerPrivKey,
     };
   } catch (e) {
     console.warn("[auth] portability envelope check failed (non-fatal):", e);
@@ -820,7 +748,6 @@ function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherD
     getPodAddress: () => _podAddress,
     recoveryKernelFor: _recoveryKernelFor,
     restorePodSeed,
-    getContentFeedSigner: _getContentFeedSigner,
   };
 }
 
@@ -1729,18 +1656,15 @@ async function loginPasskeyResult(
       }
     } else if (readVerifiedBinding("passkey", account.address) === override.toLowerCase()) {
       // RECOVERED-ACCOUNT FAST PATH (returning device): this device has already
-      // passed the binding's on-chain owner guard, and the on-device secrets a
-      // recovered account can NEVER re-derive (POD seed, feed signer) are still
-      // present — so skip the owner-read RPC and the Kernel build exactly like
-      // the non-recovered fast path. Owner staleness is re-checked in the
-      // background; the Kernel rebuilds lazily at the preserved address via the
-      // binding (`_ensureKernel` honours it and still asserts the parent).
-      const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
-      const [seed, feedSigner] = await Promise.all([
-        restorePodSeed(account.address),
-        restoreContentFeedSigner(override),
-      ]);
-      if (seed && feedSigner) {
+      // passed the binding's on-chain owner guard, and the ONE on-device secret a
+      // recovered account can NEVER re-derive — the identity seed, which the feed
+      // signer and the issuing key both fall out of — is still present, so skip
+      // the owner-read RPC and the Kernel build exactly like the non-recovered
+      // fast path. Owner staleness is re-checked in the background; the Kernel
+      // rebuilds lazily at the preserved address via the binding (`_ensureKernel`
+      // honours it and still asserts the parent).
+      const seed = await restorePodSeed(account.address);
+      if (seed) {
         const parent = override.toLowerCase();
         await _clearStaleAuthForSwitch(parent);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
@@ -1798,26 +1722,26 @@ async function loginPasskeyResult(
     }
 
     // Recovered-account secret restore. A recovered passkey's PRF credential has
-    // ROTATED, so its POD seed + feed signer can NEVER be re-derived from it — they
-    // live only in the PRF-sealed portability envelope (written after recovery). We
-    // consult that envelope when:
+    // ROTATED, so its identity SEED can never be re-derived from it — and the seed
+    // is now the whole of what must be restored, because the feed signer and the
+    // issuing key are both KDFs of it. It lives only in the PRF-sealed portability
+    // envelope (written after recovery). We consult that envelope when:
     //   (a) there is NO local binding — this may be the account opened on a 2ND device; OR
-    //   (b) a binding exists but the on-device secrets were WIPED on logout
-    //       (clearAllAuth drops the POD seed + feed signer). Without (b) a plain
-    //       logout→login of a recovered account comes back with no POD seed (→ can't
-    //       decrypt its own history, and ensurePodIdentity would re-derive a DIVERGENT
-    //       seed from the rotated credential) and no feed signer (→ its content feeds
-    //       unreadable / a divergent signer forked). The envelope is the ONLY silent
-    //       restore channel — the guardian escrow needs the guardian's signature.
-    // The presence probes below double as self-heal: restore* drops a foreign-AAD blob.
+    //   (b) a binding exists but the seed was WIPED on logout (clearAllAuth drops
+    //       it). Without (b) a plain logout→login of a recovered account comes back
+    //       with no seed → it cannot decrypt its own history, `ensurePodIdentity`
+    //       would establish a DIVERGENT seed from the rotated credential, and every
+    //       content feed it owns would fork under a new signer address. The envelope
+    //       is the ONLY silent restore channel — the guardian escrow needs the
+    //       guardian's signature.
+    // The presence probe below doubles as self-heal: restorePodSeed drops a
+    // foreign-AAD blob.
     let portabilityRestore:
-      | { preserved: `0x${string}`; podSeed: string; feedSignerPrivKey?: string }
+      | { preserved: `0x${string}`; podSeed: string }
       | null = null;
     let envelopeAbsent = false;
-    const { restoreContentFeedSigner } = await import("./feed-signer-store.js");
     const podSeedPresent = !!(await restorePodSeed(account.address));
-    const feedSignerPresent = override ? !!(await restoreContentFeedSigner(override)) : false;
-    if (!override || !podSeedPresent || !feedSignerPresent) {
+    if (!override || !podSeedPresent) {
       const check = await _verifyPortabilityEnvelope(account.privateKey, account.address);
       if (check === null) {
         envelopeAbsent = true; // definitive — makes this login cacheable below
@@ -1846,18 +1770,14 @@ async function loginPasskeyResult(
 
     await _clearStaleAuthForSwitch(kernel.address);
 
-    // Persist the escrow-restored POD seed + feed signer + durable binding (mirrors
-    // recoverAndRekey). Runs AFTER _clearStaleAuthForSwitch (which wipes them on an
-    // account switch), and covers BOTH first 2nd-device recovery AND a logged-out
-    // recovered account whose on-device secrets were wiped.
+    // Persist the escrow-restored seed + durable binding (mirrors recoverAndRekey).
+    // Runs AFTER _clearStaleAuthForSwitch (which wipes it on an account switch), and
+    // covers BOTH first 2nd-device recovery AND a logged-out recovered account whose
+    // on-device seed was wiped. The feed signer needs no restore of its own: it is a
+    // KDF of this seed, so storing the seed restores ownership of the recovered
+    // account's existing content feeds by construction.
     if (portabilityRestore) {
       await storePodSeed(account.address, portabilityRestore.podSeed);
-      // Restore the feed signer under the PRESERVED parent address so this device
-      // owns the recovered account's existing content feeds (mirrors recoverAndRekey).
-      if (portabilityRestore.feedSignerPrivKey) {
-        const { storeContentFeedSigner } = await import("./feed-signer-store.js");
-        await storeContentFeedSigner(portabilityRestore.preserved, portabilityRestore.feedSignerPrivKey);
-      }
       await _putRecoveryBinding(account.address, portabilityRestore.preserved);
       _feedSignerAddressMemo = null;
     }
@@ -2021,6 +1941,19 @@ async function ensureSession(): Promise<boolean> {
  * hangs off it by KDF.
  */
 async function ensurePodIdentity(): Promise<boolean> {
+  return _ensureIdentitySeed();
+}
+
+/**
+ * `silent` establishes the seed with NO confirm dialog, and is only ever true on
+ * the web3auth eager path: there the signer is a raw secp256k1 key already in
+ * memory, so the "signature" is an internal key-stretch (ethers → RFC-6979) with
+ * no decision for the user to take, and prompting on every page load would be
+ * friction for nothing. It never widens WHICH kinds can establish silently — a
+ * kind whose signer is a wallet or a biometric still prompts, because for those
+ * the signature genuinely is the user's decision.
+ */
+async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boolean> {
   if (_podSeedPresent) return true;
   if (!isConnected || !_parent) return false;
   if (_podInFlight) return _podInFlight;
@@ -2067,11 +2000,16 @@ async function ensurePodIdentity(): Promise<boolean> {
         return false;
       }
 
-      // No stored seed (first login on this device, or post-migration) → derive it
-      // with the deterministic PRF-EOA signer (passkey) / parent signer (others).
+      // No stored seed (first login on this device) → establish it with the
+      // deterministic PRF-EOA signer (passkey) / parent signer (others).
       // _getPodSigner() runs _ensurePasskeyKey() internally, so _podAddress is set.
-      const signer = await _getPodSigner();
-      await requestPodIdentity(podAddr, signer);
+      const silentRawKey = opts.silent && _kind === "web3auth" ? _web3authPrivateKey : null;
+      const signer = silentRawKey
+        ? createLocalSigner(silentRawKey, async () => true)
+        : await _getPodSigner();
+      // External wallets are not under our control, so their determinism is
+      // CHECKED rather than assumed — see requestPodIdentity.
+      await requestPodIdentity(podAddr, signer, { verifyDeterminism: _kind === "web3" });
       _podSeedPresent = true;
       return true;
     } catch (e) {
@@ -2148,15 +2086,17 @@ async function grantSpendPermission(args: {
  * web3auth):
  *  1. install the on-chain recovery route pinned to a guardian derived from the
  *     backup wallet (sudo/passkey userOp, sponsored),
- *  2. escrow the POD seed AND the content-feed signer — sealed to an X25519 key
- *     the backup wallet derives by signing a fixed message — so a recovered
- *     account also restores ticket decryption + ownership of its content feeds
- *     (funds recovery alone cannot; §11.1).
+ *  2. escrow the account SEED — sealed to an X25519 key the backup wallet derives
+ *     by signing a fixed message — so a recovered account also restores ticket
+ *     decryption, its issuing identity and ownership of its content feeds (funds
+ *     recovery alone cannot; §11.1). ONE secret covers all three: the encryption
+ *     key, the issuing key and the feed signer are all KDFs of the seed, so there
+ *     is nothing else that could go missing from the bundle.
  *
  * web3auth is included because its raw key is a `FEED_PRIVATE_KEY`-class EXTERNAL
  * config dependency: if Web3Auth ever repoints its key reconstruction, the user's
- * silent re-derivation yields a DIFFERENT feed signer + POD seed and orphans their
- * data. Escrow restores both verbatim, closing that risk. (Not for web3 wallets:
+ * silent re-derivation yields a DIFFERENT seed and orphans their data. Escrow
+ * restores it verbatim, closing that risk. (Not for web3 wallets:
  * re-sign IS their recovery and the parent identity is lost with the wallet.)
  *
  * The backup wallet is an EXTERNAL signer the UI connects (a normal wallet the
@@ -2210,13 +2150,16 @@ async function setupAccountRecovery(
   // Seal the escrow FIRST and verify it round-trips BEFORE the irreversible
   // on-chain install — so a non-deterministic backup signature (which would make
   // the bundle permanently un-openable) is caught here, with nothing committed.
-  // Escrow the content-feed signer ALONGSIDE the POD seed (same guardian bundle):
-  // both are root-derived secrets that a rotated passkey credential cannot
-  // re-derive, so recovery must restore them verbatim. Establishing it here also
-  // ensures the key exists before it is sealed. Non-fatal if absent.
-  const feedSigner = await _getContentFeedSigner();
+  //
+  // THE SEED IS THE WHOLE BUNDLE. The content-feed signer used to be escrowed
+  // alongside it as a second independent secret; it is now a KDF of this seed, so
+  // restoring the seed restores it byte-identically and a bundle can no longer be
+  // written missing half of what an account needs.
   const secrets: Record<string, string> = { podSeed: seed };
-  if (feedSigner) secrets.feedSignerPrivKey = feedSigner.privKey;
+  // Still needed BELOW (the backup-inventory manifest is signed and sealed with
+  // it), and cheap now: the seed above is already established, so this derives
+  // rather than prompts.
+  const feedSigner = await _getContentFeedSigner();
 
   // ONE guardian signature derives BOTH the HPKE escrow key and the SOC signer
   // that OWNS the guardian recovery SOC (§13) — no second wallet prompt.
@@ -2235,11 +2178,7 @@ async function setupAccountRecovery(
   // failing loudly at setup instead of silently at recovery time.
   const gk2 = await deriveGuardianKeys(backup.address, backup.signTypedData);
   const check = await openRecoveryBundle({ envelope, kernelAddress, role: "guardian", guardianKeypair: gk2.encryption });
-  if (
-    check.secrets.podSeed !== seed ||
-    check.secrets.feedSignerPrivKey !== secrets.feedSignerPrivKey ||
-    gk2.socSigner.address !== gk.socSigner.address
-  ) {
+  if (check.secrets.podSeed !== seed || gk2.socSigner.address !== gk.socSigner.address) {
     throw new Error(
       "Your backup wallet's signature isn't reproducible, so recovery couldn't be guaranteed. " +
         "Try a different backup wallet.",
@@ -2578,14 +2517,13 @@ async function recoverAndRekey(args: {
     if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
 
     let podSeed: string;
-    let feedSignerPrivKey: string | undefined;
     try {
       const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, role: "guardian", guardianKeypair: gk.encryption });
       if (!bundle.secrets.podSeed) throw new Error("missing podSeed");
+      // The whole account: restored verbatim, and the feed signer, issuing key and
+      // encryption key all fall back out of it — so the recovered account keeps
+      // owning the feeds it wrote and the issuer identity it published under.
       podSeed = bundle.secrets.podSeed;
-      // Restored verbatim (not re-derived) so the recovered account keeps owning
-      // the feeds it wrote under the original feed-signer address.
-      feedSignerPrivKey = bundle.secrets.feedSignerPrivKey;
     } catch (e) {
       // An envelope from a NEWER app version is the one failure that is not
       // "wrong wallet" — the version is public metadata on a public feed, so
@@ -2866,15 +2804,12 @@ async function recoverAndRekey(args: {
     // and cached it — because the envelope back-fill requires the binding that was
     // never written. Writing it first makes a half-finished commit heal instead.
     await _putRecoveryBinding(newPodAddress, target);
+    // The escrow-restored seed re-derives the ORIGINAL feed signer, so the
+    // recovered account keeps ownership of its existing content feeds rather than
+    // deriving a new address from the rotated credential — by construction, with
+    // no second secret to store and no way for the two to fall out of step.
+    // AFTER _clearStaleAuthForSwitch, which clears it.
     await storePodSeed(newPodAddress, podSeed);
-    // Restore the original feed signer under the PRESERVED parent address (the
-    // AAD key `_getContentFeedSigner` reads), so the recovered account keeps
-    // ownership of its existing content feeds instead of deriving a new address
-    // from the rotated credential. AFTER _clearStaleAuthForSwitch, which clears it.
-    if (feedSignerPrivKey) {
-      const { storeContentFeedSigner } = await import("./feed-signer-store.js");
-      await storeContentFeedSigner(target, feedSignerPrivKey);
-    }
     await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.POD_ADDRESS, newPodAddress);
@@ -3070,19 +3005,22 @@ async function clearAllAuth(): Promise<void> {
     Promise.all([delKV(StorageKeys.AUTH_KIND), delKV(StorageKeys.PARENT_ADDRESS), delKV(StorageKeys.POD_ADDRESS)]),
   );
   await step("session", () => clearSession());
+  // Dropping the seed drops the feed signer, the issuing key and the encryption
+  // key with it — there is one secret at rest now, so there is one thing to wipe
+  // and no way to wipe half an account on a shared device.
   await step("pod-identity", () => clearPodIdentity(podAddr));
-  // Drop the feed-signer secret on logout (parity with the POD seed). It is
-  // restorable from escrow on next login; the on-device copy should not outlive
-  // the session on a shared device.
-  await step("feed-signer", async () => {
-    const { clearContentFeedSigner } = await import("./feed-signer-store.js");
-    await clearContentFeedSigner(parentAddr);
-  });
-  // Drop the legacy PERSISTED feed-signer address cache (pre-2026-07 builds wrote
-  // it). It was unauthenticated and outlived logout, leaking the previous
-  // account's signer into the next login's self-reads — the live resolver now
-  // uses only the AAD-bound key blob + an in-memory memo.
-  await step("legacy-feed-signer-address", () => delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS));
+  // Legacy slots from builds that stored the feed signer as its OWN secret and
+  // cached its address in cleartext. Nothing writes either any more; both are
+  // swept so a device carrying one does not keep an orphaned key blob (and a
+  // cleartext address that once leaked the previous account's signer into the
+  // next login's self-reads) at rest forever.
+  await step("legacy-feed-signer", () =>
+    Promise.all([
+      delKV(StorageKeys.CONTENT_FEED_SIGNER_KEY),
+      parentAddr ? delKV(`${StorageKeys.CONTENT_FEED_SIGNER_KEY}:${parentAddr.toLowerCase()}`) : Promise.resolve(),
+      delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS),
+    ]),
+  );
   // Drop the scoped ZeroDev session key. Re-login mints fresh. WOCO_AA_SESSION
   // is the RETIRED sub-ENS mint key's slot (#501): nothing writes it any more,
   // but devices from before the deletion still hold one and a serialized

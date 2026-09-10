@@ -42,7 +42,7 @@ function memStore(seed: Record<string, string> = {}): ReprobeStorage & { map: Ma
 
 const FOUND: PortabilityRead = {
   status: "found",
-  value: { preservedKernelAddress: PRESERVED, podSeed: "seed", feedSignerPrivKey: "0xfeed" },
+  value: { preservedKernelAddress: PRESERVED, podSeed: "seed" },
 };
 
 /** Deps for a poisoned device: the cached parent is undeployed, an envelope exists. */

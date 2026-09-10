@@ -43,39 +43,28 @@ export const StorageKeys = {
   // which is the EIP-712 HTTP session-delegation key — two unrelated "session"
   // concepts (see ZERODEV_PASSKEY_INTEGRATION_PLAN.md).
   WOCO_AA_EAS_SESSION: "woco:auth:aa-eas-session:v1",
-  // Phase B content-feed signer ADDRESS (public — the SOC owner of the user's
-  // own content feeds). Cached so self-reads (e.g. their own profile/avatar)
-  // resolve the owner WITHOUT re-deriving the key — which for passkey would
-  // trigger a WebAuthn PRF prompt. Writes still derive the private key on demand
-  // (an explicit user action where a prompt is acceptable). Address only, never
-  // the key.
+  // LEGACY, swept on logout, never written. Both date from when the content-feed
+  // signer was an INDEPENDENT secret: an encrypted key blob established once per
+  // account and escrowed (…_KEY), plus a cleartext cache of its address so passive
+  // self-reads did not have to re-derive it (…_ADDRESS). The signer is now an HKDF
+  // sibling of the identity seed (crypto/feed-signer.ts), so the seed's own slot is
+  // the single durable secret and the address is computed on demand. Kept only so
+  // `clearAllAuth` can drop what older builds left behind.
   CONTENT_FEED_SIGNER_ADDRESS: "woco:auth:content-feed-signer",
-  // Phase B content-feed signer PRIVATE KEY — the user's INDEPENDENT, escrowed
-  // feed-signer secret (encrypted at rest, AAD-bound to the parent address, same
-  // as POD_SEED). Established once per account, then ESCROWED + restored on any
-  // device — NEVER re-derived (recovery-stability requires escrow, not
-  // derivation; a rotated passkey credential would derive a divergent key and
-  // orphan the user's feeds). Distinct from CONTENT_FEED_SIGNER_ADDRESS, which
-  // holds only the public address for no-prompt self-reads.
   CONTENT_FEED_SIGNER_KEY: "woco:auth:content-feed-signer-key",
 } as const;
 
 /** Fixed salt input for passkey PRF → secp256k1 key derivation */
 export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
 
-/** Fixed nonce for deterministic POD identity derivation */
-export const POD_IDENTITY_NONCE = "WOCO-POD-IDENTITY-V1";
+/** Fixed nonce for the account-keys derivation. FROZEN with the rest of the
+ *  signed message — see ACCOUNT_KEYS_DOMAIN in eip712.ts for what changing it
+ *  costs. (Renamed from POD_IDENTITY_NONCE / "WOCO-POD-IDENTITY-V1" on
+ *  2026-09-10; the rename is the byte change made visible.) */
+export const ACCOUNT_KEYS_NONCE = "WOCO-ACCOUNT-KEYS-V1";
 
 /** Fixed nonce for deterministic guardian recovery-escrow X25519 key derivation */
 export const RECOVERY_ENC_NONCE = "WOCO-RECOVERY-ENC-V1";
-
-/**
- * Fixed nonce for deterministic web3-wallet content-feed-signer derivation.
- * The `v1` is the ROTATION lever: bump it to migrate every web3 user to a fresh
- * feed-signer key (e.g. after a suspected signature phish) without changing any
- * other identity.
- */
-export const FEED_SIGNER_DERIVE_NONCE = "WOCO-FEED-SIGNER-V1";
 
 /** Session delegation expiry duration (30 days in ms) */
 export const SESSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;

@@ -3,7 +3,7 @@
  *
  * Two separate signatures are required:
  * 1. AuthorizeSession - delegates a random session key (per-session, different each time)
- * 2. DerivePodIdentity - derives the account's deterministic identity SEED (fixed
+ * 2. DeriveAccountKeys - derives the account's deterministic identity SEED (fixed
  *    nonce, same every time), from which every other account key is a KDF
  */
 
@@ -30,21 +30,48 @@ export const SESSION_TYPES = {
   ],
 } as const;
 
-/** Domain for POD identity derivation signatures */
-export const POD_IDENTITY_DOMAIN = {
-  name: "WoCo POD Identity",
+/**
+ * Domain for the ONE signature that establishes an account's key material.
+ *
+ * FROZEN FROM LAUNCH. Every byte here is an input to the seed — and therefore to
+ * the X25519 encryption key, the secp256k1 issuing key and the content-feed
+ * signer. Change the name, the version, the salt, the type name, a field name,
+ * a field type, the purpose string or the nonce, and every existing account
+ * derives a DIFFERENT seed: sealed order data stops decrypting, the organiser's
+ * issuer identity moves, and every content SOC the user owns is orphaned under
+ * an address nobody will look at. There is no migration short of re-publishing
+ * everything. Pinned byte for byte by apps/web/test/account-keys-bytes.test.ts.
+ *
+ * The name changed once, on 2026-09-10, from "WoCo POD Identity" — a deliberate
+ * pre-launch break with no users to carry, made so the sheet a person actually
+ * signs says what it does. The SALT was deliberately NOT churned: it is opaque
+ * to the user and rotating it buys nothing. The constants were renamed
+ * alongside, so the byte change is visible at every call site.
+ */
+export const ACCOUNT_KEYS_DOMAIN = {
+  name: "WoCo Account Keys",
   version: "1",
   salt: "0x8aee435983f8f356cb689567d575fe89bbd9f0d85e8e28c0d52c2fc340a9085a",
 } as const;
 
-/** EIP-712 types for DerivePodIdentity */
-export const POD_IDENTITY_TYPES = {
-  DerivePodIdentity: [
+/** EIP-712 types for DeriveAccountKeys. FROZEN — see {@link ACCOUNT_KEYS_DOMAIN}. */
+export const ACCOUNT_KEYS_TYPES = {
+  DeriveAccountKeys: [
     { name: "purpose", type: "string" },
     { name: "address", type: "address" },
     { name: "nonce", type: "string" },
   ],
 } as const;
+
+/**
+ * The `purpose` field's value, FROZEN with the rest of the message.
+ *
+ * It lives here rather than at the call site because it is signed bytes, not
+ * copy: a well-meaning edit in `pod-identity.ts` reads like a wording change and
+ * is a key migration. Wallets render it, so it has to be a sentence a person can
+ * act on — but it is the sentence, exactly, forever.
+ */
+export const ACCOUNT_KEYS_PURPOSE = "Derive the keys that unlock your WoCo account";
 
 /**
  * Domain for the deterministic signature a guardian signs to derive its X25519
@@ -61,30 +88,6 @@ export const RECOVERY_ENC_DOMAIN = {
 /** EIP-712 types for DeriveRecoveryEncryptionKey */
 export const RECOVERY_ENC_TYPES = {
   DeriveRecoveryEncryptionKey: [
-    { name: "purpose", type: "string" },
-    { name: "address", type: "address" },
-    { name: "nonce", type: "string" },
-  ],
-} as const;
-
-/**
- * Domain for the deterministic signature a web3 wallet (external EOA) signs to
- * derive its CONTENT-FEED signer key — the secp256k1 key whose address owns the
- * user's content SOCs. An external EOA holds no raw key we can read, but it
- * produces a deterministic (RFC-6979) signature, so we sign-to-derive — the same
- * proven mechanism that derives the web3 POD seed (`requestPodIdentity`), under a
- * DISTINCT salt so a phished feed-signer signature can never be replayed to derive
- * POD/auth, and vice versa.
- */
-export const FEED_SIGNER_DERIVE_DOMAIN = {
-  name: "WoCo Feed Signer",
-  version: "1",
-  salt: "0x589b7c3552e7762caab99cb795adec4338bbaafc3fb6c3604157937e6b39ac0f",
-} as const;
-
-/** EIP-712 types for DeriveFeedSigner */
-export const FEED_SIGNER_DERIVE_TYPES = {
-  DeriveFeedSigner: [
     { name: "purpose", type: "string" },
     { name: "address", type: "address" },
     { name: "nonce", type: "string" },
