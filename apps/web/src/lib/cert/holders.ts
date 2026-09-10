@@ -73,11 +73,12 @@ export function holderRejectLabel(reason: HolderReject["reason"]): string {
   return reason === "duplicate" ? "already on this list" : "not a badge key";
 }
 
-/** A binding row from `/attendee-keys` — an edition the platform has a record for. */
+/** A binding row from `/attendee-keys` — an edition the platform has a record for.
+ *  It carries NO holder key: the ed25519 one is gone (#518) and the cert rail's
+ *  secp256k1 replacement does not exist yet. */
 export interface AttendeeCandidate {
   seriesId: string;
   edition: number;
-  podPubKey?: string;
   route: "email-link" | "claim";
 }
 
@@ -87,7 +88,13 @@ export interface TicketClaim {
   edition: number;
 }
 
-/** Why an attendee cannot be awarded a badge right now. */
+/** Why an attendee cannot be awarded a badge right now.
+ *
+ *  Until the certificate rail migrates to secp256k1 (#518), EVERY attendee is
+ *  one of these two: the platform holds no holder identity for anybody, so a
+ *  bound ticket is `no-key` and an unbound one is `not-linked`. Both are kept,
+ *  and they still get different copy, because they have different causes and
+ *  different fixes for the organiser. */
 export type UncertifiableReason =
   /** Bound to an account, but that account has no badge identity on file. */
   | "no-key"
@@ -101,11 +108,15 @@ export interface UncertifiableAttendee {
 }
 
 export interface AttendeeSplit {
-  /** Distinct holders, first-seen order — the unit of issuance is the PERSON. */
+  /** Distinct holders, first-seen order — the unit of issuance is the PERSON.
+   *  ALWAYS EMPTY while no holder identity exists (#518); kept in the shape
+   *  because the surface's arithmetic and copy are written against it, and the
+   *  cert rail's secp256k1 migration fills it back in. */
   certifiable: HolderPubkey[];
   /** Everyone who cannot be awarded, and why. Counted and shown, never dropped. */
   withoutKey: UncertifiableAttendee[];
-  /** Editions collapsed into a holder already counted — a multi-ticket buyer. */
+  /** Editions collapsed into a holder already counted — a multi-ticket buyer.
+   *  Always 0 for the same reason `certifiable` is always empty. */
   duplicateEditions: number;
   /** Every ticket claim considered. `certifiable + withoutKey + duplicates`. */
   totalClaims: number;
@@ -113,6 +124,17 @@ export interface AttendeeSplit {
 
 /**
  * Split an event's ticket claims into who can be awarded a badge and who cannot.
+ *
+ * NOBODY IS CERTIFIABLE FROM PLATFORM DATA RIGHT NOW (#518). The rows this joins
+ * against carry no holder identity — the ed25519 key they used to carry was
+ * client-declared and unverified (#345) and is gone — so `certifiable` comes back
+ * empty and every claim lands in `withoutKey`. The organiser's PASTE path is
+ * unaffected; it supplies keys directly.
+ *
+ * That is a deliberate honest-empty, not a silent one: the shape is unchanged, so
+ * the surface still counts and shows every attendee it cannot award and says why,
+ * instead of quietly issuing fewer certificates than the organiser confirmed. The
+ * cert rail's secp256k1 migration restores the join.
  *
  * THE DENOMINATOR IS `claims`, NOT BINDINGS, and that is the whole point of this
  * signature. Bindings exist only for attendees who checked out signed in (first
@@ -125,49 +147,26 @@ export interface AttendeeSplit {
  * FIRST-CLASS un-certifiable row (`not-linked`) rather than an absence. That is
  * a different situation from a bound account with no badge identity (`no-key`),
  * and the two get different copy because they have different causes.
- *
- * THE UNIT IS THE PERSON, not the edition. A buyer with three tickets is one
- * holder and one certificate — `planCertIssuance` would dedupe them anyway, so
- * collapsing here is what makes the number the organiser confirms mean the same
- * thing as the number that lands.
  */
 export function splitAttendees(args: {
   claims: readonly TicketClaim[];
   bindings: readonly AttendeeCandidate[];
 }): AttendeeSplit {
-  const byEdition = new Map<string, AttendeeCandidate>();
-  for (const b of args.bindings ?? []) byEdition.set(`${b.seriesId}\u0000${b.edition}`, b);
+  const bound = new Set<string>();
+  for (const b of args.bindings ?? []) bound.add(`${b.seriesId}\u0000${b.edition}`);
 
-  const certifiable: HolderPubkey[] = [];
   const withoutKey: UncertifiableAttendee[] = [];
-  const seen = new Set<string>();
-  let duplicateEditions = 0;
 
   const claims = args.claims ?? [];
   for (const claim of claims) {
-    const binding = byEdition.get(`${claim.seriesId}\u0000${claim.edition}`);
-    const key = typeof binding?.podPubKey === "string" ? binding.podPubKey.toLowerCase() : "";
-
-    if (!binding) {
-      withoutKey.push({ seriesId: claim.seriesId, edition: claim.edition, reason: "not-linked" });
-      continue;
-    }
-    // A malformed key counts as absent. The server already filters these at
-    // serve time; repeating it costs one regex and makes this function correct
-    // on its own terms rather than on a promise.
-    if (!isHolderPubkey(key)) {
-      withoutKey.push({ seriesId: claim.seriesId, edition: claim.edition, reason: "no-key" });
-      continue;
-    }
-    if (seen.has(key)) {
-      duplicateEditions++;
-      continue;
-    }
-    seen.add(key);
-    certifiable.push(key);
+    withoutKey.push({
+      seriesId: claim.seriesId,
+      edition: claim.edition,
+      reason: bound.has(`${claim.seriesId}\u0000${claim.edition}`) ? "no-key" : "not-linked",
+    });
   }
 
-  return { certifiable, withoutKey, duplicateEditions, totalClaims: claims.length };
+  return { certifiable: [], withoutKey, duplicateEditions: 0, totalClaims: claims.length };
 }
 
 /** Human copy for an un-certifiable attendee. */

@@ -137,29 +137,26 @@ export async function getPodHolding(params: {
   return get<PodHolding>(`/api/pod/holdings?${q.toString()}`, params.apiUrl);
 }
 
-/** One attendee edition and whether it has a badge key on file. */
+/** One attendee edition bound to an account. */
 export interface AttendeeKeyRow {
   seriesId: string;
   edition: number;
-  /** Absent = this attendee cannot be certified yet. Shown, never dropped. */
-  podPubKey?: string;
   /** How the binding was made. Provenance, not proof — see below. */
   route: "email-link" | "claim";
 }
 
 /**
- * Attendees of one of your events, and their badge keys where the platform has
- * one. Organiser-only.
+ * Attendees of one of your events whose ticket is bound to an account.
+ * Organiser-only.
  *
- * READ THE PROVENANCE BEFORE USING THESE TO ISSUE. `podPubKey` is self-declared
- * by the claiming client and was never checked against that account's actual
- * POD identity (#345). A row proves the platform saw a verified possession
- * proof for that edition; it does not prove whose badge key this is. A
- * certificate is permanent and has no v1 revocation, so the surface must show
- * that caveat where the organiser decides, not bury it here.
+ * NO BADGE KEY COMES BACK (#518). The ed25519 key these rows used to carry was
+ * self-declared by the claiming client and never checked against anything
+ * (#345); it is gone with the rest of the holder key, and the certificate rail
+ * has no holder identity to offer until its own secp256k1 migration lands. Every
+ * bound edition is therefore un-certifiable, and the surface must say so.
  *
- * Rows with NO key are returned deliberately — a list of only the certifiable
- * ones cannot be told apart from a list that came back short.
+ * Every binding is returned — a list that came back short cannot be told apart
+ * from one where nobody qualifies.
  */
 export async function getAttendeeKeys(eventId: string): Promise<AttendeeKeyRow[]> {
   const r = await authGet<{ eventId: string; attendees: AttendeeKeyRow[] }>(

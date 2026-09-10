@@ -104,7 +104,6 @@ export async function createEventV2(opts: {
   /** Structured location — stamped into the signed EventFeed (creator-signed truth). */
   geo?: import("@woco/shared").EventGeo;
   creatorAddress: Hex0x;
-  creatorPodKey: string;
   /** The creator's VERIFIED v2 issuing address (PoP-checked by the route via
    *  `verifyAndPinIssuerBinding` before this runs) — stamped into the feed as
    *  a discovery mirror. Never read back for verification. */
@@ -140,7 +139,7 @@ export async function createEventV2(opts: {
 }): Promise<EventFeed> {
   const {
     eventId, title, tagline, description, startDate, endDate, location, tags, geo,
-    creatorAddress, creatorPodKey, issuer, imageData, series,
+    creatorAddress, issuer, imageData, series,
     encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
 
@@ -245,7 +244,6 @@ export async function createEventV2(opts: {
     ...(tags?.length ? { tags } : {}),
     ...(geo ? { geo } : {}),
     creatorAddress,
-    creatorPodKey,
     ...(issuer ? { issuer } : {}),
     series: seriesSummaries,
     createdAt,

@@ -2,11 +2,12 @@
  * Recovery-escrow crypto (PASSKEY_RECOVERY_PLAN §11.3 / §11.6).
  *
  * The funds-recovery primitive (`recoverAccount` in kernel-account.ts) rotates
- * the Kernel signer but CANNOT restore the POD ed25519 identity: that key is
+ * the Kernel signer but CANNOT restore the account's identity SEED: that seed is
  * derived deterministically from a now-dead secret, and you cannot re-derive a
- * secret from the surviving (public) Kernel address (§11.1). The original key
- * must therefore be ESCROWED to recover dashboard decryption (and, later, the
- * Swarm feed signer). This module is that escrow.
+ * secret from the surviving (public) Kernel address (§11.1). The seed must
+ * therefore be ESCROWED to recover dashboard decryption — and everything else
+ * that hangs off it by KDF (the X25519 encryption key, the issuing key). This
+ * module is that escrow.
  *
  * Construction — KEM/DEM hybrid, every step a single vetted-library call
  * (crypto-lead rationale; the §11 invariant is "never hand-roll ECIES"):

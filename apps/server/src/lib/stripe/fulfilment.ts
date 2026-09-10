@@ -246,7 +246,6 @@ export async function fulfilPaidSession(
     orderRef: metaOrderRef,
     reservationId: metaReservationId,
     siteId: metaSiteId,
-    podPubKey: metaPodPubKey,
     marketingConsent: metaConsent,
     connectedAccountId: metaConnectedAccountId,
     onChainEventId: metaOnChainEventId,
@@ -302,13 +301,7 @@ export async function fulfilPaidSession(
   // ticket of the order only: the buyer needs exactly one edition for their
   // own unlock; the rest stay bearer so group-buy forwarding keeps working.
   const accountClaim = claimerAddress
-    ? {
-        parentAddress: claimerAddress.toLowerCase(),
-        podPubKey:
-          typeof metaPodPubKey === "string" && /^[0-9a-f]{64}$/i.test(metaPodPubKey)
-            ? metaPodPubKey.toLowerCase()
-            : undefined,
-      }
+    ? { parentAddress: claimerAddress.toLowerCase() }
     : undefined;
 
   // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
@@ -854,7 +847,7 @@ interface MintV2Args {
   v2OnChainEventId: string;
   prefetchedOrderRef: string | undefined;
   encryptedOrder: SealedBox | undefined;
-  accountClaim: { parentAddress: string; podPubKey: string | undefined } | undefined;
+  accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
   claimedResults: Array<{ edition: number; qrContent: string }>;
   setStopped(reason: string): void;
@@ -967,7 +960,6 @@ async function mintV2(a: MintV2Args): Promise<void> {
         edition: firstEdition,
         eventId,
         parentAddress: a.accountClaim.parentAddress,
-        podPubKey: a.accountClaim.podPubKey,
         paid: true,
         route: "claim",
       });

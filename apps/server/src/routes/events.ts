@@ -179,7 +179,7 @@ events.post("/", requireAuth, async (c) => {
   const body = c.get("body") as unknown as CreateEventV3Request;
   const parentAddress = c.get("parentAddress") as string;
 
-  const { event: ev, series, image, creatorPodKey, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
+  const { event: ev, series, image, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
 
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
@@ -187,8 +187,8 @@ events.post("/", requireAuth, async (c) => {
   if (!series?.length) {
     return c.json({ ok: false, error: "At least one ticket series required" }, 400);
   }
-  if (!creatorPodKey || !image) {
-    return c.json({ ok: false, error: "Missing creatorPodKey or image" }, 400);
+  if (!image) {
+    return c.json({ ok: false, error: "Missing image" }, 400);
   }
   if (ev.tags !== undefined) {
     if (!Array.isArray(ev.tags) || ev.tags.length > 32
@@ -384,7 +384,6 @@ events.post("/", requireAuth, async (c) => {
         ...(ev.tags?.length ? { tags: ev.tags } : {}),
         ...(ev.geo ? { geo: ev.geo } : {}),
         creatorAddress: parentAddress.toLowerCase() as Hex0x,
-        creatorPodKey,
         issuer: body.issuerBinding.issuer,
         imageData,
         series,

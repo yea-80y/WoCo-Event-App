@@ -42,22 +42,22 @@ defines it; that file is the authority, not this document.
                     ┌────────────────┼──────────────────┐  └────────────────────────┘
                     │                │                  │
                     ▼                ▼                  ▼
-        ┌───────────────────┐ ┌──────────────┐ ┌─────────────────────┐
-        │ HOLDER IDENTITY   │ │ ENCRYPTION   │ │ ISSUING KEY         │
-        │ ed25519           │ │ X25519       │ │ secp256k1           │
-        │ seed used VERBATIM│ │ HKDF         │ │ HKDF, generation-   │
-        │                   │ │ "woco/       │ │ parameterised       │
-        │ SIGNS NOTHING on  │ │  encryption/ │ │                     │
-        │ any launch-scope  │ │  v1"         │ │ Signs editions +    │
-        │ path. Cert        │ │              │ │ manifests. Identity │
-        │ challenges +      │ │ Opens sealed │ │ of record = its     │
-        │ credits only.     │ │ orders       │ │ 20-byte ADDRESS     │
-        │ LEFTOVER → #518   │ │              │ │                     │
-        └───────────────────┘ └──────────────┘ └─────────────────────┘
+                              ┌──────────────┐ ┌─────────────────────┐
+                              │ ENCRYPTION   │ │ ISSUING KEY         │
+                              │ X25519       │ │ secp256k1           │
+                              │ HKDF         │ │ HKDF, generation-   │
+                              │ "woco/       │ │ parameterised       │
+                              │  encryption/ │ │                     │
+                              │  v1"         │ │ Signs editions +    │
+                              │              │ │ manifests. Identity │
+                              │ Opens sealed │ │ of record = its     │
+                              │ orders       │ │ 20-byte ADDRESS     │
+                              └──────────────┘ └─────────────────────┘
 ```
 
-Five keys, and the count is not incidental — each one exists because a *role* had to be
-separated, not because a layer was convenient.
+Four keys, and the count is not incidental — each one exists because a *role* had to be
+separated, not because a layer was convenient. There used to be a fifth, an ed25519 holder
+identity derived from the seed; it is gone from every launch path (§3a).
 
 ---
 
@@ -109,46 +109,58 @@ Two details that took real defects to learn:
 
 ---
 
-## 3. The three siblings off one seed
+## 3. The siblings off one seed
 
-One 32-byte seed produces three keys on three curves, and their independence is the whole point.
+One 32-byte seed produces two keys on two curves, and their independence is the whole point.
+(A third sibling, an ed25519 holder key, still exists for two out-of-launch-scope rails — but
+nothing on a launch path derives it, and no auth path knows about it: §3a.)
 
 | Key | Curve | Derivation | Defined in |
 |---|---|---|---|
-| Holder identity | ed25519 | the seed **verbatim** | `apps/web/src/lib/pod/keys.ts` — **leftover, see §3a** |
 | Encryption | X25519 | `HKDF(sha256, seed, salt="", info="woco/encryption/v1", 32)` | `packages/shared/src/crypto/keys.ts` |
 | Issuing | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/issuing/v1/"+gen, 48)` → scalar | `packages/shared/src/crypto/issuing.ts` |
 
-### 3a. The ed25519 holder key is a leftover, and the seed is not it
+### 3a. The ed25519 holder key is gone from every launch path (#518)
 
 **Tickets are signed by the per-purchase burner key (secp256k1)**, verified against the on-chain
 `slotOwner` (`packages/shared/src/ticket/canonical.ts`). Editions and manifests are signed by the
 **issuing key**. `edition/types.ts` states it without qualification: *"no ed25519 anywhere on the
-issuer side."* The ed25519 holder key signs **no ticket and owns no ticket.**
+issuer side."* The ed25519 holder key signed **no ticket and owned no ticket** — so it was
+removed from the auth store, from event create (`creatorPodKey`), and from every gate binding
+and checkout (`podPubKey`, which was self-declared and verified against nothing, #345).
 
-What it still does, in full:
+What is left, in full:
 
 | Use | Kind | Status |
 |---|---|---|
 | `woco.cert-challenge.v1` possession signature | **signature** | Cert rail — **out of launch scope** |
 | `woco.credit.v1` `holderSig` | **signature** | Credits rail — out of launch scope |
-| `podPubKey` as owner-of-record | **identifier only** | Live, but *self-declared and never verified* (`routes/orders.ts:164`), and it feeds the cert-issuance surface |
 
-So on every launch-scope path it signs nothing. Removal is tracked in
-[#518](https://github.com/yea-80y/WoCo-Event-App/issues/518).
+Both are frozen formats that specify the curve, so the key survives — but it is now derived
+**lazily, by the rail that needs it, from the seed**, and dropped after the call:
+`apps/web/src/lib/credits/holder-key.ts`, whose `@noble/ed25519` import is DYNAMIC so the curve
+stays out of the eager bundle (pinned by `apps/web/test/no-eager-ed25519.test.ts`). No auth
+surface exposes an ed25519 key any more; `ensurePodIdentity()` returns a boolean saying whether
+the SEED is available.
+
+**Consequence for the certificate rail, stated plainly:** the platform now holds no holder
+identity for any attendee, so `/api/events/:id/attendee-keys` serves none and the issuance
+surface reports every attendee as un-certifiable. The organiser's paste path still works. The
+join comes back when the cert rail migrates to secp256k1.
 
 **The distinction that matters, because the obvious reading is wrong:** the **seed is not the
 ed25519 account.** The seed is 32 bytes — `keccak256` of one EIP-712 signature — and it is the
-root for all three derivations above. ed25519 happens to use it *verbatim*; the encryption and
-issuing keys use it through HKDF. Deleting the ed25519 derivation therefore:
+root for every derivation. ed25519 happens to use it *verbatim*; the encryption and issuing keys
+use it through HKDF. Dropping the ed25519 derivation from the launch paths therefore:
 
 - keeps the seed,
 - keeps the X25519 encryption key and the secp256k1 issuing key **byte-identical**,
-- and costs **no extra user signature** — it removes a local computation, not a prompt.
+- and costs **no extra user signature** — it removed a local computation, not a prompt.
 
 HKDF's one-wayness is what makes this safe in the direction that matters: **a leaked issuing key
-cannot recover the seed**, and therefore cannot reach the holder identity or the encryption key.
-The distinct `info` strings are what keep the three independent of each other.
+cannot recover the seed**, and therefore cannot reach the encryption key (or the holder key the
+out-of-scope rails derive). The distinct `info` strings are what keep the siblings independent of
+each other.
 
 The 48-byte output for the issuing key is deliberate. 384 bits reduced `mod (n-1)` then `+1`
 gives a scalar in `[1, n-1]` with bias around 2⁻¹²⁸, so there is **no retry loop and no throw**:
@@ -183,10 +195,12 @@ natively; it is the secp identity unit used everywhere else in the system; and 4
 versus 64 keeps issuer fields **shape-distinct** from every other 64-hex key in the codebase, so
 one can never be pasted where the other belongs.
 
-**The holder side did not move.** A holder is still a bare lowercase 64-hex ed25519 key, cert
-challenges are still ed25519-signed, and the credits rail still signs with it. So the accurate
-one-line summary is: *the issuer went to secp256k1; the holder stayed ed25519* — not that
-ed25519 left the system.
+**The holder side did not move — but it did leave the launch paths.** A holder is still a bare
+lowercase 64-hex ed25519 key, cert challenges are still ed25519-signed, and the credits rail
+still signs with it. What #518 removed is everything ELSE that carried an ed25519 key around:
+the auth store's copy, `creatorPodKey` on event create, and `podPubKey` on checkouts and gate
+bindings. So the accurate one-line summary is: *the issuer went to secp256k1; the holder stayed
+ed25519, and now only two out-of-scope rails ever derive it*.
 
 ### The v2 issuer signing scheme, and why it is not raw ECDSA
 
@@ -424,7 +438,7 @@ Server side: `apps/server/src/middleware/auth.ts` and
 | Session key | Every authenticated API request (EIP-191 canonical challenge) | Anything durable |
 | Content-feed signer | The user's content chunks (profile, event, site, likes, follows) | Credentials |
 | Issuing key | `woco.manifest.v2`, `woco.cert.v1`, the issuer binding | Individual editions |
-| Holder identity (ed25519) | Cert possession challenges, credit statements — **both out of launch scope** | Tickets. Editions. Manifests. Anything on a live path (§3a) |
+| Holder identity (ed25519) | Cert possession challenges, credit statements — **both out of launch scope**, and it is derived on demand from the seed rather than held (§3a) | Tickets. Editions. Manifests. Anything on a live path |
 | **Ticket burner (secp256k1)** | **The ticket.** One per-purchase key signs one canonical message, then is discarded. Its address is the on-chain `slotOwner` — the verifier's trust root | Anything else, ever |
 | Platform feed key | More than its name suggests: the directory pointer, the **site events index** (a deliberate trust carrier — see below), the creator site directory, the issuer-registry log relay, recovery status, the marketing-list pointer, shop config, the passport collection, **and any event or site feed whose client sent no feed signer** | Producing a signature for a key it does not hold — it cannot forge a user's signed object |
 | Sponsor wallet | Chain transactions: `registerEvent`, `batchClaimFor` | Anything a user authors |

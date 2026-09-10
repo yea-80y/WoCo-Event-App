@@ -108,9 +108,7 @@ attendeeGate.post("/token-info", async (c) => {
  *  forwarding the email is implicit consent, supports group buys). */
 attendeeGate.post("/redeem", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = await c.req
-    .json<{ token?: string; podPubKey?: string }>()
-    .catch(() => null);
+  const body = await c.req.json<{ token?: string }>().catch(() => null);
   if (!body?.token) return c.json({ ok: false, error: "token is required" }, 400);
 
   const verdict = verifyGateToken(body.token);
@@ -124,36 +122,17 @@ attendeeGate.post("/redeem", requireAuth, async (c) => {
 
   const { eventId, seriesId, edition, emailHash } = verdict.payload;
 
-  // `podPubKey` arrives in an UNAUTHENTICATED body (possession of the emailed
-  // link is the proof here, not a session), and until now was stored verbatim —
-  // any string at all. It is validated for SHAPE before it is recorded, because
-  // the certificate rail turns this field into permanent, publicly-readable,
-  // issuer-signed statements with no v1 revocation (#172), and a certificate
-  // signed over garbage cannot be taken back.
-  //
-  // Shape only. It still is NOT proved to be this account's POD identity — that
-  // is #345, and it needs a possession challenge, not a regex.
-  //
-  // A malformed key does NOT fail the redeem. The unlock is what the attendee
-  // came for and what the one-shot nullifier is spent on; the key is an
-  // accessory that a broken client can get wrong. But it is not dropped
-  // silently either — `podKeyRecorded` says what happened, so a client can tell
-  // the difference between "recorded" and "gone", which matters because the
-  // nullifier is now spent and nothing backfills the key onto an existing
-  // binding.
-  const rawPodPubKey = typeof body.podPubKey === "string" ? body.podPubKey.toLowerCase() : undefined;
-  const podPubKey = rawPodPubKey && /^[0-9a-f]{64}$/.test(rawPodPubKey) ? rawPodPubKey : undefined;
-  if (rawPodPubKey && !podPubKey) {
-    console.warn(`[gate] redeem for ${seriesId}#${edition} sent a malformed podPubKey — binding without it`);
-  }
-
+  // The binding's owner of record is `parentAddress` — VERIFIED by requireAuth
+  // above, never taken from the body. A self-declared ed25519 holder key used to
+  // ride along here and be recorded unchecked (#345); it is gone with the rest of
+  // the holder key (#518), and nothing downstream lost a capability, because a
+  // string the client picked never proved whose badge it was.
   const bound = bindTicket({
     seriesId,
     edition,
     eventId,
     parentAddress,
     emailHash,
-    podPubKey,
     paid: await seriesIsPaid(eventId, seriesId),
     route: "email-link",
   });
@@ -170,9 +149,6 @@ attendeeGate.post("/redeem", requireAuth, async (c) => {
       eventId,
       seriesId,
       edition,
-      // Absent-because-not-sent and absent-because-rejected are different, and
-      // only the client knows which it attempted.
-      podKeyRecorded: !!podPubKey,
     },
   });
 });

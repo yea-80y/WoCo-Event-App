@@ -146,14 +146,6 @@ export async function createCheckoutSession(params: {
     ...(siteId ? { siteId } : {}),
     ...(returnUrl ? { returnUrl } : {}),
     ...(cancelUrl ? { cancelUrl } : {}),
-    // claimed.v2: cached POD pubkey (never prompts) — with the verified
-    // session below, the webhook issues the ticket to this identity and
-    // unlocks the account at purchase. Ignored server-side without auth.
-    // Bare 64-hex, not the 0x form `deriveKeypair` returns: the server
-    // validates /^[0-9a-f]{64}$/ and DROPS a prefixed key silently (#445).
-    ...(auth.isConnected && auth.podPublicKeyHex
-      ? { podPubKey: auth.podPublicKeyHex.replace(/^0x/, "") }
-      : {}),
   };
 
   if (auth.isConnected) {

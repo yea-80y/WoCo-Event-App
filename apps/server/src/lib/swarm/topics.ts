@@ -87,9 +87,6 @@ export const topicUserCollection = (ethAddress: string, page = 0) =>
     page,
   );
 
-export const topicCreator = (creatorPodKey: string) =>
-  Topic.fromString(`${POD_NS}/creator/${creatorPodKey}`);
-
 /**
  * Per-organiser event index keyed by Ethereum address.
  * Written whenever an event is added to the directory (create or list).

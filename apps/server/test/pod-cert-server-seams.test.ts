@@ -77,8 +77,6 @@ test("NOT a ratchet — a later honest run may correct DOWNWARD", () => {
 // attendee key rows
 // ---------------------------------------------------------------------------
 
-const GOOD = "a".repeat(64);
-
 function binding(over: Partial<GateBinding> = {}): GateBinding {
   return {
     seriesId: "s1",
@@ -91,34 +89,32 @@ function binding(over: Partial<GateBinding> = {}): GateBinding {
   };
 }
 
-test("an attendee with NO key is still returned — un-certifiable, not invisible", () => {
-  // The whole point. A picker handed only certifiable attendees cannot tell
-  // "nobody qualifies" from "the list came back short".
-  const rows = toAttendeeKeyRows([binding({ podPubKey: undefined })]);
+test("every bound attendee is still returned — un-certifiable, not invisible", () => {
+  // The whole point, and it outlives the holder key (#518): a picker handed a
+  // short list cannot tell "nobody qualifies" from "the read came back
+  // truncated". Since no holder key exists any more, EVERY attendee is in the
+  // first category and the surface has to be able to say so.
+  const rows = toAttendeeKeyRows([binding(), binding({ edition: 2 })]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => r.edition), [1, 2]);
+});
+
+test("no holder key is served, whatever a binding happens to hold", () => {
+  // The key was self-declared by the claiming client and verified against
+  // nothing (#345). Serving one to a permanent, unrevocable certificate run was
+  // the hazard; there is now nothing to serve. Pass one in anyway — a stale
+  // binding on disk is exactly the case that must not resurrect it.
+  const rows = toAttendeeKeyRows([
+    binding({ podPubKey: "a".repeat(64) } as unknown as Partial<GateBinding>),
+  ]);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.podPubKey, undefined);
-  assert.equal(rows[0]!.edition, 1);
-});
-
-test("a MALFORMED key is reported as absent, never passed through", () => {
-  // Only the redeem path could have stored it, and a certificate signed over
-  // garbage is permanent and unrevocable in v1.
-  for (const bad of ["nope", "0x" + "a".repeat(64), "a".repeat(63), "a".repeat(65), "g".repeat(64)]) {
-    const rows = toAttendeeKeyRows([binding({ podPubKey: bad })]);
-    assert.equal(rows.length, 1, "the attendee is still listed");
-    assert.equal(rows[0]!.podPubKey, undefined, `${bad.slice(0, 12)} must not be served`);
-  }
-});
-
-test("a well-formed key is served lowercased", () => {
-  const rows = toAttendeeKeyRows([binding({ podPubKey: GOOD.toUpperCase() })]);
-  assert.equal(rows[0]!.podPubKey, GOOD);
+  assert.equal(Object.prototype.hasOwnProperty.call(rows[0]!, "podPubKey"), false);
 });
 
 test("route is carried, so provenance survives to the surface", () => {
   const rows = toAttendeeKeyRows([
-    binding({ podPubKey: GOOD, route: "claim" }),
-    binding({ edition: 2, podPubKey: GOOD, route: "email-link" }),
+    binding({ route: "claim" }),
+    binding({ edition: 2, route: "email-link" }),
   ]);
   assert.deepEqual(rows.map((r) => r.route), ["claim", "email-link"]);
 });
@@ -127,8 +123,8 @@ test("no identity leaks into a picker row", () => {
   // The caller joins on (seriesId, edition) against orders it already renders.
   // Returning parentAddress or emailHash would hand over a second copy of
   // who-is-who for no new capability.
-  const rows = toAttendeeKeyRows([binding({ podPubKey: GOOD, emailHash: "deadbeef" })]);
-  assert.deepEqual(Object.keys(rows[0]!).sort(), ["edition", "podPubKey", "route", "seriesId"]);
+  const rows = toAttendeeKeyRows([binding({ emailHash: "deadbeef" })]);
+  assert.deepEqual(Object.keys(rows[0]!).sort(), ["edition", "route", "seriesId"]);
 });
 
 test("an empty binding list is an empty row list, not a throw", () => {

@@ -6,7 +6,6 @@ import {
   type EncryptedBlob,
   type EIP712Signer,
 } from "@woco/shared";
-import { deriveKeypair } from "../pod/keys.js";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -23,16 +22,21 @@ function podSeedKey(address: string): string {
 }
 
 /**
- * Request POD identity derivation from the primary wallet.
+ * Establish the account's identity SEED from the primary wallet.
  *
- * Uses a fixed nonce so the same wallet always produces the same
- * EIP-712 signature → same keccak256 hash → same ed25519 seed.
- * This makes the POD identity deterministic and recoverable on any device.
+ * Uses a fixed nonce so the same wallet always produces the same EIP-712
+ * signature → same keccak256 hash → same seed, on any device.
+ *
+ * The seed is the ROOT, not an account: it is the HKDF input for the X25519
+ * encryption key (`crypto/keys.ts`) and the secp256k1 issuing key
+ * (`crypto/issuing.ts`). The ed25519 holder key it used to derive here is gone
+ * from every launch path (#518) — the credit and cert-challenge rails derive
+ * their own from this same seed, lazily, when they are reachable at all.
  */
 export async function requestPodIdentity(
   parentAddress: string,
   signTypedData: EIP712Signer,
-): Promise<{ podPublicKeyHex: string; seed: string }> {
+): Promise<{ seed: string }> {
   // Build deterministic EIP-712 message (fixed nonce!)
   const message = {
     purpose: "Derive deterministic POD signing identity",
@@ -53,13 +57,10 @@ export async function requestPodIdentity(
   // not toUtf8Bytes(signature) which hashes the hex string representation
   // (132 bytes of ASCII). The byte form is the standard way to compress an
   // ECDSA signature into a uniform-distribution seed and is what every other
-  // library in the ecosystem does. BREAKING (2026-04-09): changes the derived
-  // ed25519 keypair for any user who previously called this function.
+  // library in the ecosystem does. FROZEN: every key the account owns hangs off
+  // these exact bytes.
   const { keccak256, getBytes } = await import("ethers");
   const seed = keccak256(getBytes(signature));
-
-  // Derive keypair to get public key
-  const keypair = await deriveKeypair(seed);
 
   // Encrypt and store seed — AAD binds the blob to the parent address so a
   // stale POD seed left in IndexedDB cannot be decrypted by a different
@@ -68,7 +69,7 @@ export async function requestPodIdentity(
   const encSeed = await encrypt(deviceKey, AAD.POD_SEED(parentAddress), { seed });
   await putKV(podSeedKey(parentAddress), encSeed);
 
-  return { podPublicKeyHex: keypair.publicKeyHex, seed };
+  return { seed };
 }
 
 /**
@@ -116,21 +117,7 @@ export async function restorePodSeed(parentAddress: string): Promise<string | nu
 }
 
 /**
- * Get the POD keypair, deriving from stored seed.
- * Returns null if no seed is stored.
- */
-export async function getPodKeypair(parentAddress: string): Promise<{
-  privateKey: Uint8Array;
-  publicKey: Uint8Array;
-  publicKeyHex: string;
-} | null> {
-  const seed = await restorePodSeed(parentAddress);
-  if (!seed) return null;
-  return deriveKeypair(seed);
-}
-
-/**
- * Persist a POD seed under a parent address — the recovery-path counterpart of
+ * Persist an identity seed under a parent address — the recovery-path counterpart of
  * `requestPodIdentity` (which derives + stores in one step). After account
  * recovery the original POD seed comes from the decrypted escrow bundle, not a
  * fresh signature, so it must be re-stored under the recovered (new) identity's

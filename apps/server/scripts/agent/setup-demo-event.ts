@@ -54,7 +54,6 @@ const eventFeed = {
   endDate,
   location: "Arbitrum Sepolia",
   creatorAddress: ORGANISER,
-  creatorPodKey: "demo",
   createdAt: new Date().toISOString(),
   claimMode: "wallet",
   series: [

@@ -1,12 +1,17 @@
 /**
  * Coaster credits — the rider's write path (P1 of docs/COASTER_CREDITS_PLAN.md).
  *
- * A ride is a statement the rider signs with their ed25519 POD key — the same
- * identity that owns their tickets — and writes to their OWN Swarm feed. The
- * feed key signs the chunk; the POD key signs the contents. Two keys, two jobs:
- * the SOC signature proves who wrote the feed, and `holderSig` proves whose
- * ride it is, which the SOC signature cannot (anyone may relay a validly-signed
- * SOC naming any holder).
+ * A ride is a statement the rider signs with their ed25519 HOLDER key — derived
+ * on demand from the account seed (`holder-key.ts`), never stored — and writes
+ * to their OWN Swarm feed. The feed key signs the chunk; the holder key signs
+ * the contents. Two keys, two jobs: the SOC signature proves who wrote the
+ * feed, and `holderSig` proves whose ride it is, which the SOC signature cannot
+ * (anyone may relay a validly-signed SOC naming any holder).
+ *
+ * This rail and the cert-challenge rail are the ONLY remaining ed25519 users
+ * (#518) — `woco.credit.v1` is a frozen format that specifies the curve. Nothing
+ * on a launch path derives a holder key any more, so this file owns the
+ * derivation outright rather than reaching for an auth-store accessor.
  *
  * ENCRYPTED BY DEFAULT. A first ride writes to the rider's PRIVATE topic,
  * sealed to their own X25519 key, with no publication decision asked — the
@@ -26,6 +31,7 @@
  */
 
 import { auth } from "../auth/auth-store.svelte.js";
+import { deriveHolderKeypair } from "./holder-key.js";
 import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
 import { readBandedContentFeed } from "../swarm/content-feed.js";
@@ -85,9 +91,9 @@ const INDEX_WRITE_ATTEMPTS = 3;
 
 /** The rider's keys for this rail. Held only for the duration of a call. */
 interface RiderKeys {
-  /** ed25519 POD private key — signs the statement contents. */
+  /** ed25519 holder private key — signs the statement contents. */
   holderPrivKey: Uint8Array;
-  /** ed25519 POD public key, hex no 0x — the statement's `holder`. */
+  /** ed25519 holder public key, hex no 0x — the statement's `holder`. */
   holder: string;
   /** X25519 keys — seal/open the private statement AND derive the private salt. */
   encPrivKey: Uint8Array;
@@ -111,34 +117,38 @@ async function riderKeys(): Promise<RiderKeys> {
   // allowed to sign for. Idempotent after the first time on a device.
   await auth.ensurePodIdentity();
 
-  // Through the BOUND accessors, never `getPodKeypair(parent)`. The POD seed is
+  // Through the BOUND accessor, never `restorePodSeed(parent)`. The seed is
   // stored under the POD address — the PRF-EOA for passkey, the Web3Auth EOA
   // for web3auth — and `auth.parent` is the KERNEL address for both. Looking it
   // up by parent reads a slot that is never written, so `ensurePodIdentity()`
   // above would succeed (storing under the right address, having just made the
   // rider approve a ceremony) and this would still come back empty: every
   // passkey and web3auth rider taps, signs, and gets "could not unlock".
-  // The accessors resolve the address themselves so no caller can pick wrong.
-  const [pod, seed, feed] = await Promise.all([
-    auth.getPodKeypair(),
+  // The accessor resolves the address itself so no caller can pick wrong.
+  const [seed, feed] = await Promise.all([
     auth.getPodSeed(),
     auth.getContentFeedSigner(),
   ]);
-  if (!pod || !seed) throw new Error("Could not unlock your collection identity.");
+  if (!seed) throw new Error("Could not unlock your collection identity.");
   if (!feed) throw new Error("Could not unlock your feed signer.");
+
+  // The holder key is derived HERE, from the seed, and held only for this call
+  // (#518): no launch path has an ed25519 key any more, so the auth store no
+  // longer keeps one and this rail owns its own derivation.
+  const holderKeypair = await deriveHolderKeypair(seed);
 
   const enc = deriveEncryptionKeypairFromPodSeed(seed);
   return {
-    holderPrivKey: pod.privateKey,
-    // STRIPPED, and the schema is why. `deriveKeypair` returns an 0x-prefixed
-    // hex string (pod/keys.ts), the POD ticket rail is happy with that, and
-    // `woco.credit.v1` is not: `holder` is validated against /^[0-9a-f]{64}$/
-    // and the format is CLOSED (plan, P0 item 4), so the caller conforms rather
-    // than the schema loosening. Passing the prefix through made every signing
-    // attempt throw "invalid woco.credit.v1 unsigned statement" — invisible
-    // until the rail was reachable at all. The indexer agrees with the schema:
-    // evidence leaves carry bare 64-hex holders (verify-report `HOLDER_RE`).
-    holder: stripHexPrefix(pod.publicKeyHex),
+    holderPrivKey: holderKeypair.privateKey,
+    // STRIPPED, and the schema is why. `deriveHolderKeypair` returns an
+    // 0x-prefixed hex string (holder-key.ts) like every other hex value here,
+    // and `woco.credit.v1` is not happy with that: `holder` is validated against
+    // /^[0-9a-f]{64}$/ and the format is CLOSED (plan, P0 item 4), so the caller
+    // conforms rather than the schema loosening. Passing the prefix through made
+    // every signing attempt throw "invalid woco.credit.v1 unsigned statement" —
+    // invisible until the rail was reachable at all. The indexer agrees with the
+    // schema: evidence leaves carry bare 64-hex holders (verify-report `HOLDER_RE`).
+    holder: stripHexPrefix(holderKeypair.publicKeyHex),
     encPrivKey: enc.privateKey,
     encPubKeyHex: enc.publicKeyHex,
     feedPrivKey: feed.privKey,

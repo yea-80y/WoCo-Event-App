@@ -56,7 +56,6 @@ function eventFeed(over: Partial<EventFeed> = {}, series: Partial<EventFeed["ser
     endDate: FUTURE,
     location: "The Venue",
     creatorAddress: ORGANISER as `0x${string}`,
-    creatorPodKey: "",
     createdAt: PAST,
     series: [
       {
@@ -93,6 +92,12 @@ interface SessionOpts {
   onChainEventId?: string | null;
   /** Drop eventId/seriesId entirely — "not our session". */
   noEventKeys?: boolean;
+  /**
+   * A `podPubKey` in the session metadata, as checkout used to stamp it. Sessions
+   * created before #518 still carry one and Stripe replays them for days, so the
+   * webhook must ignore it rather than resurrect the field.
+   */
+  legacyPodPubKey?: string;
 }
 
 function session(o: SessionOpts = {}): FulfilmentSession {
@@ -110,6 +115,7 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.consent !== null) md.marketingConsent = o.consent ?? "1";
   if (o.connectedAccountId !== null) md.connectedAccountId = o.connectedAccountId ?? ACCT;
   if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
+  if (o.legacyPodPubKey) md.podPubKey = o.legacyPodPubKey;
   return {
     id: "cs_test_1",
     metadata: md,
@@ -409,6 +415,12 @@ describe("happy path", () => {
     assert.equal(f.bindings[0].edition, 1);
     assert.equal(f.bindings[0].parentAddress, BUYER_WALLET);
     assert.deepEqual(f.consumed, ["res-1"]);
+    // The server-vouched parent is the ONLY identity on the binding (#518): the
+    // self-declared ed25519 key that used to ride alongside it is gone.
+    assert.deepEqual(
+      Object.keys(f.bindings[0]).sort(),
+      ["edition", "eventId", "paid", "parentAddress", "route", "seriesId"],
+    );
 
     const mail = f.emails[0];
     assert.equal(mail.to, "buyer@example.com");
@@ -454,6 +466,20 @@ describe("happy path", () => {
     const { f } = await run({ quantity: 1, wallet: BUYER_WALLET });
     assert.equal(f.bindings.length, 1);
     assert.equal(f.emails[0].profileCta, false);
+  });
+
+  test("an in-flight session carrying a legacy podPubKey binds WITHOUT one", async () => {
+    // Stripe replays sessions created before the field was dropped. Reading it
+    // back would put an unverified, client-declared key on a fresh binding —
+    // #345 all over again, and this time with nothing left that wants it.
+    const { f } = await run({ quantity: 1, wallet: BUYER_WALLET, legacyPodPubKey: "a".repeat(64) });
+    assert.equal(f.bindings.length, 1);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(f.bindings[0], "podPubKey"),
+      false,
+      "metadata from an old checkout must not reach the binding",
+    );
+    assert.equal(f.bindings[0].parentAddress, BUYER_WALLET);
   });
 
   test("anonymous email buyer: no binding, profile CTA on", async () => {
