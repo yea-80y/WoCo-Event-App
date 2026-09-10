@@ -3,6 +3,7 @@
   import { router } from "./lib/router/router.svelte.js";
   import LoginModal from "./lib/components/auth/LoginModal.svelte";
   import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
+  import AccountSetupSheet from "./lib/components/auth/AccountSetupSheet.svelte";
   import TicketGateModal from "./lib/attendee/gate/TicketGateModal.svelte";
   import Splitter from "./lib/landing/Splitter.svelte";
   import AttendeeApp from "./AttendeeApp.svelte";
@@ -134,6 +135,7 @@
 <TicketGateModal />
 <LoginModal />
 <SigningConfirmDialog />
+<AccountSetupSheet />
 
 <style>
   .surface-loading {

@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import SiteLoginModal from "./lib/components/site/SiteLoginModal.svelte";
   import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
+  import AccountSetupSheet from "./lib/components/auth/AccountSetupSheet.svelte";
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
   import EventPage from "./lib/components/site/EventPage.svelte";
   import Dashboard from "./lib/creator/dashboard/Dashboard.svelte";
@@ -79,6 +80,7 @@
 
 <SiteLoginModal />
 <SigningConfirmDialog />
+<AccountSetupSheet />
 
 <style>
   main {

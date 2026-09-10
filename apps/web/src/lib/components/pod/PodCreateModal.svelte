@@ -122,20 +122,11 @@
     working = true;
     error = "";
     try {
-      // ── Auth: session + POD identity (same gates as event publish). ───────
-      if (!auth.hasSession) {
-        step = "Approve session…";
-        if (!(await auth.ensureSession())) {
-          error = "Session delegation cancelled";
-          return;
-        }
-      }
-      if (!auth.hasPodIdentity) {
-        step = "Approve identity…";
-        if (!(await auth.ensurePodIdentity())) {
-          error = "Identity setup cancelled";
-          return;
-        }
+      // ── Auth: one gate, same as event publish. ────────────────────────────
+      step = "Setting up your account…";
+      if (!(await auth.ensureAccountSetup({ identity: true }))) {
+        error = "Account setup cancelled";
+        return;
       }
       // The derived issuing key signs the manifest and the parent binding.
       // Throws (fail loud, never another signer) when no seed is available;
@@ -153,7 +144,7 @@
       //    guessed, or taken from `auth.parent`. ────────────────────────────
       let certLogOwner: string | undefined;
       if (isCert) {
-        step = "Unlocking your feed signer…";
+        step = "Preparing your keys…";
         const signer = await auth.getContentFeedSigner();
         if (!signer) {
           error = "Could not unlock your feed signer — a certificate badge needs it to publish its log.";

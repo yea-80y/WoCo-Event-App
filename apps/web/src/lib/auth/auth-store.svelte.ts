@@ -45,6 +45,13 @@ import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./sign
 import type { BuiltKernel } from "./kernel-account.js";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import { signingRequest } from "./signing-request.svelte.js";
+import { accountSetupRequest } from "./account-setup-request.svelte.js";
+import {
+  planAccountSetup,
+  hasExplainedAccountSetup,
+  markAccountSetupExplained,
+  type AccountSetupStep,
+} from "./account-setup-plan.js";
 import { cacheClearByPrefix, USER_SCOPED_PREFIXES } from "../cache/cache.js";
 
 // ---------------------------------------------------------------------------
@@ -2034,6 +2041,69 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
   return _podInFlight;
 }
 
+// ---------------------------------------------------------------------------
+// Account setup — the ONE entry point every authenticated action calls
+// ---------------------------------------------------------------------------
+
+/** Run the outstanding steps in order, ticking the sheet's rail as each lands. */
+async function _runAccountSetupSteps(steps: AccountSetupStep[]): Promise<boolean> {
+  for (const step of steps) {
+    const ok = step === "session" ? await ensureSession() : await ensurePodIdentity();
+    if (!ok) return false;
+    accountSetupRequest.markDone(step);
+  }
+  return true;
+}
+
+/**
+ * Get this account ready to act on this device: session delegation, and — when
+ * the action needs the seed — the account keys. Returns false if the person
+ * declined; callers must then do nothing, exactly as they did when they called
+ * `ensureSession`/`ensurePodIdentity` themselves.
+ *
+ * This exists because the call sites were COUNTING. They hard-coded "(1 of 2)"
+ * and "(2 of 2)" step labels, which were wrong for the majority of logins: for
+ * passkey and web3auth the session signature is silent, so the person saw one
+ * prompt labelled "2 of 2" and no sign of a first. The number of prompts is not
+ * knowable at a call site — it depends on the login kind and on what is already
+ * on the device — so the decision moved to `planAccountSetup` and the narration
+ * moved to the two components that can actually see a prompt happen.
+ */
+async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean> {
+  if (!isConnected || !_parent) return false;
+  const parent = _parent;
+
+  const plan = planAccountSetup({
+    kind: _kind,
+    hasSession,
+    hasSeed: hasPodIdentity,
+    identity: opts.identity,
+    explainedBefore: hasExplainedAccountSetup(parent),
+  });
+
+  if (plan.steps.length === 0) return true;
+
+  // passkey/web3auth: `SigningConfirmDialog` IS the consent, one tap. Anything
+  // in front of it would be a screen explaining a screen.
+  if (!plan.showSheet) return _runAccountSetupSteps(plan.steps);
+
+  let proceed = await accountSetupRequest.request(plan);
+  while (proceed) {
+    if (await _runAccountSetupSteps(plan.steps)) {
+      // Only remembered on success: a person who bailed out has not yet had the
+      // explanation land, and meeting the popups cold next time would be worse.
+      markAccountSetupExplained(parent);
+      accountSetupRequest.finish();
+      return true;
+    }
+    // A rejected popup. The sheet asks whether to retry; the earned ticks stay,
+    // and the re-run short-circuits the steps that already succeeded.
+    proceed = await accountSetupRequest.reportCancelled();
+  }
+  accountSetupRequest.close();
+  return false;
+}
+
 /**
  * Ensure a scoped EAS session key exists for the Kernel, minting one on first
  * use. Selector-scoped to attest/revoke and nothing else — the deeply-nested
@@ -3120,6 +3190,9 @@ export const auth = {
   resetSession,
   logout,
   ensurePodIdentity,
+  // The entry point for "make this account ready to act" — call this, not
+  // ensureSession/ensurePodIdentity in sequence, and never count prompts.
+  ensureAccountSetup,
   ensureEasSessionKey,
   grantSpendPermission,
   setupAccountRecovery,
