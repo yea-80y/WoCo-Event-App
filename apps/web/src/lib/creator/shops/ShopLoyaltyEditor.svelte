@@ -49,7 +49,7 @@
       badges = dir.pods.filter((p) => p.eventId && p.chainId);
       podsPhase = "ready";
     } catch (e) {
-      error = e instanceof Error ? e.message : "Couldn't load your PODs";
+      error = e instanceof Error ? e.message : "Couldn't load your collectibles";
       podsPhase = "error";
     }
   });
@@ -120,7 +120,7 @@
   <label class="row-toggle">
     <input type="checkbox" bind:checked={enabled} />
     <span class="rt-label">Loyalty enabled</span>
-    <span class="rt-hint">Reward repeat spend with badge PODs at cumulative-spend milestones.</span>
+    <span class="rt-hint">Reward repeat spend with badges at cumulative-spend milestones.</span>
   </label>
 
   {#if enabled}
@@ -136,13 +136,13 @@
     </div>
 
     {#if podsPhase === "loading"}
-      <p class="hint">Loading your badge PODs…</p>
+      <p class="hint">Loading your badges…</p>
     {:else if podsPhase === "error"}
       <p class="err-box mono">{error}</p>
     {:else if badges.length === 0}
       <p class="hint">
-        No on-chain PODs yet — create a badge in the <a href="/creator/pods">POD manager</a> first.
-        Only on-chain PODs can be minted as rewards.
+        No on-chain collectibles yet — create a badge in the <a href="/creator/pods">Collectibles</a> manager first.
+        Only on-chain collectibles can be minted as rewards.
       </p>
     {:else}
       {#each rows as row, i (i)}

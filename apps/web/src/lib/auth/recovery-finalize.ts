@@ -164,13 +164,13 @@ export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<Back
   } catch (e) {
     return {
       status: "unavailable",
-      reason: `POD seed read failed: ${e instanceof Error ? e.message : String(e)}`,
+      reason: `identity seed read failed: ${e instanceof Error ? e.message : String(e)}`,
       retryable: true,
       stage: "envelope",
     };
   }
   if (!podSeed) {
-    return { status: "unavailable", reason: "POD seed absent", retryable: false, stage: "envelope" };
+    return { status: "unavailable", reason: "identity seed absent", retryable: false, stage: "envelope" };
   }
 
   let feedSigner: { privKey: string } | null;

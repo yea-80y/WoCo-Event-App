@@ -13,7 +13,7 @@ import { authGet, authPut, authPost, get } from "./client.js";
 /** The signed-in creator's POD directory (types + categories). Throws on error. */
 export async function getMyPods(): Promise<PodDirectory> {
   const r = await authGet<PodDirectory>("/api/pod/mine");
-  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to load PODs");
+  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to load collectibles");
   return r.data;
 }
 
@@ -88,7 +88,7 @@ export async function createPod(req: CreatePodRequest): Promise<PodDirectoryEntr
     "/api/pod",
     req as unknown as Record<string, unknown>,
   );
-  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to create POD");
+  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to create collectible");
   return r.data;
 }
 
@@ -112,7 +112,7 @@ export async function updatePod(
     `/api/pod/${encodeURIComponent(manifestRef)}`,
     patch,
   );
-  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to update POD");
+  if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to update collectible");
   return r.data;
 }
 
