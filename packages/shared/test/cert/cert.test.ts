@@ -2,7 +2,7 @@
  * Frozen-vector tests for woco.cert.v1 and woco.cert-challenge.v1 — the v2
  * issuer-curve rail. The hardcoded digests, signatures and topics ARE the
  * spec — a change that moves any of them is a format bump, not an edit. Same
- * contract as test/pod-cert/cert.test.ts and test/crypto/issuing.test.ts.
+ * contract as the retired v1 certificate module's tests and test/crypto/issuing.test.ts.
  *
  * Two curves in one file, deliberately: the ISSUER signs secp256k1 EIP-191
  * personal_sign, the HOLDER still signs ed25519. Every test that pins one must
@@ -44,12 +44,12 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 
 /**
- * Test-local v1 pod-cert signer — the production v1 sign path is DELETED
+ * Test-local replica of the retired v1 certificate signer — the production v1 sign path is DELETED
  * (PR 5a); this replica keeps the dispatch refusal below facing a
  * VALIDLY-SIGNED legacy certificate. Recipe frozen as it shipped:
  * ed25519 over keccak256("woco-pod-cert-v1\n" || dagCbor(unsigned)).
  */
-function signPodCertV1(unsigned: Record<string, unknown>, priv: Uint8Array) {
+function signLegacyCertV1(unsigned: Record<string, unknown>, priv: Uint8Array) {
   const digest = keccak_256(
     new Uint8Array([...utf8ToBytes("woco-pod-cert-v1\n"), ...dagCbor.encode(unsigned)]),
   );
@@ -307,7 +307,7 @@ test("a well-formed woco.pod-cert.v1 certificate is refused — dispatch, not si
   // dispatch fails them whole, before any curve is chosen. That refusal IS the
   // curve migration's cutoff.
   const v1IssuerPriv = new Uint8Array(32).fill(7);
-  const legacy = signPodCertV1(
+  const legacy = signLegacyCertV1(
     { format: "woco.pod-cert.v1", badge: BADGE, holder: HOLDER, issuedAt: "2026-08-20" },
     v1IssuerPriv,
   );
@@ -321,7 +321,7 @@ test("a well-formed woco.pod-cert.v1 certificate is refused — dispatch, not si
 });
 
 test("a rider's self-signed credit can never be read as a certificate", () => {
-  // docs/COASTER_CREDITS_PLAN.md: credits must NEVER satisfy a PodGateRule.
+  // docs/COASTER_CREDITS_PLAN.md: credits must NEVER satisfy a ObjectGateRule.
   // Format dispatch is the wall, and it is structural — there is no shape of
   // credit statement that reaches the certificate validator.
   const credit = signCreditStatement(

@@ -28,8 +28,8 @@ import type { Hex0x, PaymentChainId, SealedBox } from "@woco/shared";
 import { getEvent, listEvents } from "../lib/event/service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { fiatToUSD } from "../lib/payment/eth-price.js";
-import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
-import type { PodGate, PodGateGroup } from "@woco/shared";
+import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
+import type { ObjectGate, ObjectGateGroup } from "@woco/shared";
 import {
   agentBudgetParams,
   settleAgentTicketPurchase,
@@ -81,9 +81,9 @@ interface ResolvedPayment {
   currency: string;
   seriesName: string;
   eventTitle: string;
-  /** POD-holdings gate on this series, if any — enforced at /buy before mint. */
-  gate?: PodGate | PodGateGroup;
-  /** On-chain id of the series being SOLD (not the gate's POD event) — the
+  /** object-holdings gate on this series, if any — enforced at /buy before mint. */
+  gate?: ObjectGate | ObjectGateGroup;
+  /** On-chain id of the series being SOLD (not the gate's object event) — the
    *  only source for a firstN gate's committed claim count. */
   onChainEventId?: string;
 }
@@ -146,7 +146,7 @@ async function resolveSeriesPayment(eventId: string, seriesId: string): Promise<
 }
 
 /**
- * Enforce the series POD-holdings gate against the funding/claiming Kernel,
+ * Enforce the series object-holdings gate against the funding/claiming Kernel,
  * mirroring the Stripe checkout gate (stripe.ts). Fails closed. Returns null
  * when the gate is satisfied (or absent), or an error string to reject with.
  *
@@ -156,10 +156,10 @@ async function resolveSeriesPayment(eventId: string, seriesId: string): Promise<
  * holders through). An unknown count is passed through as undefined, which
  * computeGatePhase resolves to holders-only: never a definite count of 0, so
  * a read failure can never hold a firstN window open past its boundary. The
- * holdings check itself fails closed inside checkPodGate.
+ * holdings check itself fails closed inside checkObjectGate.
  */
 async function gateRejection(
-  gate: PodGate | PodGateGroup | undefined,
+  gate: ObjectGate | ObjectGateGroup | undefined,
   onChainEventId: string | undefined,
   userKernel: Hex0x,
 ): Promise<string | null> {
@@ -177,8 +177,8 @@ async function gateRejection(
   const phase = gatePhase(gate, { tierClaimed });
   if (phase === "closed") return "This ticket is not currently available.";
   if (phase === "holders-only") {
-    const decision = await checkPodGate(gate, userKernel, { tierClaimed });
-    if (!decision.ok) return decision.reason ?? "This ticket is gated — the required POD is not held.";
+    const decision = await checkObjectGate(gate, userKernel, { tierClaimed });
+    if (!decision.ok) return decision.reason ?? "This ticket is gated — the required object is not held.";
   }
   return null; // "open" phase or gate satisfied
 }
@@ -408,7 +408,7 @@ agentRouter.post("/buy", async (c) => {
       return c.json({ ok: false, error: "intentId is required — request a quote first" }, 400);
     }
 
-    // POD gate — fail closed BEFORE consuming the intent / minting, same as the
+    // object gate — fail closed BEFORE consuming the intent / minting, same as the
     // Stripe checkout gate. A gated-out Kernel can never settle here.
     const gateErr = await gateRejection(r.gate, r.onChainEventId, userKernel.toLowerCase() as Hex0x);
     if (gateErr) return c.json({ ok: false, gated: true, error: gateErr }, 403);

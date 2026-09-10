@@ -1,29 +1,29 @@
 <script lang="ts">
   /**
-   * PodGateEditor — attach an optional POD-holdings gate to a ticket series or
-   * product. Supports single and multi-POD (any/all) with a group-level time
-   * window. Emits `PodGateGroup | undefined`.
+   * ObjectGateEditor — attach an optional object-holdings gate to a ticket series or
+   * product. Supports single and multi-object (any/all) with a group-level time
+   * window. Emits `ObjectGateGroup | undefined`.
    *
-   * Back-compat: a prop `gate` that is a legacy `PodGate` (no `gates` field) is
+   * Back-compat: a prop `gate` that is a legacy `ObjectGate` (no `gates` field) is
    * normalised to a single-element group on first render so the UI hydrates
    * correctly from existing event/product data.
    */
-  import type { PodDirectoryEntry, PodGate, PodGateGroup } from "@woco/shared";
-  import { getMyPods } from "../../api/objects.js";
-  import PodCard from "./ObjectCard.svelte";
+  import type { ObjectDirectoryEntry, ObjectGate, ObjectGateGroup } from "@woco/shared";
+  import { getMyObjects } from "../../api/objects.js";
+  import ObjectCard from "./ObjectCard.svelte";
   import { partitionGateable, buildChainGates, notGateableLabel, type GateablePartition } from "./gate-build.js";
 
   interface Props {
-    gate: PodGate | PodGateGroup | undefined;
-    onChange: (gate: PodGateGroup | undefined) => void;
+    gate: ObjectGate | ObjectGateGroup | undefined;
+    onChange: (gate: ObjectGateGroup | undefined) => void;
   }
   let { gate, onChange }: Props = $props();
 
-  // Normalise legacy PodGate → PodGateGroup for initial state.
-  function toGroup(g: PodGate | PodGateGroup | undefined): PodGateGroup | undefined {
+  // Normalise legacy ObjectGate → ObjectGateGroup for initial state.
+  function toGroup(g: ObjectGate | ObjectGateGroup | undefined): ObjectGateGroup | undefined {
     if (!g) return undefined;
-    if ("gates" in g) return g as PodGateGroup;
-    return { mode: "any", gates: [g as PodGate], window: { kind: "always" } };
+    if ("gates" in g) return g as ObjectGateGroup;
+    return { mode: "any", gates: [g as ObjectGate], window: { kind: "always" } };
   }
 
   // One-time capture on first render (per the back-compat note above) — the
@@ -34,9 +34,9 @@
 
   type Phase = "idle" | "loading" | "ready" | "error";
   let phase = $state<Phase>("idle");
-  let gateable = $state<PodDirectoryEntry[]>([]);
-  /** PODs the organiser owns that cannot gate right now — shown with a reason,
-   *  never filtered out. An owned POD that silently vanishes reads as a bug. */
+  let gateable = $state<ObjectDirectoryEntry[]>([]);
+  /** objects the organiser owns that cannot gate right now — shown with a reason,
+   *  never filtered out. An owned object that silently vanishes reads as a bug. */
   let blocked = $state<GateablePartition["blocked"]>([]);
   let error = $state("");
 
@@ -67,11 +67,11 @@
     phase = "loading";
     error = "";
     try {
-      const dir = await getMyPods();
+      const dir = await getMyObjects();
       // Certificate badges are shown DISABLED rather than filtered — see
       // `partitionGateable`. Nothing constructs `GateEvidence` yet, so a
       // certificate gate would refuse every buyer.
-      const split = partitionGateable(dir.pods);
+      const split = partitionGateable(dir.objects);
       gateable = split.gateable;
       blocked = split.blocked;
       phase = "ready";
@@ -81,7 +81,7 @@
     }
   }
 
-  function buildWindow(): PodGateGroup["window"] {
+  function buildWindow(): ObjectGateGroup["window"] {
     if (windowKind === "firstN") {
       const n = Math.max(1, Math.floor(winFirstN) || 1);
       return { kind: "firstN", n };
@@ -93,13 +93,13 @@
   }
 
   /** Rebuild + emit the group from current UI state. Emits undefined when the
-   *  toggle is off or no valid POD is chosen. */
+   *  toggle is off or no valid object is chosen. */
   function emit() {
     if (!enabled || selectedRefs.length === 0) {
       onChange(undefined);
       return;
     }
-    const gates: PodGate[] = buildChainGates(selectedRefs, gateable);
+    const gates: ObjectGate[] = buildChainGates(selectedRefs, gateable);
     if (gates.length === 0) { onChange(undefined); return; }
     onChange({ mode, gates, window: buildWindow() });
   }
@@ -110,11 +110,11 @@
     emit();
   }
 
-  function togglePod(pod: PodDirectoryEntry) {
-    if (selectedRefs.includes(pod.manifestRef)) {
-      selectedRefs = selectedRefs.filter((r) => r !== pod.manifestRef);
+  function toggleObject(objectEntry: ObjectDirectoryEntry) {
+    if (selectedRefs.includes(objectEntry.manifestRef)) {
+      selectedRefs = selectedRefs.filter((r) => r !== objectEntry.manifestRef);
     } else {
-      selectedRefs = [...selectedRefs, pod.manifestRef];
+      selectedRefs = [...selectedRefs, objectEntry.manifestRef];
     }
     emit();
   }
@@ -129,9 +129,9 @@
   {#if blocked.length > 0}
     <div class="blocked">
       <span class="blocked-head">Not available as a gate</span>
-      {#each blocked as b (b.pod.manifestRef)}
+      {#each blocked as b (b.objectEntry.manifestRef)}
         <div class="blocked-row">
-          <span class="blocked-name">{b.pod.name}</span>
+          <span class="blocked-name">{b.objectEntry.name}</span>
           <span class="blocked-why">{notGateableLabel(b.reason)}</span>
         </div>
       {/each}
@@ -164,12 +164,12 @@
         {@render blockedList()}
       {:else}
         <div class="gate-grid">
-          {#each gateable as pod (pod.manifestRef)}
-            <PodCard
-              {pod}
+          {#each gateable as objectEntry (objectEntry.manifestRef)}
+            <ObjectCard
+              {objectEntry}
               variant="picker"
-              selected={selectedRefs.includes(pod.manifestRef)}
-              onSelect={togglePod}
+              selected={selectedRefs.includes(objectEntry.manifestRef)}
+              onSelect={toggleObject}
             />
           {/each}
         </div>
@@ -177,7 +177,7 @@
         {@render blockedList()}
 
         {#if selectedRefs.length > 1}
-          <!-- any/all toggle only shown when 2+ PODs selected -->
+          <!-- any/all toggle only shown when 2+ objects selected -->
           <div class="mode-row">
             <span class="mode-label">Require</span>
             <div class="mode-btns" role="group" aria-label="Gate mode">

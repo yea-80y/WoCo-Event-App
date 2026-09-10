@@ -29,7 +29,7 @@ import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-wi
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { chainEventEndMs } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
-import { checkPodGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
+import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
@@ -707,7 +707,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Sold out" }, 409);
   }
 
-  // POD-holdings gate on the CARD rail. The gate is a property of the buyer's
+  // object-holdings gate on the CARD rail. The gate is a property of the buyer's
   // ACCOUNT (the verified wallet's on-chain holdings), NOT the payment method —
   // so a gated series is still payable by card, provided the authenticated
   // account passes the gate. We bind the resulting claim to `verifiedAddress`
@@ -724,11 +724,11 @@ stripe.post("/create-checkout", async (c) => {
     if (phase === "holders-only") {
       if (!verifiedAddress) {
         return c.json(
-          { ok: false, gated: true, error: "This ticket is gated — sign in with the wallet that holds the required POD, then pay by card." },
+          { ok: false, gated: true, error: "This ticket is gated — sign in with the wallet that holds the required object, then pay by card." },
           401,
         );
       }
-      const decision = await checkPodGate(series.gate, verifiedAddress, { tierClaimed });
+      const decision = await checkObjectGate(series.gate, verifiedAddress, { tierClaimed });
       if (!decision.ok) {
         return c.json({ ok: false, gated: true, error: decision.reason }, 403);
       }

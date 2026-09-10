@@ -1,6 +1,6 @@
 /**
  * The issuer-registry RELAY (issuer-curve migration PR 5b; design record:
- * HANDOVER-pod-curve-migration.md + `packages/shared/src/issuer/types.ts`).
+ * the issuer-curve migration handover + `packages/shared/src/issuer/types.ts`).
  *
  * The server attests NOTHING here — every statement is parent-signed EIP-712
  * with the issuing key's own proof of possession, and any client re-verifies

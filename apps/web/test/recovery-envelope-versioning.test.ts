@@ -38,7 +38,7 @@ import type { ContentFeedResult } from "../src/lib/swarm/content-feed.js";
 
 const KERNEL = "0xAAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa";
 const SEED_A = new Uint8Array(32).fill(7);
-const BUNDLE: RecoveryBundle = { version: 1, secrets: { podSeed: "0x" + "ab".repeat(32) } };
+const BUNDLE: RecoveryBundle = { version: 1, secrets: { identitySeed: "0x" + "ab".repeat(32) } };
 
 test("v2 seal/open round-trips under the same role and declares the current version", async () => {
   const kp = await deriveEncryptionKeypairFromSeed(SEED_A);
@@ -55,7 +55,7 @@ test("v2 seal/open round-trips under the same role and declares the current vers
     role: "guardian",
     guardianKeypair: kp,
   });
-  assert.equal(opened.secrets.podSeed, BUNDLE.secrets.podSeed);
+  assert.equal(opened.secrets.identitySeed, BUNDLE.secrets.identitySeed);
 });
 
 test("role separation is cryptographic: the OTHER role cannot open it even with the right recipient key", async () => {
@@ -105,7 +105,7 @@ test("legacy v1 envelopes still open — under either role, as before roles exis
   const envelope = await sealLegacyV1(kp.publicKeyHex);
   for (const role of ["guardian", "portability"] as const) {
     const opened = await openRecoveryBundle({ envelope, kernelAddress: KERNEL, role, guardianKeypair: kp });
-    assert.equal(opened.secrets.podSeed, BUNDLE.secrets.podSeed);
+    assert.equal(opened.secrets.identitySeed, BUNDLE.secrets.identitySeed);
   }
 });
 
@@ -157,7 +157,7 @@ async function realPortabilityEnvelope(): Promise<PortabilityEnvelope> {
   const envelope = await sealRecoveryBundle({
     bundle: {
       version: PORTABILITY_ENVELOPE_VERSION,
-      secrets: { preservedKernelAddress: KERNEL.toLowerCase(), podSeed: "0x" + "cd".repeat(32) },
+      secrets: { preservedKernelAddress: KERNEL.toLowerCase(), identitySeed: "0x" + "cd".repeat(32) },
     },
     kernelAddress: keys.socOwnerAddress,
     role: "portability",

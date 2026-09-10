@@ -48,7 +48,7 @@ test("commits to exactly ONE template body, whatever the cap", () => {
     assert.equal(
       built.editionBodies.length,
       1,
-      `cap ${cap} must still commit one body — issuePodType refuses anything else`,
+      `cap ${cap} must still commit one body — issueObjectType refuses anything else`,
     );
   }
 });

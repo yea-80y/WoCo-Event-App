@@ -154,9 +154,9 @@ export async function getSlotDataV2(
 
 /**
  * All on-chain slot indices currently owned by `owner` for an event — the
- * TRUSTLESS holdings source for POD gating (§4.4). Reads `SlotClaimed` logs
+ * TRUSTLESS holdings source for object gating (§4.4). Reads `SlotClaimed` logs
  * filtered by the indexed `(eventId, owner)` topics; each log's `slot` is an
- * owned slot. PODs are soulbound today (no transfer), so a SlotClaimed log is
+ * owned slot. objects are soulbound today (no transfer), so a SlotClaimed log is
  * authoritative for current ownership; when transfer lands this must also
  * subtract slots transferred away (add a `Transfer`/`SlotTransferred` scan).
  *

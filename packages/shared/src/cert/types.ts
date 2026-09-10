@@ -1,8 +1,8 @@
 /**
  * `woco.cert.v1` + `woco.cert-challenge.v1` — the CERTIFICATE rail (Gate B) on
  * the v2 issuer curve (issuer-curve migration PR 3; design record:
- * HANDOVER-pod-curve-migration.md). docs/SWARM_SOCIAL_PLAN.md "Gate B is the
- * POD-CERTIFICATE rail" is the design record for the rail itself; this file is
+ * the issuer-curve migration handover). docs/SWARM_SOCIAL_PLAN.md "Gate B is the
+ * CERTIFICATE rail" is the design record for the rail itself; this file is
  * normative for its v2 form.
  *
  * WHAT CHANGED from `woco.pod-cert.v1`, and only this:
@@ -11,8 +11,8 @@
  *    20-byte `IssuerAddress` — never a 64-hex ed25519 pubkey again;
  *  - the badge's manifest is `woco.manifest.v2` (`edition/types.ts`), so the
  *    issuer a door resolves from it is an address too (see `holdings.ts`);
- *  - "POD" is gone from the naming. The legacy rail keeps its own names
- *    verbatim under `src/pod-cert/` until that module is deleted.
+ *  - "object" is gone from the naming. The legacy rail keeps its own names
+ *    verbatim under the retired v1 certificate module until that module is deleted.
  *
  * WHAT DID NOT CHANGE — the HOLDER side, entirely. The holder identity is
  * still a bare lowercase 64-hex ed25519 key (`HolderPubkey`), the challenge is
@@ -22,7 +22,7 @@
  * Nothing here replaces the badge. The badge stays what it was — its manifest,
  * artwork, its place in the directory. What this rail changes is only how
  * HOLDING is recorded: on the chain rail that is an on-chain slot
- * (`slotOwner[eventId][slot]`, see the note at `pod/types.ts`), and a
+ * (`slotOwner[eventId][slot]`, see the note at `object/types.ts`), and a
  * certificate makes it an ISSUER-SIGNED statement that names its holder.
  *
  * Two objects, two signers, TWO CURVES, and the split is the whole security
@@ -37,8 +37,8 @@
  *   can answer.
  *
  * THE HARD RULE this rail exists to keep (docs/COASTER_CREDITS_PLAN.md): a
- * rider's SELF-signed credits must never satisfy a `PodGateRule`. It is kept
- * structurally, not by convention — the only route from bytes to a `PodHolding`
+ * rider's SELF-signed credits must never satisfy an `ObjectGateRule`. It is kept
+ * structurally, not by convention — the only route from bytes to an `ObjectHolding`
  * is `holdings.ts`, which accepts issuer-verified certificates and nothing else.
  * A `woco.credit.v1` object fails format dispatch here and always will, and so
  * does a `woco.pod-cert.v1` object: the v1 rail is REFUSED, not branched.
@@ -132,7 +132,7 @@ export interface CertV1 {
   format: typeof CERT_FORMAT;
   /**
    * The badge TYPE's `manifestRef` (0x-prefixed lowercase bytes32) — the same
-   * stable identity `PodDirectoryEntry.manifestRef` and `PodGate.manifestRef`
+   * stable identity `ObjectDirectoryEntry.manifestRef` and `ObjectGate.manifestRef`
    * key on, joining this record to the display layer (artwork, directory entry,
    * `swarmManifestRef`) with nothing new built. Under v2 it is
    * `keccak256(dagCbor(ManifestV2Body))` (`edition/canonical.ts`).
@@ -161,12 +161,12 @@ export interface CertV1 {
   issuedAt: string;
   /**
    * OPTIONAL X25519 public key (hex, no 0x) — the holder's encryption key from
-   * `deriveEncryptionKeypairFromPodSeed`, recorded so a publisher enumerating
+   * `deriveEncryptionKeypairFromSeed`, recorded so a publisher enumerating
    * this issuer's log can seal per-drop content to current holders (the HPKE
    * alternative to Swarm ACT for club content).
    *
    * It is here rather than computed because it is NOT computable: the X25519
-   * key is HKDF'd from the POD SEED (`crypto/keys.ts`), not converted from
+   * key is HKDF'd from the IDENTITY SEED (`crypto/keys.ts`), not converted from
    * `holder`, and no WoCo feed publishes it — `UserProfile` has no key field.
    * Optional because a certificate may be issued for a holder whose encryption
    * key the issuer does not have, and omitting it must stay free.
@@ -220,7 +220,7 @@ export const MAX_CERT_BYTES = 2048;
 /**
  * Serialized byte length of a value as it will be written to a feed.
  *
- * MODULE-PRIVATE on purpose: `pod-cert/types.ts` already exports a
+ * MODULE-PRIVATE on purpose: the retired v1 certificate module already exports a
  * `jsonByteLength`, and both modules are re-exported from the package barrel —
  * a second export of the same name would break it. `log.ts` keeps its own copy
  * for the same reason. Duplicated over exported, deliberately: the duplicate
@@ -263,7 +263,7 @@ export interface CertChallengeV1 {
   /** Verifier-chosen, base64url unpadded, ≥16 bytes of entropy (22+ chars). */
   nonce: string;
   /**
-   * Unix MILLISECONDS — the same clock unit as `PodGateRule.notBefore/notAfter`,
+   * Unix MILLISECONDS — the same clock unit as `ObjectGateRule.notBefore/notAfter`,
    * so a door never mixes units between the window check and this one.
    */
   expiresAt: number;
@@ -496,7 +496,7 @@ export function buildCertV1Message(digest: Uint8Array): string {
 
 /**
  * Sign a certificate as the badge type's issuer. `issuingPrivKey` is the
- * secp256k1 key derived from the POD seed (`deriveIssuingKey`, `crypto/issuing.ts`)
+ * secp256k1 key derived from the identity seed (`deriveIssuingKey`, `crypto/issuing.ts`)
  * whose address is the manifest's `issuer` — the SAME key that signs
  * `woco.manifest.v2` bodies, so display identity and signing identity join
  * with nothing new built.

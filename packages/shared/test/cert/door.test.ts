@@ -34,7 +34,7 @@ import {
   signPersonalMessage,
 } from "../../src/crypto/issuing.js";
 import { asHolderPubkey } from "../../src/crypto/brands.js";
-import { evaluatePodGate } from "../../src/object/gate.js";
+import { evaluateObjectGate } from "../../src/object/gate.js";
 import { bytesToHex0x } from "../../src/crypto/hex.js";
 import * as dagCbor from "@ipld/dag-cbor";
 import { keccak_256 } from "@noble/hashes/sha3.js";
@@ -322,8 +322,8 @@ test("the manifest entry point fails closed on a badge the manifest is not", () 
 
 test("a certificate holding passes the existing pure gate evaluator", () => {
   const holding = certHolding(BADGE, [presentation()], ISSUING.address, EXPECT);
-  assert.ok(evaluatePodGate(holding, { manifestRef: BADGE }, NOW));
-  assert.ok(evaluatePodGate(holding, { manifestRef: BADGE, minCount: 1 }, NOW));
+  assert.ok(evaluateObjectGate(holding, { manifestRef: BADGE }, NOW));
+  assert.ok(evaluateObjectGate(holding, { manifestRef: BADGE, minCount: 1 }, NOW));
 });
 
 test("a first-N gate is UNSATISFIABLE from certificates, and fails closed", () => {
@@ -333,7 +333,7 @@ test("a first-N gate is UNSATISFIABLE from certificates, and fails closed", () =
   // nothing allocated.
   const holding = certHolding(BADGE, [presentation()], ISSUING.address, EXPECT);
   assert.deepEqual(holding.slots, []);
-  assert.ok(!evaluatePodGate(holding, { manifestRef: BADGE, maxSlotExclusive: 100 }, NOW));
+  assert.ok(!evaluateObjectGate(holding, { manifestRef: BADGE, maxSlotExclusive: 100 }, NOW));
 });
 
 test("a minCount above 1 fails closed — presence is not quantity", () => {
@@ -341,11 +341,11 @@ test("a minCount above 1 fails closed — presence is not quantity", () => {
   // rotation, say — must not add up to "holds 2".
   const holding = certHolding(BADGE, [presentation(), presentation()], ISSUING.address, EXPECT);
   assert.equal(holding.count, 1);
-  assert.ok(!evaluatePodGate(holding, { manifestRef: BADGE, minCount: 2 }, NOW));
+  assert.ok(!evaluateObjectGate(holding, { manifestRef: BADGE, minCount: 2 }, NOW));
 });
 
 test("a gate time window still applies to a certificate holding", () => {
   const holding = certHolding(BADGE, [presentation()], ISSUING.address, EXPECT);
-  assert.ok(!evaluatePodGate(holding, { manifestRef: BADGE, notBefore: NOW + 1 }, NOW));
-  assert.ok(!evaluatePodGate(holding, { manifestRef: BADGE, notAfter: NOW - 1 }, NOW));
+  assert.ok(!evaluateObjectGate(holding, { manifestRef: BADGE, notBefore: NOW + 1 }, NOW));
+  assert.ok(!evaluateObjectGate(holding, { manifestRef: BADGE, notAfter: NOW - 1 }, NOW));
 });

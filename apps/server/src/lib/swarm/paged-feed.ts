@@ -12,7 +12,7 @@ import {
  *
  * A directory/index feed whose item list can exceed one 4096-byte feed page:
  * page 0 holds the head + a `pages` overflow count, pages 1..N hold the rest.
- * Extracted from the shop/site directory pattern so the POD directory (and
+ * Extracted from the shop/site directory pattern so the object directory (and
  * future directories) don't add a fourth copy. Shop/site still carry their own
  * inline copies — they can adopt this later; this module is additive and
  * doesn't touch them.

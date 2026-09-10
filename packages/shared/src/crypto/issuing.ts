@@ -1,8 +1,8 @@
 /**
- * The ISSUING key — a secp256k1 sibling derived from the POD seed (issuer-curve
- * migration, #443/#444; design record: HANDOVER-pod-curve-migration.md).
+ * The ISSUING key — a secp256k1 sibling derived from the identity seed (issuer-curve
+ * migration, #443/#444; design record: the issuer-curve migration handover).
  *
- * HKDF(sha256, podSeed, info = "woco/issuing/v1/" + gen) → secp256k1 scalar.
+ * HKDF(sha256, identitySeed, info = "woco/issuing/v1/" + gen) → secp256k1 scalar.
  * A sibling of the X25519 encryption key (`keys.ts`, info "woco/encryption/v1")
  * — the distinct HKDF info keeps them independent, and HKDF one-wayness means a
  * leaked issuing key cannot recover the seed. (A third sibling, the ed25519
@@ -64,13 +64,13 @@ export function issuingAddress(privateKey: Uint8Array): IssuerAddress {
  * (see {@link scalarFromOkm48}).
  */
 export function deriveIssuingKey(
-  podSeedHex: string,
+  identitySeedHex: string,
   gen = 0,
 ): { privateKey: Uint8Array; address: IssuerAddress } {
   if (!Number.isInteger(gen) || gen < 0) {
     throw new Error(`invalid issuing-key generation: ${gen}`);
   }
-  const { privateKey } = deriveSecpFromSeed(podSeedHex, ISSUING_INFO_PREFIX + gen, "POD seed");
+  const { privateKey } = deriveSecpFromSeed(identitySeedHex, ISSUING_INFO_PREFIX + gen, "identity seed");
   return { privateKey, address: issuingAddress(privateKey) };
 }
 

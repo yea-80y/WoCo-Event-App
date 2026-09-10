@@ -2,7 +2,7 @@
  * WebAuthn Relying Party ID resolution — ONE implementation on purpose.
  *
  * The RP ID scopes the credential, and everything derives from the credential
- * (PRF → secp256k1 key → Kernel address → POD identity), so a credential under
+ * (PRF → secp256k1 key → Kernel address → identity seed), so a credential under
  * a different RP ID is a whole different account. apps/web and packages/embed
  * previously each carried a copy of this function, and the copies' shared
  * docstring ("falls back for localhost dev") described a fallback that in fact

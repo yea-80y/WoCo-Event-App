@@ -144,7 +144,7 @@ const readSrc = (p: string) =>
 test("both create routes verify the binding and stop on refusal", () => {
   for (const [name, path] of [
     ["events", "../src/routes/events.ts"],
-    ["pod", "../src/routes/objects.ts"],
+    ["objects", "../src/routes/objects.ts"],
   ] as const) {
     const src = readSrc(path);
     const at = src.indexOf("verifyAndPinIssuerBinding(");
@@ -181,7 +181,7 @@ test("a legacy v1 blob yields no digest on the checkout path", async () => {
       },
       signature: "cd".repeat(64),
     },
-    podRefs: [],
+    objectRefs: [],
     manifestDigestHex: `0x${"33".repeat(32)}`,
   };
   assert.equal(digestOfManifestBlob(v1Blob), null, "a v1 blob must not digest — the sale refuses");
@@ -207,7 +207,7 @@ test("a legacy v1 blob yields no digest on the checkout path", async () => {
     encoding: "cbor-v1" as const,
     treeScheme: "oz-simple-v1" as const,
   };
-  const v2Blob = { v: 2, signedManifest: signManifestV2(manifest, KEY), podRefs: [], manifestDigestHex: "" };
+  const v2Blob = { v: 2, signedManifest: signManifestV2(manifest, KEY), objectRefs: [], manifestDigestHex: "" };
   assert.equal(
     digestOfManifestBlob(v2Blob),
     bytesToHex0x(manifestV2Digest(manifest)).toLowerCase(),

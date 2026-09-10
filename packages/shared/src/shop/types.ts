@@ -7,13 +7,13 @@
  * addresses are lowercase for deterministic feed topics, ids are ULIDs.
  *
  * Spend money is USDC surfaced as fiat; there is no separate points token.
- * Loyalty is POD badges issued at milestones, with progress derived from
+ * Loyalty is object badges issued at milestones, with progress derived from
  * on-chain spend — see `docs/WOCO_SHOP_PLAN.md`.
  */
 
 import type { Hex64, Hex0x } from "../types.js";
 import type { PaymentConfig, FiatCurrency, PaymentChainId } from "../event/types.js";
-import type { PodGate, PodGateGroup } from "../object/types.js";
+import type { ObjectGate, ObjectGateGroup } from "../object/types.js";
 
 // ---------------------------------------------------------------------------
 // Shop + catalog
@@ -128,13 +128,13 @@ export interface Product {
   /** Channels this product is sold on. Omit = all channels (web + pos). */
   channels?: SalesChannel[];
   /** Loyalty badges awarded when this specific item is bought. */
-  podRewards?: PodRewardRule[];
-  /** POD-holdings gate — when set, the buyer's wallet must hold the gating POD
+  objectRewards?: ObjectRewardRule[];
+  /** object-holdings gate — when set, the buyer's wallet must hold the gating object
    *  on-chain. Enforced at every payment rail that binds a wallet (crypto +
    *  spend-permission); the card rail cannot satisfy a wallet gate, so gated
    *  products are wallet-purchase-only. The stored gate is chain-validated at
    *  write time (manifestRef↔eventId), so enforcement trusts it. */
-  gate?: PodGate | PodGateGroup;
+  gate?: ObjectGate | ObjectGateGroup;
   active: boolean;
   /** Display order within its category. */
   sortIndex: number;
@@ -243,28 +243,28 @@ export interface Order {
 // Loyalty
 // ---------------------------------------------------------------------------
 
-/** A POD badge awarded when a specific product is purchased. */
-export interface PodRewardRule {
+/** An object badge awarded when a specific product is purchased. */
+export interface ObjectRewardRule {
   /** ULID of the badge template to issue. */
   badgeId: string;
   trigger: "purchase";
 }
 
 /**
- * A POD badge awarded at a cumulative-spend milestone for the shop. Carries the
- * badge POD's RESOLVED on-chain coordinates (self-describing, mirrors PodGate)
+ * An object badge awarded at a cumulative-spend milestone for the shop. Carries the
+ * badge object's RESOLVED on-chain coordinates (self-describing, mirrors ObjectGate)
  * so the server can mint an edition to the buyer's wallet at the threshold —
- * no global manifestRef→eventId index needed. Snapshotted from the badge POD's
+ * no global manifestRef→eventId index needed. Snapshotted from the badge object's
  * directory entry when the merchant configures the milestone.
  */
 export interface SpendThresholdReward {
   /** Cumulative paid spend (decimal string, shop currency) at which the badge issues. */
   threshold: string;
-  /** Badge POD type to award (0x bytes32 manifestRef). */
+  /** Badge object type to award (0x bytes32 manifestRef). */
   badgeManifestRef: string;
   /** On-chain eventId committing the badge manifest (mint target). */
   badgeEventId: string;
-  /** Chain the badge POD lives on (must be the active mint chain). */
+  /** Chain the badge object lives on (must be the active mint chain). */
   chainId: number;
   /** Display snapshot of the badge name (UI + award log only). */
   badgeName?: string;
@@ -364,9 +364,9 @@ export interface UpsertProductRequest {
   variants?: ProductVariant[];
   stock?: number;
   channels?: SalesChannel[];
-  podRewards?: PodRewardRule[];
-  /** POD-holdings gate (wallet-purchase-only when set). Chain-validated server-side. */
-  gate?: PodGate | PodGateGroup;
+  objectRewards?: ObjectRewardRule[];
+  /** object-holdings gate (wallet-purchase-only when set). Chain-validated server-side. */
+  gate?: ObjectGate | ObjectGateGroup;
   active?: boolean;
   sortIndex?: number;
 }

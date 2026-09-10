@@ -22,7 +22,7 @@ import type { PortabilityBackfillArgs } from "../src/lib/auth/recovery-portabili
 const PRESERVED = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as const;
 const PRF_EOA = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PRF_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111";
-const POD_SEED = "seed-restored-from-escrow";
+const IDENTITY_SEED = "seed-restored-from-escrow";
 
 /** Happy-path deps for a passkey recovery, with call recording. */
 function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
@@ -39,9 +39,9 @@ function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
       return { ok: true };
     },
     getPasskeyPrivKey: () => PRF_KEY,
-    getPodAddress: () => PRF_EOA,
-    recoveryKernelFor: async (pod) => (pod === PRF_EOA ? PRESERVED : undefined),
-    restorePodSeed: async () => POD_SEED,
+    getSeedAddress: () => PRF_EOA,
+    recoveryKernelFor: async (seedAddr) => (seedAddr === PRF_EOA ? PRESERVED : undefined),
+    restoreIdentitySeed: async () => IDENTITY_SEED,
     backfill: async (args) => {
       calls.push("backfill");
       backfillArgs.push(args);
@@ -66,7 +66,7 @@ test("passkey happy path: session first, then the server probe, then the envelop
   // encryption key are all KDFs of it, so an envelope can no longer be written
   // carrying half of what the account needs on its next device.
   assert.deepEqual(backfillArgs, [
-    { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, podSeed: POD_SEED },
+    { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, identitySeed: IDENTITY_SEED },
   ]);
 });
 
@@ -78,7 +78,7 @@ test("#260: the gather helper is the ONE owner of the preamble — payload pinne
   const g = await gatherBackfillArgs(d);
   assert.deepEqual(g, {
     status: "ready",
-    args: { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, podSeed: POD_SEED },
+    args: { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, identitySeed: IDENTITY_SEED },
   });
 });
 
@@ -106,7 +106,7 @@ test("a DETERMINISTIC failure is reported as NOT retryable", async () => {
   // amount of retrying produces one. Calling it retryable is an infinite loop with
   // encouraging copy. (This used to be the feed-signer anti-divergence guard; the
   // feed signer is now a KDF of this same seed, so the seed IS the terminal case.)
-  const { d } = deps({ restorePodSeed: async () => null });
+  const { d } = deps({ restoreIdentitySeed: async () => null });
   const r = await finalizeRecovery(d);
   assert.equal(r.status, "failed");
   assert.equal((r as { retryable: boolean }).retryable, false);
@@ -181,7 +181,7 @@ test("a FAILED binding read says it FAILED — never 'no binding on this device'
 
 test("a FAILED seed read is distinguished from a genuinely absent seed", async () => {
   const { d } = deps({
-    restorePodSeed: async () => {
+    restoreIdentitySeed: async () => {
       throw new Error("indexeddb unavailable");
     },
   });
@@ -189,14 +189,14 @@ test("a FAILED seed read is distinguished from a genuinely absent seed", async (
   assert.match((r as { reason: string }).reason, /seed read failed/);
   assert.equal((r as { retryable: boolean }).retryable, true);
 
-  const { d: d2 } = deps({ restorePodSeed: async () => null });
+  const { d: d2 } = deps({ restoreIdentitySeed: async () => null });
   const r2 = await finalizeRecovery(d2);
   assert.match((r2 as { reason: string }).reason, /seed absent/);
   assert.equal((r2 as { retryable: boolean }).retryable, false);
 });
 
-test("an unreadable POD seed fails — the envelope must carry the escrow-restored seed", async () => {
-  const { d, calls } = deps({ restorePodSeed: async () => null });
+test("an unreadable identity seed fails — the envelope must carry the escrow-restored seed", async () => {
+  const { d, calls } = deps({ restoreIdentitySeed: async () => null });
   const r = await finalizeRecovery(d);
   assert.equal(r.status, "failed");
   assert.match((r as { reason: string }).reason, /seed/i);
@@ -267,7 +267,7 @@ test("#273: a NON-retryable failure is never retried — it would loop identical
   let reads = 0;
   const slept: number[] = [];
   const { d } = deps({
-    restorePodSeed: async () => {
+    restoreIdentitySeed: async () => {
       reads++;
       return null;
     },

@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// POD holdings reader — the chain half of the holdings primitive (§4.3/§4.4).
+// object holdings reader — the chain half of the holdings primitive (§4.3/§4.4).
 //
-// Answers "what does wallet A hold of POD type M?" from the TRUSTLESS on-chain
+// Answers "what does wallet A hold of object type M?" from the TRUSTLESS on-chain
 // source (WoCoEventV2 slot ownership), NOT the platform-written collection feed.
-// The pure `evaluatePodGate` (shared) then decides pass/fail against a rule.
+// The pure `evaluateObjectGate` (shared) then decides pass/fail against a rule.
 //
 // Built ONCE here; reused by event gating, product gating, and milestone
 // eligibility. Gating is done OFF chain, before a mint: the contract's own
@@ -13,7 +13,7 @@
 // slot-claim log surface — V2 or the ledger, never V1.
 // ---------------------------------------------------------------------------
 
-import type { Hex0x, Bytes32Hex, PodHolding } from "@woco/shared";
+import type { Hex0x, Bytes32Hex, ObjectHolding } from "@woco/shared";
 import { getDeployedContract, unhandledVersion } from "../chain/event-contract.js";
 import { querySlotsOwnedV2 } from "../chain/event-contract-v2.js";
 
@@ -24,21 +24,21 @@ export interface HoldingQuery {
   onChainEventId: string;
   /** Chain the event lives on. */
   chainId: number;
-  /** POD-type identity to stamp on the returned holding (the gate keys on it). */
+  /** object-type identity to stamp on the returned holding (the gate keys on it). */
   manifestRef: Bytes32Hex;
 }
 
 /**
- * Read `holder`'s on-chain holding of one POD type. Returns a zero-count
+ * Read `holder`'s on-chain holding of one object type. Returns a zero-count
  * holding (never throws) when the holder owns nothing — only configuration
  * problems (no V2 contract on the chain) throw, since those are caller bugs.
  */
-export async function getOnChainHolding(q: HoldingQuery): Promise<PodHolding> {
+export async function getOnChainHolding(q: HoldingQuery): Promise<ObjectHolding> {
   const c = getDeployedContract(q.chainId);
-  if (!c) throw new Error(`POD holdings: no WoCoEvent contract deployed on chain ${q.chainId}`);
+  if (!c) throw new Error(`object holdings: no WoCoEvent contract deployed on chain ${q.chainId}`);
   if (c.version === "v1") {
     throw new Error(
-      `POD holdings/gating need the slot-claim log surface; chain ${q.chainId} is on v1`,
+      `object holdings/gating need the slot-claim log surface; chain ${q.chainId} is on v1`,
     );
   }
 

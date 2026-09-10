@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
-   * PodCard — the reused visual atom of the creator POD layer (Concrete & Acid).
+   * ObjectCard — the reused visual atom of the creator object layer (Concrete & Acid).
    *
-   * A POD *type* (one manifest) rendered two ways, sharing one supply language:
+   * An object *type* (one manifest) rendered two ways, sharing one supply language:
    *  - "grid":   artwork + kind chip + name + the allocation hairline (issued/
-   *              supply), the POD analogue of ProductCard's loud price. Tappable.
-   *  - "picker": compact row for selecting a POD when configuring an event gate
+   *              supply), the object analogue of ProductCard's loud price. Tappable.
+   *  - "picker": compact row for selecting an object when configuring an event gate
    *              or a product reward; lime ring + check when `selected`.
    *
    * Signature detail: the lime ALLOCATION HAIRLINE under the artwork shows how
@@ -13,39 +13,39 @@
    * glance. Lime is the single accent surface (selected/affordance), matching
    * the shop. Vermillion never appears here (nothing destructive).
    */
-  import type { PodDirectoryEntry, PodKind } from "@woco/shared";
+  import type { ObjectDirectoryEntry, ObjectKind } from "@woco/shared";
 
   interface Props {
-    pod: PodDirectoryEntry;
+    objectEntry: ObjectDirectoryEntry;
     variant?: "grid" | "picker";
     /** Category label (grid only) — shown as a mono kicker above the name. */
     categoryLabel?: string;
     /** Picker selection state. */
     selected?: boolean;
-    onSelect?: (pod: PodDirectoryEntry) => void;
+    onSelect?: (objectEntry: ObjectDirectoryEntry) => void;
   }
 
-  let { pod, variant = "grid", categoryLabel, selected = false, onSelect }: Props = $props();
+  let { objectEntry, variant = "grid", categoryLabel, selected = false, onSelect }: Props = $props();
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
   /** Short human label per kind — the chip text (Bungee). */
-  const KIND_LABEL: Record<PodKind, string> = {
+  const KIND_LABEL: Record<ObjectKind, string> = {
     ticket: "TICKET",
     badge: "BADGE",
     collectible: "DROP",
     authenticity: "AUTHENTIC",
   };
 
-  const imageUrl = $derived(pod.image ? `${BEE_GATEWAY}/bytes/${pod.image}` : null);
-  const issued = $derived(pod.issuedCount ?? 0);
+  const imageUrl = $derived(objectEntry.image ? `${BEE_GATEWAY}/bytes/${objectEntry.image}` : null);
+  const issued = $derived(objectEntry.issuedCount ?? 0);
   /** Claimed fraction of the cap, 0..1 — drives the allocation hairline width. */
-  const fillPct = $derived(pod.supply > 0 ? Math.min(100, (issued / pod.supply) * 100) : 0);
+  const fillPct = $derived(objectEntry.supply > 0 ? Math.min(100, (issued / objectEntry.supply) * 100) : 0);
   /** Transferable provenance is the one special kind — marked, not color-coded. */
-  const isAuthentic = $derived(pod.kind === "authenticity");
+  const isAuthentic = $derived(objectEntry.kind === "authenticity");
 
   function select() {
-    onSelect?.(pod);
+    onSelect?.(objectEntry);
   }
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter" || e.key === " ") {
@@ -57,7 +57,7 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
-  class="podc podc--{variant}"
+  class="objc objc--{variant}"
   class:selected
   class:authentic={isAuthentic}
   role="button"
@@ -69,17 +69,17 @@
   {#if variant === "grid"}
     <div class="media">
       {#if imageUrl}
-        <img src={imageUrl} alt={pod.name} loading="lazy" />
+        <img src={imageUrl} alt={objectEntry.name} loading="lazy" />
       {:else}
         <div class="media-blank" aria-hidden="true">
           <span class="glyph">◈</span>
         </div>
       {/if}
-      <span class="chip" class:chip-auth={isAuthentic}>{KIND_LABEL[pod.kind]}</span>
+      <span class="chip" class:chip-auth={isAuthentic}>{KIND_LABEL[objectEntry.kind]}</span>
     </div>
 
     <!-- Allocation hairline: claimed / supply -->
-    <div class="alloc" title="{issued} of {pod.supply} issued">
+    <div class="alloc" title="{issued} of {objectEntry.supply} issued">
       <div class="alloc-fill" style="width:{fillPct}%"></div>
     </div>
 
@@ -87,10 +87,10 @@
       {#if categoryLabel}
         <span class="kicker">{categoryLabel}</span>
       {/if}
-      <h3 class="name" title={pod.name}>{pod.name}</h3>
+      <h3 class="name" title={objectEntry.name}>{objectEntry.name}</h3>
       <div class="supply">
         <span class="num">{issued}</span><span class="sep">/</span><span class="cap"
-          >{pod.supply}</span
+          >{objectEntry.supply}</span
         >
         <span class="supply-label">issued</span>
       </div>
@@ -99,22 +99,22 @@
     <!-- picker row -->
     <div class="thumb">
       {#if imageUrl}
-        <img src={imageUrl} alt={pod.name} loading="lazy" />
+        <img src={imageUrl} alt={objectEntry.name} loading="lazy" />
       {:else}
         <span class="glyph" aria-hidden="true">◈</span>
       {/if}
     </div>
     <div class="pick-body">
-      <span class="chip chip-inline" class:chip-auth={isAuthentic}>{KIND_LABEL[pod.kind]}</span>
-      <span class="pick-name" title={pod.name}>{pod.name}</span>
-      <span class="pick-supply">{issued} / {pod.supply}</span>
+      <span class="chip chip-inline" class:chip-auth={isAuthentic}>{KIND_LABEL[objectEntry.kind]}</span>
+      <span class="pick-name" title={objectEntry.name}>{objectEntry.name}</span>
+      <span class="pick-supply">{issued} / {objectEntry.supply}</span>
     </div>
     <span class="check" aria-hidden="true"></span>
   {/if}
 </div>
 
 <style>
-  .podc {
+  .objc {
     position: relative;
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -122,19 +122,19 @@
     transition: border-color var(--transition), background var(--transition), transform var(--transition);
     -webkit-tap-highlight-color: transparent;
   }
-  .podc:focus-visible {
+  .objc:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
 
   /* ── grid variant ───────────────────────────────────────────────── */
-  .podc--grid {
+  .objc--grid {
     border-radius: var(--radius-lg);
     overflow: hidden;
     display: flex;
     flex-direction: column;
   }
-  .podc--grid:hover {
+  .objc--grid:hover {
     border-color: var(--border-hover);
     background: var(--bg-surface-hover);
     transform: translateY(-2px);
@@ -253,18 +253,18 @@
   }
 
   /* ── picker variant ─────────────────────────────────────────────── */
-  .podc--picker {
+  .objc--picker {
     border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
   }
-  .podc--picker:hover {
+  .objc--picker:hover {
     border-color: var(--border-hover);
     background: var(--bg-surface-hover);
   }
-  .podc--picker.selected {
+  .objc--picker.selected {
     border-color: var(--accent);
     background: var(--accent-subtle);
   }

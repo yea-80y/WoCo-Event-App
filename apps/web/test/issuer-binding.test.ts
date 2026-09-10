@@ -37,7 +37,7 @@ test("ensureIssuingKey can reach NO other signer", () => {
   // Every alternative signer "works" at signing time and produces credentials
   // that verify against nothing, discovered at a door. The module must not
   // even import one.
-  assert.doesNotMatch(ISSUING, /getContentFeedSigner|feedPrivKey|sessionKey|randomBytes|getPodSigner/);
+  assert.doesNotMatch(ISSUING, /getContentFeedSigner|feedPrivKey|sessionKey|randomBytes|getSeedSigner/);
   assert.match(ISSUING, /deriveIssuingKey\(seed, gen\)/, "the seed-derived key is the only exit");
 });
 
@@ -61,13 +61,13 @@ test("the event-create payload carries the issuing key's parent binding", () => 
 });
 
 test("the badge-mint payload carries the same binding", () => {
-  assert.match(MINT, /issuerBinding:\s*\{/, "PodCreateModal must send issuerBinding");
+  assert.match(MINT, /issuerBinding:\s*\{/, "ObjectCreateModal must send issuerBinding");
   assert.match(MINT, BINDING_CALL);
   assert.match(MINT, /issuer:\s*issuing\.address/);
 });
 
 test("both payloads sign the binding with the ISSUING key, nothing else", () => {
-  for (const [name, src] of [["PublishButton", PUBLISH], ["PodCreateModal", MINT]] as const) {
+  for (const [name, src] of [["PublishButton", PUBLISH], ["ObjectCreateModal", MINT]] as const) {
     const at = src.indexOf("issuerBinding:");
     assert.ok(at > 0);
     const block = src.slice(at, at + 400);

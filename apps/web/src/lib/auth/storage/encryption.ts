@@ -28,7 +28,7 @@ export async function ensureDeviceKey(): Promise<CryptoKey> {
  * Two layers of binding:
  *   1. SLOT KIND — prevents cross-slot blob substitution (e.g. swap a
  *      delegation blob into another slot).
- *   2. PARENT ADDRESS — for identity-scoped slots (POD seed, session key,
+ *   2. PARENT ADDRESS — for identity-scoped slots (identity seed, session key,
  *      session delegation) the AAD also commits to the wallet address that
  *      wrote the blob. Decryption fails cryptographically when the active
  *      parent differs from the writer — so a stale blob left in IndexedDB
@@ -43,7 +43,7 @@ export const AAD = {
     `woco/device/session-key/v1:${parent.toLowerCase()}`,
   SESSION_DELEGATION: (parent: string) =>
     `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
-  POD_SEED: (parent: string) =>
+  IDENTITY_SEED: (parent: string) =>
     `woco/device/pod-seed/v1:${parent.toLowerCase()}`,
   // ZeroDev scoped EAS session key, bound to the Kernel (smart-account) address
   // that owns it. A serialized permission account written under one Kernel

@@ -112,7 +112,7 @@ export const APP_POLICY: Policy = {
     "'self'",
     "data:", // inline SVG textures, QR toDataURL previews
     "blob:", // image resize + logo preview object URLs
-    "https://gateway.woco-net.com", // Swarm content: event images, avatars, POD art
+    "https://gateway.woco-net.com", // Swarm content: event images, avatars, object art
     "https://gateway.etherna.io", // Swarm image fallback gateway
     "https://images.web3auth.io", // login-method icons in the Web3Auth modal
     "https://web3auth.io", // modal logo configured in web3auth-config.ts

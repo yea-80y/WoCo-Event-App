@@ -46,7 +46,7 @@ import {
 } from "../src/lib/auth/recovery-escrow.js";
 
 /** Adapt a viem local account to the WoCo EIP712Signer interface (primaryType =
- *  the single type key — identical to the escrow spike + requestPodIdentity callers). */
+ *  the single type key — identical to the escrow spike + requestIdentitySeed callers). */
 function viemSigner(account: ReturnType<typeof privateKeyToAccount>): EIP712Signer {
   return async (domain, types, value) => {
     const primaryType = Object.keys(types)[0];
@@ -91,7 +91,7 @@ async function main() {
   assert(k1.publicKeyHex === k2.publicKeyHex, "re-derived escrow pubkey is identical");
 
   console.log("[3] real escrow seal/open round-trips with the Web3Auth key");
-  const bundle: RecoveryBundle = { version: 1, secrets: { podSeed: "0x" + "cd".repeat(32) } };
+  const bundle: RecoveryBundle = { version: 1, secrets: { identitySeed: "0x" + "cd".repeat(32) } };
   const envelope = await sealRecoveryBundle({
     bundle,
     kernelAddress: kernel,
@@ -99,7 +99,7 @@ async function main() {
     guardianPublicKeysHex: [k1.publicKeyHex],
   });
   const opened = await openRecoveryBundle({ envelope, kernelAddress: kernel, role: "guardian", guardianKeypair: k2 });
-  assert(opened.secrets.podSeed === bundle.secrets.podSeed, "recovered podSeed matches original");
+  assert(opened.secrets.identitySeed === bundle.secrets.identitySeed, "recovered identitySeed matches original");
 
   console.log("[4] GUARDIAN role — the same key is a viem signer for the rotation userOp");
   // backup-signer.ts: guardian = a viem Signer (OneOf<… | LocalAccount | …>) and the

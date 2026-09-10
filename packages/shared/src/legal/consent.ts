@@ -40,7 +40,7 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
  *
  * DO NOT reintroduce any claim that WoCo destroys a decryption key on request.
  * It was here until 2026-08-01 and was false three ways: WoCo never holds that
- * key (it is HKDF-derived from a POD seed derived client-side from the
+ * key (it is HKDF-derived from a identity seed derived client-side from the
  * organiser's wallet signature); no key-destruction code exists; and the key is
  * deterministically re-derivable on any device, so it cannot be destroyed at
  * all. There is also only ONE static X25519 key per organiser, so there is no

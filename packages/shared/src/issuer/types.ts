@@ -1,6 +1,6 @@
 /**
  * `woco.issuer-statement.v1` / `woco.issuer-log.v1` — the ISSUER REGISTRY
- * (issuer-curve migration PR 5b; design record: HANDOVER-pod-curve-migration.md).
+ * (issuer-curve migration PR 5b; design record: the issuer-curve migration handover).
  *
  * The registry is what makes the issuing key ROTATABLE without a new secret at
  * rest: a generation bump is a public, parent-signed statement — not a new
@@ -142,7 +142,7 @@ export interface IssuerStatementV1 {
   gen: number;
   /** The issuer's content-feed address (their cert logs' SOC owner), or the
    *  zero address when none is declared. Carried HERE — parent-signed — so the
-   *  split-view-equivocation gap on `PodDirectoryEntry.certLogOwner`
+   *  split-view-equivocation gap on `ObjectDirectoryEntry.certLogOwner`
    *  (an unverified display hint) closes client-verifiably. */
   certLogOwner: Hex0x;
   /** Free-text, why this statement exists ("seed", "rotation: device lost").

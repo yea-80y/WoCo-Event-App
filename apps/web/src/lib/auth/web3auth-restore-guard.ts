@@ -3,17 +3,17 @@
  * stored WoCo identity must belong to the SAME person before they are joined.
  *
  * `init()` used to take the private key from the live Web3Auth session and the
- * parent / POD address from local storage, and pair them with no check that they
+ * parent / seed address from local storage, and pair them with no check that they
  * matched — while the coinbase branch thirty lines below checks
  * `session.address === storedParent`. The reachable precondition is a sign-out
- * that half-completed on a shared device: user A's `PARENT_ADDRESS` / `POD_ADDRESS`
+ * that half-completed on a shared device: user A's `PARENT_ADDRESS` / `SEED_ADDRESS`
  * survive, user B signs in, and the next page load would adopt A's identity with
  * B's key — then `_establishFeedSignerEagerly` derives A's content-feed signer
  * from B's key and persists it under A's parent, forking A's feeds before any
  * later check (`requestSessionDelegation`'s signer comparison) could fire.
  *
  * Pure, dependency-free, so the matrix is tested rather than eyeballed. The
- * address the SDK returns IS the Web3Auth EOA, which is what `POD_ADDRESS`
+ * address the SDK returns IS the Web3Auth EOA, which is what `SEED_ADDRESS`
  * stores for this kind (invariant #1 in `init`), so that is the pair compared.
  */
 
@@ -39,15 +39,15 @@ const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLow
 export function decideWeb3AuthRestore(args: {
   restore: RestoreLike;
   storedParent: string | null | undefined;
-  storedPodAddr: string | null | undefined;
+  storedSeedAddr: string | null | undefined;
 }): Web3AuthRestoreDecision {
-  const { restore, storedParent, storedPodAddr } = args;
-  // Missing POD_ADDRESS = a pre-Kernel-upgrade session (parent was the raw EOA);
+  const { restore, storedParent, storedSeedAddr } = args;
+  // Missing SEED_ADDRESS = a pre-Kernel-upgrade session (parent was the raw EOA);
   // missing PARENT = nothing to restore. Both force a clean re-login.
-  if (!storedParent || !storedPodAddr) return { action: "clear", reason: "no-identity" };
+  if (!storedParent || !storedSeedAddr) return { action: "clear", reason: "no-identity" };
   if (restore.status === "expired") return { action: "clear", reason: "expired" };
   if (restore.status === "unavailable") return { action: "adopt-without-key" };
-  if (!restore.address || !same(restore.address, storedPodAddr)) {
+  if (!restore.address || !same(restore.address, storedSeedAddr)) {
     return { action: "clear", reason: "identity-mismatch" };
   }
   return { action: "adopt", privateKey: restore.privateKey };
@@ -66,12 +66,12 @@ export type Web3AuthKeyRetryDecision =
 
 export function decideWeb3AuthKeyRetry(args: {
   restore: RestoreLike;
-  /** The POD (Web3Auth EOA) address the boot path adopted without a key. */
-  adoptedPodAddr: string | null | undefined;
+  /** The seed (Web3Auth EOA) address the boot path adopted without a key. */
+  adoptedSeedAddr: string | null | undefined;
 }): Web3AuthKeyRetryDecision {
-  const { restore, adoptedPodAddr } = args;
+  const { restore, adoptedSeedAddr } = args;
   if (restore.status === "unavailable") return { action: "retry" };
   if (restore.status === "expired") return { action: "stop" };
-  if (!adoptedPodAddr || !restore.address || !same(restore.address, adoptedPodAddr)) return { action: "clear" };
+  if (!adoptedSeedAddr || !restore.address || !same(restore.address, adoptedSeedAddr)) return { action: "clear" };
   return { action: "adopt", privateKey: restore.privateKey };
 }

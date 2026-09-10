@@ -2,7 +2,7 @@
  * Shop platform-fee configuration.
  *
  * Card uses the fixed `PLATFORM_FEE_BP` (1.5%, in shared). Crypto is
- * operationally lighter (no mint/POD/PNG/email/sponsor gas — just a feed flip)
+ * operationally lighter (no mint/object/PNG/email/sponsor gas — just a feed flip)
  * so it starts at 0.25% with a roadmap to ratchet toward a flat micro-fee. Both
  * components are env-overridable so the rate can be reduced over time without a
  * rebuild:

@@ -43,13 +43,13 @@ jobs:
       - name: Typecheck shared
         run: npm run check -w @woco/shared
 
-      - name: Test shared (POD signing)
+      - name: Test shared (statement + manifest signing)
         run: npm test -w @woco/shared
 
-      # Golden vectors pinning POD identity derivation. These existed but were
+      # Golden vectors pinning identity-seed derivation. These existed but were
       # never run in CI — the exact gap that would let a crypto bump silently
       # change every user's identity behind a green build.
-      - name: Test web (POD identity golden vectors)
+      - name: Test web (identity-seed golden vectors)
         run: npm test -w @woco/web
 
       - name: Typecheck server

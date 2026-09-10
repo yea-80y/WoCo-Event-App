@@ -3,7 +3,7 @@
    * CertIssueModal — award a certificate badge to named holders (Gate B, slice 4).
    * Design record: docs/SWARM_SOCIAL_PLAN.md, BUILD RECORDs slices 3 and 4.
    *
-   * A CENTERED MODAL, like PodCreateModal and unlike the slide-in edit drawer,
+   * A CENTERED MODAL, like ObjectCreateModal and unlike the slide-in edit drawer,
    * following this layer's own convention: committing acts get a dialog,
    * incidental edits get a drawer. A run writes permanent, publicly-readable,
    * unrevocable records — and it cannot be dismissed while one is in flight,
@@ -23,10 +23,10 @@
    *    written, and the probe counters — are printed verbatim, so an operator
    *    verifies from the screen rather than from devtools.
    */
-  import type { PodDirectoryEntry, SignedManifestV2, Hex0x, HolderPubkey } from "@woco/shared";
+  import type { ObjectDirectoryEntry, SignedManifestV2, Hex0x, HolderPubkey } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
-  import { getAttendeeKeys, updatePod, type AttendeeKeyRow } from "../../api/objects.js";
+  import { getAttendeeKeys, updateObject, type AttendeeKeyRow } from "../../api/objects.js";
   import { getEventsByCreator, getEventOrders } from "../../api/events.js";
   import {
     readCertLog,
@@ -45,12 +45,12 @@
   import { hintCounts, probeCounts, probeTotals } from "../../swarm/probe-stats.js";
 
   interface Props {
-    pod: PodDirectoryEntry | null;
+    objectEntry: ObjectDirectoryEntry | null;
     onclose: () => void;
     /** Fired after a run lands anything, so the manager can refresh its counter. */
-    onissued: (updated: PodDirectoryEntry) => void;
+    onissued: (updated: ObjectDirectoryEntry) => void;
   }
-  let { pod, onclose, onissued }: Props = $props();
+  let { objectEntry, onclose, onissued }: Props = $props();
 
   type Phase = "loading" | "compose" | "running" | "done" | "stopped" | "blocked";
   let phase = $state<Phase>("loading");
@@ -92,7 +92,7 @@
    */
   let generation = 0;
 
-  const cap = $derived(manifest?.body.totalSupply ?? pod?.supply ?? 0);
+  const cap = $derived(manifest?.body.totalSupply ?? objectEntry?.supply ?? 0);
   const remaining = $derived(Math.max(0, cap - existing.length));
 
   const pasted = $derived(parseHolderKeys(pasteText));
@@ -118,10 +118,10 @@
   const canRun = $derived(toIssue.length > 0 && !overCap && phase === "compose");
 
   $effect(() => {
-    if (pod) void open(pod);
+    if (objectEntry) void open(objectEntry);
   });
 
-  async function open(p: PodDirectoryEntry) {
+  async function open(p: ObjectDirectoryEntry) {
     const mine = ++generation;
     const stale = () => mine !== generation;
     phase = "loading";
@@ -206,7 +206,7 @@
   }
 
   async function run() {
-    if (!pod || !manifest || !canRun) return;
+    if (!objectEntry || !manifest || !canRun) return;
     phase = "running";
     progress = { done: 0, total: toIssue.length };
 
@@ -239,11 +239,11 @@
       }
 
       result = await issueCertificates({
-        badge: pod.manifestRef,
+        badge: objectEntry.manifestRef,
         manifest,
         // From the DIRECTORY, so a device writing under a different signer is
         // refused rather than starting a parallel log nobody reads.
-        expectedLogOwner: pod.certLogOwner as Hex0x,
+        expectedLogOwner: objectEntry.certLogOwner as Hex0x,
         keys: {
           issuingPrivKey: issuing.privateKey,
           feedPrivKey: signer.privKey,
@@ -293,9 +293,9 @@
    * have already landed, and the recomputable truth is the log itself.
    */
   async function syncIssuedCount() {
-    if (!pod) return;
+    if (!objectEntry) return;
     try {
-      const updated = await updatePod(pod.manifestRef, { issuedCount: existing.length });
+      const updated = await updateObject(objectEntry.manifestRef, { issuedCount: existing.length });
       onissued(updated);
     } catch {
       /* display layer — the log is the truth */
@@ -312,7 +312,7 @@
   const short = (k: string) => `${k.slice(0, 10)}…${k.slice(-6)}`;
 </script>
 
-{#if pod}
+{#if objectEntry}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="scrim" role="button" aria-label="Close" tabindex="-1" onclick={close} onkeydown={onScrimKey}></div>
 
@@ -320,7 +320,7 @@
     <header class="modal-head">
       <div class="head-meta">
         <span class="kicker">Award</span>
-        <h2>{pod.name}</h2>
+        <h2>{objectEntry.name}</h2>
       </div>
       <button class="close-btn" onclick={close} disabled={phase === "running"} aria-label="Close">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13" /></svg>
@@ -537,7 +537,7 @@
     inset: 0;
     background: rgba(0, 0, 0, 0.55);
     border: none;
-    /* ABOVE PodEditDrawer (200/201), which is where this opens from. At the
+    /* ABOVE ObjectEditDrawer (200/201), which is where this opens from. At the
        modal default of 90 it rendered behind the drawer that launched it —
        invisible, while still capturing the run. */
     z-index: 210;

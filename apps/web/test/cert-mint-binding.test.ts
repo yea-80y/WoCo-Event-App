@@ -75,10 +75,10 @@ test("a certificate mint cannot proceed without one", () => {
   );
 });
 
-test("the certificate rail is carried by holdingSource, not by a new PodKind", () => {
+test("the certificate rail is carried by holdingSource, not by a new ObjectKind", () => {
   // `kind` stays "badge" downstream — the directory, the gate picker and the
   // manager all key on the rail via `certLogOwner` / `holdingSource`. A fourth
-  // PodKind would need a migration and a new case in every switch.
+  // ObjectKind would need a migration and a new case in every switch.
   assert.match(CODE, /holdingSource:\s*"pod-cert"/);
   // Matched on the PROPERTY, not the spelling: whatever the condition, the
   // request's `kind` must resolve to "badge" for a certificate badge. The
@@ -93,7 +93,7 @@ test("the certificate rail is carried by holdingSource, not by a new PodKind", (
   assert.doesNotMatch(
     CODE,
     /kind:\s*"cert-badge"/,
-    "the rail must never travel as a fourth PodKind",
+    "the rail must never travel as a fourth ObjectKind",
   );
 });
 
@@ -103,6 +103,6 @@ test("the two rails use their own builders — no shared flag decides body count
   assert.doesNotMatch(
     CODE,
     /bodyCount/,
-    "body count must never become a parameter — see pod/seal.ts for why",
+    "body count must never become a parameter — see object/seal.ts for why",
   );
 });

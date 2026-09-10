@@ -19,7 +19,7 @@ import {
   upsertCreatorShop,
 } from "../lib/shop/service.js";
 import { signShopQuote, verifyShopQuote, consumeShopQuote } from "../lib/shop/quote.js";
-import { validatePodGate, checkProductGates, firstGatedProduct } from "../lib/object/gate-check.js";
+import { validateObjectGate, checkProductGates, firstGatedProduct } from "../lib/object/gate-check.js";
 import { awardSpendMilestones } from "../lib/shop/loyalty.js";
 import { getCryptoFeeConfig } from "../lib/shop/fees.js";
 import {
@@ -298,10 +298,10 @@ shopsRouter.post("/:id/products", requireAuth, async (c) => {
 
     // Chain-validate the gate at the write boundary (manifestRef↔eventId), so
     // enforcement at payment can trust the stored gate. Reject an invalid gate
-    // rather than silently persisting an unenforceable / wrong-POD one.
+    // rather than silently persisting an unenforceable / wrong-object one.
     if (body.gate) {
-      const v = await validatePodGate(body.gate);
-      if (!v.ok) return c.json({ ok: false, error: `Invalid POD gate: ${v.error}` }, 400);
+      const v = await validateObjectGate(body.gate);
+      if (!v.ok) return c.json({ ok: false, error: `Invalid object gate: ${v.error}` }, 400);
     }
 
     const now = new Date().toISOString();
@@ -324,7 +324,7 @@ shopsRouter.post("/:id/products", requireAuth, async (c) => {
       variants: body.variants,
       stock: body.stock,
       channels: body.channels,
-      podRewards: body.podRewards,
+      objectRewards: body.objectRewards,
       ...(body.gate ? { gate: body.gate } : {}),
       active: body.active ?? true,
       sortIndex: body.sortIndex ?? prior?.sortIndex ?? 0,
@@ -447,14 +447,14 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
       return c.json({ ok: false, error: "Card payments are not enabled for this shop" }, 400);
     }
 
-    // POD gate is a WALLET-holdings check — a card buyer has no wallet, so a
+    // object gate is a WALLET-holdings check — a card buyer has no wallet, so a
     // gated product is unsatisfiable by card. Reject BEFORE creating the Stripe
     // session (no charge), steering the buyer to the crypto/USDC rail.
     const gateProducts = await getProducts(shopId);
     const gatedName = firstGatedProduct(gateProducts, order.lines);
     if (gatedName) {
       return c.json(
-        { ok: false, gated: true, error: `"${gatedName}" requires holding a POD in your wallet — pay with crypto/USDC instead of card.` },
+        { ok: false, gated: true, error: `"${gatedName}" requires holding an object in your wallet — pay with crypto/USDC instead of card.` },
         403,
       );
     }
@@ -558,7 +558,7 @@ shopsRouter.post("/:id/orders/:orderId/quote", async (c) => {
       return c.json({ ok: false, error: "Invalid JSON body" }, 400);
     }
 
-    // POD gate (online USDC rail): refuse to sign a PAYABLE quote for a gated
+    // object gate (online USDC rail): refuse to sign a PAYABLE quote for a gated
     // order unless a verified wallet passes the gate. This stops payment BEFORE
     // funds move (no valid quote → can't pay the committed amount), so the buyer
     // can never "pay then get rejected" on this rail. Gated products are
@@ -569,7 +569,7 @@ shopsRouter.post("/:id/orders/:orderId/quote", async (c) => {
       const auth = await tryVerifyAuth(c, rawBody);
       if (!auth) {
         return c.json(
-          { ok: false, gated: true, error: `"${gatedName}" is gated — sign in with the wallet that holds the required POD to pay by crypto.` },
+          { ok: false, gated: true, error: `"${gatedName}" is gated — sign in with the wallet that holds the required object to pay by crypto.` },
           401,
         );
       }
@@ -744,7 +744,7 @@ shopsRouter.post("/:id/orders/:orderId/pay-crypto", async (c) => {
       return c.json({ ok: false, error: "Quote is bound to a different payer" }, 403);
     }
 
-    // POD gate — defense-in-depth against the verified payer (the /quote step
+    // object gate — defense-in-depth against the verified payer (the /quote step
     // already blocks gated orders pre-payment; this backstops a forged/forced
     // payment that skipped quoting). Fails closed.
     const gateProducts = await getProducts(shopId);
@@ -928,7 +928,7 @@ shopsRouter.post("/:id/orders/:orderId/pay-spend-permission", requireAuth, async
       return c.json({ ok: false, error: "Order is not awaiting payment" }, 409);
     }
 
-    // POD gate — checked BEFORE the draw (funds haven't moved), so a gated-out
+    // object gate — checked BEFORE the draw (funds haven't moved), so a gated-out
     // buyer is never charged. Holder = the granting Kernel wallet (the attendee
     // whose balance the spender pulls from), NOT the POS operator. Fails closed.
     const gateProducts = await getProducts(shopId);

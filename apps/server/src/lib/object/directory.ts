@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
-// Creator POD directory — every POD *type* (manifest) a creator has issued.
+// Creator object directory — every object *type* (manifest) a creator has issued.
 //
-// Backs the `#/creator/pods` manager and the `<PodPicker>`. Mirrors the shop /
+// Backs the `#/creator/pods` manager and the `<ObjectPicker>`. Mirrors the shop /
 // site creator directories: a paged on-feed envelope at
 // `woco/pod/creator/{ethAddress}`, most-recently-updated first, deduped by the
 // immutable `manifestRef`. Categories + display metadata live HERE (mutable),
@@ -12,8 +12,8 @@
 // ---------------------------------------------------------------------------
 
 import { Topic } from "@ethersphere/bee-js";
-import { podCreatorDirectoryTopic } from "@woco/shared";
-import type { PodDirectory, PodDirectoryEntry, PodCategory, Hex0x } from "@woco/shared";
+import { objectCreatorDirectoryTopic } from "@woco/shared";
+import type { ObjectDirectory, ObjectDirectoryEntry, ObjectCategory, Hex0x } from "@woco/shared";
 import { readFeedPage, decodeJsonFeed } from "../swarm/feeds.js";
 import {
   writePagedFeed,
@@ -21,8 +21,8 @@ import {
   readPagedFeedLenient,
 } from "../swarm/paged-feed.js";
 
-const podsExtract = (env: unknown) => (env as Partial<PodDirectory> | null)?.pods;
-const pagesExtract = (env: unknown) => (env as Partial<PodDirectory> | null)?.pages ?? 0;
+const objectsExtract = (env: unknown) => (env as Partial<ObjectDirectory> | null)?.objects;
+const pagesExtract = (env: unknown) => (env as Partial<ObjectDirectory> | null)?.pages ?? 0;
 
 // ---------------------------------------------------------------------------
 // Per-address serialization for read-modify-write of the directory feed.
@@ -42,32 +42,32 @@ function withDirLock<T>(ethAddress: string, fn: () => Promise<T>): Promise<T> {
 // Reads (GET paths — lenient)
 // ---------------------------------------------------------------------------
 
-/** All POD types a creator has issued (lenient — transient errors → []). */
-export async function getCreatorPods(ethAddress: string): Promise<PodDirectoryEntry[]> {
-  return readPagedFeedLenient<PodDirectoryEntry>(
-    (p) => podCreatorDirectoryTopic(ethAddress, p),
-    podsExtract,
+/** All object types a creator has issued (lenient — transient errors → []). */
+export async function getCreatorObjects(ethAddress: string): Promise<ObjectDirectoryEntry[]> {
+  return readPagedFeedLenient<ObjectDirectoryEntry>(
+    (p) => objectCreatorDirectoryTopic(ethAddress, p),
+    objectsExtract,
     pagesExtract,
   );
 }
 
-/** A creator's POD categories (page 0 only). */
-export async function getCreatorPodCategories(ethAddress: string): Promise<PodCategory[]> {
-  const page0 = await readFeedPage(Topic.fromString(podCreatorDirectoryTopic(ethAddress, 0)));
+/** A creator's object categories (page 0 only). */
+export async function getCreatorObjectCategories(ethAddress: string): Promise<ObjectCategory[]> {
+  const page0 = await readFeedPage(Topic.fromString(objectCreatorDirectoryTopic(ethAddress, 0)));
   if (!page0) return [];
-  return decodeJsonFeed<PodDirectory>(page0)?.categories ?? [];
+  return decodeJsonFeed<ObjectDirectory>(page0)?.categories ?? [];
 }
 
-/** Full directory (pods + categories) for the manager. */
-export async function getCreatorPodDirectory(ethAddress: string): Promise<PodDirectory> {
-  const [pods, categories] = await Promise.all([
-    getCreatorPods(ethAddress),
-    getCreatorPodCategories(ethAddress),
+/** Full directory (objects + categories) for the manager. */
+export async function getCreatorObjectDirectory(ethAddress: string): Promise<ObjectDirectory> {
+  const [objects, categories] = await Promise.all([
+    getCreatorObjects(ethAddress),
+    getCreatorObjectCategories(ethAddress),
   ]);
   return {
     v: 1,
     owner: ethAddress.toLowerCase() as Hex0x,
-    pods,
+    objects,
     categories,
     updatedAt: new Date().toISOString(),
   };
@@ -77,34 +77,34 @@ export async function getCreatorPodDirectory(ethAddress: string): Promise<PodDir
 // Writes (strict read-modify-write under the per-address lock)
 // ---------------------------------------------------------------------------
 
-/** Strict read of pods + categories for the write path (throws on transient error). */
+/** Strict read of objects + categories for the write path (throws on transient error). */
 async function readStrict(
   ethAddress: string,
-): Promise<{ pods: PodDirectoryEntry[]; categories: PodCategory[] }> {
-  const pods = await readPagedFeedStrict<PodDirectoryEntry>(
-    (p) => podCreatorDirectoryTopic(ethAddress, p),
-    podsExtract,
+): Promise<{ objects: ObjectDirectoryEntry[]; categories: ObjectCategory[] }> {
+  const objects = await readPagedFeedStrict<ObjectDirectoryEntry>(
+    (p) => objectCreatorDirectoryTopic(ethAddress, p),
+    objectsExtract,
     pagesExtract,
   );
   // readPagedFeedStrict already threw on a page-0 read error, so a plain read
   // here is safe for the (small) category list.
-  const categories = await getCreatorPodCategories(ethAddress);
-  return { pods, categories };
+  const categories = await getCreatorObjectCategories(ethAddress);
+  return { objects, categories };
 }
 
 async function writeDirectory(
   ethAddress: string,
-  pods: PodDirectoryEntry[],
-  categories: PodCategory[],
+  objects: ObjectDirectoryEntry[],
+  categories: ObjectCategory[],
 ): Promise<void> {
   const owner = ethAddress.toLowerCase() as Hex0x;
-  await writePagedFeed<PodDirectoryEntry>(
-    pods,
-    (p) => podCreatorDirectoryTopic(ethAddress, p),
-    ({ items, pages, updatedAt }): PodDirectory => ({
+  await writePagedFeed<ObjectDirectoryEntry>(
+    objects,
+    (p) => objectCreatorDirectoryTopic(ethAddress, p),
+    ({ items, pages, updatedAt }): ObjectDirectory => ({
       v: 1,
       owner,
-      pods: items,
+      objects: items,
       // Replicated on every page (tiny); readers only consult page 0.
       categories,
       updatedAt,
@@ -114,34 +114,34 @@ async function writeDirectory(
 }
 
 /**
- * Insert/replace a POD type, keyed by `manifestRef`. Most-recently-updated
+ * Insert/replace an object type, keyed by `manifestRef`. Most-recently-updated
  * first. Fire-and-forget safe: callers (event creation) should not fail the
  * primary action if this throws — log and move on.
  */
-export async function upsertCreatorPod(
+export async function upsertCreatorObject(
   ethAddress: string,
-  entry: PodDirectoryEntry,
+  entry: ObjectDirectoryEntry,
 ): Promise<void> {
   return withDirLock(ethAddress, async () => {
-    const { pods, categories } = await readStrict(ethAddress);
-    const filtered = pods.filter(
+    const { objects, categories } = await readStrict(ethAddress);
+    const filtered = objects.filter(
       (e) => e.manifestRef.toLowerCase() !== entry.manifestRef.toLowerCase(),
     );
     const updated = [entry, ...filtered];
     await writeDirectory(ethAddress, updated, categories);
     console.log(
-      `[pod] Creator directory updated for ${ethAddress}: ${updated.length} POD type(s)`,
+      `[objectEntry] Creator directory updated for ${ethAddress}: ${updated.length} object type(s)`,
     );
   });
 }
 
-/** Replace the creator's category list (manager edits). Preserves pods. */
-export async function setCreatorPodCategories(
+/** Replace the creator's category list (manager edits). Preserves objects. */
+export async function setCreatorObjectCategories(
   ethAddress: string,
-  categories: PodCategory[],
+  categories: ObjectCategory[],
 ): Promise<void> {
   return withDirLock(ethAddress, async () => {
-    const { pods } = await readStrict(ethAddress);
-    await writeDirectory(ethAddress, pods, categories);
+    const { objects } = await readStrict(ethAddress);
+    await writeDirectory(ethAddress, objects, categories);
   });
 }

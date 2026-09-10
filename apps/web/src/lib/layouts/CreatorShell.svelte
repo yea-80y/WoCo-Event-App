@@ -30,7 +30,7 @@
     router.route === "embed-setup"
   );
   const isSites = $derived(router.route === "build" || router.route === "site-builder");
-  const isPods = $derived(router.route === "creator-pods");
+  const isObjects = $derived(router.route === "creator-pods");
   const isProfile = $derived(router.route === "profile");
 
   let createOpen = $state(false);
@@ -112,7 +112,7 @@
     </button>
     <button
       class="bottom-nav-item"
-      class:active={isPods}
+      class:active={isObjects}
       onclick={() => navigate("/creator/pods")}
     >
       <span class="nav-icon"><Layers size={20} strokeWidth={2.25} /></span>

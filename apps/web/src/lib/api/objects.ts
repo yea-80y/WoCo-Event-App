@@ -1,25 +1,25 @@
 import type {
-  PodDirectory, PodCategory, PodHolding, PodDirectoryEntry,
+  ObjectDirectory, ObjectCategory, ObjectHolding, ObjectDirectoryEntry,
   SignedManifestV2, EditionV1Body, IssuerBindingV1,
 } from "@woco/shared";
 import { authGet, authPut, authPost, get } from "./client.js";
 
 /**
- * POD layer API client (Step 4). Reads/writes the creator POD directory + the
+ * object layer API client (Step 4). Reads/writes the creator object directory + the
  * public holdings read. Mirrors `api/sites.ts`. Server owner-stamps writes from
  * the verified session, so no address is sent.
  */
 
-/** The signed-in creator's POD directory (types + categories). Throws on error. */
-export async function getMyPods(): Promise<PodDirectory> {
-  const r = await authGet<PodDirectory>("/api/pod/mine");
+/** The signed-in creator's object directory (types + categories). Throws on error. */
+export async function getMyObjects(): Promise<ObjectDirectory> {
+  const r = await authGet<ObjectDirectory>("/api/pod/mine");
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to load objects");
   return r.data;
 }
 
-/** Replace the creator's POD category list. Throws on error. */
-export async function setPodCategories(categories: PodCategory[]): Promise<PodCategory[]> {
-  const r = await authPut<{ categories: PodCategory[] }>("/api/pod/categories", { categories });
+/** Replace the creator's object category list. Throws on error. */
+export async function setObjectCategories(categories: ObjectCategory[]): Promise<ObjectCategory[]> {
+  const r = await authPut<{ categories: ObjectCategory[] }>("/api/pod/categories", { categories });
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to save categories");
   return r.data.categories;
 }
@@ -31,11 +31,11 @@ export async function setPodCategories(categories: PodCategory[]): Promise<PodCa
  * `woco.manifest.v2` signed by the derived issuing key, the bodies are
  * `woco.edition.v1`, and `issuerBinding` carries the issuing key's proof of
  * possession over the parent. THE PRE-5a SEAM: the server still reads
- * `podBodies` and verifies v1 until PR 5a re-points it, so a live mint in the
+ * `objectBodies` and verifies v1 until PR 5a re-points it, so a live mint in the
  * window is refused loudly — covered by the deploy freeze (PRs 3–5a are one
  * deploy unit).
  */
-export interface CreatePodRequest {
+export interface CreateObjectRequest {
   kind: "badge" | "collectible";
   name: string;
   description?: string;
@@ -60,7 +60,7 @@ export interface CreatePodRequest {
   /**
    * How holdings of this badge are recorded. Absent means `chain` — today's
    * rail: sponsor-register the manifest so slot ownership is readable.
-   * `pod-cert` records holding as an issuer-signed certificate naming the
+   * `cert` records holding as an issuer-signed certificate naming the
    * holder's key, so there is no chain registration at all.
    */
   holdingSource?: "pod-cert";
@@ -79,12 +79,12 @@ export interface CreatePodRequest {
 }
 
 /**
- * Mint a standalone POD type. The server validates the signed manifest, uploads
- * the pod bodies, sponsor-registers on-chain, and writes the directory entry —
+ * Mint a standalone object type. The server validates the signed manifest, uploads
+ * the object bodies, sponsor-registers on-chain, and writes the directory entry —
  * returning the new entry. Throws on error.
  */
-export async function createPod(req: CreatePodRequest): Promise<PodDirectoryEntry> {
-  const r = await authPost<PodDirectoryEntry>(
+export async function createObject(req: CreateObjectRequest): Promise<ObjectDirectoryEntry> {
+  const r = await authPost<ObjectDirectoryEntry>(
     "/api/pod",
     req as unknown as Record<string, unknown>,
   );
@@ -92,8 +92,8 @@ export async function createPod(req: CreatePodRequest): Promise<PodDirectoryEntr
   return r.data;
 }
 
-/** Patch the mutable display fields of one POD type (name, image, description, categoryId). */
-export async function updatePod(
+/** Patch the mutable display fields of one object type (name, image, description, categoryId). */
+export async function updateObject(
   manifestRef: string,
   patch: {
     name?: string;
@@ -107,8 +107,8 @@ export async function updatePod(
      */
     issuedCount?: number;
   },
-): Promise<PodDirectoryEntry> {
-  const r = await authPut<PodDirectoryEntry>(
+): Promise<ObjectDirectoryEntry> {
+  const r = await authPut<ObjectDirectoryEntry>(
     `/api/pod/${encodeURIComponent(manifestRef)}`,
     patch,
   );
@@ -117,11 +117,11 @@ export async function updatePod(
 }
 
 /**
- * Public trustless holdings read — does `holder` hold this POD type on-chain?
+ * Public trustless holdings read — does `holder` hold this object type on-chain?
  * Used for "you hold N" previews and client-side gate hints (the server
  * re-checks authoritatively at claim/order time).
  */
-export async function getPodHolding(params: {
+export async function getObjectHolding(params: {
   holder: string;
   onChainEventId: string;
   manifestRef: string;
@@ -134,7 +134,7 @@ export async function getPodHolding(params: {
     manifestRef: params.manifestRef,
     chainId: String(params.chainId),
   });
-  return get<PodHolding>(`/api/pod/holdings?${q.toString()}`, params.apiUrl);
+  return get<ObjectHolding>(`/api/pod/holdings?${q.toString()}`, params.apiUrl);
 }
 
 /** One attendee edition bound to an account. */

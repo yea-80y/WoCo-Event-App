@@ -874,7 +874,7 @@ async function mintV2(a: MintV2Args): Promise<void> {
   }
 
   // No manifest read here, on purpose (#368): the series manifest blob used to
-  // be fetched for the pod-body refs the QR once carried. The QR is a ticket
+  // be fetched for the object-body refs the QR once carried. The QR is a ticket
   // signature now, the contract holds `manifestRef` from registration, and
   // door verification is ecrecover vs `slotOwner` — so the only thing a
   // Swarm read could still do on this path is refund a paid buyer over a blip.
@@ -941,7 +941,7 @@ async function mintV2(a: MintV2Args): Promise<void> {
   // burners[] goes out of scope here — private keys are unreferenced
   // and eligible for garbage collection.
 
-  // claimed.v2 on the on-chain rail: there is no ClaimedTicket POD to
+  // claimed.v2 on the on-chain rail: there is no ClaimedTicket object to
   // stamp (the contract is the ledger), but the buyer's account still
   // gets its gate binding at purchase — first edition only, same
   // group-buy reasoning as before.

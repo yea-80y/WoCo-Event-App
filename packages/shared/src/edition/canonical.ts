@@ -1,7 +1,7 @@
 /**
  * Locked cryptographic spec for `woco.edition.v1` / `woco.manifest.v2`.
  *
- * The recipes are BYTE-IDENTICAL to the v1 spec in `pod/canonical.ts` — same
+ * The recipes are BYTE-IDENTICAL to the v1 spec in the retired v1 canonicalisation module — same
  * DAG-CBOR encoder, same 0x00 leaf domain, same u32be edition prefix, same
  * keccak256 digest — only the body shapes and the signature scheme moved
  * (see `types.ts`). Golden vectors in `test/edition/` pin every recipe here;

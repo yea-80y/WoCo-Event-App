@@ -9,7 +9,7 @@
  *
  * The feed-signer key is SIGN-TO-DERIVED: keccak256 of a deterministic,
  * domain-separated EIP-712 signature (`FEED_SIGNER_DERIVE_DOMAIN`) — the SAME
- * construction as the POD seed, differing only in the domain signed, so the two
+ * construction as the identity seed, differing only in the domain signed, so the two
  * keys are cryptographically independent. Once established it is persisted (and,
  * for credentials that rotate, escrowed) and restored verbatim; the stored key
  * always wins. Reads resolve by computed chunk address (Etherna-safe — never

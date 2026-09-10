@@ -2,7 +2,7 @@
 // Loyalty — pure derivations (Step 4, item C).
 //
 // Points and milestone progress are DERIVED from the order feed, never stored
-// (a point is a decrementing balance, a POD is immutable — §4.1). These pure
+// (a point is a decrementing balance, an object is immutable — §4.1). These pure
 // functions run identically client-side (live "points / progress" UI) and
 // server-side (the authoritative milestone trigger), so there's one source of
 // truth and the logic is ready for the client-side-feed-signer migration.

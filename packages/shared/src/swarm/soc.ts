@@ -153,7 +153,7 @@ export const PORTABILITY_ENVELOPE_VERSION = 2 as const;
  * extra HPKE recipient (a PRF-derived X25519 key) AND bound (AAD + its cleartext
  * `kernelAddress` field) to the PRF-derived `socOwnerAddress` pseudonym — never
  * the real Kernel. The sealed bundle inside `envelope` carries
- * `{ preservedKernelAddress, podSeed[, feedSignerPrivKey] }`: the new device reads
+ * `{ preservedKernelAddress, identitySeed[, feedSignerPrivKey] }`: the new device reads
  * the preserved Kernel post-decrypt and verifies it on-chain before applying any
  * override. The optional `feedSignerPrivKey` rides the same sealed bundle.
  */

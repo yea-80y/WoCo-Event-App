@@ -3,16 +3,16 @@
    * ShopLoyaltyEditor — configure spend-milestone badges + the display earn rate.
    *
    * Points are DERIVED (never stored), so this only declares: the earn rate (UI
-   * display) and the cumulative-spend thresholds that mint a badge POD. Each
-   * threshold references a badge POD the merchant already created (Item A); we
+   * display) and the cumulative-spend thresholds that mint a badge object. Each
+   * threshold references a badge object the merchant already created (Item A); we
    * snapshot its resolved on-chain coordinates (manifestRef + eventId + chainId)
-   * so the server can mint editions — only on-chain PODs are eligible.
+   * so the server can mint editions — only on-chain objects are eligible.
    *
    * Card buyers earn points but no on-chain badge (no wallet); the panel says so.
    */
-  import type { Shop, SpendThresholdReward, PodDirectoryEntry } from "@woco/shared";
+  import type { Shop, SpendThresholdReward, ObjectDirectoryEntry } from "@woco/shared";
   import { updateShop } from "../../api/shops.js";
-  import { getMyPods } from "../../api/objects.js";
+  import { getMyObjects } from "../../api/objects.js";
   import { onMount } from "svelte";
 
   interface Props {
@@ -35,22 +35,22 @@
     (initialLoyalty?.spendThresholds ?? []).map((t) => ({ ...t })),
   );
 
-  let badges = $state<PodDirectoryEntry[]>([]);
-  let podsPhase = $state<"loading" | "ready" | "error">("loading");
+  let badges = $state<ObjectDirectoryEntry[]>([]);
+  let objectsPhase = $state<"loading" | "ready" | "error">("loading");
   let saving = $state(false);
   let error = $state("");
   let saved = $state(false);
 
   onMount(async () => {
     try {
-      const dir = await getMyPods();
-      // Only on-chain PODs can be minted as awards. Badges/collectibles are the
-      // natural reward kinds, but any on-chain POD type is allowed.
-      badges = dir.pods.filter((p) => p.eventId && p.chainId);
-      podsPhase = "ready";
+      const dir = await getMyObjects();
+      // Only on-chain objects can be minted as awards. Badges/collectibles are the
+      // natural reward kinds, but any on-chain object type is allowed.
+      badges = dir.objects.filter((p) => p.eventId && p.chainId);
+      objectsPhase = "ready";
     } catch (e) {
       error = e instanceof Error ? e.message : "Couldn't load your objects";
-      podsPhase = "error";
+      objectsPhase = "error";
     }
   });
 
@@ -61,17 +61,17 @@
     rows = rows.filter((_, idx) => idx !== i);
   }
 
-  /** Resolve the chosen badge POD into the row's stored coordinates. */
+  /** Resolve the chosen badge object into the row's stored coordinates. */
   function pickBadge(i: number, manifestRef: string) {
-    const pod = badges.find((b) => b.manifestRef === manifestRef);
+    const objectEntry = badges.find((b) => b.manifestRef === manifestRef);
     rows = rows.map((r, idx) =>
       idx === i
         ? {
             ...r,
-            badgeManifestRef: pod?.manifestRef ?? "",
-            badgeEventId: pod?.eventId ?? "",
-            chainId: pod?.chainId ?? 0,
-            badgeName: pod?.name,
+            badgeManifestRef: objectEntry?.manifestRef ?? "",
+            badgeEventId: objectEntry?.eventId ?? "",
+            chainId: objectEntry?.chainId ?? 0,
+            badgeName: objectEntry?.name,
           }
         : r,
     );
@@ -135,9 +135,9 @@
       <span class="count mono">{rows.length}</span>
     </div>
 
-    {#if podsPhase === "loading"}
+    {#if objectsPhase === "loading"}
       <p class="hint">Loading your badges…</p>
-    {:else if podsPhase === "error"}
+    {:else if objectsPhase === "error"}
       <p class="err-box mono">{error}</p>
     {:else if badges.length === 0}
       <p class="hint">

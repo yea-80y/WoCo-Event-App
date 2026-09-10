@@ -1,14 +1,14 @@
 // ---------------------------------------------------------------------------
-// POD gate enforcement (Step 4, item B) — the authoritative claim/order check.
+// object gate enforcement (Step 4, item B) — the authoritative claim/order check.
 //
 // Reads the holder's holding from whichever TRUSTLESS source the stored gate
 // declares — on-chain slot ownership (getOnChainHolding) or an issuer-signed
-// POD certificate the holder presents (getCertHolding) — and runs the pure
-// evaluatePodGate against it. The evaluator never learns which; both sources
-// produce a PodHolding and it cannot tell them apart. Reused by event claims
+// certificate the holder presents (getCertHolding) — and runs the pure
+// evaluateObjectGate against it. The evaluator never learns which; both sources
+// produce a ObjectHolding and it cannot tell them apart. Reused by event claims
 // and product orders so the gate semantics are identical on both rails.
 //
-// A gate with no `holdingSource` is a CHAIN gate (see the rule on PodGate);
+// A gate with no `holdingSource` is a CHAIN gate (see the rule on ObjectGate);
 // one naming a source this build does not know REFUSES rather than falling
 // into the chain arm, which would enforce the wrong proof entirely.
 //
@@ -18,12 +18,12 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  PodGate, PodGateGroup, Hex0x, HolderPubkey, GateEvalContext, GatePhase, PodHolding,
+  ObjectGate, ObjectGateGroup, Hex0x, HolderPubkey, GateEvalContext, GatePhase, ObjectHolding,
   CertPresentation, CertChallengeExpectation,
 } from "@woco/shared";
 import {
-  evaluatePodGateGroup, computeGatePhase, normalizeGate, verifyPodGateBinding,
-  isCertPodGate, isKnownHoldingSource, verifyCertPodGateShape, findDuplicateGateManifestRef,
+  evaluateObjectGateGroup, computeGatePhase, normalizeGate, verifyObjectGateBinding,
+  isCertObjectGate, isKnownHoldingSource, verifyCertObjectGateShape, findDuplicateGateManifestRef,
 } from "@woco/shared";
 import { getOnChainHolding } from "./holdings.js";
 import { getCertHolding, loadVerifiedBadgeManifest } from "./cert-holdings.js";
@@ -44,7 +44,7 @@ export interface GateEvidence {
   presentations: CertPresentation[];
   expect: CertChallengeExpectation;
   /**
-   * The claimer's VERIFIED POD identity — the ed25519 key the route already
+   * The claimer's VERIFIED identity seed — the ed25519 key the route already
    * authenticated, never one from the body. Required, not optional, so a route
    * wiring evidence cannot forget it: a certificate must name the identity
    * actually claiming, or a cooperative holder can answer challenges for
@@ -71,7 +71,7 @@ export interface GateDecision {
  * pure and chain-free (see [[signing_role_architecture]]).
  */
 export function gatePhase(
-  gate: PodGate | PodGateGroup,
+  gate: ObjectGate | ObjectGateGroup,
   ctx: GateEvalContext = {},
 ): GatePhase {
   return computeGatePhase(normalizeGate(gate).window, ctx);
@@ -83,7 +83,7 @@ export function gatePhase(
  * `always`/`time` are count-independent). Lets the claim/checkout paths skip an
  * extra feed read for the common case.
  */
-export function gateNeedsClaimCount(gate: PodGate | PodGateGroup): boolean {
+export function gateNeedsClaimCount(gate: ObjectGate | ObjectGateGroup): boolean {
   return normalizeGate(gate).window?.kind === "firstN";
 }
 
@@ -95,15 +95,15 @@ export function gateNeedsClaimCount(gate: PodGate | PodGateGroup): boolean {
  * for `onChainEventId` but does NOT itself check that that event commits the
  * gate's `manifestRef` — the creator snapshots both from their directory entry,
  * so a mismatch (bug / future untrusted client) would silently count the WRONG
- * POD. Here we read `events[onChainEventId].manifestRef` on-chain and require it
+ * object. Here we read `events[onChainEventId].manifestRef` on-chain and require it
  * to equal `gate.manifestRef`, and require the event to actually be registered.
  *
  * NOTE: this is sufficient ONLY because the gate is then stored in a
  * platform-signed Swarm feed (tamper-proof to buyers). If gates ever move to
  * untrusted client-side storage, enforcement MUST re-validate per check.
  */
-export async function validatePodGate(
-  gate: PodGate | PodGateGroup,
+export async function validateObjectGate(
+  gate: ObjectGate | ObjectGateGroup,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!gate || typeof gate !== "object") return { ok: false, error: "gate missing" };
   const group = normalizeGate(gate);
@@ -115,7 +115,7 @@ export async function validatePodGate(
   // gate's holding — under `mode: "all"`, counting a single proof twice.
   const dup = findDuplicateGateManifestRef(group);
   if (dup) {
-    return { ok: false, error: `the same POD is listed twice in this gate (${dup.slice(0, 10)}…)` };
+    return { ok: false, error: `the same object is listed twice in this gate (${dup.slice(0, 10)}…)` };
   }
 
   // Validate each gate's shape and its trust binding, per source.
@@ -124,8 +124,8 @@ export async function validatePodGate(
       return { ok: false, error: "gate asks for a holding source this server does not know how to check" };
     }
 
-    if (isCertPodGate(g)) {
-      const shape = verifyCertPodGateShape(g);
+    if (isCertObjectGate(g)) {
+      const shape = verifyCertObjectGateShape(g);
       if (!shape.ok) return shape;
       // Prove the gate is ENFORCEABLE before storing it: the ref resolves, the
       // manifest is genuinely the one `manifestRef` names, and it yields a
@@ -134,7 +134,7 @@ export async function validatePodGate(
       // every use. A transient Swarm failure here is a refusal worth retrying.
       const badgeManifest = await loadVerifiedBadgeManifest(g, { bypassCache: true });
       if (!badgeManifest) {
-        return { ok: false, error: "could not read this POD's manifest to confirm who issues it — try again" };
+        return { ok: false, error: "could not read this object's manifest to confirm who issues it — try again" };
       }
       // The leaked-key containment seam (PR 5b): a badge whose manifest names
       // an issuer some parent has ROTATED AWAY FROM must not become a stored
@@ -159,7 +159,7 @@ export async function validatePodGate(
     } catch (err) {
       return { ok: false, error: `gate chain read failed: ${(err as Error).message}` };
     }
-    const binding = verifyPodGateBinding(g, ev?.manifestRef ?? null);
+    const binding = verifyObjectGateBinding(g, ev?.manifestRef ?? null);
     if (!binding.ok) return binding;
   }
   return { ok: true };
@@ -168,15 +168,15 @@ export async function validatePodGate(
 /**
  * Does `holder` (a wallet address) satisfy `gate` right now? `holder` MUST be
  * the server-verified claimer/payer address, never one from the request body.
- * Accepts a single `PodGate` (legacy) or a `PodGateGroup`; normalises internally
+ * Accepts a single `ObjectGate` (legacy) or an `ObjectGateGroup`; normalises internally
  * so both paths use the same evaluator.
  *
  * `ctx` carries the evaluation clock + the gated tier's committed claim count
- * (for `firstN`). Threaded straight into the pure `evaluatePodGateGroup` so the
+ * (for `firstN`). Threaded straight into the pure `evaluateObjectGateGroup` so the
  * holdings read and the window phase resolve against one consistent snapshot.
  */
-export async function checkPodGate(
-  gate: PodGate | PodGateGroup,
+export async function checkObjectGate(
+  gate: ObjectGate | ObjectGateGroup,
   holder: string,
   ctx: GateEvalContext = {},
   evidence?: GateEvidence,
@@ -185,7 +185,7 @@ export async function checkPodGate(
   const holderLc = holder.toLowerCase() as Hex0x;
 
   // Build a human-readable label for error messages.
-  const nameList = group.gates.map((g) => g.podName ? `"${g.podName}"` : "a required POD");
+  const nameList = group.gates.map((g) => g.objectName ? `"${g.objectName}"` : "a required object");
   const label =
     nameList.length === 1
       ? nameList[0]
@@ -217,14 +217,14 @@ export async function checkPodGate(
       .map((g) => resolveHolding(g, holderLc, evidence));
 
     const holdings = await Promise.all(holdingPromises);
-    if (evaluatePodGateGroup(holdings, group, ctx)) return { ok: true };
+    if (evaluateObjectGateGroup(holdings, group, ctx)) return { ok: true };
 
     // Say the useful thing when the claimer simply has not been asked for a
     // certificate yet — "you hold none" would be a lie about evidence nobody
     // requested.
     const awaitingProof =
       computeGatePhase(group.window, ctx) === "holders-only" &&
-      group.gates.some((g) => isCertPodGate(g)) &&
+      group.gates.some((g) => isCertObjectGate(g)) &&
       !evidence;
     if (awaitingProof) {
       return {
@@ -239,7 +239,7 @@ export async function checkPodGate(
       reason: `This requires holding ${label}. You currently hold ${totalHeld > 0 ? totalHeld : "none"}.`,
     };
   } catch (err) {
-    console.error("[pod] gate check failed (fail-closed):", err);
+    console.error("[objects] gate check failed (fail-closed):", err);
     return { ok: false, reason: `Could not verify your holdings right now — please try again.` };
   }
 }
@@ -254,14 +254,14 @@ export async function checkPodGate(
  * enforce the wrong proof against a gate that asked for something else.
  */
 async function resolveHolding(
-  gate: PodGate,
+  gate: ObjectGate,
   holderLc: Hex0x,
   evidence?: GateEvidence,
-): Promise<PodHolding> {
+): Promise<ObjectHolding> {
   if (!isKnownHoldingSource(gate)) {
-    throw new Error(`unknown POD gate holding source for ${gate.manifestRef}`);
+    throw new Error(`unknown object gate holding source for ${gate.manifestRef}`);
   }
-  if (isCertPodGate(gate)) {
+  if (isCertObjectGate(gate)) {
     // No presentation supplied = nothing proved. Zero, not an error: the
     // claimer may simply not have been through the challenge handshake.
     if (!evidence) return { manifestRef: gate.manifestRef, count: 0, slots: [] };
@@ -280,10 +280,10 @@ async function resolveHolding(
  * `holder` MUST be the server-verified payer (crypto tx.from / EIP-712 binding /
  * spend-permission Kernel address), never a body-supplied address. Each distinct
  * gated product is checked once; the first failure short-circuits. Fails closed
- * via `checkPodGate`.
+ * via `checkObjectGate`.
  */
 export async function checkProductGates(
-  products: { productId: string; name: string; gate?: PodGate | PodGateGroup }[],
+  products: { productId: string; name: string; gate?: ObjectGate | ObjectGateGroup }[],
   lines: { productId: string }[],
   holder: string,
 ): Promise<GateDecision> {
@@ -293,7 +293,7 @@ export async function checkProductGates(
     checked.add(line.productId);
     const product = products.find((p) => p.productId === line.productId);
     if (!product?.gate) continue;
-    const decision = await checkPodGate(product.gate, holder);
+    const decision = await checkObjectGate(product.gate, holder);
     if (!decision.ok) return { ok: false, reason: `${product.name}: ${decision.reason}` };
   }
   return { ok: true };
@@ -303,7 +303,7 @@ export async function checkProductGates(
  *  which has no wallet and so must reject gated products outright (a wallet gate
  *  is unsatisfiable by card). Returns the first gated product's name. */
 export function firstGatedProduct(
-  products: { productId: string; name: string; gate?: PodGate | PodGateGroup }[],
+  products: { productId: string; name: string; gate?: ObjectGate | ObjectGateGroup }[],
   lines: { productId: string }[],
 ): string | null {
   for (const line of lines) {

@@ -51,7 +51,7 @@ import {
   verifyCreditStatement,
   validateCreditSubjectIndexV2,
   LAST_VERSION_IN_BAND,
-  deriveEncryptionKeypairFromPodSeed,
+  deriveEncryptionKeypairFromSeed,
   sealJson,
   openJson,
   type CreditStatementV1,
@@ -115,18 +115,18 @@ async function riderKeys(): Promise<RiderKeys> {
 
   // Derivation is a key-stretch, not authorship — the one thing the parent is
   // allowed to sign for. Idempotent after the first time on a device.
-  await auth.ensurePodIdentity();
+  await auth.ensureIdentitySeed();
 
-  // Through the BOUND accessor, never `restorePodSeed(parent)`. The seed is
-  // stored under the POD address — the PRF-EOA for passkey, the Web3Auth EOA
+  // Through the BOUND accessor, never `restoreIdentitySeed(parent)`. The seed is
+  // stored under the seed address — the PRF-EOA for passkey, the Web3Auth EOA
   // for web3auth — and `auth.parent` is the KERNEL address for both. Looking it
-  // up by parent reads a slot that is never written, so `ensurePodIdentity()`
+  // up by parent reads a slot that is never written, so `ensureIdentitySeed()`
   // above would succeed (storing under the right address, having just made the
   // rider approve a ceremony) and this would still come back empty: every
   // passkey and web3auth rider taps, signs, and gets "could not unlock".
   // The accessor resolves the address itself so no caller can pick wrong.
   const [seed, feed] = await Promise.all([
-    auth.getPodSeed(),
+    auth.getIdentitySeed(),
     auth.getContentFeedSigner(),
   ]);
   if (!seed) throw new Error("Could not unlock your collection identity.");
@@ -137,7 +137,7 @@ async function riderKeys(): Promise<RiderKeys> {
   // longer keeps one and this rail owns its own derivation.
   const holderKeypair = await deriveHolderKeypair(seed);
 
-  const enc = deriveEncryptionKeypairFromPodSeed(seed);
+  const enc = deriveEncryptionKeypairFromSeed(seed);
   return {
     holderPrivKey: holderKeypair.privateKey,
     // STRIPPED, and the schema is why. `deriveHolderKeypair` returns an
@@ -323,7 +323,7 @@ async function readHeadAt(
  * without a deliberate tap, untrue to the product.
  *
  * So this asks only what is already stored, by exactly the route `riderKeys`
- * would take: `restorePodSeed` reads a device blob, and the feed-signer ADDRESS
+ * would take: `restoreIdentitySeed` reads a device blob, and the feed-signer ADDRESS
  * getter is documented prompt-free and returns null rather than deriving for
  * the kinds that would need a ceremony. True here means a read costs nothing;
  * false means the screen shows its signed-out face and lets the tap unlock.
@@ -332,10 +332,10 @@ export async function creditsUnlocked(): Promise<boolean> {
   if (!auth.parent) return false;
   try {
     // Both bound, both prompt-free: the seed getter reads a device blob under
-    // the POD address, and the feed-signer ADDRESS getter is documented to
+    // the seed address, and the feed-signer ADDRESS getter is documented to
     // return null rather than derive for the kinds that would need a ceremony.
     const [seed, feedAddress] = await Promise.all([
-      auth.getPodSeed(),
+      auth.getIdentitySeed(),
       auth.getContentFeedSignerAddress(),
     ]);
     return seed !== null && feedAddress !== null;

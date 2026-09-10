@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
-   * PodCreateModal — mint a standalone badge / collectible POD type.
+   * ObjectCreateModal — mint a standalone badge / collectible object type.
    *
-   * The crypto-sensitive half of the POD manager: the manifest is built and
+   * The crypto-sensitive half of the object manager: the manifest is built and
    * signed CLIENT-side with the creator's derived secp256k1 issuing key
    * (reusing the exact event-creation builder), then handed to the server
    * which uploads it,
@@ -10,24 +10,24 @@
    * is display-layer only (uploaded separately, stored on the directory entry,
    * never in the signed manifest).
    *
-   * Centered dialog — deliberately distinct from the slide-in PodEditDrawer:
+   * Centered dialog — deliberately distinct from the slide-in ObjectEditDrawer:
    * creating is a committing act, editing is incidental. Concrete & Acid; the
-   * single lime affordance is "Mint POD".
+   * single lime affordance is "Mint object".
    */
-  import type { PodCategory, PodDirectoryEntry } from "@woco/shared";
+  import type { ObjectCategory, ObjectDirectoryEntry } from "@woco/shared";
   import { buildIssuerBindingMessage, signPersonalMessage } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
   import { buildEventManifests } from "../../object/event-builder.js";
   import { buildCertBadgeManifest } from "../../object/cert-builder.js";
   import { uploadSiteImage } from "../../api/sites.js";
-  import { createPod } from "../../api/objects.js";
+  import { createObject } from "../../api/objects.js";
 
   interface Props {
     open: boolean;
-    categories: PodCategory[];
+    categories: ObjectCategory[];
     onclose: () => void;
-    oncreated: (entry: PodDirectoryEntry) => void;
+    oncreated: (entry: ObjectDirectoryEntry) => void;
   }
 
   let { open, categories, onclose, oncreated }: Props = $props();
@@ -154,9 +154,9 @@
       }
 
       // ── Build + sign the manifest client-side. Two rails, two builders: a
-      //    chain POD commits one body per claimable edition, a certificate
+      //    chain object commits one body per claimable edition, a certificate
       //    badge commits ONE template body while `totalSupply` declares a
-      //    holder cap. Both seal through the same core (`pod/seal.ts`). ──────
+      //    holder cap. Both seal through the same core (`object/seal.ts`). ──────
       step = "Signing manifest…";
       const built = isCert
         ? buildCertBadgeManifest({
@@ -173,9 +173,9 @@
           })[0]!;
 
       step = isCert ? "Creating badge…" : "Minting on-chain…";
-      const entry = await createPod({
+      const entry = await createObject({
         // A certificate badge IS a badge to everything downstream; the rail is
-        // carried by `holdingSource`, not by a fourth `PodKind`.
+        // carried by `holdingSource`, not by a fourth `ObjectKind`.
         //
         // Compared against the literal rather than the `isCert` derived, because
         // only the literal NARROWS: `isCert` is a boolean, so in its false branch
@@ -268,9 +268,9 @@
         </p>
       {/if}
 
-      <label class="field-label" for="pod-name">Name</label>
+      <label class="field-label" for="objectEntry-name">Name</label>
       <input
-        id="pod-name"
+        id="objectEntry-name"
         class="field-input"
         type="text"
         bind:value={name}
@@ -279,9 +279,9 @@
         disabled={working}
       />
 
-      <label class="field-label" for="pod-desc">Description</label>
+      <label class="field-label" for="objectEntry-desc">Description</label>
       <textarea
-        id="pod-desc"
+        id="objectEntry-desc"
         class="field-textarea"
         bind:value={description}
         maxlength={400}
@@ -292,9 +292,9 @@
 
       <div class="row">
         <div class="col">
-          <label class="field-label" for="pod-supply">{isCert ? "Holder cap" : "Supply"}</label>
+          <label class="field-label" for="objectEntry-supply">{isCert ? "Holder cap" : "Supply"}</label>
           <input
-            id="pod-supply"
+            id="objectEntry-supply"
             class="field-input"
             type="number"
             bind:value={supply}
@@ -314,8 +314,8 @@
           </span>
         </div>
         <div class="col">
-          <label class="field-label" for="pod-cat">Category</label>
-          <select id="pod-cat" class="field-select" bind:value={categoryId} disabled={working}>
+          <label class="field-label" for="objectEntry-cat">Category</label>
+          <select id="objectEntry-cat" class="field-select" bind:value={categoryId} disabled={working}>
             <option value="">— Uncategorised —</option>
             {#each [...categories].sort((a, b) => a.sortIndex - b.sortIndex) as cat (cat.id)}
               <option value={cat.id}>{cat.label}</option>

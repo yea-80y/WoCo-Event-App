@@ -66,14 +66,14 @@ function zIndexes(src: string): number[] {
 }
 
 test("the award modal stacks ABOVE the drawer that opens it", () => {
-  // At the modal default of 90/91 it rendered BEHIND PodEditDrawer (200/201) —
+  // At the modal default of 90/91 it rendered BEHIND ObjectEditDrawer (200/201) —
   // invisible, while still capturing the run. Nothing in a unit test or a
   // typecheck can see this; only stacking arithmetic can.
   const modalMax = Math.max(...zIndexes(MODAL_RAW));
   const drawerMax = Math.max(...zIndexes(DRAWER));
   assert.ok(
     modalMax > drawerMax,
-    `award modal (${modalMax}) must stack above PodEditDrawer (${drawerMax})`,
+    `award modal (${modalMax}) must stack above ObjectEditDrawer (${drawerMax})`,
   );
 });
 

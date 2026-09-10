@@ -1,10 +1,10 @@
 /**
  * The web side of the derived ISSUING key (issuer-curve migration PR 4).
  *
- * A THIN WRAPPER and nothing more: ensure the POD identity exists, read the
+ * A THIN WRAPPER and nothing more: ensure the identity seed exists, read the
  * seed back, derive. No ceremony, no store writes, no escrow changes — the
  * seed is already escrowed, so recovery restores the issuing key byte-identical
- * at every generation (design record: HANDOVER-pod-curve-migration.md).
+ * at every generation (design record: the issuer-curve migration handover).
  *
  * FAIL LOUD, NEVER FALL THROUGH. If no seed is available this THROWS — it must
  * never quietly hand back some other signer (the feed key, the session key, a
@@ -17,7 +17,7 @@
 
 import { deriveIssuingKey, type IssuerAddress } from "@woco/shared";
 import { auth } from "./auth-store.svelte.js";
-import { restorePodSeed } from "./identity-seed.js";
+import { restoreIdentitySeed } from "./identity-seed.js";
 
 export interface IssuingKey {
   privateKey: Uint8Array;
@@ -27,14 +27,14 @@ export interface IssuingKey {
 /**
  * Ensure the signed-in account's generation-`gen` issuing key.
  *
- * Runs `ensurePodIdentity` first (a no-op when the identity exists, the usual
+ * Runs `ensureIdentitySeed` first (a no-op when the identity exists, the usual
  * case — every calling surface gates on it before building anything), then
  * derives from the stored seed. Throws when no seed can be produced.
  */
 export async function ensureIssuingKey(gen = 0): Promise<IssuingKey> {
-  const pod = await auth.ensurePodIdentity();
-  const podAddr = auth.podAddress;
-  const seed = pod && podAddr ? await restorePodSeed(podAddr) : null;
+  const hasSeed = await auth.ensureIdentitySeed();
+  const seedAddr = auth.seedAddress;
+  const seed = hasSeed && seedAddr ? await restoreIdentitySeed(seedAddr) : null;
   if (!seed) {
     throw new Error("issuing key unavailable — restore from recovery escrow");
   }

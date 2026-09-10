@@ -70,7 +70,7 @@ export interface EnvelopeReprobeDeps {
   /** Read + open the PRF-sealed envelope. Reached ONLY after a hit, so its lookups succeed. */
   readEnvelope: (passkeyPrivKey: string) => Promise<PortabilityRead>;
   /** Durable device-local fact: this PRF-EOA opens the preserved Kernel. THE heal. */
-  putRecoveryBinding: (podAddress: string, kernel: string) => Promise<void>;
+  putRecoveryBinding: (seedAddress: string, kernel: string) => Promise<void>;
   /** Durable device-local fact, the opposite direction (#283): this PRF-EOA's
    *  account was recovered away — the next login refuses honestly. */
   writeOrphanTombstone: (kind: ReprobeKind, eoa: string, fact: { kernel: string; owner: string }) => void;
@@ -340,9 +340,9 @@ export async function reprobeEnvelope(
 
     // HEAL. The binding alone is the repair: `_recoveryKernelFor` is consulted
     // before the kaddr cache, so the next login rebuilds at the preserved address
-    // and its slow path restores the POD seed + feed signer through the reviewed
-    // portability block. Deliberately NOT written here: the POD seed (logout's
-    // `clearPodIdentity` would delete it on the way out) and the verified-binding
+    // and its slow path restores the identity seed + feed signer through the reviewed
+    // portability block. Deliberately NOT written here: the identity seed (logout's
+    // `clearIdentitySeed` would delete it on the way out) and the verified-binding
     // marker (the recovered fast path needs secrets this device does not yet
     // hold, and fewer durable claims is the safer shape).
     //

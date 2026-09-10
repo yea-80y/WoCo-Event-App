@@ -1,14 +1,14 @@
 // ---------------------------------------------------------------------------
-// Pure POD-gate evaluator — the trust-light half of the holdings primitive.
+// Pure object-gate evaluator — the trust-light half of the holdings primitive.
 //
-// No chain, no I/O: given a `PodHolding` (read trustlessly on-chain by the
-// server) and a `PodGateRule`, decide pass/fail. Pure so it runs identically
+// No chain, no I/O: given an `ObjectHolding` (read trustlessly on-chain by the
+// server) and an `ObjectGateRule`, decide pass/fail. Pure so it runs identically
 // client-side (instant UX feedback) and server-side (the authoritative gate at
 // claim/order time). See docs/WOCO_SHOP_PLAN.md §4.3.
 // ---------------------------------------------------------------------------
 
 import type {
-  PodHolding, PodGateRule, PodGate, ChainPodGate, CertPodGate, PodGateGroup, GateWindow,
+  ObjectHolding, ObjectGateRule, ObjectGate, ChainObjectGate, CertObjectGate, ObjectGateGroup, GateWindow,
 } from "./types.js";
 
 /**
@@ -21,12 +21,12 @@ import type {
  *   that value count (slots are allocation-order → "first N buyers").
  * - Count: passes when the qualifying holdings ≥ `minCount` (default 1).
  *
- * The holding MUST be for the same POD type as the rule; callers pass a holding
+ * The holding MUST be for the same object type as the rule; callers pass a holding
  * read for `rule.manifestRef`. A mismatched `manifestRef` always fails closed.
  */
-export function evaluatePodGate(
-  holding: PodHolding,
-  rule: PodGateRule,
+export function evaluateObjectGate(
+  holding: ObjectHolding,
+  rule: ObjectGateRule,
   now: number = Date.now(),
 ): boolean {
   if (holding.manifestRef.toLowerCase() !== rule.manifestRef.toLowerCase()) return false;
@@ -43,17 +43,17 @@ export function evaluatePodGate(
 }
 
 /**
- * Upcast a stored `PodGate | PodGateGroup` to a `PodGateGroup` so enforcement
+ * Upcast a stored `ObjectGate | ObjectGateGroup` to an `ObjectGateGroup` so enforcement
  * code has a single shape to work with. Old single-gate records become a
  * `{ mode:"any", gates:[gate], window:{kind:"always"} }` group transparently.
  */
-export function normalizeGate(g: PodGate | PodGateGroup): PodGateGroup {
-  if ("gates" in g) return g as PodGateGroup;
-  return { mode: "any", gates: [g as PodGate], window: { kind: "always" } };
+export function normalizeGate(g: ObjectGate | ObjectGateGroup): ObjectGateGroup {
+  if ("gates" in g) return g as ObjectGateGroup;
+  return { mode: "any", gates: [g as ObjectGate], window: { kind: "always" } };
 }
 
 /**
- * Read-coordinates a `PodGateGroup` evaluation needs beyond the holdings: the
+ * Read-coordinates an `ObjectGateGroup` evaluation needs beyond the holdings: the
  * clock and (for count-based windows) how many editions of the GATED tier have
  * been claimed so far. Pure data — the caller reads `tierClaimed` from the
  * series/edition feed it already loads at claim time.
@@ -72,7 +72,7 @@ export interface GateEvalContext {
 }
 
 /**
- * The access phase a `PodGateGroup`'s window puts the gated tier in RIGHT NOW.
+ * The access phase an `ObjectGateGroup`'s window puts the gated tier in RIGHT NOW.
  * Decouples "what does out-of-window mean" — which differs per window kind —
  * from the holdings check:
  * - `holders-only` — claimable, but only by an account passing the gate set.
@@ -120,7 +120,7 @@ export function computeGatePhase(
 }
 
 /**
- * Evaluate a `PodGateGroup` against a set of holdings (one per gate in the group).
+ * Evaluate an `ObjectGateGroup` against a set of holdings (one per gate in the group).
  *
  * Resolves the window phase first (`computeGatePhase`): `open` passes for
  * everyone, `closed` fails for everyone, `holders-only` falls through to the
@@ -130,9 +130,9 @@ export function computeGatePhase(
  * in `group.gates`); pass an empty array when a holding is absent (fail-closed
  * for the relevant gate — count 0, no slots).
  */
-export function evaluatePodGateGroup(
-  holdings: PodHolding[],
-  group: PodGateGroup,
+export function evaluateObjectGateGroup(
+  holdings: ObjectHolding[],
+  group: ObjectGateGroup,
   ctx: GateEvalContext = {},
 ): boolean {
   const phase = computeGatePhase(group.window, ctx);
@@ -146,7 +146,7 @@ export function evaluatePodGateGroup(
     const holding = holdings.find(
       (h) => h.manifestRef.toLowerCase() === gate.manifestRef.toLowerCase(),
     ) ?? { manifestRef: gate.manifestRef, count: 0, slots: [] };
-    return evaluatePodGate(holding, gate, now);
+    return evaluateObjectGate(holding, gate, now);
   });
 
   return group.mode === "any" ? results.some(Boolean) : results.every(Boolean);
@@ -154,11 +154,11 @@ export function evaluatePodGateGroup(
 
 /**
  * Which holding source does this gate draw from? Absent discriminant = chain,
- * per the rule recorded on `PodGate`: every gate written before the field
+ * per the rule recorded on `ObjectGate`: every gate written before the field
  * existed passed a chain binding check, and chain is the stricter reading.
  */
-export function isCertPodGate(gate: PodGate): gate is CertPodGate {
-  return (gate as CertPodGate)?.holdingSource === "pod-cert";
+export function isCertObjectGate(gate: ObjectGate): gate is CertObjectGate {
+  return (gate as CertObjectGate)?.holdingSource === "pod-cert";
 }
 
 /**
@@ -167,7 +167,7 @@ export function isCertPodGate(gate: PodGate): gate is CertPodGate {
  * reading it — must REFUSE rather than fall into the chain arm, which would
  * enforce the wrong proof against a config that asked for something else.
  */
-export function isKnownHoldingSource(gate: PodGate): boolean {
+export function isKnownHoldingSource(gate: ObjectGate): boolean {
   const src = (gate as { holdingSource?: unknown })?.holdingSource;
   return src === undefined || src === "chain" || src === "pod-cert";
 }
@@ -186,7 +186,7 @@ export function isKnownHoldingSource(gate: PodGate): boolean {
  * digest IS `manifestRef` — is environment-specific (it needs a Swarm read) and
  * so lives with the caller, exactly as the chain arm's read does.
  */
-export function verifyCertPodGateShape(gate: CertPodGate): { ok: boolean; error?: string } {
+export function verifyCertObjectGateShape(gate: CertObjectGate): { ok: boolean; error?: string } {
   if (!gate?.manifestRef || !/^0x[0-9a-f]{64}$/.test(gate.manifestRef)) {
     return { ok: false, error: "gate manifestRef must be 0x-prefixed lowercase bytes32" };
   }
@@ -213,13 +213,13 @@ export function verifyCertPodGateShape(gate: CertPodGate): { ok: boolean; error?
  *
  * Duplicates were harmless while one source existed — the same holding checked
  * twice is idempotent. With two sources they are a live defect: enforcement
- * reads ONE holding per `manifestRef` and `evaluatePodGateGroup` matches
+ * reads ONE holding per `manifestRef` and `evaluateObjectGateGroup` matches
  * holdings by `manifestRef` alone, so a group pairing a chain gate and a
  * certificate gate for the SAME badge would evaluate the second against the
  * first's holding — under `mode: "all"`, counting one proof twice. Cheapest
  * structural fix is to refuse the duplicate where it is written.
  */
-export function findDuplicateGateManifestRef(group: PodGateGroup): string | null {
+export function findDuplicateGateManifestRef(group: ObjectGateGroup): string | null {
   const seen = new Set<string>();
   for (const g of group.gates) {
     const ref = g.manifestRef?.toLowerCase();
@@ -236,9 +236,9 @@ export function findDuplicateGateManifestRef(group: PodGateGroup): string | null
  * `manifestRef` on-chain.
  *
  * SCOPE: the chain arm only. The certificate arm's equivalent is
- * {@link verifyCertPodGateShape} plus a manifest-digest check, and the two are
+ * {@link verifyCertObjectGateShape} plus a manifest-digest check, and the two are
  * not merely different mechanisms — they are load-bearing at different times.
- * This check is the ONLY place the wrong-POD substitution is ever caught,
+ * This check is the ONLY place the wrong-object substitution is ever caught,
  * because `getOnChainHolding` does not re-check the binding at enforcement;
  * checking once is sufficient only because the gate is then stored in a
  * platform-signed feed. The certificate arm re-proves its trust root on EVERY
@@ -252,8 +252,8 @@ export function findDuplicateGateManifestRef(group: PodGateGroup): string | null
  * server and a future client signer validate gates with ONE implementation — the
  * gate stays verifiable by anyone, with no server secret.
  */
-export function verifyPodGateBinding(
-  gate: Partial<ChainPodGate> & { manifestRef: string },
+export function verifyObjectGateBinding(
+  gate: Partial<ChainObjectGate> & { manifestRef: string },
   onChainManifestRef: string | null,
 ): { ok: boolean; error?: string } {
   if (!gate?.manifestRef || !gate.onChainEventId || !Number.isFinite(gate.chainId as number)) {

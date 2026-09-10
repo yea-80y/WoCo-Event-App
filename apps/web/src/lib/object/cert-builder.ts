@@ -1,14 +1,14 @@
 /**
  * Build the signed manifest for a CERTIFICATE badge (Gate B, slice 4; on the
  * v2 issuer curve since PR 4). Design record: docs/SWARM_SOCIAL_PLAN.md,
- * BUILD RECORD slices 3 and 4; curve migration: HANDOVER-pod-curve-migration.md.
+ * BUILD RECORD slices 3 and 4; see the issuer-curve migration handover.
  *
  * A SIBLING OF `event-builder.ts`, NEVER A FLAG ON IT. The two rails disagree
  * about what a body IS: on the chain rail a body is an EDITION, one per
  * claimable slot, and `metadataRoot` commits to all of them. On this rail a
  * certificate names its holder, so no edition is ever claimed and pre-signing
  * one body per unit of supply would cost N uploads to commit to bytes no
- * reader reads. `issuePodType` enforces the difference: exactly one body for a
+ * reader reads. `issueObjectType` enforces the difference: exactly one body for a
  * certificate badge, exactly `supply` for a chain badge.
  *
  * WHAT IS SHARED, AND WHAT IS NOT. The seal-and-sign core — leaf hashing, the
@@ -115,7 +115,7 @@ export function buildCertBadgeManifest(opts: BuildCertBadgeManifestOpts): CertBa
 
   // Seal + sign through the SAME core the ticket rail uses. The divergence is
   // visible right here and nowhere else: one body, but `totalSupply` is the
-  // cap. `issuePodType` re-checks that the declared supply equals the supply it
+  // cap. `issueObjectType` re-checks that the declared supply equals the supply it
   // was asked for, so a builder that quietly wrote `1` here would be refused
   // rather than minting a badge capped at a single holder.
   const { signedManifest, manifestDigestHex } = sealManifest({

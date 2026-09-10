@@ -1,25 +1,25 @@
 <script lang="ts">
   /**
-   * PodEditDrawer — slide-in panel for viewing + editing one POD type's mutable
+   * ObjectEditDrawer — slide-in panel for viewing + editing one object type's mutable
    * display layer. Editable: name, description, categoryId, image. Read-only:
    * kind, manifestRef, supply, issuedCount, eventId.
    *
    * Anatomy: full-height right drawer over a scrim. Concrete & Acid, single lime
    * affordance on Save. Vermillion only on the destructive "Remove image" action.
    */
-  import type { PodDirectoryEntry, PodCategory } from "@woco/shared";
-  import { updatePod } from "../../api/objects.js";
+  import type { ObjectDirectoryEntry, ObjectCategory } from "@woco/shared";
+  import { updateObject } from "../../api/objects.js";
   import { uploadSiteImage } from "../../api/sites.js";
   import CertIssueModal from "./CertIssueModal.svelte";
 
   interface Props {
-    pod: PodDirectoryEntry | null;
-    categories: PodCategory[];
+    objectEntry: ObjectDirectoryEntry | null;
+    categories: ObjectCategory[];
     onclose: () => void;
-    onsaved: (updated: PodDirectoryEntry) => void;
+    onsaved: (updated: ObjectDirectoryEntry) => void;
   }
 
-  let { pod, categories, onclose, onsaved }: Props = $props();
+  let { objectEntry, categories, onclose, onsaved }: Props = $props();
 
   const KIND_LABEL: Record<string, string> = {
     ticket: "TICKET",
@@ -36,10 +36,10 @@
 
   /** A certificate badge is AWARDED, not claimed — the drawer gets the entry
    *  point because that is where an organiser already goes to look at one. */
-  const isCert = $derived(!!pod?.certLogOwner);
-  let issuing = $state<PodDirectoryEntry | null>(null);
+  const isCert = $derived(!!objectEntry?.certLogOwner);
+  let issuing = $state<ObjectDirectoryEntry | null>(null);
 
-  // Local draft — reset when pod changes.
+  // Local draft — reset when objectEntry changes.
   let draftName = $state("");
   let draftDescription = $state("");
   let draftCategoryId = $state<string>("");
@@ -47,12 +47,12 @@
   let previewSrc = $state<string | undefined>(undefined);
 
   $effect(() => {
-    if (pod) {
-      draftName = pod.name;
-      draftDescription = pod.description ?? "";
-      draftCategoryId = pod.categoryId ?? "";
-      draftImage = pod.image;
-      previewSrc = pod.image ? `${BEE_GATEWAY}/bzz/${pod.image}/` : undefined;
+    if (objectEntry) {
+      draftName = objectEntry.name;
+      draftDescription = objectEntry.description ?? "";
+      draftCategoryId = objectEntry.categoryId ?? "";
+      draftImage = objectEntry.image;
+      previewSrc = objectEntry.image ? `${BEE_GATEWAY}/bzz/${objectEntry.image}/` : undefined;
       error = "";
       saving = false;
       uploading = false;
@@ -92,11 +92,11 @@
   }
 
   async function save() {
-    if (!pod || !draftName.trim()) return;
+    if (!objectEntry || !draftName.trim()) return;
     saving = true;
     error = "";
     try {
-      const updated = await updatePod(pod.manifestRef, {
+      const updated = await updateObject(objectEntry.manifestRef, {
         name: draftName.trim(),
         description: draftDescription.trim() || undefined,
         image: draftImage,
@@ -117,20 +117,20 @@
 </script>
 
 <CertIssueModal
-  pod={issuing}
+  objectEntry={issuing}
   onclose={() => (issuing = null)}
   onissued={(updated) => { onsaved(updated); }}
 />
 
-{#if pod}
+{#if objectEntry}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="scrim" role="button" aria-label="Close" onclick={onclose} onkeydown={onScrimKey} tabindex="-1"></div>
 
   <aside class="drawer" aria-label="Edit object">
     <header class="drawer-head">
       <div class="head-meta">
-        <span class="kind-chip">{KIND_LABEL[pod.kind] ?? pod.kind}</span>
-        <h2 class="head-title">{pod.name}</h2>
+        <span class="kind-chip">{KIND_LABEL[objectEntry.kind] ?? objectEntry.kind}</span>
+        <h2 class="head-title">{objectEntry.name}</h2>
       </div>
       <button class="close-btn" onclick={onclose} aria-label="Close">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
@@ -145,21 +145,21 @@
         <dl class="fact-grid">
           <div class="fact">
             <dt>Ref</dt>
-            <dd class="mono" title={pod.manifestRef}>{trunc(pod.manifestRef)}</dd>
+            <dd class="mono" title={objectEntry.manifestRef}>{trunc(objectEntry.manifestRef)}</dd>
           </div>
           <div class="fact">
             <dt>{isCert ? "Awarded" : "Supply"}</dt>
-            <dd class="mono">{pod.issuedCount ?? 0} / {pod.supply}</dd>
+            <dd class="mono">{objectEntry.issuedCount ?? 0} / {objectEntry.supply}</dd>
           </div>
-          {#if pod.eventId}
+          {#if objectEntry.eventId}
             <div class="fact">
               <dt>Event ID</dt>
-              <dd class="mono" title={pod.eventId}>{trunc(pod.eventId)}</dd>
+              <dd class="mono" title={objectEntry.eventId}>{trunc(objectEntry.eventId)}</dd>
             </div>
           {/if}
           <div class="fact">
             <dt>Created</dt>
-            <dd>{new Date(pod.createdAt).toLocaleDateString()}</dd>
+            <dd>{new Date(objectEntry.createdAt).toLocaleDateString()}</dd>
           </div>
         </dl>
       </section>
@@ -170,7 +170,7 @@
             <span class="award-head">Award this badge</span>
             <p>Name the people who hold it. Awards are public and permanent.</p>
           </div>
-          <button class="btn btn--primary btn--sm" onclick={() => (issuing = pod)}>Award</button>
+          <button class="btn btn--primary btn--sm" onclick={() => (issuing = objectEntry)}>Award</button>
         </div>
       {/if}
 
@@ -178,9 +178,9 @@
 
       <!-- Editable fields -->
       <section class="edit-section">
-        <label class="field-label" for="pod-name">Name</label>
+        <label class="field-label" for="objectEntry-name">Name</label>
         <input
-          id="pod-name"
+          id="objectEntry-name"
           class="field-input"
           type="text"
           bind:value={draftName}
@@ -188,9 +188,9 @@
           placeholder="Object display name"
         />
 
-        <label class="field-label" for="pod-desc">Description</label>
+        <label class="field-label" for="objectEntry-desc">Description</label>
         <textarea
-          id="pod-desc"
+          id="objectEntry-desc"
           class="field-textarea"
           bind:value={draftDescription}
           maxlength={400}
@@ -198,8 +198,8 @@
           placeholder="Short description (optional)"
         ></textarea>
 
-        <label class="field-label" for="pod-cat">Category</label>
-        <select id="pod-cat" class="field-select" bind:value={draftCategoryId}>
+        <label class="field-label" for="objectEntry-cat">Category</label>
+        <select id="objectEntry-cat" class="field-select" bind:value={draftCategoryId}>
           <option value="">— Uncategorised —</option>
           {#each [...categories].sort((a, b) => a.sortIndex - b.sortIndex) as cat (cat.id)}
             <option value={cat.id}>{cat.label}</option>

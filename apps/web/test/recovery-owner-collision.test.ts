@@ -23,7 +23,7 @@ function clean(over: Partial<OwnerCollisionEvidence> = {}): OwnerCollisionEviden
     newOwnerEoa: EOA,
     targetKernel: TARGET,
     existingBinding: undefined,
-    podSeedPresent: false,
+    identitySeedPresent: false,
     cachedKernel: null,
     verifiedBinding: null,
     counterfactualAddress: OTHER, // this credential's own account is NOT the target
@@ -43,7 +43,7 @@ test("re-recovering the SAME account onto the SAME credential is allowed — the
   // died partway. Deliberately combined with evidence that would otherwise block,
   // to prove the repair rule is checked FIRST rather than merely reachable.
   const v = decideOwnerCollision(
-    clean({ existingBinding: TARGET, podSeedPresent: true, counterfactualOwner: EOA }),
+    clean({ existingBinding: TARGET, identitySeedPresent: true, counterfactualOwner: EOA }),
   );
   assert.equal(v.status, "allow");
   assert.match(v.reason, /repair/);
@@ -70,7 +70,7 @@ test("a Kernel owned by SOMEONE ELSE does not block — it is not this credentia
 });
 
 test("an identity seed already stored under the credential is blocked", () => {
-  const v = decideOwnerCollision(clean({ podSeedPresent: true }));
+  const v = decideOwnerCollision(clean({ identitySeedPresent: true }));
   assert.equal(v.status, "block");
   assert.match(v.reason, /identity seed/);
 });
@@ -78,7 +78,7 @@ test("an identity seed already stored under the credential is blocked", () => {
 test("a FAILED local seed read blocks, and is not read as an empty slot", () => {
   // The distinction this whole guard exists for: `null` means the read failed.
   // Treating it as "absent" would destroy a seed that cannot be re-derived.
-  const v = decideOwnerCollision(clean({ podSeedPresent: null }));
+  const v = decideOwnerCollision(clean({ identitySeedPresent: null }));
   assert.equal(v.status, "block");
   assert.match(v.reason, /could not read local/);
 });
@@ -160,7 +160,7 @@ test("a FAILED local seed read says 'couldn't confirm', not 'already taken'", ()
   // The message on the evidence type MOST likely to fail transiently. Asserting
   // only the verdict here would let a mutant swap in the terminal message and
   // survive — and the terminal message is the one that makes users stop trying.
-  const v = decideOwnerCollision(clean({ podSeedPresent: null }));
+  const v = decideOwnerCollision(clean({ identitySeedPresent: null }));
   assert.equal(v.status, "block");
   assert.match(v.userMessage, /couldn't confirm/i);
 });
@@ -187,7 +187,7 @@ test("#234: a scan that could not complete blocks with the UNSURE message (fail 
 
 test("#234: a clean scan changes nothing — the local rules still decide", () => {
   assert.equal(decideOwnerCollision(clean({ ownedAccountsScan: { status: "clean" } })).status, "allow");
-  assert.equal(decideOwnerCollision(clean({ ownedAccountsScan: { status: "clean" }, podSeedPresent: true })).status, "block");
+  assert.equal(decideOwnerCollision(clean({ ownedAccountsScan: { status: "clean" }, identitySeedPresent: true })).status, "block");
 });
 
 test("#234: the repair path and own-account path stay open even if the scan reports the target itself", () => {

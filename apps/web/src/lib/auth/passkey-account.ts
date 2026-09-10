@@ -85,7 +85,7 @@ function extractPrfResult(
  * cancel. That used to cascade: `restorePasskeyAccount` read the rejection as
  * "credential gone", wiped its metadata and fell through to a path that could
  * MINT A NEW ACCOUNT. Two callers really can race (`_getSigner` and
- * `_getPodSigner` both await `_ensurePasskeyKey`), and mobile's slower
+ * `_getSeedSigner` both await `_ensurePasskeyKey`), and mobile's slower
  * biometric sheet holds the window open for far longer.
  *
  * Every exported ceremony therefore runs through this serial queue. The
@@ -357,7 +357,7 @@ async function _createPasskeyAccountImpl(): Promise<{
  * credential. A wrong pick fails SAFE: the derived guardian address won't match
  * the escrow, so recovery is refused rather than mis-applied. Independence from
  * the primary is guaranteed by the caller's own-key block (the derived address
- * can never equal auth.parent / auth.podAddress).
+ * can never equal auth.parent / auth.seedAddress).
  */
 export async function createPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
   return ceremony("creation", _createPasskeyBackupKeyImpl);

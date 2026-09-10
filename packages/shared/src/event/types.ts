@@ -1,6 +1,6 @@
 import type { Hex64, Hex0x } from "../types.js";
 import type { OrderField, SealedBox } from "../crypto/types.js";
-import type { PodGate, PodGateGroup } from "../object/types.js";
+import type { ObjectGate, ObjectGateGroup } from "../object/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
 
@@ -307,12 +307,12 @@ export interface SeriesSummary {
   onChainEventId?: string;
   /** keccak256(dagCbor(manifestBody)) stored on-chain as manifestRef */
   manifestRef?: string;
-  /** Swarm ref to SeriesManifestBlob (SignedManifestV2 + podRefs array) */
+  /** Swarm ref to SeriesManifestBlob (SignedManifestV2 + objectRefs array) */
   swarmManifestRef?: Hex64;
-  /** POD-holdings gate — when set, the claim route requires the claimer's wallet
-   *  to hold the gating POD on-chain. May be a single PodGate (legacy) or a
-   *  PodGateGroup (multi-POD any/all). Use normalizeGate() to upcast. */
-  gate?: PodGate | PodGateGroup;
+  /** object-holdings gate — when set, the claim route requires the claimer's wallet
+   *  to hold the gating object on-chain. May be a single ObjectGate (legacy) or a
+   *  ObjectGateGroup (multi-object any/all). Use normalizeGate() to upcast. */
+  gate?: ObjectGate | ObjectGateGroup;
 }
 
 /**
@@ -331,7 +331,7 @@ export interface SeriesManifestBlob {
   v: 2;
   signedManifest: SignedManifestV2;
   /** Swarm refs to individual edition body JSON blobs, indexed by edition-1 (0-based). */
-  podRefs: Hex64[];
+  objectRefs: Hex64[];
   /** keccak256(dagCbor(manifestBody)), 0x-prefixed bytes32 — matches on-chain manifestRef. */
   manifestDigestHex: string;
 }
@@ -341,7 +341,7 @@ export interface SeriesManifestBlob {
  *
  * What changed from the retired v2 request shape, and only this:
  *  - each series carries a `woco.manifest.v2` signed by the derived secp256k1
- *    ISSUING key, and `editionBodies` (`woco.edition.v1`) replace `podBodies`;
+ *    ISSUING key, and `editionBodies` (`woco.edition.v1`) replace `objectBodies`;
  *  - `issuerBinding` — the issuing key's proof of possession over the parent
  *    (see {@link IssuerBindingV1}). The server pins `parent → issuer` on the
  *    event record at create, atomically with first issuance (PR 5a), and must
@@ -351,7 +351,7 @@ export interface SeriesManifestBlob {
  * Since PR 5a this is the shape BOTH sides speak — the v2 request type is
  * deleted and the server verifies v2 and refuses v1. The deploy freeze that
  * covered the PR 4→5a seam lifts when 5a merges (server + frontend deploy
- * together; see HANDOVER-pod-curve-migration.md).
+ * together; see the issuer-curve migration handover).
  */
 export interface CreateEventV3Request {
   event: {
@@ -381,8 +381,8 @@ export interface CreateEventV3Request {
     saleStart?: string;
     saleEnd?: string;
     payment?: PaymentConfig;
-    /** POD-holdings gate for this series (server-enforced at claim). */
-    gate?: PodGate | PodGateGroup;
+    /** object-holdings gate for this series (server-enforced at claim). */
+    gate?: ObjectGate | ObjectGateGroup;
   }>;
   image: string;
   creatorAddress: Hex0x;
@@ -474,7 +474,7 @@ export interface CreateEventResponse {
  *  display record for blobs already on Swarm. The `owner` field (a self-declared
  *  ed25519 key) went with the holder key in #518; nothing wrote or read it. */
 export interface ClaimedTicket {
-  podType: "woco.ticket.claimed.v1" | "woco.ticket.claimed.v2";
+  format: "woco.ticket.claimed.v1" | "woco.ticket.claimed.v2";
   eventId: string;
   seriesId: string;
   seriesName: string;
@@ -497,7 +497,7 @@ export interface ClaimedTicket {
    *    wallet from verified session). Both are valid claim handles. */
   ownerEmailHash?: string;
   claimedAt: string;
-  originalPodHash: string;
+  originalObjectHash: string;
   originalSignature: string;
 }
 

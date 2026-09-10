@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// Loyalty milestone issuance (Step 4, item C) — mint a badge POD to a buyer's
+// Loyalty milestone issuance (Step 4, item C) — mint a badge object to a buyer's
 // wallet when their cumulative PAID spend crosses a configured threshold.
 //
 // Spend is derived from the order feed (no stored ledger). Badges are on-chain
-// PODs, so issuance needs a WALLET: the crypto + spend-permission rails bind one
+// objects, so issuance needs a WALLET: the crypto + spend-permission rails bind one
 // (buyerRef = payer / Kernel address); card buyers (email-hash buyerRef) earn
 // points only and get no on-chain badge until they connect a wallet — the locked
 // loyalty decision (card earns, crypto is the portable/trustless tier).

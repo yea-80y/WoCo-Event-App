@@ -1,12 +1,12 @@
 /**
- * Smoke test: full standalone POD issuance (Item A) via the same server path
- * the create-POD UI uses. Builds + ed25519-signs a manifest exactly as the
- * client does (throwaway key), then calls issuePodType — exercising manifest
- * validation → Swarm upload (pod bodies + SeriesManifestBlob) → sponsor
+ * Smoke test: full standalone object issuance (Item A) via the same server path
+ * the create-object UI uses. Builds + ed25519-signs a manifest exactly as the
+ * client does (throwaway key), then calls issueObjectType — exercising manifest
+ * validation → Swarm upload (object bodies + SeriesManifestBlob) → sponsor
  * on-chain register → creator-directory upsert.
  *
  * SIDE EFFECTS (real): writes a few chunks to the live bee, sends one
- * registerEvent tx on Arb Sepolia (sponsor gas), and writes a junk POD
+ * registerEvent tx on Arb Sepolia (sponsor gas), and writes a junk object
  * directory feed under the throwaway creator address below. Needs the dev bee
  * tunnel up (BEE_URL reachable) and a funded sponsor wallet.
  *
@@ -22,9 +22,9 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(__dirname, "../.env") });
 
-const { buildPodTree, signManifest, bytesToHex0x } = await import("@woco/shared");
+const { buildObjectTree, signManifest, bytesToHex0x } = await import("@woco/shared");
 type SharedTypes = typeof import("@woco/shared");
-const { issuePodType } = await import("../src/lib/object/issuance.js");
+const { issueObjectType } = await import("../src/lib/object/issuance.js");
 const { getActiveChainId, getEventContractVersion } = await import("../src/lib/chain/event-contract.js");
 
 // A fixed throwaway creator so re-runs upsert the same junk directory feed.
@@ -37,18 +37,18 @@ async function main() {
     console.warn(`!!! active chain ${chainId} is not V2 — issuance will reject. Set WOCO_EVENT_CHAIN_ID=421614`);
   }
 
-  // ── ed25519 POD key (throwaway) ──────────────────────────────────────────
+  // ── ed25519 issuer key (throwaway) ──────────────────────────────────────────
   const priv = ed25519.utils.randomSecretKey();
   const pub = ed25519.getPublicKey(priv);
   const issuer = Buffer.from(pub).toString("hex"); // lowercase, no 0x
 
   const supply = 3;
   const seriesId = crypto.randomUUID();
-  // eventId in the pod body is informational (the authoritative id is emitted
+  // eventId in the object body is informational (the authoritative id is emitted
   // on-chain) — a placeholder bytes32 keeps the body well-formed.
   const placeholderEventId = "0x" + "11".repeat(32);
 
-  const podBodies: SharedTypes["PodV2Body"][] = Array.from({ length: supply }, (_, i) => ({
+  const objectBodies: SharedTypes["ObjectV2Body"][] = Array.from({ length: supply }, (_, i) => ({
     format: "woco.ticket.v2",
     eventId: placeholderEventId,
     seriesId,
@@ -57,7 +57,7 @@ async function main() {
     issuer,
   }));
 
-  const { root } = buildPodTree(podBodies);
+  const { root } = buildObjectTree(objectBodies);
   const manifestBody: SharedTypes["ManifestV1Body"] = {
     format: "woco.manifest.v1",
     eventId: placeholderEventId,
@@ -70,15 +70,15 @@ async function main() {
   const signedManifest = signManifest(manifestBody, priv);
   console.log(`built manifest: supply=${supply} root=${root.slice(0, 14)}… issuer=${issuer.slice(0, 12)}…`);
 
-  console.log("calling issuePodType (uploads + on-chain register + directory write)…");
-  const entry = await issuePodType({
+  console.log("calling issueObjectType (uploads + on-chain register + directory write)…");
+  const entry = await issueObjectType({
     creatorAddress: CREATOR,
     kind: "badge",
     name: "Smoke Test Badge",
     description: "issuance smoke test",
     supply,
     signedManifest,
-    podBodies,
+    objectBodies,
   });
 
   console.log("OK");

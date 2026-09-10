@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
-  import { buildIssuerBindingMessage, deriveEncryptionKeypairFromPodSeed, FEATURES, signPersonalMessage } from "@woco/shared";
+  import { buildIssuerBindingMessage, deriveEncryptionKeypairFromSeed, FEATURES, signPersonalMessage } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { restorePodSeed } from "../../auth/identity-seed.js";
+  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
   import { buildEventManifests } from "../../object/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
@@ -21,7 +21,7 @@
     saleStart?: string;
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
-    gate?: import("@woco/shared").PodGate;
+    gate?: import("@woco/shared").ObjectGate;
   }
 
   interface Props {
@@ -146,9 +146,9 @@
 
       // Derive encryption keypair (no extra popup)
       let encryptionKey: string | undefined;
-      const podSeed = auth.podAddress ? await restorePodSeed(auth.podAddress) : null;
-      if (podSeed) {
-        encryptionKey = deriveEncryptionKeypairFromPodSeed(podSeed).publicKeyHex;
+      const identitySeed = auth.seedAddress ? await restoreIdentitySeed(auth.seedAddress) : null;
+      if (identitySeed) {
+        encryptionKey = deriveEncryptionKeypairFromSeed(identitySeed).publicKeyHex;
       }
 
       // The derived secp256k1 issuing key — signs every manifest below AND the
@@ -171,7 +171,7 @@
       step = "Building manifests...";
 
       // Strip data: URL prefix to get raw base64, then upload image to get hash.
-      // The image hash is embedded in pod metadata so it matches the event feed.
+      // The image hash is embedded in object metadata so it matches the event feed.
       // We pass an empty string if the image isn't available yet (rare edge case).
       const manifests = buildEventManifests({
         issuingPrivKey: issuing.privateKey,
@@ -258,7 +258,7 @@
 
       // No separate editions feed is published. Each per-edition ticket body is
       // already uploaded by createEventV2 (server) and committed in the
-      // on-chain-anchored SeriesManifestBlob.podRefs; on-chain registration below
+      // on-chain-anchored SeriesManifestBlob.objectRefs; on-chain registration below
       // makes the contract the supply/allocation ledger. Reserve, claim-status and
       // the Stripe mint webhook all read the contract + manifest (the v2 path) —
       // they never touch a Swarm editions index. Publishing one here only added a

@@ -2,40 +2,40 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import type {
-  PodCategory, PodDirectoryEntry, Hex0x, Hex64, SignedManifestV2, EditionV1Body,
+  ObjectCategory, ObjectDirectoryEntry, Hex0x, Hex64, SignedManifestV2, EditionV1Body,
 } from "@woco/shared";
 import { validateSignedManifestV2 } from "@woco/shared";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
 import {
-  getCreatorPodDirectory,
-  setCreatorPodCategories,
-  upsertCreatorPod,
+  getCreatorObjectDirectory,
+  setCreatorObjectCategories,
+  upsertCreatorObject,
 } from "../lib/object/directory.js";
 import { getOnChainHolding } from "../lib/object/holdings.js";
-import { issuePodType, validateIssuedCount, type IssuablePodKind } from "../lib/object/issuance.js";
+import { issueObjectType, validateIssuedCount, type IssuableObjectKind } from "../lib/object/issuance.js";
 
-/** Upper bound on directly-minted POD supply — one on-chain registration covers
- *  the whole batch, but each pod body is a Swarm upload, so cap the burst. */
-const MAX_POD_SUPPLY = 10_000;
+/** Upper bound on directly-minted object supply — one on-chain registration covers
+ *  the whole batch, but each object body is a Swarm upload, so cap the burst. */
+const MAX_OBJECT_SUPPLY = 10_000;
 
 /**
- * POD layer routes (Step 4) — the creator POD manager + the public holdings
+ * object layer routes (Step 4) — the creator object manager + the public holdings
  * read. Write surfaces are auth-gated and owner-stamped from the verified
- * parentAddress (same trust model as events/sites/shops). Issuance of POD
+ * parentAddress (same trust model as events/sites/shops). Issuance of object
  * types still flows through event creation; the directory is populated by a
  * fire-and-forget upsert there (no dedicated create endpoint yet).
  */
-export const podRouter = new Hono<AppEnv>();
+export const objectsRouter = new Hono<AppEnv>();
 
-/** GET /api/pod/mine — the caller's POD directory (types + categories). */
-podRouter.get("/mine", requireAuth, async (c) => {
+/** GET /api/pod/mine — the caller's object directory (types + categories). */
+objectsRouter.get("/mine", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   try {
-    const directory = await getCreatorPodDirectory(parentAddress);
+    const directory = await getCreatorObjectDirectory(parentAddress);
     return c.json({ ok: true, data: directory });
   } catch (err) {
-    console.error("[pod] GET /mine failed:", err);
-    return c.json({ ok: false, error: "Failed to read POD directory" }, 500);
+    console.error("[objectEntry] GET /mine failed:", err);
+    return c.json({ ok: false, error: "Failed to read object directory" }, 500);
   }
 });
 
@@ -48,7 +48,7 @@ podRouter.get("/mine", requireAuth, async (c) => {
  * manifest, uploads the bodies, sponsor-registers on-chain, and writes the
  * directory entry. Owner is the verified parentAddress (never from the body).
  */
-podRouter.post("/", requireAuth, async (c) => {
+objectsRouter.post("/", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase() as Hex0x;
 
   let body: unknown;
@@ -83,16 +83,16 @@ podRouter.post("/", requireAuth, async (c) => {
     typeof b.supply !== "number" ||
     !Number.isInteger(b.supply) ||
     b.supply < 1 ||
-    b.supply > MAX_POD_SUPPLY
+    b.supply > MAX_OBJECT_SUPPLY
   ) {
-    return c.json({ ok: false, error: `supply must be an integer 1..${MAX_POD_SUPPLY}` }, 400);
+    return c.json({ ok: false, error: `supply must be an integer 1..${MAX_OBJECT_SUPPLY}` }, 400);
   }
   if (!b.signedManifest || typeof b.signedManifest !== "object") {
     return c.json({ ok: false, error: "signedManifest is required" }, 400);
   }
   // Closed-schema dispatch: a legacy `woco.manifest.v1` payload fails HERE,
   // whole — the v1 cutoff on this rail (full signature verification runs in
-  // issuePodType; this shape pass lets the binding check compare identities).
+  // issueObjectType; this shape pass lets the binding check compare identities).
   if (!validateSignedManifestV2(b.signedManifest)) {
     return c.json({ ok: false, error: "signedManifest is not a valid woco.manifest.v2" }, 400);
   }
@@ -133,9 +133,9 @@ podRouter.post("/", requireAuth, async (c) => {
   }
 
   try {
-    const entry = await issuePodType({
+    const entry = await issueObjectType({
       creatorAddress: parentAddress,
-      kind: b.kind as IssuablePodKind,
+      kind: b.kind as IssuableObjectKind,
       name: name.slice(0, 120),
       ...(typeof b.description === "string" && b.description.trim()
         ? { description: b.description.trim().slice(0, 400) }
@@ -151,13 +151,13 @@ podRouter.post("/", requireAuth, async (c) => {
     });
     return c.json({ ok: true, data: entry });
   } catch (err) {
-    console.error("[pod] POST / (mint) failed:", err);
+    console.error("[objectEntry] POST / (mint) failed:", err);
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 
-/** PUT /api/pod/categories — replace the caller's POD category list. */
-podRouter.put("/categories", requireAuth, async (c) => {
+/** PUT /api/pod/categories — replace the caller's object category list. */
+objectsRouter.put("/categories", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   let body: unknown;
   try {
@@ -170,9 +170,9 @@ podRouter.put("/categories", requireAuth, async (c) => {
   if (!Array.isArray(raw)) {
     return c.json({ ok: false, error: "categories must be an array" }, 400);
   }
-  const categories: PodCategory[] = [];
+  const categories: ObjectCategory[] = [];
   for (const item of raw) {
-    const cat = item as Partial<PodCategory>;
+    const cat = item as Partial<ObjectCategory>;
     if (typeof cat?.id !== "string" || typeof cat?.label !== "string") {
       return c.json({ ok: false, error: "each category needs id + label" }, 400);
     }
@@ -184,20 +184,20 @@ podRouter.put("/categories", requireAuth, async (c) => {
   }
 
   try {
-    await setCreatorPodCategories(parentAddress, categories);
+    await setCreatorObjectCategories(parentAddress, categories);
     return c.json({ ok: true, data: { categories } });
   } catch (err) {
-    console.error("[pod] PUT /categories failed:", err);
+    console.error("[objectEntry] PUT /categories failed:", err);
     return c.json({ ok: false, error: "Failed to write categories" }, 500);
   }
 });
 
 /**
- * PUT /api/pod/:manifestRef — patch the mutable display layer of one POD type.
+ * PUT /api/pod/:manifestRef — patch the mutable display layer of one object type.
  * Only updates fields that live in the directory entry (name, image, description,
  * categoryId) — the signed manifest is never touched, so no re-signing needed.
  */
-podRouter.put("/:manifestRef", requireAuth, async (c) => {
+objectsRouter.put("/:manifestRef", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const manifestRef = c.req.param("manifestRef");
 
@@ -218,17 +218,17 @@ podRouter.put("/:manifestRef", requireAuth, async (c) => {
 
   let dir;
   try {
-    dir = await getCreatorPodDirectory(parentAddress);
+    dir = await getCreatorObjectDirectory(parentAddress);
   } catch (err) {
-    console.error("[pod] PUT /:manifestRef — directory read failed:", err);
-    return c.json({ ok: false, error: "Failed to read POD directory" }, 500);
+    console.error("[objectEntry] PUT /:manifestRef — directory read failed:", err);
+    return c.json({ ok: false, error: "Failed to read object directory" }, 500);
   }
 
-  const existing = dir.pods.find(
+  const existing = dir.objects.find(
     (p) => p.manifestRef.toLowerCase() === manifestRef.toLowerCase(),
   );
   if (!existing) {
-    return c.json({ ok: false, error: "POD not found in your directory" }, 404);
+    return c.json({ ok: false, error: "object not found in your directory" }, 404);
   }
 
   // Certificate badges only, clamped, then trusted inside the bounds — the
@@ -238,7 +238,7 @@ podRouter.put("/:manifestRef", requireAuth, async (c) => {
     if (!verdict.ok) return c.json({ ok: false, error: verdict.error }, 400);
   }
 
-  const updated: PodDirectoryEntry = {
+  const updated: ObjectDirectoryEntry = {
     ...existing,
     ...(typeof patch.name === "string" && patch.name.trim()
       ? { name: patch.name.trim() }
@@ -255,21 +255,21 @@ podRouter.put("/:manifestRef", requireAuth, async (c) => {
   };
 
   try {
-    await upsertCreatorPod(parentAddress, updated);
+    await upsertCreatorObject(parentAddress, updated);
     return c.json({ ok: true, data: updated });
   } catch (err) {
-    console.error("[pod] PUT /:manifestRef — upsert failed:", err);
-    return c.json({ ok: false, error: "Failed to update POD" }, 500);
+    console.error("[objectEntry] PUT /:manifestRef — upsert failed:", err);
+    return c.json({ ok: false, error: "Failed to update object" }, 500);
   }
 });
 
 /**
  * GET /api/pod/holdings — public read of a wallet's trustless on-chain holding
- * of one POD type. Used by the client to preview "you hold N" / whether a gate
+ * of one object type. Used by the client to preview "you hold N" / whether a gate
  * passes. Holdings are public on-chain, so no auth; all params required.
  *   ?holder=0x..&onChainEventId=0x..&chainId=421614&manifestRef=0x..
  */
-podRouter.get("/holdings", async (c) => {
+objectsRouter.get("/holdings", async (c) => {
   const holder = c.req.query("holder");
   const onChainEventId = c.req.query("onChainEventId");
   const manifestRef = c.req.query("manifestRef");
@@ -292,7 +292,7 @@ podRouter.get("/holdings", async (c) => {
     });
     return c.json({ ok: true, data: holding });
   } catch (err) {
-    console.error("[pod] GET /holdings failed:", err);
+    console.error("[objectEntry] GET /holdings failed:", err);
     return c.json({ ok: false, error: (err as Error).message }, 502);
   }
 });

@@ -1,7 +1,7 @@
 /**
  * `woco.cert-log.v1` — one SOC version of an issuer's per-badge certificate
  * log, on the v2 issuer curve. Design record: docs/SWARM_SOCIAL_PLAN.md,
- * BUILD RECORD slice 3; curve migration: HANDOVER-pod-curve-migration.md.
+ * BUILD RECORD slice 3; see the issuer-curve migration handover.
  *
  * WHAT CHANGED from `woco.pod-cert-log.v1`: the certificates inside are
  * `woco.cert.v1`, and verification takes an `IssuerAddress` rather than an
@@ -44,7 +44,7 @@ export const CERT_LOG_FORMAT = "woco.cert-log.v1" as const;
  * Serialized byte length of a value as it will be written to a feed.
  *
  * MODULE-PRIVATE for the same reason as the twin in `types.ts`:
- * `pod-cert/types.ts` exports a `jsonByteLength`, and both modules are
+ * the retired v1 certificate module exports a `jsonByteLength`, and both modules are
  * re-exported from the package barrel, so a second export of that name would
  * break it.
  */
@@ -136,7 +136,7 @@ export function verifyCertLogPage(value: unknown, issuer: IssuerAddress): CertV1
 }
 
 // ---------------------------------------------------------------------------
-// Log-cursor arithmetic + holder dedupe — MOVED here from `pod-cert/log.ts`
+// Log-cursor arithmetic + holder dedupe — MOVED here from the retired v1 certificate module
 // (PR 5a, verbatim), where they were deliberately left until the v1 module's
 // deletion. All four are LOG-FORMAT-AGNOSTIC: band/version arithmetic over the
 // discipline's `LAST_VERSION_IN_BAND`, and a first-seen dedupe over holder

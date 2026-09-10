@@ -11,15 +11,15 @@ import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js"
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 /**
- * Per-account POD-seed storage key. The blob is already AAD-bound to the address,
+ * Per-account identity-seed storage key. The blob is already AAD-bound to the address,
  * but a SINGLE global slot let a second account on the same device overwrite (and,
  * via the mismatch self-heal, DELETE) the first account's seed — so switching
  * between accounts thrashed each other's data. Keying the slot by the same address
  * lets multiple accounts' seeds coexist untouched. Logout still wipes the active
- * account's slot (see clearPodIdentity) so shared-device hygiene is unchanged.
+ * account's slot (see clearIdentitySeed) so shared-device hygiene is unchanged.
  */
-function podSeedKey(address: string): string {
-  return `${StorageKeys.POD_SEED}:${address.toLowerCase()}`;
+function identitySeedKey(address: string): string {
+  return `${StorageKeys.IDENTITY_SEED}:${address.toLowerCase()}`;
 }
 
 /**
@@ -46,7 +46,7 @@ function podSeedKey(address: string): string {
  * throws at setup instead. Nothing falls back to a platform key as a consolation:
  * a different signer is a different owner, not a degraded one.
  */
-export async function requestPodIdentity(
+export async function requestIdentitySeed(
   parentAddress: string,
   signTypedData: EIP712Signer,
   opts: {
@@ -96,34 +96,34 @@ export async function requestPodIdentity(
   const seed = keccak256(getBytes(signature));
 
   // Encrypt and store seed — AAD binds the blob to the parent address so a
-  // stale POD seed left in IndexedDB cannot be decrypted by a different
+  // stale identity seed left in IndexedDB cannot be decrypted by a different
   // identity on the same browser. See encryption.ts for rationale.
   const deviceKey = await ensureDeviceKey();
-  const encSeed = await encrypt(deviceKey, AAD.POD_SEED(parentAddress), { seed });
-  await putKV(podSeedKey(parentAddress), encSeed);
+  const encSeed = await encrypt(deviceKey, AAD.IDENTITY_SEED(parentAddress), { seed });
+  await putKV(identitySeedKey(parentAddress), encSeed);
 
   return { seed };
 }
 
 /**
- * Restore cached POD seed from IndexedDB.
+ * Restore cached identity seed from IndexedDB.
  * Returns null if no seed is stored, or if the stored seed was encrypted
  * for a different parent address (cross-identity guard via AAD).
  *
- * On AAD mismatch the stale blob is deleted so the next `requestPodIdentity`
+ * On AAD mismatch the stale blob is deleted so the next `requestIdentitySeed`
  * cleanly re-derives it — same wallet always yields the same seed, so this
  * is a UX-transparent one-time re-sign for users carrying pre-hardening
  * blobs from before 2026-05-17.
  */
-export async function restorePodSeed(parentAddress: string): Promise<string | null> {
-  const key = podSeedKey(parentAddress);
+export async function restoreIdentitySeed(parentAddress: string): Promise<string | null> {
+  const key = identitySeedKey(parentAddress);
   let encSeed = await getKV<EncryptedBlob>(key);
-  // Legacy migration: pre-hardening builds stored ONE global POD_SEED. If the
+  // Legacy migration: pre-hardening builds stored ONE global IDENTITY_SEED. If the
   // per-account slot is empty, fall back to the legacy slot; a successful decrypt
   // means it belongs to THIS account, so migrate it and drop the legacy blob.
   let fromLegacy = false;
   if (!encSeed) {
-    encSeed = await getKV<EncryptedBlob>(StorageKeys.POD_SEED);
+    encSeed = await getKV<EncryptedBlob>(StorageKeys.IDENTITY_SEED);
     if (!encSeed) return null;
     fromLegacy = true;
   }
@@ -132,12 +132,12 @@ export async function restorePodSeed(parentAddress: string): Promise<string | nu
   try {
     const { seed } = await decrypt<{ seed: string }>(
       deviceKey,
-      AAD.POD_SEED(parentAddress),
+      AAD.IDENTITY_SEED(parentAddress),
       encSeed,
     );
     if (fromLegacy) {
       await putKV(key, encSeed); // adopt into this account's per-account slot
-      await delKV(StorageKeys.POD_SEED); // legacy single slot no longer needed
+      await delKV(StorageKeys.IDENTITY_SEED); // legacy single slot no longer needed
     }
     return seed;
   } catch {
@@ -151,25 +151,25 @@ export async function restorePodSeed(parentAddress: string): Promise<string | nu
 
 /**
  * Persist an identity seed under a parent address — the recovery-path counterpart of
- * `requestPodIdentity` (which derives + stores in one step). After account
- * recovery the original POD seed comes from the decrypted escrow bundle, not a
+ * `requestIdentitySeed` (which derives + stores in one step). After account
+ * recovery the original identity seed comes from the decrypted escrow bundle, not a
  * fresh signature, so it must be re-stored under the recovered (new) identity's
- * parent address: the Kernel address is preserved by recovery, but the POD_ADDRESS
+ * parent address: the Kernel address is preserved by recovery, but the SEED_ADDRESS
  * AAD key is the new passkey's PRF-EOA, so the blob is bound to that. Same
- * encrypt + AAD + key as `requestPodIdentity` so `restorePodSeed` reads it back.
+ * encrypt + AAD + key as `requestIdentitySeed` so `restoreIdentitySeed` reads it back.
  */
-export async function storePodSeed(parentAddress: string, seed: string): Promise<void> {
+export async function storeIdentitySeed(parentAddress: string, seed: string): Promise<void> {
   const deviceKey = await ensureDeviceKey();
-  const encSeed = await encrypt(deviceKey, AAD.POD_SEED(parentAddress), { seed });
-  await putKV(podSeedKey(parentAddress), encSeed);
+  const encSeed = await encrypt(deviceKey, AAD.IDENTITY_SEED(parentAddress), { seed });
+  await putKV(identitySeedKey(parentAddress), encSeed);
 }
 
 /**
- * Wipe the POD seed. Pass the account's POD address to drop its per-account slot;
+ * Wipe the identity seed. Pass the account's seed address to drop its per-account slot;
  * the legacy single slot is always cleared too (shared-device hygiene — no seed
  * left decryptable at rest after logout). Omitting the address clears only legacy.
  */
-export async function clearPodIdentity(address?: string): Promise<void> {
-  if (address) await delKV(podSeedKey(address));
-  await delKV(StorageKeys.POD_SEED);
+export async function clearIdentitySeed(address?: string): Promise<void> {
+  if (address) await delKV(identitySeedKey(address));
+  await delKV(StorageKeys.IDENTITY_SEED);
 }

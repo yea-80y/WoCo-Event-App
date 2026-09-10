@@ -8,8 +8,8 @@
  *
  * NOT TESTED HERE, because not ported here: the band/version cursor arithmetic
  * and the holder dedupe. Both are log-format-agnostic and stay in
- * `pod-cert/log.ts` until the v1 module is deleted (PR 5a) — their tests stay
- * in `test/pod-cert/log.test.ts` with them.
+ * the retired v1 certificate module until the v1 module is deleted (PR 5a) — their tests stay
+ * in the retired v1 certificate module's tests with them.
  */
 
 import { test } from "node:test";

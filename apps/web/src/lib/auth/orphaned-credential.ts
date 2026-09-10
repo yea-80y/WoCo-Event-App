@@ -15,7 +15,7 @@
  * proof of orphaning, never of a new user.
  *
  * So the refusal here fails the login and says why through the one-shot
- * notice channel. Callers must leave the binding and the POD seed in place:
+ * notice channel. Callers must leave the binding and the identity seed in place:
  * the binding is what keeps the counterfactual path unreachable — that path
  * is reserved for credentials that carry no binding at all.
  */
@@ -92,7 +92,7 @@ export function postOrphanedCredentialNotice(
 /**
  * The refusal: record the evidence, post the explanation, hand back the error
  * the login fails with. Callers throw it; they must NOT clear the binding or
- * the POD seed — durable state is exactly what makes the refusal repeatable.
+ * the identity seed — durable state is exactly what makes the refusal repeatable.
  */
 export function refuseOrphanedCredential(
   kind: OrphanedCredentialKind,

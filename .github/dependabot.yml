@@ -23,10 +23,10 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: "@ethersphere/bee-js"
         update-types: [version-update:semver-major]
-      # @noble/* derives POD identities, signs ticket editions and seals recovery
+      # @noble/* derives identity seeds, signs ticket editions and seals recovery
       # escrow. A derivation change here silently invalidates every ticket ever
       # issued — and a green build would not notice. Bump only alongside the
-      # golden vectors in apps/web/test/pod-identity.test.ts.
+      # golden vectors in apps/web/test/identity-seed.test.ts.
       - dependency-name: "@noble/*"
         update-types: [version-update:semver-major]
 

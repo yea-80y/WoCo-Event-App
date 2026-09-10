@@ -212,7 +212,7 @@ test("a seed statement carrying a rotation co-signature is refused", async () =>
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-test("validatePodGate's cert arm refuses a retired issuer", () => {
+test("validateObjectGate's cert arm refuses a retired issuer", () => {
   const src = readFileSync(
     fileURLToPath(new URL("../src/lib/object/gate-check.ts", import.meta.url)),
     "utf8",

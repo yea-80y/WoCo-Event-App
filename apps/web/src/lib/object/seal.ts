@@ -1,6 +1,6 @@
 /**
  * Seal and sign a `woco.manifest.v2` — the step BOTH rails share
- * (issuer-curve migration PR 4; design record: HANDOVER-pod-curve-migration.md).
+ * (issuer-curve migration PR 4; design record: the issuer-curve migration handover).
  *
  * The ticket rail and the certificate rail disagree about exactly one thing:
  * how many bodies the Merkle root covers. On the ticket rail a body is an
@@ -27,7 +27,7 @@
  * This function deliberately does NOT check `bodies.length` against
  * `totalSupply`. The rails legitimately disagree, and a check here could only
  * be right for one of them; the real enforcement is server-side in
- * `issuePodType`, which knows which rail it is on.
+ * `issueObjectType`, which knows which rail it is on.
  *
  * WHAT THE CURVE MIGRATION CHANGED HERE, and only this: the signer is the
  * derived secp256k1 ISSUING key (`ensureIssuingKey`), the issuer identity is

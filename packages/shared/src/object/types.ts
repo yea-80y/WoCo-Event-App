@@ -1,5 +1,5 @@
 /**
- * POD layer — the LIVE display, directory and gating types.
+ * Object layer — the LIVE display, directory and gating types.
  *
  * The v1 cryptographic surface that used to open this file (`woco.ticket.v2`
  * bodies, `woco.manifest.v1`, the ed25519 issuer) was DELETED in the
@@ -16,19 +16,19 @@ import type { Hex64, Hex0x } from "../types.js";
 export type Bytes32Hex = string;
 
 // ===========================================================================
-// POD layer — kinds, display metadata, creator directory (Step 4, 2026-06-03)
+// Object layer — kinds, display metadata, creator directory (Step 4, 2026-06-03)
 //
-// A POD *type* is a manifest. Its cryptographic surface (`woco.manifest.v2`,
+// An object *type* is a manifest. Its cryptographic surface (`woco.manifest.v2`,
 // edition/types.ts) is LOCKED and untouched here. Everything in this section is the MUTABLE,
 // creator-facing classification + display layer that lives in the directory
-// entry — so re-categorising or renaming a POD never requires re-signing the
+// entry — so re-categorising or renaming an object never requires re-signing the
 // manifest. See docs/WOCO_SHOP_PLAN.md §4.
 // ===========================================================================
 
 /**
- * What a POD is *for*. A directory-level classification only — it is NOT bound
+ * What an object is *for*. A directory-level classification only — it is NOT bound
  * into the signed manifest (gating keys on a specific `manifestRef`, never on
- * kind). Drives grouping/affordances in the creator POD manager.
+ * kind). Drives grouping/affordances in the creator object manager.
  * - `ticket`        — event admission (today's flow).
  * - `badge`         — loyalty/achievement, issued at a milestone. Soulbound.
  * - `collectible`   — drop / first-N / memento. Soulbound (opt-in NFT mirror later).
@@ -36,17 +36,17 @@ export type Bytes32Hex = string;
  *                     stage; the transfer mechanism (ERC-721 ownership) is a
  *                     separate product bet, deliberately unbuilt (§4.2/§4.6).
  */
-export type PodKind = "ticket" | "badge" | "collectible" | "authenticity";
+export type ObjectKind = "ticket" | "badge" | "collectible" | "authenticity";
 
 /**
- * Conventional shape of a POD's free-form `metadata` for DISPLAY. The POD body
+ * Conventional shape of an object's free-form `metadata` for DISPLAY. The object body
  * keeps `metadata: Record<string, unknown>` (no schema change); this interface
  * documents the keys the manager + pickers read so producers populate them
  * consistently. Tickets begin writing `image` = the event image hash so every
- * POD type has a visual in the manager.
+ * object type has a visual in the manager.
  */
-export interface PodDisplayMetadata {
-  /** Human-readable POD-type name (e.g. "Festival Regular"). */
+export interface ObjectDisplayMetadata {
+  /** Human-readable object-type name (e.g. "Festival Regular"). */
   name?: string;
   /** Primary artwork — Swarm content ref (no 0x prefix). */
   image?: Hex64;
@@ -56,12 +56,12 @@ export interface PodDisplayMetadata {
 }
 
 /**
- * A grouping a creator defines to organise their POD types (e.g. "Loyalty",
+ * A grouping a creator defines to organise their object types (e.g. "Loyalty",
  * "Limited drops"). Same shape as the shop's `ProductCategory` by design —
  * one taxonomy concept across the platform, no new model.
  */
-export interface PodCategory {
-  /** Stable slug/ULID — survives renames, referenced as a POD's `categoryId`. */
+export interface ObjectCategory {
+  /** Stable slug/ULID — survives renames, referenced as an object's `categoryId`. */
   id: string;
   label: string;
   /** Display order; lower first. */
@@ -69,20 +69,20 @@ export interface PodCategory {
 }
 
 /**
- * Compact entry in a creator's POD directory — one per POD type (manifest).
+ * Compact entry in a creator's object directory — one per object type (manifest).
  * Carries the mutable classification/display layer keyed to the immutable
  * `manifestRef`. Mirrors `SiteDirectoryEntry` / `ShopDirectoryEntry`.
  */
-export interface PodDirectoryEntry {
+export interface ObjectDirectoryEntry {
   /** 0x-prefixed bytes32 — the on-chain/manifest commitment. Stable identity. */
   manifestRef: Bytes32Hex;
-  kind: PodKind;
-  /** Display name (snapshot of the manifest's podTemplate name / metadata name). */
+  kind: ObjectKind;
+  /** Display name (snapshot of the manifest's objectTemplate name / metadata name). */
   name: string;
-  /** Primary artwork (Swarm ref, no 0x). Event image hash for `ticket` PODs. */
+  /** Primary artwork (Swarm ref, no 0x). Event image hash for `ticket` objects. */
   image?: Hex64;
   description?: string;
-  /** Creator-local grouping; references a `PodCategory.id`. */
+  /** Creator-local grouping; references an `ObjectCategory.id`. */
   categoryId?: string;
   /** Total editions the manifest commits to. */
   supply: number;
@@ -94,13 +94,13 @@ export interface PodDirectoryEntry {
   issuer?: string;
   /** On-chain eventId (0x bytes32) the manifest is committed under — the
    *  holdings reader needs this to read slot ownership. Present once on-chain
-   *  registration confirms; for `ticket` PODs that is `confirmSeriesOnChain`. */
+   *  registration confirms; for `ticket` objects that is `confirmSeriesOnChain`. */
   eventId?: Bytes32Hex;
-  /** Chain the POD was registered on — the holdings reader / gate config needs
+  /** Chain the object was registered on — the holdings reader / gate config needs
    *  it to read slot ownership. Set alongside `eventId` at on-chain confirm. */
   chainId?: number;
   /**
-   * The issuer's CONTENT-FEED owner address, for badges whose holdings are POD
+   * The issuer's CONTENT-FEED owner address, for badges whose holdings are object
    * certificates — without which the certificate log cannot be found at all.
    *
    * A log's chunk addresses are `keccak256(identifier ‖ owner)`, and while the
@@ -120,23 +120,23 @@ export interface PodDirectoryEntry {
    * flagged rather than prevented everywhere in this design.
    */
   certLogOwner?: Hex0x;
-  /** Swarm ref to the `SeriesManifestBlob` (signed manifest + pod-body refs).
-   *  Immutable/content-addressed — NOT display layer. Present for PODs minted
+  /** Swarm ref to the `SeriesManifestBlob` (signed manifest + object-body refs).
+   *  Immutable/content-addressed — NOT display layer. Present for objects minted
    *  through standalone issuance (badge/collectible); the issuance-to-holder /
-   *  verification path needs it to fetch the pod bodies + Merkle proofs. Ticket
-   *  PODs keep this on the event's `SeriesSummary` instead. */
+   *  verification path needs it to fetch the object bodies + Merkle proofs. Ticket
+   *  objects keep this on the event's `SeriesSummary` instead. */
   swarmManifestRef?: Hex64;
   createdAt: string;
   updatedAt: string;
 }
 
-/** Paged on-feed directory of a creator's POD types at `woco/pod/creator/{ethAddress}`. */
-export interface PodDirectory {
+/** Paged on-feed directory of a creator's object types at `woco/pod/creator/{ethAddress}`. */
+export interface ObjectDirectory {
   v: 1;
   owner: Hex0x;
-  pods: PodDirectoryEntry[];
+  objects: ObjectDirectoryEntry[];
   /** Creator-defined groupings (page 0 only). */
-  categories: PodCategory[];
+  categories: ObjectCategory[];
   updatedAt: string;
   /** Number of overflow pages (1..N) beyond page 0. Page 0 only. */
   pages?: number;
@@ -147,7 +147,7 @@ export interface PodDirectory {
 // ---------------------------------------------------------------------------
 
 /**
- * A holder's stake in a single POD type, as read from the TRUSTLESS on-chain
+ * A holder's stake in a single object type, as read from the TRUSTLESS on-chain
  * source (`WoCoEventV2` slot ownership) — NOT the platform-written collection
  * feed, which is spoofable and would undercut the gate (§4.4). `count` is what
  * most gates compare against; `slots` are the specific owned slot indices.
@@ -157,7 +157,7 @@ export interface PodDirectory {
  * falls out for free. Email-only (no-wallet) claims aren't on-chain and so are
  * not gateable by address, which is correct: you can only gate a wallet.
  */
-export interface PodHolding {
+export interface ObjectHolding {
   manifestRef: Bytes32Hex;
   count: number;
   /** Owned on-chain slot indices (0-based, allocation order). */
@@ -167,10 +167,10 @@ export interface PodHolding {
 /**
  * A gate rule: hold ≥`minCount` of `manifestRef`, optionally only within a slot
  * range / set, optionally only within a time window. Evaluated by the pure
- * `evaluatePodGate` against a `PodHolding` at claim/order time (v1, server-side)
+ * `evaluateObjectGate` against an `ObjectHolding` at claim/order time (v1, server-side)
  * — see §4.3/§4.4. Reused by event gating, product gating, milestone eligibility.
  */
-export interface PodGateRule {
+export interface ObjectGateRule {
   manifestRef: Bytes32Hex;
   /** Minimum holdings to pass. Default 1. */
   minCount?: number;
@@ -186,12 +186,12 @@ export interface PodGateRule {
 }
 
 /**
- * A STORED, resolved POD gate attached to a ticket series or product — a
+ * A STORED, resolved object gate attached to a ticket series or product — a
  * DISCRIMINATED UNION over where the holding it checks comes from.
  *
  * Two sources exist (docs/SWARM_SOCIAL_PLAN.md, Gate B): on-chain slot
- * ownership, and issuer-signed POD certificates. Both variants are structural
- * supersets of `PodGateRule`, so either passes directly to `evaluatePodGate` —
+ * ownership, and issuer-signed certificates. Both variants are structural
+ * supersets of `ObjectGateRule`, so either passes directly to `evaluateObjectGate` —
  * the evaluator stays source-agnostic and never learned about any of this.
  *
  * WHY A UNION rather than one interface with optional coordinates: the fields
@@ -203,20 +203,20 @@ export interface PodGateRule {
  *
  * READING AN OLD RECORD (the rule, and it is load-bearing): a stored gate with
  * NO `holdingSource` is a CHAIN gate. True historically — every gate written
- * before the field existed passed through `validatePodGate`, which required the
+ * before the field existed passed through `validateObjectGate`, which required the
  * chain binding, so no other kind can exist — and safe by direction: chain is
  * the strictest proof, so misreading could only make a gate harder to pass,
  * never let a certificate satisfy chain-configured trust. Present-but-
  * unrecognised must REFUSE, so a future source written by newer code fails
  * closed on an older server rather than falling into the chain arm.
  *
- * `podName` is a display snapshot for the config UI and the gate-failure message
+ * `objectName` is a display snapshot for the config UI and the gate-failure message
  * — never authoritative (the cryptographic identity is `manifestRef`).
  */
-interface PodGateBase {
+interface ObjectGateBase {
   manifestRef: Bytes32Hex;
-  /** Display name of the gating POD at config time (UI + error text only). */
-  podName?: string;
+  /** Display name of the gating object at config time (UI + error text only). */
+  objectName?: string;
   /** Unix ms — gate closed before this. */
   notBefore?: number;
   /** Unix ms — gate closed after this. */
@@ -232,15 +232,15 @@ interface PodGateBase {
  * self-describing to a third-party reader.
  *
  * There is no global `manifestRef → eventId` index, so the creator snapshots
- * both coordinates from the chosen POD's directory entry at config time, and
- * `validatePodGate` proves on-chain that the event really does commit
+ * both coordinates from the chosen object's directory entry at config time, and
+ * `validateObjectGate` proves on-chain that the event really does commit
  * `manifestRef` before the gate is stored.
  */
-export interface ChainPodGate extends PodGateBase {
+export interface ChainObjectGate extends ObjectGateBase {
   holdingSource?: "chain";
   /** On-chain eventId committing `manifestRef` — needed to read slot ownership. */
   onChainEventId: Bytes32Hex;
-  /** Chain the gating POD lives on (holdings read target). */
+  /** Chain the gating object lives on (holdings read target). */
   chainId: number;
   /** Minimum holdings to pass. Default 1. */
   minCount?: number;
@@ -265,7 +265,7 @@ export interface ChainPodGate extends PodGateBase {
  * `maxSlotExclusive` is absent because slots are the chain model's; `minCount`
  * admits only 1 because a certificate holding is presence, not quantity.
  */
-export interface CertPodGate extends PodGateBase {
+export interface CertObjectGate extends ObjectGateBase {
   holdingSource: "pod-cert";
   /**
    * Swarm ref (no 0x) of the `SeriesManifestBlob` carrying this badge's signed
@@ -279,10 +279,10 @@ export interface CertPodGate extends PodGateBase {
   minCount?: 1;
 }
 
-export type PodGate = ChainPodGate | CertPodGate;
+export type ObjectGate = ChainObjectGate | CertObjectGate;
 
 /**
- * Time / slot window for a `PodGateGroup`. Phase 1 ships `always` + `time`;
+ * Time / slot window for an `ObjectGateGroup`. Phase 1 ships `always` + `time`;
  * `firstN` and `reserved` are defined here for schema completeness but not yet
  * enforced (Phase 2 — needs claim-count reads; see docs/WOCO_SHOP_PLAN.md §4).
  */
@@ -293,13 +293,13 @@ export type GateWindow =
   | { kind: "reserved"; reserved: number };
 
 /**
- * Multi-POD gate group. Organiser chooses ANY (hold at least one of the listed
- * PODs) or ALL (hold every listed POD). An optional group-level `window` further
- * restricts when the gate is active. Supersedes a bare `PodGate` stored on a
+ * Multi-object gate group. Organiser chooses ANY (hold at least one of the listed
+ * objects) or ALL (hold every listed object). An optional group-level `window` further
+ * restricts when the gate is active. Supersedes a bare `ObjectGate` stored on a
  * series or product — use `normalizeGate()` to upcast old single-gate records.
  */
-export interface PodGateGroup {
+export interface ObjectGateGroup {
   mode: "any" | "all";
-  gates: PodGate[];
+  gates: ObjectGate[];
   window?: GateWindow;
 }

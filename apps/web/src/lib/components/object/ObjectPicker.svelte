@@ -1,20 +1,20 @@
 <script lang="ts">
   /**
-   * PodPicker — select one or more POD types by manifestRef.
+   * ObjectPicker — select one or more object types by manifestRef.
    *
-   * Wraps PodCard variant="picker". Used wherever event / product gating plugs
+   * Wraps ObjectCard variant="picker". Used wherever event / product gating plugs
    * in (Step 2 / Opus work). This component stays self-contained: load, filter,
    * toggle. The parent owns selection state and receives changes via `onChange`.
    */
-  import type { PodDirectoryEntry, PodKind } from "@woco/shared";
-  import { getMyPods } from "../../api/objects.js";
-  import PodCard from "./ObjectCard.svelte";
+  import type { ObjectDirectoryEntry, ObjectKind } from "@woco/shared";
+  import { getMyObjects } from "../../api/objects.js";
+  import ObjectCard from "./ObjectCard.svelte";
 
   interface Props {
     /** Currently selected manifestRef(s). */
     selected: string[];
     multiple?: boolean;
-    kindFilter?: PodKind[];
+    kindFilter?: ObjectKind[];
     onChange: (selected: string[]) => void;
     /** Optional label shown in the empty-state link. */
     label?: string;
@@ -24,22 +24,22 @@
 
   type Phase = "loading" | "ready" | "error";
   let phase = $state<Phase>("loading");
-  let pods = $state<PodDirectoryEntry[]>([]);
+  let objects = $state<ObjectDirectoryEntry[]>([]);
   let categories = $state<Map<string, string>>(new Map());
   let error = $state("");
   let catFilter = $state("all");
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
-  void BEE_GATEWAY; // used in PodCard, mentioned for context
+  void BEE_GATEWAY; // used in ObjectCard, mentioned for context
 
   async function load() {
     phase = "loading";
     error = "";
     try {
-      const dir = await getMyPods();
-      pods = kindFilter
-        ? dir.pods.filter((p) => kindFilter.includes(p.kind))
-        : dir.pods;
+      const dir = await getMyObjects();
+      objects = kindFilter
+        ? dir.objects.filter((p) => kindFilter.includes(p.kind))
+        : dir.objects;
       const m = new Map<string, string>();
       for (const c of dir.categories) m.set(c.id, c.label);
       categories = m;
@@ -53,7 +53,7 @@
   const catOptions = $derived.by(() => {
     const seen = new Set<string>();
     const opts: { id: string; label: string }[] = [];
-    for (const p of pods) {
+    for (const p of objects) {
       if (p.categoryId && !seen.has(p.categoryId)) {
         seen.add(p.categoryId);
         opts.push({ id: p.categoryId, label: categories.get(p.categoryId) ?? p.categoryId });
@@ -63,13 +63,13 @@
   });
 
   const filtered = $derived.by(() => {
-    if (catFilter === "all") return pods;
-    if (catFilter === "uncat") return pods.filter((p) => !p.categoryId);
-    return pods.filter((p) => p.categoryId === catFilter);
+    if (catFilter === "all") return objects;
+    if (catFilter === "uncat") return objects.filter((p) => !p.categoryId);
+    return objects.filter((p) => p.categoryId === catFilter);
   });
 
-  function toggle(pod: PodDirectoryEntry) {
-    const ref = pod.manifestRef;
+  function toggle(objectEntry: ObjectDirectoryEntry) {
+    const ref = objectEntry.manifestRef;
     if (multiple) {
       const next = selected.includes(ref)
         ? selected.filter((r) => r !== ref)
@@ -99,7 +99,7 @@
       <button class="btn btn--ghost btn--sm" onclick={load}>Retry</button>
     </div>
 
-  {:else if pods.length === 0}
+  {:else if objects.length === 0}
     <div class="pick-empty">
       <span class="pick-kicker">No {label} yet</span>
       <p>
@@ -126,7 +126,7 @@
             onclick={() => (catFilter = opt.id)}
           >{opt.label}</button>
         {/each}
-        {#if pods.some((p) => !p.categoryId)}
+        {#if objects.some((p) => !p.categoryId)}
           <button
             class="fchip"
             class:active={catFilter === "uncat"}
@@ -139,12 +139,12 @@
     {/if}
 
     <div class="pick-list">
-      {#each filtered as pod (pod.manifestRef)}
-        <PodCard
-          {pod}
+      {#each filtered as objectEntry (objectEntry.manifestRef)}
+        <ObjectCard
+          {objectEntry}
           variant="picker"
-          categoryLabel={pod.categoryId ? categories.get(pod.categoryId) : undefined}
-          selected={selected.includes(pod.manifestRef)}
+          categoryLabel={objectEntry.categoryId ? categories.get(objectEntry.categoryId) : undefined}
+          selected={selected.includes(objectEntry.manifestRef)}
           onSelect={toggle}
         />
       {/each}

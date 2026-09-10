@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
-  import { deriveEncryptionKeypairFromPodSeed, openJson } from "@woco/shared";
+  import { deriveEncryptionKeypairFromSeed, openJson } from "@woco/shared";
   import { getEvent } from "../../api/events.js";
   import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
   import { startBroadcast, pollBroadcast, type BroadcastJobStatus } from "../../api/broadcasts.js";
@@ -14,7 +14,7 @@
     type ServiceNoticeType,
   } from "@woco/shared";
   import { getEventSWR, getEventOrdersSWR } from "../../api/creator-cache.js";
-  import { restorePodSeed } from "../../auth/identity-seed.js";
+  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
@@ -371,7 +371,7 @@
   // ---------------------------------------------------------------------------
 
   /**
-   * Decrypt the currently-loaded orders with the organiser's POD-derived key.
+   * Decrypt the currently-loaded orders with the organiser's seed-derived key.
    * Replaces the displayed map wholesale. Safe to call multiple times (e.g.
    * once for cached data, again when fresh arrives).
    */
@@ -382,30 +382,30 @@
 
     decrypting = true;
 
-    if (!auth.podAddress) {
+    if (!auth.seedAddress) {
       decryptError = "Not logged in. Cannot decrypt orders.";
       decrypting = false;
       return;
     }
-    // POD seed is keyed by the PRF-EOA address for passkey (invariant #1), the
-    // parent for everyone else — auth.podAddress resolves the right one.
-    let podSeed = await restorePodSeed(auth.podAddress);
-    if (!podSeed) {
-      const pk = await auth.ensurePodIdentity();
+    // identity seed is keyed by the PRF-EOA address for passkey (invariant #1), the
+    // parent for everyone else — auth.seedAddress resolves the right one.
+    let identitySeed = await restoreIdentitySeed(auth.seedAddress);
+    if (!identitySeed) {
+      const pk = await auth.ensureIdentitySeed();
       if (!pk) {
         decryptError = "You cancelled the signature, so your orders stay locked.";
         decrypting = false;
         return;
       }
-      podSeed = await restorePodSeed(auth.podAddress);
+      identitySeed = await restoreIdentitySeed(auth.seedAddress);
     }
-    if (!podSeed) {
+    if (!identitySeed) {
       decryptError = "No signing key on this device. Restore from recovery to read order details.";
       decrypting = false;
       return;
     }
 
-    const { privateKey } = deriveEncryptionKeypairFromPodSeed(podSeed);
+    const { privateKey } = deriveEncryptionKeypairFromSeed(identitySeed);
 
     if (hasEncryptedOrders) {
       const results = await Promise.allSettled(

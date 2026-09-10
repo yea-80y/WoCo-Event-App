@@ -1,29 +1,29 @@
 <script lang="ts">
   /**
-   * PodManager — the creator "PODs" surface (#/creator/pods).
+   * ObjectManager — the creator "objects" surface (#/creator/pods).
    *
-   * Header (title + Create POD), category filter chips, responsive PodCard grid,
+   * Header (title + Create object), category filter chips, responsive ObjectCard grid,
    * empty/loading/error states. The LOOK is locked here (Opus + frontend-design):
-   * Concrete & Acid, single lime affordance, the PodCard allocation hairline.
+   * Concrete & Acid, single lime affordance, the ObjectCard allocation hairline.
    *
-   * HANDOFF (Sonnet — see docs/POD_MANAGER_SONNET_HANDOVER.md): the create-POD
+   * HANDOFF (its design record, an untracked handover, is gone): the create-object
    * modal (badge/collectible — name, artwork upload, supply → sign manifest),
-   * the POD detail/edit drawer (rename, re-categorise, artwork), and category
+   * the object detail/edit drawer (rename, re-categorise, artwork), and category
    * management. Those hang off the `onCreate` / `onSelect` seams below; the data
    * load, filtering, grid, and states are done.
    */
-  import type { PodDirectoryEntry, PodCategory, PodKind } from "@woco/shared";
+  import type { ObjectDirectoryEntry, ObjectCategory, ObjectKind } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { getMyPods, setPodCategories } from "../../api/objects.js";
+  import { getMyObjects, setObjectCategories } from "../../api/objects.js";
   import { onMount } from "svelte";
-  import PodCard from "./ObjectCard.svelte";
-  import PodEditDrawer from "./ObjectEditDrawer.svelte";
-  import PodCreateModal from "./ObjectCreateModal.svelte";
+  import ObjectCard from "./ObjectCard.svelte";
+  import ObjectEditDrawer from "./ObjectEditDrawer.svelte";
+  import ObjectCreateModal from "./ObjectCreateModal.svelte";
 
   type Phase = "loading" | "ready" | "unauth" | "error";
   let phase = $state<Phase>("loading");
-  let pods = $state<PodDirectoryEntry[]>([]);
-  let categories = $state<PodCategory[]>([]);
+  let objects = $state<ObjectDirectoryEntry[]>([]);
+  let categories = $state<ObjectCategory[]>([]);
   let error = $state("");
 
   /** Active category filter — "all" or a category id; "uncat" = no category. */
@@ -36,22 +36,22 @@
   });
 
   const filtered = $derived.by(() => {
-    if (activeFilter === "all") return pods;
-    if (activeFilter === "uncat") return pods.filter((p) => !p.categoryId);
-    return pods.filter((p) => p.categoryId === activeFilter);
+    if (activeFilter === "all") return objects;
+    if (activeFilter === "uncat") return objects.filter((p) => !p.categoryId);
+    return objects.filter((p) => p.categoryId === activeFilter);
   });
 
   /** Count per kind, for the header summary line. */
   const kindCounts = $derived.by(() => {
-    const c: Record<PodKind, number> = { ticket: 0, badge: 0, collectible: 0, authenticity: 0 };
-    for (const p of pods) c[p.kind]++;
+    const c: Record<ObjectKind, number> = { ticket: 0, badge: 0, collectible: 0, authenticity: 0 };
+    for (const p of objects) c[p.kind]++;
     return c;
   });
 
   const sortedCategories = $derived(
     [...categories].sort((a, b) => a.sortIndex - b.sortIndex),
   );
-  const hasUncategorised = $derived(pods.some((p) => !p.categoryId));
+  const hasUncategorised = $derived(objects.some((p) => !p.categoryId));
 
   async function load() {
     if (!auth.isConnected || !auth.parent) {
@@ -66,8 +66,8 @@
       }
     }
     try {
-      const dir = await getMyPods();
-      pods = dir.pods;
+      const dir = await getMyObjects();
+      objects = dir.objects;
       categories = dir.categories;
       phase = "ready";
     } catch (e) {
@@ -77,21 +77,21 @@
   }
 
   // ── detail drawer ────────────────────────────────────────────────────────────
-  let selectedPod = $state<PodDirectoryEntry | null>(null);
+  let selectedObject = $state<ObjectDirectoryEntry | null>(null);
 
-  function onSelect(pod: PodDirectoryEntry) {
-    selectedPod = pod;
+  function onSelect(objectEntry: ObjectDirectoryEntry) {
+    selectedObject = objectEntry;
   }
   function closeDrawer() {
-    selectedPod = null;
+    selectedObject = null;
   }
-  function onDrawerSaved(updated: PodDirectoryEntry) {
-    pods = pods.map((p) => (p.manifestRef === updated.manifestRef ? updated : p));
+  function onDrawerSaved(updated: ObjectDirectoryEntry) {
+    objects = objects.map((p) => (p.manifestRef === updated.manifestRef ? updated : p));
   }
 
   // ── category editor ───────────────────────────────────────────────────────
   let catEditorOpen = $state(false);
-  let catDraft = $state<PodCategory[]>([]);
+  let catDraft = $state<ObjectCategory[]>([]);
   let catSaving = $state(false);
   let catError = $state("");
 
@@ -131,10 +131,10 @@
     catSaving = true;
     catError = "";
     try {
-      const saved = await setPodCategories(valid.map((c, i) => ({ ...c, sortIndex: i })));
+      const saved = await setObjectCategories(valid.map((c, i) => ({ ...c, sortIndex: i })));
       categories = saved;
-      const dir = await getMyPods();
-      pods = dir.pods;
+      const dir = await getMyObjects();
+      objects = dir.objects;
       categories = dir.categories;
       catEditorOpen = false;
     } catch (e) {
@@ -144,36 +144,36 @@
     }
   }
 
-  // ── create POD ────────────────────────────────────────────────────────────
+  // ── create object ────────────────────────────────────────────────────────────
   let createOpen = $state(false);
 
   function onCreate() {
     createOpen = true;
   }
-  function onCreated(entry: PodDirectoryEntry) {
+  function onCreated(entry: ObjectDirectoryEntry) {
     // The directory is most-recently-updated first; mirror that locally so the
-    // new POD appears at the head without a refetch.
-    pods = [entry, ...pods.filter((p) => p.manifestRef !== entry.manifestRef)];
+    // new object appears at the head without a refetch.
+    objects = [entry, ...objects.filter((p) => p.manifestRef !== entry.manifestRef)];
   }
 
   onMount(load);
 </script>
 
-<PodEditDrawer
-  pod={selectedPod}
+<ObjectEditDrawer
+  objectEntry={selectedObject}
   {categories}
   onclose={closeDrawer}
   onsaved={onDrawerSaved}
 />
 
-<PodCreateModal
+<ObjectCreateModal
   open={createOpen}
   {categories}
   onclose={() => (createOpen = false)}
   oncreated={onCreated}
 />
 
-<div class="pod-manager">
+<div class="objectEntry-manager">
   <div class="page-head">
     <div class="head-left">
       <h1>Objects</h1>
@@ -187,7 +187,7 @@
     </button>
   </div>
 
-  {#if phase === "ready" && pods.length > 0}
+  {#if phase === "ready" && objects.length > 0}
     <div class="filter-row">
       <div class="filters" role="tablist" aria-label="Filter objects by category">
         <button
@@ -197,7 +197,7 @@
           aria-selected={activeFilter === "all"}
           onclick={() => (activeFilter = "all")}
         >
-          All <span class="fcount">{pods.length}</span>
+          All <span class="fcount">{objects.length}</span>
         </button>
         {#each sortedCategories as cat (cat.id)}
           <button
@@ -294,7 +294,7 @@
       <p>{error}</p>
       <button class="btn btn--ghost" onclick={load}>Retry</button>
     </div>
-  {:else if pods.length === 0}
+  {:else if objects.length === 0}
     <div class="empty-state">
       <div class="empty-mark" aria-hidden="true">◈</div>
       <span class="kicker">No objects yet</span>
@@ -312,11 +312,11 @@
     </div>
   {:else}
     <div class="grid">
-      {#each filtered as pod (pod.manifestRef)}
-        <PodCard
-          {pod}
+      {#each filtered as objectEntry (objectEntry.manifestRef)}
+        <ObjectCard
+          {objectEntry}
           variant="grid"
-          categoryLabel={pod.categoryId ? catLabel.get(pod.categoryId) : undefined}
+          categoryLabel={objectEntry.categoryId ? catLabel.get(objectEntry.categoryId) : undefined}
           {onSelect}
         />
       {/each}
@@ -325,7 +325,7 @@
 </div>
 
 <style>
-  .pod-manager {
+  .objectEntry-manager {
     max-width: 1080px;
     margin: 0 auto;
     padding: 24px 20px 80px;

@@ -1,20 +1,20 @@
 /**
  * A ratchet, not a unit test: the credits write path must resolve the rider's
- * POD material through the auth store's BOUND accessors, never by passing an
+ * seed material through the auth store's BOUND accessors, never by passing an
  * address itself.
  *
- * The bug this pins cost a whole surface. The POD seed is stored under the POD
+ * The bug this pins cost a whole surface. The identity seed is stored under the seed
  * ADDRESS — the PRF-EOA for passkey, the Web3Auth EOA for web3auth — while
- * `auth.parent` is the KERNEL address for both (auth-store `_getPodAddress`,
+ * `auth.parent` is the KERNEL address for both (auth-store `_getSeedAddress`,
  * invariant #1). `credits.ts` looked the seed up by parent, so for every
  * passkey and web3auth rider it read a slot that is never written:
- * `ensurePodIdentity()` would succeed, having just made the rider approve a
+ * `ensureIdentitySeed()` would succeed, having just made the rider approve a
  * ceremony, and the very next line would fail with "could not unlock your
  * collection identity". The rail was dead for exactly the audience it is for,
  * and silently — the signed-out card is what a constant-false unlock check
  * renders, so it looks like a rider who simply has not collected yet.
  *
- * `auth.getPodSeed()` carries the comment "so callers don't need to pass it
+ * `auth.getIdentitySeed()` carries the comment "so callers don't need to pass it
  * (and can't pass the wrong one)". This module was the sole caller in the
  * codebase reaching past it. A unit test cannot catch the regression — the
  * module reaches the auth store, which is why the pure logic was split into
@@ -45,25 +45,25 @@ const SOURCE = readFileSync(
  */
 const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
-test("credits never imports the address-taking POD helpers directly", () => {
+test("credits never imports the address-taking object helpers directly", () => {
   // Importing them is the only way to call them with the wrong address, so the
   // import is the tripwire. If a future caller genuinely needs one, bind it in
-  // the auth store next to getPodSeed rather than widening this.
+  // the auth store next to getIdentitySeed rather than widening this.
   assert.doesNotMatch(
     SOURCE,
-    /import\s*\{[^}]*\brestorePodSeed\b[^}]*\}\s*from\s*["'][^"']*pod-identity/,
+    /import\s*\{[^}]*\brestoreIdentitySeed\b[^}]*\}\s*from\s*["'][^"']*identity-seed/,
   );
 });
 
 test("credits resolves the seed through the bound accessor", () => {
-  assert.match(SOURCE, /auth\.getPodSeed\(\)/);
+  assert.match(SOURCE, /auth\.getIdentitySeed\(\)/);
 });
 
-test("credits never keys POD material by auth.parent", () => {
+test("credits never keys seed material by auth.parent", () => {
   // `auth.parent` is still legitimately read here (it is the "is anyone signed
   // in" check), so what is pinned is the narrower thing: it is never handed to
   // a seed lookup as an address.
-  assert.doesNotMatch(CODE, /(restorePodSeed|getPodSeed)\(\s*parent\s*\)/);
+  assert.doesNotMatch(CODE, /(restoreIdentitySeed|getIdentitySeed)\(\s*parent\s*\)/);
 });
 
 // ---------------------------------------------------------------------------
@@ -71,10 +71,10 @@ test("credits never keys POD material by auth.parent", () => {
 // ---------------------------------------------------------------------------
 //
 // The bug was not "the wrong constant". It was TWO RESOLVERS: the store side
-// resolved the address with `_getPodAddress()` while the read side used
+// resolved the address with `_getSeedAddress()` while the read side used
 // `auth.parent`, so for passkey and web3auth they were guaranteed to disagree.
 // What makes the repair robust is that every side now asks the same function —
-// so even where that function falls back (`_podAddress ?? _parent`), the write
+// so even where that function falls back (`_seedAddress ?? _parent`), the write
 // and the read still agree, and no address can be right for one and wrong for
 // the other.
 //
@@ -87,27 +87,27 @@ const AUTH_STORE = readFileSync(
   "utf8",
 );
 
-test("the bound seed accessor resolves the address through _getPodAddress()", () => {
-  const line = AUTH_STORE.split("\n").find((l) => l.trimStart().startsWith("getPodSeed: () =>"));
-  assert.ok(line, "getPodSeed must be exported as a bound accessor");
+test("the bound seed accessor resolves the address through _getSeedAddress()", () => {
+  const line = AUTH_STORE.split("\n").find((l) => l.trimStart().startsWith("getIdentitySeed: () =>"));
+  assert.ok(line, "getIdentitySeed must be exported as a bound accessor");
   assert.match(
     line,
-    /_getPodAddress\(\)/,
-    "getPodSeed must resolve the POD address the same way ensurePodIdentity " +
+    /_getSeedAddress\(\)/,
+    "getIdentitySeed must resolve the seed address the same way ensureIdentitySeed " +
       "stores it — two resolvers is the bug, not the wrong constant",
   );
 });
 
 test("the auth store exposes NO key accessor to reach past the seed", () => {
-  // #518. `getPodKeypair` was the second resolver's twin: it handed callers a
+  // #518. `getSeedKeypair` was the second resolver's twin: it handed callers a
   // derived ed25519 pair, so a rail could take a key without ever touching the
   // seed — and the launch paths that did so were signing nothing with it.
-  assert.doesNotMatch(AUTH_STORE, /getPodKeypair/);
-  assert.doesNotMatch(AUTH_STORE, /podPublicKeyHex/);
+  assert.doesNotMatch(AUTH_STORE, /getSeedKeypair/);
+  assert.doesNotMatch(AUTH_STORE, /seedPublicKeyHex/);
 });
 
 test("the seed is stored under the same resolver the accessor reads by", () => {
-  // `ensurePodIdentity` is a one-line wrapper; `_ensureIdentitySeed` is where the
+  // `ensureIdentitySeed` is a one-line wrapper; `_ensureIdentitySeed` is where the
   // address is resolved and the seed written, so that is what gets pinned.
   const start = AUTH_STORE.indexOf("async function _ensureIdentitySeed");
   assert.ok(start > 0, "_ensureIdentitySeed must exist — a rename would make this pass vacuously");
@@ -117,9 +117,9 @@ test("the seed is stored under the same resolver the accessor reads by", () => {
   const end = AUTH_STORE.indexOf("\n}\n", start);
   assert.ok(end > start, "could not find the end of _ensureIdentitySeed");
   const body = AUTH_STORE.slice(start, end);
-  assert.match(body, /const podAddr = _getPodAddress\(\)/);
-  // And it is podAddr, never _parent, that the seed is written under.
-  assert.match(body, /requestPodIdentity\(podAddr,/);
+  assert.match(body, /const seedAddr = _getSeedAddress\(\)/);
+  // And it is seedAddr, never _parent, that the seed is written under.
+  assert.match(body, /requestIdentitySeed\(seedAddr,/);
 });
 
 // ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ test("credits derives the holder key from the SEED, in this file", () => {
 // The holder key IS the seed — frozen vectors
 // ---------------------------------------------------------------------------
 //
-// Moved here from pod-identity.test.ts with #518: the seed no longer derives an
+// Moved here from identity-seed.test.ts with #518: the seed no longer derives an
 // ed25519 key on any launch path, so the vectors belong to the rail that still
 // does. They pin seed → public key to fixed bytes, so a crypto-library change
 // that alters the holder identity FAILS LOUDLY instead of silently orphaning

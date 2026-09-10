@@ -1,5 +1,5 @@
 /**
- * crypto/hex — relocated from `pod/canonical.ts` when the v1 module was
+ * crypto/hex — relocated from the retired v1 canonicalisation module when the v1 module was
  * deleted (PR 5a). These cases carry over the coverage the deleted
  * `test/object/canonical.test.ts` held for the helpers: every digest on both
  * rails travels through them, so a quiet regression here mislabels every

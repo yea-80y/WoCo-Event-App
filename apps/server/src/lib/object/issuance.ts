@@ -1,12 +1,12 @@
 // ---------------------------------------------------------------------------
-// Standalone POD issuance (Step 4, item A) — mint a `badge`/`collectible` POD
+// Standalone object issuance (Step 4, item A) — mint a `badge`/`collectible` object
 // *type* that is NOT wrapped in an event.
 //
 // It is the ticket-creation pipeline (createEventV2 + register-on-chain) minus
-// the event/series feed: validate the client-signed manifest, upload the pod
+// the event/series feed: validate the client-signed manifest, upload the object
 // bodies + SeriesManifestBlob to Swarm, sponsor-register the manifest on-chain
-// (so the POD gets an on-chain eventId + slot space → holdable + gateable), and
-// upsert the creator's POD directory entry.
+// (so the object gets an on-chain eventId + slot space → holdable + gateable), and
+// upsert the creator's object directory entry.
 //
 // The manifest is signed CLIENT-side by the creator's derived secp256k1
 // ISSUING key (same as events; v2 formats since PR 5a); this server path never
@@ -17,48 +17,48 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  Hex0x, Hex64, PodDirectoryEntry, SignedManifestV2, EditionV1Body, SeriesManifestBlob,
+  Hex0x, Hex64, ObjectDirectoryEntry, SignedManifestV2, EditionV1Body, SeriesManifestBlob,
 } from "@woco/shared";
 import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
-import { upsertCreatorPod } from "./directory.js";
+import { upsertCreatorObject } from "./directory.js";
 import { registerEventOnChain } from "../chain/sponsor-wallet.js";
 import { getActiveChainId, getEventContractVersion } from "../chain/event-contract.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const BATCH = 40;
-/** Manifest never expires for a standalone POD — far-future so the V2 contract's
+/** Manifest never expires for a standalone object — far-future so the V2 contract's
  *  `eventEndTs > block.timestamp` guard passes and the (price-0, dormant) escrow
  *  release window never matters. */
 const NEVER_EXPIRES_TS = Math.floor(Date.now() / 1000) + 100 * 365 * 24 * 3600;
 
 /** Kinds a creator can mint directly. `ticket` flows through event creation;
  *  `authenticity` (transferable / ERC-721) is a deliberately unbuilt stage. */
-export type IssuablePodKind = "badge" | "collectible";
+export type IssuableObjectKind = "badge" | "collectible";
 
-export interface IssuePodOpts {
+export interface IssueObjectOpts {
   /**
    * How holdings of this badge will be RECORDED, which decides whether it needs
    * a chain at all (docs/SWARM_SOCIAL_PLAN.md, Gate B).
    *
    * `chain` (default) is today's rail: sponsor-register the manifest so slot
-   * ownership becomes readable, and pre-sign one pod body per edition.
-   * `pod-cert` records holding as an issuer-signed certificate naming the
+   * ownership becomes readable, and pre-sign one object body per edition.
+   * `cert` records holding as an issuer-signed certificate naming the
    * holder's key, so there are no slots to allocate, no editions to claim, and
    * nothing for a chain registration to hold. This is the branch that makes the
    * plan's "chain footprint: ZERO" true rather than aspirational.
    */
   holdingSource?: "chain" | "pod-cert";
-  /** For `pod-cert` badges: the issuer's content-feed owner address, without
-   *  which nobody can find the certificate log. See `PodDirectoryEntry`. */
+  /** For `cert` badges: the issuer's content-feed owner address, without
+   *  which nobody can find the certificate log. See `ObjectDirectoryEntry`. */
   certLogOwner?: Hex0x;
   /** Verified parentAddress (owner) — stamped by the route, never from the body. */
   creatorAddress: Hex0x;
-  kind: IssuablePodKind;
+  kind: IssuableObjectKind;
   name: string;
   description?: string;
-  /** References a `PodCategory.id` in the creator's directory. */
+  /** References an `ObjectCategory.id` in the creator's directory. */
   categoryId?: string;
   supply: number;
   /** Client-built, personal-signed by the creator's derived issuing key. */
@@ -70,30 +70,30 @@ export interface IssuePodOpts {
 }
 
 /**
- * Mint a standalone POD type. Throws on any failure BEFORE the directory write
- * so a half-created POD never appears in the manager; once on-chain
+ * Mint a standalone object type. Throws on any failure BEFORE the directory write
+ * so a half-created object never appears in the manager; once on-chain
  * registration succeeds the directory upsert is awaited (it is the primary
  * write here, not the fire-and-forget it is for tickets).
  */
-export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntry> {
+export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDirectoryEntry> {
   const { creatorAddress, kind, name, description, categoryId, supply, signedManifest, editionBodies, image } = opts;
   const certSourced = opts.holdingSource === "pod-cert";
 
   // ── Holdings/gating on the CHAIN rail is a WoCoEventV2 feature — refuse to
-  //    mint a POD on a chain where it could never be read on-chain. A
+  //    mint an object on a chain where it could never be read on-chain. A
   //    certificate badge reads its holdings from issuer signatures and never
   //    touches a chain, so this requirement does not apply to it. ───────────
   const chainId = getActiveChainId();
   if (!certSourced && getEventContractVersion(chainId) === "v1") {
     throw new Error(
-      `POD issuance needs the on-chain slot rail; active chain ${chainId} is on v1`,
+      `object issuance needs the on-chain slot rail; active chain ${chainId} is on v1`,
     );
   }
   if (certSourced && !opts.certLogOwner) {
     throw new Error("a certificate badge needs certLogOwner, or its log can never be found");
   }
 
-  // ── Validate the client-signed manifest against the pod bodies (same checks
+  // ── Validate the client-signed manifest against the object bodies (same checks
   //    createEventV2 runs before touching Swarm).
   //
   //    The two rails count bodies differently, and deliberately. On the chain
@@ -119,31 +119,31 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
   }
   const { root } = buildEditionTree(editionBodies);
   if (root.toLowerCase() !== signedManifest.body.metadataRoot.toLowerCase()) {
-    throw new Error("Merkle root mismatch — pod bodies don't match manifest");
+    throw new Error("Merkle root mismatch — object bodies don't match manifest");
   }
   if (signedManifest.body.totalSupply !== supply) {
     throw new Error("Manifest totalSupply does not match supply");
   }
 
-  // ── Whitelist artwork so PodCard can render it via the gateway proxy (the
+  // ── Whitelist artwork so ObjectCard can render it via the gateway proxy (the
   //    upload-image route doesn't whitelist, so issuance is the authority).
   //    Fire-and-forget, non-fatal. ───────────────────────────────────────────
   if (image) {
     void whitelistHashes([image]).catch((err) =>
-      console.warn("[pod] image whitelist failed (non-critical):", err),
+      console.warn("[objects] image whitelist failed (non-critical):", err),
     );
   }
 
-  // ── Upload pod bodies + the SeriesManifestBlob to Swarm. ──────────────────
-  const podRefs: Hex64[] = [];
+  // ── Upload object bodies + the SeriesManifestBlob to Swarm. ──────────────────
+  const objectRefs: Hex64[] = [];
   for (let i = 0; i < editionBodies.length; i += BATCH) {
     const batch = editionBodies.slice(i, i + BATCH);
     const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p))));
-    podRefs.push(...batchRefs);
+    objectRefs.push(...batchRefs);
   }
 
   const manifestRef = bytesToHex0x(manifestV2Digest(signedManifest.body)); // 0x-prefixed bytes32
-  const blob: SeriesManifestBlob = { v: 2, signedManifest, podRefs, manifestDigestHex: manifestRef };
+  const blob: SeriesManifestBlob = { v: 2, signedManifest, objectRefs, manifestDigestHex: manifestRef };
   const swarmManifestRef = await uploadToBytes(JSON.stringify(blob));
 
   // ── The manifest blob must be gateway-whitelisted, or a CLIENT cannot read
@@ -170,7 +170,7 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
     }
   } else {
     void whitelistHashes([swarmManifestRef]).catch((err) =>
-      console.warn("[pod] manifest whitelist failed (non-critical on the chain rail):", err),
+      console.warn("[objects] manifest whitelist failed (non-critical on the chain rail):", err),
     );
   }
 
@@ -186,7 +186,7 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
   //    verifying offline must not pretend otherwise. ─────────────────────────
   let onChainEventId: string | undefined;
   if (certSourced) {
-    console.log(`[pod] minted certificate ${kind} "${name}" cap=${supply} manifest=${manifestRef.slice(0, 10)} (no chain)`);
+    console.log(`[objects] minted certificate ${kind} "${name}" cap=${supply} manifest=${manifestRef.slice(0, 10)} (no chain)`);
   } else {
     const registered = await registerEventOnChain(supply, manifestRef, {
       // The ledger stamps this as the event's owner of record — the creator,
@@ -198,12 +198,12 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
       dropGate: ZERO_ADDRESS,
     });
     onChainEventId = registered.onChainEventId;
-    console.log(`[pod] minted ${kind} "${name}" supply=${supply} eventId=${onChainEventId} tx=${registered.txHash}`);
+    console.log(`[objects] minted ${kind} "${name}" supply=${supply} eventId=${onChainEventId} tx=${registered.txHash}`);
   }
 
   // ── Directory upsert (awaited — this is the primary durable write). ───────
   const now = new Date().toISOString();
-  const entry: PodDirectoryEntry = {
+  const entry: ObjectDirectoryEntry = {
     manifestRef,
     kind,
     name,
@@ -216,7 +216,7 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
     // the entry has always carried, never a trust input.
     issuer: signedManifest.body.issuer,
     // A certificate badge has no chain registration, so it carries neither
-    // coordinate. `PodDirectoryEntry` already documents both as present only
+    // coordinate. `ObjectDirectoryEntry` already documents both as present only
     // once on-chain registration confirms — this is the case that optionality
     // was waiting for, so no schema change is needed.
     ...(certSourced ? { certLogOwner: opts.certLogOwner } : { eventId: onChainEventId!, chainId }),
@@ -224,7 +224,7 @@ export async function issuePodType(opts: IssuePodOpts): Promise<PodDirectoryEntr
     createdAt: now,
     updatedAt: now,
   };
-  await upsertCreatorPod(creatorAddress, entry);
+  await upsertCreatorObject(creatorAddress, entry);
   return entry;
 }
 
@@ -244,7 +244,7 @@ export type IssuedCountVerdict =
  * client is the only party that knows the number, and this counter is the only
  * way the manager shows progress without walking the whole log. A CHAIN badge's
  * count is derivable server-side from `nextSlot`, so letting a client write it
- * would allow a display number to contradict the chain. Ticket PODs are
+ * would allow a display number to contradict the chain. Ticket objects are
  * chain-sourced too and are refused by the same rule.
  *
  * Clamped, then TRUSTED inside the bounds. Shape is something the server can
@@ -256,7 +256,7 @@ export type IssuedCountVerdict =
  * a log it has just read thoroughly — so it must be able to correct DOWNWARD.
  */
 export function validateIssuedCount(
-  entry: Pick<PodDirectoryEntry, "certLogOwner" | "supply">,
+  entry: Pick<ObjectDirectoryEntry, "certLogOwner" | "supply">,
   value: unknown,
 ): IssuedCountVerdict {
   if (!entry.certLogOwner) {

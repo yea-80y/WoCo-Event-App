@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
-  import { deriveEncryptionKeypairFromPodSeed, sealJsonCompressed, openJsonAuto, contactConsentState } from "@woco/shared";
+  import { deriveEncryptionKeypairFromSeed, sealJsonCompressed, openJsonAuto, contactConsentState } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
-  import { restorePodSeed } from "../../auth/identity-seed.js";
+  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import {
@@ -49,17 +49,17 @@
   /** Abuse gate (#59): sending requires a Stripe-verified organiser. */
   let stripeVerified = $state<boolean | null>(null);
 
-  /** X25519 keys derived from the organiser's POD seed (decrypt + re-seal). */
+  /** X25519 keys derived from the organiser's identity seed (decrypt + re-seal). */
   async function getKeys(): Promise<{ privateKey: Uint8Array; publicKey: Uint8Array } | null> {
-    if (!auth.podAddress) return null;
-    let podSeed = await restorePodSeed(auth.podAddress);
-    if (!podSeed) {
-      const pk = await auth.ensurePodIdentity();
+    if (!auth.seedAddress) return null;
+    let identitySeed = await restoreIdentitySeed(auth.seedAddress);
+    if (!identitySeed) {
+      const pk = await auth.ensureIdentitySeed();
       if (!pk) return null;
-      podSeed = await restorePodSeed(auth.podAddress);
+      identitySeed = await restoreIdentitySeed(auth.seedAddress);
     }
-    if (!podSeed) return null;
-    return deriveEncryptionKeypairFromPodSeed(podSeed);
+    if (!identitySeed) return null;
+    return deriveEncryptionKeypairFromSeed(identitySeed);
   }
 
   /** One round trip gives both server-held states; the third (imported) is what

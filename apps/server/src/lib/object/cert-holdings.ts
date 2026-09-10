@@ -5,9 +5,9 @@
 // The chain half is `holdings.ts`.
 //
 // Answers the same question as `getOnChainHolding` — "what does this identity
-// hold of POD type M?" — from a different source: an issuer-signed certificate
+// hold of object type M?" — from a different source: an issuer-signed certificate
 // the holder PRESENTS, plus a challenge only their key could have answered.
-// Both produce a `PodHolding`, and the pure `evaluatePodGate` cannot tell them
+// Both produce an `ObjectHolding`, and the pure `evaluateObjectGate` cannot tell them
 // apart, which is the design property worth protecting.
 //
 // THE ASYMMETRY WITH THE CHAIN ARM, stated because it is easy to mistake for an
@@ -19,7 +19,7 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  CertPodGate, PodHolding, SignedManifestV2, SeriesManifestBlob, HolderPubkey,
+  CertObjectGate, ObjectHolding, SignedManifestV2, SeriesManifestBlob, HolderPubkey,
   CertPresentation, CertChallengeExpectation,
 } from "@woco/shared";
 import { certHoldingFromManifest, resolveCertIssuer, validateSignedManifestV2 } from "@woco/shared";
@@ -51,7 +51,7 @@ const verifiedManifests = new Map<string, SignedManifestV2>();
  * `bypassCache` exists for ONE caller and is not a performance knob. The cache
  * is keyed by `manifestRef`, so a warm entry answers without ever dereferencing
  * THIS gate's `swarmManifestRef` — which is exactly what the write boundary is
- * checking. Without the bypass, `validatePodGate` would accept a gate whose ref
+ * checking. Without the bypass, `validateObjectGate` would accept a gate whose ref
  * points at nothing whenever some earlier gate had already cached that badge,
  * and the gate would then fail closed forever from the next restart onward:
  * stored, silent, permanently unpassable. Trust is unaffected either way (the
@@ -59,7 +59,7 @@ const verifiedManifests = new Map<string, SignedManifestV2>();
  * enough to need naming.
  */
 export async function loadVerifiedBadgeManifest(
-  gate: CertPodGate,
+  gate: CertObjectGate,
   opts: { bypassCache?: boolean } = {},
 ): Promise<SignedManifestV2 | null> {
   const key = gate.manifestRef.toLowerCase();
@@ -72,7 +72,7 @@ export async function loadVerifiedBadgeManifest(
   try {
     blob = JSON.parse(await downloadFromBytes(gate.swarmManifestRef)) as SeriesManifestBlob;
   } catch (err) {
-    console.warn(`[pod-cert] manifest read failed for ${key.slice(0, 10)}:`, err);
+    console.warn(`[cert] manifest read failed for ${key.slice(0, 10)}:`, err);
     return null;
   }
 
@@ -89,11 +89,11 @@ export async function loadVerifiedBadgeManifest(
 }
 
 /**
- * Read a holder's certificate-sourced holding of one POD type.
+ * Read a holder's certificate-sourced holding of one object type.
  *
  * `presentations` come from the claimer's request; `expect` and `expectedHolder`
  * MUST be rebuilt from server state (the stored challenge record keyed by the
- * presented nonce, and the route's verified POD identity), never from the
+ * presented nonce, and the route's verified identity seed), never from the
  * request body — the same rule as "the server uses the VERIFIED parentAddress,
  * never one from the body". A presentation that names its own audience, nonce,
  * expiry and holder proves nothing at all.
@@ -101,12 +101,12 @@ export async function loadVerifiedBadgeManifest(
  * Never throws: every failure is a zero-count holding.
  */
 export async function getCertHolding(
-  gate: CertPodGate,
+  gate: CertObjectGate,
   presentations: readonly CertPresentation[],
   expect: CertChallengeExpectation,
   expectedHolder: HolderPubkey,
-): Promise<PodHolding> {
-  const empty: PodHolding = { manifestRef: gate.manifestRef, count: 0, slots: [] };
+): Promise<ObjectHolding> {
+  const empty: ObjectHolding = { manifestRef: gate.manifestRef, count: 0, slots: [] };
   if (!presentations?.length || !expectedHolder) return empty;
 
   // The certificate must name the identity actually claiming, not merely SOME

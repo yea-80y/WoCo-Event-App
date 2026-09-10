@@ -1,6 +1,6 @@
 /**
  * Issuer-binding verification + the pinned parent → issuer record
- * (issuer-curve migration PR 5a; design record: HANDOVER-pod-curve-migration.md).
+ * (issuer-curve migration PR 5a; design record: the issuer-curve migration handover).
  *
  * Every create payload that asserts an issuer identity (event create, badge
  * mint) carries an `IssuerBindingV1`: the derived issuing key's personal-sign

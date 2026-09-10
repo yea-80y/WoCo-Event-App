@@ -6,7 +6,7 @@
  * behind `requireAuth` is established by reading and by nothing else.
  *
  * The theme is the same as the client half: every failure guarded here is one
- * that would otherwise look like a success. A ticket POD quietly accepting a
+ * that would otherwise look like a success. A ticket object quietly accepting a
  * display counter, or an attendee vanishing from a picker, both render as a
  * perfectly ordinary screen.
  */
@@ -33,8 +33,8 @@ test("a CHAIN badge refuses a client-written issuedCount", () => {
   assert.match(r.ok ? "" : r.error, /certificate badge/i);
 });
 
-test("a TICKET POD refuses one too — same rule, and this is the one that matters", () => {
-  // Ticket PODs live in the same directory and are chain-sourced. The rule is
+test("a TICKET object refuses one too — same rule, and this is the one that matters", () => {
+  // Ticket objects live in the same directory and are chain-sourced. The rule is
   // "has a certLogOwner", not "is not a ticket", so a ticket is refused by
   // construction rather than by an enumerated exception someone can forget.
   const ticket = { supply: 250 };
@@ -105,10 +105,10 @@ test("no holder key is served, whatever a binding happens to hold", () => {
   // the hazard; there is now nothing to serve. Pass one in anyway — a stale
   // binding on disk is exactly the case that must not resurrect it.
   const rows = toAttendeeKeyRows([
-    binding({ podPubKey: "a".repeat(64) } as unknown as Partial<GateBinding>),
+    binding({ holderPubKey: "a".repeat(64) } as unknown as Partial<GateBinding>),
   ]);
   assert.equal(rows.length, 1);
-  assert.equal(Object.prototype.hasOwnProperty.call(rows[0]!, "podPubKey"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(rows[0]!, "holderPubKey"), false);
 });
 
 test("route is carried, so provenance survives to the surface", () => {

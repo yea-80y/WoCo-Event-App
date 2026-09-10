@@ -11,18 +11,18 @@ export const StorageKeys = {
   PARENT_ADDRESS: "woco:auth:parent",
   SESSION_KEY: "woco:auth:session-key",
   SESSION_DELEGATION: "woco:auth:session-delegation",
-  POD_SEED: "woco:auth:pod-seed",
-  // PRF-EOA address used as the POD derivation/AAD key for passkey logins.
-  // The Kernel smart-account address is the parent; POD must stay on the raw
+  IDENTITY_SEED: "woco:auth:pod-seed",
+  // PRF-EOA address used as the seed derivation/AAD key for passkey logins.
+  // The Kernel smart-account address is the parent; the seed must stay on the raw
   // PRF-EOA address (invariant #1) so it survives the future Option 2 swap.
-  POD_ADDRESS: "woco:auth:pod-address",
+  SEED_ADDRESS: "woco:auth:pod-address",
   // Durable RECOVERED-account bindings: a MAP `{ [prfEoaLower]: kernelAddress }`.
   // After recovery the Kernel's sudo owner is rotated but its address is PRESERVED,
   // so the rotated passkey's counterfactual CREATE2 address no longer equals the
   // account address. Each entry records "the passkey whose PRF-EOA = key controls
   // the Kernel at value" so loginPasskey/_ensureKernel rebuild AT the preserved
   // address via the override instead of the (now-divergent) counterfactual. It is a
-  // MAP (not a single `{pod,kernel}`) so recovering MULTIPLE accounts on one device
+  // MAP (not a single `{seedAddress,kernel}`) so recovering MULTIPLE accounts on one device
   // doesn't let a later recovery clobber an earlier one's binding — which would send
   // the earlier account's next login to a fresh counterfactual address ("the account
   // address changed"). Persists across logout so re-login works.
@@ -59,8 +59,8 @@ export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
 
 /** Fixed nonce for the account-keys derivation. FROZEN with the rest of the
  *  signed message — see ACCOUNT_KEYS_DOMAIN in eip712.ts for what changing it
- *  costs. (Renamed from POD_IDENTITY_NONCE / "WOCO-POD-IDENTITY-V1" on
- *  2026-09-10; the rename is the byte change made visible.) */
+ *  costs. (Both the constant and its value were renamed off the retired
+ *  identity nonce on 2026-09-10; the rename is that byte change made visible.) */
 export const ACCOUNT_KEYS_NONCE = "WOCO-ACCOUNT-KEYS-V1";
 
 /** Fixed nonce for deterministic guardian recovery-escrow X25519 key derivation */

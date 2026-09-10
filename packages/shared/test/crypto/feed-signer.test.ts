@@ -37,7 +37,7 @@ import { computeAddress } from "ethers";
 import { deriveFeedSignerKey, FEED_SIGNER_INFO } from "../../src/crypto/feed-signer.js";
 import { scalarToPrivateKey } from "../../src/crypto/secp-hkdf.js";
 import { deriveIssuingKey } from "../../src/crypto/issuing.js";
-import { deriveEncryptionKeypairFromPodSeed } from "../../src/crypto/keys.js";
+import { deriveEncryptionKeypairFromSeed } from "../../src/crypto/keys.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 const SEED = "0x" + "ab".repeat(32);
@@ -97,7 +97,7 @@ test("the feed signer is NOT the X25519 encryption key", () => {
   // Different curves, so this compares the raw secret bytes: the hazard is one
   // 32-byte secret doing two jobs, not two objects being equal.
   const feed = deriveFeedSignerKey(SEED).privKey.slice(2);
-  const enc = bytesToHex(deriveEncryptionKeypairFromPodSeed(SEED).privateKey);
+  const enc = bytesToHex(deriveEncryptionKeypairFromSeed(SEED).privateKey);
   assert.notEqual(feed, enc);
 });
 

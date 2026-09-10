@@ -26,7 +26,7 @@
  *
  * SCOPE — read this before trusting a PASS. This covers the ON-CHAIN mechanism
  * only. The parts that live in the browser are NOT covered and still need a manual
- * cross-device run: the WebAuthn PRF ceremony, the POD seed and content-feed-signer
+ * cross-device run: the WebAuthn PRF ceremony, the identity seed and content-feed-signer
  * restore, the portability envelope, and the IndexedDB bindings. A green run here
  * means "the chain half is sound", not "recovery works for a user".
  *
@@ -413,7 +413,7 @@ async function main() {
     );
   }
   console.log("\nNOT COVERED — still needs a manual cross-device run: the WebAuthn PRF");
-  console.log("ceremony, POD seed + feed-signer restore, the portability envelope, and the");
+  console.log("ceremony, identity seed + feed-signer restore, the portability envelope, and the");
   console.log("IndexedDB bindings. A PASS here means the chain half is sound, nothing more.");
   console.log("=".repeat(78));
   process.exit(failed.length === 0 ? 0 : 1);
