@@ -138,7 +138,7 @@ async function verifyLanded(
   version: number,
 ): Promise<VerifiedWriteResult> {
  try {
-  // Compare against the bytes we asked for, not the object: the feed stores
+  // Compare against the bytes we asked for, not the object — the feed stores
   // `JSON.stringify(data)`, and re-stringifying the parsed read-back reproduces
   // that text exactly (JSON.parse preserves the encoded key order).
   const intended = JSON.stringify(args.data);

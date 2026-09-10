@@ -41,7 +41,7 @@
  * structurally, not by convention — the only route from bytes to an `ObjectHolding`
  * is `holdings.ts`, which accepts issuer-verified certificates and nothing else.
  * A `woco.credit.v1` object fails format dispatch here and always will, and so
- * does a `woco.legacy-cert.v1` object: the v1 rail is REFUSED, not branched.
+ * does a `woco.legacy-cert.v1` object — the v1 rail is REFUSED, not branched.
  *
  * Rides the statement discipline (`../statement/discipline.ts`) unchanged:
  * registry-prefixed digests, closed JSON-safe schemas, dispatch-before-validation,

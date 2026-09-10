@@ -1,15 +1,30 @@
 /**
- * "POD" is retired as a NAME (owner decision 2026-09-01, #515/#458). What a user
- * READS is now "object(s)" in the organiser studio and "collection" on the
- * attendee side. What the machine reads — identifiers (`PodCard`, `podSeed`,
- * `ensurePodIdentity`), routes (`/creator/objects`), feed topics (`woco/pod/*`),
- * storage keys (`StorageKeys.POD_SEED`) and the frozen signed literals — keeps
- * its exact bytes, and the comments are deliberately left speaking the old
- * vocabulary because they explain the wire format, not the product.
+ * THE SOURCE RATCHET for the 2026-09-10 rename.
  *
- * A retired label is one careless edit away from coming back, and nothing else
- * in this suite reads copy at all. So: walk the whole frontend source, strip the
- * comments, and fail on the bare word wherever it survives.
+ * The retired noun left every code name, file name and wire literal so that a
+ * real 0xPARC "POD" (Provable Object Data) integration, if it ever happens,
+ * arrives into an EMPTY namespace. That only holds if nothing brings the three
+ * letters back — and a rename is one careless edit, one revived branch or one
+ * copied snippet away from being undone. So this walks the source and fails.
+ *
+ * THREE RULES:
+ *   1. no FILE or DIRECTORY name carries the noun (case-insensitive substring);
+ *   2. no file CONTENT matches {@link RETIRED_NOUN} — comments and strings
+ *      included, deliberately: a comment that still speaks the old vocabulary
+ *      is how the name comes back;
+ *   3. no BARE `object` / `Object` identifier is declared or destructured.
+ *      JavaScript owns the `Object` global and TypeScript owns the `object`
+ *      type, so the replacement noun is only ever used COMPOUNDED —
+ *      `ObjectKind`, `ObjectDirectoryEntry`, `objectEntry`, `objectsRouter`.
+ *      `Object.keys(x)` in expression position is the global and is fine; it is
+ *      DECLARING one that is not.
+ *
+ * THERE IS NO ALLOWLIST, and adding one would defeat the point: every exemption
+ * this rename could have needed was resolved by renaming the thing instead. The
+ * single path skipped is THIS FILE, which has to name what it forbids.
+ *
+ * It lives in packages/shared because that workspace's suite runs in CI for
+ * every workspace, so the guard covers web, server, shared and embed at once.
  */
 
 import { test } from "node:test";
@@ -18,168 +33,175 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, relative, sep } from "node:path";
 
-const SRC = fileURLToPath(new URL("../src", import.meta.url));
+const REPO = fileURLToPath(new URL("../../../", import.meta.url));
+const SELF = fileURLToPath(import.meta.url);
+
+/** Scanned roots. Every source root plus every workspace's `test/` directory. */
+const ROOTS = [
+  "apps/web/src",
+  "apps/web/test",
+  "apps/server/src",
+  "apps/server/scripts",
+  "apps/server/test",
+  "packages/shared/src",
+  "packages/shared/test",
+  "packages/embed/src",
+  "packages/embed/test",
+] as const;
 
 /**
- * The word may survive ONLY on these exact lines. Scoped to a line, not a file,
- * so a NEW "PODs" label added to an allowlisted file still fails here.
+ * The noun as a word (`pod`, `pods`) or as a name SEGMENT (`podSeed`, `myPod`,
+ * `PodCard`, `POD_SEED`). Case-insensitive, which makes it blunter than the
+ * alternatives suggest — `podcast` would fail too. That is the intended
+ * trade: the three letters do not belong in a name here at all, and a
+ * genuinely-needed word can be spelled around far more cheaply than a revived
+ * rename can be found.
  */
-const ALLOWLIST: ReadonlyArray<{ file: string; line: string; why: string }> = [
-  // Empty since the account-keys rename (#529): the one exemption was the old
-  // EIP-712 purpose literal in pod-identity.ts, which is now a shared constant
-  // with no POD in it. Add an entry only for SIGNED bytes, never for copy.
+export const RETIRED_NOUN = /\bpods?\b|pod[A-Z]|[a-z]Pod\b|Pod[A-Z]|POD_/i;
+
+/**
+ * Declaring or destructuring a bare `object` / `Object`. Expression use is fine.
+ *
+ * The fourth rule is not in the original spec and was added because the first
+ * three miss a SHORTHAND destructured parameter — `function f({ object })` has
+ * no `=` after the brace and no `:` inside it. It is written so each repetition
+ * is anchored by a comma: a `(ident\s*)*` form backtracks catastrophically on a
+ * long minified-ish line, which a guard that runs on every CI job cannot afford.
+ */
+export const BARE_OBJECT_RULES: ReadonlyArray<{ why: string; re: RegExp }> = [
+  { why: "declaration", re: /\b(?:const|let|var|function|class|type|interface)\s+[oO]bject\b/ },
+  { why: "destructuring assignment", re: /\{[^}]*\b[oO]bject\b[^}]*\}\s*=/ },
+  { why: "binding or property name", re: /\b[oO]bject\s*:/ },
+  { why: "shorthand destructured binding", re: /\{\s*(?:[A-Za-z0-9_$]+\s*,\s*)*[oO]bject\s*[,}]/ },
 ];
 
-const POD_WORD = /\bPODs?\b/;
+export const declaresBareObject = (line: string): boolean =>
+  BARE_OBJECT_RULES.some((r) => r.re.test(line));
 
-/**
- * Blank out comments while preserving line numbers and every non-comment byte.
- * String-aware, so a `//` inside a string literal (a URL, a path) is not read as
- * the start of a comment — over-stripping would blind the guard, which is the
- * one failure mode a guard must not have.
- */
-function stripJsComments(src: string): string {
-  let out = "";
-  let state: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  let i = 0;
-  const blank = (c: string) => (c === "\n" || c === "\t" ? c : " ");
-  while (i < src.length) {
-    const c = src[i]!;
-    const d = src[i + 1];
-    if (state === "code") {
-      if (c === "/" && d === "/") { state = "line"; out += "  "; i += 2; continue; }
-      if (c === "/" && d === "*") { state = "block"; out += "  "; i += 2; continue; }
-      if (c === "'" || c === '"' || c === "`") state = c;
-      out += c; i += 1; continue;
-    }
-    if (state === "line") {
-      if (c === "\n") { state = "code"; out += c; i += 1; continue; }
-      out += blank(c); i += 1; continue;
-    }
-    if (state === "block") {
-      if (c === "*" && d === "/") { state = "code"; out += "  "; i += 2; continue; }
-      out += blank(c); i += 1; continue;
-    }
-    // inside a string literal
-    if (c === "\\") { out += c + (d ?? ""); i += 2; continue; }
-    if (c === state) state = "code";
-    // an unterminated single/double quote (an apostrophe in template prose)
-    // must not swallow the rest of the file
-    else if (c === "\n" && state !== "`") state = "code";
-    out += c; i += 1; continue;
-  }
-  return out;
-}
+/** Extensions whose CONTENT is scanned. Names are checked on every entry. */
+const TEXT = /\.(ts|tsx|js|mjs|cjs|svelte|css|html)$/;
+const SKIP_DIR = new Set(["node_modules", "dist", "dist-site", "dist-multisite", ".svelte-kit"]);
 
-function stripHtmlComments(src: string): string {
-  return src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
-}
+type Entry = { rel: string; base: string; isDir: boolean; abs: string };
 
-export function stripComments(src: string, isSvelte: boolean): string {
-  if (!isSvelte) return stripJsComments(src);
-  // In a Svelte file only `<script>` bodies are JavaScript; `//` in template
-  // prose or in an href is text, not a comment.
-  return stripHtmlComments(src).replace(
-    /(<script[^>]*>)([\s\S]*?)(<\/script>)/gi,
-    (_m, open: string, body: string, close: string) => open + stripJsComments(body) + close,
-  );
-}
-
-function sourceFiles(dir: string, acc: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    const p = join(dir, entry);
-    if (statSync(p).isDirectory()) sourceFiles(p, acc);
-    else if (p.endsWith(".ts") || p.endsWith(".svelte")) acc.push(p);
+function walk(abs: string, acc: Entry[] = []): Entry[] {
+  for (const base of readdirSync(abs)) {
+    const child = join(abs, base);
+    const isDir = statSync(child).isDirectory();
+    if (isDir && SKIP_DIR.has(base)) continue;
+    acc.push({ rel: relative(REPO, child).split(sep).join("/"), base, isDir, abs: child });
+    if (isDir) walk(child, acc);
   }
   return acc;
 }
 
-/** Every non-comment line still carrying the word, allowlisted lines removed. */
-function findPodCopy(): Array<{ file: string; line: number; text: string }> {
-  const hits: Array<{ file: string; line: number; text: string }> = [];
-  for (const path of sourceFiles(SRC)) {
-    const file = relative(SRC, path).split(sep).join("/");
-    const original = readFileSync(path, "utf-8").split("\n");
-    const stripped = stripComments(readFileSync(path, "utf-8"), path.endsWith(".svelte")).split("\n");
-    stripped.forEach((line, i) => {
-      if (!POD_WORD.test(line)) return;
-      const text = original[i]!.trim();
-      if (ALLOWLIST.some((a) => a.file === file && a.line === text)) return;
-      hits.push({ file, line: i + 1, text });
-    });
-  }
-  return hits;
-}
+const ENTRIES: Entry[] = ROOTS.flatMap((root) => walk(join(REPO, root)));
 
-test("the word boundary spares identifiers, storage keys and comments", () => {
-  // These are the shapes the sweep deliberately did NOT touch. If the pattern
-  // ever starts matching them, the guard turns into a rename bot.
-  for (const safe of [
-    "const k = StorageKeys.POD_SEED;",
-    "import PodCard from './PodCard.svelte';",
-    "await auth.ensurePodIdentity();",
-    'navigate("/creator/objects");',
-    'topic("woco/pod/collection/" + addr)',
-  ]) {
-    assert.ok(!POD_WORD.test(safe), `pattern should not match code: ${safe}`);
+test("the scan reaches every root it claims to", () => {
+  // A moved or renamed directory would otherwise empty the walk and turn every
+  // assertion below into a pass that guards nothing.
+  for (const root of ROOTS) {
+    assert.ok(
+      ENTRIES.some((e) => e.rel.startsWith(`${root}/`)),
+      `${root} contributed no entries — did it move?`,
+    );
   }
-  // …and it does match a label.
-  assert.ok(POD_WORD.test("<span>PODs</span>"));
-  assert.ok(POD_WORD.test("Create a POD"));
+  const scanned = ENTRIES.filter((e) => !e.isDir && TEXT.test(e.base));
+  assert.ok(scanned.length > 500, `only ${scanned.length} files scanned`);
+  assert.ok(scanned.some((e) => e.abs === SELF), "this file must be inside a scanned root");
 });
 
-test("stripping drops comments and nothing else", () => {
-  const svelte = [
-    "<!-- POD manager — an HTML comment -->",
-    "<script lang='ts'>",
-    "  // POD seed: comments keep the old vocabulary on purpose",
-    "  /* POD identity lives here */",
-    "  const k = StorageKeys.POD_SEED; // a trailing POD note",
-    '  const href = "https://gateway.woco-net.com/bzz/x"; // not a comment above',
-    "</script>",
-    "<a href='https://woco.eth.limo'>Collectibles</a>",
-    "<p>Don't let an apostrophe swallow the file</p>",
-  ].join("\n");
-  const cleaned = stripComments(svelte, true);
-  assert.ok(!POD_WORD.test(cleaned), `comments survived stripping:\n${cleaned}`);
-  // The non-comment content is still there to be scanned — over-stripping would
-  // make every future check pass for the wrong reason.
-  assert.ok(cleaned.includes("StorageKeys.POD_SEED"));
-  assert.ok(cleaned.includes("https://gateway.woco-net.com/bzz/x"));
-  assert.ok(cleaned.includes("Collectibles"));
-
-  // A label in template prose survives stripping and IS found, even on a line
-  // whose text contains `//`.
-  const labelled = "<a href='https://woco.eth.limo'>PODs</a>";
-  assert.ok(POD_WORD.test(stripComments(labelled, true)));
-
-  // Same for a plain .ts file: comment blanked, string kept.
-  const ts = ['// POD seed', 'const msg = "Failed to load PODs";'].join("\n");
-  const cleanedTs = stripComments(ts, false);
-  assert.ok(!POD_WORD.test(cleanedTs.split("\n")[0]!));
-  assert.ok(POD_WORD.test(cleanedTs.split("\n")[1]!));
+test("no file or directory name carries the retired noun", () => {
+  const hits = ENTRIES.filter((e) => e.abs !== SELF && e.base.toLowerCase().includes("pod")).map(
+    (e) => e.rel,
+  );
+  assert.deepEqual(hits, [], `rename these paths:\n  ${hits.join("\n  ")}`);
 });
 
-test("no user-visible string in apps/web/src says POD", () => {
-  const hits = findPodCopy();
+test("no source line carries the retired noun — comments and strings included", () => {
+  const hits: string[] = [];
+  for (const e of ENTRIES) {
+    if (e.isDir || e.abs === SELF || !TEXT.test(e.base)) continue;
+    readFileSync(e.abs, "utf-8")
+      .split("\n")
+      .forEach((line, i) => {
+        if (RETIRED_NOUN.test(line)) hits.push(`${e.rel}:${i + 1}  ${line.trim()}`);
+      });
+  }
   assert.deepEqual(
     hits,
     [],
-    "POD is retired as a user-facing name — say object(s) in the organiser " +
-      "studio, collection on the attendee side, ticket/badge where the thing is " +
-      "specifically one of those:\n" +
-      hits.map((h) => `  ${h.file}:${h.line}  ${h.text}`).join("\n"),
+    "the retired noun is gone from this codebase on purpose — the product noun " +
+      "is `object` (always compounded) and the key material is the `identity seed`:\n  " +
+      hits.join("\n  "),
   );
 });
 
-test("every allowlisted line is still there, saying what it claims", () => {
-  // An allowlist entry that no longer matches anything is a stale exemption —
-  // it would quietly re-open the file it names.
-  for (const entry of ALLOWLIST) {
-    const src = readFileSync(join(SRC, entry.file), "utf-8");
-    assert.ok(
-      src.split("\n").some((l) => l.trim() === entry.line),
-      `allowlisted line is gone from ${entry.file} — drop the entry: ${entry.line}`,
-    );
+test("no bare object / Object identifier is declared or destructured", () => {
+  const hits: string[] = [];
+  for (const e of ENTRIES) {
+    if (e.isDir || e.abs === SELF || !TEXT.test(e.base)) continue;
+    readFileSync(e.abs, "utf-8")
+      .split("\n")
+      .forEach((line, i) => {
+        if (declaresBareObject(line)) hits.push(`${e.rel}:${i + 1}  ${line.trim()}`);
+      });
+  }
+  assert.deepEqual(
+    hits,
+    [],
+    "compound the name — `ObjectKind`, `objectEntry`, `objectsRouter` — never a " +
+      "bare `object`/`Object`, which JavaScript and TypeScript already own:\n  " +
+      hits.join("\n  "),
+  );
+});
+
+test("the noun rule fires on the shapes it exists for", () => {
+  for (const bad of [
+    "import PodCard from './PodCard.svelte';",
+    "const k = StorageKeys.POD_SEED;",
+    "await auth.ensurePodIdentity();",
+    'topic("woco/pod/collection/" + addr)',
+    "// the POD seed is stored per account",
+    "<span>PODs</span>",
+    "const myPod = entries[0];",
+    "holdingSource: \"pod-cert\",",
+  ]) {
+    assert.ok(RETIRED_NOUN.test(bad), `should have failed: ${bad}`);
+  }
+  for (const ok of [
+    "import ObjectCard from './ObjectCard.svelte';",
+    "const k = StorageKeys.IDENTITY_SEED;",
+    "await auth.ensureIdentitySeed();",
+    "export type ObjectKind = 'ticket' | 'badge';",
+    "for (const objectEntry of objects) use(objectEntry);",
+    "const keys = Object.keys(x);",
+  ]) {
+    assert.ok(!RETIRED_NOUN.test(ok), `should have passed: ${ok}`);
+  }
+});
+
+test("the bare-identifier rule fires on declarations, not on the global", () => {
+  for (const bad of [
+    "const object = {};",
+    "let Object = 1;",
+    "function object(x) { return x; }",
+    "export interface Object { a: string }",
+    "const { object } = payload;",
+    "const { a, Object, b } = payload;",
+    "function f({ object }) { return object; }",
+  ]) {
+    assert.ok(declaresBareObject(bad), `should have failed: ${bad}`);
+  }
+  for (const ok of [
+    "const keys = Object.keys(x);",
+    "if (Object.prototype.hasOwnProperty.call(row, 'a')) return;",
+    "export const FROZEN = Object.freeze({ a: 1 });",
+    "const objectEntry = objects[0];",
+    "export interface ObjectDirectoryEntry { kind: ObjectKind }",
+    "function statementSigningDigest(prefix: string, unsigned: object) {}",
+    "const { objects, categories } = dir;",
+  ]) {
+    assert.ok(!declaresBareObject(ok), `should have passed: ${ok}`);
   }
 });

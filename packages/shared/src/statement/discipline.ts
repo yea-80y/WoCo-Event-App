@@ -112,7 +112,7 @@ export function statementSigningDigest(prefix: string, unsigned: object): Uint8A
  * Statements travel as JSON: `assembleContentFeed` (swarm/soc.ts) JSON-parses
  * the base payload to detect the multi-chunk manifest, and a non-JSON payload
  * has NO paging path. So every frozen schema must survive a JSON round-trip
- * into the same canonical object: strings, booleans, safe integers, arrays,
+ * into the same canonical object — strings, booleans, safe integers, arrays,
  * plain objects. No byte strings, no floats, no null — absent means OMITTED.
  * (Floats are banned outright rather than risked: a whole-number float loses
  * its floatness across JSON and would change the CBOR encoding under the
