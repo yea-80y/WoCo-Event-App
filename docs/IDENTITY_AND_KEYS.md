@@ -5,10 +5,14 @@ Every key a WoCo account has, what derives it, what it signs, and why it exists.
 **Verified against `main` on 2026-09-08.** Every constant below is quoted from the file that
 defines it; that file is the authority, not this document.
 
-> **Naming.** "POD" is retired from prose — the standard word is **object data**, and the code
-> speaks *editions*, *certs* and *holder identity*. But the **signed literals keep their exact
-> bytes**: the EIP-712 domain is still `"WoCo POD Identity"`, the topics are still `woco/pod/*`,
-> and the storage key is still the "POD seed". Those are frozen. Only names and copy changed.
+> **Naming (2026-09-10).** The retired noun is gone from prose AND from every code name,
+> file name and wire literal, so a future 0xPARC integration arrives into an empty
+> namespace. The product noun is **object** (always compounded — `ObjectKind`,
+> `objectEntry` — never a bare `object`/`Object` identifier); the key material is the
+> **identity seed**. Topics are `woco/object/*`, the storage key is
+> `woco:auth:identity-seed`. The ONE frozen thing is the account-keys EIP-712 message
+> (`ACCOUNT_KEYS_DOMAIN` / `ACCOUNT_KEYS_TYPES` / `ACCOUNT_KEYS_NONCE` /
+> `ACCOUNT_KEYS_PURPOSE`), renamed separately on the same day and byte-pinned since.
 
 ---
 
@@ -69,7 +73,7 @@ HKDF sibling of this seed (§5).
 
 **Who signs matters more than it looks.** For a passkey or email login the signer here is the
 **raw secp256k1 key beneath the Kernel** — the PRF-derived key, or the Web3Auth key — obtained
-via `_getPodSigner()`, never `_getSigner()`. This is "invariant #1" in
+via `_getSeedSigner()`, never `_getSigner()`. This is "invariant #1" in
 `apps/web/src/lib/auth/auth-store.svelte.ts`: a Kernel's ERC-1271 signature is
 non-deterministic, so deriving from it would corrupt the user's encryption and ticket-signing
 identity on every login. It is also why the message's `address` field carries the raw key's
@@ -106,7 +110,7 @@ every one of them signed input. Change any of them and every account derives a d
 sealed orders stop decrypting, issuer identities move, and every content chunk the user owns is
 stranded under an address nothing looks at. The `purpose` string is the trap — it reads like UI
 copy, wallets render it, and it is a key. `apps/web/test/identity-vectors.test.ts` fails on a
-one-byte change. (The message was renamed from `"WoCo POD Identity"` / `DerivePodIdentity` on
+one-byte change. (The message was renamed off its retired predecessor on
 2026-09-10 — a deliberate pre-launch break, made while there were no users to carry, so that the
 sheet a person signs says what it does. The salt was deliberately not churned.)
 
@@ -143,8 +147,8 @@ nothing on a launch path derives it, and no auth path knows about it: §3a.)
 `slotOwner` (`packages/shared/src/ticket/canonical.ts`). Editions and manifests are signed by the
 **issuing key**. `edition/types.ts` states it without qualification: *"no ed25519 anywhere on the
 issuer side."* The ed25519 holder key signed **no ticket and owned no ticket** — so it was
-removed from the auth store, from event create (`creatorPodKey`), and from every gate binding
-and checkout (`podPubKey`, which was self-declared and verified against nothing, #345).
+removed from the auth store, from event create (`creatorObjectKey`), and from every gate binding
+and checkout (`holderPubKey`, which was self-declared and verified against nothing, #345).
 
 What is left, in full:
 
@@ -157,7 +161,7 @@ Both are frozen formats that specify the curve, so the key survives — but it i
 **lazily, by the rail that needs it, from the seed**, and dropped after the call:
 `apps/web/src/lib/credits/holder-key.ts`, whose `@noble/ed25519` import is DYNAMIC so the curve
 stays out of the eager bundle (pinned by `apps/web/test/no-eager-ed25519.test.ts`). No auth
-surface exposes an ed25519 key any more; `ensurePodIdentity()` returns a boolean saying whether
+surface exposes an ed25519 key any more; `ensureIdentitySeed()` returns a boolean saying whether
 the SEED is available.
 
 **Consequence for the certificate rail, stated plainly:** the platform now holds no holder
@@ -204,7 +208,7 @@ repository.
 | Issuer key | ed25519 (a second use of the holder key's curve) | **secp256k1**, HKDF sibling |
 | Issuer identity of record | 64-hex ed25519 public key | **20-byte address** (`IssuerAddress`, `0x` + 40 hex) |
 | Signature scheme | raw ed25519 | **EIP-191 `personal_sign`** over an ASCII message |
-| Formats | `woco.manifest.v1`, `woco.ticket.v2`, `woco.pod-cert.v1` | `woco.manifest.v2`, `woco.edition.v1`, `woco.cert.v1` |
+| Formats | `woco.manifest.v1`, `woco.ticket.v2`, the v1 cert format | `woco.manifest.v2`, `woco.edition.v1`, `woco.cert.v1` |
 | Old formats | — | **Deleted and dispatch-refused.** Every verifier switches on `format` first; a v1 object fails that dispatch whole. Nothing branches on it. |
 
 Three reasons the identity became an address rather than a public key: recovery yields an address
@@ -215,7 +219,7 @@ one can never be pasted where the other belongs.
 **The holder side did not move — but it did leave the launch paths.** A holder is still a bare
 lowercase 64-hex ed25519 key, cert challenges are still ed25519-signed, and the credits rail
 still signs with it. What #518 removed is everything ELSE that carried an ed25519 key around:
-the auth store's copy, `creatorPodKey` on event create, and `podPubKey` on checkouts and gate
+the auth store's copy, `creatorObjectKey` on event create, and `holderPubKey` on checkouts and gate
 bindings. So the accurate one-line summary is: *the issuer went to secp256k1; the holder stayed
 ed25519, and now only two out-of-scope rails ever derive it*.
 
@@ -291,7 +295,7 @@ Folding it into the seed keeps that property and removes the machinery:
   to keep in step and no way to restore half an account;
 - a rotated credential still cannot fork the feeds, because it cannot change the **seed** — the
   seed comes back verbatim from escrow, and the signer falls out of it;
-- the escrow bundle and the cross-device portability envelope both carry `podSeed` and nothing
+- the escrow bundle and the cross-device portability envelope both carry `identitySeed` and nothing
   else, so an envelope written by any path is complete by construction;
 - one signature, not two, on a fresh device.
 
@@ -355,7 +359,7 @@ Nothing is signed at login. Login only connects.
 | Trigger | What it establishes |
 |---|---|
 | First action needing the API | `ensureSession()` → the EIP-712 delegation |
-| Publish, or first dashboard decrypt | `ensurePodIdentity()` → the account seed (the only remaining derivation signature) |
+| Publish, or first dashboard decrypt | `ensureIdentitySeed()` → the account seed (the only remaining derivation signature) |
 | Publish (issuance) | `ensureIssuingKey()` → HKDF from the seed, no prompt |
 | First content write | the content-feed signer → HKDF from the seed, no prompt of its own |
 
