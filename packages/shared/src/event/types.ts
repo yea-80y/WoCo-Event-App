@@ -243,7 +243,6 @@ export interface EventFeed {
   endDate: string;
   location: string;
   creatorAddress: Hex0x;
-  creatorPodKey: string;
   /** The creator's v2 ISSUING address (0x + 40 lowercase hex) — the identity
    *  every series manifest is signed under. Stamped server-side at create from
    *  the VERIFIED issuer binding (PoP-checked), so this copy is a discovery
@@ -387,7 +386,6 @@ export interface CreateEventV3Request {
   }>;
   image: string;
   creatorAddress: Hex0x;
-  creatorPodKey: string;
   /** Proof of possession binding the issuing key to the (server-verified)
    *  parent — see {@link IssuerBindingV1} for what the server must check. */
   issuerBinding: IssuerBindingV1;
@@ -471,10 +469,10 @@ export interface CreateEventResponse {
 // ---------------------------------------------------------------------------
 
 /** A claimed ticket (original ticket data + claim metadata).
- *  v2 = issued-to-identity: `owner` is set at claim time. v1 = bearer; `owner`
- *  may be stamped retroactively via the attendee gate (the gate binding store
- *  is the record). Ownership that is ENFORCED lives on chain (`slotOwner`) —
- *  this object is the display record. */
+ *  READ-ONLY LEGACY: nothing in the tree constructs one since the v1 claim rail
+ *  went (#207) — the on-chain `slotOwner` is the enforced owner and this is a
+ *  display record for blobs already on Swarm. The `owner` field (a self-declared
+ *  ed25519 key) went with the holder key in #518; nothing wrote or read it. */
 export interface ClaimedTicket {
   podType: "woco.ticket.claimed.v1" | "woco.ticket.claimed.v2";
   eventId: string;
@@ -485,9 +483,6 @@ export interface ClaimedTicket {
   imageHash: string;
   creator: string;
   mintedAt: string;
-  /** Attendee ed25519 POD public key — the owner-of-record. Set at claim time
-   *  (v2) or stamped retroactively by the attendee gate (v1). */
-  owner?: string;
   /** LEGACY (pre-2026-08-01) — raw wallet address. Ticket blobs are publicly
    *  reachable via the claims feed, so new tickets carry ownerAddressHash
    *  instead. Readers must accept both. */

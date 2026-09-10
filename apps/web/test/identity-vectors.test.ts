@@ -1,17 +1,18 @@
 /**
  * Full-chain identity canaries (PR 1 of the issuer-curve migration).
  *
- * The existing `POD_GOLDEN` vectors in pod-identity.test.ts pin seed → ed25519
+ * The `HOLDER_GOLDEN` vectors in credits-key-binding.test.ts pin seed → ed25519
  * public key, but nothing pinned the chain ABOVE the seed: a change to
  * POD_IDENTITY_DOMAIN (name/version/salt), POD_IDENTITY_TYPES, the fixed
  * nonce, the message shape, or the keccak256(getBytes(sig)) step would move
- * every user's seed while `POD_GOLDEN` still passed — the derivation below the
- * seed is unchanged, so both sides of that comparison move together.
+ * every user's seed while those still passed — the derivation below the seed is
+ * unchanged, so both sides of that comparison move together.
  *
  * These tests sign the REAL EIP-712 payload with a fixed wallet key through
- * the REAL `requestPodIdentity`, and pin the resulting seed and public keys
- * to fixed bytes. Any drift anywhere in wallet → sig → seed → ed25519/X25519
- * fails loudly.
+ * the REAL `requestPodIdentity`, and pin the resulting seed and every key
+ * derived from it to fixed bytes. Any drift anywhere in wallet → sig → seed →
+ * {ed25519 holder, X25519 encryption, secp256k1 issuing, feed signer} fails
+ * loudly.
  *
  * Do NOT "fix" a failure here by pasting in new values. A mismatch means the
  * derived identity of every existing user just changed: sealed order data
@@ -71,6 +72,7 @@ installFakeIndexedDB();
 
 const { requestPodIdentity, clearPodIdentity } = await import("../src/lib/auth/pod-identity.ts");
 const { deriveContentFeedSignerFromSig } = await import("../src/lib/swarm/content-feed.ts");
+const { deriveHolderKeypair } = await import("../src/lib/credits/holder-key.ts");
 
 // A fixed, throwaway secp256k1 key. Everything below is derived from it via
 // deterministic (RFC-6979) signatures, so these values are reproducible on any
@@ -79,13 +81,15 @@ const WALLET_PRIV = "0x" + "ab".repeat(32);
 const PINNED = {
   address: "0xe239cdc5fbe977a8a141B72194D3CF8c41bC5BC6",
   seed: "0x72e9100a95f0a342992d0729b88e2afcca0151c3bb2029d0c3867e66435a4651",
+  /** The HOLDER key — derived from the seed by the credits rail (#518), no
+   *  longer by `requestPodIdentity`, which returns the seed and nothing else. */
   ed25519Pub: "0x618c7c53baa1d7d8f82effd44e08d14d273f04015afd84c8f98f22a8893a1fe2",
   x25519Pub: "9db15133070753b2302ae50ec75d00e312e1859aa3a1550d38829ecf2955d14d",
   issuingAddress: "0x55204517dfade726f04e52cc75be64e75736012d",
   feedSignerAddress: "0xd31fb22214ec3684f64c53a26edc1d9235059f3f",
 } as const;
 
-test("wallet → EIP-712 sig → seed → ed25519 pin (the chain ABOVE the seed)", async () => {
+test("wallet → EIP-712 sig → seed pin (the chain ABOVE the seed)", async () => {
   await clearPodIdentity();
   const wallet = new Wallet(WALLET_PRIV);
   assert.equal(wallet.address, PINNED.address, "the fixed wallet key itself moved?");
@@ -95,9 +99,17 @@ test("wallet → EIP-712 sig → seed → ed25519 pin (the chain ABOVE the seed)
       types as Parameters<Wallet["signTypedData"]>[1],
       message as Parameters<Wallet["signTypedData"]>[2],
     );
-  const { seed, podPublicKeyHex } = await requestPodIdentity(wallet.address, signer);
+  const { seed } = await requestPodIdentity(wallet.address, signer);
   assert.equal(seed, PINNED.seed, "identity seed moved — domain/types/nonce/hashing drift");
-  assert.equal(podPublicKeyHex, PINNED.ed25519Pub, "ed25519 identity moved");
+});
+
+test("seed → ed25519 holder pin (the credit/cert sibling, #518)", async () => {
+  const kp = await deriveHolderKeypair(PINNED.seed);
+  assert.equal(
+    kp.publicKeyHex,
+    PINNED.ed25519Pub,
+    "holder identity moved — every credit statement and cert challenge is orphaned",
+  );
 });
 
 test("seed → X25519 encryption pubkey pin (the sibling that decrypts sealed orders)", () => {

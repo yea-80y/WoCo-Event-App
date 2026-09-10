@@ -146,25 +146,25 @@ orders.get("/:id/orders", requireAuth, async (c) => {
 /**
  * GET /api/events/:id/attendee-keys — organiser-only.
  *
- * Which editions of this event have an ed25519 POD key on file, so the
- * certificate issuance surface can offer real attendees instead of asking the
- * organiser to paste keys by hand.
+ * Which editions of this event are bound to an account, so the certificate
+ * issuance surface can show real attendees instead of asking the organiser to
+ * paste keys by hand.
  *
- * DELIBERATELY MINIMAL. Rows carry only `(seriesId, edition, podPubKey?)` — no
+ * THERE IS NO HOLDER KEY TO SERVE (#518). The ed25519 key these rows carried was
+ * self-declared by the claiming client and never verified against anything
+ * (#345), so it was never a holder identity and is gone along with the rest of
+ * the ed25519 rail. The certificate surface therefore has nobody it can certify
+ * until the cert rail's own secp256k1 migration lands, and it says so — which is
+ * the honest answer, and a better one than issuing a permanent, unrevocable
+ * certificate over a key nobody checked.
+ *
+ * DELIBERATELY MINIMAL. Rows carry only `(seriesId, edition, route)` — no
  * parentAddress, no emailHash. The caller already renders the attendee list
  * from `/orders` and joins on (seriesId, edition), so returning identity here
  * would hand over a second copy of who-is-who for no new capability.
  *
- * EVERY edition with a binding is returned, INCLUDING those with no key. A
- * picker that received only the certifiable ones could not tell "nobody
- * qualifies" from "the list came back short", and the surface is required to
- * show un-certifiable attendees rather than silently dropping them.
- *
- * PROVENANCE, and it must not be lost on the way to a permanent certificate:
- * `podPubKey` is self-declared by the claiming client and was never verified
- * against that account's actual POD identity (#345). `route` is passed through
- * so a caller can distinguish a key captured alongside a verified session
- * ("claim") from one accepted in an unauthenticated redeem body ("email-link").
+ * EVERY edition with a binding is returned. A picker that received a short list
+ * could not tell "nobody qualifies" from "the read came back truncated".
  */
 orders.get("/:id/attendee-keys", requireAuth, async (c) => {
   const eventId = c.req.param("id");

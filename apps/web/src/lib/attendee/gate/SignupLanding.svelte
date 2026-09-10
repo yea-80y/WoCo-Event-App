@@ -84,18 +84,10 @@
         return;
       }
 
-      // Best-effort POD pubkey: the owner-of-record stamped into the public
-      // ClaimedTicket (client-verifiable ownership; never blocks the unlock).
-      let podPubKey: string | undefined;
-      try {
-        // Bare 64-hex — the redeem route drops a 0x-prefixed key and binds
-        // without it, silently costing the holder their badge eligibility (#445).
-        podPubKey = (await auth.ensurePodIdentity())?.replace(/^0x/, "") ?? undefined;
-      } catch {
-        podPubKey = undefined;
-      }
-
-      const resp = await redeemGateToken(token, podPubKey);
+      // The binding's owner of record is the VERIFIED session parent, stamped
+      // server-side. Nothing identity-shaped is sent from here (#518): the
+      // self-declared holder key that used to ride along proved nothing (#345).
+      const resp = await redeemGateToken(token);
       if (resp.ok) {
         void gate.refresh();
         phase = "done";

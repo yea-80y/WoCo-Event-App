@@ -14,11 +14,15 @@
  * and silently — the signed-out card is what a constant-false unlock check
  * renders, so it looks like a rider who simply has not collected yet.
  *
- * `auth.getPodKeypair()` carries the comment "so callers don't need to pass it
+ * `auth.getPodSeed()` carries the comment "so callers don't need to pass it
  * (and can't pass the wrong one)". This module was the sole caller in the
  * codebase reaching past it. A unit test cannot catch the regression — the
  * module reaches the auth store, which is why the pure logic was split into
  * `next-statement.ts` in the first place — so the import is what gets pinned.
+ *
+ * Since #518 the credits rail also OWNS the ed25519 holder key: no launch path
+ * derives one, so `holder-key.ts` moved here and this file is where the frozen
+ * `seed → holder pubkey` vectors live.
  */
 
 import { test } from "node:test";
@@ -44,23 +48,22 @@ const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 test("credits never imports the address-taking POD helpers directly", () => {
   // Importing them is the only way to call them with the wrong address, so the
   // import is the tripwire. If a future caller genuinely needs one, bind it in
-  // the auth store next to getPodKeypair/getPodSeed rather than widening this.
+  // the auth store next to getPodSeed rather than widening this.
   assert.doesNotMatch(
     SOURCE,
-    /import\s*\{[^}]*\b(getPodKeypair|restorePodSeed)\b[^}]*\}\s*from\s*["'][^"']*pod-identity/,
+    /import\s*\{[^}]*\brestorePodSeed\b[^}]*\}\s*from\s*["'][^"']*pod-identity/,
   );
 });
 
-test("credits resolves POD material through the bound accessors", () => {
-  assert.match(SOURCE, /auth\.getPodKeypair\(\)/);
+test("credits resolves the seed through the bound accessor", () => {
   assert.match(SOURCE, /auth\.getPodSeed\(\)/);
 });
 
 test("credits never keys POD material by auth.parent", () => {
   // `auth.parent` is still legitimately read here (it is the "is anyone signed
   // in" check), so what is pinned is the narrower thing: it is never handed to
-  // a POD lookup as an address.
-  assert.doesNotMatch(CODE, /(getPodKeypair|restorePodSeed|getPodSeed)\(\s*parent\s*\)/);
+  // a seed lookup as an address.
+  assert.doesNotMatch(CODE, /(restorePodSeed|getPodSeed)\(\s*parent\s*\)/);
 });
 
 // ---------------------------------------------------------------------------
@@ -84,19 +87,23 @@ const AUTH_STORE = readFileSync(
   "utf8",
 );
 
-test("both bound POD accessors resolve the address through _getPodAddress()", () => {
-  for (const accessor of ["getPodKeypair", "getPodSeed"]) {
-    const line = AUTH_STORE.split("\n").find(
-      (l) => l.trimStart().startsWith(`${accessor}: () =>`),
-    );
-    assert.ok(line, `${accessor} must be exported as a bound accessor`);
-    assert.match(
-      line,
-      /_getPodAddress\(\)/,
-      `${accessor} must resolve the POD address the same way ensurePodIdentity ` +
-        `stores it — two resolvers is the bug, not the wrong constant`,
-    );
-  }
+test("the bound seed accessor resolves the address through _getPodAddress()", () => {
+  const line = AUTH_STORE.split("\n").find((l) => l.trimStart().startsWith("getPodSeed: () =>"));
+  assert.ok(line, "getPodSeed must be exported as a bound accessor");
+  assert.match(
+    line,
+    /_getPodAddress\(\)/,
+    "getPodSeed must resolve the POD address the same way ensurePodIdentity " +
+      "stores it — two resolvers is the bug, not the wrong constant",
+  );
+});
+
+test("the auth store exposes NO key accessor to reach past the seed", () => {
+  // #518. `getPodKeypair` was the second resolver's twin: it handed callers a
+  // derived ed25519 pair, so a rail could take a key without ever touching the
+  // seed — and the launch paths that did so were signing nothing with it.
+  assert.doesNotMatch(AUTH_STORE, /getPodKeypair/);
+  assert.doesNotMatch(AUTH_STORE, /podPublicKeyHex/);
 });
 
 test("ensurePodIdentity stores under the same resolver the accessors read by", () => {
@@ -113,20 +120,20 @@ test("ensurePodIdentity stores under the same resolver the accessors read by", (
 // ---------------------------------------------------------------------------
 //
 // Fixing the address binding exposed this one, because it lived one line
-// further down a path nothing could reach: `deriveKeypair` returns an
+// further down a path nothing could reach: `deriveHolderKeypair` returns an
 // 0x-PREFIXED hex string, `woco.credit.v1` validates `holder` against bare
 // 64-hex, and `riderKeys` passed the prefixed value straight through. Every
 // signing attempt threw "invalid woco.credit.v1 unsigned statement".
 //
 // Two independent sources of truth are pinned against each other here, which
-// is what makes this a test rather than a restatement: what the POD derivation
-// actually emits, and what the frozen schema actually accepts.
+// is what makes this a test rather than a restatement: what the holder-key
+// derivation actually emits, and what the frozen schema actually accepts.
 
-const { deriveKeypair } = await import("../src/lib/pod/keys.ts");
+const { deriveHolderKeypair } = await import("../src/lib/credits/holder-key.ts");
 const { creditStatementDigest, CREDIT_STATEMENT_FORMAT } = await import("@woco/shared");
 
-test("POD derivation emits an 0x prefix that the credit schema rejects", async () => {
-  const kp = await deriveKeypair("77".repeat(32));
+test("holder derivation emits an 0x prefix that the credit schema rejects", async () => {
+  const kp = await deriveHolderKeypair("77".repeat(32));
   // If this ever stops being true, the strip in credits.ts becomes a no-op
   // rather than a bug — but silently, so it is worth knowing.
   assert.match(kp.publicKeyHex, /^0x[0-9a-f]{64}$/);
@@ -147,7 +154,7 @@ test("POD derivation emits an 0x prefix that the credit schema rejects", async (
 });
 
 test("the stripped holder is what the credit schema accepts", async () => {
-  const kp = await deriveKeypair("77".repeat(32));
+  const kp = await deriveHolderKeypair("77".repeat(32));
   const unsigned = {
     format: CREDIT_STATEMENT_FORMAT,
     subject: `0x${"11".repeat(32)}`,
@@ -164,4 +171,73 @@ test("credits strips the prefix before it reaches the statement", () => {
   // Source-level, because riderKeys reaches the auth store and cannot be
   // loaded here. Pins the call, not the comment.
   assert.match(CODE, /holder:\s*stripHexPrefix\(/);
+});
+
+test("credits derives the holder key from the SEED, in this file", () => {
+  // #518: no auth-store accessor hands out a keypair any more, so the rail that
+  // still needs one derives it itself and drops it. If this stops being true the
+  // key has gone somewhere longer-lived than a single call.
+  assert.match(SOURCE, /from\s+["']\.\/holder-key\.js["']/);
+  assert.match(CODE, /deriveHolderKeypair\(seed\)/);
+});
+
+// ---------------------------------------------------------------------------
+// The holder key IS the seed — frozen vectors
+// ---------------------------------------------------------------------------
+//
+// Moved here from pod-identity.test.ts with #518: the seed no longer derives an
+// ed25519 key on any launch path, so the vectors belong to the rail that still
+// does. They pin seed → public key to fixed bytes, so a crypto-library change
+// that alters the holder identity FAILS LOUDLY instead of silently orphaning
+// every credit statement and cert challenge ever signed.
+//
+// The first vector is the RFC 8032 §7.1 TEST 1 standard ed25519 vector (all-zero
+// secret key), so any correct implementation MUST reproduce it. Divergence means
+// the library is wrong, or the derivation changed. The rest were produced by
+// this same derivation and are pinned as a self-consistency ratchet.
+//
+// Do NOT "fix" these by pasting in new values. If they fail, every existing
+// holder identity just changed — that is a migration, not a test update.
+const HOLDER_GOLDEN: ReadonlyArray<readonly [seed: string, publicKeyHex: string]> = [
+  ["00".repeat(32), "0x3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"],
+  ["11".repeat(32), "0xd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"],
+  ["22".repeat(32), "0xa09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0"],
+  ["deadbeef".repeat(8), "0xff57575dc7af8bfc4d0837cc1ce2017b686a88145dc5579a958e3462fe9a908e"],
+  ["00".repeat(31) + "01", "0x4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29"],
+];
+
+test("the holder key matches its golden vectors", async () => {
+  for (const [seed, expected] of HOLDER_GOLDEN) {
+    const kp = await deriveHolderKeypair(seed);
+    assert.equal(
+      kp.publicKeyHex,
+      expected,
+      `seed ${seed.slice(0, 16)}… must derive ${expected} — a mismatch means every ` +
+        `existing holder identity has changed and every signed statement is orphaned`,
+    );
+  }
+});
+
+test("the holder secret IS the seed, verbatim — no KDF stands between them", async () => {
+  // The frozen credit/cert vectors depend on this exactly as much as on the
+  // curve. Checked against an INDEPENDENT ed25519 implementation (@noble/curves,
+  // a different package from the @noble/ed25519 holder-key.ts uses) so this
+  // cannot pass by agreeing with itself. NO `.js` on the specifier: apps/web
+  // hoists a @noble/curves whose exports map has no `./ed25519.js` (the same
+  // trap spot-check.test.ts documents).
+  const { ed25519 } = await import("@noble/curves/ed25519");
+  const seedHex = "77".repeat(32);
+  const kp = await deriveHolderKeypair(seedHex);
+  assert.deepEqual(Array.from(kp.privateKey), Array.from(Buffer.from(seedHex, "hex")));
+  assert.equal(
+    kp.publicKeyHex,
+    "0x" + Buffer.from(ed25519.getPublicKey(Buffer.from(seedHex, "hex"))).toString("hex"),
+  );
+  // 0x-prefixed seeds are the form the auth store stores, and must derive the same key.
+  assert.equal((await deriveHolderKeypair("0x" + seedHex)).publicKeyHex, kp.publicKeyHex);
+});
+
+test("a seed that is not 32 bytes is refused, never truncated or padded", async () => {
+  await assert.rejects(() => deriveHolderKeypair("77".repeat(31)), /expected 32 bytes/);
+  await assert.rejects(() => deriveHolderKeypair("77".repeat(33)), /expected 32 bytes/);
 });

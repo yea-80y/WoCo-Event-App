@@ -3,7 +3,8 @@
  *
  * Two separate signatures are required:
  * 1. AuthorizeSession - delegates a random session key (per-session, different each time)
- * 2. DerivePodIdentity - derives deterministic ed25519 POD key (fixed nonce, same every time)
+ * 2. DerivePodIdentity - derives the account's deterministic identity SEED (fixed
+ *    nonce, same every time), from which every other account key is a KDF
  */
 
 /** Domain for session delegation signatures */

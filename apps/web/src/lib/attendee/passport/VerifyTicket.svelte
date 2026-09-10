@@ -8,9 +8,10 @@
    * This lets buyers forward a URL to each friend in a multi-ticket purchase.
    *
    * Renders the event metadata (fetched live), a large QR encoding the full
-   * POD ticket URI, and the ticket ID. The QR payload is identical to the
-   * in-app passport QR and the email's inline QR, so any WoCo scanner reads
-   * the same ed25519-signed POD ticket.
+   * ticket URI, and the ticket ID. The QR payload is identical to the in-app
+   * passport QR and the email's inline QR, so any WoCo scanner reads the same
+   * ticket — signed by the purchase's secp256k1 BURNER key and verified against
+   * the on-chain `slotOwner`. No ed25519 is involved on this path (#518).
    */
   import type { EventFeed, SeriesSummary } from "@woco/shared";
   import { getEvent } from "../../api/events.js";

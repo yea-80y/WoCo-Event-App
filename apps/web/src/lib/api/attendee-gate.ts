@@ -50,12 +50,13 @@ export function getGateTokenInfo(token: string): Promise<ApiResponse<GateTokenIn
   return post<GateTokenInfo>("/api/attendee-gate/token-info", { token });
 }
 
-/** Redeem the email-CTA token against the signed-in account (one-shot). */
+/** Redeem the email-CTA token against the signed-in account (one-shot). The
+ *  account it binds to is the server-VERIFIED session parent, so the body
+ *  carries nothing but the token. */
 export function redeemGateToken(
   token: string,
-  podPubKey?: string,
 ): Promise<ApiResponse<{ gated: boolean; via: string; eventId: string; seriesId: string; edition: number }>> {
-  return authPost("/api/attendee-gate/redeem", { token, podPubKey });
+  return authPost("/api/attendee-gate/redeem", { token });
 }
 
 /** True when a server error means "account not unlocked yet" — callers route

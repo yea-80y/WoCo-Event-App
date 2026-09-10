@@ -3,10 +3,12 @@
  * migration, #443/#444; design record: HANDOVER-pod-curve-migration.md).
  *
  * HKDF(sha256, podSeed, info = "woco/issuing/v1/" + gen) → secp256k1 scalar.
- * A third sibling beside the ed25519 holder identity (`apps/web/src/lib/pod/keys.ts`,
- * seed used verbatim) and the X25519 encryption key (`keys.ts`, info
- * "woco/encryption/v1") — the distinct HKDF info keeps all three independent,
- * and HKDF one-wayness means a leaked issuing key cannot recover the seed.
+ * A sibling of the X25519 encryption key (`keys.ts`, info "woco/encryption/v1")
+ * — the distinct HKDF info keeps them independent, and HKDF one-wayness means a
+ * leaked issuing key cannot recover the seed. (A third sibling, the ed25519
+ * HOLDER key, is derived from the same seed used verbatim — but only by the
+ * out-of-launch-scope credit/cert rails, `apps/web/src/lib/credits/holder-key.ts`;
+ * no issuance path has touched ed25519 since #443.)
  *
  * `gen` is what makes the key ROTATABLE without a new secret at rest: a
  * generation bump is a public issuer-registry statement (PR 5b), not a new

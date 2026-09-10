@@ -99,23 +99,23 @@ DEV COMMANDS:
 AUTH ARCHITECTURE
 ============================================================================
 
-Five keys per account (issuer-curve migration #443, PRs #447–#453, 2026-09-01).
+FOUR keys per account — items 1, 2, 4 and 5 below; item 3 is the SEED, which is not a key.
+(Was five until #518 removed the ed25519 holder key, 2026-09-10;
+issuer-curve migration #443, PRs #447–#453, 2026-09-01).
 Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
-3. Holder identity (ed25519, deterministic) — attendee side. CORRECTED 2026-09-08: it does
-   NOT "own tickets" and signs NOTHING on any launch-scope path. A TICKET is signed by the
-   per-purchase BURNER key (secp256k1, `ticket/canonical.ts`) and verified against the
-   on-chain `slotOwner`; editions/manifests are signed by the ISSUING key (4 below) —
-   `edition/types.ts` states it outright: "no ed25519 anywhere on the issuer side".
-   What ed25519 still does: SIGNS cert-possession challenges + credit statements (both
-   OUT of launch scope), and its PUBLIC key rides along as a self-declared, unverified
-   owner-of-record identifier (`podPubKey` — fulfilment, attendee-gate store, the
-   cert-issuance surface). Removal tracked in #518.
-   ⚠️ THE SEED IS NOT THE ED25519 ACCOUNT. The seed is the 32-byte root
-   (keccak256 of ONE EIP-712 signature) that ALSO derives the X25519 encryption key and
-   the secp256k1 issuing key, by HKDF under different info strings. Dropping ed25519 keeps
-   the seed, keeps encryption, and costs NO extra user signature.
+3. Identity SEED (32 bytes, keccak256 of ONE deterministic EIP-712 signature) — NOT a key:
+   the HKDF root for 4 and for the X25519 encryption key. `ensurePodIdentity()` returns a
+   BOOLEAN (is the seed available), never a public key. The ed25519 HOLDER key it used to
+   derive is GONE from every launch path (#518): `creatorPodKey` and `podPubKey` are deleted
+   end to end, and no auth surface holds an ed25519 key. Two OUT-OF-LAUNCH-SCOPE rails still
+   specify the curve in frozen formats (`woco.credit.v1` holderSig, `woco.cert-challenge.v1`)
+   and derive it lazily from the seed themselves — `apps/web/src/lib/credits/holder-key.ts`,
+   `@noble/ed25519` imported DYNAMICALLY so it stays out of the eager bundle
+   (`apps/web/test/no-eager-ed25519.test.ts` fails if that regresses). CONSEQUENCE: the
+   platform holds NO holder identity, so `/attendee-keys` serves none and the cert-issuance
+   surface reports every attendee un-certifiable until the cert rail migrates to secp256k1.
 4. Issuing key (secp256k1, HKDF from the same seed, generation-parameterised —
    `packages/shared/src/crypto/issuing.ts`) — organiser side: signs manifests + certs.
    Identity of record = its 20-byte ADDRESS, bound to the parent by proof-of-possession
@@ -333,7 +333,8 @@ AUTH (frontend):
   apps/web/src/lib/auth/login-request.svelte.ts      # global login popup trigger
   apps/web/src/lib/auth/signing-request.svelte.ts    # EIP-712 confirm dialog trigger
   apps/web/src/lib/auth/session-delegation.ts        # session key + delegation
-  apps/web/src/lib/auth/pod-identity.ts              # holder-identity seed derivation
+  apps/web/src/lib/auth/pod-identity.ts              # identity-seed derivation + AAD-bound storage
+  apps/web/src/lib/credits/holder-key.ts             # ed25519 holder key — credits/cert rails ONLY, dynamic import
   apps/web/src/lib/auth/issuing-key.ts               # ensureIssuingKey() — fail-loud wrapper
   apps/web/src/lib/auth/ensure-action.ts             # requireAccountForAction() gate
   apps/web/src/lib/auth/signers/{index,web3-signer,passkey-signer,coinbase-signer,local-signer}.ts
@@ -422,7 +423,7 @@ SECURITY / AUTH:
   since 2026-04-09) and the legacy unsalted-SHA-256 path is deleted — so the old "falls back
   to unsalted" warning no longer applies. Rotating it still invalidates every outstanding
   unsubscribe link AND orphans every existing email hash
-- `POD_IDENTITY_DOMAIN` now includes a salt — changes the derived ed25519 key for any user who
+- `POD_IDENTITY_DOMAIN` now includes a salt — changes the derived SEED (and so every key) for any user who
   already published an event. Deploy `SESSION_DOMAIN` salt first; only deploy the POD salt
   after confirming no active POD identities, or build a migration path
 - Canonical challenge relies on raw body bytes: server MUST use `c.req.text()` BEFORE any

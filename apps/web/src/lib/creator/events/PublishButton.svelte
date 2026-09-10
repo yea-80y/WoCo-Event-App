@@ -144,8 +144,7 @@
 
       if (!auth.hasPodIdentity) {
         step = "Approve identity (2 of 2)...";
-        const pk = await auth.ensurePodIdentity();
-        if (!pk) { error = "Identity setup cancelled"; return; }
+        if (!(await auth.ensurePodIdentity())) { error = "Identity setup cancelled"; return; }
       }
       progress = 4;
 
@@ -155,9 +154,6 @@
       if (podSeed) {
         encryptionKey = deriveEncryptionKeypairFromPodSeed(podSeed).publicKeyHex;
       }
-
-      const keypair = await auth.getPodKeypair();
-      if (!keypair) { error = "Could not get signing key"; return; }
 
       // The derived secp256k1 issuing key — signs every manifest below AND the
       // proof-of-possession binding the server pins at create. Throws (fail
@@ -229,7 +225,6 @@
           })),
           image: imageDataUrl!,
           creatorAddress: auth.parent as `0x${string}`,
-          creatorPodKey: keypair.publicKeyHex,
           // Proof of possession: the issuing key signs the parent it belongs
           // to, so a replayed foreign manifest cannot get a foreign issuer
           // pinned to this account (#345 class). The server (5a) verifies

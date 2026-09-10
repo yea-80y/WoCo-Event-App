@@ -1,10 +1,10 @@
 /**
  * X25519 key derivation utilities for encryption.
  *
- * Mirrors the Ed25519 pattern in apps/web/src/lib/pod/keys.ts:
- *   - seedToEd25519  →  seedToX25519
- *   - getPublicKey   →  getX25519PublicKey
- *   - deriveKeypair  →  deriveEncryptionKeypair
+ * Mirrors the ed25519 pattern in apps/web/src/lib/credits/holder-key.ts:
+ *   - seedToEd25519        →  seedToX25519
+ *   - getPublicKey         →  getX25519PublicKey
+ *   - deriveHolderKeypair  →  deriveEncryptionKeypair
  *
  * X25519 private keys are 32 raw bytes (clamping is done internally
  * by the x25519 functions). A keccak256 hash output maps directly.

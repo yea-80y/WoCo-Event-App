@@ -1,18 +1,23 @@
 /**
- * POD-identity persistence guarantees that account recovery depends on.
+ * Identity-SEED persistence guarantees that account recovery depends on.
  *
- * Recovery decrypts the ORIGINAL POD seed from escrow and `storePodSeed`s it
- * under the recovered (new) passkey's PRF-EOA address. The dashboard then reads
- * that seed back — with NO signature — and decrypts the user's history. The
- * danger that motivated `ensurePodIdentity` to prefer the stored seed: after
- * recovery the passkey credential has ROTATED, so re-deriving from a fresh
- * signature yields a DIVERGENT seed that would clobber the escrow-restored
- * original and permanently break decryption. These tests lock in:
- *   1. POD derivation is deterministic + seed-sensitive (same seed ⇒ same
- *      identity; different seed ⇒ different identity).
- *   2. A stored seed is read back as the EXACT identity, with no signer call.
- *   3. The escrow-restore round-trip reproduces the original identity, while a
+ * The seed is the root every account key hangs off — the X25519 encryption key,
+ * the secp256k1 issuing key, and (on the out-of-launch-scope credit/cert rails
+ * only) the ed25519 holder key. Since #518 no key at all is derived here: this
+ * module establishes, stores and restores the seed, and nothing else.
+ *
+ * Recovery decrypts the ORIGINAL seed from escrow and `storePodSeed`s it under
+ * the recovered (new) passkey's PRF-EOA address. The dashboard then reads that
+ * seed back — with NO signature — and decrypts the user's history. The danger
+ * that motivated `ensurePodIdentity` to prefer the stored seed: after recovery
+ * the passkey credential has ROTATED, so re-deriving from a fresh signature
+ * yields a DIVERGENT seed that would clobber the escrow-restored original and
+ * permanently break decryption. These tests lock in:
+ *   1. The seed is keccak256 of the canonical signature BYTES, deterministically.
+ *   2. A stored seed is read back EXACTLY, with no signer call.
+ *   3. The escrow-restore round-trip reproduces the original seed, while a
  *      divergent signature would not — i.e. reuse is mandatory, not optional.
+ *   4. Which ADDRESS a seed is filed under decides whether it is found at all.
  *
  * Runs against the REAL pod-identity + encryption code; only IndexedDB is shimmed
  * (Node already provides WebCrypto). See the matching guard in
@@ -62,9 +67,8 @@ function installFakeIndexedDB() {
 installFakeIndexedDB();
 
 // Imported AFTER the shim is installed (functions resolve IndexedDB lazily).
-const { requestPodIdentity, storePodSeed, getPodKeypair, clearPodIdentity } =
+const { requestPodIdentity, storePodSeed, restorePodSeed, clearPodIdentity } =
   await import("../src/lib/auth/pod-identity.ts");
-const { deriveKeypair } = await import("../src/lib/pod/keys.ts");
 
 // A deterministic mock wallet: returns a fixed 65-byte signature, counts calls.
 function countingSigner(sigHex: string) {
@@ -76,79 +80,66 @@ const SIG_A = "0x" + "ab".repeat(65);
 const SIG_B = "0x" + "cd".repeat(65);
 const seedFromSig = (sig: string) => keccak256(getBytes(sig));
 
-test("POD derivation is deterministic and seed-sensitive", async () => {
-  const a1 = await deriveKeypair("11".repeat(32));
-  const a2 = await deriveKeypair("11".repeat(32));
-  const b = await deriveKeypair("22".repeat(32));
-  assert.equal(a1.publicKeyHex, a2.publicKeyHex, "same seed must yield the same identity");
-  assert.notEqual(a1.publicKeyHex, b.publicKeyHex, "different seed must yield a different identity");
+test("the seed is keccak256 of the canonical signature BYTES", async () => {
+  // Not `toUtf8Bytes(signature)` — hashing the 132-byte ASCII hex string would
+  // be a different, equally deterministic seed, and picking the wrong one is
+  // invisible until it orphans every key on another device.
+  await clearPodIdentity();
+  const addr = "0x1111111111111111111111111111111111111111";
+  const a = countingSigner(SIG_A);
+  const { seed } = await requestPodIdentity(addr, a.sign);
+  assert.equal(a.calls(), 1, "requestPodIdentity signs exactly once");
+  assert.equal(seed, seedFromSig(SIG_A));
+  assert.match(seed, /^0x[0-9a-f]{64}$/);
 });
 
-// GOLDEN VECTORS — the test above only proves derivation is self-consistent: if the
-// algorithm changed, both sides of `a1 === a2` would move together and it would still
-// pass. These pin seed → public key to fixed bytes, so a crypto-library change that
-// alters identity FAILS LOUDLY instead of silently orphaning every ticket ever issued.
-//
-// The first vector is the RFC 8032 standard ed25519 test vector (all-zero secret key),
-// so any correct implementation MUST reproduce it. Divergence = the library is wrong,
-// or derivation changed.
-//
-// Do NOT "fix" these by pasting in new values. If they fail, the identity of every
-// existing user just changed — that is a migration, not a test update.
-const POD_GOLDEN: ReadonlyArray<readonly [seed: string, publicKeyHex: string]> = [
-  // RFC 8032 §7.1 TEST 1 — secret key 00…00
-  ["00".repeat(32), "0x3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"],
-  ["11".repeat(32), "0xd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"],
-  ["22".repeat(32), "0xa09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0"],
-  ["deadbeef".repeat(8), "0xff57575dc7af8bfc4d0837cc1ce2017b686a88145dc5579a958e3462fe9a908e"],
-  ["00".repeat(31) + "01", "0x4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29"],
-];
-
-test("POD derivation matches golden vectors (identity must never silently change)", async () => {
-  for (const [seed, expected] of POD_GOLDEN) {
-    const kp = await deriveKeypair(seed);
-    assert.equal(
-      kp.publicKeyHex,
-      expected,
-      `seed ${seed.slice(0, 16)}… must derive ${expected} — a mismatch means every ` +
-        `existing POD identity has changed and all issued tickets are orphaned`,
-    );
-  }
+test("a different signature is a different seed", async () => {
+  await clearPodIdentity();
+  const addr = "0x1111111111111111111111111111111111111111";
+  const { seed: a } = await requestPodIdentity(addr, countingSigner(SIG_A).sign);
+  const { seed: b } = await requestPodIdentity(addr, countingSigner(SIG_B).sign);
+  assert.notEqual(a, b);
 });
 
-test("a stored seed is read back as the exact identity, with no signature", async () => {
+test("requestPodIdentity derives NO key — the seed is all it returns", async () => {
+  // #518: it used to hand back an ed25519 public key that signed nothing on any
+  // launch path. Anything that needs a key derives it from the seed itself, so a
+  // second field here would be a second place for a key to leak from.
+  await clearPodIdentity();
+  const out = await requestPodIdentity(
+    "0x1111111111111111111111111111111111111111",
+    countingSigner(SIG_A).sign,
+  );
+  assert.deepEqual(Object.keys(out), ["seed"]);
+});
+
+test("a stored seed is read back exactly, with no signature", async () => {
   await clearPodIdentity();
   const addr = "0x1111111111111111111111111111111111111111";
   const seed = "33".repeat(32);
   await storePodSeed(addr, seed);
-  const kp = await getPodKeypair(addr);
-  assert.ok(kp, "getPodKeypair must return the stored identity");
-  assert.equal(kp.publicKeyHex, (await deriveKeypair(seed)).publicKeyHex);
+  assert.equal(await restorePodSeed(addr), seed);
 });
 
-test("escrow-restore reproduces the original identity and never re-signs", async () => {
+test("escrow-restore reproduces the original seed and never re-signs", async () => {
   await clearPodIdentity();
 
-  // Original identity: derived once from the original credential (signer A).
+  // Original seed: derived once from the original credential (signer A).
   const origAddr = "0x1111111111111111111111111111111111111111";
   const a = countingSigner(SIG_A);
-  const { podPublicKeyHex: keyOrig } = await requestPodIdentity(origAddr, a.sign);
+  const { seed: seedOrig } = await requestPodIdentity(origAddr, a.sign);
   assert.equal(a.calls(), 1, "requestPodIdentity signs exactly once");
-  assert.equal(keyOrig, (await deriveKeypair(seedFromSig(SIG_A))).publicKeyHex);
 
   // RECOVERY: the ORIGINAL seed comes out of escrow and is stored under the NEW
   // passkey's PRF-EOA address (the credential rotated; the seed did not).
   const newAddr = "0x2222222222222222222222222222222222222222";
-  await storePodSeed(newAddr, seedFromSig(SIG_A));
-  const restored = await getPodKeypair(newAddr);
-  assert.ok(restored);
-  assert.equal(restored.publicKeyHex, keyOrig, "escrow must restore the EXACT original identity");
+  await storePodSeed(newAddr, seedOrig);
+  assert.equal(await restorePodSeed(newAddr), seedOrig, "escrow must restore the EXACT original seed");
   assert.equal(a.calls(), 1, "reading the stored seed must NOT trigger another signature");
 
   // Why reuse is mandatory: re-deriving from the rotated credential (signer B)
-  // would produce a DIFFERENT identity — clobbering the escrow-restored one.
-  const divergent = await deriveKeypair(seedFromSig(SIG_B));
-  assert.notEqual(divergent.publicKeyHex, keyOrig, "a fresh signature after rotation must NOT match");
+  // would produce a DIFFERENT seed — clobbering the escrow-restored one.
+  assert.notEqual(seedFromSig(SIG_B), seedOrig, "a fresh signature after rotation must NOT match");
 });
 
 // ---------------------------------------------------------------------------
@@ -190,9 +181,9 @@ test("a seed stored under the POD address is INVISIBLE under the Kernel parent",
 
   await storePodSeed(prfEoa, "44".repeat(32));
 
-  assert.ok(await getPodKeypair(prfEoa), "the POD address must resolve the identity");
+  assert.ok(await restorePodSeed(prfEoa), "the POD address must resolve the seed");
   assert.equal(
-    await getPodKeypair(kernelParent),
+    await restorePodSeed(kernelParent),
     null,
     "looking up by the Kernel parent must find NOTHING — this returning null, " +
       "rather than throwing, is why the dead rail looked like a rider who had " +
@@ -207,13 +198,13 @@ test("storing under the Kernel parent does not rescue a POD-address lookup eithe
   await clearBoth();
 
   await storePodSeed(KERNEL_PARENT, "55".repeat(32));
-  assert.equal(await getPodKeypair(PRF_EOA), null);
+  assert.equal(await restorePodSeed(PRF_EOA), null);
 });
 
 test("the SEED decides the identity, not the address it was filed under", async () => {
   // Worth stating explicitly, because it is what makes a wrong-address lookup
-  // SILENT rather than wrong-looking: the identity is a function of the seed,
-  // and the address only decides which seed you find. So a bad address yields
+  // SILENT rather than wrong-looking: every key is a function of the seed, and
+  // the address only decides which seed you find. So a bad address yields
   // nothing at all — never a second, divergent identity — and the rail failed
   // loudly instead of quietly signing laps under a stranger.
   await clearBoth();
@@ -221,11 +212,6 @@ test("the SEED decides the identity, not the address it was filed under", async 
   await storePodSeed(PRF_EOA, seed);
   await storePodSeed(KERNEL_PARENT, seed);
 
-  const a = await getPodKeypair(PRF_EOA);
-  const b = await getPodKeypair(KERNEL_PARENT);
-  assert.ok(a && b);
-  // Same seed ⇒ same identity. The identity is a function of the SEED; the
-  // address only decides which seed you find. That is precisely why a
-  // wrong-address read is silent instead of wrong-looking.
-  assert.equal(a.publicKeyHex, b.publicKeyHex);
+  assert.equal(await restorePodSeed(PRF_EOA), seed);
+  assert.equal(await restorePodSeed(KERNEL_PARENT), seed);
 });

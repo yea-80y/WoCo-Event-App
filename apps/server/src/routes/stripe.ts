@@ -412,7 +412,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, podPubKey: rawPodPubKey, marketingConsent: rawMarketingConsent } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -428,9 +428,6 @@ stripe.post("/create-checkout", async (c) => {
     /** Deployed site id — passed when checkout originates from an organiser's
      *  site-builder page so the webhook can theme the ticket email + PNG. */
     siteId?: string;
-    /** Attendee ed25519 POD pubkey (hex, no 0x) — claimed.v2. Only honoured
-     *  when the request also carries a verified session (see metadata below). */
-    podPubKey?: string;
     /** The checkout opt-in control. `true` = granted, `false` = explicitly
      *  declined, absent = never asked (the order form was not shown). All three
      *  are different: a decline is written to suppression, an absence is not. */
@@ -439,10 +436,6 @@ stripe.post("/create-checkout", async (c) => {
   const siteId = typeof rawSiteId === "string" && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
   const marketingConsent =
     typeof rawMarketingConsent === "boolean" ? rawMarketingConsent : undefined;
-  const podPubKey =
-    typeof rawPodPubKey === "string" && /^[0-9a-f]{64}$/i.test(rawPodPubKey)
-      ? rawPodPubKey.toLowerCase()
-      : undefined;
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
 
   // Validate reservation if one was supplied. The reservation is expected to
@@ -852,9 +845,6 @@ stripe.post("/create-checkout", async (c) => {
           // Server-vouched: only set from a verified session, never from the body.
           // The webhook trusts this field because we wrote it.
           claimerAddress: verifiedAddress || "",
-          // claimed.v2: attendee POD pubkey riding with a verified session —
-          // the webhook stamps it as owner-of-record + gate-binds at claim.
-          ...(verifiedAddress && podPubKey ? { podPubKey } : {}),
           quantity: String(quantity),
           // The on-chain event this sale was VALIDATED against, carried to
           // fulfilment (#426).
