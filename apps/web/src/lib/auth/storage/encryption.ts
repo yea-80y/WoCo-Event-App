@@ -52,11 +52,11 @@ export const AAD = {
   // stored blobs are now only ever DELETED, which needs no AAD.)
   WOCO_AA_EAS_SESSION: (kernel: string) =>
     `woco/device/aa-eas-session/v1:${kernel.toLowerCase()}`,
-  // Content-feed signer private key, bound to the account's PARENT address
-  // (preserved across recovery), so a stale blob left by a different identity on
-  // the same browser cannot be decrypted into this account's feed signer.
-  CONTENT_FEED_SIGNER: (parent: string) =>
-    `woco/device/content-feed-signer/v1:${parent.toLowerCase()}`,
+  // A CONTENT_FEED_SIGNER entry sat here while the feed signer was stored as its
+  // own secret. The signer is derived from the seed now, so nothing is encrypted
+  // under that label — and an unused AAD constructor is worse than none, because
+  // the next person to need one is invited to reuse it for something it was never
+  // bound to. Its stale blobs are only ever DELETED, which needs no AAD.
 } as const;
 
 /** Any string is accepted at the encrypt/decrypt boundary; AAD constructors
