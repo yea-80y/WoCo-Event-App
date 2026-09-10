@@ -1958,7 +1958,12 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
   if (!isConnected || !_parent) return false;
   if (_podInFlight) return _podInFlight;
 
-  _busy = true;
+  // The SILENT establish (web3auth eager path only — see _ensureIdentitySeed's
+  // doc) runs INSIDE login/restore flows that own `_busy` themselves; toggling
+  // it here re-enabled the login buttons mid-flow. Only a PROMPTING establish is
+  // a busy state of its own.
+  const prompting = !opts.silent; // silent ⇔ the web3auth eager establish
+  if (prompting) _busy = true;
   _podInFlight = (async () => {
     try {
       // POD is keyed by the PRF-EOA address for passkey (invariant #1), the
@@ -2008,15 +2013,21 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
         ? createLocalSigner(silentRawKey, async () => true)
         : await _getPodSigner();
       // External wallets are not under our control, so their determinism is
-      // CHECKED rather than assumed — see requestPodIdentity.
-      await requestPodIdentity(podAddr, signer, { verifyDeterminism: _kind === "web3" });
+      // CHECKED rather than assumed — see requestPodIdentity. Coinbase Smart
+      // Wallet is included on purpose: its 1271/6492 signatures are NOT
+      // reproducible, so without the check it would establish a DIFFERENT seed
+      // every time and fork the account silently; with it, the wallet is refused
+      // loudly at setup, which is the honest answer until CSW feeds un-park.
+      await requestPodIdentity(podAddr, signer, {
+        verifyDeterminism: _kind === "web3" || _kind === "coinbase",
+      });
       _podSeedPresent = true;
       return true;
     } catch (e) {
       console.error("[auth] POD identity derivation failed:", e);
       return false;
     } finally {
-      _busy = false;
+      if (prompting) _busy = false;
       _podInFlight = null;
     }
   })();

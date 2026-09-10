@@ -207,14 +207,15 @@ test("the auth store OPTS EXTERNAL WALLETS IN — pinned at the call site", () =
     fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
     "utf8",
   );
-  const call = src
-    .split("\n")
-    .find((l) => l.includes("requestPodIdentity(podAddr,"));
-  assert.ok(call, "the auth store must establish the seed through requestPodIdentity");
+  const lines = src.split("\n");
+  const at = lines.findIndex((l) => l.includes("requestPodIdentity(podAddr,"));
+  assert.ok(at >= 0, "the auth store must establish the seed through requestPodIdentity");
+  // The call spans lines; pin the option wherever it sits within the call.
+  const call = lines.slice(at, at + 3).join(" ");
   assert.match(
     call,
-    /verifyDeterminism:\s*_kind === "web3"/,
-    "external-wallet kinds must be signed twice and checked",
+    /verifyDeterminism:\s*_kind === "web3" \|\| _kind === "coinbase"/,
+    "EVERY external-wallet kind (web3 AND coinbase) must be signed twice and checked",
   );
 });
 

@@ -40,7 +40,7 @@ export const SESSION_TYPES = {
  * derives a DIFFERENT seed: sealed order data stops decrypting, the organiser's
  * issuer identity moves, and every content SOC the user owns is orphaned under
  * an address nobody will look at. There is no migration short of re-publishing
- * everything. Pinned byte for byte by apps/web/test/account-keys-bytes.test.ts.
+ * everything. Pinned byte for byte by apps/web/test/identity-vectors.test.ts.
  *
  * The name changed once, on 2026-09-10, from "WoCo POD Identity" — a deliberate
  * pre-launch break with no users to carry, made so the sheet a person actually

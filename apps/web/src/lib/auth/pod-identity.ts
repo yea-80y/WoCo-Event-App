@@ -79,7 +79,7 @@ export async function requestPodIdentity(
     // session to find and treat as established.
     if ((await sign()) !== signature) {
       throw new Error(
-        "Your wallet's signature isn't reproducible, so we can't create a recoverable feed for your content. Try a different wallet.",
+        "Your wallet's signature isn't reproducible, so we can't set up your account keys with it. Try a different wallet.",
       );
     }
   }
