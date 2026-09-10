@@ -218,7 +218,7 @@ export function decideOwnerCollision(e: OwnerCollisionEvidence): OwnerCollisionV
   if (e.podSeedPresent === true) {
     return {
       status: "block",
-      reason: "a POD seed is already stored under this credential",
+      reason: "an identity seed is already stored under this credential",
       userMessage: MSG_TAKEN,
     };
   }

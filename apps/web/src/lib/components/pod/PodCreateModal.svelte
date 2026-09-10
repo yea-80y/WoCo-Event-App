@@ -215,7 +215,7 @@
       oncreated(entry);
       onclose();
     } catch (err) {
-      error = err instanceof Error ? err.message : "Failed to create POD";
+      error = err instanceof Error ? err.message : "Failed to create object";
     } finally {
       working = false;
     }
@@ -237,11 +237,11 @@
     onkeydown={onScrimKey}
   ></div>
 
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Create POD">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Create object">
     <header class="modal-head">
       <div class="head-meta">
-        <span class="kicker">New POD</span>
-        <h2>Create a POD</h2>
+        <span class="kicker">New object</span>
+        <h2>Create an object</h2>
       </div>
       <button class="close-btn" onclick={onclose} disabled={working} aria-label="Close">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13" /></svg>
@@ -318,7 +318,7 @@
               up in your own log rather than being blocked. Your issuing device
               refuses to go past it.
             {:else}
-              Editions this POD can ever issue (1–10,000). Immutable once minted.
+              Editions this object can ever issue (1–10,000). Immutable once minted.
             {/if}
           </span>
         </div>
@@ -336,7 +336,7 @@
       <span class="field-label">Artwork</span>
       <div class="artwork-row">
         {#if previewSrc}
-          <div class="art-thumb"><img src={previewSrc} alt="POD artwork" /></div>
+          <div class="art-thumb"><img src={previewSrc} alt="Object artwork" /></div>
           <div class="art-actions">
             <label class="btn btn--ghost btn--sm">
               {#if uploading}Uploading…{:else}Replace{/if}
@@ -366,7 +366,7 @@
     <footer class="modal-foot">
       <button class="btn btn--ghost" onclick={onclose} disabled={working}>Cancel</button>
       <button class="btn btn--primary" onclick={mint} disabled={!canMint}>
-        {working ? step || "Working…" : "Mint POD"}
+        {working ? step || "Working…" : "Mint object"}
       </button>
     </footer>
   </div>

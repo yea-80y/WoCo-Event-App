@@ -71,7 +71,7 @@
       categories = dir.categories;
       phase = "ready";
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load PODs";
+      error = e instanceof Error ? e.message : "Failed to load objects";
       phase = "error";
     }
   }
@@ -176,20 +176,20 @@
 <div class="pod-manager">
   <div class="page-head">
     <div class="head-left">
-      <h1>PODs</h1>
+      <h1>Objects</h1>
       <span class="kicker">
-        Collectibles · loyalty badges · access passes
+        Drops · loyalty badges · access passes
       </span>
     </div>
     <button class="btn btn--primary" onclick={onCreate}>
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="square"><path d="M6 1v10M1 6h10" /></svg>
-      Create POD
+      Create object
     </button>
   </div>
 
   {#if phase === "ready" && pods.length > 0}
     <div class="filter-row">
-      <div class="filters" role="tablist" aria-label="Filter PODs by category">
+      <div class="filters" role="tablist" aria-label="Filter objects by category">
         <button
           class="fchip"
           class:active={activeFilter === "all"}
@@ -286,7 +286,7 @@
   {:else if phase === "unauth"}
     <div class="empty-state">
       <span class="kicker">Not connected</span>
-      <p>Connect your account to manage your PODs.</p>
+      <p>Connect your account to manage your objects.</p>
     </div>
   {:else if phase === "error"}
     <div class="empty-state error">
@@ -297,18 +297,18 @@
   {:else if pods.length === 0}
     <div class="empty-state">
       <div class="empty-mark" aria-hidden="true">◈</div>
-      <span class="kicker">No PODs yet</span>
+      <span class="kicker">No objects yet</span>
       <p>
-        PODs are your ownable assets — event tickets, loyalty badges, limited
+        Objects are your ownable assets — event tickets, loyalty badges, limited
         drops. Publish an event and its tickets appear here automatically, or
         create a badge to reward your community.
       </p>
-      <button class="btn btn--primary" onclick={onCreate}>Create your first POD</button>
+      <button class="btn btn--primary" onclick={onCreate}>Create your first object</button>
     </div>
   {:else if filtered.length === 0}
     <div class="empty-state">
       <span class="kicker">Nothing in this category</span>
-      <p>No PODs match this filter yet.</p>
+      <p>No objects match this filter yet.</p>
     </div>
   {:else}
     <div class="grid">
