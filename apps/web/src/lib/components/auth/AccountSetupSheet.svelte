@@ -19,7 +19,14 @@
     },
     identity: {
       title: "Unlock your account keys",
-      sub: "One signature derives the keys that decrypt your orders and sign what you publish.",
+      // Every kind that sees this sheet is an external wallet, and for those the
+      // seed signature is asked for TWICE on purpose (`verifyDeterminism` in the
+      // auth store — a wallet that signs differently twice would give this person
+      // an unrecoverable account). Two popups for one row would read as a glitch
+      // unless the row says so.
+      sub:
+        "One signature derives the keys that decrypt your orders and sign what you publish. " +
+        "Your wallet asks for it twice, so we can check it signs the same way every time.",
     },
   };
 
@@ -31,10 +38,13 @@
     n === 1 ? STEP_COPY[steps[0]!].title : "Set up your account on this device",
   );
 
+  // No popup count here on purpose: the seed row alone is two wallet prompts
+  // (see STEP_COPY.identity), so "2 signatures" would be a promise the wallet
+  // breaks. The rail is the count; each row says what it asks for.
   const intro = $derived(
     n === 1
-      ? "Your wallet will ask you to approve 1 signature. It moves no funds and sends no transaction."
-      : `Your wallet will ask you to approve ${n} signatures. Neither moves funds or sends a transaction.`,
+      ? "Your wallet will ask you to approve this. It moves no funds and sends no transaction."
+      : "Your wallet will ask you to approve these, in order. Nothing here moves funds or sends a transaction.",
   );
 
   /**

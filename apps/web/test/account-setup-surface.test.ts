@@ -197,3 +197,20 @@ test("the counting guard reads labels, not the comments that explain the ban", (
   assert.ok(!isCommentLine('      step = "Approve session (1 of 2)...";'));
   assert.ok(!isCommentLine("<p>Approve identity (2 of 2)</p>"));
 });
+
+test("the sheet says the seed signature is asked for twice — because the auth store asks twice", () => {
+  // The determinism check signs external wallets twice (auth-store: verifyDeterminism
+  // for web3/coinbase). The sheet is shown ONLY to those kinds, so its seed row must
+  // say so, and the intro must not promise a popup count the wallet then breaks.
+  const store = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const sheet = readFileSync(
+    fileURLToPath(new URL("../src/lib/components/auth/AccountSetupSheet.svelte", import.meta.url)),
+    "utf8",
+  );
+  assert.match(store, /verifyDeterminism:\s*_kind === "web3"/, "precondition: external wallets are signed twice");
+  assert.match(sheet, /asks for it twice/, "the seed row must say the wallet asks twice");
+  assert.doesNotMatch(sheet, /approve \$\{n\} signatures|approve 1 signature|approve 2 signatures/, "no popup count in the intro");
+});
